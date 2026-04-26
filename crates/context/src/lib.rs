@@ -33,7 +33,7 @@ mod metrics;
 pub mod op_events;
 pub mod registration_notify;
 
-use governance_broadcast::AckRouter;
+use calimero_context_client::local_governance::AckRouter;
 
 /// A metadata container for a single, in-memory context.
 ///
@@ -112,8 +112,10 @@ pub struct ContextManager {
 
     /// Routes incoming `SignedAck` messages from the wire receiver to the
     /// in-flight `publish_and_await_ack` caller waiting on a specific
-    /// `op_hash`. See [`governance_broadcast`].
-    #[allow(dead_code, reason = "consumed in Phase 3.4 publish_and_await_ack")]
+    /// `op_hash`. Cloned from `context_client.ack_router()` so the
+    /// receiver-side and publish-side share the same instance. See
+    /// [`governance_broadcast`].
+    #[allow(dead_code, reason = "consumed in Phase 5 sign_and_publish wiring")]
     pub(crate) ack_router: Arc<AckRouter>,
 }
 
@@ -132,6 +134,7 @@ impl ContextManager {
         context_client: ContextClient,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
+        let ack_router = Arc::clone(context_client.ack_router());
         Self {
             datastore,
             node_client,
@@ -144,7 +147,7 @@ impl ContextManager {
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),
             namespace_dags: HashMap::new(),
-            ack_router: Arc::new(AckRouter::default()),
+            ack_router,
         }
     }
 

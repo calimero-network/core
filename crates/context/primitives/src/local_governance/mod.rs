@@ -26,6 +26,9 @@ pub use wire::{
     SignedAck, SignedReadinessBeacon,
 };
 
+pub mod ack_router;
+pub use ack_router::AckRouter;
+
 /// Wire/schema version for [`SignedGroupOp`].
 ///
 /// v3: Added `state_hash: [u8; 32]` — each op commits to the group's
