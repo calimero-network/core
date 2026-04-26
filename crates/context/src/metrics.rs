@@ -36,11 +36,17 @@ pub(crate) struct MembershipPolicyLabels {
     pub(crate) reason: String,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct GovernancePublishLabels {
+    pub(crate) op_kind: String,
+}
+
 #[derive(Clone, Debug)]
 struct GroupStoreMetricSink {
     namespace_retry_events: Family<NamespaceRetryLabels, Counter>,
     namespace_decode_events: Family<NamespaceDecodeLabels, Counter>,
     membership_policy_rejections: Family<MembershipPolicyLabels, Counter>,
+    governance_publish_mesh_peers: Family<GovernancePublishLabels, Histogram>,
 }
 
 static GROUP_STORE_METRICS: OnceLock<GroupStoreMetricSink> = OnceLock::new();
@@ -89,10 +95,24 @@ impl Metrics {
             membership_policy_rejections.clone(),
         );
 
+        // Stage-0 baseline metric for #2237: number of mesh peers visible at
+        // the moment a governance op is published. Buckets match the
+        // "cold mesh" detection threshold (mesh_n_low ~= 4).
+        let governance_publish_mesh_peers =
+            Family::<GovernancePublishLabels, Histogram>::new_with_constructor(|| {
+                Histogram::new([0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0])
+            });
+        group_store_registry.register(
+            "governance_publish_mesh_peers_at_publish",
+            "Number of mesh peers visible at the moment a governance op is published",
+            governance_publish_mesh_peers.clone(),
+        );
+
         let _ = GROUP_STORE_METRICS.set(GroupStoreMetricSink {
             namespace_retry_events: namespace_retry_events.clone(),
             namespace_decode_events: namespace_decode_events.clone(),
             membership_policy_rejections: membership_policy_rejections.clone(),
+            governance_publish_mesh_peers: governance_publish_mesh_peers.clone(),
         });
 
         Self {
@@ -150,4 +170,16 @@ pub(crate) fn record_membership_policy_rejection(reason: &str) {
             reason: reason.to_owned(),
         })
         .inc();
+}
+
+pub(crate) fn record_governance_publish_mesh_peers(op_kind: &str, mesh_count: usize) {
+    let Some(metrics) = GROUP_STORE_METRICS.get() else {
+        return;
+    };
+    metrics
+        .governance_publish_mesh_peers
+        .get_or_create(&GovernancePublishLabels {
+            op_kind: op_kind.to_owned(),
+        })
+        .observe(mesh_count as f64);
 }

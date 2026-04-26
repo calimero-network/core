@@ -355,6 +355,14 @@ impl NodeClient {
         Ok(())
     }
 
+    /// Mesh peer count for the namespace topic `ns/<hex>` — used by callers
+    /// (governance publish sites) to observe `governance_publish_mesh_peers_at_publish`.
+    pub async fn mesh_peer_count_for_namespace(&self, namespace_id: [u8; 32]) -> usize {
+        let topic_str = format!("ns/{}", hex::encode(namespace_id));
+        let topic = TopicHash::from_raw(topic_str);
+        self.network_client.mesh_peer_count(topic).await
+    }
+
     /// Publish a borsh-encoded `SignedNamespaceOp` on the namespace topic `ns/<hex>`.
     ///
     /// Enforces [`MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES`] on the payload.
