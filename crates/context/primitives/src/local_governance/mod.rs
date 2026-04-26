@@ -20,6 +20,12 @@ use ed25519_dalek::SignatureError;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod wire;
+pub use wire::{
+    hash_scoped_group, hash_scoped_namespace, GroupTopicMsg, NamespaceTopicMsg, ReadinessProbe,
+    SignedAck, SignedReadinessBeacon,
+};
+
 /// Wire/schema version for [`SignedGroupOp`].
 ///
 /// v3: Added `state_hash: [u8; 32]` — each op commits to the group's
