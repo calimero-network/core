@@ -384,11 +384,23 @@ if [ "$ENABLE_PERF" = "true" ]; then
     install_kernel_tools || true
 fi
 
+# Resolve jemalloc preload path but DON'T export it. Globally exporting
+# LD_PRELOAD causes every helper this script and preserve_to_host_mount
+# spawn (mkdir, cp, mktemp, chmod, awk…) to also load libjemalloc and —
+# combined with `prof_final:true` in MALLOC_CONF — write its own
+# `jemalloc.<helper-pid>.<seq>.f.heap` on exit. Those tiny dumps end up
+# newer than merod's own dumps, so `generate-memory-flamegraph.sh
+# --latest` (`ls -t … | head -1`) ends up rendering a flamegraph from a
+# helper's heap whose MAPPED_LIBRARIES point at e.g. /usr/bin/mkdir, not
+# /usr/local/bin/merod — making jeprof's symbolisation of app frames
+# fall through to its `[$prog, 0, max_pc, 0]` catch-all and emit raw
+# hex addresses instead of function names.
+JEMALLOC_LD_PRELOAD=""
 if [ "$ENABLE_JEMALLOC" = "true" ]; then
     JEMALLOC_PATH="${LD_PRELOAD_JEMALLOC:-$(detect_jemalloc_path)}"
     if [ -n "$JEMALLOC_PATH" ] && [ -f "$JEMALLOC_PATH" ]; then
-        export LD_PRELOAD="$JEMALLOC_PATH"
-        echo "[Profiling] jemalloc enabled (LD_PRELOAD=$LD_PRELOAD)"
+        JEMALLOC_LD_PRELOAD="$JEMALLOC_PATH"
+        echo "[Profiling] jemalloc enabled (LD_PRELOAD=$JEMALLOC_LD_PRELOAD, scoped to main process only)"
         if [[ "$JEMALLOC_PATH" == "/usr/local/lib/"* ]]; then
             echo "[Profiling] Using source-built jemalloc with profiling support"
         fi
@@ -415,7 +427,7 @@ for arg in "$@"; do
 done
 
 if [ "$ENABLE_PROFILING" = "true" ] && [ "$ENABLE_PERF" = "true" ] && [ "$SHOULD_PROFILE_WITH_PERF" = "true" ]; then
-    "$@" &
+    LD_PRELOAD="$JEMALLOC_LD_PRELOAD" "$@" &
     MAIN_PID=$!
     echo "[Profiling] Process started with PID $MAIN_PID"
     
@@ -447,5 +459,5 @@ if [ "$ENABLE_PROFILING" = "true" ] && [ "$ENABLE_PERF" = "true" ] && [ "$SHOULD
     preserve_to_host_mount
     exit $EXIT_CODE
 else
-    exec "$@"
+    exec env LD_PRELOAD="$JEMALLOC_LD_PRELOAD" "$@"
 fi

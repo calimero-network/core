@@ -29,15 +29,19 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
-  # No `pull_request` trigger — fuzzy-load-test is a perf/soak run whose
-  # job needs `ghcr.io/calimero-network/merod:pr-<N>-profiling`, and the
-  # `release-merod-profiling-container` job that would publish that tag
-  # is gated `if: github.event_name != 'pull_request'` in release.yml.
-  # Any PR that modifies this workflow's own paths — e.g. this YAML or
-  # `workflows/fuzzy-tests/**` — would fire the test and fail on
-  # `docker pull ... "manifest unknown"`. Run this job on master pushes
-  # (where the profiling image IS published) or manually via
-  # `workflow_dispatch`.
+  # PR trigger — fires only on PRs that touch profiling-image paths.
+  # release.yml's `prepare.outputs.profiling_paths_changed` gate the
+  # `release-merod-profiling-container` job on the SAME path set, so
+  # `pr-<N>-profiling` is published before fuzzy-load-test consumes it
+  # via `scripts/determine-image-tag.sh`. Other PR paths skip both —
+  # they keep their cheap default behaviour. Same-repo PRs only;
+  # `prepare.outputs.docker_push` keeps fork PRs from pushing.
+  pull_request:
+    paths:
+      - "scripts/profiling/**"
+      - ".github/workflows/deps/prebuilt.profiling.Dockerfile"
+      - ".github/workflows/fuzzy-load-test.yml"
+      - "workflows/fuzzy-tests/**"
   #
   # Nightly soak: a longer run (default 60 minutes per app vs the 15
   # minutes used for routine triggers) fires at 00:00 UTC daily. The
