@@ -47,7 +47,7 @@ steps:
 
   # --- SCENARIO 1: Set default capabilities before inviting members ---
   # Capability bitmask: bit 0 = CAN_CREATE_CONTEXT (1),
-  #   bit 1 = CAN_INVITE_MEMBERS (2), bit 2 = CAN_JOIN_OPEN_CONTEXTS (4)
+  #   bit 1 = CAN_INVITE_MEMBERS (2), bit 2 = CAN_JOIN_OPEN_SUBGROUPS (4)
   # Value 7 = all capabilities enabled
 
   - name: Set default capabilities to all (7)
@@ -111,8 +111,8 @@ steps:
 
   # --- SCENARIO 4: Set visibility + verify context sync works ---
 
-  - name: Set default visibility to open
-    type: set_default_visibility
+  - name: Set subgroup visibility to open
+    type: set_subgroup_visibility
     node: e2e-node-1
     group_id: '{{namespace_id}}'
     visibility: open

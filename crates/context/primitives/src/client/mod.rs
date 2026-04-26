@@ -30,12 +30,12 @@ use crate::group::{
     ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, NamespaceSummary,
     RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest,
-    SetDefaultVisibilityRequest, SetGroupAliasRequest, SetMemberAliasRequest,
-    SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest, StoreContextAliasRequest,
-    StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
-    StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
-    StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    SetGroupAliasRequest, SetMemberAliasRequest, SetMemberCapabilitiesRequest,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextAliasRequest,
+    StoreDefaultCapabilitiesRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest,
+    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::messages::{
     ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest, ContextMessage, CreateContextRequest,
@@ -1118,9 +1118,9 @@ impl ContextClient {
         eyre::Result<()>
     );
     forward_to_actor!(
-        store_default_visibility,
-        StoreDefaultVisibility,
-        StoreDefaultVisibilityRequest,
+        store_subgroup_visibility,
+        StoreSubgroupVisibility,
+        StoreSubgroupVisibilityRequest,
         eyre::Result<()>
     );
     forward_to_actor!(
@@ -1262,9 +1262,9 @@ impl ContextClient {
         eyre::Result<()>
     );
     forward_to_actor!(
-        set_default_visibility,
-        SetDefaultVisibility,
-        SetDefaultVisibilityRequest,
+        set_subgroup_visibility,
+        SetSubgroupVisibility,
+        SetSubgroupVisibilityRequest,
         eyre::Result<()>
     );
     forward_to_actor!(

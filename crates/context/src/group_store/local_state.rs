@@ -12,7 +12,7 @@ use eyre::Result as EyreResult;
 use super::{
     collect_keys_with_prefix, delete_all_context_last_migrations, delete_all_group_signing_keys,
     delete_all_member_aliases, delete_all_member_capabilities, delete_default_capabilities,
-    delete_default_visibility, delete_group_alias, delete_group_meta, delete_group_upgrade,
+    delete_group_alias, delete_group_meta, delete_group_upgrade, delete_subgroup_visibility,
     list_group_members, remove_group_member,
 };
 
@@ -264,7 +264,7 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     delete_all_member_capabilities(store, group_id)?;
     delete_all_member_aliases(store, group_id)?;
     delete_default_capabilities(store, group_id)?;
-    delete_default_visibility(store, group_id)?;
+    delete_subgroup_visibility(store, group_id)?;
     delete_group_alias(store, group_id)?;
     delete_all_context_last_migrations(store, group_id)?;
     delete_group_upgrade(store, group_id)?;

@@ -12,8 +12,8 @@ use rand::Rng;
 use sha2::Digest;
 
 use super::{
-    cascade_remove_member_from_group_tree, check_group_membership, collect_keys_with_prefix,
-    get_group_for_context, get_group_member_role, get_op_head, remove_group_member,
+    cascade_remove_member_from_group_tree, collect_keys_with_prefix, get_group_for_context,
+    get_group_member_role, get_op_head, remove_group_member,
 };
 
 pub(crate) const MAX_NAMESPACE_DEPTH: usize = 16;
@@ -263,7 +263,16 @@ pub fn create_recursive_invitations(
 
 /// Remove a member from a group AND all its descendant groups.
 ///
-/// Returns the list of group IDs the member was removed from.
+/// Only **direct** memberships are touched: `remove_group_member` only
+/// deletes a direct membership row, so reporting groups where the member
+/// was merely inherited (via `Open` subgroup walks in
+/// [`super::check_group_membership`]) would be misleading -- the row
+/// doesn't exist, the call is a no-op, yet the caller would think they
+/// removed the user. To revoke inherited access, an admin removes the
+/// member from the anchor group higher up the chain (or flips the
+/// subgroup to `Restricted`, or revokes `CAN_JOIN_OPEN_SUBGROUPS`).
+///
+/// Returns the list of group IDs the member was directly removed from.
 pub fn recursive_remove_member(
     store: &Store,
     root_group_id: &ContextGroupId,
@@ -274,7 +283,7 @@ pub fn recursive_remove_member(
 
     let mut removed_from = Vec::new();
     for gid in &groups {
-        if check_group_membership(store, gid, member)? {
+        if get_group_member_role(store, gid, member)?.is_some() {
             remove_group_member(store, gid, member)?;
             cascade_remove_member_from_group_tree(store, gid, member)?;
             removed_from.push(*gid);

@@ -101,6 +101,26 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     }
                 }
 
+                // Issue #2256: mirror the namespace-creation invariant.
+                // `create_group` sets `default_capabilities =
+                // CAN_JOIN_OPEN_SUBGROUPS` locally so that subsequent
+                // direct-member additions on the creator side pick up the
+                // bit. That setting is *not* propagated to joiners through
+                // any governance op or bundle field today, so without this
+                // mirror the joiner gets added as a direct member with
+                // capability=0 and the parent-walk inheritance into Open
+                // subgroups (per issue #2256) never authorizes them.
+                // Ensuring the same default before the local
+                // `add_group_member` keeps the joiner aligned with the
+                // creator's intent. Idempotent — only sets when missing.
+                if group_store::get_default_capabilities(&datastore, &group_id)?.is_none() {
+                    group_store::set_default_capabilities(
+                        &datastore,
+                        &group_id,
+                        calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+                    )?;
+                }
+
                 if !group_store::check_group_membership(&datastore, &group_id, &joiner_identity)? {
                     group_store::add_group_member(&datastore, &group_id, &joiner_identity, role)?;
                 } else {

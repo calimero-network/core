@@ -324,10 +324,16 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
 
     let settings = GroupSettingsService::new(&store, gid);
 
-    assert!(settings.set_default_visibility(&member, 1).is_err());
-    assert!(settings.set_default_visibility(&admin, 2).is_err());
-    settings.set_default_visibility(&admin, 1).unwrap();
-    assert_eq!(get_default_visibility(&store, &gid).unwrap(), Some(1));
+    assert!(settings
+        .set_subgroup_visibility(&member, calimero_context_config::VisibilityMode::Restricted)
+        .is_err());
+    settings
+        .set_subgroup_visibility(&admin, calimero_context_config::VisibilityMode::Restricted)
+        .unwrap();
+    assert_eq!(
+        get_subgroup_visibility(&store, &gid).unwrap(),
+        calimero_context_config::VisibilityMode::Restricted
+    );
 
     settings.set_default_capabilities(&admin, 0b101).unwrap();
     assert_eq!(get_default_capabilities(&store, &gid).unwrap(), Some(0b101));
@@ -1747,7 +1753,7 @@ fn capability_zero_means_no_permissions() {
     // All capability bits are off
     assert_eq!(caps & (1 << 0), 0); // CAN_CREATE_CONTEXT
     assert_eq!(caps & (1 << 1), 0); // CAN_INVITE_MEMBERS
-    assert_eq!(caps & (1 << 2), 0); // CAN_JOIN_OPEN_CONTEXTS
+    assert_eq!(caps & (1 << 2), 0); // CAN_JOIN_OPEN_SUBGROUPS
 }
 
 #[test]
@@ -1798,19 +1804,290 @@ fn set_and_get_default_capabilities() {
 }
 
 #[test]
-fn set_and_get_default_visibility() {
+fn set_and_get_subgroup_visibility() {
+    use calimero_context_config::VisibilityMode;
+
     let store = test_store();
     let gid = test_group_id();
 
-    assert!(get_default_visibility(&store, &gid).unwrap().is_none());
+    // Absent key reads as Restricted (the safe default).
+    assert_eq!(
+        get_subgroup_visibility(&store, &gid).unwrap(),
+        VisibilityMode::Restricted
+    );
 
-    // Open = 0
-    set_default_visibility(&store, &gid, 0).unwrap();
-    assert_eq!(get_default_visibility(&store, &gid).unwrap().unwrap(), 0);
+    set_subgroup_visibility(&store, &gid, VisibilityMode::Open).unwrap();
+    assert_eq!(
+        get_subgroup_visibility(&store, &gid).unwrap(),
+        VisibilityMode::Open
+    );
 
-    // Restricted = 1
-    set_default_visibility(&store, &gid, 1).unwrap();
-    assert_eq!(get_default_visibility(&store, &gid).unwrap().unwrap(), 1);
+    set_subgroup_visibility(&store, &gid, VisibilityMode::Restricted).unwrap();
+    assert_eq!(
+        get_subgroup_visibility(&store, &gid).unwrap(),
+        VisibilityMode::Restricted
+    );
+}
+
+// -----------------------------------------------------------------------
+// Parent-chain membership inheritance for `Open` subgroups (issue #2256)
+//
+// The walk in `check_group_membership` treats `Open` as "inherit from
+// parent if anchor cap allows" and `Restricted` (or absent) as a wall.
+// These tests pin down the exact semantics, including admin override and
+// the deepest-anchor cap-check rule.
+// -----------------------------------------------------------------------
+
+/// Tiny helper: link `child` under `parent` directly via the test/legacy
+/// `nest_group` helper so we don't need to drive a full RootOp through
+/// governance just to set up a tree shape for membership tests.
+fn nest_for_test(store: &Store, parent: &ContextGroupId, child: &ContextGroupId) {
+    nest_group(store, parent, child).unwrap();
+}
+
+#[test]
+fn check_membership_open_subgroup_inherits_parent_with_default_cap() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xB0; 32]);
+    let child = ContextGroupId::from([0xB1; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &parent, &child);
+
+    // Alice is a direct member of the parent with the default cap set.
+    add_group_member(&store, &parent, &alice, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &parent,
+        &alice,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    // Child is `Open`. Alice should be inherited as a member.
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+    assert!(check_group_membership(&store, &child, &alice).unwrap());
+}
+
+#[test]
+fn check_membership_restricted_subgroup_does_not_inherit() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xB2; 32]);
+    let child = ContextGroupId::from([0xB3; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    add_group_member(&store, &parent, &alice, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &parent,
+        &alice,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    // Restricted child blocks inheritance even when the cap is set.
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+    assert!(!check_group_membership(&store, &child, &alice).unwrap());
+}
+
+#[test]
+fn check_membership_restricted_wall_blocks_grandparent_inheritance() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // namespace -> restricted_mid -> open_leaf
+    let store = test_store();
+    let namespace = ContextGroupId::from([0xC0; 32]);
+    let mid = ContextGroupId::from([0xC1; 32]);
+    let leaf = ContextGroupId::from([0xC2; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &namespace, &mid);
+    nest_for_test(&store, &mid, &leaf);
+
+    add_group_member(&store, &namespace, &alice, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &alice,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    set_subgroup_visibility(&store, &mid, VisibilityMode::Restricted).unwrap();
+    set_subgroup_visibility(&store, &leaf, VisibilityMode::Open).unwrap();
+
+    // The walk hits `mid` (Restricted) and stops before reaching the
+    // namespace; alice is not inherited into `leaf`.
+    assert!(!check_group_membership(&store, &leaf, &alice).unwrap());
+}
+
+#[test]
+fn check_membership_open_chain_walks_to_root() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // namespace -> open_mid -> open_leaf, member only at namespace
+    let store = test_store();
+    let namespace = ContextGroupId::from([0xD0; 32]);
+    let mid = ContextGroupId::from([0xD1; 32]);
+    let leaf = ContextGroupId::from([0xD2; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &namespace, &mid);
+    nest_for_test(&store, &mid, &leaf);
+
+    add_group_member(&store, &namespace, &alice, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &alice,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    set_subgroup_visibility(&store, &mid, VisibilityMode::Open).unwrap();
+    set_subgroup_visibility(&store, &leaf, VisibilityMode::Open).unwrap();
+
+    assert!(check_group_membership(&store, &leaf, &alice).unwrap());
+}
+
+#[test]
+fn check_membership_unset_visibility_treated_as_restricted() {
+    let store = test_store();
+    let parent = ContextGroupId::from([0xE0; 32]);
+    let child = ContextGroupId::from([0xE1; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    add_group_member(&store, &parent, &alice, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &parent,
+        &alice,
+        calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    // No `subgroup_visibility` set on `child` — should behave as Restricted.
+    assert!(!check_group_membership(&store, &child, &alice).unwrap());
+}
+
+#[test]
+fn check_membership_open_subgroup_blocked_when_cap_revoked() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xF0; 32]);
+    let child = ContextGroupId::from([0xF1; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    add_group_member(&store, &parent, &alice, GroupMemberRole::Member).unwrap();
+    // Cap explicitly cleared (admin used the deny-list).
+    set_member_capability(&store, &parent, &alice, 0).unwrap();
+
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+    assert!(!check_group_membership(&store, &child, &alice).unwrap());
+}
+
+#[test]
+fn check_membership_open_subgroup_admin_inherits_without_cap() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0x10; 32]);
+    let child = ContextGroupId::from([0x11; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    add_group_member(&store, &parent, &admin, GroupMemberRole::Admin).unwrap();
+    // Cap cleared — but admin override kicks in.
+    set_member_capability(&store, &parent, &admin, 0).unwrap();
+
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+    assert!(check_group_membership(&store, &child, &admin).unwrap());
+}
+
+#[test]
+fn check_membership_anchor_cap_check_uses_deepest_direct_membership() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // namespace -> mid -> open_leaf
+    // Alice is a direct member of BOTH `namespace` (cap set) and `mid`
+    // (cap cleared). For `open_leaf`, the walk anchors at `mid` (the
+    // deepest direct membership), where cap is cleared → false.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x20; 32]);
+    let mid = ContextGroupId::from([0x21; 32]);
+    let leaf = ContextGroupId::from([0x22; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &namespace, &mid);
+    nest_for_test(&store, &mid, &leaf);
+
+    add_group_member(&store, &namespace, &alice, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &alice,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    add_group_member(&store, &mid, &alice, GroupMemberRole::Member).unwrap();
+    set_member_capability(&store, &mid, &alice, 0).unwrap();
+
+    set_subgroup_visibility(&store, &mid, VisibilityMode::Open).unwrap();
+    set_subgroup_visibility(&store, &leaf, VisibilityMode::Open).unwrap();
+
+    assert!(!check_group_membership(&store, &leaf, &alice).unwrap());
+}
+
+#[test]
+fn default_capabilities_include_can_join_open_subgroups() {
+    use calimero_context_config::MemberCapabilities;
+
+    // When a group has default capabilities containing
+    // CAN_JOIN_OPEN_SUBGROUPS, a newly added non-admin member should
+    // automatically get the bit. This is the load-bearing default that
+    // makes `Open` subgroups inheritable without per-member admin action.
+    let store = test_store();
+    let gid = ContextGroupId::from([0x40; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    set_default_capabilities(&store, &gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS).unwrap();
+    add_group_member(&store, &gid, &alice, GroupMemberRole::Member).unwrap();
+
+    let caps = get_member_capability(&store, &gid, &alice)
+        .unwrap()
+        .unwrap_or(0);
+    assert_eq!(
+        caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS
+    );
+}
+
+#[test]
+fn check_membership_direct_member_of_subgroup_always_passes() {
+    use calimero_context_config::VisibilityMode;
+
+    // Direct membership short-circuits the walk regardless of visibility
+    // setting on the subgroup.
+    let store = test_store();
+    let parent = ContextGroupId::from([0x30; 32]);
+    let child = ContextGroupId::from([0x31; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // No parent membership; alice is added directly to the Restricted child.
+    add_group_member(&store, &child, &alice, GroupMemberRole::Member).unwrap();
+    assert!(check_group_membership(&store, &child, &alice).unwrap());
 }
 
 #[test]
@@ -1819,10 +2096,12 @@ fn defaults_isolated_per_group() {
     let g1 = ContextGroupId::from([0x40; 32]);
     let g2 = ContextGroupId::from([0x41; 32]);
 
+    use calimero_context_config::VisibilityMode;
+
     set_default_capabilities(&store, &g1, 0b001).unwrap();
     set_default_capabilities(&store, &g2, 0b110).unwrap();
-    set_default_visibility(&store, &g1, 0).unwrap();
-    set_default_visibility(&store, &g2, 1).unwrap();
+    set_subgroup_visibility(&store, &g1, VisibilityMode::Open).unwrap();
+    set_subgroup_visibility(&store, &g2, VisibilityMode::Restricted).unwrap();
 
     assert_eq!(
         get_default_capabilities(&store, &g1).unwrap().unwrap(),
@@ -1832,8 +2111,14 @@ fn defaults_isolated_per_group() {
         get_default_capabilities(&store, &g2).unwrap().unwrap(),
         0b110
     );
-    assert_eq!(get_default_visibility(&store, &g1).unwrap().unwrap(), 0);
-    assert_eq!(get_default_visibility(&store, &g2).unwrap().unwrap(), 1);
+    assert_eq!(
+        get_subgroup_visibility(&store, &g1).unwrap(),
+        VisibilityMode::Open
+    );
+    assert_eq!(
+        get_subgroup_visibility(&store, &g2).unwrap(),
+        VisibilityMode::Restricted
+    );
 }
 
 #[test]
@@ -1882,8 +2167,10 @@ fn delete_defaults_and_member_capabilities_clears_values() {
     let alice = PublicKey::from([0x41; 32]);
     let bob = PublicKey::from([0x42; 32]);
 
+    use calimero_context_config::VisibilityMode;
+
     set_default_capabilities(&store, &gid, 0b101).unwrap();
-    set_default_visibility(&store, &gid, 1).unwrap();
+    set_subgroup_visibility(&store, &gid, VisibilityMode::Restricted).unwrap();
     set_member_capability(&store, &gid, &alice, 0b001).unwrap();
     set_member_capability(&store, &gid, &bob, 0b010).unwrap();
     assert_eq!(
@@ -1892,11 +2179,16 @@ fn delete_defaults_and_member_capabilities_clears_values() {
     );
 
     delete_default_capabilities(&store, &gid).unwrap();
-    delete_default_visibility(&store, &gid).unwrap();
+    delete_subgroup_visibility(&store, &gid).unwrap();
     delete_all_member_capabilities(&store, &gid).unwrap();
 
     assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
-    assert!(get_default_visibility(&store, &gid).unwrap().is_none());
+    // Subgroup visibility's contract is "absent reads as Restricted",
+    // so a successful delete is observed as the default value coming back.
+    assert_eq!(
+        get_subgroup_visibility(&store, &gid).unwrap(),
+        VisibilityMode::Restricted
+    );
     assert!(get_member_capability(&store, &gid, &alice)
         .unwrap()
         .is_none());
@@ -2076,7 +2368,12 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
 
     save_group_meta(&store, &gid, &test_meta()).unwrap();
     set_default_capabilities(&store, &gid, 0b111).unwrap();
-    set_default_visibility(&store, &gid, 1).unwrap();
+    set_subgroup_visibility(
+        &store,
+        &gid,
+        calimero_context_config::VisibilityMode::Restricted,
+    )
+    .unwrap();
     set_group_alias(&store, &gid, "g-alias").unwrap();
     set_context_last_migration(&store, &gid, &context, "v2").unwrap();
 
@@ -2119,7 +2416,12 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     assert!(load_group_meta(&store, &gid).unwrap().is_none());
     assert!(get_group_alias(&store, &gid).unwrap().is_none());
     assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
-    assert!(get_default_visibility(&store, &gid).unwrap().is_none());
+    // Subgroup visibility falls back to Restricted when the row is absent
+    // — that's how a successful delete is observed by the typed API.
+    assert_eq!(
+        get_subgroup_visibility(&store, &gid).unwrap(),
+        calimero_context_config::VisibilityMode::Restricted
+    );
     assert!(enumerate_member_capabilities(&store, &gid)
         .unwrap()
         .is_empty());
@@ -2717,6 +3019,62 @@ fn recursive_remove_member_not_in_some_descendants() {
         "only removed from root where member existed"
     );
     assert!(!check_group_membership(&store, &root, &member).unwrap());
+}
+
+#[test]
+fn recursive_remove_skips_inherited_only_members() {
+    // Regression for cursor[bot] comment on PR #2261: before the fix,
+    // `recursive_remove_member` used `check_group_membership` which now
+    // returns true for inherited members of `Open` subgroups. Calling
+    // `remove_group_member` on such a group would be a no-op (no direct
+    // row to delete) but the group would be added to the `removed_from`
+    // list anyway -- the admin would believe they revoked access while
+    // the user kept their inherited membership.
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xF0; 32]);
+    let open_child = ContextGroupId::from([0xF1; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0x02; 32]);
+
+    nest_group(&store, &root, &open_child).unwrap();
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    save_group_meta(&store, &open_child, &test_meta()).unwrap();
+    add_group_member(&store, &root, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &open_child, &admin, GroupMemberRole::Admin).unwrap();
+
+    // Direct member of `root` only; inherited into `open_child` via the
+    // CAN_JOIN_OPEN_SUBGROUPS cap + Open visibility.
+    add_group_member(&store, &root, &member, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &root,
+        &member,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+    set_subgroup_visibility(&store, &open_child, VisibilityMode::Open).unwrap();
+
+    // Sanity: inherited path works pre-removal.
+    assert!(check_group_membership(&store, &open_child, &member).unwrap());
+
+    // Recursive remove anchored at `open_child` must NOT report it as
+    // removed-from -- the member has no direct row there.
+    let removed_from = recursive_remove_member(&store, &open_child, &member).unwrap();
+    assert!(
+        removed_from.is_empty(),
+        "inherited-only member should not be reported as removed (got {removed_from:?})"
+    );
+
+    // The member is still inherited because root membership + cap + Open
+    // child are all unchanged.
+    assert!(check_group_membership(&store, &open_child, &member).unwrap());
+
+    // To actually revoke, the admin removes them from the anchor (root).
+    let removed_from = recursive_remove_member(&store, &root, &member).unwrap();
+    assert_eq!(removed_from, vec![root]);
+    assert!(!check_group_membership(&store, &open_child, &member).unwrap());
 }
 
 #[test]

@@ -1,12 +1,13 @@
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::VisibilityMode;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use rand::{rngs::OsRng, Rng};
 
 use super::{
-    build_key_rotation, encrypt_group_op, get_namespace_identity_record,
+    build_key_rotation, encrypt_group_op, get_namespace_identity_record, get_subgroup_visibility,
     load_current_group_key_record, resolve_namespace, sign_apply_local_group_op_borsh,
     store_group_key, NamespaceGovernance,
 };
@@ -76,9 +77,27 @@ impl<'a> GroupGovernancePublisher<'a> {
             return Ok(());
         };
 
-        let Some(stored_key) = load_current_group_key_record(self.store, &self.group_id)? else {
+        // Issue #2256: an `Open` subgroup is by definition readable by every
+        // member of its parent namespace, so we encrypt its ops with the
+        // *namespace* key rather than the subgroup's own key. That makes the
+        // crypto boundary match the access boundary, eliminates the need for
+        // a separate key-delivery path to inheritance-eligible parent
+        // members, and makes "Open" mean what it says cryptographically.
+        // The subgroup itself, and any non-Open subgroup, continues to use
+        // its own per-subgroup key.
+        let encrypting_group_id = if self.group_id != namespace_id
+            && get_subgroup_visibility(self.store, &self.group_id)? == VisibilityMode::Open
+        {
+            namespace_id
+        } else {
+            self.group_id
+        };
+
+        let Some(stored_key) = load_current_group_key_record(self.store, &encrypting_group_id)?
+        else {
             tracing::debug!(
                 group_id = %hex::encode(self.group_id.to_bytes()),
+                encrypting_group_id = %hex::encode(encrypting_group_id.to_bytes()),
                 "no group key stored, skipping namespace publish"
             );
             return Ok(());

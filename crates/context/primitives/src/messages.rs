@@ -17,12 +17,12 @@ use crate::group::{
     GetMemberCapabilitiesRequest, GetNamespaceIdentityRequest, JoinContextRequest,
     JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest, SetDefaultVisibilityRequest,
-    SetGroupAliasRequest, SetMemberAliasRequest, SetMemberCapabilitiesRequest,
+    RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest, SetGroupAliasRequest,
+    SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetSubgroupVisibilityRequest,
     SetTeeAdmissionPolicyRequest, StoreContextAliasRequest, StoreDefaultCapabilitiesRequest,
-    StoreDefaultVisibilityRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest, SyncGroupRequest,
-    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    StoreGroupAliasRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
+    StoreMemberAliasRequest, StoreMemberCapabilityRequest, StoreSubgroupVisibilityRequest,
+    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -342,9 +342,9 @@ pub enum ContextMessage {
         request: AdmitTeeNodeRequest,
         outcome: oneshot::Sender<<AdmitTeeNodeRequest as Message>::Result>,
     },
-    SetDefaultVisibility {
-        request: SetDefaultVisibilityRequest,
-        outcome: oneshot::Sender<<SetDefaultVisibilityRequest as Message>::Result>,
+    SetSubgroupVisibility {
+        request: SetSubgroupVisibilityRequest,
+        outcome: oneshot::Sender<<SetSubgroupVisibilityRequest as Message>::Result>,
     },
     StoreContextAlias {
         request: StoreContextAliasRequest,
@@ -366,9 +366,9 @@ pub enum ContextMessage {
         request: StoreDefaultCapabilitiesRequest,
         outcome: oneshot::Sender<<StoreDefaultCapabilitiesRequest as Message>::Result>,
     },
-    StoreDefaultVisibility {
-        request: StoreDefaultVisibilityRequest,
-        outcome: oneshot::Sender<<StoreDefaultVisibilityRequest as Message>::Result>,
+    StoreSubgroupVisibility {
+        request: StoreSubgroupVisibilityRequest,
+        outcome: oneshot::Sender<<StoreSubgroupVisibilityRequest as Message>::Result>,
     },
     SetMemberAlias {
         request: SetMemberAliasRequest,

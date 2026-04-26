@@ -32,13 +32,23 @@ impl<'a> NamespaceRetryService<'a> {
     ) -> EyreResult<Vec<RetryCandidate>> {
         let mut candidates = Vec::new();
         let gid_typed = ContextGroupId::from(group_id);
+        let ns_typed = ContextGroupId::from(self.namespace_id);
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
         for entry in op_log.collect_signed_group_ops_for_group(group_id)? {
             let NamespaceOp::Group { key_id, .. } = entry.signed_op.op else {
                 continue;
             };
-            let Some(group_key) = load_group_key_by_id(self.store, &gid_typed, &key_id)? else {
-                continue;
+            // Issue #2256: same fallback as the live-apply path — the op
+            // may have been encrypted with the namespace key if the
+            // subgroup was `Open` at publish time.
+            let group_key = match load_group_key_by_id(self.store, &gid_typed, &key_id)? {
+                Some(k) => k,
+                None => {
+                    let Some(k) = load_group_key_by_id(self.store, &ns_typed, &key_id)? else {
+                        continue;
+                    };
+                    k
+                }
             };
             let signed_op: SignedNamespaceOp = entry.signed_op;
             candidates.push(RetryCandidate {
