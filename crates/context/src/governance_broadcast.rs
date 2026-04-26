@@ -14,7 +14,10 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use calimero_context_client::local_governance::SignedAck;
+use calimero_store::Store;
 use tokio::sync::broadcast;
+
+use crate::group_store::namespace_member_pubkeys;
 
 #[cfg(test)]
 mod tests;
@@ -69,4 +72,37 @@ impl AckRouter {
             }
         }
     }
+}
+
+/// Validate an incoming `SignedAck` for a publish in flight.
+///
+/// Three checks, all silent on failure (the caller should drop the ack
+/// rather than propagate an error — acks are best-effort gossip):
+///
+/// 1. `ack.op_hash` matches the `expected_op_hash` the publisher is
+///    waiting on (topic-scoped via `hash_scoped_namespace` /
+///    `hash_scoped_group`, so cross-topic replays are already excluded
+///    at hash construction time).
+/// 2. `ack.verify_signature()` succeeds — Ed25519 over
+///    [`SignedAck::signable_bytes`], i.e. `ACK_SIGN_DOMAIN || op_hash`.
+///    The domain prefix is what stops an attacker from substituting a
+///    signature taken over the same 32-byte hash on a different
+///    protocol surface.
+/// 3. `ack.signer_pubkey` is a current member of `namespace_id` at
+///    this node's local DAG view — non-members cannot ack.
+pub fn verify_ack(
+    store: &Store,
+    namespace_id: [u8; 32],
+    expected_op_hash: [u8; 32],
+    ack: &SignedAck,
+) -> bool {
+    if ack.op_hash != expected_op_hash {
+        return false;
+    }
+    if ack.verify_signature().is_err() {
+        return false;
+    }
+    namespace_member_pubkeys(store, namespace_id)
+        .map(|members| members.contains(&ack.signer_pubkey))
+        .unwrap_or(false)
 }

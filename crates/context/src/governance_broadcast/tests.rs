@@ -1,4 +1,8 @@
+use std::sync::Arc;
+
 use calimero_primitives::identity::PrivateKey;
+use calimero_store::db::InMemoryDB;
+use calimero_store::Store;
 
 use super::*;
 
@@ -65,4 +69,70 @@ async fn ack_router_release_does_not_leak_when_caller_holds_rx() {
         router.inner.lock().unwrap().is_empty(),
         "release must reap every entry; previously this map would have grown to 16"
     );
+}
+
+// ---------------------------------------------------------------------------
+// verify_ack
+// ---------------------------------------------------------------------------
+
+fn empty_store() -> Store {
+    Store::new(Arc::new(InMemoryDB::owned()))
+}
+
+/// Build a properly-signed ack (domain-separated bytes) for a given
+/// `op_hash`, signed by `sk`.
+fn signed_ack(sk: &PrivateKey, op_hash: [u8; 32]) -> SignedAck {
+    let msg = SignedAck::signable_bytes(&op_hash);
+    let signature = sk.sign(&msg).expect("sign").to_bytes();
+    SignedAck {
+        op_hash,
+        signer_pubkey: sk.public_key(),
+        signature,
+    }
+}
+
+#[tokio::test]
+async fn verify_ack_rejects_wrong_op_hash() {
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ack = signed_ack(&sk, [1u8; 32]);
+    // Caller is waiting on a different op_hash than the ack carries.
+    assert!(!verify_ack(&store, [42u8; 32], [9u8; 32], &ack));
+}
+
+#[tokio::test]
+async fn verify_ack_rejects_invalid_signature() {
+    let store = empty_store();
+    // dummy_ack uses [0u8; 64] — Ed25519 verification fails before we
+    // ever consult the membership store.
+    let ack = dummy_ack([1u8; 32]);
+    assert!(!verify_ack(&store, [42u8; 32], [1u8; 32], &ack));
+}
+
+#[tokio::test]
+async fn verify_ack_rejects_non_member_signer() {
+    let store = empty_store();
+    // Properly-signed ack, but `store` has no namespace members at all.
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ack = signed_ack(&sk, [7u8; 32]);
+    assert!(!verify_ack(&store, [42u8; 32], [7u8; 32], &ack));
+}
+
+#[tokio::test]
+async fn verify_ack_rejects_signature_without_domain_prefix() {
+    // Defense in depth: a signer that signed `op_hash` directly (without
+    // the ACK_SIGN_DOMAIN prefix) must not have their ack accepted, even
+    // if the signer is otherwise legitimate. This prevents lifting a
+    // signature from another protocol surface that happens to sign a
+    // 32-byte hash.
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let op_hash = [11u8; 32];
+    let signature = sk.sign(&op_hash).expect("sign").to_bytes(); // no domain prefix
+    let ack = SignedAck {
+        op_hash,
+        signer_pubkey: sk.public_key(),
+        signature,
+    };
+    assert!(!verify_ack(&store, [42u8; 32], op_hash, &ack));
 }

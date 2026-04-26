@@ -246,6 +246,22 @@ pub fn list_group_members(
     Ok(results)
 }
 
+/// Public-key-only view of the current member set for a namespace.
+///
+/// A namespace is identified by the `[u8; 32]` of its root group, so this
+/// is `list_group_members(store, ContextGroupId::from(namespace_id), 0, usize::MAX)`
+/// projected to the public-key column. Used by `verify_ack` to confirm
+/// that an ack signer is a current namespace member at this node's
+/// local DAG view.
+pub fn namespace_member_pubkeys(
+    store: &Store,
+    namespace_id: [u8; 32],
+) -> EyreResult<Vec<PublicKey>> {
+    let group_id = ContextGroupId::from(namespace_id);
+    let members = list_group_members(store, &group_id, 0, usize::MAX)?;
+    Ok(members.into_iter().map(|(pk, _role)| pk).collect())
+}
+
 pub fn count_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
     let gid = group_id.to_bytes();
     count_keys_with_prefix(
