@@ -222,8 +222,8 @@ pub struct SetCapabilitiesCommand {
     #[clap(long, help = "Allow member to invite others to the group")]
     pub can_invite_members: bool,
 
-    #[clap(long, help = "Allow member to join open contexts")]
-    pub can_join_open_contexts: bool,
+    #[clap(long, help = "Allow member to join open subgroups")]
+    pub can_join_open_subgroups: bool,
 
     #[clap(
         long,
@@ -241,7 +241,7 @@ impl SetCapabilitiesCommand {
         if self.can_invite_members {
             capabilities |= 1 << 1;
         }
-        if self.can_join_open_contexts {
+        if self.can_join_open_subgroups {
             capabilities |= 1 << 2;
         }
 

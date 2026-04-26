@@ -111,8 +111,8 @@ pub struct SetDefaultCapabilitiesCommand {
     #[clap(long, help = "Allow new members to invite others by default")]
     pub can_invite_members: bool,
 
-    #[clap(long, help = "Allow new members to join open contexts by default")]
-    pub can_join_open_contexts: bool,
+    #[clap(long, help = "Allow new members to join open subgroups by default")]
+    pub can_join_open_subgroups: bool,
 
     #[clap(
         long,
@@ -130,7 +130,7 @@ impl SetDefaultCapabilitiesCommand {
         if self.can_invite_members {
             capabilities |= 1 << 1;
         }
-        if self.can_join_open_contexts {
+        if self.can_join_open_subgroups {
             capabilities |= 1 << 2;
         }
 
