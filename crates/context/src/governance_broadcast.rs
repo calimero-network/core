@@ -15,12 +15,33 @@ use std::sync::Mutex;
 
 use calimero_context_client::local_governance::SignedAck;
 use calimero_store::Store;
+use thiserror::Error;
 use tokio::sync::broadcast;
 
 use crate::group_store::namespace_member_pubkeys;
 
 #[cfg(test)]
 mod tests;
+
+/// Typed-outcome errors returned by the governance broadcast contract.
+///
+/// `NamespaceNotReady` is the Phase-1 (transport readiness) error;
+/// `NoAckReceived` is Phase-2 (ack collection); `Publish`/`LocalApply`
+/// wrap underlying failures so callers can match-by-cause.
+#[derive(Debug, Error)]
+pub enum GovernanceBroadcastError {
+    #[error("namespace not ready: mesh={mesh}, required={required}")]
+    NamespaceNotReady { mesh: usize, required: usize },
+    #[error(
+        "no ack received within {waited_ms}ms (op_hash={})",
+        hex::encode(op_hash)
+    )]
+    NoAckReceived { waited_ms: u64, op_hash: [u8; 32] },
+    #[error("publish error: {0}")]
+    Publish(String),
+    #[error("local apply error: {0}")]
+    LocalApply(String),
+}
 
 /// Routes incoming Ack messages to in-flight `publish_and_await_ack`
 /// callers, keyed by `op_hash`.
@@ -105,4 +126,29 @@ pub fn verify_ack(
     namespace_member_pubkeys(store, namespace_id)
         .map(|members| members.contains(&ack.signer_pubkey))
         .unwrap_or(false)
+}
+
+/// Phase-1 transport-readiness gate: passes iff the gossipsub mesh has
+/// at least `min(mesh_n_low, known_subscribers)` peers visible.
+///
+/// The min cap by `known_subscribers` is what makes a solo-namespace
+/// publish succeed: with no known subscribers, `required` is zero and
+/// the publish proceeds even with an empty mesh. It also makes a
+/// 2-node namespace not block on the full `mesh_n_low` quorum (e.g. 4)
+/// it can never reach.
+///
+/// Pure function — `mesh` and `known_subscribers` are provided by the
+/// caller (typically via `NodeClient::mesh_peer_count_for_namespace`
+/// and `NodeClient::known_subscribers_for_namespace`). Phase 3.4 wires
+/// those plumbing pieces; this function is the policy.
+pub fn assert_transport_ready(
+    mesh: usize,
+    known_subscribers: usize,
+    mesh_n_low: usize,
+) -> Result<(), GovernanceBroadcastError> {
+    let required = std::cmp::min(mesh_n_low, known_subscribers);
+    if mesh < required {
+        return Err(GovernanceBroadcastError::NamespaceNotReady { mesh, required });
+    }
+    Ok(())
 }

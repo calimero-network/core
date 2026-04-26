@@ -118,6 +118,42 @@ async fn verify_ack_rejects_non_member_signer() {
     assert!(!verify_ack(&store, [42u8; 32], [7u8; 32], &ack));
 }
 
+// ---------------------------------------------------------------------------
+// assert_transport_ready
+// ---------------------------------------------------------------------------
+
+#[test]
+fn assert_transport_ready_passes_when_solo_namespace() {
+    // known_subscribers=0 ⇒ required=0 ⇒ pass regardless of mesh size.
+    assert!(assert_transport_ready(0, 0, 4).is_ok());
+}
+
+#[test]
+fn assert_transport_ready_rejects_when_mesh_below_threshold() {
+    let err = assert_transport_ready(1, 4, 4).unwrap_err();
+    assert!(matches!(
+        err,
+        GovernanceBroadcastError::NamespaceNotReady {
+            mesh: 1,
+            required: 4
+        }
+    ));
+}
+
+#[test]
+fn assert_transport_ready_caps_required_by_known_subscribers() {
+    // Only 1 subscriber known ⇒ required=1; mesh=1 should pass even
+    // though mesh_n_low=4 (a small namespace can never reach the full
+    // gossipsub quorum, but is still safe to publish on).
+    assert!(assert_transport_ready(1, 1, 4).is_ok());
+}
+
+#[test]
+fn assert_transport_ready_passes_when_mesh_exceeds_required() {
+    // mesh=8 > required=min(4, 6)=4 ⇒ pass.
+    assert!(assert_transport_ready(8, 6, 4).is_ok());
+}
+
 #[tokio::test]
 async fn verify_ack_rejects_signature_without_domain_prefix() {
     // Defense in depth: a signer that signed `op_hash` directly (without
