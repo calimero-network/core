@@ -188,8 +188,29 @@ impl<'a> NamespaceGovernance<'a> {
             } => {
                 let group_id_typed = ContextGroupId::from(*group_id);
 
-                if let Some(group_key) = load_group_key_by_id(self.store, &group_id_typed, key_id)?
-                {
+                // Issue #2256: an `Open` subgroup is encrypted with the
+                // parent namespace's key (see `GroupGovernancePublisher`).
+                // The receiver doesn't need to know whether the op is
+                // Open- or Restricted-encrypted at decode time — it
+                // tries the subgroup's keyring first (Restricted case),
+                // then falls back to the namespace's keyring (Open case).
+                // This also handles a flip race cleanly: if the publisher
+                // saw `Open` but the receiver has already applied a flip
+                // to `Restricted`, the fallback still resolves the key
+                // because both keyrings persist their entries.
+                let resolved_key = match load_group_key_by_id(
+                    self.store,
+                    &group_id_typed,
+                    key_id,
+                )? {
+                    Some(k) => Some(k),
+                    None => {
+                        let ns_id_typed = ContextGroupId::from(self.namespace_id);
+                        load_group_key_by_id(self.store, &ns_id_typed, key_id)?
+                    }
+                };
+
+                if let Some(group_key) = resolved_key {
                     self.decrypt_and_apply_group_op(op, &group_id_typed, &group_key, encrypted)?;
                 }
 
