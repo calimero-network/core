@@ -169,9 +169,15 @@ pub fn handle_entity_push(
 
 /// Extract raw `SignedNamespaceOp` bytes from a `skeleton_bytes` store value.
 ///
-/// The store encodes entries as `StoredNamespaceEntry::Signed(op)`. All wire
-/// paths (gossip, backfill, join response) expect bare `SignedNamespaceOp`
-/// bytes so the receiver can `borsh::from_slice::<SignedNamespaceOp>` directly.
+/// The store encodes entries as `StoredNamespaceEntry::Signed(op)`. The
+/// **stream-based** wire paths (sync backfill response, namespace-join
+/// response) consume the bytes returned here directly so the receiver can
+/// `borsh::from_slice::<SignedNamespaceOp>(...)`.
+///
+/// The **gossip** publish path (`BroadcastMessage::NamespaceGovernanceDelta`)
+/// requires its payload to be a `NamespaceTopicMsg::Op(op)` envelope after
+/// Phase 2 of #2237 — callers re-publishing on gossip must decode the bytes
+/// returned here back to `SignedNamespaceOp` and wrap before publishing.
 pub fn extract_signed_op_bytes(skeleton_bytes: &[u8]) -> Option<Vec<u8>> {
     use calimero_context_client::local_governance::{SignedNamespaceOp, StoredNamespaceEntry};
 

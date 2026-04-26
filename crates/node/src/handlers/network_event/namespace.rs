@@ -187,11 +187,29 @@ pub(super) fn handle_namespace_state_heartbeat(
                         else {
                             continue;
                         };
+                        // `extract_signed_op_bytes` returns raw `SignedNamespaceOp`
+                        // borsh (the storage form). Phase 2 of #2237 requires the
+                        // gossip-topic payload to be `NamespaceTopicMsg::Op(op)`,
+                        // so re-decode here and wrap before publishing.
+                        let signed_op: SignedNamespaceOp = match borsh::from_slice(&signed_bytes) {
+                            Ok(op) => op,
+                            Err(err) => {
+                                warn!(
+                                    %err,
+                                    delta_id = %hex::encode(delta_id),
+                                    "heartbeat republish: failed to decode stored op; skipping"
+                                );
+                                continue;
+                            }
+                        };
+                        let Ok(wrapped) = borsh::to_vec(&NamespaceTopicMsg::Op(signed_op)) else {
+                            continue;
+                        };
                         let payload = BroadcastMessage::NamespaceGovernanceDelta {
                             namespace_id,
                             delta_id: *delta_id,
                             parent_ids: vec![],
-                            payload: signed_bytes,
+                            payload: wrapped,
                         };
                         if let Ok(bytes) = borsh::to_vec(&payload) {
                             let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
