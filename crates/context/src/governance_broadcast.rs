@@ -12,11 +12,18 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-use calimero_context_client::local_governance::SignedAck;
+use async_trait::async_trait;
+use calimero_context_client::local_governance::{
+    hash_scoped_namespace, NamespaceTopicMsg, SignedAck, SignedNamespaceOp,
+};
+use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
+use libp2p::gossipsub::TopicHash;
 use thiserror::Error;
 use tokio::sync::broadcast;
+use tokio::time::timeout;
 
 use crate::group_store::namespace_member_pubkeys;
 
@@ -151,4 +158,147 @@ pub fn assert_transport_ready(
         return Err(GovernanceBroadcastError::NamespaceNotReady { mesh, required });
     }
     Ok(())
+}
+
+/// Phase-3 typed-outcome on a successful publish: the originator's view
+/// of who acked the op and how long it took (start of publish to `min_acks`-th
+/// distinct valid signer).
+#[derive(Debug, Clone)]
+pub struct DeliveryReport {
+    pub op_hash: [u8; 32],
+    pub acked_by: Vec<PublicKey>,
+    pub elapsed_ms: u64,
+}
+
+/// Abstraction over the gossipsub transport used by
+/// [`publish_and_await_ack_namespace`]. The blanket impl on
+/// `NetworkClient` covers production callers; unit tests substitute a
+/// stub so they don't need a live actor system.
+#[async_trait]
+pub trait BroadcastTransport: Send + Sync {
+    async fn mesh_peer_count(&self, topic: TopicHash) -> usize;
+    async fn publish(&self, topic: TopicHash, bytes: Vec<u8>) -> Result<(), String>;
+}
+
+#[async_trait]
+impl BroadcastTransport for calimero_network_primitives::client::NetworkClient {
+    async fn mesh_peer_count(&self, topic: TopicHash) -> usize {
+        Self::mesh_peer_count(self, topic).await
+    }
+    async fn publish(&self, topic: TopicHash, bytes: Vec<u8>) -> Result<(), String> {
+        Self::publish(self, topic, bytes)
+            .await
+            .map(|_msg_id| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Publish a namespace governance op and collect signed acks until
+/// `min_acks` distinct valid signers have acked or the deadline passes.
+///
+/// **Phase-1 readiness is the caller's responsibility.** Phase 3.4 keeps
+/// `publish_and_await_ack_namespace` as the Phase-2/3 (publish + collect +
+/// outcome) primitive; gating on `assert_transport_ready` happens at the
+/// caller (typically `NamespaceGovernance::sign_apply_and_publish` once
+/// Phase 5 wires it). This split lets the helper be unit-testable
+/// without dragging mesh/subscriber state into every test.
+///
+/// Behavior:
+///   * Subscribes to the per-`op_hash` ack channel **before** publishing
+///     so a fast ack from a peer that already had the op cannot race
+///     past the subscription.
+///   * Drops acks failing [`verify_ack`] (wrong op_hash, bad signature,
+///     non-member signer) silently — they're best-effort gossip.
+///   * Filters by `required_signers` if provided (e.g. KeyDelivery
+///     requires the recipient's ack specifically).
+///   * Dedups by `signer_pubkey` so duplicate gossip rebroadcasts of the
+///     same ack don't inflate `acked_by`.
+///   * Returns `Ok(DeliveryReport)` once `acked_by.len() >= min_acks`,
+///     `Err(NoAckReceived)` on timeout or channel close.
+pub async fn publish_and_await_ack_namespace(
+    store: &Store,
+    transport: &dyn BroadcastTransport,
+    ack_router: &AckRouter,
+    namespace_id: [u8; 32],
+    topic: TopicHash,
+    op: SignedNamespaceOp,
+    op_timeout: Duration,
+    min_acks: usize,
+    required_signers: Option<Vec<PublicKey>>,
+) -> Result<DeliveryReport, GovernanceBroadcastError> {
+    let topic_id = topic.as_str().as_bytes();
+    let op_hash = hash_scoped_namespace(topic_id, &op)
+        .map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
+    let start = Instant::now();
+
+    // Subscribe BEFORE publishing so a peer that already has this op
+    // (e.g. via concurrent backfill) cannot ack faster than our
+    // subscription registration and have its ack dropped.
+    let mut rx = ack_router.subscribe(op_hash);
+    let payload = borsh::to_vec(&NamespaceTopicMsg::Op(op))
+        .map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
+    transport
+        .publish(topic, payload)
+        .await
+        .map_err(GovernanceBroadcastError::Publish)?;
+
+    let mut acked_by: Vec<PublicKey> = Vec::new();
+    let deadline = start + op_timeout;
+    loop {
+        // saturating_duration_since returns ZERO past the deadline (no
+        // Instant subtraction panic) — `tokio::time::timeout` then
+        // resolves immediately as `Err(_elapsed)` on the zero duration.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            ack_router.release(op_hash, rx);
+            return Err(GovernanceBroadcastError::NoAckReceived {
+                waited_ms: start.elapsed().as_millis() as u64,
+                op_hash,
+            });
+        }
+        match timeout(remaining, rx.recv()).await {
+            Ok(Ok(ack)) => {
+                if !verify_ack(store, namespace_id, op_hash, &ack) {
+                    continue;
+                }
+                if let Some(req) = &required_signers {
+                    if !req.contains(&ack.signer_pubkey) {
+                        continue;
+                    }
+                }
+                if !acked_by.iter().any(|p| *p == ack.signer_pubkey) {
+                    acked_by.push(ack.signer_pubkey);
+                }
+                if acked_by.len() >= min_acks {
+                    ack_router.release(op_hash, rx);
+                    return Ok(DeliveryReport {
+                        op_hash,
+                        acked_by,
+                        elapsed_ms: start.elapsed().as_millis() as u64,
+                    });
+                }
+            }
+            // Lagged(n): we missed n messages but the channel is still
+            // open — keep polling. n is bounded by broadcast capacity (64).
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            // Closed: all senders dropped (typically because a concurrent
+            // flow released the AckRouter entry as the last subscriber).
+            // `recv()` would return immediately on every subsequent call —
+            // `continue` would burn CPU until the deadline. Treat as terminal.
+            Ok(Err(broadcast::error::RecvError::Closed)) => {
+                ack_router.release(op_hash, rx);
+                return Err(GovernanceBroadcastError::NoAckReceived {
+                    waited_ms: start.elapsed().as_millis() as u64,
+                    op_hash,
+                });
+            }
+            Err(_elapsed) => {
+                ack_router.release(op_hash, rx);
+                return Err(GovernanceBroadcastError::NoAckReceived {
+                    waited_ms: start.elapsed().as_millis() as u64,
+                    op_hash,
+                });
+            }
+        }
+    }
 }
