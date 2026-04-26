@@ -245,14 +245,22 @@ async fn publish_and_await_ack(
                 if acked_by.len() >= min_acks { break; }
             }
             Ok(Err(RecvError::Lagged(_))) => continue,
-            Ok(Err(RecvError::Closed)) | Err(_elapsed) => return Err(
-                GovernanceBroadcastError::NoAckReceived {
+            Ok(Err(RecvError::Closed)) | Err(_elapsed) => {
+                // Release the AckRouter subscription on the error path —
+                // without this, the entry leaks one HashMap slot per timeout.
+                // `release(op_hash, collector)` consumes the receiver so it
+                // is dropped before the receiver-count check (see plan Task 3.3).
+                ack_router.release(op_hash, collector);
+                return Err(GovernanceBroadcastError::NoAckReceived {
                     waited_ms: start.elapsed().as_millis() as u64,
                     op_hash,
-                }
-            ),
+                });
+            }
         }
     }
+    // Success path — release the AckRouter subscription before returning.
+    // Symmetric with the error path above; without this the entry leaks.
+    ack_router.release(op_hash, collector);
     Ok(DeliveryReport { op_hash, acked_by, elapsed_ms: start.elapsed().as_millis() as u64 })
 }
 ```
@@ -265,11 +273,16 @@ async fn publish_and_await_ack(
 
 ```rust
 // crates/context-primitives/src/errors.rs (extend)
+#[derive(Debug, thiserror::Error)]
 pub enum GovernanceBroadcastError {
+    #[error("namespace not ready: mesh={mesh}, required={required}")]
     NamespaceNotReady { mesh: usize, required: usize },
-    NoAckReceived    { waited_ms: u64, op_hash: [u8; 32] },
-    PublishError(PublishError),
-    LocalApplyError(ApplyError),
+    #[error("no ack received within {waited_ms}ms (op_hash={op_hash:?})")]
+    NoAckReceived { waited_ms: u64, op_hash: [u8; 32] },
+    #[error("publish error: {0}")]
+    Publish(String),
+    #[error("local apply error: {0}")]
+    LocalApply(String),
 }
 
 pub struct DeliveryReport {
@@ -278,6 +291,8 @@ pub struct DeliveryReport {
     pub elapsed_ms:  u64,
 }
 ```
+
+`Publish(String)` and `LocalApply(String)` deliberately wrap upstream errors as strings rather than typing them (`PublishError(PublishError)` etc.) — keeps the new error enum free of cross-crate coupling, lets implementers land Phase 3 without first restructuring the network/store error hierarchies, and is consistent with the implementation plan Task 3.3.
 
 External API boundaries (JSON-RPC, meroctl, SDK) map this enum to typed outward errors.
 
@@ -524,7 +539,14 @@ pub async fn join_namespace_with_retry(
     let mut delay = Duration::from_secs(3);
     let start = Instant::now();
     loop {
-        match self.join_namespace(invitation.clone(), JOIN_ATTEMPT_DEADLINE).await {
+        // Cap each attempt's deadline by the *remaining* budget — without this,
+        // a caller passing `max_total = 5s` with `JOIN_ATTEMPT_DEADLINE = 10s`
+        // would block 10s on the first attempt alone, overshooting `max_total`.
+        // `max_total` must be respected during attempts, not just between them.
+        let remaining = max_total.saturating_sub(start.elapsed());
+        if remaining.is_zero() { return Err(JoinError::NoReadyPeers { .. }); }
+        let attempt_deadline = min(JOIN_ATTEMPT_DEADLINE, remaining);
+        match self.join_namespace(invitation.clone(), attempt_deadline).await {
             Ok(js) => return Ok(js),
             Err(JoinError::NoReadyPeers { .. }) => {
                 if start.elapsed() + delay > max_total { return Err(JoinError::NoReadyPeers { .. }); }
