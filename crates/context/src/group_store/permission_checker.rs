@@ -108,12 +108,7 @@ impl<'a> PermissionChecker<'a> {
         identity: &PublicKey,
         capability_bit: u32,
     ) -> EyreResult<bool> {
-        if is_group_admin_or_has_capability(
-            self.store,
-            &self.group_id,
-            identity,
-            capability_bit,
-        )? {
+        if is_group_admin_or_has_capability(self.store, &self.group_id, identity, capability_bit)? {
             return Ok(true);
         }
         match check_group_membership_path(self.store, &self.group_id, identity)? {

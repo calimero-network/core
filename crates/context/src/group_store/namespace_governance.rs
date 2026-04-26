@@ -198,11 +198,8 @@ impl<'a> NamespaceGovernance<'a> {
                 // saw `Open` but the receiver has already applied a flip
                 // to `Restricted`, the fallback still resolves the key
                 // because both keyrings persist their entries.
-                let resolved_key = match load_group_key_by_id(
-                    self.store,
-                    &group_id_typed,
-                    key_id,
-                )? {
+                let resolved_key = match load_group_key_by_id(self.store, &group_id_typed, key_id)?
+                {
                     Some(k) => Some(k),
                     None => {
                         let ns_id_typed = ContextGroupId::from(self.namespace_id);

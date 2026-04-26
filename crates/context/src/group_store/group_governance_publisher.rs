@@ -7,9 +7,9 @@ use eyre::Result as EyreResult;
 use rand::{rngs::OsRng, Rng};
 
 use super::{
-    build_key_rotation, encrypt_group_op, get_namespace_identity_record,
-    get_subgroup_visibility, load_current_group_key_record, resolve_namespace,
-    sign_apply_local_group_op_borsh, store_group_key, NamespaceGovernance,
+    build_key_rotation, encrypt_group_op, get_namespace_identity_record, get_subgroup_visibility,
+    load_current_group_key_record, resolve_namespace, sign_apply_local_group_op_borsh,
+    store_group_key, NamespaceGovernance,
 };
 use crate::metrics::record_governance_publish_mesh_peers;
 

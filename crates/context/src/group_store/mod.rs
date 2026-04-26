@@ -74,9 +74,8 @@ pub use self::membership::{
     add_group_member, add_group_member_with_keys, check_group_membership,
     check_group_membership_path, count_group_admins, count_group_members, get_group_member_role,
     get_group_member_value, is_direct_group_admin, is_group_admin,
-    is_group_admin_or_has_capability, list_group_members, remove_group_member,
-    require_group_admin, require_group_admin_or_capability, set_member_auto_follow,
-    MembershipPath,
+    is_group_admin_or_has_capability, list_group_members, remove_group_member, require_group_admin,
+    require_group_admin_or_capability, set_member_auto_follow, MembershipPath,
 };
 pub use self::membership_policy::MembershipPolicy;
 pub use self::membership_view::GroupMembershipView;
