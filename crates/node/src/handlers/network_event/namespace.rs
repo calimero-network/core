@@ -182,25 +182,14 @@ pub(super) fn handle_namespace_state_heartbeat(
                 for delta_id in &peer_needs {
                     let key = calimero_store::key::NamespaceGovOp::new(namespace_id, *delta_id);
                     if let Ok(Some(value)) = handle_inner.get(&key) {
-                        let Some(signed_bytes) =
-                            crate::sync::helpers::extract_signed_op_bytes(&value.skeleton_bytes)
+                        // Decode straight to the typed op so we can wrap it in
+                        // `NamespaceTopicMsg::Op` and serialize once. Going via
+                        // `extract_signed_op_bytes` would force a redundant
+                        // serialize/deserialize round-trip on every republish.
+                        let Some(signed_op) =
+                            crate::sync::helpers::extract_signed_op(&value.skeleton_bytes)
                         else {
                             continue;
-                        };
-                        // `extract_signed_op_bytes` returns raw `SignedNamespaceOp`
-                        // borsh (the storage form). Phase 2 of #2237 requires the
-                        // gossip-topic payload to be `NamespaceTopicMsg::Op(op)`,
-                        // so re-decode here and wrap before publishing.
-                        let signed_op: SignedNamespaceOp = match borsh::from_slice(&signed_bytes) {
-                            Ok(op) => op,
-                            Err(err) => {
-                                warn!(
-                                    %err,
-                                    delta_id = %hex::encode(delta_id),
-                                    "heartbeat republish: failed to decode stored op; skipping"
-                                );
-                                continue;
-                            }
                         };
                         let Ok(wrapped) = borsh::to_vec(&NamespaceTopicMsg::Op(signed_op)) else {
                             continue;
