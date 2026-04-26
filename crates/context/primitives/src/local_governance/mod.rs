@@ -156,6 +156,41 @@ pub enum GroupOp {
     },
 }
 
+impl GroupOp {
+    /// Stable observability label for `op_kind` on
+    /// `governance_publish_mesh_peers_at_publish` and other
+    /// per-variant metrics. Defined in the same crate as `GroupOp` so
+    /// the match is naturally exhaustive — adding a new variant
+    /// surfaces as a compile error here, keeping the metric label set
+    /// in sync with the wire format.
+    #[must_use]
+    pub fn op_kind_label(&self) -> &'static str {
+        match self {
+            GroupOp::Noop => "noop",
+            GroupOp::MemberAdded { .. } => "member_added",
+            GroupOp::MemberRemoved { .. } => "member_removed",
+            GroupOp::MemberRoleSet { .. } => "member_role_set",
+            GroupOp::MemberCapabilitySet { .. } => "member_capability_set",
+            GroupOp::DefaultCapabilitiesSet { .. } => "default_capabilities_set",
+            GroupOp::UpgradePolicySet { .. } => "upgrade_policy_set",
+            GroupOp::TargetApplicationSet { .. } => "target_application_set",
+            GroupOp::ContextRegistered { .. } => "context_registered",
+            GroupOp::ContextDetached { .. } => "context_detached",
+            GroupOp::DefaultVisibilitySet { .. } => "default_visibility_set",
+            GroupOp::ContextAliasSet { .. } => "context_alias_set",
+            GroupOp::MemberAliasSet { .. } => "member_alias_set",
+            GroupOp::GroupAliasSet { .. } => "group_alias_set",
+            GroupOp::GroupDelete => "group_delete",
+            GroupOp::GroupMigrationSet { .. } => "group_migration_set",
+            GroupOp::ContextCapabilityGranted { .. } => "context_capability_granted",
+            GroupOp::ContextCapabilityRevoked { .. } => "context_capability_revoked",
+            GroupOp::TeeAdmissionPolicySet { .. } => "tee_admission_policy_set",
+            GroupOp::MemberJoinedViaTeeAttestation { .. } => "member_joined_via_tee",
+            GroupOp::MemberSetAutoFollow { .. } => "member_set_auto_follow",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Namespace-scoped governance ops (Phase 2 rewrite)
 // ---------------------------------------------------------------------------
@@ -258,6 +293,27 @@ pub enum RootOp {
         group_id: [u8; 32],
         envelope: KeyEnvelope,
     },
+}
+
+impl NamespaceOp {
+    /// Stable observability label for `op_kind`. See
+    /// [`GroupOp::op_kind_label`] for the rationale around defining this
+    /// in the same crate as the enum: a new variant added here surfaces
+    /// as a compile error so metric labels stay in sync with the wire
+    /// format.
+    #[must_use]
+    pub fn op_kind_label(&self) -> &'static str {
+        match self {
+            NamespaceOp::Root(RootOp::GroupCreated { .. }) => "group_created",
+            NamespaceOp::Root(RootOp::GroupReparented { .. }) => "group_reparented",
+            NamespaceOp::Root(RootOp::GroupDeleted { .. }) => "group_deleted",
+            NamespaceOp::Root(RootOp::AdminChanged { .. }) => "admin_changed",
+            NamespaceOp::Root(RootOp::PolicyUpdated { .. }) => "policy_updated",
+            NamespaceOp::Root(RootOp::MemberJoined { .. }) => "member_joined",
+            NamespaceOp::Root(RootOp::KeyDelivery { .. }) => "key_delivery",
+            NamespaceOp::Group { .. } => "group_op",
+        }
+    }
 }
 
 /// An encrypted group operation payload. Only members of the group

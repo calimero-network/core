@@ -10,7 +10,7 @@ use super::{
     load_current_group_key_record, resolve_namespace, sign_apply_local_group_op_borsh,
     store_group_key, NamespaceGovernance,
 };
-use crate::metrics::{op_kind_label_group, record_governance_publish_mesh_peers};
+use crate::metrics::record_governance_publish_mesh_peers;
 
 /// Orchestrates local apply + encrypted namespace publish for group governance ops.
 pub struct GroupGovernancePublisher<'a> {
@@ -116,7 +116,7 @@ impl<'a> GroupGovernancePublisher<'a> {
             .node_client
             .mesh_peer_count_for_namespace(namespace_bytes)
             .await;
-        record_governance_publish_mesh_peers(op_kind_label_group(&op), mesh_count);
+        record_governance_publish_mesh_peers(op.op_kind_label(), mesh_count);
 
         let namespace_sk = PrivateKey::from(namespace_identity.private_key);
         NamespaceGovernance::new(self.store, namespace_bytes)

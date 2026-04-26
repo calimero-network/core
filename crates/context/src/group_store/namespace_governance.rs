@@ -9,9 +9,7 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use crate::metrics::{
-    op_kind_label_namespace, record_governance_publish_mesh_peers, record_namespace_retry_event,
-};
+use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
 use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::{
@@ -249,7 +247,7 @@ impl<'a> NamespaceGovernance<'a> {
         // Group ops are observed in `GroupGovernancePublisher` with the
         // cleartext `GroupOp` label; observing them here too would double-count.
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
-        let op_kind = op_kind_label_namespace(&op);
+        let op_kind = op.op_kind_label();
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
@@ -286,7 +284,7 @@ impl<'a> NamespaceGovernance<'a> {
     ) -> EyreResult<()> {
         let head = self.read_head_record()?;
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
-        let op_kind = op_kind_label_namespace(&op);
+        let op_kind = op.op_kind_label();
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
