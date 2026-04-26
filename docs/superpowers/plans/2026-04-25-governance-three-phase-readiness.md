@@ -1155,7 +1155,14 @@ pub async fn sign_apply_and_publish_namespace_op(
 }
 ```
 
-(Engineer: there is a residual narrow window where `assert_transport_ready` passes but the subsequent `publish_and_await_ack_namespace` fails its `network_client.publish()` call — leaving the op locally applied but not on the wire. This is the standard TOCTOU between Phase 1 and Phase 2 transmit; gossipsub's mesh state can shift in microseconds. Recovery is handled by the existing heartbeat reconciliation arm and any subsequent re-publish on retry; document this in the spec as a known asymmetric window rather than trying to make Phase 1+Phase 2 atomic.)
+(Engineer: there is a residual narrow window where `assert_transport_ready` passes but the subsequent `publish_and_await_ack_namespace` fails its `network_client.publish()` call — leaving the op locally applied but not on the wire. This is the standard TOCTOU between Phase 1 and Phase 2 transmit; gossipsub's mesh state can shift in microseconds.
+
+Recovery in the new design comes from two mechanisms (NOT the legacy `NamespaceStateHeartbeat` reconciliation arm, which Phase 11's Task 11.x **deletes**):
+
+1. **Beacons advertise the publisher's `applied_through`.** The publisher's local op IS in their DAG, so their next `ReadinessBeacon` carries the post-apply `applied_through`. Other peers see they're behind (`peer.applied_through < publisher.applied_through`) and run `NamespaceBackfill` against the publisher, pulling the missing op via the existing sync stream. No special "local-ahead-of-peers" branch is needed.
+2. **Caller-driven retry.** The publisher receives `Err(GovernanceBroadcastError::Publish(...))` and may retry the op — but with a different `op_hash` (new sign), so the existing op stays in the DAG and the retry adds a sibling. CRDT semantics handle this: both ops are valid governance writes, both apply once received. Idempotency at the application layer (e.g. set-membership ops) absorbs the duplicate cleanly.
+
+The asymmetric window is therefore **self-healing without a heartbeat divergence arm** — but worth documenting as a known design tradeoff against trying to make Phase 1 + Phase 2 atomic, which would require a transactional commit-prepared protocol that gossipsub does not natively support.)
 
 (Engineer: `node_client.known_subscribers(topic).await` and `node_client.gossipsub_mesh_n_low()` are new accessors — add them to `NodeClient` proxying through the actor message system. Keep them tightly scoped to this caller path.)
 
@@ -1405,17 +1412,26 @@ pub fn evaluate_readiness(
         (None, false, true) => ReadinessTier::LocallyReady,
         // No peer beacons and still in boot grace: stay Bootstrapping.
         (None, false, false) => ReadinessTier::Bootstrapping,
-        // Edge cases: peer existed but TTL expired since.
-        (Some(_), false, true) => ReadinessTier::LocallyReady,
-        (Some(_), false, false) => ReadinessTier::Bootstrapping,
-        // Defensive: with an atomic `ReadinessCache::peer_summary` snapshot this arm is
-        // unreachable — `heard_recent_beacon == true` ⇔ at least one fresh peer ⇒
-        // `max_applied_through.is_some()`. Kept as a safe fallback in case a future
-        // call site builds `PeerSummary` from non-atomic reads. Stay Bootstrapping
-        // (no self-promotion) and let the next beacon re-evaluate.
+        // Defensive: with an atomic `ReadinessCache::peer_summary` snapshot, both
+        // `(None, true, _)` and `(Some(_), false, _)` are unreachable —
+        // `max_applied_through` and `heard_recent_beacon` are both derived from the
+        // same fresh-within-TTL filter, so they are always either (None, false) or
+        // (Some(_), true). The arms below remain as safe fallbacks for any future
+        // non-atomic call site, return spec §7.2-aligned tiers, and `debug_assert!`
+        // loud in dev builds so a regression is caught immediately.
+        //
+        // `(None, true)`: claim of fresh peer with no max_applied_through → no usable
+        // target → stay Bootstrapping (no self-promotion).
         (None, true, _) => {
-            debug_assert!(false, "PeerSummary built from non-atomic reads — use ReadinessCache::peer_summary");
+            debug_assert!(false, "PeerSummary built from non-atomic reads (None, true) — use ReadinessCache::peer_summary");
             ReadinessTier::Bootstrapping
+        }
+        // `(Some(_), false)`: we knew about a peer once, no fresh beacon now. Spec
+        // §7.2 says `*Ready → Degraded { reason: NoRecentPeers }`; align here so the
+        // FSM matches the spec semantics if peer_summary atomicity is ever broken.
+        (Some(_), false, _) => {
+            debug_assert!(false, "PeerSummary built from non-atomic reads (Some, false) — use ReadinessCache::peer_summary");
+            ReadinessTier::Degraded { reason: DemotionReason::NoRecentPeers }
         }
     }
 }
@@ -2269,20 +2285,35 @@ impl ReadinessCache {
         ttl: Duration,
         deadline: Duration,
     ) -> Option<(PublicKey, CacheEntry)> {
-        // Fast-path: already cached.
-        if let Some(entry) = self.pick_sync_partner(ns, ttl) {
-            return Some(entry);
-        }
+        // Avoid the classic notify-race: `tokio::sync::Notify::notify_waiters()`
+        // does NOT store a permit — it only wakes already-registered waiters.
+        // If we did `pick_sync_partner` (miss) → `waiter.notified().await`, a
+        // beacon inserted between those two steps would call `notify_waiters()`
+        // with no waiter registered yet, and the wake would be lost. The waiter
+        // would then block until the *next* beacon or the deadline.
+        //
+        // Fix: register the waiter BEFORE the cache check on every iteration.
+        // `Notified::enable()` (tokio ≥ 1.32) registers the future without
+        // polling — so any subsequent `notify_waiters()` will wake us, even if
+        // it fires before we reach the `select!`.
         let waiter = notify.waiter_for(ns);
         let timeout_fut = tokio::time::sleep(deadline);
         tokio::pin!(timeout_fut);
         loop {
+            // 1. Create + pin a fresh Notified future for this iteration.
+            let notified = waiter.notified();
+            tokio::pin!(notified);
+            // 2. Register it (tokio 1.32+). For older tokio, drive registration by
+            //    polling once via `futures::poll!(...)` or `poll_fn`.
+            notified.as_mut().enable();
+            // 3. Now safe to check the cache — any beacon arriving between
+            //    `enable()` and the `select!` poll will wake the (already-
+            //    registered) `notified` future.
+            if let Some(entry) = self.pick_sync_partner(ns, ttl) {
+                return Some(entry);
+            }
             tokio::select! {
-                _ = waiter.notified() => {
-                    if let Some(entry) = self.pick_sync_partner(ns, ttl) {
-                        return Some(entry);
-                    }
-                }
+                _ = notified => { /* loop, re-register, re-check */ }
                 _ = &mut timeout_fut => return None,
             }
         }
