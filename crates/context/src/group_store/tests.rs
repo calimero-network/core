@@ -3022,6 +3022,62 @@ fn recursive_remove_member_not_in_some_descendants() {
 }
 
 #[test]
+fn recursive_remove_skips_inherited_only_members() {
+    // Regression for cursor[bot] comment on PR #2261: before the fix,
+    // `recursive_remove_member` used `check_group_membership` which now
+    // returns true for inherited members of `Open` subgroups. Calling
+    // `remove_group_member` on such a group would be a no-op (no direct
+    // row to delete) but the group would be added to the `removed_from`
+    // list anyway -- the admin would believe they revoked access while
+    // the user kept their inherited membership.
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let root = ContextGroupId::from([0xF0; 32]);
+    let open_child = ContextGroupId::from([0xF1; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0x02; 32]);
+
+    nest_group(&store, &root, &open_child).unwrap();
+    save_group_meta(&store, &root, &test_meta()).unwrap();
+    save_group_meta(&store, &open_child, &test_meta()).unwrap();
+    add_group_member(&store, &root, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &open_child, &admin, GroupMemberRole::Admin).unwrap();
+
+    // Direct member of `root` only; inherited into `open_child` via the
+    // CAN_JOIN_OPEN_SUBGROUPS cap + Open visibility.
+    add_group_member(&store, &root, &member, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &root,
+        &member,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+    set_subgroup_visibility(&store, &open_child, VisibilityMode::Open).unwrap();
+
+    // Sanity: inherited path works pre-removal.
+    assert!(check_group_membership(&store, &open_child, &member).unwrap());
+
+    // Recursive remove anchored at `open_child` must NOT report it as
+    // removed-from -- the member has no direct row there.
+    let removed_from = recursive_remove_member(&store, &open_child, &member).unwrap();
+    assert!(
+        removed_from.is_empty(),
+        "inherited-only member should not be reported as removed (got {removed_from:?})"
+    );
+
+    // The member is still inherited because root membership + cap + Open
+    // child are all unchanged.
+    assert!(check_group_membership(&store, &open_child, &member).unwrap());
+
+    // To actually revoke, the admin removes them from the anchor (root).
+    let removed_from = recursive_remove_member(&store, &root, &member).unwrap();
+    assert_eq!(removed_from, vec![root]);
+    assert!(!check_group_membership(&store, &open_child, &member).unwrap());
+}
+
+#[test]
 fn recursive_remove_nonexistent_member_returns_empty() {
     let store = test_store();
     let root = ContextGroupId::from([0xE0; 32]);
