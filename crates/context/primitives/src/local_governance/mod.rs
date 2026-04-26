@@ -178,7 +178,7 @@ impl GroupOp {
             GroupOp::TargetApplicationSet { .. } => "target_application_set",
             GroupOp::ContextRegistered { .. } => "context_registered",
             GroupOp::ContextDetached { .. } => "context_detached",
-            GroupOp::DefaultVisibilitySet { .. } => "default_visibility_set",
+            GroupOp::SubgroupVisibilitySet { .. } => "subgroup_visibility_set",
             GroupOp::ContextAliasSet { .. } => "context_alias_set",
             GroupOp::MemberAliasSet { .. } => "member_alias_set",
             GroupOp::GroupAliasSet { .. } => "group_alias_set",
