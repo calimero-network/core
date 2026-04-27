@@ -8,7 +8,7 @@ use eyre::{bail, Result as EyreResult};
 use super::membership::{
     check_group_membership_path, is_group_admin_or_has_capability, MembershipPath,
 };
-use super::{membership_view::GroupMembershipView, require_group_admin_or_capability};
+use super::{membership_view::GroupMembershipView, GroupStoreError};
 
 /// Authorization service for group governance operations.
 ///
@@ -59,13 +59,15 @@ impl<'a> PermissionChecker<'a> {
         if self.is_authorized_with_capability(identity, MemberCapabilities::MANAGE_MEMBERS)? {
             return Ok(());
         }
-        require_group_admin_or_capability(
-            self.store,
-            &self.group_id,
-            identity,
-            MemberCapabilities::MANAGE_MEMBERS,
-            operation,
-        )
+        // `is_authorized_with_capability` is a strict superset of the
+        // direct admin-or-cap check, so falling through to
+        // `require_group_admin_or_capability` would just redo the same
+        // store reads to format an error. Bail directly with the same
+        // diagnostic shape.
+        bail!(GroupStoreError::Unauthorized {
+            group_id: format!("{:?}", self.group_id),
+            operation: operation.to_owned(),
+        });
     }
 
     pub fn require_manage_application(
@@ -76,13 +78,10 @@ impl<'a> PermissionChecker<'a> {
         if self.is_authorized_with_capability(identity, MemberCapabilities::MANAGE_APPLICATION)? {
             return Ok(());
         }
-        require_group_admin_or_capability(
-            self.store,
-            &self.group_id,
-            identity,
-            MemberCapabilities::MANAGE_APPLICATION,
-            operation,
-        )
+        bail!(GroupStoreError::Unauthorized {
+            group_id: format!("{:?}", self.group_id),
+            operation: operation.to_owned(),
+        });
     }
 
     pub fn require_can_create_context(&self, identity: &PublicKey) -> EyreResult<()> {
