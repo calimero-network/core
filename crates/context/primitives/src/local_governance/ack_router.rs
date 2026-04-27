@@ -27,10 +27,22 @@ pub struct AckRouter {
 }
 
 impl AckRouter {
+    /// Acquire the inner map. A `PoisonError` only happens if a previous
+    /// holder panicked while the guard was live; the HashMap's invariants
+    /// are not at risk here (no nested invariants between entries), so
+    /// continuing with the inner guard via `into_inner()` is safe and
+    /// strictly preferable to permanently DoSing the governance broadcast
+    /// subsystem on the first transient panic.
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], broadcast::Sender<SignedAck>>> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Register interest in acks for `op_hash`. Returns a receiver that
     /// fires once per ack the wire layer routes here.
     pub fn subscribe(&self, op_hash: [u8; 32]) -> broadcast::Receiver<SignedAck> {
-        let mut g = self.inner.lock().expect("ack_router lock");
+        let mut g = self.lock();
         let tx = g
             .entry(op_hash)
             .or_insert_with(|| broadcast::channel(64).0)
@@ -42,7 +54,7 @@ impl AckRouter {
     /// subscriber was registered for the op (purely for telemetry — not
     /// load-bearing for correctness).
     pub fn route(&self, ack: SignedAck) -> bool {
-        let g = self.inner.lock().expect("ack_router lock");
+        let g = self.lock();
         match g.get(&ack.op_hash) {
             Some(tx) => tx.send(ack).is_ok(),
             None => false,
@@ -57,7 +69,7 @@ impl AckRouter {
     /// Idempotent — safe to call multiple times.
     pub fn release(&self, op_hash: [u8; 32], rx: broadcast::Receiver<SignedAck>) {
         drop(rx);
-        let mut g = self.inner.lock().expect("ack_router lock");
+        let mut g = self.lock();
         if let Some(tx) = g.get(&op_hash) {
             if tx.receiver_count() == 0 {
                 let _ = g.remove(&op_hash);
@@ -69,7 +81,7 @@ impl AckRouter {
     /// Test-only — production code should not depend on this number.
     #[cfg(test)]
     pub fn entry_count(&self) -> usize {
-        self.inner.lock().expect("ack_router lock").len()
+        self.lock().len()
     }
 }
 

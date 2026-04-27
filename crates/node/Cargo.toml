@@ -29,6 +29,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 tracing.workspace = true
+zeroize.workspace = true
 
 calimero-context.workspace = true
 calimero-context-config.workspace = true

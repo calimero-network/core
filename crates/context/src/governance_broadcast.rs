@@ -17,6 +17,7 @@ use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, GovernanceError, NamespaceTopicMsg, SignedAck,
     SignedNamespaceOp,
 };
+use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use libp2p::gossipsub::TopicHash;
@@ -204,8 +205,30 @@ pub async fn publish_and_await_ack_namespace(
     // (e.g. via concurrent backfill) cannot ack faster than our
     // subscription registration and have its ack dropped.
     let mut rx = ack_router.subscribe(op_hash);
-    let payload = borsh::to_vec(&NamespaceTopicMsg::Op(op))
+    // Wire framing on `ns/<id>` is two-layer: the gossipsub frame
+    // decodes as `BroadcastMessage` first (see
+    // `node/src/handlers/network_event.rs::handle_network_event`),
+    // and only the `NamespaceGovernanceDelta::payload` field is then
+    // decoded as `NamespaceTopicMsg`. Publishing the inner enum raw
+    // would deserialize-fail at the receiver and be silently dropped
+    // before reaching the `Op` arm — which would make every Phase-5
+    // caller of this helper observe `NoAckReceived` regardless of
+    // mesh health. Mirrors `client.rs::publish_signed_namespace_op`
+    // and the heartbeat-republish site at `namespace.rs:223`.
+    let delta_id = op
+        .content_hash()
+        .map_err(|e| GovernanceBroadcastError::Publish(format!("content_hash: {e}")))?;
+    let parent_ids = op.parent_op_hashes.clone();
+    let inner = borsh::to_vec(&NamespaceTopicMsg::Op(op))
         .map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
+    let envelope = BroadcastMessage::NamespaceGovernanceDelta {
+        namespace_id,
+        delta_id,
+        parent_ids,
+        payload: inner,
+    };
+    let payload =
+        borsh::to_vec(&envelope).map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
     transport
         .publish(topic, payload)
         .await

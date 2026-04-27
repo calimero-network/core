@@ -13,6 +13,7 @@ use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLO
 use calimero_primitives::identity::PrivateKey;
 use libp2p::gossipsub::TopicHash;
 use tracing::{debug, info, warn};
+use zeroize::Zeroize;
 
 use crate::sync::parent_pull::{NextPeer, ParentPullBudget};
 use crate::NodeManager;
@@ -468,7 +469,7 @@ async fn emit_namespace_ack(
 
     let store = context_client.datastore();
     let ns_group = ContextGroupId::from(namespace_id);
-    let identity = match get_namespace_identity(store, &ns_group) {
+    let mut identity = match get_namespace_identity(store, &ns_group) {
         Ok(Some(t)) => t,
         Ok(None) => {
             debug!(
@@ -482,7 +483,16 @@ async fn emit_namespace_ack(
             return;
         }
     };
+    // `PrivateKey` zeroizes its inner buffer on drop, but the `[u8; 32]`
+    // returned by `get_namespace_identity` is `Copy` — constructing the
+    // `PrivateKey` leaves the original tuple field intact on the stack
+    // until the function returns. Zeroize the leftover bytes explicitly
+    // so the only remaining copy is inside the `PrivateKey`. (Systemic
+    // fix lives at `get_namespace_identity` returning a `PrivateKey`
+    // directly — out of scope for Phase 4.)
     let signer_sk = PrivateKey::from(identity.1);
+    identity.1.zeroize();
+    identity.2.zeroize();
 
     let ack = match sign_ack(&signer_sk, op_hash) {
         Ok(ack) => ack,
