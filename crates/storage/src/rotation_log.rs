@@ -46,10 +46,12 @@ use crate::store::{Key, StorageAdaptor};
 /// One accepted rotation, captured at apply-time.
 ///
 /// **Caller invariant**: at most one entry per `(entity_id, delta_id)`. The
-/// log dedups on `delta_id` alone and silently drops a second [`append`] for
-/// the same delta (see that fn for rationale + debug assertion). Multi-action
-/// `CausalDelta`s with two rotations on the same entity are not supported;
-/// callers must split them into separate deltas. Tracked in #2233 P3.
+/// log dedups on `delta_id` alone:
+/// - Replaying a delta with **identical** entry contents is a no-op (idempotent).
+/// - Calling [`append`] a second time with **differing** contents returns
+///   [`StorageError::DuplicateRotationInDelta`] — multi-action `CausalDelta`s
+///   with two rotations on the same entity are not supported; callers must
+///   split them into separate deltas. Tracked in #2233 P3.
 ///
 /// Fields chosen to be sufficient for the ADR ordering rule without needing
 /// to consult any other state:
@@ -173,37 +175,38 @@ pub fn save<S: StorageAdaptor>(id: Id, log: &RotationLog) -> Result<(), StorageE
 /// insertion order; causal resolution happens at read time.
 ///
 /// **Idempotent on `delta_id`**: a delta delivered twice (out-of-order sync,
-/// retransmit) only produces one log entry. The duplicate is silently
-/// dropped — no error. This matches the broader CRDT model where applying
-/// the same operation twice is safe.
+/// retransmit) only produces one log entry, provided the entry contents
+/// match. This matches the broader CRDT model where applying the same
+/// operation twice is safe.
 ///
 /// **Caller invariant — one rotation per entity per delta**: dedup keys on
 /// `delta_id` only. If a single `CausalDelta` carries two rotation actions
-/// on the same entity, only the first reaches the log; the second is
-/// silently dropped while `save_internal` still applies its data. This
-/// would diverge log from stored state. A `debug_assert!` below catches the
-/// case where the silent drop would discard *different* contents (replays
-/// pass it because contents match). Multi-action deltas with multiple
-/// rotations on the same entity must be split into separate deltas at
-/// construction time. Tracked in #2233 P3.
+/// on the same entity, only the first reaches the log; the second would
+/// silently be dropped while `save_internal` still applies its data,
+/// diverging log from stored state. To prevent that, a second [`append`]
+/// for the same `delta_id` whose entry contents differ from the existing
+/// entry returns [`StorageError::DuplicateRotationInDelta`] instead of
+/// being silently dropped. Multi-action deltas with multiple rotations on
+/// the same entity must be split into separate deltas at construction time.
+/// Tracked in #2233 P3.
 ///
 /// # Errors
 ///
-/// Propagates [`load`] / [`save`] errors (deserialization on read,
-/// serialization on write).
+/// - [`StorageError::DuplicateRotationInDelta`] if a prior entry exists for
+///   `entry.delta_id` with differing `(new_writers, signer, writers_nonce)`.
+/// - Propagates [`load`] / [`save`] errors (deserialization on read,
+///   serialization on write).
 pub fn append<S: StorageAdaptor>(id: Id, entry: RotationLogEntry) -> Result<(), StorageError> {
     let mut log = load::<S>(id)?.unwrap_or_else(RotationLog::empty);
     if let Some(existing) = log.entries.iter().find(|e| e.delta_id == entry.delta_id) {
-        debug_assert_eq!(
-            (
-                &existing.new_writers,
-                existing.signer,
-                existing.writers_nonce
-            ),
-            (&entry.new_writers, entry.signer, entry.writers_nonce),
-            "rotation_log::append called twice for delta_id with differing contents — \
-             multi-rotation-per-entity-per-delta is not supported (#2233 P3)"
-        );
+        if (
+            &existing.new_writers,
+            existing.signer,
+            existing.writers_nonce,
+        ) != (&entry.new_writers, entry.signer, entry.writers_nonce)
+        {
+            return Err(StorageError::DuplicateRotationInDelta(entry.delta_id));
+        }
         return Ok(());
     }
     log.entries.push(entry);
@@ -542,6 +545,37 @@ mod tests {
         // Different parent that doesn't reach delta 1.
         let writers = writers_at::<Store, _>(id, &[[42; 32]], |_, _| false).unwrap();
         assert_eq!(writers, None);
+    }
+
+    #[test]
+    fn append_is_idempotent_when_replayed_with_identical_contents() {
+        // CRDT replay safety: re-appending the exact same entry is a no-op
+        // (only one log row, no error).
+        let id = id(11);
+        let e = entry(1, 100, 0xAA, &[0xAA, 0xBB], 1);
+        append::<Store>(id, e.clone()).unwrap();
+        append::<Store>(id, e.clone()).unwrap();
+        let log = load::<Store>(id).unwrap().unwrap();
+        assert_eq!(log.entries, vec![e]);
+    }
+
+    #[test]
+    fn append_rejects_duplicate_delta_with_divergent_contents() {
+        // Caller invariant violation: same delta_id, different new_writers.
+        // Was previously a debug_assert; promoted to a hard error so release
+        // builds also surface multi-rotation-per-entity-per-delta misuse.
+        let id = id(12);
+        let e1 = entry(1, 100, 0xAA, &[0xAA], 1);
+        let e2 = entry(1, 100, 0xAA, &[0xBB], 1); // same delta_id, different writers
+        append::<Store>(id, e1.clone()).unwrap();
+        let err = append::<Store>(id, e2).unwrap_err();
+        assert!(
+            matches!(err, StorageError::DuplicateRotationInDelta(d) if d == [1; 32]),
+            "expected DuplicateRotationInDelta, got {err:?}"
+        );
+        // The original entry stays put; nothing was overwritten.
+        let log = load::<Store>(id).unwrap().unwrap();
+        assert_eq!(log.entries, vec![e1]);
     }
 
     #[test]

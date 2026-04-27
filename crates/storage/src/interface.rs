@@ -801,7 +801,10 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Must not be called twice for the same entity within one delta —
     /// see [`rotation_log::append`](crate::rotation_log::append) for why
     /// (delta_id-only dedup). Multi-action deltas with two rotations on
-    /// the same entity are not supported and will trip a debug assertion.
+    /// the same entity are not supported: a second call with differing
+    /// entry contents returns
+    /// [`StorageError::DuplicateRotationInDelta`](crate::error::StorageError::DuplicateRotationInDelta);
+    /// a replay with identical contents is idempotent.
     ///
     /// # Log may diverge from stored state
     ///
