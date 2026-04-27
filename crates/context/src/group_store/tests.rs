@@ -2232,6 +2232,80 @@ fn is_open_chain_to_namespace_walks_parent_chain_correctly() {
 }
 
 #[test]
+fn auth_and_crypto_walks_agree_at_max_namespace_depth_boundary() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    use super::namespace::MAX_NAMESPACE_DEPTH;
+    use super::{is_inherited_admin, is_open_chain_to_namespace};
+
+    // Bugbot finding (PR #2261, comment 3146841673): at chain length
+    // exactly `MAX_NAMESPACE_DEPTH`, `is_open_chain_to_namespace`
+    // succeeds (encrypt path selects namespace key) while the
+    // membership walks bailed with a spurious cycle error (auth path
+    // refused). The two layers must agree on the corruption signal:
+    // either both succeed or both bail. The fix bumps the membership
+    // walks to `MAX_NAMESPACE_DEPTH + 1` iterations so they have the
+    // same effective reach as the chain check.
+    let store = test_store();
+
+    // Build chain of length MAX_NAMESPACE_DEPTH from leaf to ns:
+    // ns -> g_1 -> g_2 -> ... -> g_{MAX-1} -> leaf
+    // (i.e. MAX_NAMESPACE_DEPTH parent-edges separate `leaf` from `ns`.)
+    let ns = ContextGroupId::from([0xF0; 32]);
+    let mut nodes = vec![ns];
+    for i in 1..=MAX_NAMESPACE_DEPTH {
+        let g = ContextGroupId::from([0xF0u8.wrapping_add(i as u8); 32]);
+        nest_for_test(&store, nodes.last().unwrap(), &g);
+        // Mark every non-root link `Open` so the chain is fully open.
+        set_subgroup_visibility(&store, &g, VisibilityMode::Open).unwrap();
+        nodes.push(g);
+    }
+    let leaf = *nodes.last().unwrap();
+
+    // Sanity: chain check succeeds at the boundary.
+    assert!(
+        is_open_chain_to_namespace(&store, &leaf, &ns).unwrap(),
+        "is_open_chain_to_namespace should resolve at chain length MAX_NAMESPACE_DEPTH"
+    );
+
+    // The bug: membership walks used to bail here. After the fix,
+    // they must resolve to a definite answer (no cycle error).
+    let alice = PublicKey::from([0x01; 32]);
+    add_group_member(&store, &ns, &alice, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &ns,
+        &alice,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    // is_inherited_admin: alice is not admin anywhere → should
+    // resolve to false (NOT bail).
+    assert!(
+        matches!(is_inherited_admin(&store, &leaf, &alice), Ok(false)),
+        "is_inherited_admin must terminate at chain length MAX_NAMESPACE_DEPTH, not bail"
+    );
+
+    // check_group_membership: alice has CAN_JOIN_OPEN_SUBGROUPS at
+    // the namespace, all intermediate links are Open → should
+    // resolve to true via inheritance, not bail.
+    assert!(
+        matches!(check_group_membership(&store, &leaf, &alice), Ok(true)),
+        "check_group_membership must resolve at chain length MAX_NAMESPACE_DEPTH, not bail"
+    );
+
+    // Promoting alice to admin should also be observed (governance
+    // surface in agreement).
+    let bob = PublicKey::from([0x02; 32]);
+    add_group_member(&store, &ns, &bob, GroupMemberRole::Admin).unwrap();
+    assert!(
+        matches!(is_inherited_admin(&store, &leaf, &bob), Ok(true)),
+        "inherited admin authority must reach the leaf at chain length MAX_NAMESPACE_DEPTH"
+    );
+}
+
+#[test]
 fn is_open_chain_to_namespace_bails_on_depth_overflow() {
     use calimero_context_config::VisibilityMode;
 

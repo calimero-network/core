@@ -242,7 +242,21 @@ pub fn check_group_membership_path(
     let mut anchor_decision: Option<MembershipPath> = None;
 
     let mut current = *group_id;
-    for _ in 0..MAX_NAMESPACE_DEPTH {
+    // Off-by-one note: `is_open_chain_to_namespace` short-circuits
+    // when `parent == namespace_id` (success at iter k for chain
+    // length k). This walk has no equivalent shortcut — it "falls
+    // off" the chain by reaching `current = root` and then needing
+    // one *additional* iteration to read the root's visibility /
+    // observe `get_parent_group(root) == None` and return the
+    // recorded `anchor_decision`. Bound the loop at
+    // `MAX_NAMESPACE_DEPTH + 1` so a chain at exactly
+    // `MAX_NAMESPACE_DEPTH` resolves here just as it does in the
+    // chain-check; otherwise auth and crypto-key selection
+    // disagree at the boundary (encrypt path picks the namespace
+    // key, auth bails with a spurious cycle error). Cycle
+    // detection is unaffected — a true cycle still exhausts the
+    // bound.
+    for _ in 0..=MAX_NAMESPACE_DEPTH {
         if get_subgroup_visibility(store, &current)? != VisibilityMode::Open {
             return Ok(anchor_decision.unwrap_or(MembershipPath::None));
         }
@@ -335,7 +349,14 @@ pub fn is_inherited_admin(
         return Ok(true);
     }
     let mut current = *group_id;
-    for _ in 0..MAX_NAMESPACE_DEPTH {
+    // See `check_group_membership_path` for why this is bounded
+    // at `MAX_NAMESPACE_DEPTH + 1` rather than `MAX_NAMESPACE_DEPTH`:
+    // the membership walks need one extra iteration past the chain
+    // length to "fall off" at the namespace root, where
+    // `is_open_chain_to_namespace` exits early via `parent == ns_id`.
+    // Matching effective depth here keeps governance authority and
+    // crypto-key selection in agreement at the boundary.
+    for _ in 0..=MAX_NAMESPACE_DEPTH {
         if get_subgroup_visibility(store, &current)? != VisibilityMode::Open {
             return Ok(false);
         }
