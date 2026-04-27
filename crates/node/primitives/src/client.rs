@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 // Removed: NonZeroUsize (no longer using height)
 
 use async_stream::stream;
@@ -135,14 +135,24 @@ pub struct LocalAppliedDelta {
     pub actions: Vec<calimero_storage::action::Action>,
 }
 
-/// libp2p gossipsub's default `mesh_n_low` (the floor below which a peer
-/// triggers a fresh mesh GRAFT round). Calimero uses
-/// `gossipsub::Config::default()` in `crates/network/src/behaviour.rs`,
-/// so this mirrors the upstream constant.
+/// Read libp2p's `mesh_n_low` once from the live `gossipsub::Config::default()`
+/// and cache it. Used by Phase-1 readiness in
+/// `governance_broadcast::assert_transport_ready` as the upper bound for
+/// `required = min(mesh_n_low, known_subscribers)`.
 ///
-/// Used by Phase-1 readiness in `governance_broadcast::assert_transport_ready`
-/// as the upper bound for `required = min(mesh_n_low, known_subscribers)`.
-pub const GOSSIPSUB_MESH_N_LOW: usize = 5;
+/// Reading from `Config::default()` (instead of hardcoding) keeps this
+/// value in sync across libp2p version bumps — the upstream default has
+/// shifted between releases (4 → 5 between older crates and the 0.49.x
+/// line currently pinned), and a hardcoded mismatch would either reject
+/// healthy publishes (`required` too high) or admit publishes on an
+/// unhealthy mesh (`required` too low). Calimero constructs the
+/// gossipsub behaviour with `Config::default()` at
+/// `crates/network/src/behaviour.rs:111`, so reading the same default
+/// here is faithful to the actor's configuration.
+fn gossipsub_mesh_n_low_default() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| libp2p::gossipsub::Config::default().mesh_n_low())
+}
 
 #[derive(Clone, Debug)]
 pub struct NodeClient {
@@ -238,10 +248,10 @@ impl NodeClient {
             .unwrap_or(0)
     }
 
-    /// Gossipsub `mesh_n_low` — see [`GOSSIPSUB_MESH_N_LOW`].
+    /// Gossipsub `mesh_n_low` — see [`gossipsub_mesh_n_low_default`].
     #[must_use]
     pub fn gossipsub_mesh_n_low(&self) -> usize {
-        GOSSIPSUB_MESH_N_LOW
+        gossipsub_mesh_n_low_default()
     }
 
     /// Borrow the underlying `NetworkClient`. Used by
