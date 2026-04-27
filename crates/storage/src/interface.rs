@@ -394,6 +394,19 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // No DAG-causal answer → v2 fallback to stored, then
                                 // to the action's claim for bootstrap (preserves the
                                 // pre-P3 behavior exactly).
+                                //
+                                // Caveat: `stored` here is `metadata.storage_type.writers`
+                                // from the entity index, which `Index::update_hash_for`
+                                // never updates after a rotation (it only refreshes
+                                // own_hash/full_hash/updated_at). So this fallback
+                                // always returns the *bootstrap* writer set, regardless
+                                // of how many rotations have applied. Production WASM
+                                // paths land here today (until the ABI threads
+                                // CausalDelta.{id,hlc,parents} through), which means
+                                // post-rotation writers cannot bootstrap a signature
+                                // and pre-rotation writers can still sign forever.
+                                // Same root cause as the rotation-log write hook's
+                                // stale-stored-writers fragility (#2233 P3 follow-up).
                                 (None, Some(stored)) => stored.clone(),
                                 (None, None) => writers.clone(),
                             };
@@ -572,9 +585,16 @@ impl<S: StorageAdaptor> Interface<S> {
                                 // Replay protection (per-entity monotonic nonce).
                                 // Done BEFORE per-writer Ed25519 scan so replays are
                                 // O(1)-rejected (matches User arm + upsert arm).
+                                //
+                                // Mirrors the upsert arm's [`disable_nonce_check_for_testing`]
+                                // bypass so DAG-causal P5 tests that exercise out-of-order
+                                // delivery of Shared deletes can opt into the v3 target
+                                // behavior. Production codepath unchanged — the const fn
+                                // returns false outside cfg(test).
                                 let new_nonce = sig_data.nonce;
                                 let last_nonce = *existing_metadata.updated_at;
-                                if new_nonce <= last_nonce {
+                                let skip_nonce = nonce_check_disabled_for_testing();
+                                if !skip_nonce && new_nonce <= last_nonce {
                                     let placeholder = existing_writers
                                         .iter()
                                         .copied()
@@ -782,6 +802,19 @@ impl<S: StorageAdaptor> Interface<S> {
     /// see [`rotation_log::append`](crate::rotation_log::append) for why
     /// (delta_id-only dedup). Multi-action deltas with two rotations on
     /// the same entity are not supported and will trip a debug assertion.
+    ///
+    /// # Log may diverge from stored state
+    ///
+    /// This hook fires right after signature verification but BEFORE the
+    /// `save_internal` apply branch, so it records every signature-verified
+    /// rotation regardless of whether `save_internal` later drops the data
+    /// write under v2's LWW-by-HLC. This is intentional — cross-node
+    /// convergence (P5) requires the rotation log to reflect *received
+    /// causal facts*, not the local node's storage-merge decisions. The
+    /// consequence is that `RotationLog::entries` may contain rotations
+    /// whose data write was dropped; downstream readers (`writers_at`,
+    /// future P6 compaction, audit tools) must treat the log as the
+    /// authoritative writer-set history independent of stored data.
     fn maybe_append_rotation_log(
         id: Id,
         metadata: &Metadata,

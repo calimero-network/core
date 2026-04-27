@@ -326,9 +326,12 @@ where
             std::cmp::Ordering::Equal => {}
             non_eq => return non_eq,
         }
-        // 3. HLC tie → smaller signer bytes win, so the smaller one is "later"
-        //    in our cmp (since we take max). `None` is treated as larger than
-        //    any `Some(_)` so it sorts last and loses ties.
+        // 3. HLC tie → entry with the smaller signer bytes is the WINNER
+        //    (per ADR 0001). We're computing `max_by`, so the comparator
+        //    must return `Greater` for the entry whose signer is smaller —
+        //    that makes `max_by` pick it. `None` signers compare as
+        //    `Greater` than any `Some(_)`, so unsigned legacy entries lose
+        //    HLC ties to signed ones.
         match (&a.signer, &b.signer) {
             (Some(sa), Some(sb)) => sb.digest().cmp(sa.digest()),
             (Some(_), None) => std::cmp::Ordering::Greater,

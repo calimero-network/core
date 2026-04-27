@@ -398,6 +398,9 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
         ),
     };
     let d_root_dave = Delta {
+        id: d_root_id,
+        parents: vec![],
+        hlc_ns: one_sec(10),
         action: build_signed_shared_action(
             true,
             id,
@@ -407,12 +410,6 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
             &alice_sk,
             vec![dave_root.clone()],
         ),
-        ..Delta {
-            id: d_root_id,
-            parents: vec![],
-            hlc_ns: one_sec(10),
-            action: Action::Compare { id: Id::root() },
-        }
     };
     dag.record(d_root_carol.id, d_root_carol.parents.clone());
     deliver::<Carol>(&d_root_carol, &dag).unwrap();
@@ -539,6 +536,9 @@ fn long_partition_reconciliation_converges() {
         ),
     };
     let bootstrap_right = Delta {
+        id: g0,
+        parents: vec![],
+        hlc_ns: one_sec(10),
         action: build_signed_shared_action(
             true,
             id,
@@ -548,12 +548,6 @@ fn long_partition_reconciliation_converges() {
             &alice_sk,
             vec![right_root.clone()],
         ),
-        ..Delta {
-            id: g0,
-            parents: vec![],
-            hlc_ns: one_sec(10),
-            action: Action::Compare { id: Id::root() },
-        }
     };
     dag.record(g0, vec![]);
     deliver::<Left>(&bootstrap_left, &dag).unwrap();
