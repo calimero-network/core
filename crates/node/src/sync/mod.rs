@@ -43,6 +43,7 @@ mod manager;
 pub mod metrics;
 pub(crate) mod parent_pull;
 pub mod prometheus_metrics;
+pub(crate) mod rotation_log_reader;
 mod snapshot;
 pub(crate) mod stream;
 mod tracking;
