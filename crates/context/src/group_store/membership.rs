@@ -158,21 +158,31 @@ pub enum MembershipPath {
 ///
 /// 1. Direct membership in `group_id` → [`MembershipPath::Direct`].
 /// 2. Else, if `group_id` is `Restricted` (or has no `subgroup_visibility`
-///    set, treated as `Restricted`), return [`MembershipPath::None`].
-/// 3. Else (`Open`), look up the parent. No parent → [`MembershipPath::None`]
-///    (we hit the namespace root without finding the identity).
-/// 4. If `identity` is a direct member of the parent, that's the **anchor**.
-///    Admins inherit unconditionally; non-admins need
-///    [`MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS`].
-/// 5. Otherwise, recurse: walk one level up.
+///    set, treated as `Restricted`), return the recorded anchor decision
+///    (or [`MembershipPath::None`] if none was recorded).
+/// 3. Else (`Open`), look up the parent. No parent → return the recorded
+///    anchor decision (or [`MembershipPath::None`]).
+/// 4. **Admin authority cascades.** If `identity` is admin at this
+///    parent (direct admin row, or `GroupMeta.admin_identity`), return
+///    `Inherited { anchor: parent, via_admin: true }` immediately —
+///    parent admins are not revocable by intermediate non-admin direct
+///    rows. This keeps `check_group_membership_path` in agreement with
+///    [`is_inherited_admin`] on admin authority.
+/// 5. **Anchor cap (deepest non-admin direct row).** If `identity` is a
+///    direct (non-admin) member of this parent and we have not yet
+///    recorded an anchor decision, record one based on its caps:
+///    `CAN_JOIN_OPEN_SUBGROUPS` set → `Inherited { via_admin: false }`,
+///    else `None`. Do **not** return — keep walking; a parent admin
+///    further up still overrides this denial.
+/// 6. Walk one level up.
 ///
-/// The walk terminates at the first `Restricted` ancestor (a wall) or at
-/// the namespace root. Bounded by [`MAX_NAMESPACE_DEPTH`] to defend
-/// against corrupted store state with cyclic parent edges. The namespace
-/// root's *own* `subgroup_visibility` is intentionally never read — the
-/// walk reaches it only when a direct membership at the root is the
-/// anchor, at which point the `has_direct_member` check at step 4 returns
-/// before step 2 is re-evaluated for that level.
+/// The walk terminates at the first `Restricted` ancestor (a wall) or
+/// at the namespace root. Bounded by [`MAX_NAMESPACE_DEPTH`] to defend
+/// against corrupted store state with cyclic parent edges. The
+/// namespace root's *own* `subgroup_visibility` is intentionally never
+/// read — the walk reaches it only when checking direct admin / direct
+/// membership at that level via step 4 / 5, both of which fire before
+/// step 2 is re-evaluated for that level.
 ///
 /// **Architectural note:** this same parent-walk logic anchors several
 /// other subsystems that all need to recognize Open-subgroup inheritance
@@ -203,29 +213,50 @@ pub fn check_group_membership_path(
         return Ok(MembershipPath::Direct);
     }
 
+    // Track the deepest non-admin direct-row anchor decision (if any)
+    // as a *fallback*. We do not short-circuit on it — admin authority
+    // at a higher Open-chain ancestor cascades through and overrides a
+    // denial at the anchor. This keeps `check_group_membership_path`
+    // and [`is_inherited_admin`] in agreement on admin authority while
+    // preserving anchor-cap semantics for ordinary members.
+    //
+    // Joining a context is a voluntary action. A namespace admin who
+    // happened to be added as a regular member of an intermediate
+    // group, with that group's join cap cleared, would otherwise be
+    // unable to join contexts in descendant subgroups they govern —
+    // even though they have full admin authority and could trivially
+    // re-grant themselves the cap. The cap-revocation in that case is
+    // a per-level participation knob, not a security barrier; honoring
+    // it strictly only produces the confusing "can govern but cannot
+    // join" UX without offering a real isolation guarantee.
+    let mut anchor_decision: Option<MembershipPath> = None;
+
     let mut current = *group_id;
     for _ in 0..MAX_NAMESPACE_DEPTH {
         if get_subgroup_visibility(store, &current)? != VisibilityMode::Open {
-            return Ok(MembershipPath::None);
+            return Ok(anchor_decision.unwrap_or(MembershipPath::None));
         }
         let Some(parent) = get_parent_group(store, &current)? else {
-            return Ok(MembershipPath::None);
+            return Ok(anchor_decision.unwrap_or(MembershipPath::None));
         };
-        if has_direct_member(store, &parent, identity)? {
-            if is_group_admin(store, &parent, identity)? {
-                return Ok(MembershipPath::Inherited {
-                    anchor: parent,
-                    via_admin: true,
-                });
-            }
+        if is_group_admin(store, &parent, identity)? {
+            return Ok(MembershipPath::Inherited {
+                anchor: parent,
+                via_admin: true,
+            });
+        }
+        if has_direct_member(store, &parent, identity)? && anchor_decision.is_none() {
+            // Deepest non-admin anchor: record its cap-based decision
+            // but keep walking — a parent admin further up overrides.
             let caps = get_member_capability(store, &parent, identity)?.unwrap_or(0);
-            if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0 {
-                return Ok(MembershipPath::Inherited {
+            anchor_decision = Some(if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0 {
+                MembershipPath::Inherited {
                     anchor: parent,
                     via_admin: false,
-                });
-            }
-            return Ok(MembershipPath::None);
+                }
+            } else {
+                MembershipPath::None
+            });
         }
         current = parent;
     }

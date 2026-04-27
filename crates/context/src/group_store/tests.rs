@@ -2111,6 +2111,80 @@ fn inherited_admin_walk_independent_of_direct_non_admin_membership() {
 }
 
 #[test]
+fn membership_path_inherited_admin_overrides_anchor_cap_denial() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // Bugbot finding (PR #2261, comment 3146210600): governance
+    // (`is_inherited_admin`) and context-join
+    // (`check_group_membership_path`) used to disagree when an
+    // identity held admin authority at a higher ancestor but ALSO
+    // happened to have a direct non-admin row at an intermediate
+    // level with `CAN_JOIN_OPEN_SUBGROUPS` cleared. The old walk
+    // anchored at the intermediate row and denied join — yielding
+    // the confusing "can govern but cannot join" UX.
+    //
+    // After the fix, admin authority cascades: the walk keeps going
+    // past a non-admin direct row and finds the parent admin
+    // anchor, returning `Inherited { via_admin: true }`.
+    let store = test_store();
+    let ns = ContextGroupId::from([0xE0; 32]);
+    let mid = ContextGroupId::from([0xE1; 32]);
+    let leaf = ContextGroupId::from([0xE2; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &ns, &mid);
+    nest_for_test(&store, &mid, &leaf);
+
+    // Alice: namespace admin AND a direct non-admin Member at `mid`
+    // with the join cap explicitly cleared.
+    add_group_member(&store, &ns, &alice, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &mid, &alice, GroupMemberRole::Member).unwrap();
+    set_member_capability(&store, &mid, &alice, 0).unwrap();
+
+    set_subgroup_visibility(&store, &mid, VisibilityMode::Open).unwrap();
+    set_subgroup_visibility(&store, &leaf, VisibilityMode::Open).unwrap();
+
+    // Both authorization surfaces must agree: Alice is authorized.
+    assert!(super::is_inherited_admin(&store, &leaf, &alice).unwrap());
+    let path = check_group_membership_path(&store, &leaf, &alice).unwrap();
+    match path {
+        super::MembershipPath::Inherited {
+            anchor,
+            via_admin: true,
+        } => {
+            assert_eq!(
+                anchor, ns,
+                "admin anchor should be the namespace, not the intermediate `mid` row"
+            );
+        }
+        other => panic!(
+            "expected Inherited{{ via_admin: true, anchor: ns }} for parent admin, got {:?}",
+            other
+        ),
+    }
+
+    // Sanity: a non-admin in the same shape must still be denied —
+    // the fix does NOT widen authorization for non-admins, only
+    // honors admin authority that already exists higher up.
+    let bob = PublicKey::from([0x02; 32]);
+    add_group_member(&store, &ns, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &ns,
+        &bob,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+    add_group_member(&store, &mid, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(&store, &mid, &bob, 0).unwrap();
+    assert!(
+        !check_group_membership(&store, &leaf, &bob).unwrap(),
+        "non-admin with cleared cap at intermediate anchor must still be denied; \
+         the fix only cascades *admin* authority, not arbitrary parent membership"
+    );
+}
+
+#[test]
 fn is_open_chain_to_namespace_walks_parent_chain_correctly() {
     use calimero_context_config::VisibilityMode;
 
