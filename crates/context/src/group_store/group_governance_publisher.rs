@@ -1,4 +1,4 @@
-use calimero_context_client::local_governance::{GroupOp, NamespaceOp};
+use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
@@ -10,6 +10,7 @@ use super::{
     is_open_chain_to_namespace, load_current_group_key_record, resolve_namespace,
     sign_apply_local_group_op_borsh, store_group_key, NamespaceGovernance,
 };
+use crate::governance_broadcast::{assert_transport_ready, ns_topic, DeliveryReport};
 use crate::metrics::record_governance_publish_mesh_peers;
 
 /// Orchestrates local apply + encrypted namespace publish for group governance ops.
@@ -32,20 +33,31 @@ impl<'a> GroupGovernancePublisher<'a> {
         }
     }
 
+    /// `Ok(Some(report))` is a published-and-acked outcome.
+    /// `Ok(None)` is a deliberate skip: this node is not yet a namespace
+    /// member (no identity record) or has no group key for the
+    /// encrypting group — the local apply still happened, but there is
+    /// nothing to publish on the wire.
     pub async fn sign_apply_and_publish(
         &self,
+        ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: GroupOp,
-    ) -> EyreResult<()> {
-        self.sign_apply_and_publish_inner(signer_sk, op, None).await
+    ) -> EyreResult<Option<DeliveryReport>> {
+        self.sign_apply_and_publish_inner(ack_router, signer_sk, op, None)
+            .await
     }
 
+    /// See [`sign_apply_and_publish`](Self::sign_apply_and_publish) for
+    /// the meaning of `Ok(None)`.
     pub async fn sign_apply_and_publish_removal(
         &self,
+        ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         removed_member: &PublicKey,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<Option<DeliveryReport>> {
         self.sign_apply_and_publish_inner(
+            ack_router,
             signer_sk,
             GroupOp::MemberRemoved {
                 member: *removed_member,
@@ -57,15 +69,33 @@ impl<'a> GroupGovernancePublisher<'a> {
 
     async fn sign_apply_and_publish_inner(
         &self,
+        ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: GroupOp,
         removed_member: Option<&PublicKey>,
-    ) -> EyreResult<()> {
-        let _output =
-            sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op.clone())?;
-
+    ) -> EyreResult<Option<DeliveryReport>> {
+        // Phase-1 readiness gate runs FIRST — before
+        // `sign_apply_local_group_op_borsh` (which mutates the local group
+        // store) and before the per-removal key-mint+store below. The
+        // namespace-level helper invoked at the bottom of this function
+        // ALSO runs the gate, but a `NamespaceNotReady` rejection there
+        // would arrive *after* local mutation, leaving an orphan group-row
+        // and (for member-removal) a freshly-minted-but-unused key on
+        // every retry. Gating up front keeps the rejection side-effect-free
+        // and cleanly retryable, mirroring `NamespaceGovernance::sign_apply_and_publish`.
         let namespace_id = resolve_namespace(self.store, &self.group_id)?;
         let namespace_bytes = namespace_id.to_bytes();
+        let topic = ns_topic(namespace_bytes);
+        let mesh = self
+            .node_client
+            .mesh_peer_count_for_namespace(namespace_bytes)
+            .await;
+        let known = self.node_client.known_subscribers(&topic);
+        assert_transport_ready(mesh, known, self.node_client.gossipsub_mesh_n_low())
+            .map_err(|e| eyre::eyre!(e))?;
+
+        let _output =
+            sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op.clone())?;
 
         let Some(namespace_identity) = get_namespace_identity_record(self.store, &namespace_id)?
         else {
@@ -73,7 +103,7 @@ impl<'a> GroupGovernancePublisher<'a> {
                 group_id = %hex::encode(self.group_id.to_bytes()),
                 "no namespace identity, skipping namespace publish"
             );
-            return Ok(());
+            return Ok(None);
         };
 
         // Issue #2256: an `Open` subgroup whose entire ancestor chain up
@@ -154,7 +184,7 @@ impl<'a> GroupGovernancePublisher<'a> {
                 encrypting_group_id = %hex::encode(encrypting_group_id.to_bytes()),
                 "no group key stored, skipping namespace publish"
             );
-            return Ok(());
+            return Ok(None);
         };
 
         let encrypted = encrypt_group_op(&stored_key.group_key, &op)?;
@@ -220,8 +250,14 @@ impl<'a> GroupGovernancePublisher<'a> {
         record_governance_publish_mesh_peers(op.op_kind_label(), mesh_count);
 
         let namespace_sk = PrivateKey::from(namespace_identity.private_key);
-        NamespaceGovernance::new(self.store, namespace_bytes)
-            .sign_and_publish_without_apply(self.node_client, &namespace_sk, namespace_op)
-            .await
+        let report = NamespaceGovernance::new(self.store, namespace_bytes)
+            .sign_and_publish_without_apply(
+                self.node_client,
+                ack_router,
+                &namespace_sk,
+                namespace_op,
+            )
+            .await?;
+        Ok(Some(report))
     }
 }

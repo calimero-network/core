@@ -106,6 +106,57 @@ fn assert_transport_ready_passes_when_mesh_exceeds_required() {
 }
 
 // ---------------------------------------------------------------------------
+// timeout_for_namespace_op
+// ---------------------------------------------------------------------------
+
+#[test]
+fn timeout_classifier_assigns_per_op_kind() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+
+    // Cheap class: single-row writes, no inheritance walk.
+    assert_eq!(
+        timeout_for_namespace_op(&NamespaceOp::Root(RootOp::AdminChanged { new_admin: pk })),
+        OP_ACK_CHEAP_TIMEOUT
+    );
+
+    // Member-change class: membership-table mutations, possible inheritance walks.
+    assert_eq!(
+        timeout_for_namespace_op(&NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: [0u8; 32],
+            parent_id: [0u8; 32],
+        })),
+        OP_ACK_MEMBER_CHANGE_TIMEOUT
+    );
+
+    // Heavy class: cascade deletes / KeyDelivery side-effects.
+    assert_eq!(
+        timeout_for_namespace_op(&NamespaceOp::Root(RootOp::GroupDeleted {
+            root_group_id: [0u8; 32],
+            cascade_group_ids: Vec::new(),
+            cascade_context_ids: Vec::new(),
+        })),
+        OP_ACK_HEAVY_TIMEOUT
+    );
+
+    // Encrypted Group ops: classified as member-change baseline because
+    // the inner GroupOp variant isn't visible without decrypting.
+    assert_eq!(
+        timeout_for_namespace_op(&NamespaceOp::Group {
+            group_id: [0u8; 32],
+            key_id: [0u8; 32],
+            encrypted: calimero_context_client::local_governance::EncryptedGroupOp {
+                ciphertext: Vec::new(),
+                nonce: [0u8; 12],
+            },
+            key_rotation: None,
+        }),
+        OP_ACK_MEMBER_CHANGE_TIMEOUT
+    );
+}
+
+// ---------------------------------------------------------------------------
 // publish_and_await_ack_namespace
 // ---------------------------------------------------------------------------
 

@@ -59,6 +59,7 @@ pub async fn maybe_publish_key_delivery(
     if let Err(e) = calimero_context::group_store::sign_and_publish_namespace_op(
         &store,
         node_client,
+        context_client.ack_router(),
         namespace_id,
         &sender_sk,
         delivery_op,

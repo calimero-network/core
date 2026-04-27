@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{DeleteGroupRequest, DeleteGroupResponse};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
@@ -91,6 +93,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
         let group_id_bytes = group_id.to_bytes();
         let (_, signer_sk_bytes) = namespace_identity;
 
@@ -103,9 +106,10 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                     cascade_context_ids,
                 });
 
-                group_store::sign_apply_and_publish_namespace_op(
+                let _report = group_store::sign_apply_and_publish_namespace_op(
                     &datastore,
                     &node_client,
+                    &ack_router,
                     namespace_id_bytes,
                     &signer_sk,
                     op,

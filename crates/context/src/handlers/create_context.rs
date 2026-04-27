@@ -99,6 +99,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         act.datastore.clone(),
                         act.node_client.clone(),
                         act.context_client.clone(),
+                        Arc::clone(&act.ack_router),
                         module,
                         external_config,
                         context_meta,
@@ -291,6 +292,7 @@ async fn create_context(
     datastore: Store,
     node_client: NodeClient,
     _context_client: ContextClient,
+    ack_router: Arc<calimero_context_client::local_governance::AckRouter>,
     module: calimero_runtime::Module,
     external_config: ContextConfigParams,
     mut context: Context,
@@ -448,9 +450,10 @@ async fn create_context(
     // worst case is a single context associated with a since-removed member.
     {
         let sk = PrivateKey::from(*identity_secret);
-        group_store::sign_apply_and_publish(
+        let _report = group_store::sign_apply_and_publish(
             &datastore,
             &node_client,
+            &ack_router,
             &group_id,
             &sk,
             GroupOp::ContextRegistered {
@@ -481,9 +484,10 @@ async fn create_context(
 
     if let Some(ref alias_str) = alias {
         let sk = PrivateKey::from(*identity_secret);
-        group_store::sign_apply_and_publish(
+        let _report = group_store::sign_apply_and_publish(
             &datastore,
             &node_client,
+            &ack_router,
             &group_id,
             &sk,
             GroupOp::ContextAliasSet {

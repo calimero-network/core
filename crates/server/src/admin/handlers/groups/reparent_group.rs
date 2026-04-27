@@ -85,13 +85,14 @@ pub async fn handler(
     match calimero_context::group_store::sign_apply_and_publish_namespace_op(
         &state.store,
         &state.node_client,
+        state.ctx_client.ack_router(),
         namespace_id.to_bytes(),
         &signer_sk,
         op,
     )
     .await
     {
-        Ok(()) => ApiResponse {
+        Ok(_report) => ApiResponse {
             payload: ReparentGroupApiResponse {
                 reparented: !was_already_there,
             },

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::SetTeeAdmissionPolicyRequest;
 use calimero_context_client::local_governance::GroupOp;
@@ -81,6 +83,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
         let effective_signing_key = signing_key.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
@@ -92,9 +95,10 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
                     eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
-                group_store::sign_apply_and_publish(
+                let _report = group_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
+                    &ack_router,
                     &group_id,
                     &sk,
                     GroupOp::TeeAdmissionPolicySet {

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -50,6 +51,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let namespace_id = ns_id.to_bytes();
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
         let context_client = self.context_client.clone();
 
         ActorResponse::r#async(
@@ -205,16 +207,18 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     member: joiner_identity,
                     signed_invitation: invitation.clone(),
                 });
-                if let Err(e) = group_store::sign_and_publish_namespace_op(
+                match group_store::sign_and_publish_namespace_op(
                     &datastore,
                     &node_client,
+                    &ack_router,
                     namespace_id,
                     &sk,
                     member_joined_op,
                 )
                 .await
                 {
-                    warn!(?e, "failed to publish MemberJoined (non-fatal)");
+                    Ok(_report) => {}
+                    Err(e) => warn!(?e, "failed to publish MemberJoined (non-fatal)"),
                 }
 
                 // -------------------------------------------------------

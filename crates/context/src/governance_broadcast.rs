@@ -14,10 +14,10 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use calimero_context_client::local_governance::{
-    hash_scoped_namespace, AckRouter, GovernanceError, NamespaceTopicMsg, SignedAck,
-    SignedNamespaceOp,
+    hash_scoped_namespace, AckRouter, GovernanceError, NamespaceOp, NamespaceTopicMsg, RootOp,
+    SignedAck, SignedNamespaceOp,
 };
-use calimero_node_primitives::sync::BroadcastMessage;
+use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use libp2p::gossipsub::TopicHash;
@@ -26,6 +26,69 @@ use tokio::sync::broadcast;
 use tokio::time::timeout;
 
 use crate::group_store::namespace_member_pubkeys;
+
+/// Default `min_acks` for governance publishes — at least one peer must
+/// ack before we consider the op delivered. Spec §6.2. Callers that
+/// need a stricter quorum (e.g. KeyDelivery requiring the recipient's
+/// ack) override per-call.
+pub const DEFAULT_MIN_ACKS: usize = 1;
+
+/// Compute the gossipsub topic for a namespace governance publish.
+/// Mirrors the format used by `NodeClient::publish_signed_namespace_op`
+/// and the receiver-side `network_event::namespace` handler.
+#[must_use]
+pub fn ns_topic(namespace_id: [u8; 32]) -> TopicHash {
+    TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)))
+}
+
+/// Per-op publish timeout for "cheap" governance ops — alias / metadata
+/// writes whose apply path is O(1) on every receiver. The 2s budget
+/// comfortably covers a fresh GRAFT (≤1s) plus one round-trip ack.
+pub const OP_ACK_CHEAP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Per-op publish timeout for member-change governance ops — add /
+/// remove members, MemberJoined, capability flips. Receivers walk
+/// inheritance edges and may rotate group keys, so a 5s budget is
+/// realistic on top of the cheap baseline.
+pub const OP_ACK_MEMBER_CHANGE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Per-op publish timeout for "heavy" governance ops — context
+/// creation, app installation, namespace bootstrap. Receivers may
+/// unwrap large envelopes, store stub application metadata, and
+/// trigger downstream retry loops; 10s mirrors the snapshot-sync
+/// class.
+pub const OP_ACK_HEAVY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Pick the appropriate per-op timeout for a `NamespaceOp` based on the
+/// receiver-side apply work it implies. The classification is:
+///
+///   * `AdminChanged` / `PolicyUpdated`: cheap — single-row writes.
+///   * `MemberJoined` / `GroupCreated` / `GroupReparented`: member-change —
+///     membership-table mutations, possible inheritance walks.
+///   * `GroupDeleted` / `KeyDelivery`: heavy — cascade deletes touch every
+///     descendant subtree row; key delivery may unwrap large envelopes.
+///   * `Group { encrypted, .. }`: member-change baseline. The inner
+///     `GroupOp` variant isn't visible without decrypting, so a finer
+///     classification (e.g. `KeyDelivery` heavy via the rotation
+///     envelope) requires accepting a wider tail. Member-change is the
+///     conservative middle ground.
+#[must_use]
+pub fn timeout_for_namespace_op(op: &NamespaceOp) -> Duration {
+    match op {
+        NamespaceOp::Root(RootOp::AdminChanged { .. } | RootOp::PolicyUpdated { .. }) => {
+            OP_ACK_CHEAP_TIMEOUT
+        }
+        NamespaceOp::Root(
+            RootOp::MemberJoined { .. }
+            | RootOp::GroupCreated { .. }
+            | RootOp::GroupReparented { .. },
+        ) => OP_ACK_MEMBER_CHANGE_TIMEOUT,
+        NamespaceOp::Root(RootOp::GroupDeleted { .. } | RootOp::KeyDelivery { .. }) => {
+            OP_ACK_HEAVY_TIMEOUT
+        }
+        NamespaceOp::Group { .. } => OP_ACK_MEMBER_CHANGE_TIMEOUT,
+    }
+}
 
 #[cfg(test)]
 mod tests;
@@ -199,12 +262,7 @@ pub async fn publish_and_await_ack_namespace(
     let topic_id = topic.as_str().as_bytes();
     let op_hash = hash_scoped_namespace(topic_id, &op)
         .map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
-    let start = Instant::now();
 
-    // Subscribe BEFORE publishing so a peer that already has this op
-    // (e.g. via concurrent backfill) cannot ack faster than our
-    // subscription registration and have its ack dropped.
-    let mut rx = ack_router.subscribe(op_hash);
     // Wire framing on `ns/<id>` is two-layer: the gossipsub frame
     // decodes as `BroadcastMessage` first (see
     // `node/src/handlers/network_event.rs::handle_network_event`),
@@ -215,12 +273,26 @@ pub async fn publish_and_await_ack_namespace(
     // caller of this helper observe `NoAckReceived` regardless of
     // mesh health. Mirrors `client.rs::publish_signed_namespace_op`
     // and the heartbeat-republish site at `namespace.rs:223`.
+    //
+    // All synchronous serialization happens BEFORE `ack_router.subscribe`
+    // so a borsh / size-check failure cannot leak a channel registration:
+    // we only enter the wait state once the publish has actually been
+    // handed to the gossipsub layer. This keeps the `subscribe-before-
+    // publish` race-free guarantee documented above intact (`subscribe`
+    // still happens before the wire `publish` call).
     let delta_id = op
         .content_hash()
         .map_err(|e| GovernanceBroadcastError::Publish(format!("content_hash: {e}")))?;
     let parent_ids = op.parent_op_hashes.clone();
     let inner = borsh::to_vec(&NamespaceTopicMsg::Op(op))
         .map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
+    if inner.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
+        return Err(GovernanceBroadcastError::Publish(format!(
+            "signed namespace op payload exceeds max ({} > {})",
+            inner.len(),
+            MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES
+        )));
+    }
     let envelope = BroadcastMessage::NamespaceGovernanceDelta {
         namespace_id,
         delta_id,
@@ -229,10 +301,19 @@ pub async fn publish_and_await_ack_namespace(
     };
     let payload =
         borsh::to_vec(&envelope).map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
-    transport
-        .publish(topic, payload)
-        .await
-        .map_err(GovernanceBroadcastError::Publish)?;
+
+    let start = Instant::now();
+    // Subscribe BEFORE publishing so a peer that already has this op
+    // (e.g. via concurrent backfill) cannot ack faster than our
+    // subscription registration and have its ack dropped.
+    let mut rx = ack_router.subscribe(op_hash);
+    if let Err(e) = transport.publish(topic, payload).await {
+        // Publish handed-off failed — release the channel registration
+        // before propagating, otherwise the entry stays subscribed
+        // forever (op_hash is single-use, so no future caller reuses it).
+        ack_router.release(op_hash, rx);
+        return Err(GovernanceBroadcastError::Publish(e));
+    }
 
     // `min_acks == 0` means "publish-only, don't wait" — the expected
     // outcome is immediate `Ok`, not a `NoAckReceived` after `op_timeout`

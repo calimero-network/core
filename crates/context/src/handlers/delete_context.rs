@@ -1,6 +1,8 @@
 use core::error::Error;
+use std::sync::Arc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
+use calimero_context_client::local_governance::AckRouter;
 use calimero_context_client::messages::{DeleteContextRequest, DeleteContextResponse};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
@@ -44,6 +46,7 @@ impl Handler<DeleteContextRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
 
         let group_id_for_context =
             match group_store::get_group_for_context(&self.datastore, &context_id) {
@@ -74,7 +77,7 @@ impl Handler<DeleteContextRequest> for ContextManager {
                 None => None,
             };
 
-            delete_context(datastore, node_client, context_id, requester).await?;
+            delete_context(datastore, node_client, ack_router, context_id, requester).await?;
 
             Ok(DeleteContextResponse { deleted: true })
         };
@@ -90,6 +93,7 @@ impl Handler<DeleteContextRequest> for ContextManager {
 async fn delete_context(
     datastore: Store,
     node_client: NodeClient,
+    ack_router: Arc<AckRouter>,
     context_id: ContextId,
     requester: Option<PublicKey>,
 ) -> eyre::Result<()> {
@@ -129,9 +133,10 @@ async fn delete_context(
                      cannot publish local detach op"
                 )
             })?;
-        group_store::sign_apply_and_publish(
+        let _report = group_store::sign_apply_and_publish(
             &datastore,
             &node_client,
+            &ack_router,
             &group_id,
             &PrivateKey::from(sk),
             calimero_context_client::local_governance::GroupOp::ContextDetached { context_id },
