@@ -2378,9 +2378,25 @@ impl SyncManager {
 
         let mut _updated = None;
 
+        // Issue #2256: also accept inheritance-eligible parent members
+        // for sync auth. `has_member` only knows direct context-membership
+        // and direct group-membership; the parent-walk for `Open` subgroups
+        // lives in `calimero-context::group_store`, which we have access
+        // to here at the node layer.
+        let is_inherited_member = || -> eyre::Result<bool> {
+            let store = self.context_client.datastore();
+            let Some(group_id) =
+                calimero_context::group_store::get_group_for_context(store, &context_id)?
+            else {
+                return Ok(false);
+            };
+            calimero_context::group_store::check_group_membership(store, &group_id, &their_identity)
+        };
+
         if !self
             .context_client
             .has_member(&context_id, &their_identity)?
+            && !is_inherited_member()?
         {
             _updated = Some(
                 self.context_client
@@ -2391,6 +2407,7 @@ impl SyncManager {
             if !self
                 .context_client
                 .has_member(&context_id, &their_identity)?
+                && !is_inherited_member()?
             {
                 // The peer may have just published MemberAdded for themselves
                 // (or their side of the governance DAG is ahead of ours) and
@@ -2410,6 +2427,7 @@ impl SyncManager {
                 if !self
                     .context_client
                     .has_member(&context_id, &their_identity)?
+                    && !is_inherited_member()?
                 {
                     // Catch-up didn't resolve it (peer returned nothing, peer
                     // also doesn't know, or the op chain isn't valid locally).
