@@ -88,21 +88,13 @@ steps:
     outputs:
       member_identity_node2: memberIdentity
 
-  # Gossipsub mesh warmup: after joining the namespace, node-2 subscribes
-  # to `ns/{namespace_id}` but the mesh on that topic doesn't GRAFT between
-  # both nodes instantly. GRAFT typically takes a handful of heartbeat
-  # cycles (~1-3s). If we broadcast governance ops before GRAFT completes,
-  # node-2 misses them entirely and has to wait for the next periodic
-  # heartbeat (~30s) to catch up — which exceeds the probe's window.
-  #
-  # The proactive backfill path (#2198) only fires once node-2 actually
-  # receives a gossip op; it cannot recover from a mesh that hasn't formed
-  # yet. This small wait ensures gossip delivery works by the time we
-  # start touching the subgroup.
-  - name: Warm up namespace gossipsub mesh
-    type: wait
-    seconds: 3
-    message: allow gossipsub GRAFT on ns/<id> before broadcasting governance ops
+  # GRAFT race obsoleted by the three-phase governance contract (#2237):
+  # `assert_transport_ready` now blocks publishes until the namespace
+  # mesh has the required quorum, and `publish_and_await_ack_namespace`
+  # waits for at least one peer's signed ack before returning Ok.
+  # Subsequent `add_group_members` / `create_group_in_namespace` are
+  # guaranteed to have either landed or surfaced a typed
+  # NamespaceNotReady / NoAckReceived error — no fixed sleep needed.
 
   # ── Subgroup: node-2 is a member BEFORE the context exists ────────
   #
@@ -137,15 +129,11 @@ steps:
   # by asserting node-2's local view of subgroup membership BEFORE the
   # delta burst begins, so the two bugs can't conflate in this workflow.
 
-  # With the proactive-backfill code path (#2198) in place, governance ops
-  # that arrive on node-2 with missing parents trigger an immediate
-  # cross-peer backfill instead of waiting for the 30s heartbeat cycle.
-  # A short wall-clock window here covers gossip propagation latency; the
-  # probe below is the real gate.
-  - name: Short window for subgroup governance propagation
-    type: wait
-    seconds: 5
-    message: cover gossip hop + proactive backfill; probe is the real gate
+  # No fixed wait needed: `add_group_members` above returns only after
+  # at least one ack on the underlying NamespaceOp::Group, so node-2's
+  # apply has already landed (or the call itself returned NoAckReceived).
+  # The probe below is the real gate.
+
 
   - name: Node-2 lists subgroup members (local view)
     type: list_group_members

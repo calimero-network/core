@@ -98,13 +98,9 @@ steps:
       - identity: '{{member_identity_node2}}'
         role: Member
 
-  # Short wait for subgroup membership governance to propagate to node-2.
-  # This is NOT the thing under test — we just need node-2's group_store
-  # to accept itself as a member before the join_context membership check.
-  - name: Wait for subgroup governance
-    type: wait
-    seconds: 5
-    message: Subgroup governance needs to reach node-2 before join_context
+  # No fixed wait needed: `add_group_members` above returns only after
+  # node-2 acks the underlying NamespaceOp::Group, so its group_store
+  # already accepts the new membership row (#2237 three-phase contract).
 
   # ── Create context in subgroup + node-2 joins immediately ──────────
 
