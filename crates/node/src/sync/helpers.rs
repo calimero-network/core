@@ -8,7 +8,7 @@ use calimero_primitives::context::ContextId;
 use calimero_storage::address::Id;
 use calimero_storage::entities::{ChildInfo, Metadata};
 use calimero_storage::index::Index;
-use calimero_storage::interface::{Action, Interface};
+use calimero_storage::interface::{Action, ApplyContext, Interface};
 use calimero_storage::store::MainStorage;
 use eyre::{bail, Result};
 use rand::Rng;
@@ -88,7 +88,16 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
                 ancestors: vec![],
                 metadata: Metadata::default(),
             };
-            Interface::<MainStorage>::apply_action(root_action)?;
+            // P1 of #2233: snapshot leaf push has no DAG-causal context.
+            Interface::<MainStorage>::apply_action(
+                root_action,
+                ApplyContext {
+                    causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
+                },
+            )?;
         }
 
         // Get root info for ancestor chain
@@ -113,7 +122,16 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         }
     };
 
-    Interface::<MainStorage>::apply_action(action)?;
+    // P1 of #2233: snapshot leaf push has no DAG-causal context.
+    Interface::<MainStorage>::apply_action(
+        action,
+        ApplyContext {
+            causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
+        },
+    )?;
     Ok(())
 }
 

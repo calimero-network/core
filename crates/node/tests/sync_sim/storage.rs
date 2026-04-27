@@ -49,7 +49,7 @@ use calimero_storage::address::Id;
 use calimero_storage::entities::{ChildInfo, Metadata};
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::index::{EntityIndex, Index};
-use calimero_storage::interface::{Action, Interface};
+use calimero_storage::interface::{Action, ApplyContext, Interface};
 use calimero_storage::store::{Key, MainStorage};
 use calimero_store::db::InMemoryDB;
 use calimero_store::{key, types, Store};
@@ -336,13 +336,21 @@ impl SimStorage {
                 ancestors: vec![],
                 metadata: Metadata::default(),
             };
-            let _ = Interface::<MainStorage>::apply_action(action);
+            let _ = Interface::<MainStorage>::apply_action(
+                action,
+                ApplyContext {
+                    causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
+                },
+            );
         });
     }
 
     /// Add an entity with a parent relationship.
     ///
-    /// Uses `Interface::apply_action(Action::Update)` which is the public API
+    /// Uses `Interface::apply_action(Action::Update, ctx)` which is the public API
     /// for creating/updating entities in the Merkle tree.
     pub fn add_entity_with_parent(&self, id: Id, parent_id: Id, data: &[u8], metadata: Metadata) {
         self.with_index(|| {
@@ -367,7 +375,15 @@ impl SimStorage {
                 ancestors: vec![ancestor],
                 metadata,
             };
-            let _ = Interface::<MainStorage>::apply_action(action);
+            let _ = Interface::<MainStorage>::apply_action(
+                action,
+                ApplyContext {
+                    causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
+                },
+            );
         });
     }
 
@@ -407,7 +423,15 @@ impl SimStorage {
                     ancestors: vec![],
                     metadata: Metadata::default(),
                 };
-                let _ = Interface::<MainStorage>::apply_action(action);
+                let _ = Interface::<MainStorage>::apply_action(
+                    action,
+                    ApplyContext {
+                        causal_parents: &[],
+                        delta_id: None,
+                        delta_hlc: None,
+                        happens_before: None,
+                    },
+                );
             } else {
                 // Create new entity as child of root
                 // First ensure root exists
@@ -423,7 +447,15 @@ impl SimStorage {
                         ancestors: vec![],
                         metadata: Metadata::default(),
                     };
-                    let _ = Interface::<MainStorage>::apply_action(root_action);
+                    let _ = Interface::<MainStorage>::apply_action(
+                        root_action,
+                        ApplyContext {
+                            causal_parents: &[],
+                            delta_id: None,
+                            delta_hlc: None,
+                            happens_before: None,
+                        },
+                    );
                 }
 
                 // Add new entity under root
@@ -433,7 +465,15 @@ impl SimStorage {
                     ancestors: vec![ChildInfo::new(root_id, [0; 32], Metadata::default())],
                     metadata: Metadata::default(),
                 };
-                let _ = Interface::<MainStorage>::apply_action(action);
+                let _ = Interface::<MainStorage>::apply_action(
+                    action,
+                    ApplyContext {
+                        causal_parents: &[],
+                        delta_id: None,
+                        delta_hlc: None,
+                        happens_before: None,
+                    },
+                );
             }
         });
     }
@@ -447,7 +487,15 @@ impl SimStorage {
                     deleted_at: calimero_storage::env::time_now(),
                     metadata: index.metadata.clone(),
                 };
-                let _ = Interface::<MainStorage>::apply_action(action);
+                let _ = Interface::<MainStorage>::apply_action(
+                    action,
+                    ApplyContext {
+                        causal_parents: &[],
+                        delta_id: None,
+                        delta_hlc: None,
+                        happens_before: None,
+                    },
+                );
             }
         });
     }
