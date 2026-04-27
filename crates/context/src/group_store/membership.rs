@@ -178,11 +178,21 @@ pub enum MembershipPath {
 ///
 /// The walk terminates at the first `Restricted` ancestor (a wall) or
 /// at the namespace root. Bounded by [`MAX_NAMESPACE_DEPTH`] to defend
-/// against corrupted store state with cyclic parent edges. The
-/// namespace root's *own* `subgroup_visibility` is intentionally never
-/// read — the walk reaches it only when checking direct admin / direct
-/// membership at that level via step 4 / 5, both of which fire before
-/// step 2 is re-evaluated for that level.
+/// against corrupted store state with cyclic parent edges.
+///
+/// **Namespace-root visibility is read but doesn't drive the outcome.**
+/// After step 6 sets `current = parent` to a namespace root, the next
+/// iteration's step 2 reads `get_subgroup_visibility(root)`. Either
+/// branch terminates with the same value: if `Restricted`, we return
+/// the recorded `anchor_decision`; if `Open`, the subsequent
+/// `get_parent_group(root)` returns `None` and we return the same
+/// `anchor_decision`. No code path consults the root's setting to
+/// allow inheritance through it (the root is itself the inheritance
+/// boundary), so an admin who sets `subgroup_visibility` on the
+/// namespace root sees no behavioral effect — the
+/// [`super::handlers::set_subgroup_visibility`] handler rejects that
+/// call up-front to surface the no-op explicitly rather than letting
+/// it succeed silently.
 ///
 /// **Architectural note:** this same parent-walk logic anchors several
 /// other subsystems that all need to recognize Open-subgroup inheritance

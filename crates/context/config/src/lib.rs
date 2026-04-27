@@ -130,7 +130,7 @@ impl<'a> GroupRequest<'a> {
 ///
 /// The walk in `check_group_membership` stops at the first `Restricted`
 /// ancestor; a `Restricted` subgroup is a wall regardless of what sits above.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VisibilityMode {
     Open,
     Restricted,
