@@ -101,36 +101,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     }
                 }
 
-                // Issue #2256: mirror the namespace-creation invariant.
-                // `create_group` sets `default_capabilities =
-                // CAN_JOIN_OPEN_SUBGROUPS` locally so that subsequent
-                // direct-member additions on the creator side pick up the
-                // bit. That setting is *not* propagated to joiners through
-                // any governance op or bundle field today, so without this
-                // mirror the joiner gets added as a direct member with
-                // capability=0 and the parent-walk inheritance into Open
-                // subgroups (per issue #2256) never authorizes them.
-                // Ensuring the same default before the local
-                // `add_group_member` keeps the joiner aligned with the
-                // creator's intent. Idempotent — only sets when missing.
-                if group_store::get_default_capabilities(&datastore, &group_id)?.is_none() {
-                    group_store::set_default_capabilities(
-                        &datastore,
-                        &group_id,
-                        calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
-                    )?;
-                }
-
-                if !group_store::check_group_membership(&datastore, &group_id, &joiner_identity)? {
-                    group_store::add_group_member(&datastore, &group_id, &joiner_identity, role)?;
-                } else {
-                    info!(
-                        ?group_id,
-                        %joiner_identity,
-                        "group member already recorded locally, skipping add_group_member"
-                    );
-                }
-
                 // -------------------------------------------------------
                 // Phase 2: Subscribe to namespace topic, wait for mesh
                 //          formation, then get everything we need via a
@@ -181,6 +151,41 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     warn!(
                         ?e,
                         "failed to trigger post-join namespace governance pull (non-fatal)"
+                    );
+                }
+
+                // Issue #2256: write the namespace's `default_capabilities`
+                // from the bundle if no governance op set it. Governance
+                // ops are authoritative when present (they were applied
+                // above); the bundle's value is a fallback for the case
+                // where `create_group` populated defaults locally but
+                // never published a `DefaultCapabilitiesSet` op (today's
+                // codebase). Doing this *before* `add_group_member`
+                // ensures the joiner's individual capability inherits
+                // the right default — and reflects any admin-issued
+                // override that travelled in the bundle, closing the
+                // race where a stale joiner-side hard-coded constant
+                // could otherwise override admin intent.
+                if group_store::get_default_capabilities(&datastore, &group_id)?.is_none() {
+                    group_store::set_default_capabilities(
+                        &datastore,
+                        &group_id,
+                        join_result.default_capabilities,
+                    )?;
+                }
+
+                // Add the joiner as a direct member of the namespace. The
+                // call reads `default_capabilities` from the local store
+                // (just populated above) and assigns the bit set to the
+                // new member. Idempotent on the membership existence
+                // check — re-runs after a crash converge.
+                if !group_store::check_group_membership(&datastore, &group_id, &joiner_identity)? {
+                    group_store::add_group_member(&datastore, &group_id, &joiner_identity, role)?;
+                } else {
+                    info!(
+                        ?group_id,
+                        %joiner_identity,
+                        "group member already recorded locally, skipping add_group_member"
                     );
                 }
 

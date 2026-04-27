@@ -170,6 +170,9 @@ jobs:
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
             app: e2e-kv-store
+          - workflow: group-default-capabilities-propagation
+            file: workflows/group-default-capabilities-propagation.yml
+            app: e2e-kv-store
           - workflow: group-reparent
             file: workflows/group-reparent.yml
             app: e2e-kv-store

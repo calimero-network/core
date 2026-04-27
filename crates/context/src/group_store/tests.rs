@@ -2072,6 +2072,50 @@ fn default_capabilities_include_can_join_open_subgroups() {
 }
 
 #[test]
+fn default_capabilities_admin_override_propagates_to_new_member() {
+    // Issue #2256 / PR #2261 regression: when an admin has overridden
+    // the namespace's default capabilities to a non-`CAN_JOIN_OPEN_SUBGROUPS`
+    // value, a newly added member should pick up *that* overridden value,
+    // not the create-time default. This guards against a hard-coded
+    // joiner-side fallback re-introducing itself: if some future change
+    // causes `add_group_member_with_keys` to substitute its own constant
+    // when the local default is anything other than the create-time one,
+    // this test fires.
+    let store = test_store();
+    let gid = ContextGroupId::from([0x40; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    // Admin override: set default to 0 (no caps).
+    set_default_capabilities(&store, &gid, 0).unwrap();
+    add_group_member(&store, &gid, &alice, GroupMemberRole::Member).unwrap();
+
+    // alice should NOT have any capability bits; in particular she
+    // should NOT have CAN_JOIN_OPEN_SUBGROUPS just because a hard-coded
+    // path snuck it in.
+    let caps = get_member_capability(&store, &gid, &alice)
+        .unwrap()
+        .unwrap_or(0);
+    assert_eq!(
+        caps, 0,
+        "admin override default=0 should give member caps=0, got {caps}"
+    );
+
+    // Symmetric check with a non-zero non-default value.
+    let bob = PublicKey::from([0x02; 32]);
+    let custom = calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT
+        | calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS;
+    set_default_capabilities(&store, &gid, custom).unwrap();
+    add_group_member(&store, &gid, &bob, GroupMemberRole::Member).unwrap();
+    let bob_caps = get_member_capability(&store, &gid, &bob)
+        .unwrap()
+        .unwrap_or(0);
+    assert_eq!(
+        bob_caps, custom,
+        "admin override default={custom} should give member caps={custom}, got {bob_caps}"
+    );
+}
+
+#[test]
 fn check_membership_direct_member_of_subgroup_always_passes() {
     use calimero_context_config::VisibilityMode;
 

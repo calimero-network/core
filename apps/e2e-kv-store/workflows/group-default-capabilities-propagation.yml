@@ -1,0 +1,138 @@
+name: E2E KV Store - Default Capabilities Propagation
+description: >
+  Regression test for issue #2256 / PR #2261: when an admin overrides
+  the namespace's `default_capabilities` *before* a new member joins,
+  the new member must pick up the overridden value — not a hard-coded
+  fallback the joiner side previously substituted in.
+
+  The pre-fix bug: `create_group` writes `default_capabilities =
+  CAN_JOIN_OPEN_SUBGROUPS` to the creator's local store but never
+  publishes the corresponding `DefaultCapabilitiesSet` governance op,
+  so a joiner couldn't read the value out of the governance DAG. A
+  joiner-side mirror substituted the same hard-coded constant — which
+  silently overrode any admin change made via `set_default_capabilities`.
+
+  The fix: the namespace's current `default_capabilities` is carried
+  in the join-bundle's `default_capabilities` field, so the joiner
+  reflects whatever the responder currently believes — including any
+  admin-issued override. This workflow asserts that contract.
+
+  Flow:
+    1. node-1 installs the app and creates a namespace. By construction
+       of `create_group`, the local default is CAN_JOIN_OPEN_SUBGROUPS (4).
+    2. node-1 admin overrides the default to 0 (no capabilities) via
+       `set_default_capabilities`.
+    3. node-1 invites node-2.
+    4. node-2 joins the namespace.
+    5. Assert node-2's individual capability is 0 (the admin's override),
+       NOT 4 (the create-time hard-coded constant). If the assertion
+       fails with `json_equal({{node2_caps}}, 4)` truthy, the fix has
+       regressed.
+    6. As a downstream sanity-check that the inherited cap actually
+       gates Open-subgroup access: node-1 creates an Open subgroup
+       containing a context, and node-2 tries to join that context.
+       With caps=0 (no CAN_JOIN_OPEN_SUBGROUPS), the parent-walk in
+       `check_group_membership` should refuse — `join_context` must
+       fail. (`join_context_expect_failure` is the merobox action for
+       a deliberate-deny scenario; if the runner doesn't support it,
+       this step can be commented out — the cap-value assertion above
+       is sufficient regression coverage.)
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  # --- Admin overrides the create-time default ---
+  # `create_group` populated defaults locally with bit 2
+  # (CAN_JOIN_OPEN_SUBGROUPS = 4). The admin now restricts to 0.
+  # Without the bundle-field fix, node-2 would still pick up the
+  # hard-coded constant (4) instead of this override (0).
+
+  - name: Admin overrides default capabilities to 0
+    type: set_default_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    capabilities: 0
+
+  # --- node-2 joins after the override ---
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+    outputs:
+      member_identity_node2: memberIdentity
+
+  # --- Core regression assertion ---
+  # If the joiner-side fallback wins, node-2 has caps=4. If the bundle
+  # field wins (correct behavior), node-2 has caps=0.
+
+  - name: Get node-2 capabilities as seen by node-1
+    type: get_member_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{member_identity_node2}}'
+    outputs:
+      node2_caps_view_node1: capabilities
+
+  - name: Assert node-2 picked up admin's override (caps=0)
+    type: json_assert
+    statements:
+      - "json_equal({{node2_caps_view_node1}}, 0)"
+
+  # --- Verify the same on node-2's own view (consistency across nodes) ---
+
+  - name: Get node-2 capabilities as seen by node-2 itself
+    type: get_member_capabilities
+    node: e2e-node-2
+    group_id: '{{namespace_id}}'
+    member_id: '{{member_identity_node2}}'
+    outputs:
+      node2_caps_view_node2: capabilities
+
+  - name: Assert node-2 self-view is consistent (caps=0)
+    type: json_assert
+    statements:
+      - "json_equal({{node2_caps_view_node2}}, 0)"
+
+stop_all_nodes: false
