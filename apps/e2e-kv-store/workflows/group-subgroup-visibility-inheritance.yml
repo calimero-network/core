@@ -1,0 +1,163 @@
+name: E2E KV Store - Subgroup Visibility Inheritance
+description: >
+  End-to-end coverage for issue #2256 (subgroup visibility refactor).
+
+  Verifies that a member of a parent namespace, who holds the default
+  CAN_JOIN_OPEN_SUBGROUPS capability, is automatically inherited as a
+  member of any `Open` subgroup beneath that namespace -- including its
+  contexts -- without an explicit `add_group_members` call. This is the
+  payoff of moving visibility from the (unused) context level to the
+  subgroup level.
+
+  Flow:
+    1. node-1 installs the kv-store app and creates a namespace.
+    2. node-2 joins the namespace via invitation. As a non-admin member
+       it picks up the default capabilities, which include
+       CAN_JOIN_OPEN_SUBGROUPS.
+    3. node-1 creates a subgroup inside the namespace and flips its
+       visibility to `open`.
+    4. node-1 creates a context inside the Open subgroup. node-2 is NOT
+       added to the subgroup directly.
+    5. node-2 joins the context. With the parent-walk in
+       `check_group_membership`, this should succeed: node-2's
+       namespace membership + capability bit + Open child subgroup ⇒
+       inherited membership.
+    6. node-1 writes, node-2 reads, and the value matches -- proving
+       node-2 is a fully functional context member, not just a passive
+       subscriber.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  # --- node-2 joins the namespace (gets default caps incl.
+  #     CAN_JOIN_OPEN_SUBGROUPS) ---
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+    outputs:
+      member_identity_node2: memberIdentity
+
+  # --- Create an Open subgroup with a context inside it ---
+
+  - name: Create subgroup inside namespace on node-1
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: open-subgroup
+    outputs:
+      subgroup_id: groupId
+
+  - name: Mark subgroup as Open (inherits parent members)
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    visibility: open
+
+  - name: Create context inside the Open subgroup
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_id}}'
+    outputs:
+      sub_ctx_id: contextId
+
+  - name: Assert subgroup context created
+    type: assert
+    statements:
+      - "is_set({{sub_ctx_id}})"
+
+  # --- The payoff: node-2 joins the context WITHOUT being added to the
+  #     subgroup. The parent-walk in check_group_membership should let
+  #     them in via inheritance. ---
+
+  - name: Node-2 joins subgroup context via inheritance
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+    outputs:
+      ctx_key_node2: memberPublicKey
+
+  - name: Assert node-2 holds a context identity
+    type: assert
+    statements:
+      - "is_set({{ctx_key_node2}})"
+
+  # --- Confirm node-2 is a real member, not just a passive subscriber ---
+
+  - name: Node-1 writes to the inherited context
+    type: call
+    node: e2e-node-1
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args:
+      key: "inherited_key"
+      value: "from_node1"
+
+  - name: Wait for context sync between nodes
+    type: wait_for_sync
+    context_id: '{{sub_ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-2 reads the value via the inherited membership
+    type: call
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+    method: get
+    args:
+      key: "inherited_key"
+    outputs:
+      inherited_read: result
+
+  - name: Assert inheritance grants real read access
+    type: json_assert
+    statements:
+      - 'json_equal({{inherited_read}}, {"output": "from_node1"})'
+
+stop_all_nodes: false

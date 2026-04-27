@@ -2378,9 +2378,25 @@ impl SyncManager {
 
         let mut _updated = None;
 
+        // Issue #2256: also accept inheritance-eligible parent members
+        // for sync auth. `has_member` only knows direct context-membership
+        // and direct group-membership; the parent-walk for `Open` subgroups
+        // lives in `calimero-context::group_store`, which we have access
+        // to here at the node layer.
+        let is_inherited_member = || -> eyre::Result<bool> {
+            let store = self.context_client.datastore();
+            let Some(group_id) =
+                calimero_context::group_store::get_group_for_context(store, &context_id)?
+            else {
+                return Ok(false);
+            };
+            calimero_context::group_store::check_group_membership(store, &group_id, &their_identity)
+        };
+
         if !self
             .context_client
             .has_member(&context_id, &their_identity)?
+            && !is_inherited_member()?
         {
             _updated = Some(
                 self.context_client
@@ -2391,6 +2407,7 @@ impl SyncManager {
             if !self
                 .context_client
                 .has_member(&context_id, &their_identity)?
+                && !is_inherited_member()?
             {
                 // The peer may have just published MemberAdded for themselves
                 // (or their side of the governance DAG is ahead of ours) and
@@ -2410,6 +2427,7 @@ impl SyncManager {
                 if !self
                     .context_client
                     .has_member(&context_id, &their_identity)?
+                    && !is_inherited_member()?
                 {
                     // Catch-up didn't resolve it (peer returned nothing, peer
                     // also doesn't know, or the op chain isn't valid locally).
@@ -2823,8 +2841,8 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         use calimero_context::group_store::{
-            enumerate_group_contexts, load_current_group_key, load_group_meta,
-            wrap_group_key_for_member,
+            enumerate_group_contexts, get_default_capabilities, load_current_group_key,
+            load_group_meta, wrap_group_key_for_member,
         };
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::types::SignedGroupOpenInvitation;
@@ -2927,12 +2945,22 @@ impl SyncManager {
 
         let governance_ops = self.collect_namespace_governance_ops(namespace_id)?;
 
+        // Issue #2256: the namespace's default-capabilities value travels
+        // with the bundle so the joiner doesn't need to fall back to a
+        // hard-coded constant. Read whatever the responder currently
+        // believes (already reflects any admin-issued
+        // `DefaultCapabilitiesSet` ops because the local store is
+        // updated as those ops apply). `unwrap_or(0)` matches the
+        // pre-existing semantics for "default key absent."
+        let default_capabilities = get_default_capabilities(&store, &group_id)?.unwrap_or(0);
+
         debug!(
             namespace_id = %hex::encode(namespace_id),
             has_key = !key_envelope_bytes.is_empty(),
             context_count = context_ids.len(),
             app_id = %hex::encode(application_id),
             governance_ops_count = governance_ops.len(),
+            default_capabilities,
             "Sending NamespaceJoinResponse"
         );
 
@@ -2943,6 +2971,7 @@ impl SyncManager {
                 context_ids,
                 application_id,
                 governance_ops,
+                default_capabilities,
             },
             next_nonce: nonce,
         };
@@ -3055,6 +3084,7 @@ impl SyncManager {
                         context_ids,
                         application_id,
                         governance_ops,
+                        default_capabilities,
                     },
                 ..
             }) => Ok(JoinBundle {
@@ -3062,6 +3092,7 @@ impl SyncManager {
                 context_ids,
                 application_id: application_id.into(),
                 governance_ops,
+                default_capabilities,
             }),
             Some(StreamMessage::Message {
                 payload: MessagePayload::NamespaceJoinRejected { reason },

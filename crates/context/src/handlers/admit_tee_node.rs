@@ -82,7 +82,13 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             return ActorResponse::reply(Err(eyre::eyre!("RTMR3 not in policy allowlist")));
         }
 
-        match group_store::check_group_membership(&self.datastore, &group_id, &member) {
+        // Direct-row check: TEE admission writes the node's direct
+        // membership row + signing key. An inherited match via the
+        // Open-subgroup chain (#2256) does not mean the node already has
+        // its own direct row, and skipping the write here would leave
+        // the TEE without a per-node row that subsequent direct-membership
+        // operations expect.
+        match group_store::has_direct_group_member(&self.datastore, &group_id, &member) {
             Ok(true) => return ActorResponse::reply(Ok(())),
             Ok(false) => {}
             Err(e) => return ActorResponse::reply(Err(e)),
