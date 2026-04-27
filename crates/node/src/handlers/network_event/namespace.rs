@@ -491,14 +491,33 @@ async fn emit_namespace_ack(
             return;
         }
     };
-    let payload = match borsh::to_vec(&NamespaceTopicMsg::Ack(ack)) {
+    let inner = match borsh::to_vec(&NamespaceTopicMsg::Ack(ack)) {
         Ok(p) => p,
         Err(err) => {
             warn!(%err, "ack: borsh encode failed; skipping");
             return;
         }
     };
-    if let Err(err) = network_client.publish(topic, payload).await {
+    // Receiver decodes the gossipsub frame as `BroadcastMessage` first
+    // (see `network_event.rs` and `client.rs::publish_signed_namespace_op`),
+    // then unwraps `payload` as `NamespaceTopicMsg`. Publishing the inner
+    // `NamespaceTopicMsg` raw would deserialize-fail at the receiver and
+    // be silently dropped, defeating the ack. `delta_id`/`parent_ids` are
+    // not DAG-bound for an Ack — they're discarded by the receive path.
+    let envelope = BroadcastMessage::NamespaceGovernanceDelta {
+        namespace_id,
+        delta_id: [0u8; 32],
+        parent_ids: vec![],
+        payload: inner,
+    };
+    let bytes = match borsh::to_vec(&envelope) {
+        Ok(b) => b,
+        Err(err) => {
+            warn!(%err, "ack: envelope encode failed; skipping");
+            return;
+        }
+    };
+    if let Err(err) = network_client.publish(topic, bytes).await {
         // Non-fatal — ack is fire-and-forget; sender will time out and retry.
         debug!(%err, "ack: publish failed; sender will retry on timeout");
     }

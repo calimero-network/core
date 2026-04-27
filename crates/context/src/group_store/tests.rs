@@ -4574,3 +4574,83 @@ mod auto_follow_tests {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// namespace_member_pubkeys — regression for ack-verify identity set
+// -----------------------------------------------------------------------
+
+/// Regression: the namespace creator/root admin is recorded only in
+/// `GroupMeta::admin_identity` at namespace genesis (no self-`MemberJoined`
+/// op). `namespace_member_pubkeys` must include that identity so that
+/// `verify_ack` accepts legitimate acks signed by the namespace creator.
+#[test]
+fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
+    let store = test_store();
+    let namespace_id = [0xAA; 32];
+    let gid = ContextGroupId::from(namespace_id);
+    let admin = PublicKey::from([0x01; 32]);
+
+    let meta = GroupMetaValue {
+        app_key: [0xBB; 32],
+        target_application_id: ApplicationId::from([0xCC; 32]),
+        upgrade_policy: UpgradePolicy::Automatic,
+        created_at: 1_700_000_000,
+        admin_identity: admin,
+        migration: None,
+        auto_join: true,
+    };
+    save_group_meta(&store, &gid, &meta).unwrap();
+
+    let pks = namespace_member_pubkeys(&store, namespace_id).unwrap();
+    assert!(
+        pks.contains(&admin),
+        "meta admin must appear in namespace_member_pubkeys even without a self-row"
+    );
+}
+
+/// `namespace_member_pubkeys` must not duplicate the meta admin when
+/// the admin also has a `GroupMember` row (e.g. an explicit `MemberJoined`
+/// op was emitted for them).
+#[test]
+fn namespace_member_pubkeys_dedups_admin_with_member_row() {
+    let store = test_store();
+    let namespace_id = [0xAA; 32];
+    let gid = ContextGroupId::from(namespace_id);
+    let admin = PublicKey::from([0x01; 32]);
+    let other = PublicKey::from([0x02; 32]);
+
+    let meta = GroupMetaValue {
+        app_key: [0xBB; 32],
+        target_application_id: ApplicationId::from([0xCC; 32]),
+        upgrade_policy: UpgradePolicy::Automatic,
+        created_at: 1_700_000_000,
+        admin_identity: admin,
+        migration: None,
+        auto_join: true,
+    };
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &other, GroupMemberRole::Member).unwrap();
+
+    let pks = namespace_member_pubkeys(&store, namespace_id).unwrap();
+    assert_eq!(pks.iter().filter(|p| **p == admin).count(), 1);
+    assert!(pks.contains(&other));
+}
+
+/// Members added via `add_group_member` continue to appear (no regression
+/// from the meta-admin enrichment).
+#[test]
+fn namespace_member_pubkeys_includes_member_rows() {
+    let store = test_store();
+    let namespace_id = [0xAA; 32];
+    let gid = ContextGroupId::from(namespace_id);
+    let m1 = PublicKey::from([0x10; 32]);
+    let m2 = PublicKey::from([0x20; 32]);
+
+    add_group_member(&store, &gid, &m1, GroupMemberRole::Member).unwrap();
+    add_group_member(&store, &gid, &m2, GroupMemberRole::Admin).unwrap();
+
+    let pks = namespace_member_pubkeys(&store, namespace_id).unwrap();
+    assert!(pks.contains(&m1));
+    assert!(pks.contains(&m2));
+}

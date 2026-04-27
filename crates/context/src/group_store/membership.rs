@@ -487,16 +487,28 @@ pub fn list_group_members(
 ///
 /// A namespace is identified by the `[u8; 32]` of its root group, so this
 /// is `list_group_members(store, ContextGroupId::from(namespace_id), 0, usize::MAX)`
-/// projected to the public-key column. Used by `verify_ack` to confirm
-/// that an ack signer is a current namespace member at this node's
-/// local DAG view.
+/// projected to the public-key column, **plus** the creator/root admin
+/// recorded in `GroupMeta::admin_identity`. The creator does not always
+/// have a `GroupMember` row of their own (no self-`MemberJoined` op is
+/// emitted at namespace genesis), but [`is_group_admin`] treats the
+/// `meta.admin_identity` as a member of the group regardless. Used by
+/// `verify_ack` to confirm that an ack signer is a current namespace
+/// member at this node's local DAG view — without including the meta
+/// admin, legitimate acks from the namespace creator would be silently
+/// dropped.
 pub fn namespace_member_pubkeys(
     store: &Store,
     namespace_id: [u8; 32],
 ) -> EyreResult<Vec<PublicKey>> {
     let group_id = ContextGroupId::from(namespace_id);
     let members = list_group_members(store, &group_id, 0, usize::MAX)?;
-    Ok(members.into_iter().map(|(pk, _role)| pk).collect())
+    let mut pubkeys: Vec<PublicKey> = members.into_iter().map(|(pk, _role)| pk).collect();
+    if let Some(meta) = load_group_meta(store, &group_id)? {
+        if !pubkeys.contains(&meta.admin_identity) {
+            pubkeys.push(meta.admin_identity);
+        }
+    }
+    Ok(pubkeys)
 }
 
 pub fn count_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
