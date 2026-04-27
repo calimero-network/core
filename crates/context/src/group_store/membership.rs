@@ -130,6 +130,16 @@ pub enum MembershipPath {
     /// Identity is not a member of the subgroup, directly or by inheritance.
     None,
     /// Identity has a direct membership row in the subgroup.
+    ///
+    /// **Caution:** `Direct` does *not* imply the identity lacks
+    /// inherited admin authority. The walk in [`check_group_membership_path`]
+    /// short-circuits as soon as a direct row is found — even a
+    /// non-admin `Member` row — and never inspects the parent chain.
+    /// A parent admin who is also added as a regular subgroup member
+    /// will appear as `Direct` here while still holding inherited admin
+    /// authority. Callers that need to know admin status must call
+    /// [`is_inherited_admin`] separately rather than infer "not an
+    /// inherited admin" from `Direct`.
     Direct,
     /// Identity inherits membership from the closest ancestor where they
     /// hold a direct row (`anchor`). `via_admin` is `true` when the

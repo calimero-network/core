@@ -2111,6 +2111,85 @@ fn inherited_admin_walk_independent_of_direct_non_admin_membership() {
 }
 
 #[test]
+fn is_open_chain_to_namespace_walks_parent_chain_correctly() {
+    use calimero_context_config::VisibilityMode;
+
+    use super::is_open_chain_to_namespace;
+
+    // Tree: ns -> mid -> leaf. This is the input shape the
+    // visibility-flip encryption special-case in
+    // `GroupGovernancePublisher` feeds into when it queries the
+    // **parent chain** of a `SubgroupVisibilitySet` op (i.e. it
+    // calls `is_open_chain_to_namespace(parent, ns)` instead of
+    // `(self, ns)`). The cases below pin down the contract that
+    // path relies on.
+    let store = test_store();
+    let ns = ContextGroupId::from([0xA0; 32]);
+    let mid = ContextGroupId::from([0xA1; 32]);
+    let leaf = ContextGroupId::from([0xA2; 32]);
+    nest_for_test(&store, &ns, &mid);
+    nest_for_test(&store, &mid, &leaf);
+
+    // Identity case: a group is not an "Open chain to itself" — the
+    // namespace root has no parent and does not participate in
+    // subgroup-style inheritance.
+    assert!(!is_open_chain_to_namespace(&store, &ns, &ns).unwrap());
+
+    // Direct child of the namespace: parent chain trivially Open
+    // when `mid` itself is Open.
+    set_subgroup_visibility(&store, &mid, VisibilityMode::Open).unwrap();
+    assert!(is_open_chain_to_namespace(&store, &mid, &ns).unwrap());
+
+    // Two-hop chain, all Open → boundary is namespace-wide.
+    set_subgroup_visibility(&store, &leaf, VisibilityMode::Open).unwrap();
+    assert!(is_open_chain_to_namespace(&store, &leaf, &ns).unwrap());
+
+    // Restricted wall at mid → boundary is NOT namespace-wide,
+    // even if leaf itself is Open.
+    set_subgroup_visibility(&store, &mid, VisibilityMode::Restricted).unwrap();
+    assert!(!is_open_chain_to_namespace(&store, &leaf, &ns).unwrap());
+
+    // The visibility-flip publisher special-case calls this with
+    // the *parent* of the flipping group — `mid` here, walking up
+    // to `ns`. With mid currently Restricted that returns false;
+    // re-open mid and confirm we get true.
+    set_subgroup_visibility(&store, &mid, VisibilityMode::Open).unwrap();
+    assert!(is_open_chain_to_namespace(&store, &mid, &ns).unwrap());
+}
+
+#[test]
+fn is_open_chain_to_namespace_bails_on_depth_overflow() {
+    use calimero_context_config::VisibilityMode;
+
+    use super::is_open_chain_to_namespace;
+    use super::namespace::MAX_NAMESPACE_DEPTH;
+
+    // Build a chain longer than MAX_NAMESPACE_DEPTH so the walk
+    // exhausts its bound without finding the namespace. This used
+    // to silently return Ok(false); the fix bails so authorization
+    // and crypto-key selection both surface the corruption signal.
+    let store = test_store();
+    let ns = ContextGroupId::from([0xC0; 32]);
+    let mut prev = ns;
+    for i in 0..(MAX_NAMESPACE_DEPTH + 2) {
+        let next = ContextGroupId::from([0xD0u8.wrapping_add(i as u8); 32]);
+        nest_for_test(&store, &prev, &next);
+        set_subgroup_visibility(&store, &next, VisibilityMode::Open).unwrap();
+        prev = next;
+    }
+    // Walking from the deepest node should hit the depth bound
+    // before reaching `ns` and return an error rather than
+    // Ok(false).
+    let res = is_open_chain_to_namespace(&store, &prev, &ns);
+    assert!(
+        res.is_err(),
+        "is_open_chain_to_namespace must bail on MAX_NAMESPACE_DEPTH overflow, \
+         got {:?}",
+        res
+    );
+}
+
+#[test]
 fn has_direct_group_member_ignores_open_chain_inheritance() {
     use calimero_context_config::VisibilityMode;
 

@@ -230,16 +230,26 @@ pub async fn handle_state_delta(
                 // `namespace_governance::apply_namespace_op`.
                 let direct =
                     calimero_context::group_store::load_group_key_by_id(store, &g, &key_id)?;
+                // Symmetric with the encrypt path in `execute/mod.rs`:
+                // store-corruption signals from `resolve_namespace`
+                // (e.g. cyclic parent edges, missing namespace meta)
+                // must propagate, not be silently squashed to "no key
+                // found." A silent fallback here would hide the same
+                // corruption the encrypt path now bails on, and trick
+                // the caller into reporting "no key" when the real
+                // failure is that the chain itself is unwalkable.
                 let resolved = match direct {
                     Some(k) => Some(k),
-                    None => match calimero_context::group_store::resolve_namespace(store, &g) {
-                        Ok(ns_id) if ns_id != g => {
+                    None => {
+                        let ns_id = calimero_context::group_store::resolve_namespace(store, &g)?;
+                        if ns_id != g {
                             calimero_context::group_store::load_group_key_by_id(
                                 store, &ns_id, &key_id,
                             )?
+                        } else {
+                            None
                         }
-                        _ => None,
-                    },
+                    }
                 };
                 resolved.map(PrivateKey::from).ok_or_else(|| {
                     eyre::eyre!("no group key found for key_id {}", hex::encode(key_id))
@@ -1349,18 +1359,23 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     &g,
                     &buffered.key_id,
                 )?;
+                // See live-apply path above: propagate
+                // `resolve_namespace` errors instead of swallowing
+                // them; symmetric with the encrypt path's handling.
                 let resolved = match direct {
                     Some(k) => Some(k),
-                    None => match calimero_context::group_store::resolve_namespace(store, &g) {
-                        Ok(ns_id) if ns_id != g => {
+                    None => {
+                        let ns_id = calimero_context::group_store::resolve_namespace(store, &g)?;
+                        if ns_id != g {
                             calimero_context::group_store::load_group_key_by_id(
                                 store,
                                 &ns_id,
                                 &buffered.key_id,
                             )?
+                        } else {
+                            None
                         }
-                        _ => None,
-                    },
+                    }
                 };
                 resolved
                     .map(PrivateKey::from)

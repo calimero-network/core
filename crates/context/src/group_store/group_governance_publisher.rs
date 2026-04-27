@@ -6,7 +6,7 @@ use eyre::Result as EyreResult;
 use rand::{rngs::OsRng, Rng};
 
 use super::{
-    build_key_rotation, encrypt_group_op, get_namespace_identity_record,
+    build_key_rotation, encrypt_group_op, get_namespace_identity_record, get_parent_group,
     is_open_chain_to_namespace, load_current_group_key_record, resolve_namespace,
     sign_apply_local_group_op_borsh, store_group_key, NamespaceGovernance,
 };
@@ -98,37 +98,54 @@ impl<'a> GroupGovernancePublisher<'a> {
         // Restricted subgroups (or any subgroup behind a Restricted
         // ancestor) keep their per-subgroup key, unchanged.
         //
-        // **Visibility-flip op asymmetry (deferred follow-up):**
+        // **Visibility-flip ops are special-cased:**
         // `sign_apply_local_group_op_borsh` above has *already* applied
-        // the op locally, so when `op` is itself a `SubgroupVisibilitySet`
-        // the chain check below sees the **post-apply** visibility.
-        // - `Restricted → Open`: post-apply chain is Open, so the flip
-        //   op is encrypted with the namespace key. Receivers that
-        //   still see the subgroup as Restricted try the subgroup
-        //   keyring first; the receiver-side fallback to the namespace
-        //   keyring (see `namespace_governance.rs` decrypt path)
-        //   handles this transparently.
-        // - `Open → Restricted`: post-apply chain is *not* Open, so the
-        //   flip op is encrypted with the per-subgroup key.
-        //   Inheritance-only members (who hold the namespace key but
-        //   never received the per-subgroup key) cannot decrypt this
-        //   op and so never observe the transition locally — their
-        //   replicas appear stuck at the pre-flip Open state. They
-        //   *do* lose authorization at the next governance walk, but
-        //   the cryptographic visibility of the flip itself is lost.
-        //   The deferred Open→Restricted lifecycle work (issue #2256
-        //   follow-up) is the proper fix: encrypt the visibility-flip
-        //   op with the namespace key (or broadcast a tombstone) so
-        //   every namespace member observes the transition before the
-        //   subgroup key is rotated. Until that lands, operators must
-        //   not rely on Open→Restricted being observable to inherited
-        //   members through governance gossip alone.
-        let encrypting_group_id =
-            if is_open_chain_to_namespace(self.store, &self.group_id, &namespace_id)? {
-                namespace_id
-            } else {
-                self.group_id
-            };
+        // the op locally, so the post-apply visibility of `self.group_id`
+        // is the *new* mode. For ordinary ops (member add/remove,
+        // capability set, etc.) that's exactly what we want: the new
+        // state defines the access boundary the op should be encrypted
+        // for. But for `SubgroupVisibilitySet`, post-apply state would
+        // strand inheritance-eligible members on an `Open → Restricted`
+        // flip — they hold only the namespace key, the post-apply check
+        // selects the per-subgroup key, and they can never decrypt the
+        // very op that says "you're no longer a member here."
+        //
+        // Resolution: for `SubgroupVisibilitySet`, decide the encryption
+        // boundary from the **parent chain** (excluding `self.group_id`),
+        // which is independent of the op being applied. The set of
+        // members who *could observe* the flip is precisely the access
+        // boundary that existed *before* the flip — i.e. the boundary
+        // implied by the parent chain. This works symmetrically:
+        // - `Open → Restricted` flip with fully-Open parent chain:
+        //   namespace key. Every namespace member observes the wall
+        //   going up.
+        // - `Restricted → Open` flip with fully-Open parent chain:
+        //   namespace key. Direct subgroup members try the subgroup
+        //   keyring first (their subgroup is "still" Restricted from
+        //   their PoV); the receiver-side namespace-keyring fallback
+        //   handles the miss.
+        // - Either flip behind a `Restricted` ancestor: per-subgroup
+        //   key. The access boundary was never namespace-wide, so
+        //   nobody outside the wall is owed visibility into the flip.
+        // - Subgroup directly under the namespace (parent IS namespace):
+        //   namespace key. The parent chain is trivially Open.
+        let parent_chain_open = match &op {
+            GroupOp::SubgroupVisibilitySet { .. } => {
+                match get_parent_group(self.store, &self.group_id)? {
+                    Some(parent) => {
+                        parent == namespace_id
+                            || is_open_chain_to_namespace(self.store, &parent, &namespace_id)?
+                    }
+                    None => false,
+                }
+            }
+            _ => is_open_chain_to_namespace(self.store, &self.group_id, &namespace_id)?,
+        };
+        let encrypting_group_id = if parent_chain_open {
+            namespace_id
+        } else {
+            self.group_id
+        };
 
         let Some(stored_key) = load_current_group_key_record(self.store, &encrypting_group_id)?
         else {

@@ -90,8 +90,14 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                     // Add the namespace admin to the member list so joining
                     // nodes see the creator in /admin-api/groups/:id/members.
-                    if !group_store::check_group_membership(&datastore, &group_id, &admin_identity)?
-                    {
+                    // Direct-row check: see joiner-side guard below for
+                    // why inheritance-aware `check_group_membership`
+                    // would be unsafe here.
+                    if !group_store::has_direct_group_member(
+                        &datastore,
+                        &group_id,
+                        &admin_identity,
+                    )? {
                         group_store::add_group_member(
                             &datastore,
                             &group_id,
@@ -177,9 +183,13 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // Add the joiner as a direct member of the namespace. The
                 // call reads `default_capabilities` from the local store
                 // (just populated above) and assigns the bit set to the
-                // new member. Idempotent on the membership existence
-                // check — re-runs after a crash converge.
-                if !group_store::check_group_membership(&datastore, &group_id, &joiner_identity)? {
+                // new member. Idempotent on the *direct*-row check — the
+                // inheritance-aware `check_group_membership` would
+                // wrongly skip the add when the joiner already inherits
+                // membership from a parent namespace, leaving them
+                // without the direct row that subsequent direct lookups
+                // (removal, capability writes, list_group_members) need.
+                if !group_store::has_direct_group_member(&datastore, &group_id, &joiner_identity)? {
                     group_store::add_group_member(&datastore, &group_id, &joiner_identity, role)?;
                 } else {
                     info!(
