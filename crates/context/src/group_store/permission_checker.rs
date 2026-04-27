@@ -5,9 +5,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::membership::{
-    check_group_membership_path, is_group_admin_or_has_capability, MembershipPath,
-};
+use super::membership::{is_group_admin_or_has_capability, is_inherited_admin};
 use super::{membership_view::GroupMembershipView, GroupStoreError};
 
 /// Authorization service for group governance operations.
@@ -31,19 +29,16 @@ impl<'a> PermissionChecker<'a> {
     }
 
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
-        if self.membership.is_admin(identity)? {
-            return Ok(true);
-        }
-        // Issue #2256: admin authority cascades into Open subgroups from
-        // any ancestor where the signer is a direct admin (matches the
-        // membership-inheritance walk used by `check_group_membership`).
-        if let MembershipPath::Inherited {
-            via_admin: true, ..
-        } = check_group_membership_path(self.store, &self.group_id, identity)?
-        {
-            return Ok(true);
-        }
-        Ok(false)
+        // Issue #2256: admin authority cascades into Open subgroups
+        // from any ancestor where the signer is a direct admin.
+        // Uses `is_inherited_admin` (a dedicated walk) rather than
+        // `check_group_membership_path` because the latter
+        // short-circuits to `Direct` as soon as the identity has any
+        // direct membership row in the target subgroup — even a
+        // non-admin `Member` row — which would suppress inherited
+        // admin authority for parent admins who happen to also be
+        // explicit subgroup members.
+        is_inherited_admin(self.store, &self.group_id, identity)
     }
 
     pub fn require_admin(&self, identity: &PublicKey) -> EyreResult<()> {
@@ -125,16 +120,13 @@ impl<'a> PermissionChecker<'a> {
         }
         // Only admin-inherited authority crosses the parent boundary;
         // non-admin caps must be explicit at the subgroup level.
-        if matches!(
-            check_group_membership_path(self.store, &self.group_id, identity)?,
-            MembershipPath::Inherited {
-                via_admin: true,
-                ..
-            }
-        ) {
-            return Ok(true);
-        }
-        Ok(false)
+        // Uses `is_inherited_admin` (a dedicated walk) rather than
+        // `check_group_membership_path`'s `Inherited{via_admin:true}`
+        // branch — the path walker short-circuits to `Direct` as soon
+        // as any direct membership row exists in the target subgroup,
+        // which would mask inherited admin authority for a parent
+        // admin who is also an explicit non-admin subgroup member.
+        is_inherited_admin(self.store, &self.group_id, identity)
     }
 
     pub fn require_admin_to_add_admin(

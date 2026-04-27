@@ -2072,6 +2072,45 @@ fn default_capabilities_include_can_join_open_subgroups() {
 }
 
 #[test]
+fn inherited_admin_walk_independent_of_direct_non_admin_membership() {
+    use calimero_context_config::VisibilityMode;
+
+    use super::is_inherited_admin;
+
+    // Bugbot finding (PR #2261): the previous `is_admin` reused
+    // `check_group_membership_path`, which short-circuits to `Direct`
+    // when the identity has *any* direct membership row in the target
+    // subgroup — even a non-admin `Member` row. That suppressed
+    // inherited admin authority for parent admins who happened to
+    // also be added as explicit subgroup members. The dedicated
+    // `is_inherited_admin` walk is independent of non-admin direct
+    // membership.
+    let store = test_store();
+    let parent = ContextGroupId::from([0x50; 32]);
+    let child = ContextGroupId::from([0x51; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &parent, &child);
+
+    // Alice is namespace admin AND a non-admin direct member of the
+    // child subgroup (e.g. she opted into a subgroup-specific role
+    // for visibility, but her parent admin authority should still
+    // apply).
+    add_group_member(&store, &parent, &alice, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &child, &alice, GroupMemberRole::Member).unwrap();
+
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+
+    // Inherited admin authority must hold despite Alice's direct
+    // non-admin membership in `child`.
+    assert!(
+        is_inherited_admin(&store, &child, &alice).unwrap(),
+        "parent admin should retain admin authority in child subgroup \
+         regardless of any direct non-admin membership row"
+    );
+}
+
+#[test]
 fn default_capabilities_admin_override_propagates_to_new_member() {
     // Issue #2256 / PR #2261 regression: when an admin has overridden
     // the namespace's default capabilities to a non-`CAN_JOIN_OPEN_SUBGROUPS`

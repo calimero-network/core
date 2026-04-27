@@ -116,16 +116,44 @@ impl<'a> GroupGovernancePublisher<'a> {
 
         let encrypted = encrypt_group_op(&stored_key.group_key, &op)?;
 
+        // Key rotation on member-removal:
+        //
+        // - Restricted subgroup (`encrypting_group_id == self.group_id`):
+        //   mint a new per-subgroup key, distribute it to remaining
+        //   direct members via the rotation envelope, and revoke the
+        //   removed member's decrypt access to subsequent ops. This is
+        //   the standard forward-secrecy path.
+        //
+        // - Open subgroup (`encrypting_group_id == namespace_id`):
+        //   **skip rotation**. The just-published op was encrypted
+        //   with the *namespace* key, which the removed member still
+        //   holds (their namespace membership is unaffected by a
+        //   subgroup-member-removal), so a per-subgroup rotation
+        //   would not actually revoke their read access — it would
+        //   only mint a key that goes unused while the subgroup stays
+        //   Open. This is the documented Option C trade-off (issue
+        //   #2256): an Open subgroup's removal revokes *authorization*
+        //   (the membership row goes away — the removed identity can
+        //   no longer pass the membership walk for governance/write
+        //   operations) but NOT cryptographic *read access* — that
+        //   would require either rotating the namespace key (broad
+        //   blast radius) or flipping the subgroup to Restricted
+        //   (the deferred Open→Restricted lifecycle work, which
+        //   itself will mint a fresh subgroup key at flip time).
         let key_rotation = if let Some(removed) = removed_member {
-            let new_group_key: [u8; 32] = OsRng.gen();
-            let _ = store_group_key(self.store, &self.group_id, &new_group_key)?;
-            Some(build_key_rotation(
-                self.store,
-                &self.group_id,
-                &new_group_key,
-                signer_sk,
-                Some(removed),
-            )?)
+            if encrypting_group_id == self.group_id {
+                let new_group_key: [u8; 32] = OsRng.gen();
+                let _ = store_group_key(self.store, &self.group_id, &new_group_key)?;
+                Some(build_key_rotation(
+                    self.store,
+                    &self.group_id,
+                    &new_group_key,
+                    signer_sk,
+                    Some(removed),
+                )?)
+            } else {
+                None
+            }
         } else {
             None
         };

@@ -253,6 +253,55 @@ pub fn is_direct_group_admin(
     }
 }
 
+/// Returns `true` iff `identity` holds direct admin authority at *any*
+/// ancestor in the Open chain rooted at `group_id` (or at `group_id`
+/// itself).
+///
+/// Unlike [`check_group_membership_path`], this walk is **independent of
+/// any non-admin direct membership** the identity may have in the
+/// target subgroup. A parent admin who has also been added as a
+/// regular `Member` of a descendant subgroup still inherits admin
+/// authority into that subgroup — without this dedicated walk, the
+/// `Direct` short-circuit in `check_group_membership_path` would
+/// suppress the inherited-admin signal as soon as any direct
+/// membership row existed.
+///
+/// Walk semantics mirror `check_group_membership_path`:
+///   1. Direct admin in `group_id` → `true`.
+///   2. Else, if `group_id` is `Restricted` → `false` (wall).
+///   3. Else (`Open`), look up parent. No parent → `false`.
+///   4. If `identity` is a direct admin of any ancestor in the Open
+///      chain → `true`.
+///   5. Else continue walking.
+///
+/// Bounded by [`MAX_NAMESPACE_DEPTH`].
+pub fn is_inherited_admin(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+) -> EyreResult<bool> {
+    if is_group_admin(store, group_id, identity)? {
+        return Ok(true);
+    }
+    let mut current = *group_id;
+    for _ in 0..MAX_NAMESPACE_DEPTH {
+        if get_subgroup_visibility(store, &current)? != VisibilityMode::Open {
+            return Ok(false);
+        }
+        let Some(parent) = get_parent_group(store, &current)? else {
+            return Ok(false);
+        };
+        if is_group_admin(store, &parent, identity)? {
+            return Ok(true);
+        }
+        current = parent;
+    }
+    bail!(
+        "is_inherited_admin exceeded MAX_NAMESPACE_DEPTH ({MAX_NAMESPACE_DEPTH}); \
+         possible cycle in store"
+    )
+}
+
 pub fn is_group_admin(
     store: &Store,
     group_id: &ContextGroupId,
