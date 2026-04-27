@@ -928,13 +928,14 @@ impl VMHostFunctions<'_> {
             );
 
             with_runtime_env(env.clone(), || {
-                // #2266: empty ctx for now. Step 3 of the WASM-ABI wiring
-                // routes deltas with `CausalDelta` metadata through the
-                // sync layer, which pre-resolves `effective_writers` and
-                // populates ctx before calling `Root::sync`. Until that
-                // path lands, this entry-point keeps the v2 stored-writers
-                // fallback (safe: this is host-side replay of an artifact
-                // already verified at apply-time).
+                // #2266: empty ctx is the TEMPLATE here. `payload` is a
+                // pre-built `StorageDelta` artifact — when its variant is
+                // `CausalActions`, `Root::sync` builds per-action ctxs
+                // from the embedded `effective_writers` map and ignores
+                // this template. For `Actions` (host-side replay of
+                // already-verified state) the template is used as-is and
+                // the verifier falls back to v2 stored-writers, which is
+                // safe for replicated state from a peer.
                 let sync_ctx = calimero_storage::interface::ApplyContext::empty();
                 calimero_storage::collections::Root::<Vec<u8>>::sync(&payload, sync_ctx)
             })

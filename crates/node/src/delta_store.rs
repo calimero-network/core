@@ -9,7 +9,7 @@
 //! This ensures that all nodes converge to the same state regardless of the
 //! order in which they receive concurrent deltas.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,10 +22,15 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
+use calimero_storage::address::Id;
 use calimero_storage::delta::StorageDelta;
+use calimero_storage::entities::StorageType;
+use calimero_storage::store::MainStorage;
 use eyre::Result;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+
+use crate::sync::rotation_log_reader;
 
 /// Result of adding a delta with cascaded event information
 #[derive(Debug)]
@@ -107,6 +112,21 @@ struct ContextStorageApplier {
     /// while Node-B applies X sequentially → hash H2. When Node-B's child delta
     /// arrives, we must recognize that our parent hash differs from the author's.
     merged_deltas: Arc<RwLock<HashSet<[u8; 32]>>>,
+    /// `delta_id → parents` for every applied delta this node has seen.
+    /// Maintained inside `apply()` (after WASM success) and seeded by
+    /// `restore_topology` from `load_persisted_deltas`. Read-only inside
+    /// `apply()` to derive the `happens_before` predicate that
+    /// [`rotation_log_reader::writers_at`] needs — kept separate from
+    /// the `Arc<RwLock<CoreDagStore>>` so reads here don't deadlock
+    /// against the dag write lock the caller holds during `add_delta`.
+    /// (#2266)
+    topology: Arc<RwLock<HashMap<[u8; 32], Vec<[u8; 32]>>>>,
+    /// Cache for resolved writer sets keyed on `(entity_id, delta_id)`.
+    /// Each entry is the answer to "what was the writer set for this
+    /// Shared entity as of this delta's causal frontier?" Cache hits
+    /// dominate when chains of deltas all reference the same entity
+    /// against the same parent set. (#2266)
+    effective_writers_cache: Arc<RwLock<HashMap<(Id, [u8; 32]), BTreeSet<PublicKey>>>>,
 }
 
 #[async_trait::async_trait]
@@ -159,9 +179,28 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             );
         }
 
-        // Serialize actions to StorageDelta
-        let artifact = borsh::to_vec(&StorageDelta::Actions(delta.payload.clone()))
-            .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {e}")))?;
+        // #2266: resolve `effective_writers` for every Shared entity
+        // touched by this delta, then ship the artifact as
+        // `StorageDelta::CausalActions` so the receiver's verifier
+        // validates Shared signatures against the pre-resolved set
+        // (per ADR 0001 / writers_at(delta.parents)) instead of
+        // falling back to v2 stored writers. Resolution reads `topology`
+        // (this applier's local copy of the DAG parent links) so it
+        // doesn't contend with the dag write lock held by our caller.
+        let effective_writers = self
+            .resolve_effective_writers_for_delta(delta)
+            .await
+            .map_err(|e| {
+                ApplyError::Application(format!("Failed to resolve effective writers: {e}"))
+            })?;
+
+        let artifact = borsh::to_vec(&StorageDelta::CausalActions {
+            actions: delta.payload.clone(),
+            delta_id: delta.id,
+            delta_hlc: delta.hlc,
+            effective_writers,
+        })
+        .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {e}")))?;
 
         let wasm_start = std::time::Instant::now();
 
@@ -241,6 +280,26 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                     expected_hash = %Hash::from(delta.expected_root_hash),
                     "Hash mismatch (concurrent state) - CRDT merge ensures consistency"
                 );
+            }
+        }
+
+        // #2266: record this delta's parent links into the applier's
+        // topology mirror so cascaded children's `apply()` can resolve
+        // happens_before against an up-to-date view. Done after WASM
+        // success so a failed apply doesn't pollute the topology with
+        // an unapplied delta. Bounded the same way as `parent_hashes`
+        // below so it can't grow without limit on long-lived nodes.
+        {
+            let mut topology = self.topology.write().await;
+            let _previous = topology.insert(delta.id, delta.parents.clone());
+
+            const MAX_TOPOLOGY_ENTRIES: usize = 10_000;
+            if topology.len() > MAX_TOPOLOGY_ENTRIES {
+                let excess = topology.len() - (MAX_TOPOLOGY_ENTRIES * 9 / 10);
+                let keys_to_remove: Vec<_> = topology.keys().take(excess).copied().collect();
+                for key in keys_to_remove {
+                    let _removed = topology.remove(&key);
+                }
             }
         }
 
@@ -470,6 +529,128 @@ impl ContextStorageApplier {
         );
         true
     }
+
+    /// Resolve the writer set for every Shared entity touched by `delta`.
+    ///
+    /// Iterates the action payload, picks out Shared `Add`/`Update`/
+    /// `DeleteRef`s, dedups by entity, and resolves each via
+    /// [`rotation_log_reader::writers_at`] against this applier's
+    /// `topology` view of the DAG. Cache-keyed on `(entity_id, delta_id)`.
+    ///
+    /// Returns a map keyed by entity id; non-Shared entities are absent.
+    /// An empty result is normal — a delta with only User/Frozen/Public
+    /// actions has nothing to resolve.
+    async fn resolve_effective_writers_for_delta(
+        &self,
+        delta: &CausalDelta<Vec<Action>>,
+    ) -> Result<BTreeMap<Id, BTreeSet<PublicKey>>> {
+        let mut shared_entities: BTreeSet<Id> = BTreeSet::new();
+        for action in &delta.payload {
+            let metadata = match action {
+                Action::Add { metadata, .. }
+                | Action::Update { metadata, .. }
+                | Action::DeleteRef { metadata, .. } => metadata,
+                Action::Compare { .. } => continue,
+            };
+            if matches!(metadata.storage_type, StorageType::Shared { .. }) {
+                let _inserted = shared_entities.insert(action.id());
+            }
+        }
+
+        let mut out: BTreeMap<Id, BTreeSet<PublicKey>> = BTreeMap::new();
+        if shared_entities.is_empty() {
+            return Ok(out);
+        }
+
+        // Snapshot topology once per delta apply. The `happens_before`
+        // closure consults this snapshot for every reachability test
+        // inside `writers_at`, avoiding repeated lock acquisitions.
+        let topology_snapshot = self.topology.read().await.clone();
+
+        for entity_id in shared_entities {
+            let cache_key = (entity_id, delta.id);
+            if let Some(cached) = self.effective_writers_cache.read().await.get(&cache_key) {
+                let _replaced = out.insert(entity_id, cached.clone());
+                continue;
+            }
+
+            let log = match calimero_storage::rotation_log::load::<MainStorage>(entity_id) {
+                Ok(Some(log)) => log,
+                Ok(None) => continue, // No log → verifier falls back to v2 stored-writers.
+                Err(e) => {
+                    return Err(eyre::eyre!(
+                        "rotation_log::load for entity {entity_id:?} failed: {e}"
+                    ))
+                }
+            };
+
+            let resolved = rotation_log_reader::writers_at(&log, &delta.parents, |a, b| {
+                happens_before_in_topology(&topology_snapshot, a, b)
+            });
+
+            if let Some(set) = resolved {
+                let _replaced = out.insert(entity_id, set.clone());
+
+                let mut cache = self.effective_writers_cache.write().await;
+                let _previous = cache.insert(cache_key, set);
+
+                // Bound the cache the same way as parent_hashes/topology
+                // to keep long-lived nodes from growing unboundedly.
+                const MAX_EFFECTIVE_WRITERS_ENTRIES: usize = 10_000;
+                if cache.len() > MAX_EFFECTIVE_WRITERS_ENTRIES {
+                    let excess = cache.len() - (MAX_EFFECTIVE_WRITERS_ENTRIES * 9 / 10);
+                    let keys_to_remove: Vec<_> = cache.keys().take(excess).copied().collect();
+                    for key in keys_to_remove {
+                        let _removed = cache.remove(&key);
+                    }
+                }
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Seed `topology` with deltas restored by `load_persisted_deltas`.
+    ///
+    /// Persisted deltas are restored into the dag via
+    /// `restore_applied_delta` without going through `apply()`, so the
+    /// topology mirror would otherwise miss them and `happens_before`
+    /// would incorrectly return false for ancestry that crosses the
+    /// pre-restart boundary. Call this once after persisted-delta
+    /// restoration completes.
+    async fn restore_topology(&self, deltas: impl IntoIterator<Item = ([u8; 32], Vec<[u8; 32]>)>) {
+        let mut topology = self.topology.write().await;
+        for (delta_id, parents) in deltas {
+            let _previous = topology.insert(delta_id, parents);
+        }
+    }
+}
+
+/// Reverse-BFS reachability over a `delta_id → parents` mirror of the
+/// DAG: returns true iff `a` is in the transitive ancestry of `b`. Pure
+/// over the snapshot — `happens_before(x, x) == false` (strict ancestry).
+fn happens_before_in_topology(
+    topology: &HashMap<[u8; 32], Vec<[u8; 32]>>,
+    a: &[u8; 32],
+    b: &[u8; 32],
+) -> bool {
+    if a == b {
+        return false;
+    }
+    let mut frontier: Vec<[u8; 32]> = topology.get(b).cloned().unwrap_or_default();
+    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    while let Some(node) = frontier.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        if &node == a {
+            return true;
+        }
+        if let Some(parents) = topology.get(&node) {
+            frontier.extend(parents.iter().copied());
+        }
+    }
+    false
 }
 
 /// Node-level delta store that wraps calimero-dag
@@ -505,6 +686,12 @@ impl DeltaStore {
             our_identity,
             parent_hashes: Arc::clone(&parent_hashes),
             merged_deltas: Arc::clone(&merged_deltas),
+            // #2266: applier-local DAG topology + per-(entity,delta) cache
+            // for the rotation-log-driven writer-set resolution. Populated
+            // by `apply()` and seeded by `load_persisted_deltas` →
+            // `restore_topology` so cross-restart ancestry is preserved.
+            topology: Arc::new(RwLock::new(HashMap::new())),
+            effective_writers_cache: Arc::new(RwLock::new(HashMap::new())),
         });
 
         Self {
@@ -679,6 +866,12 @@ impl DeltaStore {
         let mut loaded_count = 0;
         let mut remaining = all_deltas;
         let mut progress_made = true;
+        // #2266: collect (delta_id, parents) for the applier-local
+        // topology mirror. Persisted deltas bypass `apply()` (they're
+        // restored as already-applied), so without this seed the mirror
+        // would be empty after restart and `happens_before` would
+        // incorrectly return false for any cross-restart ancestry.
+        let mut topology_seed: Vec<([u8; 32], Vec<[u8; 32]>)> = Vec::new();
 
         while progress_made && !remaining.is_empty() {
             progress_made = false;
@@ -698,6 +891,7 @@ impl DeltaStore {
                     if dag.restore_applied_delta(dag_delta.clone()) {
                         loaded_count += 1;
                         to_remove.push(*delta_id);
+                        topology_seed.push((*delta_id, dag_delta.parents.clone()));
                         progress_made = true;
                     }
                 }
@@ -706,6 +900,11 @@ impl DeltaStore {
             for delta_id in to_remove {
                 drop(remaining.remove(&delta_id));
             }
+        }
+
+        // Seed the applier topology with everything we just restored.
+        if !topology_seed.is_empty() {
+            self.applier.restore_topology(topology_seed).await;
         }
 
         // Count + small bs58 sample rather than full-list Debug —

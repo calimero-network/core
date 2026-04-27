@@ -178,12 +178,13 @@ impl ToTokens for PublicLogicMethod<'_> {
                         ::calimero_sdk::env::panic_str("Expected payload to sync method.")
                     };
 
-                    // #2266: empty ctx today. Step 4 of the WASM-ABI wiring
-                    // extends the artifact (`StorageDelta`) with a
-                    // CausalActions variant that carries pre-resolved
-                    // `effective_writers`; `Root::sync` will branch on it
-                    // and populate ctx before applying. Until then this
-                    // path keeps v2 stored-writers fallback semantics.
+                    // #2266: ctx is empty here as a TEMPLATE — used as-is for
+                    // `StorageDelta::Actions` (SDK-driven local apply, v2
+                    // stored-writers fallback). For network-sync deltas the
+                    // node sync layer ships a `StorageDelta::CausalActions`
+                    // artifact carrying pre-resolved `effective_writers`;
+                    // `Root::sync` branches on the variant and builds a
+                    // per-action ctx from the map, ignoring this template.
                     let __sync_ctx = ::calimero_storage::interface::ApplyContext::empty();
                     ::calimero_storage::collections::Root::<#self_>::sync(&args, __sync_ctx).expect("fatal: sync failed");
                 }

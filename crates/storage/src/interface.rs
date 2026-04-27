@@ -720,20 +720,24 @@ impl<S: StorageAdaptor> Interface<S> {
     /// 1. Already deleted - update tombstone if newer
     /// Append to the rotation log when applying a Shared rotation.
     ///
-    /// P3 of #2233 write hook. Called from [`apply_action`] after
-    /// `save_internal` succeeds. No-op for non-Shared actions, for
-    /// value-writes (writers unchanged), or when ctx lacks the delta
-    /// id/hlc the entry needs.
+    /// Rotation-log write hook (#2233 phase 3). Called from
+    /// [`apply_action`] after `save_internal` succeeds. No-op for
+    /// non-Shared actions, for value-writes (writers unchanged), or
+    /// when ctx lacks the delta id/hlc the entry needs.
     ///
     /// `pre_apply_writers` is the writer set in the index *before* this
     /// action mutated it — `Some` for an existing Shared entity, `None`
     /// for bootstrap (first time we see this entity). Bootstrap counts as
     /// the first rotation.
     ///
-    /// Skips silently rather than erroring on missing context: P3-era
-    /// production paths don't yet thread `CausalDelta.{id,hlc}` through
-    /// the WASM ABI, so the hook is dormant in production until that
-    /// follow-up lands. Tests construct full ctx explicitly.
+    /// Skips silently rather than erroring on missing context.
+    /// Empty-ctx callers (snapshot leaf push, local apply, the
+    /// `StorageDelta::Actions` artifact path) are not network-received
+    /// causal deltas and don't have an originating `CausalDelta` to
+    /// record. Network-sync deltas arrive via
+    /// [`StorageDelta::CausalActions`](crate::delta::StorageDelta::CausalActions)
+    /// (per #2266) which populates `delta_id`/`delta_hlc`, lighting up
+    /// the hook in production.
     ///
     /// # Caller invariant
     ///
@@ -783,9 +787,10 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         // Need the originating delta's identity to record an entry the
-        // verifier can later look up. P3-era callers without WASM ABI
-        // extensions pass None here; the hook then silently no-ops so the
-        // log stays empty and writers_at falls back to v2 stored writers.
+        // node-side reader can later look up. Empty-ctx callers (snapshot
+        // leaf push, local apply, `StorageDelta::Actions`) pass None here
+        // and the hook silently no-ops; only `StorageDelta::CausalActions`
+        // (#2266) populates these and lights up the hook.
         let (Some(delta_id), Some(delta_hlc)) = (ctx.delta_id, ctx.delta_hlc) else {
             return Ok(());
         };

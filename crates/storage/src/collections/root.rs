@@ -125,10 +125,12 @@ where
     /// Syncs the root collection.
     ///
     /// `ctx` is the apply-time context for the inner [`Interface::apply_action`]
-    /// calls. Per #2266, when the artifact carries DAG-causal information
-    /// the sync layer pre-resolves `effective_writers` and populates ctx
-    /// before calling here; storage then validates Shared signatures
-    /// against the resolved set.
+    /// calls. Per #2266, the [`StorageDelta::CausalActions`] variant
+    /// carries pre-resolved `effective_writers` per Shared entity from
+    /// the sync layer; this function builds a per-action `ApplyContext`
+    /// from that map and ignores the passed `ctx` for that variant. For
+    /// [`StorageDelta::Actions`] the passed `ctx` is used as-is (typically
+    /// empty — verifier falls back to v2 stored-writers).
     #[expect(clippy::missing_errors_doc, reason = "NO")]
     pub fn sync(args: &[u8], ctx: crate::interface::ApplyContext) -> Result<(), StorageError> {
         let artifact =
@@ -136,122 +138,19 @@ where
 
         match artifact {
             StorageDelta::Actions(actions) => {
-                let mut root_snapshot: Option<(Vec<u8>, crate::entities::Metadata)> = None;
-
-                // #2238: defer ancestor-hash recomputation until the end of
-                // the action loop. Many deltas in a single merge often touch
-                // the same parent; without batching, each `add_child_to`
-                // walks from that parent to the root redoing the same O(K)
-                // hash work. The scope dedupes starting ids and flushes via
-                // `finish()?` after the loop so storage errors during flush
-                // propagate back to the caller (an error here means the
-                // merkle tree is left inconsistent).
-                let defer_scope = DeferredAncestorScope::<S>::new();
-
-                for action in actions {
-                    match &action {
-                        Action::Add {
-                            id, data, metadata, ..
-                        }
-                        | Action::Update {
-                            id, data, metadata, ..
-                        } if id.is_root() => {
-                            info!(
-                                target: "storage::root",
-                                payload_len = data.len(),
-                                created_at = metadata.created_at,
-                                updated_at = metadata.updated_at(),
-                                "captured root snapshot from delta replay"
-                            );
-                            root_snapshot = Some((data.clone(), metadata.clone()));
-                        }
-                        _ => {}
-                    }
-
-                    match action {
-                        Action::Compare { id } => {
-                            push_comparison(Comparison {
-                                data: <Interface<S>>::find_by_id_raw(id),
-                                comparison_data: <Interface<S>>::generate_comparison_data(Some(
-                                    id,
-                                ))?,
-                            });
-                        }
-                        Action::Add {
-                            id,
-                            data,
-                            metadata,
-                            ancestors,
-                        } => {
-                            // Skip root - it will be processed after all children via root_snapshot
-                            // This ensures children are created before root merge happens
-                            if !id.is_root() {
-                                info!(
-                                    target: "storage::sync_child",
-                                    %id,
-                                    data_len = data.len(),
-                                    created_at = metadata.created_at,
-                                    updated_at = metadata.updated_at(),
-                                    "SYNC CHILD: Applying Action::Add for child entity"
-                                );
-                                <Interface<S>>::apply_action(
-                                    Action::Add {
-                                        id,
-                                        data,
-                                        metadata,
-                                        ancestors,
-                                    },
-                                    &ctx,
-                                )?;
-                            }
-                        }
-                        Action::Update {
-                            id,
-                            data,
-                            metadata,
-                            ancestors,
-                        } => {
-                            // Skip root - it will be processed after all children via root_snapshot
-                            // This ensures children are created before root merge happens
-                            if !id.is_root() {
-                                info!(
-                                    target: "storage::sync_child",
-                                    %id,
-                                    data_len = data.len(),
-                                    created_at = metadata.created_at,
-                                    updated_at = metadata.updated_at(),
-                                    "SYNC CHILD: Applying Action::Update for child entity"
-                                );
-                                <Interface<S>>::apply_action(
-                                    Action::Update {
-                                        id,
-                                        data,
-                                        metadata,
-                                        ancestors,
-                                    },
-                                    &ctx,
-                                )?;
-                            }
-                        }
-                        Action::DeleteRef { .. } => {
-                            <Interface<S>>::apply_action(action, &ctx)?;
-                        }
-                    };
-                }
-
-                // Flush deferred ancestor walks. Errors here indicate a
-                // partially-propagated merkle tree and must surface to the
-                // caller rather than being silently logged by Drop.
-                defer_scope.finish()?;
-
-                if let Some((payload, metadata)) = root_snapshot {
-                    if <Interface<S>>::save_raw(Id::root(), payload, metadata)?.is_some() {
-                        info!(
-                            target: "storage::root",
-                            "persisted root document from delta replay"
-                        );
-                    }
-                }
+                Self::apply_actions(actions, |_| ctx.clone())?;
+            }
+            StorageDelta::CausalActions {
+                actions,
+                delta_id,
+                delta_hlc,
+                effective_writers,
+            } => {
+                Self::apply_actions(actions, |action| crate::interface::ApplyContext {
+                    effective_writers: effective_writers.get(&action.id()).cloned(),
+                    delta_id: Some(delta_id),
+                    delta_hlc: Some(delta_hlc),
+                })?;
             }
             StorageDelta::Comparisons(comparisons) => {
                 if comparisons.is_empty() {
@@ -276,6 +175,130 @@ where
             "committing root after delta replay"
         );
         Self::commit_headless();
+
+        Ok(())
+    }
+
+    /// Apply a batch of actions, deriving the per-action [`ApplyContext`]
+    /// from `ctx_for_action`. Shared between the `Actions` (uniform ctx)
+    /// and `CausalActions` (per-action ctx via `effective_writers` lookup)
+    /// branches of [`Self::sync`].
+    fn apply_actions<F>(actions: Vec<Action>, ctx_for_action: F) -> Result<(), StorageError>
+    where
+        F: Fn(&Action) -> crate::interface::ApplyContext,
+    {
+        let mut root_snapshot: Option<(Vec<u8>, crate::entities::Metadata)> = None;
+
+        // #2238: defer ancestor-hash recomputation until the end of
+        // the action loop. Many deltas in a single merge often touch
+        // the same parent; without batching, each `add_child_to`
+        // walks from that parent to the root redoing the same O(K)
+        // hash work. The scope dedupes starting ids and flushes via
+        // `finish()?` after the loop so storage errors during flush
+        // propagate back to the caller (an error here means the
+        // merkle tree is left inconsistent).
+        let defer_scope = DeferredAncestorScope::<S>::new();
+
+        for action in actions {
+            match &action {
+                Action::Add {
+                    id, data, metadata, ..
+                }
+                | Action::Update {
+                    id, data, metadata, ..
+                } if id.is_root() => {
+                    info!(
+                        target: "storage::root",
+                        payload_len = data.len(),
+                        created_at = metadata.created_at,
+                        updated_at = metadata.updated_at(),
+                        "captured root snapshot from delta replay"
+                    );
+                    root_snapshot = Some((data.clone(), metadata.clone()));
+                }
+                _ => {}
+            }
+
+            let action_ctx = ctx_for_action(&action);
+
+            match action {
+                Action::Compare { id } => {
+                    push_comparison(Comparison {
+                        data: <Interface<S>>::find_by_id_raw(id),
+                        comparison_data: <Interface<S>>::generate_comparison_data(Some(id))?,
+                    });
+                }
+                Action::Add {
+                    id,
+                    data,
+                    metadata,
+                    ancestors,
+                } => {
+                    if !id.is_root() {
+                        info!(
+                            target: "storage::sync_child",
+                            %id,
+                            data_len = data.len(),
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            "SYNC CHILD: Applying Action::Add for child entity"
+                        );
+                        <Interface<S>>::apply_action(
+                            Action::Add {
+                                id,
+                                data,
+                                metadata,
+                                ancestors,
+                            },
+                            &action_ctx,
+                        )?;
+                    }
+                }
+                Action::Update {
+                    id,
+                    data,
+                    metadata,
+                    ancestors,
+                } => {
+                    if !id.is_root() {
+                        info!(
+                            target: "storage::sync_child",
+                            %id,
+                            data_len = data.len(),
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            "SYNC CHILD: Applying Action::Update for child entity"
+                        );
+                        <Interface<S>>::apply_action(
+                            Action::Update {
+                                id,
+                                data,
+                                metadata,
+                                ancestors,
+                            },
+                            &action_ctx,
+                        )?;
+                    }
+                }
+                Action::DeleteRef { .. } => {
+                    <Interface<S>>::apply_action(action, &action_ctx)?;
+                }
+            };
+        }
+
+        // Flush deferred ancestor walks. Errors here indicate a
+        // partially-propagated merkle tree and must surface to the
+        // caller rather than being silently logged by Drop.
+        defer_scope.finish()?;
+
+        if let Some((payload, metadata)) = root_snapshot {
+            if <Interface<S>>::save_raw(Id::root(), payload, metadata)?.is_some() {
+                info!(
+                    target: "storage::root",
+                    "persisted root document from delta replay"
+                );
+            }
+        }
 
         Ok(())
     }

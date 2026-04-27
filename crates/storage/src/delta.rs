@@ -4,15 +4,20 @@
 //! across nodes using a DAG (Directed Acyclic Graph) structure.
 
 use core::cell::RefCell;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::io;
 
+use borsh::{to_vec, BorshDeserialize, BorshSerialize};
+use calimero_primitives::identity::PublicKey;
+use sha2::{Digest, Sha256};
+
 use crate::action::Action;
+use crate::address::Id;
 use crate::entities::{Metadata, SignatureData, StorageType};
 use crate::env;
 use crate::integration::Comparison;
 use crate::logical_clock::HybridTimestamp;
-use borsh::{to_vec, BorshDeserialize, BorshSerialize};
-use sha2::{Digest, Sha256};
 
 /// A causal delta in the DAG representing a set of CRDT actions.
 ///
@@ -128,14 +133,47 @@ impl CausalDelta {
 
 /// Delta produced by storage operations for synchronization.
 ///
-/// Contains either a list of actions (operation-based CRDT) or comparisons
-/// (state-based CRDT for Merkle tree reconciliation).
+/// Three variants:
+/// - [`StorageDelta::Actions`] — local apply, snapshot leaf push,
+///   SDK→host commits. The verifier falls back to v2 stored-writers
+///   semantics for `Shared` actions in this variant.
+/// - [`StorageDelta::Comparisons`] — state-based Merkle tree sync.
+/// - [`StorageDelta::CausalActions`] — DAG-causal sync (#2266). The
+///   sync layer pre-resolves the writer set per Shared entity using
+///   the rotation log + DAG ancestry; the receiver's verifier
+///   validates Shared signatures against that pre-resolved set
+///   instead of stored writers.
 #[derive(Debug, BorshSerialize)]
 pub enum StorageDelta {
     /// A list of actions from direct operations.
     Actions(Vec<Action>),
     /// A list of comparisons for Merkle tree sync.
     Comparisons(Vec<Comparison>),
+    /// Actions delivered with DAG-causal context (#2266).
+    ///
+    /// `effective_writers` carries the pre-resolved writer set for
+    /// every `Shared` entity touched by `actions`, computed by the
+    /// sender's sync layer via
+    /// `rotation_log_reader::writers_at(rotation_log, delta.parents, happens_before)`.
+    /// Entries for non-Shared entities are omitted (the verifier
+    /// doesn't consult them).
+    CausalActions {
+        /// Actions to apply.
+        actions: Vec<Action>,
+        /// Hash of the originating `CausalDelta`. Used by the
+        /// rotation-log write hook to record the delta on detected
+        /// writer-set changes.
+        delta_id: [u8; 32],
+        /// Hybrid timestamp of the originating `CausalDelta`. Used by
+        /// the rotation-log write hook for sibling tiebreak (ADR 0001).
+        delta_hlc: HybridTimestamp,
+        /// Pre-resolved writer set per Shared entity touched by
+        /// `actions`. The receiver's verifier validates Shared
+        /// signatures against the entry for the action's entity id;
+        /// non-Shared entities (User / Frozen / Public) are absent
+        /// from the map.
+        effective_writers: BTreeMap<Id, BTreeSet<PublicKey>>,
+    },
 }
 
 impl BorshDeserialize for StorageDelta {
@@ -147,6 +185,12 @@ impl BorshDeserialize for StorageDelta {
         match tag {
             0 => Ok(StorageDelta::Actions(Vec::deserialize_reader(reader)?)),
             1 => Ok(StorageDelta::Comparisons(Vec::deserialize_reader(reader)?)),
+            2 => Ok(StorageDelta::CausalActions {
+                actions: Vec::deserialize_reader(reader)?,
+                delta_id: <[u8; 32]>::deserialize_reader(reader)?,
+                delta_hlc: HybridTimestamp::deserialize_reader(reader)?,
+                effective_writers: BTreeMap::deserialize_reader(reader)?,
+            }),
             _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid tag")),
         }
     }

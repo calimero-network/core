@@ -27,10 +27,6 @@ use calimero_storage::rotation_log::{RotationLog, RotationLogEntry};
 ///
 /// Returns `None` if the log has no entries and no snapshot.
 #[must_use]
-#[allow(
-    dead_code,
-    reason = "wired in Step 3 of #2266 (delta_store apply path)"
-)]
 pub fn latest_writers(log: &RotationLog) -> Option<BTreeSet<PublicKey>> {
     if let Some(entry) = log.entries.last() {
         return Some(entry.new_writers.clone());
@@ -65,10 +61,6 @@ pub fn latest_writers(log: &RotationLog) -> Option<BTreeSet<PublicKey>> {
 /// Returns the same answer as [`latest_writers`] — the v2-compatible
 /// fallback for paths without DAG context.
 #[must_use]
-#[allow(
-    dead_code,
-    reason = "wired in Step 3 of #2266 (delta_store apply path)"
-)]
 pub fn writers_at<F>(
     log: &RotationLog,
     causal_parents: &[[u8; 32]],
