@@ -125,10 +125,12 @@ where
     /// Syncs the root collection.
     ///
     /// `ctx` is the apply-time context for the inner [`Interface::apply_action`]
-    /// calls (DAG-causal parents of the delta the artifact came from). In phase
-    /// P1 of #2233 it is plumbed through but not consulted.
+    /// calls. Per #2266, when the artifact carries DAG-causal information
+    /// the sync layer pre-resolves `effective_writers` and populates ctx
+    /// before calling here; storage then validates Shared signatures
+    /// against the resolved set.
     #[expect(clippy::missing_errors_doc, reason = "NO")]
-    pub fn sync(args: &[u8], ctx: crate::interface::ApplyContext<'_>) -> Result<(), StorageError> {
+    pub fn sync(args: &[u8], ctx: crate::interface::ApplyContext) -> Result<(), StorageError> {
         let artifact =
             from_slice::<StorageDelta>(args).map_err(StorageError::DeserializationError)?;
 
@@ -199,7 +201,7 @@ where
                                         metadata,
                                         ancestors,
                                     },
-                                    ctx,
+                                    &ctx,
                                 )?;
                             }
                         }
@@ -227,12 +229,12 @@ where
                                         metadata,
                                         ancestors,
                                     },
-                                    ctx,
+                                    &ctx,
                                 )?;
                             }
                         }
                         Action::DeleteRef { .. } => {
-                            <Interface<S>>::apply_action(action, ctx)?;
+                            <Interface<S>>::apply_action(action, &ctx)?;
                         }
                     };
                 }
@@ -264,7 +266,7 @@ where
                     comparison_data,
                 } in comparisons
                 {
-                    <Interface<S>>::compare_affective(data, comparison_data, ctx)?;
+                    <Interface<S>>::compare_affective(data, comparison_data, &ctx)?;
                 }
             }
         }

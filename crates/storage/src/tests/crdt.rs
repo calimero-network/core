@@ -117,16 +117,7 @@ fn tombstone_marks_deleted() {
         metadata: Metadata::default(),
     };
 
-    TestInterface::apply_action(
-        delete_action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(delete_action, &ApplyContext::empty()).unwrap();
 
     // Entity should be gone
     assert!(TestInterface::find_by_id::<Page>(id).unwrap().is_none());
@@ -155,16 +146,7 @@ fn tombstone_prevents_old_resurrection() {
         metadata: save_meta, // Old metadata from before deletion
     };
 
-    TestInterface::apply_action(
-        resurrect_action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(resurrect_action, &ApplyContext::empty()).unwrap();
 
     // Should remain deleted (tombstone is newer)
     assert!(TestInterface::find_by_id::<Page>(id).unwrap().is_none());
@@ -197,16 +179,7 @@ fn tombstone_allows_newer_update() {
         metadata: new_page.element().metadata.clone(),
     };
 
-    TestInterface::apply_action(
-        update_action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(update_action, &ApplyContext::empty()).unwrap();
 
     // Should be resurrected (if the add timestamp is newer than delete)
     let retrieved = TestInterface::find_by_id::<Page>(id).unwrap();
@@ -247,26 +220,8 @@ fn delete_vs_update_conflict() {
     };
 
     // Apply delete first, then update
-    TestInterface::apply_action(
-        delete_action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
-    TestInterface::apply_action(
-        update_action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(delete_action, &ApplyContext::empty()).unwrap();
+    TestInterface::apply_action(update_action, &ApplyContext::empty()).unwrap();
 
     // Behavior depends on implementation
     // Just verify no panic
@@ -303,26 +258,8 @@ fn update_vs_delete_conflict() {
     };
 
     // Apply update first, then delete
-    TestInterface::apply_action(
-        update_action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
-    TestInterface::apply_action(
-        delete_action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(update_action, &ApplyContext::empty()).unwrap();
+    TestInterface::apply_action(delete_action, &ApplyContext::empty()).unwrap();
 
     // Delete wins (newer timestamp)
     let retrieved = TestInterface::find_by_id::<Page>(id).unwrap();
@@ -400,26 +337,8 @@ fn concurrent_update_same_entity_different_fields() {
     };
 
     // Apply both
-    TestInterface::apply_action(
-        action1,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
-    TestInterface::apply_action(
-        action2,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(action1, &ApplyContext::empty()).unwrap();
+    TestInterface::apply_action(action2, &ApplyContext::empty()).unwrap();
 
     // Later timestamp wins
     let retrieved = TestInterface::find_by_id::<Page>(page.id())
@@ -445,36 +364,9 @@ fn actions_idempotent() {
     };
 
     // Apply multiple times
-    TestInterface::apply_action(
-        action.clone(),
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
-    TestInterface::apply_action(
-        action.clone(),
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
-    TestInterface::apply_action(
-        action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(action.clone(), &ApplyContext::empty()).unwrap();
+    TestInterface::apply_action(action.clone(), &ApplyContext::empty()).unwrap();
+    TestInterface::apply_action(action, &ApplyContext::empty()).unwrap();
 
     // Should only exist once
     let retrieved = TestInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -493,16 +385,7 @@ fn update_before_add_creates_entity() {
         metadata: page.element().metadata.clone(),
     };
 
-    TestInterface::apply_action(
-        action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(action, &ApplyContext::empty()).unwrap();
 
     // Should be created
     let retrieved = TestInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -523,16 +406,7 @@ fn delete_prevents_old_add() {
         deleted_at: time_now(),
         metadata: Metadata::default(),
     };
-    TestInterface::apply_action(
-        delete_action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(delete_action, &ApplyContext::empty()).unwrap();
 
     // Try to add with older timestamp (from before deletion)
     let add_action = Action::Add {
@@ -542,16 +416,7 @@ fn delete_prevents_old_add() {
         metadata: old_meta,
     };
 
-    TestInterface::apply_action(
-        add_action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(add_action, &ApplyContext::empty()).unwrap();
 
     // Should remain deleted (tombstone wins)
     assert!(TestInterface::find_by_id::<Page>(page.id())
@@ -596,26 +461,8 @@ fn same_timestamp_lww_behavior() {
     };
 
     // Apply both - later one wins
-    TestInterface::apply_action(
-        action1,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
-    TestInterface::apply_action(
-        action2,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(action1, &ApplyContext::empty()).unwrap();
+    TestInterface::apply_action(action2, &ApplyContext::empty()).unwrap();
 
     let result = TestInterface::find_by_id::<Page>(id).unwrap().unwrap();
     assert_eq!(result.title, "Update 2");
@@ -635,15 +482,7 @@ fn empty_entity_data() {
     };
 
     // Should handle gracefully - expect deserialization to fail
-    let result = TestInterface::apply_action(
-        action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    );
+    let result = TestInterface::apply_action(action, &ApplyContext::empty());
     // Just verify it doesn't panic - result may vary
     drop(result);
 }
@@ -660,15 +499,7 @@ fn malformed_entity_data() {
     };
 
     // Should fail gracefully
-    let result = TestInterface::apply_action(
-        action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    );
+    let result = TestInterface::apply_action(action, &ApplyContext::empty());
     assert!(result.is_err());
 }
 
@@ -684,36 +515,9 @@ fn multiple_deletes_idempotent() {
     };
 
     // Delete multiple times
-    TestInterface::apply_action(
-        delete_action.clone(),
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
-    TestInterface::apply_action(
-        delete_action.clone(),
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
-    TestInterface::apply_action(
-        delete_action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    TestInterface::apply_action(delete_action.clone(), &ApplyContext::empty()).unwrap();
+    TestInterface::apply_action(delete_action.clone(), &ApplyContext::empty()).unwrap();
+    TestInterface::apply_action(delete_action, &ApplyContext::empty()).unwrap();
 
     // Should still be deleted
     assert!(TestInterface::find_by_id::<Page>(page.id())
@@ -747,16 +551,7 @@ fn many_sequential_updates() {
             metadata: page.element().metadata.clone(),
         };
 
-        TestInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        )
-        .unwrap();
+        TestInterface::apply_action(action, &ApplyContext::empty()).unwrap();
     }
 
     // Latest version should win
@@ -786,16 +581,7 @@ fn rapid_add_delete_cycles() {
                 deleted_at: time_now(),
                 metadata: Metadata::default(),
             };
-            TestInterface::apply_action(
-                action,
-                ApplyContext {
-                    causal_parents: &[],
-                    delta_id: None,
-                    delta_hlc: None,
-                    happens_before: None,
-                },
-            )
-            .unwrap();
+            TestInterface::apply_action(action, &ApplyContext::empty()).unwrap();
         } else {
             // Update (resurrect if was deleted)
             page.title = format!("Version {}", i);
@@ -807,16 +593,7 @@ fn rapid_add_delete_cycles() {
                 ancestors: vec![],
                 metadata: page.element().metadata.clone(),
             };
-            TestInterface::apply_action(
-                action,
-                ApplyContext {
-                    causal_parents: &[],
-                    delta_id: None,
-                    delta_hlc: None,
-                    happens_before: None,
-                },
-            )
-            .unwrap();
+            TestInterface::apply_action(action, &ApplyContext::empty()).unwrap();
         }
     }
 
@@ -841,15 +618,7 @@ fn test_future_timestamp_rejected() {
         metadata: page.element().metadata.clone(),
     };
 
-    let result = TestInterface::apply_action(
-        action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    );
+    let result = TestInterface::apply_action(action, &ApplyContext::empty());
 
     assert!(
         result.is_err(),
@@ -881,16 +650,7 @@ fn test_near_future_timestamp_accepted() {
     };
 
     assert!(
-        TestInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok(),
+        TestInterface::apply_action(action, &ApplyContext::empty()).is_ok(),
         "Should accept timestamp within drift tolerance"
     );
 }
@@ -914,16 +674,7 @@ fn test_past_timestamp_accepted() {
     };
 
     assert!(
-        TestInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok(),
+        TestInterface::apply_action(action, &ApplyContext::empty()).is_ok(),
         "Should accept valid past timestamps"
     );
 }
@@ -943,15 +694,7 @@ fn test_delete_future_timestamp_rejected() {
         metadata: Metadata::default(),
     };
 
-    let result = TestInterface::apply_action(
-        action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    );
+    let result = TestInterface::apply_action(action, &ApplyContext::empty());
     assert!(
         result.is_err(),
         "Should reject delete timestamp too far in the future"
@@ -978,16 +721,7 @@ fn test_delete_near_future_accepted() {
     };
 
     assert!(
-        TestInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok(),
+        TestInterface::apply_action(action, &ApplyContext::empty()).is_ok(),
         "Should accept delete timestamp within tolerance"
     );
 }

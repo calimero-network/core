@@ -88,16 +88,11 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
                 ancestors: vec![],
                 metadata: Metadata::default(),
             };
-            // P1 of #2233: snapshot leaf push has no DAG-causal context.
-            Interface::<MainStorage>::apply_action(
-                root_action,
-                ApplyContext {
-                    causal_parents: &[],
-                    delta_id: None,
-                    delta_hlc: None,
-                    happens_before: None,
-                },
-            )?;
+            // #2266: snapshot leaf push has no `CausalDelta` in scope —
+            // these bytes come from a peer who already verified them.
+            // Empty ctx → verifier falls back to v2 stored-writers, which
+            // is the safe semantic for already-verified replicated state.
+            Interface::<MainStorage>::apply_action(root_action, &ApplyContext::empty())?;
         }
 
         // Get root info for ancestor chain
@@ -122,16 +117,11 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         }
     };
 
-    // P1 of #2233: snapshot leaf push has no DAG-causal context.
-    Interface::<MainStorage>::apply_action(
-        action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )?;
+    // #2266: snapshot leaf push has no `CausalDelta` in scope — these
+    // bytes come from a peer who already verified them. Empty ctx →
+    // verifier falls back to v2 stored-writers, which is the safe
+    // semantic for already-verified replicated state.
+    Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())?;
     Ok(())
 }
 
