@@ -1,6 +1,7 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::SetSubgroupVisibilityRequest;
 use calimero_context_client::local_governance::GroupOp;
+use tracing::warn;
 
 use crate::{group_store, ContextManager};
 
@@ -16,27 +17,22 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
         }: SetSubgroupVisibilityRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Visibility on the namespace root is a silent no-op: the
-        // inheritance walk in `check_group_membership_path` only
-        // consults a subgroup's visibility to decide whether to keep
-        // walking *upward* from it. The root has no parent and is
-        // itself the inheritance boundary, so its `subgroup_visibility`
-        // setting never affects any descendant's authorization.
-        // Surface the no-op explicitly instead of accepting + storing
-        // a meaningless value.
-        match group_store::resolve_namespace(&self.datastore, &group_id) {
-            Ok(ns_id) if ns_id == group_id => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "subgroup_visibility cannot be set on the namespace root \
-                     (group_id == namespace_id); visibility only governs \
-                     inheritance into descendant subgroups"
-                )));
-            }
-            Ok(_) => {}
-            Err(err) => {
-                return ActorResponse::reply(Err(eyre::eyre!(
-                    "failed to resolve namespace for visibility check: {err}"
-                )));
+        // Setting visibility on the namespace root is a no-op for
+        // inheritance: `check_group_membership_path` only consults a
+        // subgroup's visibility to decide whether to keep walking
+        // *upward* from it, and the root has no parent. Warn so
+        // operators notice the meaningless call rather than silently
+        // accepting it; we don't reject because existing workflows
+        // (including e2e suites and likely external clients) issue
+        // the call as a harmless setup step.
+        if let Ok(ns_id) = group_store::resolve_namespace(&self.datastore, &group_id) {
+            if ns_id == group_id {
+                warn!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    "subgroup_visibility set on the namespace root has no effect on \
+                     inheritance — the root is itself the inheritance boundary; only \
+                     descendant subgroups observe this setting via the parent walk"
+                );
             }
         }
 

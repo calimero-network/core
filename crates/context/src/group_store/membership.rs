@@ -189,10 +189,10 @@ pub enum MembershipPath {
 /// `anchor_decision`. No code path consults the root's setting to
 /// allow inheritance through it (the root is itself the inheritance
 /// boundary), so an admin who sets `subgroup_visibility` on the
-/// namespace root sees no behavioral effect — the
-/// [`super::handlers::set_subgroup_visibility`] handler rejects that
-/// call up-front to surface the no-op explicitly rather than letting
-/// it succeed silently.
+/// namespace root sees no behavioral effect. The
+/// `set_subgroup_visibility` handler emits a warning when called on
+/// the root so operators notice the no-op without breaking existing
+/// workflows that issue the call as a harmless setup step.
 ///
 /// **Architectural note:** this same parent-walk logic anchors several
 /// other subsystems that all need to recognize Open-subgroup inheritance
