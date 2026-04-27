@@ -186,22 +186,45 @@ impl Handler<ExecuteRequest> for ContextManager {
         let (sender_key, broadcast_key_id) =
             match crate::group_store::get_group_for_context(&self.datastore, &context_id) {
                 Ok(Some(gid)) => {
-                    let key_group_id =
-                        match crate::group_store::resolve_namespace(&self.datastore, &gid) {
-                            Ok(ns_id)
-                                if matches!(
-                                    crate::group_store::is_open_chain_to_namespace(
-                                        &self.datastore,
-                                        &gid,
-                                        &ns_id,
-                                    ),
-                                    Ok(true),
-                                ) =>
-                            {
-                                ns_id
-                            }
-                            _ => gid,
-                        };
+                    // Errors from `resolve_namespace` or
+                    // `is_open_chain_to_namespace` mean we cannot reliably
+                    // decide *which* key (subgroup vs. namespace) to encrypt
+                    // with — they signal store corruption (cyclic parent
+                    // edges, missing namespace metadata, etc.). Silently
+                    // falling back to the subgroup key would mask the
+                    // corruption *and* mis-encrypt for inheritance-eligible
+                    // receivers, who'd then fail to decrypt. Mirror the
+                    // governance-publisher path: propagate the error.
+                    let ns_id = match crate::group_store::resolve_namespace(&self.datastore, &gid) {
+                        Ok(ns_id) => ns_id,
+                        Err(err) => {
+                            error!(
+                                group_id = ?gid,
+                                ?context_id,
+                                %err,
+                                "state-delta encryption: resolve_namespace failed",
+                            );
+                            return ActorResponse::reply(Err(ExecuteError::InternalError));
+                        }
+                    };
+                    let key_group_id = match crate::group_store::is_open_chain_to_namespace(
+                        &self.datastore,
+                        &gid,
+                        &ns_id,
+                    ) {
+                        Ok(true) => ns_id,
+                        Ok(false) => gid,
+                        Err(err) => {
+                            error!(
+                                group_id = ?gid,
+                                namespace_id = ?ns_id,
+                                ?context_id,
+                                %err,
+                                "state-delta encryption: is_open_chain_to_namespace failed",
+                            );
+                            return ActorResponse::reply(Err(ExecuteError::InternalError));
+                        }
+                    };
                     match crate::group_store::load_current_group_key(&self.datastore, &key_group_id)
                     {
                         Ok(Some((kid, gk))) => (PrivateKey::from(gk), kid),
@@ -214,12 +237,22 @@ impl Handler<ExecuteRequest> for ContextManager {
                         }
                     }
                 }
-                _ => {
+                Ok(None) => {
+                    // Non-group context: legitimately falls back to the
+                    // identity's own sender_key.
                     if let Some(sk) = identity.sender_key {
                         (sk, [0u8; 32])
                     } else {
                         return ActorResponse::reply(Err(ExecuteError::InternalError));
                     }
+                }
+                Err(err) => {
+                    error!(
+                        ?context_id,
+                        %err,
+                        "state-delta encryption: get_group_for_context failed",
+                    );
+                    return ActorResponse::reply(Err(ExecuteError::InternalError));
                 }
             };
 
