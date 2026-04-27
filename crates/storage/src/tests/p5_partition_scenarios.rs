@@ -185,23 +185,6 @@ fn setup_root<S: StorageAdaptor>() -> ChildInfo {
     ChildInfo::new(root_id, [0; 32], root_meta)
 }
 
-/// Read the current writer set from a node's index — convenience for asserts.
-fn stored_writers<S: StorageAdaptor>(id: Id) -> Option<BTreeSet<PublicKey>> {
-    Index::<S>::get_metadata(id).ok().flatten().and_then(|m| {
-        if let StorageType::Shared { writers, .. } = m.storage_type {
-            Some(writers)
-        } else {
-            None
-        }
-    })
-}
-
-/// Read the current value bytes from a node's index — convenience for asserts.
-fn stored_data<S: StorageAdaptor>(id: Id) -> Option<Vec<u8>> {
-    use crate::store::Key;
-    S::storage_read(Key::Entry(id))
-}
-
 fn one_sec(n: u64) -> u64 {
     n.saturating_mul(1_000_000_000)
 }
@@ -727,13 +710,4 @@ fn long_partition_reconciliation_converges() {
         [bob, dave].into_iter().collect(),
         "R1 (HLC 25) wins HLC tiebreak vs L1 (HLC 20)"
     );
-
-    // Sanity: each node's stored writer set after applying everything in
-    // delivery order matches what writers_at on the merged frontier reports.
-    // (In this scenario the apply path gates on the local view; convergence
-    // is the property we check via the rotation log, which IS the canonical
-    // post-merge writer set in v3.)
-    let _ = stored_writers::<Left>(id);
-    let _ = stored_writers::<Right>(id);
-    let _ = stored_data::<Left>(id);
 }

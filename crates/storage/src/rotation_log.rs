@@ -133,6 +133,11 @@ impl RotationLog {
 /// Returns `Ok(None)` when no log has been written yet (entity exists but
 /// no rotation has been recorded). Returns `Err` only on deserialization
 /// failure — corruption is loud, never silent.
+///
+/// # Errors
+///
+/// Returns [`StorageError::DeserializationError`] if the stored bytes
+/// cannot be decoded as a `RotationLog`.
 pub fn load<S: StorageAdaptor>(id: Id) -> Result<Option<RotationLog>, StorageError> {
     let Some(bytes) = S::storage_read(Key::RotationLog(id)) else {
         return Ok(None);
@@ -145,6 +150,10 @@ pub fn load<S: StorageAdaptor>(id: Id) -> Result<Option<RotationLog>, StorageErr
 ///
 /// Callers should reach for [`append`] in the common case; `save` is exposed
 /// for tests and future P6 compaction that rewrites the log shape.
+///
+/// # Errors
+///
+/// Returns [`StorageError::SerializationError`] if `log` cannot be encoded.
 pub fn save<S: StorageAdaptor>(id: Id, log: &RotationLog) -> Result<(), StorageError> {
     let bytes = to_vec(log).map_err(|e| StorageError::SerializationError(e.into()))?;
     let _ = S::storage_write(Key::RotationLog(id), &bytes);
@@ -161,6 +170,11 @@ pub fn save<S: StorageAdaptor>(id: Id, log: &RotationLog) -> Result<(), StorageE
 /// retransmit) only produces one log entry. The duplicate is silently
 /// dropped — no error. This matches the broader CRDT model where applying
 /// the same operation twice is safe.
+///
+/// # Errors
+///
+/// Propagates [`load`] / [`save`] errors (deserialization on read,
+/// serialization on write).
 pub fn append<S: StorageAdaptor>(id: Id, entry: RotationLogEntry) -> Result<(), StorageError> {
     let mut log = load::<S>(id)?.unwrap_or_else(RotationLog::empty);
     if log.entries.iter().any(|e| e.delta_id == entry.delta_id) {
@@ -185,6 +199,10 @@ pub fn append<S: StorageAdaptor>(id: Id, entry: RotationLogEntry) -> Result<(), 
 /// preserving backward compatibility.
 ///
 /// Returns `Ok(None)` if the log is empty or absent.
+///
+/// # Errors
+///
+/// Propagates [`load`] errors (deserialization on read).
 pub fn latest_writers<S: StorageAdaptor>(
     id: Id,
 ) -> Result<Option<BTreeSet<PublicKey>>, StorageError> {
@@ -236,6 +254,10 @@ pub fn latest_writers<S: StorageAdaptor>(
 /// fallback for paths without DAG context.
 ///
 /// Returns `Ok(None)` if no log entry is reachable (or the log is absent).
+///
+/// # Errors
+///
+/// Propagates [`load`] errors (deserialization on read).
 pub fn writers_at<S: StorageAdaptor, F>(
     id: Id,
     causal_parents: &[[u8; 32]],

@@ -285,7 +285,8 @@ fn verifier_with_dag_context_uses_rotation_log() {
         vec![],
     );
     let parents = [d1];
-    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|a, b| a == &d1 && b == &d1;
+    // Direct parent-match in writers_at handles `delta_id == d1`; no DAG ancestry needed here.
+    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
     let ctx = dag_ctx(&parents, [0xD2; 32], hlc_at(2), happens_before);
 
     // Without P3 this would be rejected (sig vs stored {Bob} fails).
@@ -343,7 +344,8 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
         vec![],
     );
     let parents = [d1];
-    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|a, b| a == &d1 && b == &d1;
+    // Direct parent-match in writers_at handles `delta_id == d1`; no DAG ancestry needed here.
+    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
     let ctx = dag_ctx(&parents, [0xD2; 32], hlc_at(2), happens_before);
 
     let result = Interface::<S<403>>::apply_action(forged, ctx);
