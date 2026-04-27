@@ -775,6 +775,13 @@ impl<S: StorageAdaptor> Interface<S> {
     /// production paths don't yet thread `CausalDelta.{id,hlc}` through
     /// the WASM ABI, so the hook is dormant in production until that
     /// follow-up lands. Tests construct full ctx explicitly.
+    ///
+    /// # Caller invariant
+    ///
+    /// Must not be called twice for the same entity within one delta —
+    /// see [`rotation_log::append`](crate::rotation_log::append) for why
+    /// (delta_id-only dedup). Multi-action deltas with two rotations on
+    /// the same entity are not supported and will trip a debug assertion.
     fn maybe_append_rotation_log(
         id: Id,
         metadata: &Metadata,

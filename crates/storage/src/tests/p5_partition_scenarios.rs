@@ -221,10 +221,22 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
          includes Bob, even though stored writers post-D1 is {Alice}",
     );
 
-    // The rotation log on Carol should have entries from D_root, D1, and D2's
-    // bootstrap-counts-as-rotation (D2 didn't change the writer set since
-    // Bob's claim was {Alice, Bob} — same as D_root). So the log has 2 entries
-    // (D_root and D1); D2 was a value-write.
+    // The rotation log on Carol should have entries from D_root and D1; D2
+    // was a value-write whose claimed `{Alice, Bob}` matches the bootstrap
+    // set, so it doesn't trigger the rotation hook.
+    //
+    // KNOWN FRAGILITY (PR #2265 review): D2 is correctly skipped here only
+    // because the index's `storage_type.writers` is *frozen at bootstrap* —
+    // `Index::update_hash_for` updates `own_hash`/`full_hash`/`updated_at`
+    // but never touches `storage_type`. So `pre_apply_writers` returned to
+    // `maybe_append_rotation_log` is `{Alice, Bob}` (bootstrap), not the
+    // post-D1 `{Alice}`. The comparison `pre_apply_writers != action.writers`
+    // is thus `{A,B} != {A,B}` → not a rotation. If `update_hash_for` is
+    // ever changed to keep `storage_type` in sync, the rotation-detection
+    // logic must move to comparing against `writers_at(causal_parents)`
+    // instead of stored, or stale value-writes will be falsely logged.
+    // See `write_hook_relies_on_stale_stored_writers_for_rotation_detection`
+    // in p3_dag_causal.rs for the explicit demonstration. Tracked in #2233 P3.
     let log = rotation_log::load::<Carol>(id).unwrap().unwrap();
     assert_eq!(log.entries.len(), 2, "log has D_root and D1");
     assert_eq!(log.entries[0].delta_id, d_root_id);

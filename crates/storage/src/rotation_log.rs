@@ -45,6 +45,12 @@ use crate::store::{Key, StorageAdaptor};
 
 /// One accepted rotation, captured at apply-time.
 ///
+/// **Caller invariant**: at most one entry per `(entity_id, delta_id)`. The
+/// log dedups on `delta_id` alone and silently drops a second [`append`] for
+/// the same delta (see that fn for rationale + debug assertion). Multi-action
+/// `CausalDelta`s with two rotations on the same entity are not supported;
+/// callers must split them into separate deltas. Tracked in #2233 P3.
+///
 /// Fields chosen to be sufficient for the ADR ordering rule without needing
 /// to consult any other state:
 /// - `delta_id` identifies the `CausalDelta` so the caller's DAG-ancestry
@@ -171,13 +177,33 @@ pub fn save<S: StorageAdaptor>(id: Id, log: &RotationLog) -> Result<(), StorageE
 /// dropped — no error. This matches the broader CRDT model where applying
 /// the same operation twice is safe.
 ///
+/// **Caller invariant — one rotation per entity per delta**: dedup keys on
+/// `delta_id` only. If a single `CausalDelta` carries two rotation actions
+/// on the same entity, only the first reaches the log; the second is
+/// silently dropped while `save_internal` still applies its data. This
+/// would diverge log from stored state. A `debug_assert!` below catches the
+/// case where the silent drop would discard *different* contents (replays
+/// pass it because contents match). Multi-action deltas with multiple
+/// rotations on the same entity must be split into separate deltas at
+/// construction time. Tracked in #2233 P3.
+///
 /// # Errors
 ///
 /// Propagates [`load`] / [`save`] errors (deserialization on read,
 /// serialization on write).
 pub fn append<S: StorageAdaptor>(id: Id, entry: RotationLogEntry) -> Result<(), StorageError> {
     let mut log = load::<S>(id)?.unwrap_or_else(RotationLog::empty);
-    if log.entries.iter().any(|e| e.delta_id == entry.delta_id) {
+    if let Some(existing) = log.entries.iter().find(|e| e.delta_id == entry.delta_id) {
+        debug_assert_eq!(
+            (
+                &existing.new_writers,
+                existing.signer,
+                existing.writers_nonce
+            ),
+            (&entry.new_writers, entry.signer, entry.writers_nonce),
+            "rotation_log::append called twice for delta_id with differing contents — \
+             multi-rotation-per-entity-per-delta is not supported (#2233 P3)"
+        );
         return Ok(());
     }
     log.entries.push(entry);

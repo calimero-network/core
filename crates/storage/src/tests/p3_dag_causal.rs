@@ -458,6 +458,115 @@ fn write_hook_appends_on_writer_set_change() {
     );
 }
 
+/// Documents a known design fragility flagged in PR #2265 review.
+///
+/// `maybe_append_rotation_log` decides whether to append by comparing the
+/// action's claimed `writers` against the currently-stored writers. But
+/// `Index::update_hash_for` only touches `own_hash`/`full_hash`/`updated_at`
+/// — it never updates `metadata.storage_type`, so the stored writers stay
+/// frozen at the bootstrap set forever.
+///
+/// As a result, a value-write that *happens* to claim the bootstrap writers
+/// (e.g., authored by a peer with stale view) is correctly NOT logged as a
+/// rotation, even after a real rotation has updated the writer set logically.
+/// The rotation-detection logic depends on this stale-stored-writers behavior
+/// to avoid false positives.
+///
+/// If `update_hash_for` is ever changed to also update `storage_type`, the
+/// rotation-detection logic must switch to comparing against
+/// `writers_at(causal_parents)` instead, or stale value-writes will be
+/// falsely flagged as rotations. Same root cause underlies the v2 fallback
+/// verifier's reliance on stored writers for signature checks; both are
+/// tracked as #2233 P3 follow-up.
+#[test]
+fn write_hook_relies_on_stale_stored_writers_for_rotation_detection() {
+    env::reset_for_testing();
+    let root = setup_root::<S<408>>();
+
+    let alice_sk = make_signing_key(0xAB);
+    let bob_sk = make_signing_key(0xBB);
+    let alice = pubkey_of(&alice_sk);
+    let bob = pubkey_of(&bob_sk);
+    let id = entity_id(0x48);
+
+    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
+
+    // Bootstrap with {Alice, Bob}.
+    let bootstrap = build_signed_shared_action(
+        true,
+        id,
+        b"v0".to_vec(),
+        [alice, bob].into_iter().collect(),
+        hlc_at(0),
+        &alice_sk,
+        vec![root.clone()],
+    );
+    Interface::<S<408>>::apply_action(
+        bootstrap,
+        dag_ctx(&[], [0xE0; 32], hlc_at(0), happens_before),
+    )
+    .unwrap();
+
+    // D1: Alice rotates Bob out → writers = {Alice}. Logged as a rotation.
+    let rotation = build_signed_shared_action(
+        false,
+        id,
+        b"v1".to_vec(),
+        [alice].into_iter().collect(),
+        hlc_at(1),
+        &alice_sk,
+        vec![],
+    );
+    Interface::<S<408>>::apply_action(
+        rotation,
+        dag_ctx(&[[0xE0; 32]], [0xE1; 32], hlc_at(1), happens_before),
+    )
+    .unwrap();
+    assert_eq!(
+        rotation_log::load::<S<408>>(id)
+            .unwrap()
+            .unwrap()
+            .entries
+            .len(),
+        2,
+        "post-D1 baseline: bootstrap + rotation"
+    );
+
+    // D2: Alice value-write claiming the BOOTSTRAP writers {Alice, Bob}.
+    // She's authorized (signature verifies against the authoritative set),
+    // so the write itself is accepted. The rotation-detection compares
+    // action.writers `{Alice, Bob}` against `pre_apply_writers` — which is
+    // STILL `{Alice, Bob}` because `Index::update_hash_for` never updated
+    // `storage_type` after D1. So `is_rotation = false` and no log entry
+    // is appended.
+    //
+    // If the index had updated to `{Alice}` after D1, this comparison would
+    // be `{Alice, Bob} != {Alice}` → IS rotation → falsely append. This
+    // assertion catches that future regression.
+    let value_write_with_stale_writers = build_signed_shared_action(
+        false,
+        id,
+        b"v2".to_vec(),
+        [alice, bob].into_iter().collect(), // claims bootstrap writers
+        hlc_at(2),
+        &alice_sk,
+        vec![],
+    );
+    Interface::<S<408>>::apply_action(
+        value_write_with_stale_writers,
+        dag_ctx(&[[0xE1; 32]], [0xE2; 32], hlc_at(2), happens_before),
+    )
+    .unwrap();
+
+    let log = rotation_log::load::<S<408>>(id).unwrap().unwrap();
+    assert_eq!(
+        log.entries.len(),
+        2,
+        "value-write with stale writer claim must NOT append \
+         (relies on stored writers staying frozen at bootstrap)"
+    );
+}
+
 // =============================================================================
 // P4-impl coverage: ADR Example D (write vs rotate on the same entity)
 // =============================================================================
