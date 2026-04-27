@@ -6,7 +6,7 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
 use super::membership::{is_group_admin_or_has_capability, is_inherited_admin};
-use super::{membership_view::GroupMembershipView, GroupStoreError};
+use super::GroupStoreError;
 
 /// Authorization service for group governance operations.
 ///
@@ -16,16 +16,11 @@ use super::{membership_view::GroupMembershipView, GroupStoreError};
 pub struct PermissionChecker<'a> {
     store: &'a Store,
     group_id: ContextGroupId,
-    membership: GroupMembershipView<'a>,
 }
 
 impl<'a> PermissionChecker<'a> {
     pub fn new(store: &'a Store, group_id: ContextGroupId) -> Self {
-        Self {
-            store,
-            group_id,
-            membership: GroupMembershipView::new(store, group_id),
-        }
+        Self { store, group_id }
     }
 
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
@@ -45,9 +40,16 @@ impl<'a> PermissionChecker<'a> {
         if self.is_admin(identity)? {
             return Ok(());
         }
-        // Re-emit the direct error for non-Open / non-inherited cases so
-        // existing callers see the same diagnostic surface they expect.
-        self.membership.require_admin(identity)
+        // `is_admin` (via `is_inherited_admin`) is a strict superset of
+        // the direct admin check, including the `GroupMeta.admin_identity`
+        // fallback. Falling through to `membership.require_admin` here
+        // would just re-run `is_group_admin` to format an error. Bail
+        // directly with the same shape `require_group_admin` uses, so
+        // callers that match on `GroupStoreError::NotAdmin` keep working.
+        bail!(GroupStoreError::NotAdmin {
+            group_id: format!("{:?}", self.group_id),
+            identity: format!("{:?}", identity),
+        });
     }
 
     pub fn require_manage_members(&self, identity: &PublicKey, operation: &str) -> EyreResult<()> {
