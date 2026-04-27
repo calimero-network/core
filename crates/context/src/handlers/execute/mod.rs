@@ -168,10 +168,35 @@ impl Handler<ExecuteRequest> for ContextManager {
             "infallible (verified before): missing private key in ContextIdentity for signing",
         );
 
+        // Issue #2256: align state-delta crypto with subgroup-visibility
+        // model. An `Open` subgroup is, by definition, readable by every
+        // namespace member (including inheritance-eligible parent
+        // members), so its context state deltas are encrypted with the
+        // *namespace* key — not the subgroup's own per-subgroup key.
+        // This is symmetric with the governance-op encryption choice in
+        // `GroupGovernancePublisher`. Restricted (or unset) subgroups
+        // continue to use their own per-subgroup key, unchanged.
         let (sender_key, broadcast_key_id) =
             match crate::group_store::get_group_for_context(&self.datastore, &context_id) {
                 Ok(Some(gid)) => {
-                    match crate::group_store::load_current_group_key(&self.datastore, &gid) {
+                    let key_group_id =
+                        match crate::group_store::resolve_namespace(&self.datastore, &gid) {
+                            Ok(ns_id)
+                                if gid != ns_id
+                                    && matches!(
+                                        crate::group_store::get_subgroup_visibility(
+                                            &self.datastore,
+                                            &gid,
+                                        ),
+                                        Ok(calimero_context_config::VisibilityMode::Open)
+                                    ) =>
+                            {
+                                ns_id
+                            }
+                            _ => gid,
+                        };
+                    match crate::group_store::load_current_group_key(&self.datastore, &key_group_id)
+                    {
                         Ok(Some((kid, gk))) => (PrivateKey::from(gk), kid),
                         _ => {
                             if let Some(sk) = identity.sender_key {

@@ -220,11 +220,31 @@ pub async fn handle_state_delta(
         let store = node_clients.context.datastore();
         let gid = calimero_context::group_store::get_group_for_context(store, &context_id)?;
         match gid {
-            Some(g) => calimero_context::group_store::load_group_key_by_id(store, &g, &key_id)?
-                .map(PrivateKey::from)
-                .ok_or_else(|| {
+            Some(g) => {
+                // Issue #2256: an `Open` subgroup encrypts state deltas
+                // with the parent namespace's key (see `execute/mod.rs`
+                // for the publisher choice). Try the subgroup keyring
+                // first (Restricted case), then fall back to the
+                // namespace keyring (Open case). Same shape as the
+                // governance-op decrypt fallback in
+                // `namespace_governance::apply_namespace_op`.
+                let direct =
+                    calimero_context::group_store::load_group_key_by_id(store, &g, &key_id)?;
+                let resolved = match direct {
+                    Some(k) => Some(k),
+                    None => match calimero_context::group_store::resolve_namespace(store, &g) {
+                        Ok(ns_id) if ns_id != g => {
+                            calimero_context::group_store::load_group_key_by_id(
+                                store, &ns_id, &key_id,
+                            )?
+                        }
+                        _ => None,
+                    },
+                };
+                resolved.map(PrivateKey::from).ok_or_else(|| {
                     eyre::eyre!("no group key found for key_id {}", hex::encode(key_id))
-                })?,
+                })?
+            }
             None => {
                 let identity = node_clients
                     .context
@@ -1322,7 +1342,27 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         let gid = calimero_context::group_store::get_group_for_context(store, &context_id)?;
         match gid {
             Some(g) => {
-                calimero_context::group_store::load_group_key_by_id(store, &g, &buffered.key_id)?
+                // Issue #2256 — Open-subgroup namespace-key fallback,
+                // mirroring the live-apply path above.
+                let direct = calimero_context::group_store::load_group_key_by_id(
+                    store,
+                    &g,
+                    &buffered.key_id,
+                )?;
+                let resolved = match direct {
+                    Some(k) => Some(k),
+                    None => match calimero_context::group_store::resolve_namespace(store, &g) {
+                        Ok(ns_id) if ns_id != g => {
+                            calimero_context::group_store::load_group_key_by_id(
+                                store,
+                                &ns_id,
+                                &buffered.key_id,
+                            )?
+                        }
+                        _ => None,
+                    },
+                };
+                resolved
                     .map(PrivateKey::from)
                     .ok_or_else(|| eyre::eyre!("no group key found for buffered delta"))?
             }
