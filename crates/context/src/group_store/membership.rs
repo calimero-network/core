@@ -158,7 +158,32 @@ pub enum MembershipPath {
 ///
 /// The walk terminates at the first `Restricted` ancestor (a wall) or at
 /// the namespace root. Bounded by [`MAX_NAMESPACE_DEPTH`] to defend
-/// against corrupted store state with cyclic parent edges.
+/// against corrupted store state with cyclic parent edges. The namespace
+/// root's *own* `subgroup_visibility` is intentionally never read — the
+/// walk reaches it only when a direct membership at the root is the
+/// anchor, at which point the `has_direct_member` check at step 4 returns
+/// before step 2 is re-evaluated for that level.
+///
+/// **Architectural note:** this same parent-walk logic anchors several
+/// other subsystems that all need to recognize Open-subgroup inheritance
+/// consistently:
+///
+/// - [`super::permission_checker::PermissionChecker::is_admin`] and
+///   `is_authorized_with_capability` — governance-op authorization for
+///   inherited admins / capability-holders.
+/// - `crates/context/src/handlers/execute/mod.rs` — picks the namespace
+///   key (instead of the subgroup key) when encrypting context state
+///   deltas for Open subgroups.
+/// - `crates/node/src/handlers/state_delta/mod.rs` — falls back to the
+///   namespace keyring on receiver-side decryption miss.
+/// - `crates/node/src/sync/manager/mod.rs` — accepts inheritance-eligible
+///   parent members at the responder-side stream-auth gate
+///   (`DagHeadsRequest`, `DeltaRequest`, snapshot stream).
+///
+/// Keeping these in sync is the price of having Open-subgroup
+/// inheritance work end-to-end without a separate key-distribution
+/// path. If you change the walk semantics here, audit the four call
+/// sites above.
 pub fn check_group_membership_path(
     store: &Store,
     group_id: &ContextGroupId,
