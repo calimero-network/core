@@ -296,6 +296,44 @@ async fn publish_and_await_ack_returns_ok_on_min_acks_satisfied() {
 }
 
 #[tokio::test]
+async fn publish_and_await_ack_returns_ok_immediately_when_min_acks_is_zero() {
+    // `min_acks == 0` means "publish-only, no wait". Without the early
+    // short-circuit the collect loop sits at `tokio::time::timeout` for
+    // the full `op_timeout` (no ack ever arrives) and then returns
+    // `NoAckReceived` instead of `Ok` — the wrong outcome for the
+    // contract. Test deadline is intentionally large so a regressed
+    // implementation would visibly time out rather than appear to pass.
+    let store = empty_store();
+    let router = AckRouter::default();
+    let transport = StubTransport;
+    let topic = TopicHash::from_raw("ns/min-acks-zero");
+    let signer = PrivateKey::random(&mut rand::thread_rng());
+    let signed_op = mk_signed_op(&signer, [42u8; 32]);
+
+    let started = std::time::Instant::now();
+    let res = publish_and_await_ack_namespace(
+        &store,
+        &transport,
+        &router,
+        [42u8; 32],
+        topic,
+        signed_op,
+        Duration::from_secs(5),
+        0,
+        None,
+    )
+    .await;
+
+    let report = res.expect("min_acks=0 must return Ok immediately");
+    assert!(report.acked_by.is_empty());
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "min_acks=0 must not wait for op_timeout; elapsed = {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
 async fn verify_ack_rejects_signature_without_domain_prefix() {
     // Defense in depth: a signer that signed `op_hash` directly (without
     // the ACK_SIGN_DOMAIN prefix) must not have their ack accepted, even

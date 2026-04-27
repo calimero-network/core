@@ -211,6 +211,24 @@ pub async fn publish_and_await_ack_namespace(
         .await
         .map_err(GovernanceBroadcastError::Publish)?;
 
+    // `min_acks == 0` means "publish-only, don't wait" — the expected
+    // outcome is immediate `Ok`, not a `NoAckReceived` after `op_timeout`
+    // elapses. The collect loop's threshold check sits inside the
+    // `Ok(Ok(ack))` arm and is therefore unreachable when no ack ever
+    // arrives, so without this short-circuit the function would block
+    // for the full `op_timeout` and then surface the wrong error.
+    // Spec §6.2 documents the default as `1`; this guard also makes the
+    // primitive well-behaved if a future caller (e.g. a "broadcast and
+    // forget" variant) opts out of waiting.
+    if min_acks == 0 {
+        ack_router.release(op_hash, rx);
+        return Ok(DeliveryReport {
+            op_hash,
+            acked_by: Vec::new(),
+            elapsed_ms: start.elapsed().as_millis() as u64,
+        });
+    }
+
     let mut acked_by: Vec<PublicKey> = Vec::new();
     let deadline = start + op_timeout;
     loop {
