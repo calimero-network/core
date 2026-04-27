@@ -26,20 +26,20 @@
 //! actually exercise.
 
 use core::num::NonZeroU128;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
-use calimero_primitives::identity::PublicKey;
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::SigningKey;
 
 use crate::action::Action;
 use crate::address::Id;
-use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+use crate::entities::{ChildInfo, Metadata};
 use crate::env;
 use crate::index::Index;
 use crate::interface::{disable_nonce_check_for_testing, ApplyContext, Interface, StorageError};
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use crate::rotation_log;
 use crate::store::{MockedStorage, StorageAdaptor};
+use crate::tests::common::{build_signed_shared_action, pubkey_of};
 
 // =============================================================================
 // Harness
@@ -118,66 +118,6 @@ fn make_signing_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-fn pubkey_of(sk: &SigningKey) -> PublicKey {
-    PublicKey::from(*sk.verifying_key().as_bytes())
-}
-
-/// Build a signed Shared action. Parameters mirror the production stamping
-/// path: `hlc_ns` populates both `updated_at` and the signature `nonce`.
-fn build_signed(
-    add: bool,
-    id: Id,
-    data: Vec<u8>,
-    writers: BTreeSet<PublicKey>,
-    hlc_ns: u64,
-    signer_sk: &SigningKey,
-    ancestors: Vec<ChildInfo>,
-) -> Action {
-    let metadata = Metadata {
-        created_at: hlc_ns,
-        updated_at: hlc_ns.into(),
-        storage_type: StorageType::Shared {
-            writers,
-            signature_data: Some(SignatureData {
-                signature: [0; 64],
-                nonce: hlc_ns,
-                signer: Some(pubkey_of(signer_sk)),
-            }),
-        },
-        crdt_type: None,
-        field_name: None,
-    };
-    let mut action = if add {
-        Action::Add {
-            id,
-            data,
-            ancestors,
-            metadata,
-        }
-    } else {
-        Action::Update {
-            id,
-            data,
-            ancestors,
-            metadata,
-        }
-    };
-    let payload = action.payload_for_signing();
-    let signature = signer_sk.sign(&payload).to_bytes();
-    let metadata_mut = match &mut action {
-        Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata,
-        _ => unreachable!(),
-    };
-    if let StorageType::Shared {
-        signature_data: Some(sd),
-        ..
-    } = &mut metadata_mut.storage_type
-    {
-        sd.signature = signature;
-    }
-    action
-}
-
 fn setup_root<S: StorageAdaptor>() -> ChildInfo {
     let root_id = Id::root();
     let root_meta = Metadata::default();
@@ -224,7 +164,7 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
         id: d_root_id,
         parents: vec![],
         hlc_ns: one_sec(10),
-        action: build_signed(
+        action: build_signed_shared_action(
             true,
             id,
             b"hello".to_vec(),
@@ -243,7 +183,7 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
         id: d1_id,
         parents: vec![d_root_id],
         hlc_ns: one_sec(20),
-        action: build_signed(
+        action: build_signed_shared_action(
             false,
             id,
             b"hello".to_vec(),
@@ -262,7 +202,7 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
         id: d2_id,
         parents: vec![d_root_id],
         hlc_ns: one_sec(21),
-        action: build_signed(
+        action: build_signed_shared_action(
             false,
             id,
             b"world".to_vec(),
@@ -321,7 +261,7 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
         id: d_root_id,
         parents: vec![],
         hlc_ns: one_sec(10),
-        action: build_signed(
+        action: build_signed_shared_action(
             true,
             id,
             b"v0".to_vec(),
@@ -340,7 +280,7 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
         id: d2_id,
         parents: vec![d_root_id],
         hlc_ns: one_sec(15),
-        action: build_signed(
+        action: build_signed_shared_action(
             false,
             id,
             b"alice-pre".to_vec(),
@@ -358,7 +298,7 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
         id: d1_id,
         parents: vec![d2_id],
         hlc_ns: one_sec(20),
-        action: build_signed(
+        action: build_signed_shared_action(
             false,
             id,
             b"alice-pre".to_vec(),
@@ -377,7 +317,7 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
         id: d3_id,
         parents: vec![d1_id],
         hlc_ns: one_sec(25),
-        action: build_signed(
+        action: build_signed_shared_action(
             false,
             id,
             b"alice-post".to_vec(),
@@ -435,7 +375,7 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
         id: d_root_id,
         parents: vec![],
         hlc_ns: one_sec(10),
-        action: build_signed(
+        action: build_signed_shared_action(
             true,
             id,
             b"v0".to_vec(),
@@ -446,7 +386,7 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
         ),
     };
     let d_root_dave = Delta {
-        action: build_signed(
+        action: build_signed_shared_action(
             true,
             id,
             b"v0".to_vec(),
@@ -472,7 +412,7 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
         id: d1_id,
         parents: vec![d_root_id],
         hlc_ns: one_sec(20),
-        action: build_signed(
+        action: build_signed_shared_action(
             false,
             id,
             b"v0".to_vec(),
@@ -490,7 +430,7 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
         id: d2_id,
         parents: vec![d_root_id],
         hlc_ns: one_sec(21),
-        action: build_signed(
+        action: build_signed_shared_action(
             false,
             id,
             b"v0".to_vec(),
@@ -576,7 +516,7 @@ fn long_partition_reconciliation_converges() {
         id: g0,
         parents: vec![],
         hlc_ns: one_sec(10),
-        action: build_signed(
+        action: build_signed_shared_action(
             true,
             id,
             b"v0".to_vec(),
@@ -587,7 +527,7 @@ fn long_partition_reconciliation_converges() {
         ),
     };
     let bootstrap_right = Delta {
-        action: build_signed(
+        action: build_signed_shared_action(
             true,
             id,
             b"v0".to_vec(),
@@ -613,7 +553,7 @@ fn long_partition_reconciliation_converges() {
         id: l1,
         parents: vec![g0],
         hlc_ns: one_sec(20),
-        action: build_signed(
+        action: build_signed_shared_action(
             false,
             id,
             b"v0".to_vec(),
@@ -631,7 +571,7 @@ fn long_partition_reconciliation_converges() {
         id: l2,
         parents: vec![l1],
         hlc_ns: one_sec(30),
-        action: build_signed(
+        action: build_signed_shared_action(
             false,
             id,
             b"left".to_vec(),
@@ -650,7 +590,7 @@ fn long_partition_reconciliation_converges() {
         id: r1,
         parents: vec![g0],
         hlc_ns: one_sec(25),
-        action: build_signed(
+        action: build_signed_shared_action(
             false,
             id,
             b"v0".to_vec(),
@@ -668,7 +608,7 @@ fn long_partition_reconciliation_converges() {
         id: r2,
         parents: vec![r1],
         hlc_ns: one_sec(35),
-        action: build_signed(
+        action: build_signed_shared_action(
             false,
             id,
             b"right".to_vec(),

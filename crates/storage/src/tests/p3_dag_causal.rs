@@ -9,20 +9,18 @@
 //!   `delta_id`/`delta_hlc` are no-ops.
 
 use core::num::NonZeroU128;
-use std::collections::BTreeSet;
 
-use calimero_primitives::identity::PublicKey;
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::SigningKey;
 
-use crate::action::Action;
 use crate::address::Id;
-use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+use crate::entities::{ChildInfo, Metadata};
 use crate::env;
 use crate::index::Index;
 use crate::interface::{ApplyContext, Interface};
 use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 use crate::rotation_log::{self, RotationLogEntry};
 use crate::store::{MockedStorage, StorageAdaptor};
+use crate::tests::common::{build_signed_shared_action, pubkey_of};
 
 // Each test uses a unique mocked-storage scope so they don't bleed into each
 // other (the mock store is a thread-local BTreeMap keyed on (scope, key)).
@@ -34,10 +32,6 @@ type S<const SCOPE: usize> = MockedStorage<SCOPE>;
 
 fn make_signing_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
-}
-
-fn pubkey_of(sk: &SigningKey) -> PublicKey {
-    PublicKey::from(*sk.verifying_key().as_bytes())
 }
 
 fn hlc(ns: u64) -> HybridTimestamp {
@@ -60,67 +54,6 @@ fn setup_root<S: StorageAdaptor>() -> ChildInfo {
     let root_meta = Metadata::default();
     Index::<S>::add_root(ChildInfo::new(root_id, [0; 32], root_meta.clone())).unwrap();
     ChildInfo::new(root_id, [0; 32], root_meta)
-}
-
-/// Construct a signed Shared action. `signer_sk` must be in `writers` (or the
-/// caller is intentionally testing a forged action).
-///
-/// `hlc_ns` is used as BOTH the action's `updated_at` and the signature's
-/// `nonce` — matching production where `sign_authorized_actions` stamps both
-/// with the action's HLC. Tests must pass strictly increasing values across
-/// sequential calls to satisfy the per-entity replay-protection check.
-fn build_signed_shared_action(
-    add: bool,
-    id: Id,
-    data: Vec<u8>,
-    writers: BTreeSet<PublicKey>,
-    hlc_ns: u64,
-    signer_sk: &SigningKey,
-    ancestors: Vec<ChildInfo>,
-) -> Action {
-    let metadata = Metadata {
-        created_at: hlc_ns,
-        updated_at: hlc_ns.into(),
-        storage_type: StorageType::Shared {
-            writers,
-            signature_data: Some(SignatureData {
-                signature: [0; 64], // placeholder, filled in below
-                nonce: hlc_ns,
-                signer: Some(pubkey_of(signer_sk)),
-            }),
-        },
-        crdt_type: None,
-        field_name: None,
-    };
-    let mut action = if add {
-        Action::Add {
-            id,
-            data,
-            ancestors,
-            metadata,
-        }
-    } else {
-        Action::Update {
-            id,
-            data,
-            ancestors,
-            metadata,
-        }
-    };
-    let payload = action.payload_for_signing();
-    let signature = signer_sk.sign(&payload).to_bytes();
-    let metadata_mut = match &mut action {
-        Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata,
-        _ => unreachable!(),
-    };
-    if let StorageType::Shared {
-        signature_data: Some(sd),
-        ..
-    } = &mut metadata_mut.storage_type
-    {
-        sd.signature = signature;
-    }
-    action
 }
 
 fn empty_ctx<'a>() -> ApplyContext<'a> {
