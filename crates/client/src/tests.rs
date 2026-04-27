@@ -37,8 +37,8 @@ use calimero_server_primitives::admin::RemoveGroupMembersApiRequest;
 use calimero_server_primitives::admin::ReparentGroupApiRequest;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
-use calimero_server_primitives::admin::SetDefaultVisibilityApiRequest;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
+use calimero_server_primitives::admin::SetSubgroupVisibilityApiRequest;
 use calimero_server_primitives::admin::SyncGroupApiRequest;
 use calimero_server_primitives::admin::UpdateGroupSettingsApiRequest;
 use calimero_server_primitives::admin::UpdateMemberRoleApiRequest;
@@ -121,7 +121,7 @@ async fn get_group_info() {
                 "contextCount": 0,
                 "activeUpgrade": null,
                 "defaultCapabilities": 0,
-                "defaultVisibility": "open"
+                "subgroupVisibility": "open"
             }
         })))
         .expect(1)
@@ -775,11 +775,11 @@ async fn set_default_capabilities() {
 }
 
 #[tokio::test]
-async fn set_default_visibility() {
+async fn set_subgroup_visibility() {
     let server = MockServer::start().await;
     Mock::given(method("PUT"))
         .and(path(format!(
-            "/admin-api/groups/{GID}/settings/default-visibility"
+            "/admin-api/groups/{GID}/settings/subgroup-visibility"
         )))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
         .expect(1)
@@ -788,10 +788,10 @@ async fn set_default_visibility() {
 
     let client = make_client(&Url::parse(&server.uri()).unwrap());
     client
-        .set_default_visibility(
+        .set_subgroup_visibility(
             GID,
-            SetDefaultVisibilityApiRequest {
-                default_visibility: "open".to_string(),
+            SetSubgroupVisibilityApiRequest {
+                subgroup_visibility: "open".to_string(),
                 requester: None,
             },
         )

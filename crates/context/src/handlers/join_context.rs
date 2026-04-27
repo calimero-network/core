@@ -129,14 +129,40 @@ impl Handler<JoinContextRequest> for ContextManager {
                         )
                         })?;
 
-                // Group membership already verified above. All contexts in a group
-                // a member has access to are joinable. Restricted access is handled
-                // at the subgroup level (admin must explicitly add member to the subgroup).
+                // Group membership covers both direct members and parent-chain
+                // members inherited through `Open` subgroups (gated by the
+                // `CAN_JOIN_OPEN_SUBGROUPS` capability at the anchor parent).
+                // `Restricted` subgroups still require an explicit
+                // `add_group_members` call by an admin.
                 if group_store::load_group_meta(&datastore, &group_id)?.is_none() {
                     bail!("group not found");
                 }
-                if !group_store::check_group_membership(&datastore, &group_id, &joiner_identity)? {
-                    bail!("identity is not a member of the group");
+                let membership_path = group_store::check_group_membership_path(
+                    &datastore,
+                    &group_id,
+                    &joiner_identity,
+                )?;
+                match membership_path {
+                    group_store::MembershipPath::None => {
+                        bail!("identity is not a member of the group");
+                    }
+                    group_store::MembershipPath::Direct => {}
+                    group_store::MembershipPath::Inherited { anchor, via_admin } => {
+                        // Audit trail: inherited members do not appear in
+                        // `list_group_members` for the subgroup, so emit a
+                        // structured log so admins can reconstruct who has
+                        // access via the parent-walk inheritance path
+                        // (issue #2256).
+                        info!(
+                            target: "calimero::audit::group_membership",
+                            subgroup_id = %hex::encode(group_id.to_bytes()),
+                            anchor_parent = %hex::encode(anchor.to_bytes()),
+                            %joiner_identity,
+                            %context_id,
+                            via_admin,
+                            "context join authorized via inherited subgroup membership"
+                        );
+                    }
                 }
 
                 let ns_id = group_store::resolve_namespace(&datastore, &group_id)?;

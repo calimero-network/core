@@ -119,11 +119,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     GroupMemberRole::Admin,
                 )?;
 
-                // Set default capabilities so new members can join open contexts
+                // Set default capabilities so new members can be inherited
+                // into Open subgroups beneath this group.
                 group_store::set_default_capabilities(
                     &datastore,
                     &group_id,
-                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_CONTEXTS,
+                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
                 )?;
 
                 // Generate and store the group encryption key.
