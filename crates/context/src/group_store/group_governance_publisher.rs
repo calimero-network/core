@@ -1,15 +1,14 @@
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
-use calimero_context_config::VisibilityMode;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 use rand::{rngs::OsRng, Rng};
 
 use super::{
-    build_key_rotation, encrypt_group_op, get_namespace_identity_record, get_subgroup_visibility,
-    load_current_group_key_record, resolve_namespace, sign_apply_local_group_op_borsh,
-    store_group_key, NamespaceGovernance,
+    build_key_rotation, encrypt_group_op, get_namespace_identity_record,
+    is_open_chain_to_namespace, load_current_group_key_record, resolve_namespace,
+    sign_apply_local_group_op_borsh, store_group_key, NamespaceGovernance,
 };
 use crate::metrics::record_governance_publish_mesh_peers;
 
@@ -77,21 +76,33 @@ impl<'a> GroupGovernancePublisher<'a> {
             return Ok(());
         };
 
-        // Issue #2256: an `Open` subgroup is by definition readable by every
-        // member of its parent namespace, so we encrypt its ops with the
-        // *namespace* key rather than the subgroup's own key. That makes the
-        // crypto boundary match the access boundary, eliminates the need for
-        // a separate key-delivery path to inheritance-eligible parent
-        // members, and makes "Open" mean what it says cryptographically.
-        // The subgroup itself, and any non-Open subgroup, continues to use
-        // its own per-subgroup key.
-        let encrypting_group_id = if self.group_id != namespace_id
-            && get_subgroup_visibility(self.store, &self.group_id)? == VisibilityMode::Open
-        {
-            namespace_id
-        } else {
-            self.group_id
-        };
+        // Issue #2256: an `Open` subgroup whose entire ancestor chain up
+        // to the namespace is also `Open` is by definition readable by
+        // every member of its parent namespace, so we encrypt its ops
+        // with the *namespace* key rather than the subgroup's own key.
+        // That makes the crypto boundary match the access boundary,
+        // eliminates the need for a separate key-delivery path to
+        // inheritance-eligible parent members, and makes "Open" mean
+        // what it says cryptographically.
+        //
+        // **Chain check is required, not just immediate visibility:** if
+        // any ancestor between this subgroup and the namespace is
+        // `Restricted`, the membership walk in
+        // `check_group_membership_path` correctly refuses inheritance
+        // through that wall — so encrypting with the namespace key
+        // would expose this subgroup's content to namespace members
+        // who cannot actually join it. `is_open_chain_to_namespace`
+        // verifies the whole chain is Open before we widen the crypto
+        // boundary.
+        //
+        // Restricted subgroups (or any subgroup behind a Restricted
+        // ancestor) keep their per-subgroup key, unchanged.
+        let encrypting_group_id =
+            if is_open_chain_to_namespace(self.store, &self.group_id, &namespace_id)? {
+                namespace_id
+            } else {
+                self.group_id
+            };
 
         let Some(stored_key) = load_current_group_key_record(self.store, &encrypting_group_id)?
         else {

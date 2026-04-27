@@ -169,27 +169,34 @@ impl Handler<ExecuteRequest> for ContextManager {
         );
 
         // Issue #2256: align state-delta crypto with subgroup-visibility
-        // model. An `Open` subgroup is, by definition, readable by every
+        // model. An `Open` subgroup *whose entire ancestor chain to the
+        // namespace is also Open* is by definition readable by every
         // namespace member (including inheritance-eligible parent
         // members), so its context state deltas are encrypted with the
         // *namespace* key — not the subgroup's own per-subgroup key.
         // This is symmetric with the governance-op encryption choice in
-        // `GroupGovernancePublisher`. Restricted (or unset) subgroups
-        // continue to use their own per-subgroup key, unchanged.
+        // `GroupGovernancePublisher`. The chain check (rather than just
+        // immediate visibility) prevents widening the crypto boundary
+        // for a subgroup that sits behind a `Restricted` ancestor — the
+        // membership walk would refuse inheritance there, so namespace
+        // members must not be given decrypt access to its content.
+        // Restricted (or unset) subgroups, and Open subgroups behind a
+        // Restricted ancestor, continue to use their own per-subgroup
+        // key.
         let (sender_key, broadcast_key_id) =
             match crate::group_store::get_group_for_context(&self.datastore, &context_id) {
                 Ok(Some(gid)) => {
                     let key_group_id =
                         match crate::group_store::resolve_namespace(&self.datastore, &gid) {
                             Ok(ns_id)
-                                if gid != ns_id
-                                    && matches!(
-                                        crate::group_store::get_subgroup_visibility(
-                                            &self.datastore,
-                                            &gid,
-                                        ),
-                                        Ok(calimero_context_config::VisibilityMode::Open)
-                                    ) =>
+                                if matches!(
+                                    crate::group_store::is_open_chain_to_namespace(
+                                        &self.datastore,
+                                        &gid,
+                                        &ns_id,
+                                    ),
+                                    Ok(true),
+                                ) =>
                             {
                                 ns_id
                             }

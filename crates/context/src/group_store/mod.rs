@@ -48,8 +48,9 @@ pub use self::aliases::{
 pub use self::capabilities::{
     delete_all_member_capabilities, delete_default_capabilities, delete_subgroup_visibility,
     enumerate_member_capabilities, get_context_member_capability, get_default_capabilities,
-    get_member_capability, get_subgroup_visibility, set_context_member_capability,
-    set_default_capabilities, set_member_capability, set_subgroup_visibility,
+    get_member_capability, get_subgroup_visibility, is_open_chain_to_namespace,
+    set_context_member_capability, set_default_capabilities, set_member_capability,
+    set_subgroup_visibility,
 };
 pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;

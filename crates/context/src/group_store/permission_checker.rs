@@ -96,13 +96,26 @@ impl<'a> PermissionChecker<'a> {
     /// Resolves "admin or holds `capability_bit`" with Open-subgroup
     /// inheritance applied (issue #2256).
     ///
-    /// Direct authority in `self.group_id` short-circuits. Otherwise, if
-    /// the subgroup is reachable via the parent-walk inheritance path
-    /// (i.e. the subgroup or some ancestor is `Open` and `identity`
-    /// anchors at a parent), the check is *re-evaluated at the anchor
-    /// parent*. Admins at the anchor inherit unconditionally; non-admins
-    /// must hold both `CAN_JOIN_OPEN_SUBGROUPS` (already verified by the
-    /// walk) and the specific `capability_bit` at the anchor.
+    /// Direct authority in `self.group_id` short-circuits. Otherwise:
+    ///
+    /// - **Admins** at any ancestor in the Open chain inherit governance
+    ///   authority unconditionally (mirrors the structural-inheritance
+    ///   model for parent admins).
+    /// - **Non-admin** inherited members do **not** inherit governance
+    ///   capabilities (`MANAGE_MEMBERS`, `MANAGE_APPLICATION`,
+    ///   `CAN_CREATE_CONTEXT`, `CAN_INVITE_MEMBERS`, etc.). Their
+    ///   cross-boundary authority is scoped to *context join/read* via
+    ///   `CAN_JOIN_OPEN_SUBGROUPS` — the bit that already gated their
+    ///   passing the membership walk in
+    ///   [`super::membership::check_group_membership_path`]. Inheriting
+    ///   arbitrary parent-level capabilities into the subgroup would be
+    ///   a privilege-escalation path: a parent member with
+    ///   `MANAGE_MEMBERS` at the namespace could otherwise add/remove
+    ///   members in every Open subgroup, even though the subgroup admin
+    ///   may not have intended to delegate that authority.
+    ///
+    /// Subgroup admins must grant governance capabilities explicitly at
+    /// the subgroup level for non-admin parent members.
     fn is_authorized_with_capability(
         &self,
         identity: &PublicKey,
@@ -111,16 +124,18 @@ impl<'a> PermissionChecker<'a> {
         if is_group_admin_or_has_capability(self.store, &self.group_id, identity, capability_bit)? {
             return Ok(true);
         }
-        match check_group_membership_path(self.store, &self.group_id, identity)? {
+        // Only admin-inherited authority crosses the parent boundary;
+        // non-admin caps must be explicit at the subgroup level.
+        if matches!(
+            check_group_membership_path(self.store, &self.group_id, identity)?,
             MembershipPath::Inherited {
-                via_admin: true, ..
-            } => Ok(true),
-            MembershipPath::Inherited {
-                anchor,
-                via_admin: false,
-            } => is_group_admin_or_has_capability(self.store, &anchor, identity, capability_bit),
-            _ => Ok(false),
+                via_admin: true,
+                ..
+            }
+        ) {
+            return Ok(true);
         }
+        Ok(false)
     }
 
     pub fn require_admin_to_add_admin(

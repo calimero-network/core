@@ -96,6 +96,47 @@ pub fn get_subgroup_visibility(
     })
 }
 
+/// Returns `true` iff the chain `group_id → ... → namespace_id` consists
+/// entirely of `Open` subgroups — i.e. there is no `Restricted` ancestor
+/// between `group_id` and the namespace root.
+///
+/// This is the correct gate for **encryption-key selection** under the
+/// Option-C alignment (issue #2256): a subgroup whose access boundary is
+/// effectively namespace-wide must be `Open` *all the way up*. If any
+/// ancestor is `Restricted`, the membership walk in
+/// [`super::check_group_membership_path`] would terminate at that wall
+/// and refuse inheritance — so encrypting with the namespace key would
+/// open a confidentiality gap (all namespace members could decrypt
+/// content for a subgroup nobody can actually join via inheritance).
+///
+/// Returns `false` if `group_id == namespace_id` (the namespace itself
+/// has no parent and does not participate in subgroup inheritance), if
+/// any ancestor is `Restricted`, if the parent chain doesn't reach
+/// `namespace_id`, or if the walk exceeds [`super::namespace::MAX_NAMESPACE_DEPTH`].
+pub fn is_open_chain_to_namespace(
+    store: &Store,
+    group_id: &ContextGroupId,
+    namespace_id: &ContextGroupId,
+) -> EyreResult<bool> {
+    if group_id == namespace_id {
+        return Ok(false);
+    }
+    let mut current = *group_id;
+    for _ in 0..super::namespace::MAX_NAMESPACE_DEPTH {
+        if get_subgroup_visibility(store, &current)? != VisibilityMode::Open {
+            return Ok(false);
+        }
+        let Some(parent) = super::namespace::get_parent_group(store, &current)? else {
+            return Ok(false);
+        };
+        if &parent == namespace_id {
+            return Ok(true);
+        }
+        current = parent;
+    }
+    Ok(false)
+}
+
 pub fn set_subgroup_visibility(
     store: &Store,
     group_id: &ContextGroupId,
