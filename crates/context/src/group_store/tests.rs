@@ -2111,6 +2111,46 @@ fn inherited_admin_walk_independent_of_direct_non_admin_membership() {
 }
 
 #[test]
+fn has_direct_group_member_ignores_open_chain_inheritance() {
+    use calimero_context_config::VisibilityMode;
+
+    use super::has_direct_group_member;
+
+    // Bugbot finding (PR #2261): a previous version of the bootstrap /
+    // dedup guards in `store_group_meta`, `apply_member_joined`, and
+    // `admit_tee_node` used the inheritance-aware `check_group_membership`,
+    // which would silently report `true` for an identity that holds
+    // membership only via an Open parent — and skip writing the direct
+    // row that those handlers exist to create. `has_direct_group_member`
+    // is the direct-only counterpart that those guards must use.
+    let store = test_store();
+    let parent = ContextGroupId::from([0x60; 32]);
+    let child = ContextGroupId::from([0x61; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    add_group_member(&store, &parent, &alice, GroupMemberRole::Admin).unwrap();
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+
+    // Inheritance-aware path *should* see Alice (admin inheritance from parent).
+    assert!(check_group_membership(&store, &child, &alice).unwrap());
+
+    // Direct-only path *must not* see her — that's exactly the signal
+    // the bootstrap/dedup guards need to know they still have to write
+    // the direct row.
+    assert!(
+        !has_direct_group_member(&store, &child, &alice).unwrap(),
+        "has_direct_group_member must ignore Open-chain inheritance and \
+         report only on the direct membership row"
+    );
+
+    // After explicitly adding her to the child, both views agree.
+    add_group_member(&store, &child, &alice, GroupMemberRole::Member).unwrap();
+    assert!(has_direct_group_member(&store, &child, &alice).unwrap());
+    assert!(check_group_membership(&store, &child, &alice).unwrap());
+}
+
+#[test]
 fn default_capabilities_admin_override_propagates_to_new_member() {
     // Issue #2256 / PR #2261 regression: when an admin has overridden
     // the namespace's default capabilities to a non-`CAN_JOIN_OPEN_SUBGROUPS`

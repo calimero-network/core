@@ -24,7 +24,14 @@ impl Handler<StoreGroupMetaRequest> for ContextManager {
         // If metadata exists but admin is missing, fall through to repair.
         if let Ok(Some(ref meta)) = existing_meta {
             let admin_identity = meta.admin_identity.into();
-            if group_store::check_group_membership(&self.datastore, &group_id, &admin_identity)
+            // Direct-row check: this guard's intent is "did the previous
+            // bootstrap finish writing the admin's direct membership row?"
+            // The inheritance-aware `check_group_membership` walks the
+            // parent chain for Open subgroups (#2256) and would mask the
+            // missing direct row whenever the admin happens to also
+            // inherit membership from a parent — leaving the repair path
+            // unable to ever recover the direct row.
+            if group_store::has_direct_group_member(&self.datastore, &group_id, &admin_identity)
                 .unwrap_or(false)
             {
                 return ActorResponse::reply(Ok(()));

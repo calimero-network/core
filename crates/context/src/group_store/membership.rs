@@ -421,6 +421,21 @@ pub fn count_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResu
     )
 }
 
+/// Returns `true` iff `identity` has a **direct** membership row in
+/// `group_id` — never walks the parent chain. Use this (not
+/// [`check_group_membership`]) when the caller's intent is "would I be
+/// creating a duplicate direct row?": idempotency guards before
+/// `add_group_member`, repair paths in the namespace-meta handler,
+/// TEE-attestation deduplication, etc. Mirrors the role-aware
+/// [`is_direct_group_admin`] for the membership-row case.
+pub fn has_direct_group_member(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+) -> EyreResult<bool> {
+    has_direct_member(store, group_id, identity)
+}
+
 fn has_direct_member(
     store: &Store,
     group_id: &ContextGroupId,

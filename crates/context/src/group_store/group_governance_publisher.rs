@@ -97,6 +97,32 @@ impl<'a> GroupGovernancePublisher<'a> {
         //
         // Restricted subgroups (or any subgroup behind a Restricted
         // ancestor) keep their per-subgroup key, unchanged.
+        //
+        // **Visibility-flip op asymmetry (deferred follow-up):**
+        // `sign_apply_local_group_op_borsh` above has *already* applied
+        // the op locally, so when `op` is itself a `SubgroupVisibilitySet`
+        // the chain check below sees the **post-apply** visibility.
+        // - `Restricted → Open`: post-apply chain is Open, so the flip
+        //   op is encrypted with the namespace key. Receivers that
+        //   still see the subgroup as Restricted try the subgroup
+        //   keyring first; the receiver-side fallback to the namespace
+        //   keyring (see `namespace_governance.rs` decrypt path)
+        //   handles this transparently.
+        // - `Open → Restricted`: post-apply chain is *not* Open, so the
+        //   flip op is encrypted with the per-subgroup key.
+        //   Inheritance-only members (who hold the namespace key but
+        //   never received the per-subgroup key) cannot decrypt this
+        //   op and so never observe the transition locally — their
+        //   replicas appear stuck at the pre-flip Open state. They
+        //   *do* lose authorization at the next governance walk, but
+        //   the cryptographic visibility of the flip itself is lost.
+        //   The deferred Open→Restricted lifecycle work (issue #2256
+        //   follow-up) is the proper fix: encrypt the visibility-flip
+        //   op with the namespace key (or broadcast a tombstone) so
+        //   every namespace member observes the transition before the
+        //   subgroup key is rotated. Until that lands, operators must
+        //   not rely on Open→Restricted being observable to inherited
+        //   members through governance gossip alone.
         let encrypting_group_id =
             if is_open_chain_to_namespace(self.store, &self.group_id, &namespace_id)? {
                 namespace_id

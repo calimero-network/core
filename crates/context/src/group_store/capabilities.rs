@@ -8,7 +8,7 @@ use calimero_store::key::{
     GROUP_MEMBER_CAPABILITY_PREFIX,
 };
 use calimero_store::Store;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 
 use super::collect_keys_with_prefix;
 
@@ -111,8 +111,16 @@ pub fn get_subgroup_visibility(
 ///
 /// Returns `false` if `group_id == namespace_id` (the namespace itself
 /// has no parent and does not participate in subgroup inheritance), if
-/// any ancestor is `Restricted`, if the parent chain doesn't reach
-/// `namespace_id`, or if the walk exceeds [`super::namespace::MAX_NAMESPACE_DEPTH`].
+/// any ancestor is `Restricted`, or if the parent chain doesn't reach
+/// `namespace_id`. Returns an error (does **not** silently fall back to
+/// `false`) if the walk exceeds [`super::namespace::MAX_NAMESPACE_DEPTH`]
+/// — matching the bail behavior in
+/// [`super::membership::check_group_membership_path`] and
+/// [`super::membership::is_inherited_admin`]. Authorization and
+/// crypto-key selection must agree on this corruption signal: if one
+/// path errors out and another silently widens (or narrows) the access
+/// boundary, an inheritance-eligible reader can be left unable to
+/// decrypt content they were authorized to read (or vice versa).
 pub fn is_open_chain_to_namespace(
     store: &Store,
     group_id: &ContextGroupId,
@@ -134,7 +142,11 @@ pub fn is_open_chain_to_namespace(
         }
         current = parent;
     }
-    Ok(false)
+    bail!(
+        "is_open_chain_to_namespace exceeded MAX_NAMESPACE_DEPTH ({}); \
+         possible cycle in store",
+        super::namespace::MAX_NAMESPACE_DEPTH
+    )
 }
 
 pub fn set_subgroup_visibility(
