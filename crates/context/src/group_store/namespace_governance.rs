@@ -7,6 +7,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
+use libp2p::gossipsub::TopicHash;
 
 use crate::governance_broadcast::{
     self, assert_transport_ready, ns_topic, publish_and_await_ack_namespace,
@@ -128,8 +129,9 @@ impl<'a> NamespaceGovernance<'a> {
                         // store, or the retry walk.
                         let mut apply_kd = || -> EyreResult<()> {
                             if let Some(identity) =
-                                get_namespace_identity_record(self.store, &ns_id)
-                                    .map_err(|e| eyre::eyre!("get_namespace_identity_record: {e}"))?
+                                get_namespace_identity_record(self.store, &ns_id).map_err(|e| {
+                                    eyre::eyre!("get_namespace_identity_record: {e}")
+                                })?
                             {
                                 let recipient_sk = PrivateKey::from(identity.private_key);
                                 if envelope.recipient == recipient_sk.public_key() {
@@ -138,14 +140,21 @@ impl<'a> NamespaceGovernance<'a> {
                                             let gid = ContextGroupId::from(*group_id);
                                             let key_id =
                                                 store_group_key(self.store, &gid, &group_key)
-                                                    .map_err(|e| eyre::eyre!("store_group_key: {e}"))?;
+                                                    .map_err(|e| {
+                                                        eyre::eyre!("store_group_key: {e}")
+                                                    })?;
                                             tracing::info!(
                                                 group_id = %hex::encode(group_id),
                                                 key_id = %hex::encode(key_id),
                                                 "received group key via KeyDelivery"
                                             );
-                                            self.retry_encrypted_ops_for_group(*group_id)
-                                                .map_err(|e| eyre::eyre!("retry_encrypted_ops_for_group: {e}"))?;
+                                            self.retry_encrypted_ops_for_group(*group_id).map_err(
+                                                |e| {
+                                                    eyre::eyre!(
+                                                        "retry_encrypted_ops_for_group: {e}"
+                                                    )
+                                                },
+                                            )?;
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -359,6 +368,47 @@ impl<'a> NamespaceGovernance<'a> {
         assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
             .map_err(|e| eyre::eyre!(e))?;
 
+        self.publish_post_gate(node_client, ack_router, signer_sk, op, topic, mesh, known)
+            .await
+    }
+
+    /// Caller-gated variant of [`sign_and_publish_without_apply`]: assumes
+    /// the caller already ran `assert_transport_ready` and is providing
+    /// the `mesh` / `known_subscribers` snapshot it observed at gate-time.
+    /// Used by [`GroupGovernancePublisher::sign_apply_and_publish_inner`]
+    /// to avoid re-running the readiness gate after the local store has
+    /// already been mutated — a second gate that flips between "Ready"
+    /// at the outer call and "NotReady" here would leave the local op
+    /// applied and the remote peers unaware (state divergence on retry).
+    pub(crate) async fn sign_and_publish_post_gate(
+        &self,
+        node_client: &calimero_node_primitives::client::NodeClient,
+        ack_router: &AckRouter,
+        signer_sk: &PrivateKey,
+        op: NamespaceOp,
+        mesh: usize,
+        known: usize,
+    ) -> EyreResult<DeliveryReport> {
+        let topic = ns_topic(self.namespace_id);
+        self.publish_post_gate(node_client, ack_router, signer_sk, op, topic, mesh, known)
+            .await
+    }
+
+    /// Shared body of [`sign_and_publish_without_apply`] and
+    /// [`sign_and_publish_post_gate`]. Assumes the readiness gate has
+    /// already been run by the caller; takes the gate-time `mesh` /
+    /// `known_subscribers` snapshot to feed the metric and the
+    /// solo-namespace `min_acks` decision.
+    async fn publish_post_gate(
+        &self,
+        node_client: &calimero_node_primitives::client::NodeClient,
+        ack_router: &AckRouter,
+        signer_sk: &PrivateKey,
+        op: NamespaceOp,
+        topic: TopicHash,
+        mesh: usize,
+        known: usize,
+    ) -> EyreResult<DeliveryReport> {
         let head = self.read_head_record()?;
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();

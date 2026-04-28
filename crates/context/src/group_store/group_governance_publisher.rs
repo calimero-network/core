@@ -250,12 +250,24 @@ impl<'a> GroupGovernancePublisher<'a> {
 
         let namespace_sk = PrivateKey::from(namespace_identity.private_key);
         let op_kind = op.op_kind_label();
+        // Reuse the (mesh, known) snapshot captured by the outer gate
+        // and call `sign_and_publish_post_gate` so the inner publisher
+        // does NOT re-run `assert_transport_ready`. Re-running the gate
+        // here would create a TOCTOU window: the local store mutation
+        // from `sign_apply_local_group_op_borsh` (above) is already
+        // committed, so a re-gated `NamespaceNotReady` rejection would
+        // leave nonce N applied locally but never published — the
+        // caller's retry signs nonce N+1, remote peers only see N+1,
+        // and we'd have a permanent local/remote divergence on member-
+        // change ops.
         let report = NamespaceGovernance::new(self.store, namespace_bytes)
-            .sign_and_publish_without_apply(
+            .sign_and_publish_post_gate(
                 self.node_client,
                 ack_router,
                 &namespace_sk,
                 namespace_op,
+                mesh,
+                known,
             )
             .await?;
         tracing::debug!(
