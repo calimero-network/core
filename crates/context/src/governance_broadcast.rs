@@ -168,36 +168,6 @@ pub fn sign_ack(signer_sk: &PrivateKey, op_hash: [u8; 32]) -> Result<SignedAck, 
     })
 }
 
-/// Adapter for callers that genuinely need strict ack-quorum semantics:
-/// turns a `DeliveryReport` whose `acked_by.len() < min_acks` into
-/// `Err(NoAckReceived)`. Pair with
-/// [`publish_and_await_ack_namespace`]:
-///
-/// ```ignore
-/// let report = publish_and_await_ack_namespace(...).await?;
-/// require_acks(&report, min_acks)?;
-/// ```
-///
-/// Phase 5 governance handlers do NOT call this — the local DAG
-/// advance is durable and an unconfirmed publish is recoverable via
-/// gossip + backfill, so converting "no acks in time" to a hard error
-/// would just tempt callers into retries that double the local
-/// advance. This helper exists for future flows (e.g. quorum-required
-/// rotation acknowledgement) where waiting for confirmed delivery is
-/// the whole point of the operation.
-pub fn require_acks(
-    report: &DeliveryReport,
-    min_acks: usize,
-) -> Result<(), GovernanceBroadcastError> {
-    if report.acked_by.len() < min_acks {
-        return Err(GovernanceBroadcastError::NoAckReceived {
-            waited_ms: report.elapsed_ms,
-            op_hash: report.op_hash,
-        });
-    }
-    Ok(())
-}
-
 /// Phase-1 transport-readiness gate: passes iff the gossipsub mesh has
 /// at least `min(mesh_n_low, known_subscribers)` peers visible.
 ///
@@ -303,15 +273,17 @@ impl BroadcastTransport for calimero_network_primitives::client::NetworkClient {
 ///   * `Err(NamespaceNotReady)` — not raised by this fn; readiness
 ///     gating is the caller's responsibility.
 ///
-/// Callers that need stricter "confirmed-by-quorum" semantics (e.g.
-/// a future KeyDelivery flow that must block until the recipient
-/// acked) should compose this with [`require_acks`] or implement an
-/// explicit retry policy on top of `acked_by`. Default callers in
-/// Phase 5 treat the publisher-boundary `tracing::debug!` (op_kind +
-/// acks + elapsed_ms) as the source of truth for delivery
+/// Phase 5 callers treat the publisher-boundary `tracing::debug!`
+/// (op_kind + acks + elapsed_ms) as the source of truth for delivery
 /// observability and proceed regardless of `acked_by.len()` — the
 /// local DAG advance is the durable side-effect, the ack is just
 /// confirmation that some peer received it before the deadline.
+/// Phases 8/9 will introduce a strict-confirmation path (KeyDelivery
+/// recipient ack must arrive before `join_group` returns) by passing
+/// the recipient's pubkey as `required_signers` and inspecting
+/// `report.acked_by` at the call site — at that point the helper to
+/// turn a partial report into `Err` will be added alongside the first
+/// caller that needs it.
 pub async fn publish_and_await_ack_namespace(
     store: &Store,
     transport: &dyn BroadcastTransport,
