@@ -317,12 +317,38 @@ pub async fn publish_and_await_ack_namespace(
     // (e.g. via concurrent backfill) cannot ack faster than our
     // subscription registration and have its ack dropped.
     let mut rx = ack_router.subscribe(op_hash);
-    if let Err(e) = transport.publish(topic, payload).await {
-        // Publish handed-off failed — release the channel registration
-        // before propagating, otherwise the entry stays subscribed
-        // forever (op_hash is single-use, so no future caller reuses it).
-        ack_router.release(op_hash, rx);
-        return Err(GovernanceBroadcastError::Publish(e));
+    match transport.publish(topic, payload).await {
+        Ok(()) => {}
+        // libp2p returns `PublishError::NoPeersSubscribedToTopic` (which
+        // reaches us via the trait's `Display` as the Debug variant name)
+        // when the gossipsub mesh has zero subscribers for `topic`. For
+        // governance ops on a freshly-created or solo namespace this is
+        // the expected outcome — the originator has just locally applied
+        // the op, and remote peers pick it up via on-subscribe sync
+        // (`subscriptions::handle_subscribed`) once they join the
+        // namespace. Treat as Ok-with-no-acks: semantically identical to
+        // "delivered to no one", and matches the legacy
+        // `NodeClient::publish_signed_namespace_op` path that warned and
+        // returned Ok rather than propagating. Hard publish failures
+        // (signing errors, oversized messages, transform errors) still
+        // propagate — only this specific zero-subscribers case is
+        // tolerated.
+        Err(e) if e.contains("NoPeersSubscribedToTopic") => {
+            ack_router.release(op_hash, rx);
+            return Ok(DeliveryReport {
+                op_hash,
+                acked_by: Vec::new(),
+                elapsed_ms: start.elapsed().as_millis() as u64,
+            });
+        }
+        Err(e) => {
+            // Other publish failures: release the channel registration
+            // before propagating, otherwise the entry stays subscribed
+            // forever (op_hash is single-use, so no future caller reuses
+            // it).
+            ack_router.release(op_hash, rx);
+            return Err(GovernanceBroadcastError::Publish(e));
+        }
     }
 
     // `min_acks == 0` means "publish-only, don't wait" — the expected
