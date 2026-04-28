@@ -179,8 +179,7 @@ pub fn sign_ack(signer_sk: &PrivateKey, op_hash: [u8; 32]) -> Result<SignedAck, 
 ///
 /// Pure function — `mesh` and `known_subscribers` are provided by the
 /// caller (typically via `NodeClient::mesh_peer_count_for_namespace`
-/// and `NodeClient::known_subscribers_for_namespace`). Phase 3.4 wires
-/// those plumbing pieces; this function is the policy.
+/// and `NodeClient::known_subscribers`). This function is the policy.
 pub fn assert_transport_ready(
     mesh: usize,
     known_subscribers: usize,

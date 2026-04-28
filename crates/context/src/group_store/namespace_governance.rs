@@ -121,9 +121,15 @@ impl<'a> NamespaceGovernance<'a> {
                         // This was the root cause of the "Unexpected length of input"
                         // stuck-sync observed when a KeyDelivery op's retry-apply
                         // path hit a pre-existing stored op that failed to decode.
+                        // Each `?` site below tags the error with the failing
+                        // step so the warn log at line ~158 names the exact
+                        // call. Without this, "Unexpected length of input"
+                        // is ambiguous between the identity read, the key
+                        // store, or the retry walk.
                         let mut apply_kd = || -> EyreResult<()> {
                             if let Some(identity) =
-                                get_namespace_identity_record(self.store, &ns_id)?
+                                get_namespace_identity_record(self.store, &ns_id)
+                                    .map_err(|e| eyre::eyre!("get_namespace_identity_record: {e}"))?
                             {
                                 let recipient_sk = PrivateKey::from(identity.private_key);
                                 if envelope.recipient == recipient_sk.public_key() {
@@ -131,13 +137,15 @@ impl<'a> NamespaceGovernance<'a> {
                                         Ok(group_key) => {
                                             let gid = ContextGroupId::from(*group_id);
                                             let key_id =
-                                                store_group_key(self.store, &gid, &group_key)?;
+                                                store_group_key(self.store, &gid, &group_key)
+                                                    .map_err(|e| eyre::eyre!("store_group_key: {e}"))?;
                                             tracing::info!(
                                                 group_id = %hex::encode(group_id),
                                                 key_id = %hex::encode(key_id),
                                                 "received group key via KeyDelivery"
                                             );
-                                            self.retry_encrypted_ops_for_group(*group_id)?;
+                                            self.retry_encrypted_ops_for_group(*group_id)
+                                                .map_err(|e| eyre::eyre!("retry_encrypted_ops_for_group: {e}"))?;
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -372,7 +380,9 @@ impl<'a> NamespaceGovernance<'a> {
     fn retry_encrypted_ops_for_group(&self, group_id: [u8; 32]) -> EyreResult<()> {
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
-        let retry_candidates = retry_service.collect_retry_candidates_for_group(group_id)?;
+        let retry_candidates = retry_service
+            .collect_retry_candidates_for_group(group_id)
+            .map_err(|e| eyre::eyre!("collect_retry_candidates_for_group: {e}"))?;
         let attempted = retry_candidates.len();
         if attempted > 0 {
             record_namespace_retry_event("collected");

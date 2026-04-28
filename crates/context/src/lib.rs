@@ -115,7 +115,6 @@ pub struct ContextManager {
     /// `op_hash`. Cloned from `context_client.ack_router()` so the
     /// receiver-side and publish-side share the same instance. See
     /// [`governance_broadcast`].
-    #[allow(dead_code, reason = "consumed in Phase 5 sign_and_publish wiring")]
     pub(crate) ack_router: Arc<AckRouter>,
 }
 
