@@ -412,22 +412,19 @@ impl ReadinessManager {
     /// field-substitution replays (proven by the tamper tests in
     /// that module).
     fn publish_beacon(&self, ns_id: [u8; 32], state: &ReadinessState) {
-        use calimero_context_client::local_governance::{
-            NamespaceTopicMsg, SignedReadinessBeacon,
-        };
+        use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedReadinessBeacon};
 
         let group_id = calimero_context_config::types::ContextGroupId::from(ns_id);
-        let identity = match calimero_context::group_store::get_namespace_identity(
-            &self.datastore,
-            &group_id,
-        ) {
-            Ok(Some(id)) => id,
-            Ok(None) => return, // No identity for this namespace yet — skip.
-            Err(err) => {
-                tracing::debug!(?err, ?ns_id, "ReadinessBeacon: identity load failed");
-                return;
-            }
-        };
+        let identity =
+            match calimero_context::group_store::get_namespace_identity(&self.datastore, &group_id)
+            {
+                Ok(Some(id)) => id,
+                Ok(None) => return, // No identity for this namespace yet — skip.
+                Err(err) => {
+                    tracing::debug!(?err, ?ns_id, "ReadinessBeacon: identity load failed");
+                    return;
+                }
+            };
         let (peer_pubkey, sk_bytes, _sender_key) = identity;
 
         let strong = matches!(state.tier, ReadinessTier::PeerValidatedReady);
@@ -524,6 +521,89 @@ impl Handler<LocalStateChanged> for ReadinessManager {
             ) {
                 let snapshot = entry.clone();
                 self.publish_beacon(msg.namespace_id, &snapshot);
+            }
+        }
+    }
+}
+
+/// Out-of-cycle beacon emission triggered by an inbound
+/// [`calimero_context_client::local_governance::ReadinessProbe`].
+///
+/// Carries the requesting peer so the actor can rate-limit responses
+/// per-(peer, namespace) — see [`Handler<EmitOutOfCycleBeacon>`].
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct EmitOutOfCycleBeacon {
+    pub namespace_id: [u8; 32],
+    pub requesting_peer: PeerId,
+}
+
+impl Handler<EmitOutOfCycleBeacon> for ReadinessManager {
+    type Result = ();
+
+    fn handle(&mut self, msg: EmitOutOfCycleBeacon, _ctx: &mut Self::Context) {
+        // Rate-limit probe responses per (peer, namespace) at
+        // `BEACON_INTERVAL / 2` to close the unsigned-`ReadinessProbe`
+        // traffic-amplification path: one ~48-byte probe would otherwise
+        // trigger one ~200-byte signed beacon from EVERY *Ready peer on
+        // the topic (≈Nx amplification). Bypass via varying `nonce` is
+        // blocked because the rate-limit key is (peer, namespace), not
+        // probe content.
+        let now = Instant::now();
+        let min_spacing = self.config.beacon_interval / 2;
+        let key = (msg.requesting_peer, msg.namespace_id);
+        if let Some(last) = self.last_probe_response_at.get(&key) {
+            if now.duration_since(*last) < min_spacing {
+                return; // within rate-limit window — drop silently
+            }
+        }
+        // Snapshot-then-emit so `publish_beacon` does not borrow
+        // `state_per_namespace` across the call (it loads identity from
+        // `self.datastore`).
+        let snapshot = match self.state_per_namespace.get(&msg.namespace_id) {
+            Some(s)
+                if matches!(
+                    s.tier,
+                    ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
+                ) =>
+            {
+                s.clone()
+            }
+            // Either no state for this namespace or not in a *Ready tier —
+            // nothing to advertise, drop the probe silently. Don't update
+            // `last_probe_response_at` so a later probe after we promote
+            // is not silently rate-limited.
+            _ => return,
+        };
+        self.publish_beacon(msg.namespace_id, &snapshot);
+        let _ = self.last_probe_response_at.insert(key, now);
+    }
+}
+
+impl Handler<ApplyBeaconLocal> for ReadinessManager {
+    type Result = ();
+
+    fn handle(&mut self, msg: ApplyBeaconLocal, _ctx: &mut Self::Context) {
+        // A peer beacon has just been inserted into the cache. Re-evaluate
+        // the FSM with the (possibly) updated `peer_summary` and edge-emit
+        // if our tier transitions into *Ready.
+        let Some(state) = self.state_per_namespace.get(&msg.namespace_id).cloned() else {
+            return;
+        };
+        let peers = self
+            .cache
+            .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
+        let new_tier = evaluate_readiness(&state, &peers, &self.config, Instant::now());
+        if new_tier != state.tier {
+            if let Some(s) = self.state_per_namespace.get_mut(&msg.namespace_id) {
+                s.tier = new_tier;
+                if matches!(
+                    new_tier,
+                    ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
+                ) {
+                    let snapshot = s.clone();
+                    self.publish_beacon(msg.namespace_id, &snapshot);
+                }
             }
         }
     }

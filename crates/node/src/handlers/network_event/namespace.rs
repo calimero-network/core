@@ -51,11 +51,16 @@ pub(super) fn handle_namespace_governance_delta(
             let _ = this.clients.context.ack_router().route(ack);
             return;
         }
-        // Phases 7/8 will wire these variants. Until then, drop them
-        // forward-compatibly so the wire schema reservations don't
-        // require another cluster-wide upgrade.
-        NamespaceTopicMsg::ReadinessBeacon(_) | NamespaceTopicMsg::ReadinessProbe(_) => {
-            debug!("NamespaceTopicMsg readiness variant not yet handled; dropping");
+        // Phase 7.3: forward readiness variants to the dedicated
+        // submodule. Beacon receive verifies + inserts into the cache;
+        // probe receive forwards to the rate-limited
+        // `EmitOutOfCycleBeacon` handler on `ReadinessManager`.
+        NamespaceTopicMsg::ReadinessBeacon(beacon) => {
+            super::readiness::handle_readiness_beacon(this, ctx, source, beacon);
+            return;
+        }
+        NamespaceTopicMsg::ReadinessProbe(probe) => {
+            super::readiness::handle_readiness_probe(this, ctx, source, probe);
             return;
         }
     };
