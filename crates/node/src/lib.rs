@@ -22,6 +22,7 @@ pub mod key_delivery;
 mod manager;
 pub mod network_event_channel;
 pub mod network_event_processor;
+pub mod readiness;
 mod run;
 mod specialized_node_invite_state;
 mod state;
