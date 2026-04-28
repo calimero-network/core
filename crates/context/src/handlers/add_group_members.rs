@@ -5,6 +5,7 @@ use calimero_context_client::group::AddGroupMembersRequest;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use tracing::{info, warn};
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -35,7 +36,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 for (identity, role) in &members {
-                    let _report = group_store::sign_apply_and_publish(
+                    let report = group_store::sign_apply_and_publish(
                         &datastore,
                         &node_client,
                         &ack_router,
@@ -47,6 +48,9 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                         },
                     )
                     .await?;
+                    if let Some(report) = report.as_ref() {
+                        observe_handler_delivery("add_group_members", "MemberAdded", report);
+                    }
 
                     if let Some((_key_id, group_key)) =
                         group_store::load_current_group_key(&datastore, &group_id)?
@@ -58,6 +62,14 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                                     group_id: group_id.to_bytes(),
                                     envelope,
                                 });
+                                // KeyDelivery is recipient-specific: the
+                                // only ack that proves successful delivery
+                                // is from the added member themselves.
+                                // Pass `required_signers = Some([identity])`
+                                // so non-recipient acks are filtered out
+                                // and the report's `acked_by` cleanly
+                                // signals whether the recipient applied
+                                // and acked.
                                 if let Err(e) = group_store::sign_and_publish_namespace_op(
                                     &datastore,
                                     &node_client,
@@ -65,6 +77,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                                     ns_id.to_bytes(),
                                     &sk,
                                     delivery_op,
+                                    Some(vec![*identity]),
                                 )
                                 .await
                                 {

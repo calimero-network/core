@@ -7,6 +7,7 @@ use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -95,7 +96,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
                     eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
-                let _report = group_store::sign_apply_and_publish(
+                let report = group_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -112,6 +113,13 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                     },
                 )
                 .await?;
+                if let Some(report) = report.as_ref() {
+                    observe_handler_delivery(
+                        "set_tee_admission_policy",
+                        "TeeAdmissionPolicySet",
+                        report,
+                    );
+                }
 
                 info!(?group_id, accept_mock, "TEE admission policy updated");
 

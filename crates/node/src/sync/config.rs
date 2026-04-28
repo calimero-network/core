@@ -71,13 +71,28 @@ pub const DEFAULT_PEER_STATE_PROBE_CONCURRENCY: usize = 4;
 ///
 /// Applies to both data-delta parent pulls (cold-start join_context, #2198)
 /// and governance-op parent pulls (subgroup MemberAdded propagation, #2209).
-pub const DEFAULT_PARENT_PULL_ADDITIONAL_PEERS: usize = 3;
+///
+/// Phase 11.1 (#2237) reduced this from 3 → 1 once `publish_and_await_ack`
+/// took over delivery confirmation: the publisher boundary now blocks until
+/// at least one mesh peer acks the op, so a "no peer has the parent" outcome
+/// is far rarer than under fire-and-forget gossipsub. A single fallback peer
+/// covers the residual transient (the acker just left the mesh, or our local
+/// pending-op record points to a peer that has since rotated their identity);
+/// fan-out beyond that is redundant work the heartbeat path already handles
+/// for genuinely-stuck divergence.
+pub const DEFAULT_PARENT_PULL_ADDITIONAL_PEERS: usize = 1;
 
 /// Total wall-clock budget (milliseconds) for the cross-peer
 /// missing-parent fetch loop, including the initial peer attempt.
 /// When exhausted, the sync session returns an error rather than
 /// reporting silent success on a partially-applied DAG.
-pub const DEFAULT_PARENT_PULL_BUDGET_MS: u64 = 10_000;
+///
+/// Phase 11.1 (#2237) reduced this from 10s → 5s in tandem with
+/// `DEFAULT_PARENT_PULL_ADDITIONAL_PEERS` 3 → 1: with at most two peer
+/// attempts (initial + one fallback), the prior 10s window was mostly
+/// idle wall-clock time. 5s is two `BACKFILL_REQUEST_TIMEOUT` cycles
+/// (default 2s) plus margin for the mesh-snapshot refetch.
+pub const DEFAULT_PARENT_PULL_BUDGET_MS: u64 = 5_000;
 
 /// Synchronization configuration.
 ///

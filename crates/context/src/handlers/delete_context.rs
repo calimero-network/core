@@ -15,6 +15,7 @@ use eyre::bail;
 
 use calimero_primitives::identity::PrivateKey;
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::{group_store, ContextManager};
 
 impl Handler<DeleteContextRequest> for ContextManager {
@@ -133,7 +134,7 @@ async fn delete_context(
                      cannot publish local detach op"
                 )
             })?;
-        let _report = group_store::sign_apply_and_publish(
+        let report = group_store::sign_apply_and_publish(
             &datastore,
             &node_client,
             &ack_router,
@@ -142,6 +143,9 @@ async fn delete_context(
             calimero_context_client::local_governance::GroupOp::ContextDetached { context_id },
         )
         .await?;
+        if let Some(report) = report.as_ref() {
+            observe_handler_delivery("delete_context", "ContextDetached", report);
+        }
     }
 
     Ok(())

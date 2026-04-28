@@ -104,7 +104,12 @@ pub async fn handler(
     )
     .await
     {
-        Ok(_report) => {
+        Ok(report) => {
+            calimero_context::governance_broadcast::observe_handler_delivery(
+                "create_group_in_namespace",
+                "GroupCreated",
+                &report,
+            );
             let group_id = calimero_context_config::types::ContextGroupId::from(group_id);
 
             // Store the creator's signing key for the new subgroup. Without

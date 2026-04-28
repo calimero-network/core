@@ -159,6 +159,21 @@ impl<'a> NamespaceGovernance<'a> {
                                                 key_id = %hex::encode(key_id),
                                                 "received group key via KeyDelivery"
                                             );
+                                            // Wake any `join_group` future
+                                            // waiting on the gossip-fallback
+                                            // path. The apply path already
+                                            // filtered by
+                                            // `envelope.recipient ==
+                                            // recipient_sk.public_key()`, so
+                                            // this only fires for our own
+                                            // identity. Emit *before*
+                                            // `retry_encrypted_ops_for_group`
+                                            // so the wake-up isn't blocked
+                                            // by a slow retry pass.
+                                            notify_op_event(OpEvent::GroupKeyDelivered {
+                                                group_id: *group_id,
+                                                recipient: recipient_sk.public_key(),
+                                            });
                                             self.retry_encrypted_ops_for_group(*group_id).map_err(
                                                 |e| {
                                                     eyre::eyre!(
@@ -365,6 +380,7 @@ impl<'a> NamespaceGovernance<'a> {
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
+        required_signers: Option<Vec<PublicKey>>,
     ) -> EyreResult<DeliveryReport> {
         let topic = ns_topic(self.namespace_id);
         let mesh = node_client
@@ -374,8 +390,17 @@ impl<'a> NamespaceGovernance<'a> {
         assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
             .map_err(|e| eyre::eyre!(e))?;
 
-        self.publish_post_gate(node_client, ack_router, signer_sk, op, topic, mesh, known)
-            .await
+        self.publish_post_gate(
+            node_client,
+            ack_router,
+            signer_sk,
+            op,
+            topic,
+            mesh,
+            known,
+            required_signers,
+        )
+        .await
     }
 
     /// Caller-gated variant of [`sign_and_publish_without_apply`]: assumes
@@ -396,8 +421,17 @@ impl<'a> NamespaceGovernance<'a> {
         known: usize,
     ) -> EyreResult<DeliveryReport> {
         let topic = ns_topic(self.namespace_id);
-        self.publish_post_gate(node_client, ack_router, signer_sk, op, topic, mesh, known)
-            .await
+        self.publish_post_gate(
+            node_client,
+            ack_router,
+            signer_sk,
+            op,
+            topic,
+            mesh,
+            known,
+            None,
+        )
+        .await
     }
 
     /// Shared body of [`sign_and_publish_without_apply`] and
@@ -416,6 +450,7 @@ impl<'a> NamespaceGovernance<'a> {
         topic: TopicHash,
         mesh: usize,
         known_at_gate: usize,
+        required_signers: Option<Vec<PublicKey>>,
     ) -> EyreResult<DeliveryReport> {
         let head = self.read_head_record()?;
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
@@ -467,7 +502,7 @@ impl<'a> NamespaceGovernance<'a> {
             signed,
             op_timeout,
             min_acks,
-            None,
+            required_signers,
         )
         .await
         .map_err(|e| eyre::eyre!(e))?;
@@ -938,9 +973,10 @@ pub async fn sign_and_publish_namespace_op(
     namespace_id: [u8; 32],
     signer_sk: &PrivateKey,
     op: NamespaceOp,
+    required_signers: Option<Vec<PublicKey>>,
 ) -> EyreResult<DeliveryReport> {
     NamespaceGovernance::new(store, namespace_id)
-        .sign_and_publish_without_apply(node_client, ack_router, signer_sk, op)
+        .sign_and_publish_without_apply(node_client, ack_router, signer_sk, op, required_signers)
         .await
 }
 

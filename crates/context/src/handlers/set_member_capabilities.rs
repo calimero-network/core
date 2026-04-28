@@ -4,6 +4,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::SetMemberCapabilitiesRequest;
 use calimero_context_client::local_governance::GroupOp;
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::{group_store, ContextManager};
 
 impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
@@ -42,7 +43,7 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let _report = group_store::sign_apply_and_publish(
+                let report = group_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -54,6 +55,13 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
                     },
                 )
                 .await?;
+                if let Some(report) = report.as_ref() {
+                    observe_handler_delivery(
+                        "set_member_capabilities",
+                        "MemberCapabilitySet",
+                        report,
+                    );
+                }
                 tracing::info!(?group_id, %member, capabilities, "member capabilities updated");
                 Ok(())
             }

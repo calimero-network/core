@@ -425,21 +425,52 @@ pub struct ApplyBeaconLocal {
 
 /// A single namespace governance op was successfully applied locally.
 ///
-/// Sent from the receiver-side network-event handler after a
-/// `NamespaceApplyOutcome::Applied`. The actor increments its own
-/// per-namespace `local_applied_through` counter — this is the single
-/// progress signal the FSM needs to leave `Bootstrapping` and start
-/// emitting beacons.
+/// Sent from BOTH the receiver-side network-event handler (after a
+/// `NamespaceApplyOutcome::Applied`) and the publisher-side apply path,
+/// so the FSM observes every monotonic advance regardless of origin.
 ///
-/// The actor maintains the count internally (not the caller) because
-/// the count exists nowhere else in the codebase: `apply_signed_namespace_op`
-/// doesn't return a new height, and the namespace DAG doesn't expose a
-/// monotonic apply counter. Keeping the count on the actor keeps the
-/// scope minimal.
+/// The actor no longer maintains its own counter — it now refreshes
+/// `local_applied_through` from `NamespaceGovHeadValue.sequence` in the
+/// store on every FSM evaluation. This closes the publisher-side miss
+/// the previous actor-local counter exhibited (it was incremented only
+/// from the receive path) without changing the message contract.
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct NamespaceOpApplied {
     pub namespace_id: [u8; 32],
+}
+
+/// Read the canonical local-applied sequence for a namespace from the
+/// store. Returns 0 if the head record is missing (legitimate for a
+/// brand-new namespace with no applied ops) or if the read fails
+/// transiently. The two cases are distinguished in the log:
+///
+///   - `Ok(None)` is silent — empty-DAG is the well-defined start state.
+///   - `Err(_)` emits a `warn!` so a transiently broken store layer
+///     does not silently regress the FSM. With this log present, an
+///     operator chasing a `*Ready → Bootstrapping` regression has a
+///     clear breadcrumb instead of guessing at a fail-soft `0`.
+///
+/// Returning `0` on the error path (rather than propagating) keeps
+/// the FSM evaluation total — `evaluate_readiness` is a pure
+/// transition fn and should not have to handle store I/O errors.
+/// On the next successful read the FSM recovers naturally.
+pub(crate) fn read_local_applied_through(store: &Store, ns_id: [u8; 32]) -> u64 {
+    let handle = store.handle();
+    let key = calimero_store::key::NamespaceGovHead::new(ns_id);
+    match handle.get(&key) {
+        Ok(Some(head)) => head.sequence,
+        Ok(None) => 0,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                namespace_id = %hex::encode(ns_id),
+                "read_local_applied_through: store read failed; treating as 0 — \
+                 FSM may regress until the next successful read"
+            );
+            0
+        }
+    }
 }
 
 impl ReadinessManager {
@@ -467,7 +498,12 @@ impl ReadinessManager {
             // Atomic single-lock snapshot per namespace — see
             // `ReadinessCache::peer_summary` for why.
             let peers = self.cache.peer_summary(ns_id, ttl);
+            // Refresh canonical sequence from the store before each
+            // evaluation so the periodic tick observes publisher-side
+            // applies that don't fire `NamespaceOpApplied`.
+            let applied_through = read_local_applied_through(&self.datastore, ns_id);
             let snapshot = if let Some(entry) = self.state_per_namespace.get_mut(&ns_id) {
+                entry.local_applied_through = applied_through;
                 let new_tier = evaluate_readiness(entry, &peers, &cfg, now);
                 if new_tier != entry.tier {
                     tracing::info!(
@@ -669,11 +705,15 @@ impl Handler<NamespaceOpApplied> for ReadinessManager {
             .cache
             .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
 
-        // Increment the per-namespace local apply counter, then re-evaluate
-        // FSM and edge-emit on transition into a *Ready tier. Uses the
-        // same scoped-borrow pattern as Handler<ApplyBeaconLocal> so
+        // Refresh `local_applied_through` from the canonical store
+        // record (`NamespaceGovHeadValue.sequence`) before evaluating the
+        // FSM. This is the single source of truth for both publisher
+        // and receiver applies, so the FSM observes every monotonic
+        // advance regardless of where it originated. Uses the same
+        // scoped-borrow pattern as `Handler<ApplyBeaconLocal>` so
         // `clear_probe_window_for` and `publish_beacon` can re-borrow
         // self after the entry borrow ends.
+        let applied_through = read_local_applied_through(&self.datastore, msg.namespace_id);
         let to_emit = {
             let entry = self
                 .state_per_namespace
@@ -684,7 +724,7 @@ impl Handler<NamespaceOpApplied> for ReadinessManager {
                     local_pending_ops: 0,
                     subscribed_at: Instant::now(),
                 });
-            entry.local_applied_through = entry.local_applied_through.saturating_add(1);
+            entry.local_applied_through = applied_through;
             let new_tier = evaluate_readiness(entry, &peers, &self.config, Instant::now());
             if new_tier != entry.tier {
                 tracing::info!(
@@ -788,22 +828,37 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
         // A peer beacon has just been inserted into the cache. Re-evaluate
         // the FSM with the (possibly) updated `peer_summary` and edge-emit
         // if our tier transitions into *Ready.
-        let Some(state) = self.state_per_namespace.get(&msg.namespace_id).cloned() else {
+        let Some(mut state) = self.state_per_namespace.get(&msg.namespace_id).cloned() else {
             return;
         };
+        // Refresh from the store before evaluating — see
+        // `Handler<NamespaceOpApplied>` for rationale.
+        state.local_applied_through = read_local_applied_through(&self.datastore, msg.namespace_id);
         let peers = self
             .cache
             .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
         let new_tier = evaluate_readiness(&state, &peers, &self.config, Instant::now());
-        if new_tier != state.tier {
-            tracing::info!(
-                namespace_id = %hex::encode(msg.namespace_id),
-                old = ?state.tier,
-                new = ?new_tier,
-                cause = "peer_beacon_received",
-                "readiness tier transition"
-            );
-            let snapshot = if let Some(s) = self.state_per_namespace.get_mut(&msg.namespace_id) {
+        let tier_changed = new_tier != state.tier;
+
+        // Always persist `local_applied_through` back to the map,
+        // independent of whether the tier transitioned this tick.
+        // The previous structure scoped the write inside the
+        // `tier_changed` branch, which silently dropped the refreshed
+        // value on the steady-state path and left the map drifting
+        // until the next periodic-tick refresh in `emit_periodic_beacons`.
+        // Other FSM eval sites (`Handler<NamespaceOpApplied>`,
+        // `emit_periodic_beacons`) already persist unconditionally, so
+        // this also keeps the three eval entry points symmetric.
+        let snapshot = if let Some(s) = self.state_per_namespace.get_mut(&msg.namespace_id) {
+            s.local_applied_through = state.local_applied_through;
+            if tier_changed {
+                tracing::info!(
+                    namespace_id = %hex::encode(msg.namespace_id),
+                    old = ?state.tier,
+                    new = ?new_tier,
+                    cause = "peer_beacon_received",
+                    "readiness tier transition"
+                );
                 s.tier = new_tier;
                 if matches!(
                     new_tier,
@@ -815,11 +870,13 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
                 }
             } else {
                 None
-            };
-            if let Some(snapshot) = snapshot {
-                self.clear_probe_window_for(msg.namespace_id);
-                self.publish_beacon(msg.namespace_id, &snapshot);
             }
+        } else {
+            None
+        };
+        if let Some(snapshot) = snapshot {
+            self.clear_probe_window_for(msg.namespace_id);
+            self.publish_beacon(msg.namespace_id, &snapshot);
         }
     }
 }

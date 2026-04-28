@@ -360,7 +360,7 @@ pub async fn await_namespace_ready(
         signed_invitation: invitation,
     });
     let report = NamespaceGovernance::new(store, namespace_id)
-        .sign_and_publish_without_apply(node_client, ack_router, &signing_key, op)
+        .sign_and_publish_without_apply(node_client, ack_router, &signing_key, op, None)
         .await
         .map_err(|e| ReadyError::PublishMemberJoined(e.to_string()))?;
 

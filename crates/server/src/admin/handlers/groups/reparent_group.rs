@@ -92,12 +92,19 @@ pub async fn handler(
     )
     .await
     {
-        Ok(_report) => ApiResponse {
-            payload: ReparentGroupApiResponse {
-                reparented: !was_already_there,
-            },
+        Ok(report) => {
+            calimero_context::governance_broadcast::observe_handler_delivery(
+                "reparent_group",
+                "GroupReparented",
+                &report,
+            );
+            ApiResponse {
+                payload: ReparentGroupApiResponse {
+                    reparented: !was_already_there,
+                },
+            }
+            .into_response()
         }
-        .into_response(),
         Err(err) => {
             error!(child=%group_id_str, new_parent=%req.new_parent_id, error=?err, "Failed to reparent subgroup");
             parse_api_error(err).into_response()
