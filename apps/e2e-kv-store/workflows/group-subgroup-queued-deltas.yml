@@ -129,10 +129,11 @@ steps:
   # by asserting node-2's local view of subgroup membership BEFORE the
   # delta burst begins, so the two bugs can't conflate in this workflow.
 
-  # No fixed wait needed: `add_group_members` above returns only after
-  # at least one ack on the underlying NamespaceOp::Group, so node-2's
-  # apply has already landed (or the call itself returned NoAckReceived).
-  # The probe below is the real gate.
+  # No fixed wait needed: `add_group_members` above returns once the
+  # publish is accepted by gossipsub. Acks may still be in flight when
+  # the call returns (cold-state backfill window — receivers ack only
+  # after apply). The list_group_members probe below is the real gate
+  # for "node-2 has applied the membership row".
 
 
   - name: Node-2 lists subgroup members (local view)

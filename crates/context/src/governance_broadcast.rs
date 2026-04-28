@@ -168,6 +168,36 @@ pub fn sign_ack(signer_sk: &PrivateKey, op_hash: [u8; 32]) -> Result<SignedAck, 
     })
 }
 
+/// Adapter for callers that genuinely need strict ack-quorum semantics:
+/// turns a `DeliveryReport` whose `acked_by.len() < min_acks` into
+/// `Err(NoAckReceived)`. Pair with
+/// [`publish_and_await_ack_namespace`]:
+///
+/// ```ignore
+/// let report = publish_and_await_ack_namespace(...).await?;
+/// require_acks(&report, min_acks)?;
+/// ```
+///
+/// Phase 5 governance handlers do NOT call this — the local DAG
+/// advance is durable and an unconfirmed publish is recoverable via
+/// gossip + backfill, so converting "no acks in time" to a hard error
+/// would just tempt callers into retries that double the local
+/// advance. This helper exists for future flows (e.g. quorum-required
+/// rotation acknowledgement) where waiting for confirmed delivery is
+/// the whole point of the operation.
+pub fn require_acks(
+    report: &DeliveryReport,
+    min_acks: usize,
+) -> Result<(), GovernanceBroadcastError> {
+    if report.acked_by.len() < min_acks {
+        return Err(GovernanceBroadcastError::NoAckReceived {
+            waited_ms: report.elapsed_ms,
+            op_hash: report.op_hash,
+        });
+    }
+    Ok(())
+}
+
 /// Phase-1 transport-readiness gate: passes iff the gossipsub mesh has
 /// at least `min(mesh_n_low, known_subscribers)` peers visible.
 ///
@@ -246,25 +276,42 @@ impl BroadcastTransport for calimero_network_primitives::client::NetworkClient {
 ///   * Dedups by `signer_pubkey` so duplicate gossip rebroadcasts of the
 ///     same ack don't inflate `acked_by`.
 ///
-/// Outcomes (matters: callers MUST inspect `acked_by` to decide
-/// whether the ack threshold was actually met):
+/// Contract — eventually-consistent, best-effort:
 ///
-///   * `Ok(DeliveryReport)` with `acked_by.len() >= min_acks` —
-///     happy path: enough distinct signers acked within `op_timeout`.
-///   * `Ok(DeliveryReport)` with `acked_by.len() < min_acks` —
-///     publish was accepted by gossipsub but acks didn't arrive in time.
-///     The op IS on the wire; a receiver that needs to backfill missing
-///     parents (cold-state join window) will apply + ack later. The
-///     caller's local apply (if any) is preserved — failing here would
-///     tempt the caller to retry and double the local DAG advance.
-///     Solo-namespace publish (`min_acks == 0`, no peers) lands here too.
-///   * `Err(GovernanceBroadcastError::Publish)` — gossipsub rejected
-///     the publish (signing, oversize, transform error). With
-///     `min_acks > 0`, `NoPeersSubscribedToTopic` from the transport
-///     also surfaces as `Err(NoAckReceived)` because no delivery
-///     attempt actually succeeded.
-///   * `Err(GovernanceBroadcastError::NamespaceNotReady)` — readiness
-///     gate is the caller's responsibility; not raised by this fn.
+/// `Ok` means "publish accepted by gossipsub". The op is on the wire,
+/// receivers will apply + ack as they catch up. The exact ack count
+/// depends on mesh state and receiver-side backfill latency:
+///
+///   * `Ok` with `acked_by.len() >= min_acks` — enough distinct
+///     signers acked within `op_timeout`. Tight happy path.
+///   * `Ok` with `acked_by.len() < min_acks` (incl. empty) —
+///     publish accepted but acks didn't arrive in time. Common during
+///     a cold-state join window where the receiver needs to backfill
+///     missing parents (`apply` only emits the ack post-apply). The
+///     caller's local apply (if any) is durable; surfacing a partial
+///     report rather than `Err` keeps the caller from retrying an
+///     already-applied op and double-advancing the local DAG.
+///   * `Ok` with empty `acked_by` is also the solo-namespace fast path
+///     (`min_acks == 0`).
+///
+/// `Err` only when the publish itself never delivered:
+///
+///   * `Err(Publish)` — gossipsub rejected the message (signing,
+///     oversize, transform error). Also wraps
+///     `NoPeersSubscribedToTopic` when `min_acks > 0` (no delivery
+///     was attempted; surfacing `Ok` would be a lie).
+///   * `Err(NamespaceNotReady)` — not raised by this fn; readiness
+///     gating is the caller's responsibility.
+///
+/// Callers that need stricter "confirmed-by-quorum" semantics (e.g.
+/// a future KeyDelivery flow that must block until the recipient
+/// acked) should compose this with [`require_acks`] or implement an
+/// explicit retry policy on top of `acked_by`. Default callers in
+/// Phase 5 treat the publisher-boundary `tracing::debug!` (op_kind +
+/// acks + elapsed_ms) as the source of truth for delivery
+/// observability and proceed regardless of `acked_by.len()` — the
+/// local DAG advance is the durable side-effect, the ack is just
+/// confirmation that some peer received it before the deadline.
 pub async fn publish_and_await_ack_namespace(
     store: &Store,
     transport: &dyn BroadcastTransport,

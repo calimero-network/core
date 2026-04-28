@@ -488,3 +488,38 @@ async fn no_peers_with_min_acks_positive_returns_no_ack_received() {
         res
     );
 }
+
+// ---------------------------------------------------------------------------
+// require_acks
+// ---------------------------------------------------------------------------
+
+#[test]
+fn require_acks_accepts_when_threshold_met() {
+    let report = DeliveryReport {
+        op_hash: [7u8; 32],
+        acked_by: vec![
+            PrivateKey::random(&mut rand::thread_rng()).public_key(),
+            PrivateKey::random(&mut rand::thread_rng()).public_key(),
+        ],
+        elapsed_ms: 42,
+    };
+    assert!(require_acks(&report, 2).is_ok());
+    assert!(require_acks(&report, 1).is_ok());
+}
+
+#[test]
+fn require_acks_rejects_when_below_threshold() {
+    let report = DeliveryReport {
+        op_hash: [9u8; 32],
+        acked_by: Vec::new(),
+        elapsed_ms: 5001,
+    };
+    let err = require_acks(&report, 1).unwrap_err();
+    match err {
+        GovernanceBroadcastError::NoAckReceived { waited_ms, op_hash } => {
+            assert_eq!(waited_ms, 5001);
+            assert_eq!(op_hash, [9u8; 32]);
+        }
+        other => panic!("expected NoAckReceived; got {:?}", other),
+    }
+}

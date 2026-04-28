@@ -98,9 +98,13 @@ steps:
       - identity: '{{member_identity_node2}}'
         role: Member
 
-  # No fixed wait needed: `add_group_members` above returns only after
-  # node-2 acks the underlying NamespaceOp::Group, so its group_store
-  # already accepts the new membership row (#2237 three-phase contract).
+  # No fixed wait needed: `add_group_members` above returns once the
+  # publish is accepted by gossipsub. Best-effort ack collection runs in
+  # parallel — node-2 may still be backfilling ancestors when the publish
+  # call returns, but its receiver-side apply happens within a few hundred
+  # ms once the gossip + backfill round-trip completes (#2237 three-phase
+  # contract; see `publish_and_await_ack_namespace` doc for outcomes).
+  # The workflow's own retry/poll wraps any race-prone subsequent step.
 
   # ── Create context in subgroup + node-2 joins immediately ──────────
 
