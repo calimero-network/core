@@ -242,12 +242,11 @@ impl<'a> GroupGovernancePublisher<'a> {
         // `GroupOp` variant as the label* before the inner namespace publish
         // hides it inside an encrypted envelope. `NamespaceGovernance::sign_*`
         // skips emission for `NamespaceOp::Group { .. }` so this is the
-        // single source of truth for group-op observations.
-        let mesh_count = self
-            .node_client
-            .mesh_peer_count_for_namespace(namespace_bytes)
-            .await;
-        record_governance_publish_mesh_peers(op.op_kind_label(), mesh_count);
+        // single source of truth for group-op observations. Reuse the value
+        // captured by the readiness gate at the top of the function — issuing
+        // a second `mesh_peer_count_for_namespace` round-trip here would burn
+        // an actor-mailbox hop per publish without observable benefit.
+        record_governance_publish_mesh_peers(op.op_kind_label(), mesh);
 
         let namespace_sk = PrivateKey::from(namespace_identity.private_key);
         let report = NamespaceGovernance::new(self.store, namespace_bytes)

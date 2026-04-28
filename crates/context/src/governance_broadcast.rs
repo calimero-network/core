@@ -286,13 +286,6 @@ pub async fn publish_and_await_ack_namespace(
     let parent_ids = op.parent_op_hashes.clone();
     let inner = borsh::to_vec(&NamespaceTopicMsg::Op(op))
         .map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
-    if inner.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
-        return Err(GovernanceBroadcastError::Publish(format!(
-            "signed namespace op payload exceeds max ({} > {})",
-            inner.len(),
-            MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES
-        )));
-    }
     let envelope = BroadcastMessage::NamespaceGovernanceDelta {
         namespace_id,
         delta_id,
@@ -301,6 +294,23 @@ pub async fn publish_and_await_ack_namespace(
     };
     let payload =
         borsh::to_vec(&envelope).map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
+    // Bound the *actual on-wire payload* (envelope-serialized) — the
+    // envelope adds a borsh-encoded variant tag + 32B namespace_id +
+    // 32B delta_id + a length-prefixed parent_ids Vec on top of the
+    // inner `NamespaceTopicMsg::Op(op)` bytes. Checking only the inner
+    // (an earlier draft did this) lets a borderline-large signed op
+    // with many parent hashes slip past our limit while exceeding it
+    // once wrapped — the gossipsub layer would reject it later with
+    // an opaque error. Mirror what `NodeClient::publish_signed_namespace_op`
+    // does upstream by enforcing the cap on the bytes we hand to the
+    // transport.
+    if payload.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
+        return Err(GovernanceBroadcastError::Publish(format!(
+            "namespace governance envelope exceeds max ({} > {})",
+            payload.len(),
+            MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES
+        )));
+    }
 
     let start = Instant::now();
     // Subscribe BEFORE publishing so a peer that already has this op
