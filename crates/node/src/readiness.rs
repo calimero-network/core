@@ -1,10 +1,19 @@
-//! Per-namespace readiness FSM, beacon cache, and (in later tasks)
-//! the actor that emits beacons and handles probes.
+//! Per-namespace readiness FSM, beacon cache, and the [`ReadinessManager`]
+//! actor that emits beacons and handles probes.
 //!
-//! Phase 6 of the three-phase governance contract: pure types + logic.
-//! The actor wiring (periodic beacon emission, probe handling) lands in
-//! Phase 7; the join-flow consumer (`await_first_fresh_beacon`,
-//! `join_namespace`, `await_namespace_ready`) lands in Phase 8.
+//! Implements implementation-plan Phase 6 (FSM + cache types) and
+//! Phase 7 (actor / emission / probe handling) of the three-phase
+//! governance contract for #2237. The "three phases" referred to are
+//! `assert_transport_ready` / `publish + collect acks` / `apply on
+//! receipt` — see `crates/context/src/governance_broadcast.rs`. The
+//! "Phase 6/7/8" numbers in this PR refer to the implementation plan
+//! at `docs/superpowers/plans/2026-04-25-governance-three-phase-readiness.md`,
+//! which slices the work into landable chunks.
+//!
+//! The join-flow consumer (`await_first_fresh_beacon` via
+//! [`ReadinessCache::await_first_fresh_beacon`], plus `join_namespace`
+//! / `await_namespace_ready`) lives in Phase 8, partially in this
+//! module and partially in [`crate::join_namespace`].
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -39,8 +48,12 @@ pub enum ReadinessTier {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DemotionReason {
     PendingOps(usize),
+    /// We had a fresh peer beacon for this namespace once, but no
+    /// peer has emitted within `ttl_heartbeat` recently — the spec
+    /// §7.2 "*Ready → Degraded" arm. Surfaced from `evaluate_readiness`
+    /// when `peer_summary` returns the (defensive) `(Some, false)`
+    /// state that should be unreachable under atomic-snapshot reads.
     NoRecentPeers,
-    PeerSawHigherThroughput,
 }
 
 #[derive(Debug, Clone)]
@@ -122,7 +135,16 @@ pub fn evaluate_readiness(
     ) {
         // Heard a peer beacon: tip-fresh → PeerValidatedReady; behind → CatchingUp{target}.
         (Some(peer_at), true, _) => {
-            if state.local_applied_through + cfg.applied_through_grace >= peer_at {
+            // saturating_add: in debug builds an overflow on
+            // `local_applied_through + applied_through_grace` would
+            // panic if `local_applied_through` were near `u64::MAX` —
+            // an unreachable state in practice, but a defensive
+            // saturating_add costs nothing and silences the audit.
+            if state
+                .local_applied_through
+                .saturating_add(cfg.applied_through_grace)
+                >= peer_at
+            {
                 ReadinessTier::PeerValidatedReady
             } else {
                 ReadinessTier::CatchingUp {
@@ -203,12 +225,24 @@ pub struct ReadinessCache {
 }
 
 impl ReadinessCache {
-    /// Insert iff the incoming beacon is *newer* than any cached entry from
-    /// the same peer (by `ts_millis`, with `applied_through` as tiebreaker
-    /// on clock equality). Gossipsub does not guarantee delivery order —
-    /// without this filter, an older re-delivered beacon could overwrite a
-    /// fresher one, causing `pick_sync_partner` and `peer_summary` to
-    /// regress and the FSM to spuriously demote
+    /// Insert a beacon into the cache.
+    ///
+    /// **Verification contract**: this method assumes the beacon has
+    /// already been verified for signature AND namespace membership by
+    /// the caller. The single legitimate caller is the receiver-side
+    /// `network_event::readiness::handle_readiness_beacon`, which calls
+    /// `calimero_context::governance_broadcast::verify_readiness_beacon`
+    /// (sig + member-set check) BEFORE invoking `insert`. Putting
+    /// verification inside `insert` would couple the cache to
+    /// `&Store`, drag namespace-membership state into a pure-types
+    /// module, and duplicate work since the receiver gate runs first.
+    ///
+    /// Insert iff the incoming beacon is *newer* than any cached entry
+    /// from the same peer (by `ts_millis`, with `applied_through` as
+    /// tiebreaker on clock equality). Gossipsub does not guarantee
+    /// delivery order — without this filter, an older re-delivered
+    /// beacon could overwrite a fresher one, causing `pick_sync_partner`
+    /// and `peer_summary` to regress and the FSM to spuriously demote
     /// `PeerValidatedReady → CatchingUp`.
     ///
     /// Also rejects beacons with `ts_millis` more than
@@ -217,10 +251,13 @@ impl ReadinessCache {
     /// with `ts_millis = year 2100`, poisoning their cache entry: every
     /// subsequent legitimate beacon from the same peer would be dropped
     /// by the `older-than-existing` filter, freezing `applied_through`
-    /// and `dag_head` at attacker-chosen values indefinitely. Beacons
-    /// are signed and verified against namespace membership, so only
-    /// current members can attempt this — but a single compromised key
-    /// would otherwise be sufficient.
+    /// and `dag_head` at attacker-chosen values indefinitely.
+    ///
+    /// Opportunistically evicts entries past `2 × MAX_BEACON_CLOCK_DRIFT_MS`
+    /// for *this namespace* on every insert — keeps long-lived nodes
+    /// from accumulating entries from peers that left the namespace.
+    /// Stale-but-within-eviction-window entries are still filtered out
+    /// of `fresh_peers`/`peer_summary` by the per-call `ttl` check.
     pub fn insert(&self, beacon: &SignedReadinessBeacon) {
         // Wall-clock sanity bound — reject far-future ts_millis to close
         // the cache-poisoning attack described above.
@@ -232,6 +269,7 @@ impl ReadinessCache {
             return;
         }
 
+        let now = Instant::now();
         let mut g = self.entries.lock().expect("readiness cache lock");
         let key = (beacon.namespace_id, beacon.peer_pubkey);
         if let Some(existing) = g.get(&key) {
@@ -243,13 +281,26 @@ impl ReadinessCache {
                 return;
             }
         }
+
+        // Opportunistic eviction for the same namespace — keep the
+        // BTreeMap from accumulating entries from peers that left the
+        // namespace on long-running nodes. Eviction window
+        // (`2 × MAX_BEACON_CLOCK_DRIFT_MS`) is intentionally wider
+        // than typical TTLs so reads can still see "stale-but-recent"
+        // entries (filtered by per-call `ttl`) without competing
+        // against this prune.
+        let evict_window = Duration::from_millis(MAX_BEACON_CLOCK_DRIFT_MS.saturating_mul(2));
+        g.retain(|(ns, _), entry| {
+            *ns != beacon.namespace_id || now.duration_since(entry.received_at) <= evict_window
+        });
+
         let _ = g.insert(
             key,
             CacheEntry {
                 head: beacon.dag_head,
                 applied_through: beacon.applied_through,
                 ts_millis: beacon.ts_millis,
-                received_at: Instant::now(),
+                received_at: now,
                 strong: beacon.strong,
             },
         );
@@ -265,19 +316,20 @@ impl ReadinessCache {
     }
 
     /// Sort order: `(strong desc, applied_through desc, received_at desc)`.
+    ///
+    /// O(n) via `Iterator::max_by` — earlier sort-then-take-first was
+    /// O(n log n) for a single-element selection.
     pub fn pick_sync_partner(
         &self,
         ns: [u8; 32],
         ttl: Duration,
     ) -> Option<(PublicKey, CacheEntry)> {
-        let mut peers = self.fresh_peers(ns, ttl);
-        peers.sort_by(|a, b| {
-            b.1.strong
-                .cmp(&a.1.strong)
-                .then(b.1.applied_through.cmp(&a.1.applied_through))
-                .then(b.1.received_at.cmp(&a.1.received_at))
-        });
-        peers.into_iter().next()
+        self.fresh_peers(ns, ttl).into_iter().max_by(|a, b| {
+            a.1.strong
+                .cmp(&b.1.strong)
+                .then(a.1.applied_through.cmp(&b.1.applied_through))
+                .then(a.1.received_at.cmp(&b.1.received_at))
+        })
     }
 
     pub fn max_applied_through(&self, ns: [u8; 32], ttl: Duration) -> Option<u64> {
@@ -413,6 +465,7 @@ impl ReadinessManager {
     /// that module).
     fn publish_beacon(&self, ns_id: [u8; 32], state: &ReadinessState) {
         use calimero_context_client::local_governance::{NamespaceTopicMsg, SignedReadinessBeacon};
+        use calimero_node_primitives::sync::BroadcastMessage;
 
         let group_id = calimero_context_config::types::ContextGroupId::from(ns_id);
         let identity =
@@ -462,11 +515,28 @@ impl ReadinessManager {
         beacon.signature = signature;
 
         let topic = calimero_context::governance_broadcast::ns_topic(ns_id);
-        let envelope = NamespaceTopicMsg::ReadinessBeacon(beacon);
+        // Wrap the NamespaceTopicMsg in the BroadcastMessage envelope used
+        // on `ns/<id>` topics — the receiver-side dispatch in
+        // `network_event::handle_namespace_governance_delta` unwraps
+        // NamespaceGovernanceDelta and decodes the inner NamespaceTopicMsg.
+        // delta_id/parent_ids are zero/empty since beacons are not DAG content.
+        let inner = match borsh::to_vec(&NamespaceTopicMsg::ReadinessBeacon(beacon)) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::debug!(?err, "ReadinessBeacon: borsh encode (inner) failed");
+                return;
+            }
+        };
+        let envelope = BroadcastMessage::NamespaceGovernanceDelta {
+            namespace_id: ns_id,
+            delta_id: [0u8; 32],
+            parent_ids: Vec::new(),
+            payload: inner,
+        };
         let bytes = match borsh::to_vec(&envelope) {
             Ok(b) => b,
             Err(err) => {
-                tracing::debug!(?err, "ReadinessBeacon: borsh encode failed");
+                tracing::debug!(?err, "ReadinessBeacon: borsh encode (envelope) failed");
                 return;
             }
         };

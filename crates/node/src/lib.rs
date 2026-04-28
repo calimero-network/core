@@ -18,6 +18,7 @@ mod constants;
 mod delta_store;
 pub mod gc;
 pub mod handlers;
+pub mod join_namespace;
 pub mod key_delivery;
 mod manager;
 pub mod network_event_channel;
