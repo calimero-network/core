@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
-use crate::readiness::{ReadinessCache, ReadinessCacheNotify, ReadinessConfig, ReadinessManager};
-use crate::sync::SyncManager;
-use crate::{NodeClients, NodeManagers, NodeState};
 use actix::{Actor, Addr};
 use calimero_blobstore::BlobManager as BlobStore;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
+
+use crate::readiness::{ReadinessCache, ReadinessCacheNotify, ReadinessConfig, ReadinessManager};
+use crate::sync::SyncManager;
+use crate::{NodeClients, NodeManagers, NodeState};
+
 mod startup;
 
 /// Main node orchestrator.

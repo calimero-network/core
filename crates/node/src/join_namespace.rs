@@ -24,11 +24,15 @@ use calimero_context_client::local_governance::{
 use calimero_context_config::types::{ContextGroupId, SignedGroupOpenInvitation};
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use rand::Rng;
 use thiserror::Error;
 use tracing::debug;
+use zeroize::Zeroize;
 
 use crate::readiness::{ReadinessCache, ReadinessCacheNotify, ReadinessConfig};
 
@@ -134,10 +138,56 @@ pub async fn join_namespace(
     // step 2: provision identity (mark_membership_pending equivalent —
     // the namespace identity row IS the local pending marker until
     // MemberJoined ack arrives).
-    let (ns_id, _pk, _sk_bytes, _sender_key) =
+    let (ns_id, _pk, mut sk_bytes, mut sender_key) =
         group_store::get_or_create_namespace_identity(store, &group_id)
             .map_err(|e| JoinError::Local(e.to_string()))?;
     let namespace_id = ns_id.to_bytes();
+    // Zeroize raw secret-key bytes before drop — `PrivateKey::from(...)`
+    // owns its own zeroizing wrapper, but the bare `[u8; 32]` arrays
+    // returned by `get_or_create_namespace_identity` do not. Mirrors
+    // PR #2264's `emit_namespace_ack` zeroize discipline. We don't need
+    // the bytes in the J6 fast path (signing happens in
+    // `await_namespace_ready`), so wipe them immediately.
+    sk_bytes.zeroize();
+    sender_key.zeroize();
+
+    // step 2b: trust seed for `verify_readiness_beacon`.
+    //
+    // `verify_readiness_beacon` checks `peer_pubkey ∈
+    // namespace_member_pubkeys(store, ns_id)`. A fresh joiner has
+    // applied no DAG ops yet, so without this seed `namespace_member_pubkeys`
+    // returns an empty set and EVERY incoming beacon fails verification
+    // — `await_first_fresh_beacon` then always times out, defeating the
+    // J6 fast path (#2269 review issue #1).
+    //
+    // The invitation is admin-signed, so `inviter_identity` is by
+    // definition an authorized namespace member. Writing a minimal
+    // `GroupMeta { admin_identity: inviter, ... }` makes
+    // `namespace_member_pubkeys` include the inviter (the meta-admin
+    // is added by `namespace_member_pubkeys` even without a member row),
+    // so beacons signed by the inviter verify. Other members' beacons
+    // remain unverifiable until backfill applies the real DAG state —
+    // for J6 cold-start the inviter alone is sufficient.
+    //
+    // The block mirrors the local-init prelude of
+    // `Handler<JoinGroupRequest>` in `crates/context/src/handlers/join_group.rs`.
+    if group_store::load_group_meta(store, &group_id)
+        .map_err(|e| JoinError::Local(e.to_string()))?
+        .is_none()
+    {
+        let admin_identity = PublicKey::from(invitation.invitation.inviter_identity.to_bytes());
+        let meta = GroupMetaValue {
+            admin_identity,
+            target_application_id: ApplicationId::from([0u8; 32]),
+            app_key: [0u8; 32],
+            upgrade_policy: UpgradePolicy::default(),
+            migration: None,
+            created_at: 0,
+            auto_join: true,
+        };
+        group_store::save_group_meta(store, &group_id, &meta)
+            .map_err(|e| JoinError::Local(e.to_string()))?;
+    }
 
     // step 3: subscribe to namespace topic. Idempotent.
     node_client
@@ -210,11 +260,14 @@ pub async fn join_namespace(
 /// timed out without acks — the caller decides whether that's
 /// acceptable for their flow.
 ///
-/// `deadline` is the FULL function budget. Sub-steps are not
-/// individually deadline-clamped because the backfill duration is
-/// unbounded by the caller's perspective; the
-/// `sign_and_publish_namespace_op` call carries its own per-op timeout
-/// derived from `op_kind_label`.
+/// `deadline` clamps the *backfill wait* and the *cold-start mesh wait*
+/// inside this function. The downstream `sign_and_publish_without_apply`
+/// call carries its own per-op-kind timeout (`OP_ACK_MEMBER_CHANGE_TIMEOUT
+/// = 5s` for `MemberJoined`) and is NOT clamped by `deadline`, so the
+/// total wall-clock can exceed `deadline` by up to that publish timeout.
+/// Document this asymmetry rather than wrap the publish in another
+/// timeout layer (which would race with the publish's own ack-collection
+/// logic).
 pub async fn await_namespace_ready(
     store: &Store,
     node_client: &NodeClient,
@@ -246,11 +299,47 @@ pub async fn await_namespace_ready(
     let backfill_wait = std::cmp::min(deadline / 4, Duration::from_secs(2));
     tokio::time::sleep(backfill_wait).await;
 
+    // step 1b: mesh-wait. `sign_and_publish_without_apply` runs
+    // `assert_transport_ready` which fails if mesh < min(known, mesh_n_low).
+    // A J6 cold-start joiner's mesh on the namespace topic typically
+    // forms within 1-2 gossipsub heartbeats (~1-2s) AFTER subscription
+    // — but `await_namespace_ready` is called immediately after
+    // `join_namespace` returns, so the mesh may still be empty.
+    // Poll briefly so the publish gate has a chance to pass before we
+    // surface a `NamespaceNotReady` error (#2269 review issue #6).
+    let mesh_deadline = start
+        + std::cmp::min(
+            deadline.saturating_sub(start.elapsed()),
+            Duration::from_secs(3),
+        );
+    let mesh_n_low = node_client.gossipsub_mesh_n_low();
+    loop {
+        let mesh = node_client
+            .mesh_peer_count_for_namespace(namespace_id)
+            .await;
+        let topic = ns_topic(namespace_id);
+        let known = node_client.known_subscribers(&topic);
+        let required = std::cmp::min(mesh_n_low, known);
+        if mesh >= required {
+            break;
+        }
+        if Instant::now() >= mesh_deadline {
+            // Fall through — let `sign_and_publish_without_apply`
+            // surface the typed `NamespaceNotReady` error.
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
     // step 2: load the namespace identity for signing MemberJoined.
     let group_id = ContextGroupId::from(namespace_id);
-    let (_, my_pk, my_sk_bytes, _) =
+    let (_, my_pk, my_sk_bytes, mut sender_key) =
         group_store::get_or_create_namespace_identity(store, &group_id)
             .map_err(|e| ReadyError::Local(e.to_string()))?;
+    // `PrivateKey::from(my_sk_bytes)` consumes and zeroizes my_sk_bytes
+    // on its own drop. `sender_key` is discarded here — zeroize the
+    // raw `[u8; 32]` before drop.
+    sender_key.zeroize();
     let signing_key = PrivateKey::from(my_sk_bytes);
 
     // step 3: publish MemberJoined via three-phase contract.
@@ -283,12 +372,19 @@ pub async fn await_namespace_ready(
 
 /// Convenience aggregator: run the J6 fast path then the slow path.
 ///
-/// `deadline` is split into a join slice and a ready slice with
-/// `join = clamp(deadline / 3, 1s, deadline)`. The 1s floor prevents
-/// `deadline / 3` from rounding to a near-zero value on small
-/// deadlines; the cap stops the floor from EXCEEDING the caller's
-/// total budget. Callers who want fine-grained control should call
-/// `join_namespace` and `await_namespace_ready` directly.
+/// Deadline split: `join_deadline = min(2s, deadline / 2)`, so the
+/// ready half always gets at least half the caller's budget — even on
+/// small deadlines (e.g. `deadline = 500ms` → `join = 250ms`,
+/// `ready = ~250ms`). Earlier `clamp(deadline/3, 1s, deadline)` fully
+/// consumed budgets ≤ 1s on the join half (#2269 review issue #8).
+///
+/// `ready_deadline` is computed from `start.elapsed()` (not the
+/// allocated `join_deadline`), so any unused join budget rolls over to
+/// the ready half (#2269 review issue #5). Net effect: callers
+/// authorise a single total budget and we use it efficiently.
+///
+/// Callers who want fine-grained control should call `join_namespace`
+/// and `await_namespace_ready` directly.
 pub async fn join_and_wait_ready(
     store: &Store,
     node_client: &NodeClient,
@@ -299,10 +395,8 @@ pub async fn join_and_wait_ready(
     invitation: SignedGroupOpenInvitation,
     deadline: Duration,
 ) -> Result<ReadyReport, ReadyError> {
-    let join_deadline = std::cmp::min(
-        std::cmp::max(deadline / 3, Duration::from_secs(1)),
-        deadline,
-    );
+    let start = Instant::now();
+    let join_deadline = std::cmp::min(Duration::from_secs(2), deadline / 2);
     let started = join_namespace(
         store,
         node_client,
@@ -317,7 +411,7 @@ pub async fn join_and_wait_ready(
         JoinError::InvalidInvitation(msg) => ReadyError::InvalidInvitation(msg),
         other => ReadyError::JoinFailed(other.to_string()),
     })?;
-    let ready_deadline = deadline.saturating_sub(join_deadline);
+    let ready_deadline = deadline.saturating_sub(start.elapsed());
     await_namespace_ready(
         store,
         node_client,

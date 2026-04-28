@@ -225,6 +225,24 @@ pub struct ReadinessCache {
 }
 
 impl ReadinessCache {
+    /// Acquire the entries map, recovering from a poisoned mutex.
+    ///
+    /// A `PoisonError` only happens if a previous holder panicked while
+    /// the guard was live; the BTreeMap's invariants are not at risk
+    /// here (no nested invariants between entries), so continuing with
+    /// the inner guard via `into_inner()` is strictly preferable to
+    /// permanently DoSing the readiness subsystem on the first transient
+    /// panic. Mirrors `AckRouter::lock` from PR #2264.
+    fn entries_lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, BTreeMap<([u8; 32], PublicKey), CacheEntry>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl ReadinessCache {
     /// Insert a beacon into the cache.
     ///
     /// **Verification contract**: this method assumes the beacon has
@@ -270,7 +288,7 @@ impl ReadinessCache {
         }
 
         let now = Instant::now();
-        let mut g = self.entries.lock().expect("readiness cache lock");
+        let mut g = self.entries_lock();
         let key = (beacon.namespace_id, beacon.peer_pubkey);
         if let Some(existing) = g.get(&key) {
             // Drop the beacon if it's older or equal-clock-but-not-fresher.
@@ -307,7 +325,7 @@ impl ReadinessCache {
     }
 
     pub fn fresh_peers(&self, ns: [u8; 32], ttl: Duration) -> Vec<(PublicKey, CacheEntry)> {
-        let g = self.entries.lock().expect("readiness cache lock");
+        let g = self.entries_lock();
         let now = Instant::now();
         g.iter()
             .filter(|((nns, _), e)| *nns == ns && now.duration_since(e.received_at) <= ttl)
@@ -346,7 +364,7 @@ impl ReadinessCache {
     /// `PeerSummary` MUST use this rather than two separate calls to
     /// `max_applied_through` and `fresh_peers`.
     pub fn peer_summary(&self, ns: [u8; 32], ttl: Duration) -> PeerSummary {
-        let g = self.entries.lock().expect("readiness cache lock");
+        let g = self.entries_lock();
         let now = Instant::now();
         let mut max_applied: Option<u64> = None;
         let mut any_fresh = false;
@@ -558,40 +576,52 @@ impl Handler<LocalStateChanged> for ReadinessManager {
     type Result = ();
 
     fn handle(&mut self, msg: LocalStateChanged, _ctx: &mut Self::Context) {
-        let entry = self
-            .state_per_namespace
-            .entry(msg.namespace_id)
-            .or_insert_with(|| ReadinessState {
-                tier: ReadinessTier::Bootstrapping,
-                local_applied_through: 0,
-                local_head: [0u8; 32],
-                local_pending_ops: 0,
-                subscribed_at: Instant::now(),
-            });
-        entry.local_applied_through = msg.local_applied_through;
-        entry.local_head = msg.local_head;
-        entry.local_pending_ops = msg.local_pending_ops;
-
         // Atomic single-lock snapshot — see ReadinessCache::peer_summary
         // for why peer_summary is the only correct source for PeerSummary.
         let peers = self
             .cache
             .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
-        let new_tier = evaluate_readiness(entry, &peers, &self.config, Instant::now());
-        if new_tier != entry.tier {
-            entry.tier = new_tier;
-            // Edge trigger: a tier transition into *Ready warrants an
-            // immediate beacon so peers see our promotion without waiting
-            // for the next freshness tick. The clone-then-emit pattern
-            // mirrors `emit_periodic_beacons` and keeps `publish_beacon`
-            // free of borrows on `state_per_namespace`.
-            if matches!(
-                new_tier,
-                ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
-            ) {
-                let snapshot = entry.clone();
-                self.publish_beacon(msg.namespace_id, &snapshot);
+
+        // Scoped borrow on `state_per_namespace`: compute next tier,
+        // mutate the entry, snapshot for emission. The borrow ends at
+        // the end of this block so `clear_probe_window_for` and
+        // `publish_beacon` can re-borrow `self` afterwards.
+        let to_emit = {
+            let entry = self
+                .state_per_namespace
+                .entry(msg.namespace_id)
+                .or_insert_with(|| ReadinessState {
+                    tier: ReadinessTier::Bootstrapping,
+                    local_applied_through: 0,
+                    local_head: [0u8; 32],
+                    local_pending_ops: 0,
+                    subscribed_at: Instant::now(),
+                });
+            entry.local_applied_through = msg.local_applied_through;
+            entry.local_head = msg.local_head;
+            entry.local_pending_ops = msg.local_pending_ops;
+            let new_tier = evaluate_readiness(entry, &peers, &self.config, Instant::now());
+            if new_tier != entry.tier {
+                entry.tier = new_tier;
+                // Edge trigger: a tier transition into *Ready warrants
+                // an immediate beacon so peers see our promotion without
+                // waiting for the next freshness tick.
+                if matches!(
+                    new_tier,
+                    ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
+                ) {
+                    Some(entry.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        };
+
+        if let Some(snapshot) = to_emit {
+            self.clear_probe_window_for(msg.namespace_id);
+            self.publish_beacon(msg.namespace_id, &snapshot);
         }
     }
 }
@@ -613,12 +643,24 @@ impl Handler<EmitOutOfCycleBeacon> for ReadinessManager {
 
     fn handle(&mut self, msg: EmitOutOfCycleBeacon, _ctx: &mut Self::Context) {
         // Rate-limit probe responses per (peer, namespace) at
-        // `BEACON_INTERVAL / 2` to close the unsigned-`ReadinessProbe`
-        // traffic-amplification path: one ~48-byte probe would otherwise
-        // trigger one ~200-byte signed beacon from EVERY *Ready peer on
-        // the topic (≈Nx amplification). Bypass via varying `nonce` is
-        // blocked because the rate-limit key is (peer, namespace), not
-        // probe content.
+        // `BEACON_INTERVAL / 2` to close BOTH:
+        // - The traffic-amplification path: one ~48-byte unsigned probe
+        //   would otherwise trigger one ~200-byte signed beacon from
+        //   EVERY *Ready peer on the topic (≈Nx amplification).
+        // - The mailbox-CPU path: even when we drop on tier (non-Ready),
+        //   each probe from the same peer still costs a HashMap lookup
+        //   + state lookup. Applying the rate-limit FIRST short-circuits
+        //   on the timestamp before the tier check.
+        //
+        // Bypass via varying `nonce` is blocked because the rate-limit
+        // key is (peer, namespace), not probe content.
+        //
+        // Tier-promotion fairness: if we drop a probe due to non-Ready
+        // tier, we still record `last_probe_response_at` so the same
+        // peer cannot poll us into pathological recheck rates. After a
+        // tier transition into *Ready, `last_probe_response_at` for
+        // affected (peer, ns) is cleared in `LocalStateChanged` /
+        // `ApplyBeaconLocal` so a later probe immediately gets a beacon.
         let now = Instant::now();
         let min_spacing = self.config.beacon_interval / 2;
         let key = (msg.requesting_peer, msg.namespace_id);
@@ -627,6 +669,7 @@ impl Handler<EmitOutOfCycleBeacon> for ReadinessManager {
                 return; // within rate-limit window — drop silently
             }
         }
+
         // Snapshot-then-emit so `publish_beacon` does not borrow
         // `state_per_namespace` across the call (it loads identity from
         // `self.datastore`).
@@ -637,16 +680,27 @@ impl Handler<EmitOutOfCycleBeacon> for ReadinessManager {
                     ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
                 ) =>
             {
-                s.clone()
+                Some(s.clone())
             }
-            // Either no state for this namespace or not in a *Ready tier —
-            // nothing to advertise, drop the probe silently. Don't update
-            // `last_probe_response_at` so a later probe after we promote
-            // is not silently rate-limited.
-            _ => return,
+            _ => None,
         };
-        self.publish_beacon(msg.namespace_id, &snapshot);
+        // Stamp BEFORE potential publish: the rate-limit budget is
+        // consumed by *this probe* regardless of whether we publish.
         let _ = self.last_probe_response_at.insert(key, now);
+        if let Some(snapshot) = snapshot {
+            self.publish_beacon(msg.namespace_id, &snapshot);
+        }
+    }
+}
+
+impl ReadinessManager {
+    /// Clear rate-limit timestamps for `ns_id` after a tier transition
+    /// into a *Ready variant so a probe that arrives shortly after the
+    /// promotion gets a fresh beacon instead of being silently dropped
+    /// by the still-running rate-limit window.
+    fn clear_probe_window_for(&mut self, ns_id: [u8; 32]) {
+        self.last_probe_response_at
+            .retain(|(_, key_ns), _| *key_ns != ns_id);
     }
 }
 
@@ -665,15 +719,22 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
             .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
         let new_tier = evaluate_readiness(&state, &peers, &self.config, Instant::now());
         if new_tier != state.tier {
-            if let Some(s) = self.state_per_namespace.get_mut(&msg.namespace_id) {
+            let snapshot = if let Some(s) = self.state_per_namespace.get_mut(&msg.namespace_id) {
                 s.tier = new_tier;
                 if matches!(
                     new_tier,
                     ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
                 ) {
-                    let snapshot = s.clone();
-                    self.publish_beacon(msg.namespace_id, &snapshot);
+                    Some(s.clone())
+                } else {
+                    None
                 }
+            } else {
+                None
+            };
+            if let Some(snapshot) = snapshot {
+                self.clear_probe_window_for(msg.namespace_id);
+                self.publish_beacon(msg.namespace_id, &snapshot);
             }
         }
     }
@@ -694,18 +755,29 @@ pub struct ReadinessCacheNotify {
 }
 
 impl ReadinessCacheNotify {
+    /// Acquire the waiters map, recovering from a poisoned mutex.
+    /// See [`ReadinessCache::entries_lock`] for rationale (mirrors
+    /// `AckRouter::lock` from PR #2264).
+    fn waiters_lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], Arc<tokio::sync::Notify>>> {
+        self.waiters
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Get-or-create the per-namespace `Notify`. Cloned so the caller
     /// holds it across `.await` points without keeping the registry
     /// lock.
     pub fn waiter_for(&self, ns: [u8; 32]) -> Arc<tokio::sync::Notify> {
-        let mut g = self.waiters.lock().expect("readiness notify lock");
+        let mut g = self.waiters_lock();
         g.entry(ns)
             .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
             .clone()
     }
 
     pub fn notify(&self, ns: [u8; 32]) {
-        let g = self.waiters.lock().expect("readiness notify lock");
+        let g = self.waiters_lock();
         if let Some(n) = g.get(&ns) {
             n.notify_waiters();
         }

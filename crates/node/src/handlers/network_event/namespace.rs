@@ -55,11 +55,26 @@ pub(super) fn handle_namespace_governance_delta(
         // submodule. Beacon receive verifies + inserts into the cache;
         // probe receive forwards to the rate-limited
         // `EmitOutOfCycleBeacon` handler on `ReadinessManager`.
+        //
+        // Cross-check `inner.namespace_id == namespace_id` (the topic's
+        // namespace) BEFORE forwarding — without this, a peer could
+        // publish a beacon claiming `beacon.namespace_id = X` on the
+        // gossipsub topic for namespace Y, polluting namespace X's
+        // cache from a Y subscription. Mirrors the existing `Op` arm
+        // check below.
         NamespaceTopicMsg::ReadinessBeacon(beacon) => {
+            if beacon.namespace_id != namespace_id {
+                warn!("ReadinessBeacon namespace_id mismatch with topic; dropping");
+                return;
+            }
             super::readiness::handle_readiness_beacon(this, ctx, source, beacon);
             return;
         }
         NamespaceTopicMsg::ReadinessProbe(probe) => {
+            if probe.namespace_id != namespace_id {
+                warn!("ReadinessProbe namespace_id mismatch with topic; dropping");
+                return;
+            }
             super::readiness::handle_readiness_probe(this, ctx, source, probe);
             return;
         }
