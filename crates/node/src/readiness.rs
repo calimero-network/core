@@ -351,13 +351,6 @@ impl ReadinessCache {
         })
     }
 
-    pub fn max_applied_through(&self, ns: [u8; 32], ttl: Duration) -> Option<u64> {
-        self.fresh_peers(ns, ttl)
-            .into_iter()
-            .map(|(_, e)| e.applied_through)
-            .max()
-    }
-
     /// Atomic snapshot — `max_applied_through` and `heard_recent_beacon`
     /// are read under a single lock acquisition so the FSM's match arms
     /// cannot observe a torn state (e.g. `heard_recent_beacon=true`
@@ -442,6 +435,25 @@ pub struct LocalStateChanged {
     pub local_applied_through: u64,
     pub local_head: [u8; 32],
     pub local_pending_ops: usize,
+}
+
+/// A single namespace governance op was successfully applied locally.
+///
+/// Sent from the receiver-side network-event handler after a
+/// `NamespaceApplyOutcome::Applied`. The actor increments its own
+/// per-namespace `local_applied_through` counter — this is the single
+/// progress signal the FSM needs to leave `Bootstrapping` and start
+/// emitting beacons.
+///
+/// The actor maintains the count internally (not the caller) because
+/// the count exists nowhere else in the codebase: `apply_signed_namespace_op`
+/// doesn't return a new height, and the namespace DAG doesn't expose a
+/// monotonic apply counter. Keeping the count on the actor keeps the
+/// scope minimal.
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct NamespaceOpApplied {
+    pub namespace_id: [u8; 32],
 }
 
 impl ReadinessManager {
@@ -648,6 +660,56 @@ impl Handler<LocalStateChanged> for ReadinessManager {
 pub struct EmitOutOfCycleBeacon {
     pub namespace_id: [u8; 32],
     pub requesting_peer: PeerId,
+}
+
+impl Handler<NamespaceOpApplied> for ReadinessManager {
+    type Result = ();
+
+    fn handle(&mut self, msg: NamespaceOpApplied, _ctx: &mut Self::Context) {
+        // Atomic single-lock snapshot — see ReadinessCache::peer_summary
+        // for why peer_summary is the only correct source for PeerSummary.
+        let peers = self
+            .cache
+            .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
+
+        // Increment the per-namespace local apply counter, then re-evaluate
+        // FSM and edge-emit on transition into a *Ready tier. Uses the
+        // same scoped-borrow pattern as Handler<LocalStateChanged> so
+        // `clear_probe_window_for` and `publish_beacon` can re-borrow
+        // self after the entry borrow ends.
+        let to_emit = {
+            let entry = self
+                .state_per_namespace
+                .entry(msg.namespace_id)
+                .or_insert_with(|| ReadinessState {
+                    tier: ReadinessTier::Bootstrapping,
+                    local_applied_through: 0,
+                    local_head: [0u8; 32],
+                    local_pending_ops: 0,
+                    subscribed_at: Instant::now(),
+                });
+            entry.local_applied_through = entry.local_applied_through.saturating_add(1);
+            let new_tier = evaluate_readiness(entry, &peers, &self.config, Instant::now());
+            if new_tier != entry.tier {
+                entry.tier = new_tier;
+                if matches!(
+                    new_tier,
+                    ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
+                ) {
+                    Some(entry.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(snapshot) = to_emit {
+            self.clear_probe_window_for(msg.namespace_id);
+            self.publish_beacon(msg.namespace_id, &snapshot);
+        }
+    }
 }
 
 impl Handler<EmitOutOfCycleBeacon> for ReadinessManager {

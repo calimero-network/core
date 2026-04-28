@@ -97,6 +97,7 @@ pub(super) fn handle_namespace_governance_delta(
     let pull_budget_max_peers = this.managers.sync.sync_config.parent_pull_additional_peers;
     let pull_budget_duration = this.managers.sync.sync_config.parent_pull_budget;
     let op_for_delivery = op.clone();
+    let readiness_addr = this.readiness_addr.clone();
 
     let op_for_ack = op.clone();
     let _ignored = ctx.spawn(
@@ -108,6 +109,19 @@ pub(super) fn handle_namespace_governance_delta(
                     return;
                 }
             };
+
+            // Notify the ReadinessManager FSM that we've made local
+            // progress on this namespace. Without this signal,
+            // `state_per_namespace` stays empty forever, no beacons emit,
+            // and the readiness subsystem is inert (#2269 cursor[bot]
+            // HIGH-severity finding). `Pending` and `Duplicate` outcomes
+            // do NOT advance our applied count — Pending is waiting on
+            // parents (no real progress yet) and Duplicate is a re-deliver.
+            if matches!(outcome, NamespaceApplyOutcome::Applied) {
+                if let Some(addr) = &readiness_addr {
+                    addr.do_send(crate::readiness::NamespaceOpApplied { namespace_id });
+                }
+            }
 
             // Phase 4: emit a `SignedAck` on the same topic when we've
             // newly applied the op. `Pending` (waiting on parents) and

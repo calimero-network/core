@@ -470,20 +470,26 @@ pub async fn join_namespace_with_retry(
         {
             Ok(started) => return Ok(started),
             Err(JoinError::NoReadyPeers { .. }) => {
-                if start.elapsed() + delay > max_total {
+                // Sample jitter FIRST so the budget check accounts for the
+                // actual sleep duration (`delay + jitter`), not just `delay`.
+                // With `MAX_BACKOFF = 30s`, max jitter ≈ 7.5s — without
+                // including it the function could overshoot `max_total` by
+                // up to that much per iteration, violating the documented
+                // "clamped by remaining total budget" contract.
+                let jitter = {
+                    let bound = delay.as_millis() as u64 / 4;
+                    if bound == 0 {
+                        Duration::ZERO
+                    } else {
+                        Duration::from_millis(rand::thread_rng().gen_range(0..bound))
+                    }
+                };
+                if start.elapsed() + delay + jitter > max_total {
                     return Err(JoinError::NoReadyPeers {
                         waited_ms: start.elapsed().as_millis() as u64,
                     });
                 }
-                let jitter_ms = {
-                    let bound = delay.as_millis() as u64 / 4;
-                    if bound == 0 {
-                        0
-                    } else {
-                        rand::thread_rng().gen_range(0..bound)
-                    }
-                };
-                tokio::time::sleep(delay + Duration::from_millis(jitter_ms)).await;
+                tokio::time::sleep(delay + jitter).await;
                 delay = std::cmp::min(delay * 2, MAX_BACKOFF);
             }
             Err(other) => return Err(other),
