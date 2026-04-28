@@ -445,21 +445,51 @@ pub struct NamespaceOpApplied {
 
 impl ReadinessManager {
     fn emit_periodic_beacons(&mut self) {
-        // Snapshot the (ns_id, state) pairs we want to publish so the
-        // borrow on `self.state_per_namespace` is released before
-        // `publish_beacon` runs (`publish_beacon` will load identity
-        // material from `self.datastore` in Task 7.2).
-        let to_emit: Vec<([u8; 32], ReadinessState)> = self
-            .state_per_namespace
-            .iter()
-            .filter(|(_, s)| {
-                matches!(
-                    s.tier,
+        // The freshness tick is the natural FSM-recompute checkpoint.
+        // Without re-evaluating, a `*Ready` tier set hours ago would
+        // persist forever even if every peer beacon expired in the
+        // meantime — leaving us emitting stale "I'm ready" claims with
+        // no peer-validated backing. Re-eval on every tick lets TTL
+        // expiry demote `PeerValidatedReady → Degraded(NoRecentPeers)`
+        // and gain-of-peer-awareness promote `LocallyReady →
+        // PeerValidatedReady`.
+        //
+        // Walk all namespaces (not just `*Ready` ones — a
+        // `Bootstrapping` ns may have caught up enough to promote
+        // since its last evaluation), recompute the tier, persist any
+        // change, and collect the post-recompute `*Ready` snapshots
+        // for emission.
+        let now = Instant::now();
+        let ttl = self.config.ttl_heartbeat;
+        let cfg = self.config;
+        let mut to_emit: Vec<([u8; 32], ReadinessState)> = Vec::new();
+        let ns_ids: Vec<[u8; 32]> = self.state_per_namespace.keys().copied().collect();
+        for ns_id in ns_ids {
+            // Atomic single-lock snapshot per namespace — see
+            // `ReadinessCache::peer_summary` for why.
+            let peers = self.cache.peer_summary(ns_id, ttl);
+            let snapshot = if let Some(entry) = self.state_per_namespace.get_mut(&ns_id) {
+                let new_tier = evaluate_readiness(entry, &peers, &cfg, now);
+                if new_tier != entry.tier {
+                    entry.tier = new_tier;
+                }
+                if matches!(
+                    entry.tier,
                     ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
-                )
-            })
-            .map(|(ns, s)| (*ns, s.clone()))
-            .collect();
+                ) {
+                    Some(entry.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(snapshot) = snapshot {
+                to_emit.push((ns_id, snapshot));
+            }
+        }
+        // Emit outside the borrow on `state_per_namespace` because
+        // `publish_beacon` loads identity material from `self.datastore`.
         for (ns_id, state) in to_emit {
             self.publish_beacon(ns_id, &state);
         }
