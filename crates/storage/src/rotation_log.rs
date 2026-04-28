@@ -66,10 +66,11 @@ pub struct RotationLogEntry {
 
     /// Public key that signed the rotation action.
     ///
-    /// `None` only for legacy / unsigned-bootstrap entries — see
-    /// [`writers_at`] for how those participate in ordering (they sort
-    /// after any `Some(...)` entry at equal HLC, mirroring the
-    /// "smaller bytes win" rule with `None` treated as "larger than any").
+    /// `None` only for legacy / unsigned-bootstrap entries — see the
+    /// node-side `rotation_log_reader::writers_at` for how those
+    /// participate in ordering (they sort after any `Some(...)` entry
+    /// at equal HLC, mirroring the "smaller bytes win" rule with `None`
+    /// treated as "larger than any").
     pub signer: Option<PublicKey>,
 
     /// Resolved writer set after this rotation. `BTreeSet` so the on-wire

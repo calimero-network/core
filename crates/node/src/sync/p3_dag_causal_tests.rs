@@ -1,37 +1,89 @@
 //! Tests for phase **P3** of [#2233](https://github.com/calimero-network/core/issues/2233):
 //!
-//! - **Verifier swap.** When `ApplyContext` carries DAG-causal information,
-//!   `Interface::apply_action` validates `Shared` signatures against
-//!   `writers_at(causal_parents)` (per ADR 0001) instead of stored writers.
+//! - **Verifier swap.** When `ApplyContext` carries DAG-causal information
+//!   (resolved `effective_writers`), `Interface::apply_action` validates
+//!   `Shared` signatures against that set instead of stored writers.
 //!   When the context is empty, behavior matches v2 exactly.
 //! - **Write hook.** Successful applies of `Shared` rotations append a
 //!   [`RotationLogEntry`]. Value-writes (writers unchanged) and ctx without
 //!   `delta_id`/`delta_hlc` are no-ops.
+//!
+//! Migrated from `calimero_storage::tests::p3_dag_causal` per #2266 step 5.
+//! The closure-typed `happens_before` ApplyContext field is gone; resolution
+//! happens in this crate's `rotation_log_reader::writers_at` against a DAG
+//! the test owns. The single storage-layer write-hook stale-writers
+//! regression stays in `calimero_storage::tests::write_hook` (it asserts
+//! a storage-internal invariant; no DAG needed).
 
 use core::num::NonZeroU128;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
-use ed25519_dalek::SigningKey;
+use calimero_primitives::identity::PublicKey;
+use calimero_storage::action::Action;
+use calimero_storage::address::Id;
+use calimero_storage::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+use calimero_storage::index::Index;
+use calimero_storage::interface::{ApplyContext, Interface, StorageError};
+use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+use calimero_storage::rotation_log::{self, RotationLogEntry};
+use calimero_storage::store::{MockedStorage, StorageAdaptor};
+use ed25519_dalek::{Signer, SigningKey};
 
-use crate::address::Id;
-use crate::entities::{ChildInfo, Metadata};
-use crate::env;
-use crate::index::Index;
-use crate::interface::{ApplyContext, Interface};
-use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use crate::rotation_log::{self, RotationLogEntry};
-use crate::store::{MockedStorage, StorageAdaptor};
-use crate::tests::common::{build_signed_shared_action, pubkey_of};
+use crate::sync::rotation_log_reader;
+
+// =============================================================================
+// Harness
+// =============================================================================
+
+/// Minimal DAG mirror used by tests to provide a `happens_before` predicate
+/// over delta ids — same shape as P5's `Dag`, scoped here so each test
+/// builds the DAG it needs.
+struct Dag {
+    parents: HashMap<[u8; 32], Vec<[u8; 32]>>,
+}
+
+impl Dag {
+    fn new() -> Self {
+        Self {
+            parents: HashMap::new(),
+        }
+    }
+
+    fn record(&mut self, delta_id: [u8; 32], parents: Vec<[u8; 32]>) {
+        self.parents.insert(delta_id, parents);
+    }
+
+    fn happens_before(&self, ancestor: &[u8; 32], descendant: &[u8; 32]) -> bool {
+        if ancestor == descendant {
+            return false;
+        }
+        let mut frontier: Vec<[u8; 32]> = self.parents.get(descendant).cloned().unwrap_or_default();
+        let mut seen: HashSet<[u8; 32]> = HashSet::new();
+        while let Some(node) = frontier.pop() {
+            if !seen.insert(node) {
+                continue;
+            }
+            if node == *ancestor {
+                return true;
+            }
+            if let Some(ps) = self.parents.get(&node) {
+                frontier.extend(ps.iter().copied());
+            }
+        }
+        false
+    }
+}
 
 // Each test uses a unique mocked-storage scope so they don't bleed into each
 // other (the mock store is a thread-local BTreeMap keyed on (scope, key)).
 type S<const SCOPE: usize> = MockedStorage<SCOPE>;
 
-// =============================================================================
-// Helpers
-// =============================================================================
-
 fn make_signing_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
+}
+
+fn pubkey_of(sk: &SigningKey) -> PublicKey {
+    PublicKey::from(*sk.verifying_key().as_bytes())
 }
 
 fn hlc(ns: u64) -> HybridTimestamp {
@@ -39,16 +91,17 @@ fn hlc(ns: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(NTP64(ns), node_id))
 }
 
-/// Returns an HLC nanosecond value rooted at "now" plus `step` seconds.
-/// Use this so sequential actions in a test always have strictly-increasing
-/// nonces without depending on wall-clock advancement between calls.
+/// Returns a HLC nanosecond value rooted at "now" plus `step` seconds.
 fn hlc_at(step: u64) -> u64 {
-    env::time_now().saturating_add(step.saturating_mul(1_000_000_000))
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    now.saturating_add(step.saturating_mul(1_000_000_000))
 }
 
 /// Pre-create the root index entry so non-root child entities can be
 /// added/updated by `apply_action` without tripping `IndexNotFound`.
-/// Returns the root `ChildInfo` ready to embed in an action's `ancestors`.
 fn setup_root<S: StorageAdaptor>() -> ChildInfo {
     let root_id = Id::root();
     let root_meta = Metadata::default();
@@ -56,34 +109,81 @@ fn setup_root<S: StorageAdaptor>() -> ChildInfo {
     ChildInfo::new(root_id, [0; 32], root_meta)
 }
 
-fn empty_ctx<'a>() -> ApplyContext<'a> {
-    ApplyContext {
-        causal_parents: &[],
-        delta_id: None,
-        delta_hlc: None,
-        happens_before: None,
-    }
-}
-
-fn dag_ctx<'a>(
-    parents: &'a [[u8; 32]],
-    delta_id: [u8; 32],
-    delta_hlc_ns: u64,
-    happens_before: &'a dyn Fn(&[u8; 32], &[u8; 32]) -> bool,
-) -> ApplyContext<'a> {
-    ApplyContext {
-        causal_parents: parents,
-        delta_id: Some(delta_id),
-        delta_hlc: Some(hlc(delta_hlc_ns)),
-        happens_before: Some(happens_before),
-    }
-}
-
-// Convenient per-test entity id derived from the scope so each test gets a
-// distinct, deterministic id (avoids any cross-test interference even if
-// scopes were reused).
 fn entity_id(seed: u8) -> Id {
     Id::new([seed; 32])
+}
+
+/// Build a signed `Shared` action — see notes on the storage-side helper
+/// (`tests::common::build_signed_shared_action`) for invariants.
+fn build_signed_shared_action(
+    add: bool,
+    id: Id,
+    data: Vec<u8>,
+    writers: BTreeSet<PublicKey>,
+    hlc_ns: u64,
+    signer_sk: &SigningKey,
+    ancestors: Vec<ChildInfo>,
+) -> Action {
+    let mut metadata = Metadata::new(hlc_ns, hlc_ns);
+    metadata.storage_type = StorageType::Shared {
+        writers,
+        signature_data: Some(SignatureData {
+            signature: [0; 64],
+            nonce: hlc_ns,
+            signer: Some(pubkey_of(signer_sk)),
+        }),
+    };
+    let mut action = if add {
+        Action::Add {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+    } else {
+        Action::Update {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+    };
+    let payload = action.payload_for_signing();
+    let signature = signer_sk.sign(&payload).to_bytes();
+    let metadata_mut = match &mut action {
+        Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata,
+        _ => unreachable!(),
+    };
+    if let StorageType::Shared {
+        signature_data: Some(sd),
+        ..
+    } = &mut metadata_mut.storage_type
+    {
+        sd.signature = signature;
+    }
+    action
+}
+
+/// Build an `ApplyContext` for `apply_action` by resolving `effective_writers`
+/// against the rotation log + DAG, mirroring the production sync-layer flow.
+fn ctx_for<S: StorageAdaptor>(
+    entity: Id,
+    parents: &[[u8; 32]],
+    delta_id: [u8; 32],
+    delta_hlc_ns: u64,
+    dag: &Dag,
+) -> ApplyContext {
+    let effective_writers = match rotation_log::load::<S>(entity).unwrap() {
+        Some(log) => {
+            rotation_log_reader::writers_at(&log, parents, |a, b| dag.happens_before(a, b))
+        }
+        None => None,
+    };
+    ApplyContext {
+        effective_writers,
+        delta_id: Some(delta_id),
+        delta_hlc: Some(hlc(delta_hlc_ns)),
+    }
 }
 
 // =============================================================================
@@ -95,8 +195,7 @@ fn entity_id(seed: u8) -> Id {
 /// claim when the entity doesn't exist yet (bootstrap).
 #[test]
 fn verifier_without_dag_context_uses_stored_writers() {
-    env::reset_for_testing();
-    let root = setup_root::<S<400>>();
+    let root = setup_root::<S<6400>>();
 
     let alice_sk = make_signing_key(0xA1);
     let alice = pubkey_of(&alice_sk);
@@ -111,7 +210,7 @@ fn verifier_without_dag_context_uses_stored_writers() {
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<400>>::apply_action(bootstrap, empty_ctx())
+    Interface::<S<6400>>::apply_action(bootstrap, &ApplyContext::empty())
         .expect("bootstrap accepted with v2 fallback");
 
     let update = build_signed_shared_action(
@@ -123,14 +222,14 @@ fn verifier_without_dag_context_uses_stored_writers() {
         &alice_sk,
         vec![],
     );
-    Interface::<S<400>>::apply_action(update, empty_ctx()).expect("update by writer accepted");
+    Interface::<S<6400>>::apply_action(update, &ApplyContext::empty())
+        .expect("update by writer accepted");
 }
 
 /// Action signed by a non-writer is rejected by the v2 path.
 #[test]
 fn verifier_without_dag_context_rejects_non_writer() {
-    env::reset_for_testing();
-    let root = setup_root::<S<401>>();
+    let root = setup_root::<S<6401>>();
 
     let alice_sk = make_signing_key(0xA2);
     let bob_sk = make_signing_key(0xB2);
@@ -146,7 +245,7 @@ fn verifier_without_dag_context_rejects_non_writer() {
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<401>>::apply_action(bootstrap, empty_ctx()).unwrap();
+    Interface::<S<6401>>::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
 
     // Bob is not in the stored writer set — must reject.
     let forged = build_signed_shared_action(
@@ -158,22 +257,18 @@ fn verifier_without_dag_context_rejects_non_writer() {
         &bob_sk,
         vec![],
     );
-    let result = Interface::<S<401>>::apply_action(forged, empty_ctx());
-    assert!(matches!(
-        result,
-        Err(crate::interface::StorageError::InvalidSignature)
-    ));
+    let result = Interface::<S<6401>>::apply_action(forged, &ApplyContext::empty());
+    assert!(matches!(result, Err(StorageError::InvalidSignature)));
 }
 
 /// **The partition-correctness fix.** A pre-populated rotation log says the
 /// writer set as-of `D1` is `{Alice}`. The stored entity (simulating
 /// divergent state from a partition) has `{Bob}`. An action signed by Alice
 /// with `causal_parents = [D1]` must be accepted: per ADR 0001 the verifier
-/// consults the rotation log, not stored.
+/// consults the rotation log resolution, not stored.
 #[test]
 fn verifier_with_dag_context_uses_rotation_log() {
-    env::reset_for_testing();
-    let root = setup_root::<S<402>>();
+    let root = setup_root::<S<6402>>();
 
     let alice_sk = make_signing_key(0xA3);
     let bob_sk = make_signing_key(0xB3);
@@ -191,11 +286,11 @@ fn verifier_with_dag_context_uses_rotation_log() {
         &bob_sk,
         vec![root.clone()],
     );
-    Interface::<S<402>>::apply_action(bootstrap, empty_ctx()).unwrap();
+    Interface::<S<6402>>::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
 
     // Pre-populate the rotation log: as-of delta D1, the writer set was {Alice}.
     let d1 = [0xD1; 32];
-    rotation_log::append::<S<402>>(
+    rotation_log::append::<S<6402>>(
         id,
         RotationLogEntry {
             delta_id: d1,
@@ -217,14 +312,13 @@ fn verifier_with_dag_context_uses_rotation_log() {
         &alice_sk,
         vec![],
     );
-    let parents = [d1];
-    // Direct parent-match in writers_at handles `delta_id == d1`; no DAG ancestry needed here.
-    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
-    let ctx = dag_ctx(&parents, [0xD2; 32], hlc_at(2), happens_before);
+    let mut dag = Dag::new();
+    dag.record(d1, vec![]);
+    let ctx = ctx_for::<S<6402>>(id, &[d1], [0xD2; 32], hlc_at(2), &dag);
 
-    // Without P3 this would be rejected (sig vs stored {Bob} fails).
-    // With P3 it's accepted because writers_at returns {Alice}.
-    Interface::<S<402>>::apply_action(action, ctx)
+    // Without DAG-causal this would be rejected (sig vs stored {Bob} fails).
+    // With DAG-causal it's accepted because writers_at returns {Alice}.
+    Interface::<S<6402>>::apply_action(action, &ctx)
         .expect("DAG-causal verifier accepts Alice — she's the writer as-of D1");
 }
 
@@ -232,8 +326,7 @@ fn verifier_with_dag_context_uses_rotation_log() {
 /// writer set is rejected.
 #[test]
 fn verifier_with_dag_context_rejects_non_causal_writer() {
-    env::reset_for_testing();
-    let root = setup_root::<S<403>>();
+    let root = setup_root::<S<6403>>();
 
     let alice_sk = make_signing_key(0xA4);
     let bob_sk = make_signing_key(0xB4);
@@ -251,10 +344,10 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
         &bob_sk,
         vec![root.clone()],
     );
-    Interface::<S<403>>::apply_action(bootstrap, empty_ctx()).unwrap();
+    Interface::<S<6403>>::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
 
     let d1 = [0xD1; 32];
-    rotation_log::append::<S<403>>(
+    rotation_log::append::<S<6403>>(
         id,
         RotationLogEntry {
             delta_id: d1,
@@ -276,16 +369,12 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
         &mallory_sk,
         vec![],
     );
-    let parents = [d1];
-    // Direct parent-match in writers_at handles `delta_id == d1`; no DAG ancestry needed here.
-    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
-    let ctx = dag_ctx(&parents, [0xD2; 32], hlc_at(2), happens_before);
+    let mut dag = Dag::new();
+    dag.record(d1, vec![]);
+    let ctx = ctx_for::<S<6403>>(id, &[d1], [0xD2; 32], hlc_at(2), &dag);
 
-    let result = Interface::<S<403>>::apply_action(forged, ctx);
-    assert!(matches!(
-        result,
-        Err(crate::interface::StorageError::InvalidSignature)
-    ));
+    let result = Interface::<S<6403>>::apply_action(forged, &ctx);
+    assert!(matches!(result, Err(StorageError::InvalidSignature)));
 }
 
 // =============================================================================
@@ -295,8 +384,7 @@ fn verifier_with_dag_context_rejects_non_causal_writer() {
 /// Bootstrap with full DAG context appends one rotation log entry.
 #[test]
 fn write_hook_appends_on_bootstrap_with_ctx() {
-    env::reset_for_testing();
-    let root = setup_root::<S<404>>();
+    let root = setup_root::<S<6404>>();
 
     let alice_sk = make_signing_key(0xA5);
     let alice = pubkey_of(&alice_sk);
@@ -311,11 +399,11 @@ fn write_hook_appends_on_bootstrap_with_ctx() {
         &alice_sk,
         vec![root.clone()],
     );
-    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
-    let ctx = dag_ctx(&[], [0xAA; 32], hlc_at(0), happens_before);
-    Interface::<S<404>>::apply_action(bootstrap, ctx).unwrap();
+    let dag = Dag::new();
+    let ctx = ctx_for::<S<6404>>(id, &[], [0xAA; 32], hlc_at(0), &dag);
+    Interface::<S<6404>>::apply_action(bootstrap, &ctx).unwrap();
 
-    let log = rotation_log::load::<S<404>>(id)
+    let log = rotation_log::load::<S<6404>>(id)
         .unwrap()
         .expect("rotation log exists after Shared apply with delta ctx");
     assert_eq!(log.entries.len(), 1);
@@ -325,11 +413,10 @@ fn write_hook_appends_on_bootstrap_with_ctx() {
 }
 
 /// Same bootstrap but with empty ctx (no delta_id) — the log stays empty.
-/// Production sync paths behave like this until the WASM ABI extension lands.
+/// Local-apply / snapshot-leaf paths behave like this.
 #[test]
 fn write_hook_skips_when_ctx_lacks_delta_id() {
-    env::reset_for_testing();
-    let root = setup_root::<S<405>>();
+    let root = setup_root::<S<6405>>();
 
     let alice_sk = make_signing_key(0xA6);
     let alice = pubkey_of(&alice_sk);
@@ -344,22 +431,21 @@ fn write_hook_skips_when_ctx_lacks_delta_id() {
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<405>>::apply_action(bootstrap, empty_ctx()).unwrap();
+    Interface::<S<6405>>::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
 
-    assert_eq!(rotation_log::load::<S<405>>(id).unwrap(), None);
+    assert_eq!(rotation_log::load::<S<6405>>(id).unwrap(), None);
 }
 
 /// Value-write (writer set unchanged) does not append an entry.
 #[test]
 fn write_hook_skips_when_writers_unchanged() {
-    env::reset_for_testing();
-    let root = setup_root::<S<406>>();
+    let root = setup_root::<S<6406>>();
 
     let alice_sk = make_signing_key(0xA7);
     let alice = pubkey_of(&alice_sk);
     let id = entity_id(0x46);
 
-    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
+    let mut dag = Dag::new();
 
     let bootstrap = build_signed_shared_action(
         true,
@@ -370,13 +456,15 @@ fn write_hook_skips_when_writers_unchanged() {
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<406>>::apply_action(
+    let bootstrap_id = [0xBB; 32];
+    dag.record(bootstrap_id, vec![]);
+    Interface::<S<6406>>::apply_action(
         bootstrap,
-        dag_ctx(&[], [0xBB; 32], hlc_at(0), happens_before),
+        &ctx_for::<S<6406>>(id, &[], bootstrap_id, hlc_at(0), &dag),
     )
     .unwrap();
     assert_eq!(
-        rotation_log::load::<S<406>>(id)
+        rotation_log::load::<S<6406>>(id)
             .unwrap()
             .unwrap()
             .entries
@@ -394,21 +482,22 @@ fn write_hook_skips_when_writers_unchanged() {
         &alice_sk,
         vec![],
     );
-    Interface::<S<406>>::apply_action(
+    let vw_id = [0xCC; 32];
+    dag.record(vw_id, vec![bootstrap_id]);
+    Interface::<S<6406>>::apply_action(
         value_write,
-        dag_ctx(&[], [0xCC; 32], hlc_at(1), happens_before),
+        &ctx_for::<S<6406>>(id, &[bootstrap_id], vw_id, hlc_at(1), &dag),
     )
     .unwrap();
 
-    let log = rotation_log::load::<S<406>>(id).unwrap().unwrap();
+    let log = rotation_log::load::<S<6406>>(id).unwrap().unwrap();
     assert_eq!(log.entries.len(), 1, "value-write did not append");
 }
 
 /// Genuine rotation (writer set changes) appends a second entry.
 #[test]
 fn write_hook_appends_on_writer_set_change() {
-    env::reset_for_testing();
-    let root = setup_root::<S<407>>();
+    let root = setup_root::<S<6407>>();
 
     let alice_sk = make_signing_key(0xA8);
     let bob_sk = make_signing_key(0xB8);
@@ -416,7 +505,7 @@ fn write_hook_appends_on_writer_set_change() {
     let bob = pubkey_of(&bob_sk);
     let id = entity_id(0x47);
 
-    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
+    let mut dag = Dag::new();
 
     let bootstrap = build_signed_shared_action(
         true,
@@ -427,9 +516,11 @@ fn write_hook_appends_on_writer_set_change() {
         &alice_sk,
         vec![root.clone()],
     );
-    Interface::<S<407>>::apply_action(
+    let d0 = [0xD0; 32];
+    dag.record(d0, vec![]);
+    Interface::<S<6407>>::apply_action(
         bootstrap,
-        dag_ctx(&[], [0xD0; 32], hlc_at(0), happens_before),
+        &ctx_for::<S<6407>>(id, &[], d0, hlc_at(0), &dag),
     )
     .unwrap();
 
@@ -443,148 +534,33 @@ fn write_hook_appends_on_writer_set_change() {
         &alice_sk,
         vec![],
     );
-    Interface::<S<407>>::apply_action(
+    let d1 = [0xD1; 32];
+    dag.record(d1, vec![d0]);
+    Interface::<S<6407>>::apply_action(
         rotation,
-        dag_ctx(&[[0xD0; 32]], [0xD1; 32], hlc_at(1), happens_before),
+        &ctx_for::<S<6407>>(id, &[d0], d1, hlc_at(1), &dag),
     )
     .unwrap();
 
-    let log = rotation_log::load::<S<407>>(id).unwrap().unwrap();
+    let log = rotation_log::load::<S<6407>>(id).unwrap().unwrap();
     assert_eq!(log.entries.len(), 2);
-    assert_eq!(log.entries[1].delta_id, [0xD1; 32]);
+    assert_eq!(log.entries[1].delta_id, d1);
     assert_eq!(
         log.entries[1].new_writers,
         [alice, bob].into_iter().collect()
     );
 }
 
-/// Documents a known design fragility flagged in PR #2265 review.
-///
-/// `maybe_append_rotation_log` decides whether to append by comparing the
-/// action's claimed `writers` against the currently-stored writers. But
-/// `Index::update_hash_for` only touches `own_hash`/`full_hash`/`updated_at`
-/// — it never updates `metadata.storage_type`, so the stored writers stay
-/// frozen at the bootstrap set forever.
-///
-/// As a result, a value-write that *happens* to claim the bootstrap writers
-/// (e.g., authored by a peer with stale view) is correctly NOT logged as a
-/// rotation, even after a real rotation has updated the writer set logically.
-/// The rotation-detection logic depends on this stale-stored-writers behavior
-/// to avoid false positives.
-///
-/// If `update_hash_for` is ever changed to also update `storage_type`, the
-/// rotation-detection logic must switch to comparing against
-/// `writers_at(causal_parents)` instead, or stale value-writes will be
-/// falsely flagged as rotations. Same root cause underlies the v2 fallback
-/// verifier's reliance on stored writers for signature checks; both are
-/// tracked as #2233 P3 follow-up.
-#[test]
-fn write_hook_relies_on_stale_stored_writers_for_rotation_detection() {
-    env::reset_for_testing();
-    let root = setup_root::<S<408>>();
-
-    let alice_sk = make_signing_key(0xAB);
-    let bob_sk = make_signing_key(0xBB);
-    let alice = pubkey_of(&alice_sk);
-    let bob = pubkey_of(&bob_sk);
-    let id = entity_id(0x48);
-
-    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
-
-    // Bootstrap with {Alice, Bob}.
-    let bootstrap = build_signed_shared_action(
-        true,
-        id,
-        b"v0".to_vec(),
-        [alice, bob].into_iter().collect(),
-        hlc_at(0),
-        &alice_sk,
-        vec![root.clone()],
-    );
-    Interface::<S<408>>::apply_action(
-        bootstrap,
-        dag_ctx(&[], [0xE0; 32], hlc_at(0), happens_before),
-    )
-    .unwrap();
-
-    // D1: Alice rotates Bob out → writers = {Alice}. Logged as a rotation.
-    let rotation = build_signed_shared_action(
-        false,
-        id,
-        b"v1".to_vec(),
-        [alice].into_iter().collect(),
-        hlc_at(1),
-        &alice_sk,
-        vec![],
-    );
-    Interface::<S<408>>::apply_action(
-        rotation,
-        dag_ctx(&[[0xE0; 32]], [0xE1; 32], hlc_at(1), happens_before),
-    )
-    .unwrap();
-    assert_eq!(
-        rotation_log::load::<S<408>>(id)
-            .unwrap()
-            .unwrap()
-            .entries
-            .len(),
-        2,
-        "post-D1 baseline: bootstrap + rotation"
-    );
-
-    // D2: Alice value-write claiming the BOOTSTRAP writers {Alice, Bob}.
-    // She's authorized (signature verifies against the authoritative set),
-    // so the write itself is accepted. The rotation-detection compares
-    // action.writers `{Alice, Bob}` against `pre_apply_writers` — which is
-    // STILL `{Alice, Bob}` because `Index::update_hash_for` never updated
-    // `storage_type` after D1. So `is_rotation = false` and no log entry
-    // is appended.
-    //
-    // If the index had updated to `{Alice}` after D1, this comparison would
-    // be `{Alice, Bob} != {Alice}` → IS rotation → falsely append. This
-    // assertion catches that future regression.
-    let value_write_with_stale_writers = build_signed_shared_action(
-        false,
-        id,
-        b"v2".to_vec(),
-        [alice, bob].into_iter().collect(), // claims bootstrap writers
-        hlc_at(2),
-        &alice_sk,
-        vec![],
-    );
-    Interface::<S<408>>::apply_action(
-        value_write_with_stale_writers,
-        dag_ctx(&[[0xE1; 32]], [0xE2; 32], hlc_at(2), happens_before),
-    )
-    .unwrap();
-
-    let log = rotation_log::load::<S<408>>(id).unwrap().unwrap();
-    assert_eq!(
-        log.entries.len(),
-        2,
-        "value-write with stale writer claim must NOT append \
-         (relies on stored writers staying frozen at bootstrap)"
-    );
-}
-
 // =============================================================================
-// P4-impl coverage: ADR Example D (write vs rotate on the same entity)
+// ADR Example D coverage (write vs rotate on the same entity)
 // =============================================================================
-//
-// The other ADR examples (A sequential, B concurrent siblings HLC, C HLC tie)
-// are exercised in `rotation_log::tests`. Example D — a value-write signed by
-// a pre-rotation writer must still verify after the rotation lands locally —
-// is the central guarantee that makes concurrent operation safe, and it
-// involves the full apply_action verifier swap, so it lives here next to
-// the rest of the P3 verifier coverage.
 
 /// ADR Example D: pre-rotation value-write is accepted even after the
 /// rotation that removes the signer is applied locally. The verifier must
 /// consult `writers_at(value_write.parents)`, NOT the post-merge writer set.
 #[test]
 fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
-    env::reset_for_testing();
-    let root = setup_root::<S<420>>();
+    let root = setup_root::<S<6420>>();
 
     let alice_sk = make_signing_key(0xA9);
     let bob_sk = make_signing_key(0xB9);
@@ -592,8 +568,11 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
     let bob = pubkey_of(&bob_sk);
     let id = entity_id(0x60);
 
+    let mut dag = Dag::new();
+
     // D_root: writers = {Alice, Bob}. Bootstrap so the entity exists locally.
     let d_root = [0xD0; 32];
+    dag.record(d_root, vec![]);
     let bootstrap = build_signed_shared_action(
         true,
         id,
@@ -603,16 +582,16 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
         &alice_sk,
         vec![root.clone()],
     );
-    let happens_before_simple: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
-    Interface::<S<420>>::apply_action(
+    Interface::<S<6420>>::apply_action(
         bootstrap,
-        dag_ctx(&[], d_root, hlc_at(0), happens_before_simple),
+        &ctx_for::<S<6420>>(id, &[], d_root, hlc_at(0), &dag),
     )
     .unwrap();
 
     // D1 (concurrent sibling of D_root from D2's perspective): Alice rotates
     // Bob out → writers = {Alice}. Apply this first.
     let d1 = [0xD1; 32];
+    dag.record(d1, vec![d_root]);
     let rotation = build_signed_shared_action(
         false,
         id,
@@ -622,21 +601,22 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
         &alice_sk,
         vec![],
     );
-    Interface::<S<420>>::apply_action(
+    Interface::<S<6420>>::apply_action(
         rotation,
-        dag_ctx(&[d_root], d1, hlc_at(1), happens_before_simple),
+        &ctx_for::<S<6420>>(id, &[d_root], d1, hlc_at(1), &dag),
     )
     .unwrap();
 
     // Sanity: the local stored writer set is now {Alice} and the rotation log
     // has two entries (bootstrap + rotation).
-    let log = rotation_log::load::<S<420>>(id).unwrap().unwrap();
+    let log = rotation_log::load::<S<6420>>(id).unwrap().unwrap();
     assert_eq!(log.entries.len(), 2);
 
     // D2 (concurrent sibling of D1): Bob writes "world" against the writer
     // set he saw — {Alice, Bob}. From Bob's local view this is valid; D2's
-    // parent is D_root, NOT D1. Carry that into ctx.causal_parents.
+    // parent is D_root, NOT D1.
     let d2 = [0xD2; 32];
+    dag.record(d2, vec![d_root]);
     let bob_write = build_signed_shared_action(
         false,
         id,
@@ -646,24 +626,13 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
         &bob_sk,
         vec![],
     );
-
-    // happens_before: D_root precedes everything; D1 and D2 are siblings so
-    // neither precedes the other.
-    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|a, b| {
-        // D_root happens-before D1 and D2.
-        if *a == d_root && (*b == d1 || *b == d2) {
-            return true;
-        }
-        false
-    };
-    let parents = [d_root];
-    let ctx = dag_ctx(&parents, d2, hlc_at(2), happens_before);
+    let ctx = ctx_for::<S<6420>>(id, &[d_root], d2, hlc_at(2), &dag);
 
     // Crucial: even though stored writers (post-D1) is {Alice}, D2 is causally
     // a sibling of D1 — it never saw the rotation. writers_at(D2.parents=[D_root])
     // returns the bootstrap writer set {Alice, Bob}, so Bob's signature
-    // verifies. Without P3 this would fail (sig vs stored {Alice}).
-    Interface::<S<420>>::apply_action(bob_write, ctx).expect(
+    // verifies. Without DAG-causal this would fail (sig vs stored {Alice}).
+    Interface::<S<6420>>::apply_action(bob_write, &ctx).expect(
         "ADR Example D: pre-rotation write by Bob accepted because writers_at \
          (causal parents of D2) includes Bob, even though stored writers no longer do",
     );
@@ -674,8 +643,7 @@ fn adr_example_d_pre_rotation_write_accepted_after_rotation() {
 /// rejected if the signer is no longer in the writer set as-of those parents.
 #[test]
 fn write_post_rotation_by_removed_writer_rejected() {
-    env::reset_for_testing();
-    let root = setup_root::<S<421>>();
+    let root = setup_root::<S<6421>>();
 
     let alice_sk = make_signing_key(0xAA);
     let bob_sk = make_signing_key(0xBA);
@@ -683,7 +651,10 @@ fn write_post_rotation_by_removed_writer_rejected() {
     let bob = pubkey_of(&bob_sk);
     let id = entity_id(0x61);
 
+    let mut dag = Dag::new();
+
     let d_root = [0xD0; 32];
+    dag.record(d_root, vec![]);
     let bootstrap = build_signed_shared_action(
         true,
         id,
@@ -693,15 +664,15 @@ fn write_post_rotation_by_removed_writer_rejected() {
         &alice_sk,
         vec![root.clone()],
     );
-    let happens_before_simple: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|_, _| false;
-    Interface::<S<421>>::apply_action(
+    Interface::<S<6421>>::apply_action(
         bootstrap,
-        dag_ctx(&[], d_root, hlc_at(0), happens_before_simple),
+        &ctx_for::<S<6421>>(id, &[], d_root, hlc_at(0), &dag),
     )
     .unwrap();
 
     // D1: Alice rotates Bob out.
     let d1 = [0xD1; 32];
+    dag.record(d1, vec![d_root]);
     let rotation = build_signed_shared_action(
         false,
         id,
@@ -711,14 +682,15 @@ fn write_post_rotation_by_removed_writer_rejected() {
         &alice_sk,
         vec![],
     );
-    Interface::<S<421>>::apply_action(
+    Interface::<S<6421>>::apply_action(
         rotation,
-        dag_ctx(&[d_root], d1, hlc_at(1), happens_before_simple),
+        &ctx_for::<S<6421>>(id, &[d_root], d1, hlc_at(1), &dag),
     )
     .unwrap();
 
     // D2 has D1 as a parent — Bob saw the rotation and tries to write anyway.
     let d2 = [0xD2; 32];
+    dag.record(d2, vec![d1]);
     let bob_write_post = build_signed_shared_action(
         false,
         id,
@@ -728,26 +700,13 @@ fn write_post_rotation_by_removed_writer_rejected() {
         &bob_sk,
         vec![],
     );
-    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|a, b| {
-        // D_root → D1 → D2. (D_root → D2 transitively.)
-        matches!(
-            (*a, *b),
-            (x, y) if x == d_root && (y == d1 || y == d2)
-                || (x == d1 && y == d2)
-        )
-    };
-    let parents = [d1];
-    let ctx = dag_ctx(&parents, d2, hlc_at(2), happens_before);
+    let ctx = ctx_for::<S<6421>>(id, &[d1], d2, hlc_at(2), &dag);
 
     // writers_at(D2.parents=[D1]) returns {Alice} — Bob is no longer a writer
     // and his signature must fail.
-    let result = Interface::<S<421>>::apply_action(bob_write_post, ctx);
+    let result = Interface::<S<6421>>::apply_action(bob_write_post, &ctx);
     assert!(
-        matches!(
-            result,
-            Err(crate::interface::StorageError::InvalidSignature)
-        ),
-        "post-rotation write by removed writer must be rejected; got {:?}",
-        result
+        matches!(result, Err(StorageError::InvalidSignature)),
+        "post-rotation write by removed writer must be rejected; got {result:?}",
     );
 }

@@ -124,10 +124,14 @@ impl ApplyContext {
 // production telemetry confirming DAG-causal subsumes it. Tests that need
 // to exercise the v3 target behavior (post-removal) can opt out here.
 //
-// Production code uses `cfg(not(test))` and always returns `false` so the
-// nonce check stays live. Test code uses the thread-local toggle.
+// Gated on `cfg(any(test, feature = "testing"))` so dependent crates' tests
+// (notably `calimero-node`'s migrated P3/P5 partition scenarios — see
+// #2266 step 5) can opt into the bypass via the `testing` feature on the
+// storage dev-dependency. Production builds (no `testing` feature, no
+// `cfg(test)`) compile out the toggle entirely so the nonce check stays
+// live — `nonce_check_disabled_for_testing` reduces to `const false`.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 thread_local! {
     static SKIP_NONCE_CHECK: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
@@ -141,7 +145,7 @@ thread_local! {
 /// verification provides once the nonce check is retired. Tests of the
 /// nonce check itself (or of behavior expected to hold under the v2
 /// regime) should NOT bypass.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 #[must_use]
 pub fn disable_nonce_check_for_testing() -> NonceCheckGuard {
     SKIP_NONCE_CHECK.with(|c| c.set(true));
@@ -149,22 +153,22 @@ pub fn disable_nonce_check_for_testing() -> NonceCheckGuard {
 }
 
 /// RAII guard returned by [`disable_nonce_check_for_testing`].
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub struct NonceCheckGuard;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 impl Drop for NonceCheckGuard {
     fn drop(&mut self) {
         SKIP_NONCE_CHECK.with(|c| c.set(false));
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 fn nonce_check_disabled_for_testing() -> bool {
     SKIP_NONCE_CHECK.with(core::cell::Cell::get)
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "testing")))]
 const fn nonce_check_disabled_for_testing() -> bool {
     false
 }

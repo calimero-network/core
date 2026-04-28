@@ -147,11 +147,13 @@ impl StorageAdaptor for MainStorage {
 // }
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
-pub(crate) use mocked::MockedStorage;
+pub use mocked::MockedStorage;
 
-/// The mocked storage system.
+/// The mocked storage system. Compiled into native builds (gated off
+/// `wasm32`) so dependent crates can drive the same in-memory backend
+/// from their own tests — see `calimero_node::sync::*_tests`.
 #[cfg(any(test, not(target_arch = "wasm32")))]
-pub(crate) mod mocked {
+pub mod mocked {
     use core::cell::RefCell;
     use std::collections::BTreeMap;
 
@@ -166,8 +168,7 @@ pub(crate) mod mocked {
     }
 
     /// The mocked storage system.
-    #[expect(clippy::redundant_pub_crate, reason = "Needed here")]
-    pub(crate) struct MockedStorage<const SCOPE: usize>;
+    pub struct MockedStorage<const SCOPE: usize>;
 
     impl<const SCOPE: usize> StorageAdaptor for MockedStorage<SCOPE> {
         fn storage_read(key: Key) -> Option<Vec<u8>> {

@@ -53,5 +53,7 @@ calimero-utils-actix.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 calimero-dag = { workspace = true, features = ["testing"] }
+calimero-storage = { workspace = true, features = ["testing"] }
+ed25519-dalek.workspace = true
 rand_chacha = "0.3"
 tempfile.workspace = true
