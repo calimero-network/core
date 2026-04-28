@@ -191,6 +191,9 @@ jobs:
           - workflow: shared-storage
             file: workflows/test_shared_storage.yml
             app: kv-store-with-shared-storage
+          - workflow: kv-store-joiner-cold
+            file: workflows/kv-store-joiner-cold.yml
+            app: e2e-kv-store
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -217,11 +220,14 @@ jobs:
 
       - name: Run ${{ matrix.workflow }}
         run: |
+          # Phase 11.3 (#2237): single attempt, fail loud. The retry loop
+          # + `merobox nuke --force` between attempts existed to mask
+          # cold-start governance flakes (#2198, #2225). With the
+          # three-phase contract (publish_and_await_ack + readiness FSM
+          # + parent_pull single-peer fallback) in place, a flake here
+          # is a real bug worth surfacing.
           mkdir -p docker-logs
           cd apps/${{ matrix.app }}
-          max_attempts=2
-          attempt=1
-          success=false
 
           # Start a background watcher that streams `docker logs -f` from
           # each node container to an artifact file as soon as it appears.
@@ -237,22 +243,16 @@ jobs:
           # persists logs natively we'll remove this block (calimero/core#2179).
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"
           WATCHER_STATE_DIR="$(mktemp -d)"
-          # The watcher reads the current attempt from this file each poll so
-          # that (a) retry containers, which are nuked and recreated with the
-          # same names as attempt 1's, get picked up as new followers, and
-          # (b) attempt 1's logs aren't clobbered by attempt 2's output.
-          echo "1" > "$WATCHER_STATE_DIR/attempt"
           (
               while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
-                  cur_attempt=$(cat "$WATCHER_STATE_DIR/attempt" 2>/dev/null || echo 1)
                   # Follow containers labeled by merobox, excluding the
                   # short-lived init containers (`*-init`).
                   for c in $(docker ps --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null | grep -v -- '-init$' || true); do
-                      mark="$WATCHER_STATE_DIR/attempt${cur_attempt}-${c}"
+                      mark="$WATCHER_STATE_DIR/${c}"
                       if [ ! -f "$mark" ]; then
                           touch "$mark"
-                          echo "[log-watcher] following $c (attempt $cur_attempt)"
-                          docker logs -f "$c" > "$LOGDIR/${{ matrix.workflow }}-attempt${cur_attempt}-${c}.log" 2>&1 &
+                          echo "[log-watcher] following $c"
+                          docker logs -f "$c" > "$LOGDIR/${{ matrix.workflow }}-${c}.log" 2>&1 &
                       fi
                   done
                   sleep 1
@@ -260,26 +260,14 @@ jobs:
           ) &
           WATCHER_PID=$!
 
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-              # Tell the watcher which attempt we're on; it namespaces its
-              # mark files + log filenames by this so each retry captures
-              # cleanly without clobbering prior-attempt logs.
-              echo "$attempt" > "$WATCHER_STATE_DIR/attempt"
-
-              if merobox bootstrap run \
-                  "${{ matrix.file }}" \
-                  --image merod:local \
-                  --e2e-mode; then
-                  success=true
-                  break
-              fi
-              attempt=$((attempt + 1))
-          done
+          if merobox bootstrap run \
+              "${{ matrix.file }}" \
+              --image merod:local \
+              --e2e-mode; then
+              success=true
+          else
+              success=false
+          fi
 
           # Signal the watcher to stop and give `docker logs -f` followers
           # a moment to flush their final output.
@@ -293,7 +281,7 @@ jobs:
           merobox nuke --force || true
 
           if [ "$success" = false ]; then
-              echo "::error::${{ matrix.workflow }} workflow failed after $max_attempts attempts"
+              echo "::error::${{ matrix.workflow }} workflow failed"
               exit 1
           fi
 
@@ -332,7 +320,7 @@ jobs:
         run: |
           message="## E2E Rust Apps Failed
 
-          One or more E2E workflows (e2e-kv-store, xcall-example) failed after retries.
+          One or more E2E workflows (e2e-kv-store, xcall-example) failed.
 
           Please check the workflow logs for more details."
 
