@@ -395,13 +395,95 @@ impl ReadinessManager {
         }
     }
 
-    /// Sign and publish a [`SignedReadinessBeacon`] on the namespace topic.
+    /// Sign and publish a [`SignedReadinessBeacon`] on the namespace
+    /// topic.
     ///
-    /// Body filled in Task 7.2; in Task 7.1 this is intentionally a stub
-    /// so the actor compiles standalone — no beacons are emitted until
-    /// 7.2 lands the signing + publish path.
-    fn publish_beacon(&self, _ns_id: [u8; 32], _state: &ReadinessState) {
-        // Intentional stub — see doc comment.
+    /// Best-effort: any error is logged at `debug` (no peers subscribed
+    /// yet, identity not yet provisioned, etc.) and the call returns
+    /// silently. The freshness-tick interval will retry on the next
+    /// `beacon_interval`, and an edge-trigger beacon will fire on the
+    /// next tier transition into `*Ready`.
+    ///
+    /// The signed body uses [`SignedReadinessBeacon::signable_bytes`] —
+    /// the canonical scheme defined alongside the wire type in
+    /// `calimero_context_client::local_governance::wire`. Receivers
+    /// verify via [`SignedReadinessBeacon::verify_signature`] which
+    /// includes the `READINESS_BEACON_SIGN_DOMAIN` prefix and rejects
+    /// field-substitution replays (proven by the tamper tests in
+    /// that module).
+    fn publish_beacon(&self, ns_id: [u8; 32], state: &ReadinessState) {
+        use calimero_context_client::local_governance::{
+            NamespaceTopicMsg, SignedReadinessBeacon,
+        };
+
+        let group_id = calimero_context_config::types::ContextGroupId::from(ns_id);
+        let identity = match calimero_context::group_store::get_namespace_identity(
+            &self.datastore,
+            &group_id,
+        ) {
+            Ok(Some(id)) => id,
+            Ok(None) => return, // No identity for this namespace yet — skip.
+            Err(err) => {
+                tracing::debug!(?err, ?ns_id, "ReadinessBeacon: identity load failed");
+                return;
+            }
+        };
+        let (peer_pubkey, sk_bytes, _sender_key) = identity;
+
+        let strong = matches!(state.tier, ReadinessTier::PeerValidatedReady);
+        let ts_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        // Build with a placeholder signature, sign over the canonical
+        // signable_bytes(), then write the real signature back.
+        let mut beacon = SignedReadinessBeacon {
+            namespace_id: ns_id,
+            peer_pubkey,
+            dag_head: state.local_head,
+            applied_through: state.local_applied_through,
+            ts_millis,
+            strong,
+            signature: [0u8; 64],
+        };
+        let signable = match beacon.signable_bytes() {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::debug!(?err, "ReadinessBeacon: signable_bytes failed");
+                return;
+            }
+        };
+        let signing_key = calimero_primitives::identity::PrivateKey::from(sk_bytes);
+        let signature = match signing_key.sign(&signable) {
+            Ok(sig) => sig.to_bytes(),
+            Err(err) => {
+                tracing::debug!(?err, "ReadinessBeacon: sign failed");
+                return;
+            }
+        };
+        beacon.signature = signature;
+
+        let topic = calimero_context::governance_broadcast::ns_topic(ns_id);
+        let envelope = NamespaceTopicMsg::ReadinessBeacon(beacon);
+        let bytes = match borsh::to_vec(&envelope) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::debug!(?err, "ReadinessBeacon: borsh encode failed");
+                return;
+            }
+        };
+
+        // Detached publish — the caller (`emit_periodic_beacons` /
+        // edge-trigger) doesn't await; gossipsub publish failures are
+        // non-fatal. Using `network_client().publish` directly bypasses
+        // the 10s mesh-wait gate of `NodeClient::publish_on_namespace`.
+        let net = self.node_client.network_client().clone();
+        actix::spawn(async move {
+            if let Err(err) = net.publish(topic, bytes).await {
+                tracing::debug!(?err, "ReadinessBeacon publish failed (non-fatal)");
+            }
+        });
     }
 }
 

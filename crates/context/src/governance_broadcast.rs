@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, GovernanceError, NamespaceOp, NamespaceTopicMsg, RootOp,
-    SignedAck, SignedNamespaceOp,
+    SignedAck, SignedNamespaceOp, SignedReadinessBeacon,
 };
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -165,6 +165,35 @@ pub fn verify_ack(
     }
     namespace_member_pubkeys(store, namespace_id)
         .map(|members| members.contains(&ack.signer_pubkey))
+        .unwrap_or(false)
+}
+
+/// Verify a [`SignedReadinessBeacon`] against the local store's view of
+/// namespace membership.
+///
+/// The Ed25519 signature is checked via
+/// [`SignedReadinessBeacon::verify_signature`], which uses the canonical
+/// `READINESS_BEACON_SIGN_DOMAIN || borsh(SignableReadinessBeacon)`
+/// payload defined alongside the wire type in
+/// `calimero_context_client::local_governance::wire`. This rejects
+/// field-substitution replays (proven by the `signed_readiness_beacon_*`
+/// tamper tests in that module).
+///
+/// The membership check uses [`namespace_member_pubkeys`], which
+/// includes the meta admin even when the admin has no member row —
+/// matching `verify_ack`'s behaviour and ensuring legitimate beacons
+/// from the namespace creator are not silently dropped.
+///
+/// Returns `false` on any failure (signature, membership, store error)
+/// so the receiver can drop the beacon without surfacing an error to
+/// the gossipsub layer.
+#[must_use]
+pub fn verify_readiness_beacon(store: &Store, beacon: &SignedReadinessBeacon) -> bool {
+    if beacon.verify_signature().is_err() {
+        return false;
+    }
+    namespace_member_pubkeys(store, beacon.namespace_id)
+        .map(|members| members.contains(&beacon.peer_pubkey))
         .unwrap_or(false)
 }
 
