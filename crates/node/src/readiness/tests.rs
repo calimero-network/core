@@ -1,3 +1,6 @@
+use calimero_context_client::local_governance::SignedReadinessBeacon;
+use calimero_primitives::identity::PrivateKey;
+
 use super::*;
 
 fn base_state() -> ReadinessState {
@@ -143,4 +146,190 @@ fn applied_through_grace_prevents_thrashing() {
     };
     let result = evaluate_readiness(&state, &peers, &ReadinessConfig::default(), Instant::now());
     assert_eq!(result, ReadinessTier::PeerValidatedReady);
+}
+
+fn make_beacon(pk: PublicKey, applied_through: u64, strong: bool) -> SignedReadinessBeacon {
+    SignedReadinessBeacon {
+        namespace_id: [42u8; 32],
+        peer_pubkey: pk,
+        dag_head: [9u8; 32],
+        applied_through,
+        ts_millis: 0,
+        strong,
+        signature: [0u8; 64],
+    }
+}
+
+#[test]
+fn pick_sync_partner_prefers_strong_over_locally_ready() {
+    let cache = ReadinessCache::default();
+    let weak_pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let strong_pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    cache.insert(&make_beacon(weak_pk, 100, false));
+    cache.insert(&make_beacon(strong_pk, 50, true));
+    let pick = cache
+        .pick_sync_partner([42u8; 32], Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(
+        pick.0, strong_pk,
+        "strong=true beats higher applied_through if strong=false"
+    );
+}
+
+#[test]
+fn pick_sync_partner_among_strong_picks_highest_applied_through() {
+    let cache = ReadinessCache::default();
+    let pk_a = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let pk_b = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    cache.insert(&make_beacon(pk_a, 5, true));
+    cache.insert(&make_beacon(pk_b, 10, true));
+    let pick = cache
+        .pick_sync_partner([42u8; 32], Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(pick.0, pk_b);
+}
+
+#[test]
+fn pick_sync_partner_excludes_stale_entries() {
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    cache.insert(&make_beacon(pk, 5, true));
+    // Wait beyond TTL by setting a very small TTL on the query.
+    std::thread::sleep(Duration::from_millis(10));
+    let pick = cache.pick_sync_partner([42u8; 32], Duration::from_millis(5));
+    assert!(pick.is_none());
+}
+
+#[test]
+fn pick_sync_partner_empty_cache_returns_none() {
+    let cache = ReadinessCache::default();
+    assert!(cache
+        .pick_sync_partner([42u8; 32], Duration::from_secs(60))
+        .is_none());
+}
+
+#[test]
+fn insert_drops_stale_beacon_from_same_peer() {
+    // Regression: gossipsub out-of-order delivery must not stale-overwrite
+    // a fresher entry. The fresher beacon's `applied_through` and
+    // `ts_millis` should remain after the older beacon arrives second.
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let mut fresh = make_beacon(pk, 100, true);
+    fresh.ts_millis = 2000;
+    let mut stale = make_beacon(pk, 50, true);
+    stale.ts_millis = 1000;
+    cache.insert(&fresh);
+    cache.insert(&stale); // arrives second but is older — must be dropped
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(
+        s.max_applied_through,
+        Some(100),
+        "stale beacon must not overwrite fresher entry from same peer",
+    );
+}
+
+#[test]
+fn insert_accepts_newer_beacon_from_same_peer() {
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let mut older = make_beacon(pk, 50, true);
+    older.ts_millis = 1000;
+    let mut newer = make_beacon(pk, 100, true);
+    newer.ts_millis = 2000;
+    cache.insert(&older);
+    cache.insert(&newer); // arrives second and IS newer — must replace
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(s.max_applied_through, Some(100));
+}
+
+#[test]
+fn insert_rejects_far_future_ts_millis() {
+    // Cache-poisoning regression: a malicious or clock-skewed member could
+    // sign a beacon with `ts_millis = year 2100`, then every legitimate
+    // beacon would be rejected as "older". MAX_BEACON_CLOCK_DRIFT_MS (60s)
+    // bounds the damage.
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let mut poison = make_beacon(pk, 999, true);
+    poison.ts_millis = now_ms + 600_000; // 10 minutes ahead — well beyond 60s drift
+    cache.insert(&poison);
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(
+        s.max_applied_through, None,
+        "far-future beacon must be rejected to prevent cache poisoning"
+    );
+    // A legitimate beacon afterwards should be accepted normally.
+    let mut legit = make_beacon(pk, 42, true);
+    legit.ts_millis = now_ms;
+    cache.insert(&legit);
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(s.max_applied_through, Some(42));
+}
+
+#[test]
+fn insert_accepts_ts_millis_within_clock_drift_window() {
+    // 30s ahead is within the 60s drift window — should be accepted.
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let mut b = make_beacon(pk, 17, true);
+    b.ts_millis = now_ms + 30_000;
+    cache.insert(&b);
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(s.max_applied_through, Some(17));
+}
+
+#[test]
+fn insert_uses_applied_through_to_break_ts_millis_ties() {
+    // Same wall-clock millis (rare but possible across reboots / clock
+    // skew): the higher applied_through wins.
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let mut a = make_beacon(pk, 10, true);
+    a.ts_millis = 1000;
+    let mut b = make_beacon(pk, 20, true);
+    b.ts_millis = 1000;
+    cache.insert(&a);
+    cache.insert(&b);
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert_eq!(s.max_applied_through, Some(20));
+}
+
+#[test]
+fn peer_summary_atomic_when_fresh_peer_present() {
+    // Snapshot must always have heard_recent_beacon == true ⇒
+    // max_applied_through.is_some().
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    cache.insert(&make_beacon(pk, 7, true));
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert!(s.heard_recent_beacon);
+    assert_eq!(s.max_applied_through, Some(7));
+}
+
+#[test]
+fn peer_summary_no_fresh_peers_returns_none_and_false() {
+    let cache = ReadinessCache::default();
+    let s = cache.peer_summary([42u8; 32], Duration::from_secs(60));
+    assert!(!s.heard_recent_beacon);
+    assert_eq!(s.max_applied_through, None);
+}
+
+#[test]
+fn peer_summary_excludes_stale_and_returns_none_after_ttl() {
+    let cache = ReadinessCache::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    cache.insert(&make_beacon(pk, 9, false));
+    std::thread::sleep(Duration::from_millis(10));
+    let s = cache.peer_summary([42u8; 32], Duration::from_millis(5));
+    assert!(!s.heard_recent_beacon);
+    assert_eq!(s.max_applied_through, None);
 }
