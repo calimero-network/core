@@ -253,6 +253,59 @@ pub struct DeliveryReport {
     pub elapsed_ms: u64,
 }
 
+/// Per-handler delivery observability log.
+///
+/// The publish-boundary helpers
+/// (`NamespaceGovernance::sign_apply_and_publish` and friends) already
+/// log a `tracing::debug!` line carrying op_kind / acks / elapsed_ms —
+/// good enough for protocol-level diagnostics but invisible at the
+/// default `info` log level. Handlers in `crates/context/src/handlers/*`
+/// own the user-facing API surface, so promoting an `info!` line here
+/// gives operators a per-endpoint signal: which API call flaked, on
+/// which namespace, and whether the ack collection landed within the
+/// op timeout. Centralising the log shape keeps every handler emit
+/// identical so log-aggregation queries don't have to special-case the
+/// per-endpoint format.
+///
+/// `acked_by.is_empty()` is logged at `warn!` to highlight cold-start
+/// or GRAFT-window publishes that landed on the wire but didn't gather
+/// confirmation in time. The local DAG advance is durable in either
+/// case — the warn is a hint that downstream peers may need
+/// reconciliation, not a failure indication.
+pub fn observe_handler_delivery(handler: &str, op_kind: &str, report: &DeliveryReport) {
+    let outcome = if report.acked_by.is_empty() {
+        "empty"
+    } else {
+        "acked"
+    };
+    crate::metrics::record_governance_handler_delivery(
+        handler,
+        op_kind,
+        outcome,
+        report.elapsed_ms,
+    );
+    if report.acked_by.is_empty() {
+        tracing::warn!(
+            handler,
+            op_kind,
+            elapsed_ms = report.elapsed_ms,
+            op_hash = %hex::encode(report.op_hash),
+            "governance op published but no acks collected before deadline \
+             (publisher boundary deemed delivery best-effort; receivers will \
+             reconcile via heartbeat)"
+        );
+    } else {
+        tracing::info!(
+            handler,
+            op_kind,
+            acks = report.acked_by.len(),
+            elapsed_ms = report.elapsed_ms,
+            op_hash = %hex::encode(report.op_hash),
+            "governance op delivered"
+        );
+    }
+}
+
 /// Abstraction over the gossipsub transport used by
 /// [`publish_and_await_ack_namespace`]. The blanket impl on
 /// `NetworkClient` covers production callers; unit tests substitute a

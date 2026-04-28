@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{JoinGroupRequest, JoinGroupResponse};
@@ -7,11 +8,23 @@ use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNames
 use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key;
+use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
+use crate::op_events::subscribe as subscribe_op_events;
+use crate::op_events::OpEvent;
 use crate::{group_store, ContextManager};
 
 const NAMESPACE_MESH_GRACE: Duration = Duration::from_secs(2);
+
+/// Maximum time `join_group` waits on the gossip-fallback path for a
+/// `KeyDelivery` op addressed to the joiner. Reached only when the
+/// direct join response did not carry a key (served peer didn't hold
+/// it, or the direct stream request timed out). The wait fires
+/// after MemberJoined is on the wire, so the bound is "round-trip to
+/// any admin + their `publish_and_await_ack` budget", not the full
+/// gossipsub heartbeat reconciliation window.
+const KEY_DELIVERY_FALLBACK_WAIT: Duration = Duration::from_secs(5);
 
 impl Handler<JoinGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinGroupRequest as Message>::Result>;
@@ -201,8 +214,36 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     );
                 }
 
+                // The joiner needs the group key to decrypt subsequent
+                // group ops. Two delivery paths converge here:
+                //
+                //   1. Direct stream (`request_namespace_join` above).
+                //      Authoritative when the served peer holds the key.
+                //   2. Gossip `KeyDelivery` from any admin who applies our
+                //      `MemberJoined` op below — Phase 9.1 already targets
+                //      the recipient via `required_signers` so the admin
+                //      knows whether *we* acked.
+                //
+                // If path 1 didn't deliver a key, we fall through to path 2
+                // here and block `join_group` until either a `KeyDelivery`
+                // for our identity arrives or `KEY_DELIVERY_FALLBACK_WAIT`
+                // elapses. Subscribing BEFORE publishing MemberJoined
+                // closes the race where an admin could see our op,
+                // immediately publish KeyDelivery, and have us miss it
+                // before subscribing.
+                let needs_key_wait =
+                    group_store::load_current_group_key(&datastore, &group_id)?.is_none();
+                let mut op_event_rx = if needs_key_wait {
+                    Some(subscribe_op_events())
+                } else {
+                    None
+                };
+
                 // Publish MemberJoined so other namespace members learn
-                // about us (fire-and-forget, the joiner doesn't depend on it).
+                // about us. Joiner can't ack their own op (they're not yet
+                // a recognised member from the receiver's view until the
+                // op applies), so `required_signers = None` here — any
+                // ack from any current member is fine.
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoined {
                     member: joiner_identity,
                     signed_invitation: invitation.clone(),
@@ -214,11 +255,76 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     namespace_id,
                     &sk,
                     member_joined_op,
+                    None,
                 )
                 .await
                 {
                     Ok(_report) => {}
                     Err(e) => warn!(?e, "failed to publish MemberJoined (non-fatal)"),
+                }
+
+                if let Some(rx) = op_event_rx.as_mut() {
+                    let deadline = Instant::now() + KEY_DELIVERY_FALLBACK_WAIT;
+                    loop {
+                        // Re-check the store on every iteration: the apply
+                        // path emits the event AFTER `store_group_key`, so
+                        // any successful unwrap is observable as an
+                        // already-stored key by the time we get woken.
+                        // This also catches races where an event was
+                        // dropped via `RecvError::Lagged` before we got to
+                        // it (broadcast channel is process-wide and other
+                        // tasks may flood it).
+                        if group_store::load_current_group_key(&datastore, &group_id)?.is_some() {
+                            info!(
+                                ?group_id,
+                                "group key acquired via gossip KeyDelivery fallback"
+                            );
+                            break;
+                        }
+                        let now = Instant::now();
+                        if now >= deadline {
+                            warn!(
+                                ?group_id,
+                                "timed out waiting for KeyDelivery via gossip fallback; \
+                                 group state will reconcile via heartbeat"
+                            );
+                            break;
+                        }
+                        let remaining = deadline - now;
+                        match tokio::time::timeout(remaining, rx.recv()).await {
+                            Ok(Ok(OpEvent::GroupKeyDelivered {
+                                group_id: g,
+                                recipient,
+                            })) if g == group_id.to_bytes() && recipient == joiner_identity => {
+                                // Loop back to re-read the store — the
+                                // emitter publishes AFTER store_group_key
+                                // succeeded, so the next iteration's
+                                // `load_current_group_key` will hit and
+                                // break cleanly.
+                                continue;
+                            }
+                            Ok(Ok(_)) => continue, // unrelated event
+                            Ok(Err(RecvError::Lagged(_))) => {
+                                // Broadcast capacity exceeded — relevant
+                                // events may have been dropped. Re-check
+                                // store; if the key arrived during the
+                                // overflow window we'll observe it on the
+                                // next iteration and break cleanly.
+                                continue;
+                            }
+                            Ok(Err(RecvError::Closed)) => {
+                                // The static `op_events::NOTIFIER` cannot
+                                // be dropped at runtime today, so this
+                                // branch is functionally unreachable. If
+                                // a future refactor changes that, fall
+                                // through to the deadline check rather
+                                // than spinning on a permanently-closed
+                                // channel.
+                                break;
+                            }
+                            Err(_) => continue, // timeout slice — outer deadline check handles exit
+                        }
+                    }
                 }
 
                 // -------------------------------------------------------

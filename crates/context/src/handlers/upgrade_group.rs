@@ -13,6 +13,7 @@ use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use eyre::bail;
 use tracing::{debug, error, info, warn};
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::{group_store, ContextManager};
 
 impl Handler<UpgradeGroupRequest> for ContextManager {
@@ -130,7 +131,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             .as_ref()
                             .ok_or_else(|| eyre::eyre!("target application not found"))?;
                         let app_key = *app_meta.bytecode.blob_id().as_ref();
-                        let _report = group_store::sign_apply_and_publish(
+                        let report = group_store::sign_apply_and_publish(
                             &datastore,
                             &node_client,
                             &ack_router_for_lazy,
@@ -142,8 +143,15 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             },
                         )
                         .await?;
+                        if let Some(report) = report.as_ref() {
+                            observe_handler_delivery(
+                                "upgrade_group",
+                                "TargetApplicationSet",
+                                report,
+                            );
+                        }
                         if migration_bytes.is_some() {
-                            let _report = group_store::sign_apply_and_publish(
+                            let report = group_store::sign_apply_and_publish(
                                 &datastore,
                                 &node_client,
                                 &ack_router_for_lazy,
@@ -154,6 +162,13 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                                 },
                             )
                             .await?;
+                            if let Some(report) = report.as_ref() {
+                                observe_handler_delivery(
+                                    "upgrade_group",
+                                    "GroupMigrationSet",
+                                    report,
+                                );
+                            }
                         }
                     }
 
@@ -268,7 +283,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     .as_ref()
                     .ok_or_else(|| eyre::eyre!("target application not found"))?;
                 let app_key = *app_meta.bytecode.blob_id().as_ref();
-                let _report = group_store::sign_apply_and_publish(
+                let report = group_store::sign_apply_and_publish(
                     &datastore_for_canary,
                     &node_client,
                     &ack_router_for_canary,
@@ -280,8 +295,11 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     },
                 )
                 .await?;
+                if let Some(report) = report.as_ref() {
+                    observe_handler_delivery("upgrade_group", "TargetApplicationSet", report);
+                }
                 if migration_bytes.is_some() {
-                    let _report = group_store::sign_apply_and_publish(
+                    let report = group_store::sign_apply_and_publish(
                         &datastore_for_canary,
                         &node_client,
                         &ack_router_for_canary,
@@ -292,6 +310,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         },
                     )
                     .await?;
+                    if let Some(report) = report.as_ref() {
+                        observe_handler_delivery("upgrade_group", "GroupMigrationSet", report);
+                    }
                 }
             }
 

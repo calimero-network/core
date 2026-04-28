@@ -41,12 +41,29 @@ pub(crate) struct GovernancePublishLabels {
     pub(crate) op_kind: String,
 }
 
+/// Labels for handler-level governance op delivery outcomes.
+///
+/// `outcome` is one of:
+///   - `"acked"`: at least one valid ack was collected within `op_timeout`.
+///   - `"empty"`: the op was published but no ack arrived in time. The
+///     local DAG advance is durable; downstream peers will reconcile via
+///     parent_pull / readiness beacons. Useful as a leading indicator of
+///     mesh fragility (cold-start, partition, GRAFT delay).
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct GovernanceHandlerDeliveryLabels {
+    pub(crate) handler: String,
+    pub(crate) op_kind: String,
+    pub(crate) outcome: String,
+}
+
 #[derive(Clone, Debug)]
 struct GroupStoreMetricSink {
     namespace_retry_events: Family<NamespaceRetryLabels, Counter>,
     namespace_decode_events: Family<NamespaceDecodeLabels, Counter>,
     membership_policy_rejections: Family<MembershipPolicyLabels, Counter>,
     governance_publish_mesh_peers: Family<GovernancePublishLabels, Histogram>,
+    governance_handler_delivery_total: Family<GovernanceHandlerDeliveryLabels, Counter>,
+    governance_handler_delivery_seconds: Family<GovernanceHandlerDeliveryLabels, Histogram>,
 }
 
 static GROUP_STORE_METRICS: OnceLock<GroupStoreMetricSink> = OnceLock::new();
@@ -108,11 +125,42 @@ impl Metrics {
             governance_publish_mesh_peers.clone(),
         );
 
+        // Phase 12.1 (#2237): handler-level delivery outcomes. Counters
+        // and a wait-time histogram sliced by handler / op_kind / outcome.
+        // Operators use `outcome="empty"` rate as the leading indicator of
+        // cold-start mesh fragility — under a healthy mesh it should be
+        // approximately zero in steady state.
+        let governance_handler_delivery_total =
+            Family::<GovernanceHandlerDeliveryLabels, Counter>::default();
+        group_store_registry.register(
+            "governance_handler_delivery_total",
+            "Governance op publish outcomes, sliced by handler / op_kind / outcome",
+            governance_handler_delivery_total.clone(),
+        );
+
+        // Buckets cover the realistic ack-wait range: 1ms → 30s. Cheap
+        // ops (alias / capability) settle ≤100ms; membership ops 100ms–2s;
+        // heavy ops (create_context / upgrade) up to ~10s; the 30s tail
+        // catches op_timeout-bound publishes.
+        let governance_handler_delivery_seconds =
+            Family::<GovernanceHandlerDeliveryLabels, Histogram>::new_with_constructor(|| {
+                Histogram::new([
+                    0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0,
+                ])
+            });
+        group_store_registry.register(
+            "governance_handler_delivery_seconds",
+            "Governance op ack-collection wait time at the handler boundary",
+            governance_handler_delivery_seconds.clone(),
+        );
+
         let _ = GROUP_STORE_METRICS.set(GroupStoreMetricSink {
             namespace_retry_events: namespace_retry_events.clone(),
             namespace_decode_events: namespace_decode_events.clone(),
             membership_policy_rejections: membership_policy_rejections.clone(),
             governance_publish_mesh_peers: governance_publish_mesh_peers.clone(),
+            governance_handler_delivery_total: governance_handler_delivery_total.clone(),
+            governance_handler_delivery_seconds: governance_handler_delivery_seconds.clone(),
         });
 
         Self {
@@ -182,4 +230,35 @@ pub(crate) fn record_governance_publish_mesh_peers(op_kind: &str, mesh_count: us
             op_kind: op_kind.to_owned(),
         })
         .observe(mesh_count as f64);
+}
+
+/// Record a handler-level governance op delivery outcome.
+///
+/// Called from [`crate::governance_broadcast::observe_handler_delivery`] so
+/// every API endpoint that publishes a governance op contributes to the
+/// `governance_handler_delivery_total` and `governance_handler_delivery_seconds`
+/// series with consistent labels. `outcome` is `"acked"` when at least one
+/// valid ack arrived within `op_timeout`, `"empty"` otherwise.
+pub fn record_governance_handler_delivery(
+    handler: &str,
+    op_kind: &str,
+    outcome: &str,
+    elapsed_ms: u64,
+) {
+    let Some(metrics) = GROUP_STORE_METRICS.get() else {
+        return;
+    };
+    let labels = GovernanceHandlerDeliveryLabels {
+        handler: handler.to_owned(),
+        op_kind: op_kind.to_owned(),
+        outcome: outcome.to_owned(),
+    };
+    metrics
+        .governance_handler_delivery_total
+        .get_or_create(&labels)
+        .inc();
+    metrics
+        .governance_handler_delivery_seconds
+        .get_or_create(&labels)
+        .observe(elapsed_ms as f64 / 1000.0);
 }

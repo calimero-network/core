@@ -56,23 +56,34 @@ pub async fn maybe_publish_key_delivery(
         envelope,
     });
 
-    if let Err(e) = calimero_context::group_store::sign_and_publish_namespace_op(
+    // Pass `required_signers = Some([member])` so only the joiner's ack
+    // counts toward delivery confirmation. The publisher boundary will
+    // reflect the joiner's ack (or its absence) in the returned
+    // `DeliveryReport.acked_by`; Phase 9.2 will gate `join_group` on
+    // observing that ack before returning to the API caller.
+    let report = match calimero_context::group_store::sign_and_publish_namespace_op(
         &store,
         node_client,
         context_client.ack_router(),
         namespace_id,
         &sender_sk,
         delivery_op,
+        Some(vec![member]),
     )
     .await
     {
-        warn!(?e, "failed to publish KeyDelivery");
-        return;
-    }
+        Ok(r) => r,
+        Err(e) => {
+            warn!(?e, "failed to publish KeyDelivery");
+            return;
+        }
+    };
 
     info!(
         group_id = %hex::encode(group_id.to_bytes()),
         %member,
+        acked = report.acked_by.len(),
+        elapsed_ms = report.elapsed_ms,
         "published KeyDelivery for new joiner"
     );
 }

@@ -5,6 +5,7 @@ use calimero_context_client::group::DetachContextFromGroupRequest;
 use calimero_context_client::local_governance::GroupOp;
 use eyre::bail;
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -42,7 +43,7 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let _report = group_store::sign_apply_and_publish(
+                let report = group_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -51,6 +52,13 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
                     GroupOp::ContextDetached { context_id },
                 )
                 .await?;
+                if let Some(report) = report.as_ref() {
+                    observe_handler_delivery(
+                        "detach_context_from_group",
+                        "ContextDetached",
+                        report,
+                    );
+                }
 
                 Ok(())
             }

@@ -7,6 +7,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use tracing::info;
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -127,7 +128,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     PrivateKey::from(effective_signing_key.ok_or_else(|| {
                         eyre::eyre!("no signing key available for TEE admission")
                     })?);
-                let _report = group_store::sign_apply_and_publish(
+                let report = group_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -146,6 +147,13 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     },
                 )
                 .await?;
+                if let Some(report) = report.as_ref() {
+                    observe_handler_delivery(
+                        "admit_tee_node",
+                        "MemberJoinedViaTeeAttestation",
+                        report,
+                    );
+                }
 
                 info!(%member, ?group_id, "TEE node admitted via attestation");
                 // Auto-follow flags for the admitted TEE member are

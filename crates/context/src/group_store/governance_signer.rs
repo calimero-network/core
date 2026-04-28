@@ -69,9 +69,16 @@ impl<'a> GovernanceSigner<'a> {
         namespace_id: [u8; 32],
         signer_sk: &PrivateKey,
         op: NamespaceOp,
+        required_signers: Option<Vec<PublicKey>>,
     ) -> EyreResult<DeliveryReport> {
         super::NamespaceGovernance::new(self.store, namespace_id)
-            .sign_and_publish_without_apply(self.node_client, self.ack_router, signer_sk, op)
+            .sign_and_publish_without_apply(
+                self.node_client,
+                self.ack_router,
+                signer_sk,
+                op,
+                required_signers,
+            )
             .await
     }
 }

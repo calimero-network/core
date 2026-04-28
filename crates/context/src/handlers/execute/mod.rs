@@ -225,15 +225,40 @@ impl Handler<ExecuteRequest> for ContextManager {
                             return ActorResponse::reply(Err(ExecuteError::InternalError));
                         }
                     };
+                    // Group-context branch: the group/namespace key is the
+                    // *authoritative* encryption key. Falling back to
+                    // `identity.sender_key` here would produce ciphertext
+                    // that other group members cannot decrypt — silent
+                    // state divergence across the cluster. With the
+                    // Phase 9 join-time KeyDelivery wait in place, the
+                    // joiner should already hold this key by the time
+                    // they call `execute`. If we get here with no key,
+                    // it's a real "key not yet delivered" condition and
+                    // the caller needs to know — surface it loudly
+                    // rather than silently mis-encrypting.
                     match crate::group_store::load_current_group_key(&self.datastore, &key_group_id)
                     {
                         Ok(Some((kid, gk))) => (PrivateKey::from(gk), kid),
-                        _ => {
-                            if let Some(sk) = identity.sender_key {
-                                (sk, [0u8; 32])
-                            } else {
-                                return ActorResponse::reply(Err(ExecuteError::InternalError));
-                            }
+                        Ok(None) => {
+                            error!(
+                                group_id = ?gid,
+                                key_group_id = ?key_group_id,
+                                ?context_id,
+                                "state-delta encryption: group key not yet delivered \
+                                 (KeyDelivery pending or failed) — refusing sender_key fallback \
+                                 to avoid mis-encrypting for inheritance-eligible receivers"
+                            );
+                            return ActorResponse::reply(Err(ExecuteError::InternalError));
+                        }
+                        Err(err) => {
+                            error!(
+                                group_id = ?gid,
+                                key_group_id = ?key_group_id,
+                                ?context_id,
+                                %err,
+                                "state-delta encryption: load_current_group_key failed",
+                            );
+                            return ActorResponse::reply(Err(ExecuteError::InternalError));
                         }
                     }
                 }

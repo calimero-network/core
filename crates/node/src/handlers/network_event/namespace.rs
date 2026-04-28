@@ -207,11 +207,32 @@ pub(super) fn handle_namespace_state_heartbeat(
         return;
     }
 
+    // Phase 11.2 (#2237): the heartbeat is now liveness-only. The
+    // active catch-up arms (republishing ops the peer is missing,
+    // backfilling ops we are missing, and the cross-peer
+    // `resolve_namespace_pending` fan-out) are gone. With the
+    // three-phase contract in place (Phase 5+6+7+8):
+    //
+    //   * `publish_and_await_ack_namespace` blocks the publisher until
+    //     at least one mesh peer applies + acks, so a freshly-applied
+    //     op is already known to be on at least one receiver before the
+    //     publisher returns.
+    //   * `parent_pull` runs on every gossip op whose parents are
+    //     missing locally — that's the on-receive recovery path.
+    //   * `ReadinessBeacon` carries `applied_through` and `dag_head`,
+    //     so peers detect divergence and pick a sync partner via
+    //     `pick_sync_partner` without needing the heartbeat to
+    //     advertise heads.
+    //
+    // The heartbeat-driven catch-up was the fallback before any of
+    // those existed. Keeping it now duplicates work the new path
+    // already performs, and makes the system noisier without making it
+    // more correct (a genuinely stuck DAG is recovered by the join /
+    // probe / beacon flow, not by the heartbeat). We still log the
+    // divergence detection at debug for observability — operators
+    // chasing a wedged namespace can grep for the `peer_heads` count
+    // mismatch — but no remediation runs from here.
     let context_client = this.clients.context.clone();
-    let network_client = this.managers.sync.network_client.clone();
-    let sync_timeout = this.managers.sync.sync_config.timeout;
-    let pull_budget_max_peers = this.managers.sync.sync_config.parent_pull_additional_peers;
-    let pull_budget_duration = this.managers.sync.sync_config.parent_pull_budget;
 
     let _ignored = ctx.spawn(
         async move {
@@ -224,89 +245,27 @@ pub(super) fn handle_namespace_state_heartbeat(
             };
             drop(handle);
 
-            let we_need: Vec<[u8; 32]> = peer_heads
+            let we_missing = peer_heads
                 .iter()
                 .filter(|h| !local_heads.contains(*h))
-                .copied()
-                .collect();
-
+                .count();
             let peer_head_set: HashSet<[u8; 32]> = peer_heads.iter().copied().collect();
-            let peer_needs: Vec<[u8; 32]> = local_heads
+            let peer_missing = local_heads
                 .iter()
                 .filter(|h| !peer_head_set.contains(*h))
-                .copied()
-                .collect();
+                .count();
 
-            if !peer_needs.is_empty() {
-                let store_inner = context_client.datastore_handle().into_inner();
-                let handle_inner = store_inner.handle();
-                for delta_id in &peer_needs {
-                    let key = calimero_store::key::NamespaceGovOp::new(namespace_id, *delta_id);
-                    if let Ok(Some(value)) = handle_inner.get(&key) {
-                        // Decode straight to the typed op so we can wrap it in
-                        // `NamespaceTopicMsg::Op` and serialize once. Going via
-                        // `extract_signed_op_bytes` would force a redundant
-                        // serialize/deserialize round-trip on every republish.
-                        let Some(signed_op) =
-                            crate::sync::helpers::extract_signed_op(&value.skeleton_bytes)
-                        else {
-                            continue;
-                        };
-                        let Ok(wrapped) = borsh::to_vec(&NamespaceTopicMsg::Op(signed_op)) else {
-                            continue;
-                        };
-                        let payload = BroadcastMessage::NamespaceGovernanceDelta {
-                            namespace_id,
-                            delta_id: *delta_id,
-                            parent_ids: vec![],
-                            payload: wrapped,
-                        };
-                        if let Ok(bytes) = borsh::to_vec(&payload) {
-                            let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
-                                "ns/{}",
-                                hex::encode(namespace_id)
-                            ));
-                            let _ = network_client.publish(topic, bytes).await;
-                        }
-                    }
-                }
-            }
-
-            if we_need.is_empty() {
+            if we_missing == 0 && peer_missing == 0 {
                 return;
             }
-
-            info!(
+            tracing::debug!(
                 namespace_id = %hex::encode(namespace_id),
-                missing = we_need.len(),
                 %source,
-                "namespace heartbeat divergence: requesting missing deltas"
+                we_missing,
+                peer_missing,
+                "namespace heartbeat: divergence detected (liveness-only — recovery via \
+                 publish_and_await_ack / parent_pull / readiness beacon)"
             );
-
-            // First attempt: the peer that advertised its heads.
-            fetch_and_apply_namespace_backfill(
-                &context_client,
-                &network_client,
-                source,
-                namespace_id,
-                we_need,
-                sync_timeout,
-            )
-            .await;
-
-            // Cross-peer fallback (#2198): if the first peer did not fully
-            // resolve our pending chain, iterate other namespace-mesh peers
-            // until the DAG drains or the budget is exhausted.
-            resolve_namespace_pending(
-                &context_client,
-                &network_client,
-                source,
-                namespace_id,
-                sync_timeout,
-                pull_budget_max_peers,
-                pull_budget_duration,
-            )
-            .await;
         }
         .into_actor(this),
     );

@@ -8,6 +8,7 @@ use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use tracing::info;
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -58,7 +59,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 for identity in &members {
-                    let _report = group_store::sign_apply_and_publish_removal(
+                    let report = group_store::sign_apply_and_publish_removal(
                         &datastore,
                         &node_client,
                         &ack_router,
@@ -67,6 +68,9 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                         identity,
                     )
                     .await?;
+                    if let Some(report) = report.as_ref() {
+                        observe_handler_delivery("remove_group_members", "MemberRemoved", report);
+                    }
                 }
                 info!(
                     ?group_id,
