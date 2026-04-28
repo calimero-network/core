@@ -396,9 +396,11 @@ impl<'a> NamespaceGovernance<'a> {
 
     /// Shared body of [`sign_and_publish_without_apply`] and
     /// [`sign_and_publish_post_gate`]. Assumes the readiness gate has
-    /// already been run by the caller; takes the gate-time `mesh` /
-    /// `known_subscribers` snapshot to feed the metric and the
-    /// solo-namespace `min_acks` decision.
+    /// already been run by the caller; takes the gate-time `mesh`
+    /// snapshot to feed the metric. The subscriber count is
+    /// re-sampled at publish time (see below) so transient peer
+    /// departures between the gate and the publish don't cause an
+    /// `Err(NoAckReceived)` after the local store has already mutated.
     async fn publish_post_gate(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
@@ -407,7 +409,7 @@ impl<'a> NamespaceGovernance<'a> {
         op: NamespaceOp,
         topic: TopicHash,
         mesh: usize,
-        known: usize,
+        _known_at_gate: usize,
     ) -> EyreResult<DeliveryReport> {
         let head = self.read_head_record()?;
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
@@ -433,7 +435,21 @@ impl<'a> NamespaceGovernance<'a> {
             record_governance_publish_mesh_peers(op_kind, mesh);
         }
 
-        // Solo-namespace fast-path: see `sign_apply_and_publish` above.
+        // Refresh `known` here, AFTER all the local-mutation /
+        // encryption / key-rotation / store_operation work above and
+        // immediately before deciding `min_acks`. The gate-time
+        // snapshot (`_known_at_gate`) was taken many awaits ago; in
+        // group-publish flows it predates `sign_apply_local_group_op_borsh`
+        // and the per-removal key mint. If a peer unsubscribed in the
+        // meantime, sticking with the stale count would leave
+        // `min_acks = 1` against an empty subscriber set and force
+        // `NoAckReceived` after the local DAG has already advanced —
+        // exactly the orphan-op-on-retry pattern the readiness gate
+        // exists to prevent. `known_subscribers` is a cheap synchronous
+        // DashMap lookup on `NodeClient` (no actor mailbox round-trip),
+        // so re-sampling here costs effectively nothing while making
+        // the solo-namespace fast-path responsive to live state.
+        let known = node_client.known_subscribers(&topic);
         let min_acks = if known == 0 {
             0
         } else {
