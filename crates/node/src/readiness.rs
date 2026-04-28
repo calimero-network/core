@@ -441,15 +441,35 @@ pub struct NamespaceOpApplied {
 }
 
 /// Read the canonical local-applied sequence for a namespace from the
-/// store. Returns 0 if the head record is missing or the read fails;
-/// neither is fatal for FSM evaluation (a brand-new namespace with no
-/// applied ops legitimately has no head record).
+/// store. Returns 0 if the head record is missing (legitimate for a
+/// brand-new namespace with no applied ops) or if the read fails
+/// transiently. The two cases are distinguished in the log:
+///
+///   - `Ok(None)` is silent — empty-DAG is the well-defined start state.
+///   - `Err(_)` emits a `warn!` so a transiently broken store layer
+///     does not silently regress the FSM. With this log present, an
+///     operator chasing a `*Ready → Bootstrapping` regression has a
+///     clear breadcrumb instead of guessing at a fail-soft `0`.
+///
+/// Returning `0` on the error path (rather than propagating) keeps
+/// the FSM evaluation total — `evaluate_readiness` is a pure
+/// transition fn and should not have to handle store I/O errors.
+/// On the next successful read the FSM recovers naturally.
 pub(crate) fn read_local_applied_through(store: &Store, ns_id: [u8; 32]) -> u64 {
     let handle = store.handle();
     let key = calimero_store::key::NamespaceGovHead::new(ns_id);
     match handle.get(&key) {
         Ok(Some(head)) => head.sequence,
-        Ok(None) | Err(_) => 0,
+        Ok(None) => 0,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                namespace_id = %hex::encode(ns_id),
+                "read_local_applied_through: store read failed; treating as 0 — \
+                 FSM may regress until the next successful read"
+            );
+            0
+        }
     }
 }
 
