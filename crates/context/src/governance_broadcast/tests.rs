@@ -402,3 +402,83 @@ async fn verify_ack_rejects_signature_without_domain_prefix() {
     };
     assert!(!verify_ack(&store, [42u8; 32], op_hash, &ack));
 }
+
+/// Transport stub whose publish always returns the libp2p
+/// `NoPeersSubscribedToTopic` error — used to exercise the
+/// solo-namespace / mesh-not-yet-grafted code path in
+/// `publish_and_await_ack_namespace` without standing up a real swarm.
+struct NoPeersTransport;
+
+#[async_trait]
+impl BroadcastTransport for NoPeersTransport {
+    async fn mesh_peer_count(&self, _: TopicHash) -> usize {
+        0
+    }
+    async fn publish(&self, _: TopicHash, _: Vec<u8>) -> Result<(), String> {
+        Err("InsufficientPeers(NoPeersSubscribedToTopic)".to_owned())
+    }
+}
+
+#[tokio::test]
+async fn no_peers_with_min_acks_zero_returns_ok_empty() {
+    // Solo-namespace fast-path: caller passed `min_acks = 0` to opt out
+    // of confirmation, so the no-peers publish error is a legitimate
+    // Ok-with-empty outcome (matches legacy `publish_signed_namespace_op`
+    // best-effort semantics).
+    let store = empty_store();
+    let router = AckRouter::default();
+    let transport = NoPeersTransport;
+    let topic = TopicHash::from_raw("ns/test-solo");
+    let signer = PrivateKey::random(&mut rand::thread_rng());
+    let signed_op = mk_signed_op(&signer, [42u8; 32]);
+
+    let report = publish_and_await_ack_namespace(
+        &store,
+        &transport,
+        &router,
+        [42u8; 32],
+        topic,
+        signed_op,
+        Duration::from_millis(50),
+        0,
+        None,
+    )
+    .await
+    .expect("solo namespace must return Ok with empty acks");
+
+    assert!(report.acked_by.is_empty());
+}
+
+#[tokio::test]
+async fn no_peers_with_min_acks_positive_returns_no_ack_received() {
+    // When the caller asked for confirmation (`min_acks > 0`), receiving
+    // `NoPeersSubscribedToTopic` from the transport must not be silently
+    // promoted to `Ok(DeliveryReport { acked_by: [] })` — that would lie
+    // about the contract and let workflow steps that claim "returns only
+    // after node-2 acks" pass without actually delivering.
+    let store = empty_store();
+    let router = AckRouter::default();
+    let transport = NoPeersTransport;
+    let topic = TopicHash::from_raw("ns/test-multi");
+    let signer = PrivateKey::random(&mut rand::thread_rng());
+    let signed_op = mk_signed_op(&signer, [42u8; 32]);
+
+    let res = publish_and_await_ack_namespace(
+        &store,
+        &transport,
+        &router,
+        [42u8; 32],
+        topic,
+        signed_op,
+        Duration::from_millis(50),
+        1,
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(res, Err(GovernanceBroadcastError::NoAckReceived { .. })),
+        "min_acks=1 + NoPeersSubscribedToTopic must surface as NoAckReceived; got {:?}",
+        res
+    );
+}

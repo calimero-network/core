@@ -308,6 +308,18 @@ impl<'a> NamespaceGovernance<'a> {
             record_governance_publish_mesh_peers(op_kind, mesh);
         }
 
+        // Solo-namespace fast-path: if no peers are known to be subscribed
+        // there is no one to ack. Pass `min_acks = 0` so
+        // `publish_and_await_ack_namespace` returns immediately on
+        // `NoPeersSubscribedToTopic` rather than waiting out the full
+        // op_timeout. For non-solo namespaces, keep the default min_acks
+        // so the caller actually receives delivery confirmation.
+        let min_acks = if known == 0 {
+            0
+        } else {
+            governance_broadcast::DEFAULT_MIN_ACKS
+        };
+
         let report = publish_and_await_ack_namespace(
             self.store,
             node_client.network_client(),
@@ -316,7 +328,7 @@ impl<'a> NamespaceGovernance<'a> {
             topic,
             signed,
             op_timeout,
-            governance_broadcast::DEFAULT_MIN_ACKS,
+            min_acks,
             None,
         )
         .await
@@ -371,6 +383,13 @@ impl<'a> NamespaceGovernance<'a> {
             record_governance_publish_mesh_peers(op_kind, mesh);
         }
 
+        // Solo-namespace fast-path: see `sign_apply_and_publish` above.
+        let min_acks = if known == 0 {
+            0
+        } else {
+            governance_broadcast::DEFAULT_MIN_ACKS
+        };
+
         let report = publish_and_await_ack_namespace(
             self.store,
             node_client.network_client(),
@@ -379,7 +398,7 @@ impl<'a> NamespaceGovernance<'a> {
             topic,
             signed,
             op_timeout,
-            governance_broadcast::DEFAULT_MIN_ACKS,
+            min_acks,
             None,
         )
         .await

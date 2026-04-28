@@ -320,24 +320,39 @@ pub async fn publish_and_await_ack_namespace(
         Ok(()) => {}
         // libp2p returns `PublishError::NoPeersSubscribedToTopic` (which
         // reaches us via the trait's `Display` as the Debug variant name)
-        // when the gossipsub mesh has zero subscribers for `topic`. For
-        // governance ops on a freshly-created or solo namespace this is
-        // the expected outcome — the originator has just locally applied
-        // the op, and remote peers pick it up via on-subscribe sync
-        // (`subscriptions::handle_subscribed`) once they join the
-        // namespace. Treat as Ok-with-no-acks: semantically identical to
-        // "delivered to no one", and matches the legacy
-        // `NodeClient::publish_signed_namespace_op` path that warned and
-        // returned Ok rather than propagating. Hard publish failures
-        // (signing errors, oversized messages, transform errors) still
-        // propagate — only this specific zero-subscribers case is
-        // tolerated.
+        // when the gossipsub mesh has zero subscribers for `topic`. The
+        // intended behaviour depends on `min_acks`:
+        //
+        //   * `min_acks == 0` — caller opted out of confirmation, so
+        //     "delivered to no one" is a legitimate Ok-with-empty result.
+        //     Solo namespaces (`assert_transport_ready` passed because
+        //     `known_subscribers == 0`) compute this min_acks and reach
+        //     this arm. Matches the legacy
+        //     `NodeClient::publish_signed_namespace_op` semantics that
+        //     warned and returned Ok rather than propagating.
+        //
+        //   * `min_acks > 0` — caller asked for confirmation, and zero
+        //     mesh peers means it cannot be obtained. Surfacing this as
+        //     `Ok(DeliveryReport { acked_by: [] })` would silently lie
+        //     about the contract; instead return `NoAckReceived` so the
+        //     caller can decide to retry, escalate, or fall through to a
+        //     best-effort path explicitly.
+        //
+        // Hard publish failures (signing errors, oversized messages,
+        // transform errors) still propagate as `Publish` regardless of
+        // `min_acks`.
         Err(e) if e.contains("NoPeersSubscribedToTopic") => {
             ack_router.release(op_hash, rx);
-            return Ok(DeliveryReport {
+            if min_acks == 0 {
+                return Ok(DeliveryReport {
+                    op_hash,
+                    acked_by: Vec::new(),
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                });
+            }
+            return Err(GovernanceBroadcastError::NoAckReceived {
+                waited_ms: start.elapsed().as_millis() as u64,
                 op_hash,
-                acked_by: Vec::new(),
-                elapsed_ms: start.elapsed().as_millis() as u64,
             });
         }
         Err(e) => {
