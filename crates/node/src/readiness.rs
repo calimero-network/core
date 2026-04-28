@@ -838,17 +838,28 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
             .cache
             .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
         let new_tier = evaluate_readiness(&state, &peers, &self.config, Instant::now());
-        if new_tier != state.tier {
-            tracing::info!(
-                namespace_id = %hex::encode(msg.namespace_id),
-                old = ?state.tier,
-                new = ?new_tier,
-                cause = "peer_beacon_received",
-                "readiness tier transition"
-            );
-            let snapshot = if let Some(s) = self.state_per_namespace.get_mut(&msg.namespace_id) {
+        let tier_changed = new_tier != state.tier;
+
+        // Always persist `local_applied_through` back to the map,
+        // independent of whether the tier transitioned this tick.
+        // The previous structure scoped the write inside the
+        // `tier_changed` branch, which silently dropped the refreshed
+        // value on the steady-state path and left the map drifting
+        // until the next periodic-tick refresh in `emit_periodic_beacons`.
+        // Other FSM eval sites (`Handler<NamespaceOpApplied>`,
+        // `emit_periodic_beacons`) already persist unconditionally, so
+        // this also keeps the three eval entry points symmetric.
+        let snapshot = if let Some(s) = self.state_per_namespace.get_mut(&msg.namespace_id) {
+            s.local_applied_through = state.local_applied_through;
+            if tier_changed {
+                tracing::info!(
+                    namespace_id = %hex::encode(msg.namespace_id),
+                    old = ?state.tier,
+                    new = ?new_tier,
+                    cause = "peer_beacon_received",
+                    "readiness tier transition"
+                );
                 s.tier = new_tier;
-                s.local_applied_through = state.local_applied_through;
                 if matches!(
                     new_tier,
                     ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
@@ -859,11 +870,13 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
                 }
             } else {
                 None
-            };
-            if let Some(snapshot) = snapshot {
-                self.clear_probe_window_for(msg.namespace_id);
-                self.publish_beacon(msg.namespace_id, &snapshot);
             }
+        } else {
+            None
+        };
+        if let Some(snapshot) = snapshot {
+            self.clear_probe_window_for(msg.namespace_id);
+            self.publish_beacon(msg.namespace_id, &snapshot);
         }
     }
 }
