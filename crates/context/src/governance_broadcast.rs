@@ -41,6 +41,20 @@ pub enum BroadcastPublishError {
     Other(String),
 }
 
+pub(crate) fn classify_network_publish_error(e: eyre::Report) -> BroadcastPublishError {
+    let no_peers = e.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<PublishError>(),
+            Some(PublishError::NoPeersSubscribedToTopic)
+        )
+    });
+    if no_peers {
+        BroadcastPublishError::NoPeersSubscribed
+    } else {
+        BroadcastPublishError::Other(e.to_string())
+    }
+}
+
 /// Compute the gossipsub topic for a namespace governance publish.
 /// Mirrors the format used by `NodeClient::publish_signed_namespace_op`
 /// and the receiver-side `network_event::namespace` handler.
@@ -229,16 +243,7 @@ impl BroadcastTransport for calimero_network_primitives::client::NetworkClient {
         Self::publish(self, topic, bytes)
             .await
             .map(|_msg_id| ())
-            .map_err(|e| {
-                if matches!(
-                    e.downcast_ref::<PublishError>(),
-                    Some(PublishError::NoPeersSubscribedToTopic)
-                ) {
-                    BroadcastPublishError::NoPeersSubscribed
-                } else {
-                    BroadcastPublishError::Other(e.to_string())
-                }
-            })
+            .map_err(classify_network_publish_error)
     }
 }
 

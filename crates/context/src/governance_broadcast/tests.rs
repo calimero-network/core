@@ -455,6 +455,17 @@ async fn no_peers_with_min_acks_zero_returns_ok_empty() {
     assert!(report.acked_by.is_empty());
 }
 
+#[test]
+fn wrapped_no_peers_publish_error_classifies_as_no_peers() {
+    let err: eyre::Report = libp2p::gossipsub::PublishError::NoPeersSubscribedToTopic.into();
+    let err = err.wrap_err("network manager context");
+
+    assert!(matches!(
+        classify_network_publish_error(err),
+        BroadcastPublishError::NoPeersSubscribed
+    ));
+}
+
 #[tokio::test]
 async fn no_peers_with_min_acks_positive_returns_no_ack_received() {
     // When the caller asked for confirmation (`min_acks > 0`), receiving
