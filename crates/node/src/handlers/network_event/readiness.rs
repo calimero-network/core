@@ -17,7 +17,7 @@
 use calimero_context::governance_broadcast::verify_readiness_beacon;
 use calimero_context_client::local_governance::{ReadinessProbe, SignedReadinessBeacon};
 use libp2p::PeerId;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::readiness::{ApplyBeaconLocal, EmitOutOfCycleBeacon};
 use crate::NodeManager;
@@ -36,11 +36,21 @@ pub(super) fn handle_readiness_beacon(
         return;
     }
     let namespace_id = beacon.namespace_id;
+    let peer_pubkey = beacon.peer_pubkey;
+    let applied_through = beacon.applied_through;
+    let strong = beacon.strong;
     manager.readiness_cache.insert(&beacon);
     // Wake any `await_first_fresh_beacon` waiters for this namespace
     // (Phase 8.1). Must run AFTER `cache.insert` so a waiter that
     // re-checks the cache on wakeup sees the new entry.
     manager.readiness_notify.notify(namespace_id);
+    info!(
+        namespace_id = %hex::encode(namespace_id),
+        peer = %peer_pubkey,
+        applied_through,
+        strong,
+        "readiness beacon received"
+    );
     if let Some(addr) = &manager.readiness_addr {
         addr.do_send(ApplyBeaconLocal { namespace_id });
     }

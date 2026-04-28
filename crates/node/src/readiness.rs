@@ -471,6 +471,13 @@ impl ReadinessManager {
             let snapshot = if let Some(entry) = self.state_per_namespace.get_mut(&ns_id) {
                 let new_tier = evaluate_readiness(entry, &peers, &cfg, now);
                 if new_tier != entry.tier {
+                    tracing::info!(
+                        namespace_id = %hex::encode(ns_id),
+                        old = ?entry.tier,
+                        new = ?new_tier,
+                        cause = "periodic_tick",
+                        "readiness tier transition"
+                    );
                     entry.tier = new_tier;
                 }
                 if matches!(
@@ -605,9 +612,20 @@ impl ReadinessManager {
         // non-fatal. Using `network_client().publish` directly bypasses
         // the 10s mesh-wait gate of `NodeClient::publish_on_namespace`.
         let net = self.node_client.network_client().clone();
+        let log_ns = ns_id;
+        let log_applied = state.local_applied_through;
+        let log_strong = strong;
         actix::spawn(async move {
-            if let Err(err) = net.publish(topic, bytes).await {
-                tracing::debug!(?err, "ReadinessBeacon publish failed (non-fatal)");
+            match net.publish(topic, bytes).await {
+                Ok(_) => tracing::info!(
+                    namespace_id = %hex::encode(log_ns),
+                    applied_through = log_applied,
+                    strong = log_strong,
+                    "readiness beacon emitted"
+                ),
+                Err(err) => {
+                    tracing::debug!(?err, "ReadinessBeacon publish failed (non-fatal)");
+                }
             }
         });
     }
@@ -654,6 +672,13 @@ impl Handler<NamespaceOpApplied> for ReadinessManager {
             entry.local_applied_through = entry.local_applied_through.saturating_add(1);
             let new_tier = evaluate_readiness(entry, &peers, &self.config, Instant::now());
             if new_tier != entry.tier {
+                tracing::info!(
+                    namespace_id = %hex::encode(msg.namespace_id),
+                    old = ?entry.tier,
+                    new = ?new_tier,
+                    cause = "namespace_op_applied",
+                    "readiness tier transition"
+                );
                 entry.tier = new_tier;
                 if matches!(
                     new_tier,
@@ -756,6 +781,13 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
             .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
         let new_tier = evaluate_readiness(&state, &peers, &self.config, Instant::now());
         if new_tier != state.tier {
+            tracing::info!(
+                namespace_id = %hex::encode(msg.namespace_id),
+                old = ?state.tier,
+                new = ?new_tier,
+                cause = "peer_beacon_received",
+                "readiness tier transition"
+            );
             let snapshot = if let Some(s) = self.state_per_namespace.get_mut(&msg.namespace_id) {
                 s.tier = new_tier;
                 if matches!(
@@ -860,6 +892,13 @@ impl ReadinessCache {
             //    `enable()` and the `select!` poll wake the
             //    (already-registered) future.
             if let Some(entry) = self.pick_sync_partner(ns, ttl) {
+                tracing::info!(
+                    namespace_id = %hex::encode(ns),
+                    partner = %entry.0,
+                    partner_applied = entry.1.applied_through,
+                    partner_strong = entry.1.strong,
+                    "first fresh beacon resolved"
+                );
                 return Some(entry);
             }
             tokio::select! {
