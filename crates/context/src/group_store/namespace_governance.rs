@@ -308,7 +308,7 @@ impl<'a> NamespaceGovernance<'a> {
             record_governance_publish_mesh_peers(op_kind, mesh);
         }
 
-        publish_and_await_ack_namespace(
+        let report = publish_and_await_ack_namespace(
             self.store,
             node_client.network_client(),
             ack_router,
@@ -320,7 +320,16 @@ impl<'a> NamespaceGovernance<'a> {
             None,
         )
         .await
-        .map_err(|e| eyre::eyre!(e))
+        .map_err(|e| eyre::eyre!(e))?;
+        tracing::debug!(
+            op_kind,
+            namespace_id = %hex::encode(self.namespace_id),
+            acks = report.acked_by.len(),
+            elapsed_ms = report.elapsed_ms,
+            op_hash = %hex::encode(report.op_hash),
+            "namespace governance op published"
+        );
+        Ok(report)
     }
 
     pub async fn sign_and_publish_without_apply(
@@ -362,7 +371,7 @@ impl<'a> NamespaceGovernance<'a> {
             record_governance_publish_mesh_peers(op_kind, mesh);
         }
 
-        publish_and_await_ack_namespace(
+        let report = publish_and_await_ack_namespace(
             self.store,
             node_client.network_client(),
             ack_router,
@@ -374,7 +383,16 @@ impl<'a> NamespaceGovernance<'a> {
             None,
         )
         .await
-        .map_err(|e| eyre::eyre!(e))
+        .map_err(|e| eyre::eyre!(e))?;
+        tracing::debug!(
+            op_kind,
+            namespace_id = %hex::encode(self.namespace_id),
+            acks = report.acked_by.len(),
+            elapsed_ms = report.elapsed_ms,
+            op_hash = %hex::encode(report.op_hash),
+            "namespace governance op published (no local apply)"
+        );
+        Ok(report)
     }
 
     fn retry_encrypted_ops_for_group(&self, group_id: [u8; 32]) -> EyreResult<()> {

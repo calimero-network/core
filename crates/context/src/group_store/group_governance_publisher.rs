@@ -249,6 +249,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         record_governance_publish_mesh_peers(op.op_kind_label(), mesh);
 
         let namespace_sk = PrivateKey::from(namespace_identity.private_key);
+        let op_kind = op.op_kind_label();
         let report = NamespaceGovernance::new(self.store, namespace_bytes)
             .sign_and_publish_without_apply(
                 self.node_client,
@@ -257,6 +258,14 @@ impl<'a> GroupGovernancePublisher<'a> {
                 namespace_op,
             )
             .await?;
+        tracing::debug!(
+            op_kind,
+            group_id = %hex::encode(self.group_id.to_bytes()),
+            acks = report.acked_by.len(),
+            elapsed_ms = report.elapsed_ms,
+            op_hash = %hex::encode(report.op_hash),
+            "group governance op published"
+        );
         Ok(Some(report))
     }
 }
