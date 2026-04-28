@@ -424,19 +424,6 @@ pub struct ApplyBeaconLocal {
     pub namespace_id: [u8; 32],
 }
 
-/// Carries a snapshot of locally-observed namespace state into the FSM
-/// driver. The actor merges this into `state_per_namespace`, re-evaluates
-/// `evaluate_readiness`, and emits an edge-trigger beacon if the tier
-/// transitions into a *Ready variant.
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct LocalStateChanged {
-    pub namespace_id: [u8; 32],
-    pub local_applied_through: u64,
-    pub local_head: [u8; 32],
-    pub local_pending_ops: usize,
-}
-
 /// A single namespace governance op was successfully applied locally.
 ///
 /// Sent from the receiver-side network-event handler after a
@@ -596,60 +583,6 @@ impl ReadinessManager {
     }
 }
 
-impl Handler<LocalStateChanged> for ReadinessManager {
-    type Result = ();
-
-    fn handle(&mut self, msg: LocalStateChanged, _ctx: &mut Self::Context) {
-        // Atomic single-lock snapshot — see ReadinessCache::peer_summary
-        // for why peer_summary is the only correct source for PeerSummary.
-        let peers = self
-            .cache
-            .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
-
-        // Scoped borrow on `state_per_namespace`: compute next tier,
-        // mutate the entry, snapshot for emission. The borrow ends at
-        // the end of this block so `clear_probe_window_for` and
-        // `publish_beacon` can re-borrow `self` afterwards.
-        let to_emit = {
-            let entry = self
-                .state_per_namespace
-                .entry(msg.namespace_id)
-                .or_insert_with(|| ReadinessState {
-                    tier: ReadinessTier::Bootstrapping,
-                    local_applied_through: 0,
-                    local_head: [0u8; 32],
-                    local_pending_ops: 0,
-                    subscribed_at: Instant::now(),
-                });
-            entry.local_applied_through = msg.local_applied_through;
-            entry.local_head = msg.local_head;
-            entry.local_pending_ops = msg.local_pending_ops;
-            let new_tier = evaluate_readiness(entry, &peers, &self.config, Instant::now());
-            if new_tier != entry.tier {
-                entry.tier = new_tier;
-                // Edge trigger: a tier transition into *Ready warrants
-                // an immediate beacon so peers see our promotion without
-                // waiting for the next freshness tick.
-                if matches!(
-                    new_tier,
-                    ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
-                ) {
-                    Some(entry.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        if let Some(snapshot) = to_emit {
-            self.clear_probe_window_for(msg.namespace_id);
-            self.publish_beacon(msg.namespace_id, &snapshot);
-        }
-    }
-}
-
 /// Out-of-cycle beacon emission triggered by an inbound
 /// [`calimero_context_client::local_governance::ReadinessProbe`].
 ///
@@ -674,7 +607,7 @@ impl Handler<NamespaceOpApplied> for ReadinessManager {
 
         // Increment the per-namespace local apply counter, then re-evaluate
         // FSM and edge-emit on transition into a *Ready tier. Uses the
-        // same scoped-borrow pattern as Handler<LocalStateChanged> so
+        // same scoped-borrow pattern as Handler<ApplyBeaconLocal> so
         // `clear_probe_window_for` and `publish_beacon` can re-borrow
         // self after the entry borrow ends.
         let to_emit = {
@@ -733,7 +666,7 @@ impl Handler<EmitOutOfCycleBeacon> for ReadinessManager {
         // tier, we still record `last_probe_response_at` so the same
         // peer cannot poll us into pathological recheck rates. After a
         // tier transition into *Ready, `last_probe_response_at` for
-        // affected (peer, ns) is cleared in `LocalStateChanged` /
+        // affected (peer, ns) is cleared in `NamespaceOpApplied` /
         // `ApplyBeaconLocal` so a later probe immediately gets a beacon.
         let now = Instant::now();
         let min_spacing = self.config.beacon_interval / 2;
