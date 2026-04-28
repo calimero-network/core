@@ -10,6 +10,17 @@ pub(super) fn handle_subscribed(
     peer_id: libp2p::PeerId,
     topic: libp2p::gossipsub::TopicHash,
 ) {
+    // Track every observed subscription so Phase-1 governance readiness
+    // (`assert_transport_ready` via `NodeClient::known_subscribers`) can
+    // cap the required mesh quorum by the population size. The
+    // bookkeeping is topic-agnostic — non-governance topics in the map
+    // are harmless because the readiness gate only queries `ns/<id>`
+    // and `group/<id>` topics.
+    manager
+        .clients
+        .node
+        .record_peer_subscribed(peer_id, topic.clone());
+
     let topic_str = topic.as_str();
 
     // Check for group topic: "group/<hex32>"
@@ -82,7 +93,16 @@ pub(super) fn handle_subscribed(
     info!("Peer '{}' subscribed to context '{}'", peer_id, context_id);
 }
 
-pub(super) fn handle_unsubscribed(peer_id: libp2p::PeerId, topic: libp2p::gossipsub::TopicHash) {
+pub(super) fn handle_unsubscribed(
+    manager: &mut NodeManager,
+    peer_id: libp2p::PeerId,
+    topic: libp2p::gossipsub::TopicHash,
+) {
+    manager
+        .clients
+        .node
+        .record_peer_unsubscribed(&peer_id, &topic);
+
     let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
         return;
     };

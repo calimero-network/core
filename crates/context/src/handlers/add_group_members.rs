@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::AddGroupMembersRequest;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
@@ -25,6 +27,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
 
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
         let sk = preflight.signer_sk();
         let requester = preflight.requester;
         let members = members.clone();
@@ -32,9 +35,10 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 for (identity, role) in &members {
-                    group_store::sign_apply_and_publish(
+                    let _report = group_store::sign_apply_and_publish(
                         &datastore,
                         &node_client,
+                        &ack_router,
                         &group_id,
                         &sk,
                         GroupOp::MemberAdded {
@@ -57,6 +61,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                                 if let Err(e) = group_store::sign_and_publish_namespace_op(
                                     &datastore,
                                     &node_client,
+                                    &ack_router,
                                     ns_id.to_bytes(),
                                     &sk,
                                     delivery_op,

@@ -34,17 +34,24 @@ impl<'a> NamespaceRetryService<'a> {
         let gid_typed = ContextGroupId::from(group_id);
         let ns_typed = ContextGroupId::from(self.namespace_id);
         let op_log = NamespaceOpLogService::new(self.store, self.namespace_id);
-        for entry in op_log.collect_signed_group_ops_for_group(group_id)? {
+        let entries = op_log
+            .collect_signed_group_ops_for_group(group_id)
+            .map_err(|e| eyre::eyre!("op_log.collect_signed_group_ops_for_group: {e}"))?;
+        for entry in entries {
             let NamespaceOp::Group { key_id, .. } = entry.signed_op.op else {
                 continue;
             };
             // Issue #2256: same fallback as the live-apply path — the op
             // may have been encrypted with the namespace key if the
             // subgroup was `Open` at publish time.
-            let group_key = match load_group_key_by_id(self.store, &gid_typed, &key_id)? {
+            let group_key = match load_group_key_by_id(self.store, &gid_typed, &key_id)
+                .map_err(|e| eyre::eyre!("load_group_key_by_id(group): {e}"))?
+            {
                 Some(k) => k,
                 None => {
-                    let Some(k) = load_group_key_by_id(self.store, &ns_typed, &key_id)? else {
+                    let Some(k) = load_group_key_by_id(self.store, &ns_typed, &key_id)
+                        .map_err(|e| eyre::eyre!("load_group_key_by_id(namespace): {e}"))?
+                    else {
                         continue;
                     };
                     k

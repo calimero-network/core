@@ -106,6 +106,57 @@ fn assert_transport_ready_passes_when_mesh_exceeds_required() {
 }
 
 // ---------------------------------------------------------------------------
+// timeout_for_namespace_op
+// ---------------------------------------------------------------------------
+
+#[test]
+fn timeout_classifier_assigns_per_op_kind() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+
+    // Cheap class: single-row writes, no inheritance walk.
+    assert_eq!(
+        timeout_for_namespace_op(&NamespaceOp::Root(RootOp::AdminChanged { new_admin: pk })),
+        OP_ACK_CHEAP_TIMEOUT
+    );
+
+    // Member-change class: membership-table mutations, possible inheritance walks.
+    assert_eq!(
+        timeout_for_namespace_op(&NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: [0u8; 32],
+            parent_id: [0u8; 32],
+        })),
+        OP_ACK_MEMBER_CHANGE_TIMEOUT
+    );
+
+    // Heavy class: cascade deletes / KeyDelivery side-effects.
+    assert_eq!(
+        timeout_for_namespace_op(&NamespaceOp::Root(RootOp::GroupDeleted {
+            root_group_id: [0u8; 32],
+            cascade_group_ids: Vec::new(),
+            cascade_context_ids: Vec::new(),
+        })),
+        OP_ACK_HEAVY_TIMEOUT
+    );
+
+    // Encrypted Group ops: classified as member-change baseline because
+    // the inner GroupOp variant isn't visible without decrypting.
+    assert_eq!(
+        timeout_for_namespace_op(&NamespaceOp::Group {
+            group_id: [0u8; 32],
+            key_id: [0u8; 32],
+            encrypted: calimero_context_client::local_governance::EncryptedGroupOp {
+                ciphertext: Vec::new(),
+                nonce: [0u8; 12],
+            },
+            key_rotation: None,
+        }),
+        OP_ACK_MEMBER_CHANGE_TIMEOUT
+    );
+}
+
+// ---------------------------------------------------------------------------
 // publish_and_await_ack_namespace
 // ---------------------------------------------------------------------------
 
@@ -116,7 +167,7 @@ impl BroadcastTransport for StubTransport {
     async fn mesh_peer_count(&self, _: TopicHash) -> usize {
         0
     }
-    async fn publish(&self, _: TopicHash, _: Vec<u8>) -> Result<(), String> {
+    async fn publish(&self, _: TopicHash, _: Vec<u8>) -> Result<(), BroadcastPublishError> {
         Ok(())
     }
 }
@@ -145,7 +196,13 @@ fn plant_namespace_member(
 }
 
 #[tokio::test]
-async fn publish_and_await_ack_times_out_when_no_ack_arrives() {
+async fn publish_and_await_ack_times_out_with_empty_acked_by() {
+    // Post-publish timeout: the publish succeeded (StubTransport returns
+    // Ok) but no ack ever arrives, so the deadline elapses. The function
+    // returns Ok(DeliveryReport) with empty `acked_by` — NOT an error.
+    // Failing here would tempt the caller to retry an already-applied op
+    // and double the local DAG advance; instead the caller inspects
+    // `acked_by` and decides what to do with the unconfirmed delivery.
     let store = empty_store();
     let router = AckRouter::default();
     let transport = StubTransport;
@@ -153,7 +210,7 @@ async fn publish_and_await_ack_times_out_when_no_ack_arrives() {
     let signer = PrivateKey::random(&mut rand::thread_rng());
     let signed_op = mk_signed_op(&signer, [42u8; 32]);
 
-    let res = publish_and_await_ack_namespace(
+    let report = publish_and_await_ack_namespace(
         &store,
         &transport,
         &router,
@@ -164,12 +221,10 @@ async fn publish_and_await_ack_times_out_when_no_ack_arrives() {
         1,
         None,
     )
-    .await;
+    .await
+    .expect("post-publish timeout must return Ok with partial DeliveryReport");
 
-    assert!(matches!(
-        res,
-        Err(GovernanceBroadcastError::NoAckReceived { .. })
-    ));
+    assert!(report.acked_by.is_empty());
 }
 
 #[tokio::test]
@@ -213,7 +268,7 @@ async fn publish_and_await_ack_dedups_acks_from_same_signer() {
         }
     });
 
-    let res = publish_and_await_ack_namespace(
+    let report = publish_and_await_ack_namespace(
         &store,
         &transport,
         &router,
@@ -224,11 +279,13 @@ async fn publish_and_await_ack_dedups_acks_from_same_signer() {
         2,
         None,
     )
-    .await;
-    assert!(
-        matches!(res, Err(GovernanceBroadcastError::NoAckReceived { .. })),
+    .await
+    .expect("post-publish dedup-only path returns Ok with partial DeliveryReport");
+    assert_eq!(
+        report.acked_by.len(),
+        1,
         "min_acks=2 must not be satisfied by 3 acks from one signer; got {:?}",
-        res
+        report.acked_by
     );
 }
 
@@ -350,4 +407,95 @@ async fn verify_ack_rejects_signature_without_domain_prefix() {
         signature,
     };
     assert!(!verify_ack(&store, [42u8; 32], op_hash, &ack));
+}
+
+/// Transport stub whose publish always returns the libp2p
+/// `NoPeersSubscribedToTopic` error — used to exercise the
+/// solo-namespace / mesh-not-yet-grafted code path in
+/// `publish_and_await_ack_namespace` without standing up a real swarm.
+struct NoPeersTransport;
+
+#[async_trait]
+impl BroadcastTransport for NoPeersTransport {
+    async fn mesh_peer_count(&self, _: TopicHash) -> usize {
+        0
+    }
+    async fn publish(&self, _: TopicHash, _: Vec<u8>) -> Result<(), BroadcastPublishError> {
+        Err(BroadcastPublishError::NoPeersSubscribed)
+    }
+}
+
+#[tokio::test]
+async fn no_peers_with_min_acks_zero_returns_ok_empty() {
+    // Solo-namespace fast-path: caller passed `min_acks = 0` to opt out
+    // of confirmation, so the no-peers publish error is a legitimate
+    // Ok-with-empty outcome (matches legacy `publish_signed_namespace_op`
+    // best-effort semantics).
+    let store = empty_store();
+    let router = AckRouter::default();
+    let transport = NoPeersTransport;
+    let topic = TopicHash::from_raw("ns/test-solo");
+    let signer = PrivateKey::random(&mut rand::thread_rng());
+    let signed_op = mk_signed_op(&signer, [42u8; 32]);
+
+    let report = publish_and_await_ack_namespace(
+        &store,
+        &transport,
+        &router,
+        [42u8; 32],
+        topic,
+        signed_op,
+        Duration::from_millis(50),
+        0,
+        None,
+    )
+    .await
+    .expect("solo namespace must return Ok with empty acks");
+
+    assert!(report.acked_by.is_empty());
+}
+
+#[test]
+fn wrapped_no_peers_publish_error_classifies_as_no_peers() {
+    let err: eyre::Report = libp2p::gossipsub::PublishError::NoPeersSubscribedToTopic.into();
+    let err = err.wrap_err("network manager context");
+
+    assert!(matches!(
+        classify_network_publish_error(err),
+        BroadcastPublishError::NoPeersSubscribed
+    ));
+}
+
+#[tokio::test]
+async fn no_peers_with_min_acks_positive_returns_no_ack_received() {
+    // When the caller asked for confirmation (`min_acks > 0`), receiving
+    // `NoPeersSubscribedToTopic` from the transport must not be silently
+    // promoted to `Ok(DeliveryReport { acked_by: [] })` — that would lie
+    // about the contract and let workflow steps that claim "returns only
+    // after node-2 acks" pass without actually delivering.
+    let store = empty_store();
+    let router = AckRouter::default();
+    let transport = NoPeersTransport;
+    let topic = TopicHash::from_raw("ns/test-multi");
+    let signer = PrivateKey::random(&mut rand::thread_rng());
+    let signed_op = mk_signed_op(&signer, [42u8; 32]);
+
+    let res = publish_and_await_ack_namespace(
+        &store,
+        &transport,
+        &router,
+        [42u8; 32],
+        topic,
+        signed_op,
+        Duration::from_millis(50),
+        1,
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(res, Err(GovernanceBroadcastError::NoAckReceived { .. })),
+        "min_acks=1 + NoPeersSubscribedToTopic must surface as NoAckReceived; got {:?}",
+        res
+    );
 }

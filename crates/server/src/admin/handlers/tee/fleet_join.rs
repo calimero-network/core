@@ -206,6 +206,7 @@ pub async fn handler(
                 match calimero_context::group_store::sign_apply_and_publish(
                     &state.store,
                     &state.node_client,
+                    state.ctx_client.ack_router(),
                     &group_id,
                     &our_sk_typed,
                     calimero_context_client::local_governance::GroupOp::MemberSetAutoFollow {
@@ -216,7 +217,7 @@ pub async fn handler(
                 )
                 .await
                 {
-                    Ok(()) => {
+                    Ok(_report) => {
                         info!(
                             group_id = %req.group_id,
                             "fleet-join: auto-follow enabled for self"

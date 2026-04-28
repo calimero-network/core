@@ -14,18 +14,103 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use calimero_context_client::local_governance::{
-    hash_scoped_namespace, AckRouter, GovernanceError, NamespaceTopicMsg, SignedAck,
-    SignedNamespaceOp,
+    hash_scoped_namespace, AckRouter, GovernanceError, NamespaceOp, NamespaceTopicMsg, RootOp,
+    SignedAck, SignedNamespaceOp,
 };
-use calimero_node_primitives::sync::BroadcastMessage;
+use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
-use libp2p::gossipsub::TopicHash;
+use libp2p::gossipsub::{PublishError, TopicHash};
 use thiserror::Error;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
 use crate::group_store::namespace_member_pubkeys;
+
+/// Default `min_acks` for governance publishes — at least one peer must
+/// ack before we consider the op delivered. Spec §6.2. Callers that
+/// need a stricter quorum (e.g. KeyDelivery requiring the recipient's
+/// ack) override per-call.
+pub const DEFAULT_MIN_ACKS: usize = 1;
+
+#[derive(Debug, Clone, Error)]
+pub enum BroadcastPublishError {
+    #[error("no peers subscribed to topic")]
+    NoPeersSubscribed,
+    #[error("{0}")]
+    Other(String),
+}
+
+pub(crate) fn classify_network_publish_error(e: eyre::Report) -> BroadcastPublishError {
+    let no_peers = e.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<PublishError>(),
+            Some(PublishError::NoPeersSubscribedToTopic)
+        )
+    });
+    if no_peers {
+        BroadcastPublishError::NoPeersSubscribed
+    } else {
+        BroadcastPublishError::Other(e.to_string())
+    }
+}
+
+/// Compute the gossipsub topic for a namespace governance publish.
+/// Mirrors the format used by `NodeClient::publish_signed_namespace_op`
+/// and the receiver-side `network_event::namespace` handler.
+#[must_use]
+pub fn ns_topic(namespace_id: [u8; 32]) -> TopicHash {
+    TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)))
+}
+
+/// Per-op publish timeout for "cheap" governance ops — alias / metadata
+/// writes whose apply path is O(1) on every receiver. The 2s budget
+/// comfortably covers a fresh GRAFT (≤1s) plus one round-trip ack.
+pub const OP_ACK_CHEAP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Per-op publish timeout for member-change governance ops — add /
+/// remove members, MemberJoined, capability flips. Receivers walk
+/// inheritance edges and may rotate group keys, so a 5s budget is
+/// realistic on top of the cheap baseline.
+pub const OP_ACK_MEMBER_CHANGE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Per-op publish timeout for "heavy" governance ops — context
+/// creation, app installation, namespace bootstrap. Receivers may
+/// unwrap large envelopes, store stub application metadata, and
+/// trigger downstream retry loops; 10s mirrors the snapshot-sync
+/// class.
+pub const OP_ACK_HEAVY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Pick the appropriate per-op timeout for a `NamespaceOp` based on the
+/// receiver-side apply work it implies. The classification is:
+///
+///   * `AdminChanged` / `PolicyUpdated`: cheap — single-row writes.
+///   * `MemberJoined` / `GroupCreated` / `GroupReparented`: member-change —
+///     membership-table mutations, possible inheritance walks.
+///   * `GroupDeleted` / `KeyDelivery`: heavy — cascade deletes touch every
+///     descendant subtree row; key delivery may unwrap large envelopes.
+///   * `Group { encrypted, .. }`: member-change baseline. The inner
+///     `GroupOp` variant isn't visible without decrypting, so a finer
+///     classification (e.g. `KeyDelivery` heavy via the rotation
+///     envelope) requires accepting a wider tail. Member-change is the
+///     conservative middle ground.
+#[must_use]
+pub fn timeout_for_namespace_op(op: &NamespaceOp) -> Duration {
+    match op {
+        NamespaceOp::Root(RootOp::AdminChanged { .. } | RootOp::PolicyUpdated { .. }) => {
+            OP_ACK_CHEAP_TIMEOUT
+        }
+        NamespaceOp::Root(
+            RootOp::MemberJoined { .. }
+            | RootOp::GroupCreated { .. }
+            | RootOp::GroupReparented { .. },
+        ) => OP_ACK_MEMBER_CHANGE_TIMEOUT,
+        NamespaceOp::Root(RootOp::GroupDeleted { .. } | RootOp::KeyDelivery { .. }) => {
+            OP_ACK_HEAVY_TIMEOUT
+        }
+        NamespaceOp::Group { .. } => OP_ACK_MEMBER_CHANGE_TIMEOUT,
+    }
+}
 
 #[cfg(test)]
 mod tests;
@@ -116,8 +201,7 @@ pub fn sign_ack(signer_sk: &PrivateKey, op_hash: [u8; 32]) -> Result<SignedAck, 
 ///
 /// Pure function — `mesh` and `known_subscribers` are provided by the
 /// caller (typically via `NodeClient::mesh_peer_count_for_namespace`
-/// and `NodeClient::known_subscribers_for_namespace`). Phase 3.4 wires
-/// those plumbing pieces; this function is the policy.
+/// and `NodeClient::known_subscribers`). This function is the policy.
 pub fn assert_transport_ready(
     mesh: usize,
     known_subscribers: usize,
@@ -147,7 +231,7 @@ pub struct DeliveryReport {
 #[async_trait]
 pub trait BroadcastTransport: Send + Sync {
     async fn mesh_peer_count(&self, topic: TopicHash) -> usize;
-    async fn publish(&self, topic: TopicHash, bytes: Vec<u8>) -> Result<(), String>;
+    async fn publish(&self, topic: TopicHash, bytes: Vec<u8>) -> Result<(), BroadcastPublishError>;
 }
 
 #[async_trait]
@@ -155,11 +239,11 @@ impl BroadcastTransport for calimero_network_primitives::client::NetworkClient {
     async fn mesh_peer_count(&self, topic: TopicHash) -> usize {
         Self::mesh_peer_count(self, topic).await
     }
-    async fn publish(&self, topic: TopicHash, bytes: Vec<u8>) -> Result<(), String> {
+    async fn publish(&self, topic: TopicHash, bytes: Vec<u8>) -> Result<(), BroadcastPublishError> {
         Self::publish(self, topic, bytes)
             .await
             .map(|_msg_id| ())
-            .map_err(|e| e.to_string())
+            .map_err(classify_network_publish_error)
     }
 }
 
@@ -183,8 +267,46 @@ impl BroadcastTransport for calimero_network_primitives::client::NetworkClient {
 ///     requires the recipient's ack specifically).
 ///   * Dedups by `signer_pubkey` so duplicate gossip rebroadcasts of the
 ///     same ack don't inflate `acked_by`.
-///   * Returns `Ok(DeliveryReport)` once `acked_by.len() >= min_acks`,
-///     `Err(NoAckReceived)` on timeout or channel close.
+///
+/// Contract — eventually-consistent, best-effort:
+///
+/// `Ok` means "publish accepted by gossipsub". The op is on the wire,
+/// receivers will apply + ack as they catch up. The exact ack count
+/// depends on mesh state and receiver-side backfill latency:
+///
+///   * `Ok` with `acked_by.len() >= min_acks` — enough distinct
+///     signers acked within `op_timeout`. Tight happy path.
+///   * `Ok` with `acked_by.len() < min_acks` (incl. empty) —
+///     publish accepted but acks didn't arrive in time. Common during
+///     a cold-state join window where the receiver needs to backfill
+///     missing parents (`apply` only emits the ack post-apply). The
+///     caller's local apply (if any) is durable; surfacing a partial
+///     report rather than `Err` keeps the caller from retrying an
+///     already-applied op and double-advancing the local DAG.
+///   * `Ok` with empty `acked_by` is also the solo-namespace fast path
+///     (`min_acks == 0`).
+///
+/// `Err` only when the publish itself never delivered:
+///
+///   * `Err(Publish)` — gossipsub rejected the message (signing,
+///     oversize, transform error).
+///   * `Err(NoAckReceived)` — the transport reported no subscribed peers
+///     while `min_acks > 0` (no delivery was attempted; surfacing `Ok`
+///     would be a lie).
+///   * `Err(NamespaceNotReady)` — not raised by this fn; readiness
+///     gating is the caller's responsibility.
+///
+/// Phase 5 callers treat the publisher-boundary `tracing::debug!`
+/// (op_kind + acks + elapsed_ms) as the source of truth for delivery
+/// observability and proceed regardless of `acked_by.len()` — the
+/// local DAG advance is the durable side-effect, the ack is just
+/// confirmation that some peer received it before the deadline.
+/// Phases 8/9 will introduce a strict-confirmation path (KeyDelivery
+/// recipient ack must arrive before `join_group` returns) by passing
+/// the recipient's pubkey as `required_signers` and inspecting
+/// `report.acked_by` at the call site — at that point the helper to
+/// turn a partial report into `Err` will be added alongside the first
+/// caller that needs it.
 pub async fn publish_and_await_ack_namespace(
     store: &Store,
     transport: &dyn BroadcastTransport,
@@ -199,12 +321,7 @@ pub async fn publish_and_await_ack_namespace(
     let topic_id = topic.as_str().as_bytes();
     let op_hash = hash_scoped_namespace(topic_id, &op)
         .map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
-    let start = Instant::now();
 
-    // Subscribe BEFORE publishing so a peer that already has this op
-    // (e.g. via concurrent backfill) cannot ack faster than our
-    // subscription registration and have its ack dropped.
-    let mut rx = ack_router.subscribe(op_hash);
     // Wire framing on `ns/<id>` is two-layer: the gossipsub frame
     // decodes as `BroadcastMessage` first (see
     // `node/src/handlers/network_event.rs::handle_network_event`),
@@ -215,12 +332,37 @@ pub async fn publish_and_await_ack_namespace(
     // caller of this helper observe `NoAckReceived` regardless of
     // mesh health. Mirrors `client.rs::publish_signed_namespace_op`
     // and the heartbeat-republish site at `namespace.rs:223`.
+    //
+    // All synchronous serialization happens BEFORE `ack_router.subscribe`
+    // so a borsh / size-check failure cannot leak a channel registration:
+    // we only enter the wait state once the publish has actually been
+    // handed to the gossipsub layer. This keeps the `subscribe-before-
+    // publish` race-free guarantee documented above intact (`subscribe`
+    // still happens before the wire `publish` call).
     let delta_id = op
         .content_hash()
         .map_err(|e| GovernanceBroadcastError::Publish(format!("content_hash: {e}")))?;
     let parent_ids = op.parent_op_hashes.clone();
     let inner = borsh::to_vec(&NamespaceTopicMsg::Op(op))
         .map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
+    // `MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES` caps the inner
+    // `borsh(NamespaceTopicMsg::Op(SignedNamespaceOp))` bytes — the
+    // value the constant's doc at `sync/snapshot.rs` and the legacy
+    // `NodeClient::publish_signed_namespace_op` (which checks
+    // `signed_op_borsh.len()`) both describe. Earlier in this PR the
+    // check ran on the outer `BroadcastMessage` envelope bytes (~100B
+    // overhead from the variant tag + 32B namespace_id + 32B delta_id
+    // + length-prefixed parent_ids), creating split-enforcement
+    // asymmetry: a borderline 64KB inner op accepted by the legacy
+    // path would be rejected here. Checking the inner keeps both
+    // paths consistent and matches the constant's documented intent.
+    if inner.len() > MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES {
+        return Err(GovernanceBroadcastError::Publish(format!(
+            "signed namespace op payload exceeds max ({} > {})",
+            inner.len(),
+            MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES
+        )));
+    }
     let envelope = BroadcastMessage::NamespaceGovernanceDelta {
         namespace_id,
         delta_id,
@@ -229,10 +371,60 @@ pub async fn publish_and_await_ack_namespace(
     };
     let payload =
         borsh::to_vec(&envelope).map_err(|e| GovernanceBroadcastError::Publish(e.to_string()))?;
-    transport
-        .publish(topic, payload)
-        .await
-        .map_err(GovernanceBroadcastError::Publish)?;
+
+    let start = Instant::now();
+    // Subscribe BEFORE publishing so a peer that already has this op
+    // (e.g. via concurrent backfill) cannot ack faster than our
+    // subscription registration and have its ack dropped.
+    let mut rx = ack_router.subscribe(op_hash);
+    match transport.publish(topic, payload).await {
+        Ok(()) => {}
+        // The transport boundary classifies libp2p's
+        // `PublishError::NoPeersSubscribedToTopic` while the concrete
+        // error type is still available. The intended behaviour depends
+        // on `min_acks`:
+        //
+        //   * `min_acks == 0` — caller opted out of confirmation, so
+        //     "delivered to no one" is a legitimate Ok-with-empty result.
+        //     Solo namespaces (`assert_transport_ready` passed because
+        //     `known_subscribers == 0`) compute this min_acks and reach
+        //     this arm. Matches the legacy
+        //     `NodeClient::publish_signed_namespace_op` semantics that
+        //     warned and returned Ok rather than propagating.
+        //
+        //   * `min_acks > 0` — caller asked for confirmation, and zero
+        //     mesh peers means it cannot be obtained. Surfacing this as
+        //     `Ok(DeliveryReport { acked_by: [] })` would silently lie
+        //     about the contract; instead return `NoAckReceived` so the
+        //     caller can decide to retry, escalate, or fall through to a
+        //     best-effort path explicitly.
+        //
+        // Hard publish failures (signing errors, oversized messages,
+        // transform errors) still propagate as `Publish` regardless of
+        // `min_acks`.
+        Err(BroadcastPublishError::NoPeersSubscribed) => {
+            ack_router.release(op_hash, rx);
+            if min_acks == 0 {
+                return Ok(DeliveryReport {
+                    op_hash,
+                    acked_by: Vec::new(),
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                });
+            }
+            return Err(GovernanceBroadcastError::NoAckReceived {
+                waited_ms: start.elapsed().as_millis() as u64,
+                op_hash,
+            });
+        }
+        Err(e) => {
+            // Other publish failures: release the channel registration
+            // before propagating, otherwise the entry stays subscribed
+            // forever (op_hash is single-use, so no future caller reuses
+            // it).
+            ack_router.release(op_hash, rx);
+            return Err(GovernanceBroadcastError::Publish(e.to_string()));
+        }
+    }
 
     // `min_acks == 0` means "publish-only, don't wait" — the expected
     // outcome is immediate `Ok`, not a `NoAckReceived` after `op_timeout`
@@ -254,6 +446,20 @@ pub async fn publish_and_await_ack_namespace(
 
     let mut acked_by: Vec<PublicKey> = Vec::new();
     let deadline = start + op_timeout;
+    // Helper: build a `DeliveryReport` for whatever acks we did manage
+    // to collect. Used at every post-publish exit (deadline elapsed,
+    // channel closed). Once the publish succeeded the op is on the
+    // wire — failing the call here would falsely suggest non-delivery
+    // and tempt the caller to retry, which (for the apply-then-publish
+    // flow) doubles the local DAG advance and creates the orphan-op
+    // pattern the gate exists to prevent. Surface the partial state as
+    // `Ok` and let callers compare `acked_by.len()` against their own
+    // confirmation expectations.
+    let report = |acked_by: Vec<PublicKey>, start: Instant| DeliveryReport {
+        op_hash,
+        acked_by,
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    };
     loop {
         // saturating_duration_since returns ZERO past the deadline (no
         // Instant subtraction panic) — `tokio::time::timeout` then
@@ -261,10 +467,12 @@ pub async fn publish_and_await_ack_namespace(
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             ack_router.release(op_hash, rx);
-            return Err(GovernanceBroadcastError::NoAckReceived {
-                waited_ms: start.elapsed().as_millis() as u64,
-                op_hash,
-            });
+            // Deadline exceeded after a successful publish. The op is
+            // gossiped; receivers may still be backfilling missing
+            // parents (cold-state join window) and will apply + ack
+            // later. Return what we collected — the caller decides
+            // whether `acked_by.len()` meets their needs.
+            return Ok(report(acked_by, start));
         }
         match timeout(remaining, rx.recv()).await {
             Ok(Ok(ack)) => {
@@ -281,11 +489,7 @@ pub async fn publish_and_await_ack_namespace(
                 }
                 if acked_by.len() >= min_acks {
                     ack_router.release(op_hash, rx);
-                    return Ok(DeliveryReport {
-                        op_hash,
-                        acked_by,
-                        elapsed_ms: start.elapsed().as_millis() as u64,
-                    });
+                    return Ok(report(acked_by, start));
                 }
             }
             // Lagged(n): we missed n messages but the channel is still
@@ -294,20 +498,18 @@ pub async fn publish_and_await_ack_namespace(
             // Closed: all senders dropped (typically because a concurrent
             // flow released the AckRouter entry as the last subscriber).
             // `recv()` would return immediately on every subsequent call —
-            // `continue` would burn CPU until the deadline. Treat as terminal.
+            // `continue` would burn CPU until the deadline. Treat as
+            // terminal but, like the deadline arm, return `Ok` with the
+            // partial `acked_by` rather than `Err` — the publish itself
+            // succeeded and the caller's local apply (if any) must not
+            // be invalidated by router GC.
             Ok(Err(broadcast::error::RecvError::Closed)) => {
                 ack_router.release(op_hash, rx);
-                return Err(GovernanceBroadcastError::NoAckReceived {
-                    waited_ms: start.elapsed().as_millis() as u64,
-                    op_hash,
-                });
+                return Ok(report(acked_by, start));
             }
             Err(_elapsed) => {
                 ack_router.release(op_hash, rx);
-                return Err(GovernanceBroadcastError::NoAckReceived {
-                    waited_ms: start.elapsed().as_millis() as u64,
-                    op_hash,
-                });
+                return Ok(report(acked_by, start));
             }
         }
     }

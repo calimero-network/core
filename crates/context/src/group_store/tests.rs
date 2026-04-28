@@ -3822,6 +3822,16 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     );
 }
 
+#[test]
+fn min_acks_after_local_mutation_uses_publish_time_subscribers() {
+    let min_acks = namespace_governance::min_acks_after_local_mutation(1, 0);
+
+    assert_eq!(
+        min_acks, 0,
+        "subscriber departure after the readiness gate must use min_acks=0 to avoid NoAckReceived after local DAG mutation"
+    );
+}
+
 // Helper: create a GroupMetaValue with a specific admin
 fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
     GroupMetaValue {

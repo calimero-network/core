@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::UpdateMemberRoleRequest;
 use calimero_context_client::local_governance::GroupOp;
@@ -62,13 +64,15 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
         // Inline the sign+publish to avoid a second governance_preflight call.
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
         let sk = preflight.signer_sk();
 
         ActorResponse::r#async(
             async move {
-                group_store::sign_apply_and_publish(
+                let _report = group_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
+                    &ack_router,
                     &group_id,
                     &sk,
                     GroupOp::MemberRoleSet {

@@ -34,7 +34,7 @@ impl Handler<NetworkEvent> for NodeManager {
                 subscriptions::handle_subscribed(self, ctx, peer_id, topic);
             }
             NetworkEvent::Unsubscribed { peer_id, topic } => {
-                subscriptions::handle_unsubscribed(peer_id, topic);
+                subscriptions::handle_unsubscribed(self, peer_id, topic);
             }
             NetworkEvent::Message {
                 message: gossip_message,

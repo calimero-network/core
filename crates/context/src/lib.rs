@@ -115,7 +115,6 @@ pub struct ContextManager {
     /// `op_hash`. Cloned from `context_client.ack_router()` so the
     /// receiver-side and publish-side share the same instance. See
     /// [`governance_broadcast`].
-    #[allow(dead_code, reason = "consumed in Phase 5 sign_and_publish wiring")]
     pub(crate) ack_router: Arc<AckRouter>,
 }
 
@@ -270,14 +269,22 @@ impl ContextManager {
 
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
         let sk = preflight.signer_sk();
         let group_id = *group_id;
         let op_debug = format!("{op:?}");
 
         ActorResponse::r#async(
             async move {
-                group_store::sign_apply_and_publish(&datastore, &node_client, &group_id, &sk, op)
-                    .await?;
+                let _report = group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &ack_router,
+                    &group_id,
+                    &sk,
+                    op,
+                )
+                .await?;
                 tracing::info!(?group_id, op = %op_debug, "governance op applied");
                 Ok(())
             }

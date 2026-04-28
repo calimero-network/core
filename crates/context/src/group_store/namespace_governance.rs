@@ -1,6 +1,5 @@
 use calimero_context_client::local_governance::{
-    EncryptedGroupOp, GroupOp, NamespaceOp, NamespaceTopicMsg, RootOp, SignedGroupOp,
-    SignedNamespaceOp,
+    AckRouter, EncryptedGroupOp, GroupOp, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
@@ -8,7 +7,12 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
+use libp2p::gossipsub::TopicHash;
 
+use crate::governance_broadcast::{
+    self, assert_transport_ready, ns_topic, publish_and_await_ack_namespace,
+    timeout_for_namespace_op, DeliveryReport,
+};
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
 use crate::op_events::{notify as notify_op_event, OpEvent};
 
@@ -43,6 +47,17 @@ pub struct KeyUnwrapFailure {
 pub struct ApplyNamespaceOpResult {
     pub pending_deliveries: Vec<PendingKeyDelivery>,
     pub key_unwrap_failures: Vec<KeyUnwrapFailure>,
+}
+
+pub(crate) fn min_acks_after_local_mutation(
+    _known_at_gate: usize,
+    known_at_publish: usize,
+) -> usize {
+    if known_at_publish == 0 {
+        0
+    } else {
+        governance_broadcast::DEFAULT_MIN_ACKS
+    }
 }
 
 /// Domain API for namespace DAG and governance operation lifecycle.
@@ -118,9 +133,16 @@ impl<'a> NamespaceGovernance<'a> {
                         // This was the root cause of the "Unexpected length of input"
                         // stuck-sync observed when a KeyDelivery op's retry-apply
                         // path hit a pre-existing stored op that failed to decode.
+                        // Each `?` site below tags the error with the failing
+                        // step so the warn log at line ~158 names the exact
+                        // call. Without this, "Unexpected length of input"
+                        // is ambiguous between the identity read, the key
+                        // store, or the retry walk.
                         let mut apply_kd = || -> EyreResult<()> {
                             if let Some(identity) =
-                                get_namespace_identity_record(self.store, &ns_id)?
+                                get_namespace_identity_record(self.store, &ns_id).map_err(|e| {
+                                    eyre::eyre!("get_namespace_identity_record: {e}")
+                                })?
                             {
                                 let recipient_sk = PrivateKey::from(identity.private_key);
                                 if envelope.recipient == recipient_sk.public_key() {
@@ -128,13 +150,22 @@ impl<'a> NamespaceGovernance<'a> {
                                         Ok(group_key) => {
                                             let gid = ContextGroupId::from(*group_id);
                                             let key_id =
-                                                store_group_key(self.store, &gid, &group_key)?;
+                                                store_group_key(self.store, &gid, &group_key)
+                                                    .map_err(|e| {
+                                                        eyre::eyre!("store_group_key: {e}")
+                                                    })?;
                                             tracing::info!(
                                                 group_id = %hex::encode(group_id),
                                                 key_id = %hex::encode(key_id),
                                                 "received group key via KeyDelivery"
                                             );
-                                            self.retry_encrypted_ops_for_group(*group_id)?;
+                                            self.retry_encrypted_ops_for_group(*group_id).map_err(
+                                                |e| {
+                                                    eyre::eyre!(
+                                                        "retry_encrypted_ops_for_group: {e}"
+                                                    )
+                                                },
+                                            )?;
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -258,14 +289,30 @@ impl<'a> NamespaceGovernance<'a> {
     pub async fn sign_apply_and_publish(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
+        ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<DeliveryReport> {
+        let topic = ns_topic(self.namespace_id);
+        // Phase-1 readiness gate runs FIRST — before any signing or local
+        // DAG mutation. Apply-before-readiness leaks orphan ops on retry:
+        // a rejected op stays in the local DAG, the retry signs a *new*
+        // op (different op_hash), and we accumulate duplicate writes on
+        // every attempt. Checking readiness up front makes the rejection
+        // side-effect-free and cleanly retryable.
+        let mesh = node_client
+            .mesh_peer_count_for_namespace(self.namespace_id)
+            .await;
+        let known_at_gate = node_client.known_subscribers(&topic);
+        assert_transport_ready(mesh, known_at_gate, node_client.gossipsub_mesh_n_low())
+            .map_err(|e| eyre::eyre!(e))?;
+
         let head = self.read_head_record()?;
         // Group ops are observed in `GroupGovernancePublisher` with the
         // cleartext `GroupOp` label; observing them here too would double-count.
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
+        let op_timeout = timeout_for_namespace_op(&op);
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
@@ -274,35 +321,106 @@ impl<'a> NamespaceGovernance<'a> {
             head.next_nonce,
             op,
         )?;
-        let delta_id = signed
-            .content_hash()
-            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
-        let parent_ids = signed.parent_op_hashes.clone();
 
         self.apply_signed_op(&signed)?;
 
-        let bytes =
-            borsh::to_vec(&NamespaceTopicMsg::Op(signed)).map_err(|e| eyre::eyre!("borsh: {e}"))?;
         if observe_mesh {
-            let mesh_count = node_client
-                .mesh_peer_count_for_namespace(self.namespace_id)
-                .await;
-            record_governance_publish_mesh_peers(op_kind, mesh_count);
+            record_governance_publish_mesh_peers(op_kind, mesh);
         }
-        node_client
-            .publish_signed_namespace_op(self.namespace_id, delta_id, parent_ids, bytes)
-            .await
+
+        // Refresh after `apply_signed_op`: if all peers departed since
+        // the readiness gate, using the stale gate snapshot would turn
+        // `NoPeersSubscribedToTopic` into `NoAckReceived` after the local
+        // DAG has already advanced.
+        let known_at_publish = node_client.known_subscribers(&topic);
+        let min_acks = min_acks_after_local_mutation(known_at_gate, known_at_publish);
+
+        let report = publish_and_await_ack_namespace(
+            self.store,
+            node_client.network_client(),
+            ack_router,
+            self.namespace_id,
+            topic,
+            signed,
+            op_timeout,
+            min_acks,
+            None,
+        )
+        .await
+        .map_err(|e| eyre::eyre!(e))?;
+        tracing::debug!(
+            op_kind,
+            namespace_id = %hex::encode(self.namespace_id),
+            acks = report.acked_by.len(),
+            elapsed_ms = report.elapsed_ms,
+            op_hash = %hex::encode(report.op_hash),
+            "namespace governance op published"
+        );
+        Ok(report)
     }
 
     pub async fn sign_and_publish_without_apply(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
+        ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<DeliveryReport> {
+        let topic = ns_topic(self.namespace_id);
+        let mesh = node_client
+            .mesh_peer_count_for_namespace(self.namespace_id)
+            .await;
+        let known = node_client.known_subscribers(&topic);
+        assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
+            .map_err(|e| eyre::eyre!(e))?;
+
+        self.publish_post_gate(node_client, ack_router, signer_sk, op, topic, mesh, known)
+            .await
+    }
+
+    /// Caller-gated variant of [`sign_and_publish_without_apply`]: assumes
+    /// the caller already ran `assert_transport_ready` and is providing
+    /// the `mesh` / `known_subscribers` snapshot it observed at gate-time.
+    /// Used by [`GroupGovernancePublisher::sign_apply_and_publish_inner`]
+    /// to avoid re-running the readiness gate after the local store has
+    /// already been mutated — a second gate that flips between "Ready"
+    /// at the outer call and "NotReady" here would leave the local op
+    /// applied and the remote peers unaware (state divergence on retry).
+    pub(crate) async fn sign_and_publish_post_gate(
+        &self,
+        node_client: &calimero_node_primitives::client::NodeClient,
+        ack_router: &AckRouter,
+        signer_sk: &PrivateKey,
+        op: NamespaceOp,
+        mesh: usize,
+        known: usize,
+    ) -> EyreResult<DeliveryReport> {
+        let topic = ns_topic(self.namespace_id);
+        self.publish_post_gate(node_client, ack_router, signer_sk, op, topic, mesh, known)
+            .await
+    }
+
+    /// Shared body of [`sign_and_publish_without_apply`] and
+    /// [`sign_and_publish_post_gate`]. Assumes the readiness gate has
+    /// already been run by the caller; takes the gate-time `mesh`
+    /// snapshot to feed the metric. The subscriber count is
+    /// re-sampled at publish time (see below) so transient peer
+    /// departures between the gate and the publish don't cause an
+    /// `Err(NoAckReceived)` after the local store has already mutated.
+    async fn publish_post_gate(
+        &self,
+        node_client: &calimero_node_primitives::client::NodeClient,
+        ack_router: &AckRouter,
+        signer_sk: &PrivateKey,
+        op: NamespaceOp,
+        topic: TopicHash,
+        mesh: usize,
+        known_at_gate: usize,
+    ) -> EyreResult<DeliveryReport> {
         let head = self.read_head_record()?;
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
+        let op_timeout = timeout_for_namespace_op(&op);
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
@@ -319,23 +437,57 @@ impl<'a> NamespaceGovernance<'a> {
         self.store_operation(&signed)?;
         self.advance_dag_head(delta_id, &parent_ids, head.next_nonce)?;
 
-        let bytes =
-            borsh::to_vec(&NamespaceTopicMsg::Op(signed)).map_err(|e| eyre::eyre!("borsh: {e}"))?;
         if observe_mesh {
-            let mesh_count = node_client
-                .mesh_peer_count_for_namespace(self.namespace_id)
-                .await;
-            record_governance_publish_mesh_peers(op_kind, mesh_count);
+            record_governance_publish_mesh_peers(op_kind, mesh);
         }
-        node_client
-            .publish_signed_namespace_op(self.namespace_id, delta_id, parent_ids, bytes)
-            .await
+
+        // Refresh `known` here, AFTER all the local-mutation /
+        // encryption / key-rotation / store_operation work above and
+        // immediately before deciding `min_acks`. The gate-time
+        // snapshot (`known_at_gate`) was taken many awaits ago; in
+        // group-publish flows it predates `sign_apply_local_group_op_borsh`
+        // and the per-removal key mint. If a peer unsubscribed in the
+        // meantime, sticking with the stale count would leave
+        // `min_acks = 1` against an empty subscriber set and force
+        // `NoAckReceived` after the local DAG has already advanced —
+        // exactly the orphan-op-on-retry pattern the readiness gate
+        // exists to prevent. `known_subscribers` is a cheap synchronous
+        // DashMap lookup on `NodeClient` (no actor mailbox round-trip),
+        // so re-sampling here costs effectively nothing while making
+        // the solo-namespace fast-path responsive to live state.
+        let known_at_publish = node_client.known_subscribers(&topic);
+        let min_acks = min_acks_after_local_mutation(known_at_gate, known_at_publish);
+
+        let report = publish_and_await_ack_namespace(
+            self.store,
+            node_client.network_client(),
+            ack_router,
+            self.namespace_id,
+            topic,
+            signed,
+            op_timeout,
+            min_acks,
+            None,
+        )
+        .await
+        .map_err(|e| eyre::eyre!(e))?;
+        tracing::debug!(
+            op_kind,
+            namespace_id = %hex::encode(self.namespace_id),
+            acks = report.acked_by.len(),
+            elapsed_ms = report.elapsed_ms,
+            op_hash = %hex::encode(report.op_hash),
+            "namespace governance op published (no local apply)"
+        );
+        Ok(report)
     }
 
     fn retry_encrypted_ops_for_group(&self, group_id: [u8; 32]) -> EyreResult<()> {
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
-        let retry_candidates = retry_service.collect_retry_candidates_for_group(group_id)?;
+        let retry_candidates = retry_service
+            .collect_retry_candidates_for_group(group_id)
+            .map_err(|e| eyre::eyre!("collect_retry_candidates_for_group: {e}"))?;
         let attempted = retry_candidates.len();
         if attempted > 0 {
             record_namespace_retry_event("collected");
@@ -769,24 +921,26 @@ pub fn apply_signed_namespace_op(
 pub async fn sign_apply_and_publish_namespace_op(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &AckRouter,
     namespace_id: [u8; 32],
     signer_sk: &PrivateKey,
     op: NamespaceOp,
-) -> EyreResult<()> {
+) -> EyreResult<DeliveryReport> {
     NamespaceGovernance::new(store, namespace_id)
-        .sign_apply_and_publish(node_client, signer_sk, op)
+        .sign_apply_and_publish(node_client, ack_router, signer_sk, op)
         .await
 }
 
 pub async fn sign_and_publish_namespace_op(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &AckRouter,
     namespace_id: [u8; 32],
     signer_sk: &PrivateKey,
     op: NamespaceOp,
-) -> EyreResult<()> {
+) -> EyreResult<DeliveryReport> {
     NamespaceGovernance::new(store, namespace_id)
-        .sign_and_publish_without_apply(node_client, signer_sk, op)
+        .sign_and_publish_without_apply(node_client, ack_router, signer_sk, op)
         .await
 }
 

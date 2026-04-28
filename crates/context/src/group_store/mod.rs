@@ -10,7 +10,7 @@ use calimero_store::types::PredefinedEntry;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+use calimero_context_client::local_governance::SignedNamespaceOp;
 
 mod aliases;
 mod capabilities;
@@ -696,75 +696,6 @@ impl<'a> NamespaceHandle<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// GovernancePublisher — sign + publish workflow for group/namespace ops
-// ---------------------------------------------------------------------------
-
-/// Encapsulates the sign-apply-publish workflow for governance operations.
-///
-/// Binds a `Store` and `NodeClient` reference, providing methods to publish
-/// group ops (encrypted under the namespace topic) and namespace ops.
-pub struct GovernancePublisher<'a> {
-    store: &'a Store,
-    node_client: &'a calimero_node_primitives::client::NodeClient,
-}
-
-impl<'a> GovernancePublisher<'a> {
-    pub fn new(
-        store: &'a Store,
-        node_client: &'a calimero_node_primitives::client::NodeClient,
-    ) -> Self {
-        Self { store, node_client }
-    }
-
-    pub async fn publish_group_op(
-        &self,
-        group_id: &ContextGroupId,
-        signer_sk: &PrivateKey,
-        op: GroupOp,
-    ) -> EyreResult<()> {
-        sign_apply_and_publish(self.store, self.node_client, group_id, signer_sk, op).await
-    }
-
-    pub async fn publish_group_removal(
-        &self,
-        group_id: &ContextGroupId,
-        signer_sk: &PrivateKey,
-        removed_member: &PublicKey,
-    ) -> EyreResult<()> {
-        sign_apply_and_publish_removal(
-            self.store,
-            self.node_client,
-            group_id,
-            signer_sk,
-            removed_member,
-        )
-        .await
-    }
-
-    pub async fn publish_namespace_op(
-        &self,
-        namespace_id: [u8; 32],
-        signer_sk: &PrivateKey,
-        op: NamespaceOp,
-    ) -> EyreResult<()> {
-        NamespaceGovernance::new(self.store, namespace_id)
-            .sign_apply_and_publish(self.node_client, signer_sk, op)
-            .await
-    }
-
-    pub async fn publish_namespace_op_without_apply(
-        &self,
-        namespace_id: [u8; 32],
-        signer_sk: &PrivateKey,
-        op: NamespaceOp,
-    ) -> EyreResult<()> {
-        NamespaceGovernance::new(self.store, namespace_id)
-            .sign_and_publish_without_apply(self.node_client, signer_sk, op)
-            .await
-    }
-}
-
-// ---------------------------------------------------------------------------
 // GroupStoreIndex — cross-group queries and handle factory
 // ---------------------------------------------------------------------------
 
@@ -1211,30 +1142,38 @@ pub fn sign_apply_local_group_op_borsh(
 ///
 /// When `removed_member` is `Some`, a key rotation is generated and attached
 /// to the namespace op so the removed member loses access to future ops.
+///
+/// `Ok(None)` is a deliberate skip — see
+/// [`GroupGovernancePublisher::sign_apply_and_publish`].
 pub async fn sign_apply_and_publish(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
     group_id: &ContextGroupId,
     signer_sk: &PrivateKey,
     op: GroupOp,
-) -> EyreResult<()> {
+) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
     GroupGovernancePublisher::new(store, node_client, *group_id)
-        .sign_apply_and_publish(signer_sk, op)
+        .sign_apply_and_publish(ack_router, signer_sk, op)
         .await
 }
 
 /// Like [`sign_apply_and_publish`] but attaches a [`KeyRotation`] bundle to
 /// the encrypted `MemberRemoved` op. Generates a new group key, wraps it for
 /// all remaining members, and stores the new key locally.
+///
+/// `Ok(None)` is a deliberate skip — see
+/// [`GroupGovernancePublisher::sign_apply_and_publish_removal`].
 pub async fn sign_apply_and_publish_removal(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
     group_id: &ContextGroupId,
     signer_sk: &PrivateKey,
     removed_member: &PublicKey,
-) -> EyreResult<()> {
+) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
     GroupGovernancePublisher::new(store, node_client, *group_id)
-        .sign_apply_and_publish_removal(signer_sk, removed_member)
+        .sign_apply_and_publish_removal(ack_router, signer_sk, removed_member)
         .await
 }
 
