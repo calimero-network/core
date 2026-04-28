@@ -608,3 +608,85 @@ impl Handler<ApplyBeaconLocal> for ReadinessManager {
         }
     }
 }
+
+/// Per-namespace `tokio::sync::Notify` registry that wakes waiters
+/// blocked on [`ReadinessCache::await_first_fresh_beacon`] when a
+/// beacon arrives.
+///
+/// Lives on `NodeManager` (alongside `readiness_cache`) so the
+/// receiver-side beacon handler in
+/// `handlers::network_event::readiness::handle_readiness_beacon` can
+/// call `notify.notify(ns)` after `cache.insert(&beacon)` without
+/// going through the actor mailbox.
+#[derive(Debug, Default)]
+pub struct ReadinessCacheNotify {
+    waiters: Mutex<HashMap<[u8; 32], Arc<tokio::sync::Notify>>>,
+}
+
+impl ReadinessCacheNotify {
+    /// Get-or-create the per-namespace `Notify`. Cloned so the caller
+    /// holds it across `.await` points without keeping the registry
+    /// lock.
+    pub fn waiter_for(&self, ns: [u8; 32]) -> Arc<tokio::sync::Notify> {
+        let mut g = self.waiters.lock().expect("readiness notify lock");
+        g.entry(ns)
+            .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
+            .clone()
+    }
+
+    pub fn notify(&self, ns: [u8; 32]) {
+        let g = self.waiters.lock().expect("readiness notify lock");
+        if let Some(n) = g.get(&ns) {
+            n.notify_waiters();
+        }
+    }
+}
+
+impl ReadinessCache {
+    /// Block until a fresh-within-`ttl` beacon for `ns` is available
+    /// in the cache, or `deadline` elapses.
+    ///
+    /// Avoids the classic `Notify` race:
+    /// `tokio::sync::Notify::notify_waiters()` does NOT store a permit
+    /// — it only wakes already-registered waiters. A naive
+    /// `pick_sync_partner` (miss) → `waiter.notified().await` ordering
+    /// would lose any beacon inserted *between* those two steps,
+    /// blocking until the next beacon or `deadline`.
+    ///
+    /// Fix: register the `Notified` future via `enable()` (tokio
+    /// ≥ 1.32) BEFORE the cache check on every iteration. Any
+    /// subsequent `notify_waiters()` then wakes us, even if it fires
+    /// before we reach the `select!`. The race-test
+    /// `await_first_fresh_beacon_resolves_on_late_arrival` exercises
+    /// this exact ordering.
+    pub async fn await_first_fresh_beacon(
+        &self,
+        notify: &ReadinessCacheNotify,
+        ns: [u8; 32],
+        ttl: Duration,
+        deadline: Duration,
+    ) -> Option<(PublicKey, CacheEntry)> {
+        let waiter = notify.waiter_for(ns);
+        let timeout_fut = tokio::time::sleep(deadline);
+        tokio::pin!(timeout_fut);
+        loop {
+            // 1. Create + pin a fresh Notified for this iteration.
+            let notified = waiter.notified();
+            tokio::pin!(notified);
+            // 2. Register without polling. From here on, any
+            //    `notify_waiters()` is guaranteed to wake us, even if
+            //    it fires before we reach the `select!`.
+            notified.as_mut().enable();
+            // 3. Safe to check the cache — beacons arriving between
+            //    `enable()` and the `select!` poll wake the
+            //    (already-registered) future.
+            if let Some(entry) = self.pick_sync_partner(ns, ttl) {
+                return Some(entry);
+            }
+            tokio::select! {
+                _ = notified => { /* loop, re-register, re-check */ }
+                _ = &mut timeout_fut => return None,
+            }
+        }
+    }
+}

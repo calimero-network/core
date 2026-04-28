@@ -333,3 +333,63 @@ fn peer_summary_excludes_stale_and_returns_none_after_ttl() {
     assert!(!s.heard_recent_beacon);
     assert_eq!(s.max_applied_through, None);
 }
+
+#[tokio::test]
+async fn await_first_fresh_beacon_resolves_immediately_when_cached() {
+    let cache = ReadinessCache::default();
+    let notify = ReadinessCacheNotify::default();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    cache.insert(&make_beacon(pk, 5, true));
+    let got = cache
+        .await_first_fresh_beacon(
+            &notify,
+            [42u8; 32],
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+        )
+        .await;
+    assert!(got.is_some());
+}
+
+#[tokio::test]
+async fn await_first_fresh_beacon_resolves_on_late_arrival() {
+    // The race-fix test: spawns a writer that inserts AFTER the awaiter
+    // has registered its `Notified` future via `enable()`. Without the
+    // `enable()`-before-cache-check ordering, the wake fired by
+    // `notify_waiters()` would be lost (Notify stores no permit) and
+    // the awaiter would block until the timeout.
+    let cache = std::sync::Arc::new(ReadinessCache::default());
+    let notify = std::sync::Arc::new(ReadinessCacheNotify::default());
+    let cache_w = cache.clone();
+    let notify_w = notify.clone();
+    let pk = PrivateKey::random(&mut rand::thread_rng()).public_key();
+    let _ = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cache_w.insert(&make_beacon(pk, 7, true));
+        notify_w.notify([42u8; 32]);
+    });
+    let got = cache
+        .await_first_fresh_beacon(
+            &notify,
+            [42u8; 32],
+            Duration::from_secs(60),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(got.is_some());
+}
+
+#[tokio::test]
+async fn await_first_fresh_beacon_times_out() {
+    let cache = ReadinessCache::default();
+    let notify = ReadinessCacheNotify::default();
+    let got = cache
+        .await_first_fresh_beacon(
+            &notify,
+            [42u8; 32],
+            Duration::from_secs(60),
+            Duration::from_millis(50),
+        )
+        .await;
+    assert!(got.is_none());
+}

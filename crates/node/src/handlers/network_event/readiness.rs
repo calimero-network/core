@@ -37,6 +37,10 @@ pub(super) fn handle_readiness_beacon(
     }
     let namespace_id = beacon.namespace_id;
     manager.readiness_cache.insert(&beacon);
+    // Wake any `await_first_fresh_beacon` waiters for this namespace
+    // (Phase 8.1). Must run AFTER `cache.insert` so a waiter that
+    // re-checks the cache on wakeup sees the new entry.
+    manager.readiness_notify.notify(namespace_id);
     if let Some(addr) = &manager.readiness_addr {
         addr.do_send(ApplyBeaconLocal { namespace_id });
     }

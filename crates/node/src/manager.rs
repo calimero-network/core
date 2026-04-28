@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::readiness::{ReadinessCache, ReadinessConfig, ReadinessManager};
+use crate::readiness::{ReadinessCache, ReadinessCacheNotify, ReadinessConfig, ReadinessManager};
 use crate::sync::SyncManager;
 use crate::{NodeClients, NodeManagers, NodeState};
 use actix::{Actor, Addr};
@@ -39,6 +39,11 @@ pub struct NodeManager {
     /// `NodeClients` re-construction without having to plumb the cache
     /// through. Those helpers don't read beacons.
     pub(crate) readiness_cache: Arc<ReadinessCache>,
+    /// Per-namespace `Notify` registry paired with `readiness_cache`.
+    /// The receiver-side beacon handler calls `notify(ns)` after
+    /// `cache.insert(&beacon)` so any in-flight
+    /// `await_first_fresh_beacon` future wakes immediately.
+    pub(crate) readiness_notify: Arc<ReadinessCacheNotify>,
     /// Address of the [`ReadinessManager`] actor. Wired by
     /// `setup_readiness_manager` in [`Actor::started`]; `None` until
     /// then (and during early-startup races where receivers may fire
@@ -67,6 +72,7 @@ impl NodeManager {
             state,
             datastore,
             readiness_cache: Arc::new(ReadinessCache::default()),
+            readiness_notify: Arc::new(ReadinessCacheNotify::default()),
             readiness_addr: None,
         }
     }
