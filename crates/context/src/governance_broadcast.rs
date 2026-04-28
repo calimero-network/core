@@ -20,7 +20,7 @@ use calimero_context_client::local_governance::{
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
-use libp2p::gossipsub::TopicHash;
+use libp2p::gossipsub::{PublishError, TopicHash};
 use thiserror::Error;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
@@ -32,6 +32,14 @@ use crate::group_store::namespace_member_pubkeys;
 /// need a stricter quorum (e.g. KeyDelivery requiring the recipient's
 /// ack) override per-call.
 pub const DEFAULT_MIN_ACKS: usize = 1;
+
+#[derive(Debug, Clone, Error)]
+pub enum BroadcastPublishError {
+    #[error("no peers subscribed to topic")]
+    NoPeersSubscribed,
+    #[error("{0}")]
+    Other(String),
+}
 
 /// Compute the gossipsub topic for a namespace governance publish.
 /// Mirrors the format used by `NodeClient::publish_signed_namespace_op`
@@ -209,7 +217,7 @@ pub struct DeliveryReport {
 #[async_trait]
 pub trait BroadcastTransport: Send + Sync {
     async fn mesh_peer_count(&self, topic: TopicHash) -> usize;
-    async fn publish(&self, topic: TopicHash, bytes: Vec<u8>) -> Result<(), String>;
+    async fn publish(&self, topic: TopicHash, bytes: Vec<u8>) -> Result<(), BroadcastPublishError>;
 }
 
 #[async_trait]
@@ -217,11 +225,20 @@ impl BroadcastTransport for calimero_network_primitives::client::NetworkClient {
     async fn mesh_peer_count(&self, topic: TopicHash) -> usize {
         Self::mesh_peer_count(self, topic).await
     }
-    async fn publish(&self, topic: TopicHash, bytes: Vec<u8>) -> Result<(), String> {
+    async fn publish(&self, topic: TopicHash, bytes: Vec<u8>) -> Result<(), BroadcastPublishError> {
         Self::publish(self, topic, bytes)
             .await
             .map(|_msg_id| ())
-            .map_err(|e| e.to_string())
+            .map_err(|e| {
+                if matches!(
+                    e.downcast_ref::<PublishError>(),
+                    Some(PublishError::NoPeersSubscribedToTopic)
+                ) {
+                    BroadcastPublishError::NoPeersSubscribed
+                } else {
+                    BroadcastPublishError::Other(e.to_string())
+                }
+            })
     }
 }
 
@@ -267,9 +284,10 @@ impl BroadcastTransport for calimero_network_primitives::client::NetworkClient {
 /// `Err` only when the publish itself never delivered:
 ///
 ///   * `Err(Publish)` — gossipsub rejected the message (signing,
-///     oversize, transform error). Also wraps
-///     `NoPeersSubscribedToTopic` when `min_acks > 0` (no delivery
-///     was attempted; surfacing `Ok` would be a lie).
+///     oversize, transform error).
+///   * `Err(NoAckReceived)` — the transport reported no subscribed peers
+///     while `min_acks > 0` (no delivery was attempted; surfacing `Ok`
+///     would be a lie).
 ///   * `Err(NamespaceNotReady)` — not raised by this fn; readiness
 ///     gating is the caller's responsibility.
 ///
@@ -356,10 +374,10 @@ pub async fn publish_and_await_ack_namespace(
     let mut rx = ack_router.subscribe(op_hash);
     match transport.publish(topic, payload).await {
         Ok(()) => {}
-        // libp2p returns `PublishError::NoPeersSubscribedToTopic` (which
-        // reaches us via the trait's `Display` as the Debug variant name)
-        // when the gossipsub mesh has zero subscribers for `topic`. The
-        // intended behaviour depends on `min_acks`:
+        // The transport boundary classifies libp2p's
+        // `PublishError::NoPeersSubscribedToTopic` while the concrete
+        // error type is still available. The intended behaviour depends
+        // on `min_acks`:
         //
         //   * `min_acks == 0` — caller opted out of confirmation, so
         //     "delivered to no one" is a legitimate Ok-with-empty result.
@@ -379,7 +397,7 @@ pub async fn publish_and_await_ack_namespace(
         // Hard publish failures (signing errors, oversized messages,
         // transform errors) still propagate as `Publish` regardless of
         // `min_acks`.
-        Err(e) if e.contains("NoPeersSubscribedToTopic") => {
+        Err(BroadcastPublishError::NoPeersSubscribed) => {
             ack_router.release(op_hash, rx);
             if min_acks == 0 {
                 return Ok(DeliveryReport {
@@ -399,7 +417,7 @@ pub async fn publish_and_await_ack_namespace(
             // forever (op_hash is single-use, so no future caller reuses
             // it).
             ack_router.release(op_hash, rx);
-            return Err(GovernanceBroadcastError::Publish(e));
+            return Err(GovernanceBroadcastError::Publish(e.to_string()));
         }
     }
 

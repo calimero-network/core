@@ -167,7 +167,7 @@ impl BroadcastTransport for StubTransport {
     async fn mesh_peer_count(&self, _: TopicHash) -> usize {
         0
     }
-    async fn publish(&self, _: TopicHash, _: Vec<u8>) -> Result<(), String> {
+    async fn publish(&self, _: TopicHash, _: Vec<u8>) -> Result<(), BroadcastPublishError> {
         Ok(())
     }
 }
@@ -420,8 +420,8 @@ impl BroadcastTransport for NoPeersTransport {
     async fn mesh_peer_count(&self, _: TopicHash) -> usize {
         0
     }
-    async fn publish(&self, _: TopicHash, _: Vec<u8>) -> Result<(), String> {
-        Err("InsufficientPeers(NoPeersSubscribedToTopic)".to_owned())
+    async fn publish(&self, _: TopicHash, _: Vec<u8>) -> Result<(), BroadcastPublishError> {
+        Err(BroadcastPublishError::NoPeersSubscribed)
     }
 }
 

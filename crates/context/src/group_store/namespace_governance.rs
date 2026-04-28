@@ -49,6 +49,17 @@ pub struct ApplyNamespaceOpResult {
     pub key_unwrap_failures: Vec<KeyUnwrapFailure>,
 }
 
+pub(crate) fn min_acks_after_local_mutation(
+    _known_at_gate: usize,
+    known_at_publish: usize,
+) -> usize {
+    if known_at_publish == 0 {
+        0
+    } else {
+        governance_broadcast::DEFAULT_MIN_ACKS
+    }
+}
+
 /// Domain API for namespace DAG and governance operation lifecycle.
 pub struct NamespaceGovernance<'a> {
     store: &'a Store,
@@ -292,8 +303,8 @@ impl<'a> NamespaceGovernance<'a> {
         let mesh = node_client
             .mesh_peer_count_for_namespace(self.namespace_id)
             .await;
-        let known = node_client.known_subscribers(&topic);
-        assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
+        let known_at_gate = node_client.known_subscribers(&topic);
+        assert_transport_ready(mesh, known_at_gate, node_client.gossipsub_mesh_n_low())
             .map_err(|e| eyre::eyre!(e))?;
 
         let head = self.read_head_record()?;
@@ -317,17 +328,12 @@ impl<'a> NamespaceGovernance<'a> {
             record_governance_publish_mesh_peers(op_kind, mesh);
         }
 
-        // Solo-namespace fast-path: if no peers are known to be subscribed
-        // there is no one to ack. Pass `min_acks = 0` so
-        // `publish_and_await_ack_namespace` returns immediately on
-        // `NoPeersSubscribedToTopic` rather than waiting out the full
-        // op_timeout. For non-solo namespaces, keep the default min_acks
-        // so the caller actually receives delivery confirmation.
-        let min_acks = if known == 0 {
-            0
-        } else {
-            governance_broadcast::DEFAULT_MIN_ACKS
-        };
+        // Refresh after `apply_signed_op`: if all peers departed since
+        // the readiness gate, using the stale gate snapshot would turn
+        // `NoPeersSubscribedToTopic` into `NoAckReceived` after the local
+        // DAG has already advanced.
+        let known_at_publish = node_client.known_subscribers(&topic);
+        let min_acks = min_acks_after_local_mutation(known_at_gate, known_at_publish);
 
         let report = publish_and_await_ack_namespace(
             self.store,
@@ -409,7 +415,7 @@ impl<'a> NamespaceGovernance<'a> {
         op: NamespaceOp,
         topic: TopicHash,
         mesh: usize,
-        _known_at_gate: usize,
+        known_at_gate: usize,
     ) -> EyreResult<DeliveryReport> {
         let head = self.read_head_record()?;
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
@@ -438,7 +444,7 @@ impl<'a> NamespaceGovernance<'a> {
         // Refresh `known` here, AFTER all the local-mutation /
         // encryption / key-rotation / store_operation work above and
         // immediately before deciding `min_acks`. The gate-time
-        // snapshot (`_known_at_gate`) was taken many awaits ago; in
+        // snapshot (`known_at_gate`) was taken many awaits ago; in
         // group-publish flows it predates `sign_apply_local_group_op_borsh`
         // and the per-removal key mint. If a peer unsubscribed in the
         // meantime, sticking with the stale count would leave
@@ -449,12 +455,8 @@ impl<'a> NamespaceGovernance<'a> {
         // DashMap lookup on `NodeClient` (no actor mailbox round-trip),
         // so re-sampling here costs effectively nothing while making
         // the solo-namespace fast-path responsive to live state.
-        let known = node_client.known_subscribers(&topic);
-        let min_acks = if known == 0 {
-            0
-        } else {
-            governance_broadcast::DEFAULT_MIN_ACKS
-        };
+        let known_at_publish = node_client.known_subscribers(&topic);
+        let min_acks = min_acks_after_local_mutation(known_at_gate, known_at_publish);
 
         let report = publish_and_await_ack_namespace(
             self.store,
