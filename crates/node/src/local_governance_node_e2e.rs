@@ -116,6 +116,7 @@ async fn apply_signed_group_op_via_context_client() {
         sync_manager,
         context_client.clone(),
         node_client,
+        store.clone(),
         node_state,
     );
 

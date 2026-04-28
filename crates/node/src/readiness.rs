@@ -6,12 +6,16 @@
 //! Phase 7; the join-flow consumer (`await_first_fresh_beacon`,
 //! `join_namespace`, `await_namespace_ready`) lands in Phase 8.
 
-use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use actix::{Actor, AsyncContext, Context, Handler, Message};
 use calimero_context_client::local_governance::SignedReadinessBeacon;
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::PublicKey;
+use calimero_store::Store;
+use libp2p::PeerId;
 
 #[cfg(test)]
 mod tests;
@@ -193,7 +197,7 @@ pub const MAX_BEACON_CLOCK_DRIFT_MS: u64 = 60_000;
 /// map that holds at most one entry per peer; the practical n is the
 /// namespace member count, well within a regime where the constant
 /// factors of `BTreeMap` are competitive with `HashMap`.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ReadinessCache {
     entries: Mutex<BTreeMap<([u8; 32], PublicKey), CacheEntry>>,
 }
@@ -304,6 +308,141 @@ impl ReadinessCache {
         PeerSummary {
             max_applied_through: max_applied,
             heard_recent_beacon: any_fresh,
+        }
+    }
+}
+
+/// Per-namespace beacon emitter and FSM driver.
+///
+/// Holds:
+/// - the shared [`ReadinessCache`] so the receiver-side handler can
+///   `cache.insert(&beacon)` directly without an actor-mailbox hop
+///   (the cache is internally synchronised),
+/// - the [`NodeClient`] for `publish` access on the namespace topic
+///   (bypassing the 10s mesh-wait gate of `publish_on_namespace` —
+///   beacon emission is best-effort and must not block the periodic
+///   tick),
+/// - the [`Store`] for namespace-identity loading in beacon signing
+///   (Task 7.2),
+/// - per-namespace local FSM state and last-probe-response timestamps
+///   for the `BEACON_INTERVAL/2` rate limit (Task 7.3).
+pub struct ReadinessManager {
+    pub cache: Arc<ReadinessCache>,
+    pub config: ReadinessConfig,
+    pub state_per_namespace: HashMap<[u8; 32], ReadinessState>,
+    pub node_client: NodeClient,
+    pub datastore: Store,
+    /// Per-(peer, namespace) timestamp of the last out-of-cycle beacon
+    /// emitted in response to a [`ReadinessProbe`]. Used by Task 7.3 to
+    /// rate-limit probe responses at `BEACON_INTERVAL / 2` and close the
+    /// unsigned-probe traffic-amplification path.
+    pub last_probe_response_at: HashMap<(PeerId, [u8; 32]), Instant>,
+}
+
+impl Actor for ReadinessManager {
+    type Context = Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        // Periodic freshness-tick beacon emission. Only namespaces in a
+        // *Ready tier emit; the filter is inside `emit_periodic_beacons`.
+        ctx.run_interval(self.config.beacon_interval, |this, _ctx| {
+            this.emit_periodic_beacons();
+        });
+    }
+}
+
+/// Hint that a peer beacon has just been inserted into the cache for this
+/// namespace and the FSM should be re-evaluated. Sent by the receiver-side
+/// `handle_readiness_beacon` handler in Task 7.3.
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct ApplyBeaconLocal {
+    pub namespace_id: [u8; 32],
+}
+
+/// Carries a snapshot of locally-observed namespace state into the FSM
+/// driver. The actor merges this into `state_per_namespace`, re-evaluates
+/// `evaluate_readiness`, and emits an edge-trigger beacon if the tier
+/// transitions into a *Ready variant.
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct LocalStateChanged {
+    pub namespace_id: [u8; 32],
+    pub local_applied_through: u64,
+    pub local_head: [u8; 32],
+    pub local_pending_ops: usize,
+}
+
+impl ReadinessManager {
+    fn emit_periodic_beacons(&mut self) {
+        // Snapshot the (ns_id, state) pairs we want to publish so the
+        // borrow on `self.state_per_namespace` is released before
+        // `publish_beacon` runs (`publish_beacon` will load identity
+        // material from `self.datastore` in Task 7.2).
+        let to_emit: Vec<([u8; 32], ReadinessState)> = self
+            .state_per_namespace
+            .iter()
+            .filter(|(_, s)| {
+                matches!(
+                    s.tier,
+                    ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
+                )
+            })
+            .map(|(ns, s)| (*ns, s.clone()))
+            .collect();
+        for (ns_id, state) in to_emit {
+            self.publish_beacon(ns_id, &state);
+        }
+    }
+
+    /// Sign and publish a [`SignedReadinessBeacon`] on the namespace topic.
+    ///
+    /// Body filled in Task 7.2; in Task 7.1 this is intentionally a stub
+    /// so the actor compiles standalone — no beacons are emitted until
+    /// 7.2 lands the signing + publish path.
+    fn publish_beacon(&self, _ns_id: [u8; 32], _state: &ReadinessState) {
+        // Intentional stub — see doc comment.
+    }
+}
+
+impl Handler<LocalStateChanged> for ReadinessManager {
+    type Result = ();
+
+    fn handle(&mut self, msg: LocalStateChanged, _ctx: &mut Self::Context) {
+        let entry = self
+            .state_per_namespace
+            .entry(msg.namespace_id)
+            .or_insert_with(|| ReadinessState {
+                tier: ReadinessTier::Bootstrapping,
+                local_applied_through: 0,
+                local_head: [0u8; 32],
+                local_pending_ops: 0,
+                subscribed_at: Instant::now(),
+            });
+        entry.local_applied_through = msg.local_applied_through;
+        entry.local_head = msg.local_head;
+        entry.local_pending_ops = msg.local_pending_ops;
+
+        // Atomic single-lock snapshot — see ReadinessCache::peer_summary
+        // for why peer_summary is the only correct source for PeerSummary.
+        let peers = self
+            .cache
+            .peer_summary(msg.namespace_id, self.config.ttl_heartbeat);
+        let new_tier = evaluate_readiness(entry, &peers, &self.config, Instant::now());
+        if new_tier != entry.tier {
+            entry.tier = new_tier;
+            // Edge trigger: a tier transition into *Ready warrants an
+            // immediate beacon so peers see our promotion without waiting
+            // for the next freshness tick. The clone-then-emit pattern
+            // mirrors `emit_periodic_beacons` and keeps `publish_beacon`
+            // free of borrows on `state_per_namespace`.
+            if matches!(
+                new_tier,
+                ReadinessTier::PeerValidatedReady | ReadinessTier::LocallyReady
+            ) {
+                let snapshot = entry.clone();
+                self.publish_beacon(msg.namespace_id, &snapshot);
+            }
         }
     }
 }

@@ -255,6 +255,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         sync_manager.clone(),
         context_client.clone(),
         node_client.clone(),
+        datastore.clone(),
         node_state.clone(),
     );
 
