@@ -245,8 +245,26 @@ impl BroadcastTransport for calimero_network_primitives::client::NetworkClient {
 ///     requires the recipient's ack specifically).
 ///   * Dedups by `signer_pubkey` so duplicate gossip rebroadcasts of the
 ///     same ack don't inflate `acked_by`.
-///   * Returns `Ok(DeliveryReport)` once `acked_by.len() >= min_acks`,
-///     `Err(NoAckReceived)` on timeout or channel close.
+///
+/// Outcomes (matters: callers MUST inspect `acked_by` to decide
+/// whether the ack threshold was actually met):
+///
+///   * `Ok(DeliveryReport)` with `acked_by.len() >= min_acks` —
+///     happy path: enough distinct signers acked within `op_timeout`.
+///   * `Ok(DeliveryReport)` with `acked_by.len() < min_acks` —
+///     publish was accepted by gossipsub but acks didn't arrive in time.
+///     The op IS on the wire; a receiver that needs to backfill missing
+///     parents (cold-state join window) will apply + ack later. The
+///     caller's local apply (if any) is preserved — failing here would
+///     tempt the caller to retry and double the local DAG advance.
+///     Solo-namespace publish (`min_acks == 0`, no peers) lands here too.
+///   * `Err(GovernanceBroadcastError::Publish)` — gossipsub rejected
+///     the publish (signing, oversize, transform error). With
+///     `min_acks > 0`, `NoPeersSubscribedToTopic` from the transport
+///     also surfaces as `Err(NoAckReceived)` because no delivery
+///     attempt actually succeeded.
+///   * `Err(GovernanceBroadcastError::NamespaceNotReady)` — readiness
+///     gate is the caller's responsibility; not raised by this fn.
 pub async fn publish_and_await_ack_namespace(
     store: &Store,
     transport: &dyn BroadcastTransport,
@@ -386,6 +404,20 @@ pub async fn publish_and_await_ack_namespace(
 
     let mut acked_by: Vec<PublicKey> = Vec::new();
     let deadline = start + op_timeout;
+    // Helper: build a `DeliveryReport` for whatever acks we did manage
+    // to collect. Used at every post-publish exit (deadline elapsed,
+    // channel closed). Once the publish succeeded the op is on the
+    // wire — failing the call here would falsely suggest non-delivery
+    // and tempt the caller to retry, which (for the apply-then-publish
+    // flow) doubles the local DAG advance and creates the orphan-op
+    // pattern the gate exists to prevent. Surface the partial state as
+    // `Ok` and let callers compare `acked_by.len()` against their own
+    // confirmation expectations.
+    let report = |acked_by: Vec<PublicKey>, start: Instant| DeliveryReport {
+        op_hash,
+        acked_by,
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    };
     loop {
         // saturating_duration_since returns ZERO past the deadline (no
         // Instant subtraction panic) — `tokio::time::timeout` then
@@ -393,10 +425,12 @@ pub async fn publish_and_await_ack_namespace(
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             ack_router.release(op_hash, rx);
-            return Err(GovernanceBroadcastError::NoAckReceived {
-                waited_ms: start.elapsed().as_millis() as u64,
-                op_hash,
-            });
+            // Deadline exceeded after a successful publish. The op is
+            // gossiped; receivers may still be backfilling missing
+            // parents (cold-state join window) and will apply + ack
+            // later. Return what we collected — the caller decides
+            // whether `acked_by.len()` meets their needs.
+            return Ok(report(acked_by, start));
         }
         match timeout(remaining, rx.recv()).await {
             Ok(Ok(ack)) => {
@@ -413,11 +447,7 @@ pub async fn publish_and_await_ack_namespace(
                 }
                 if acked_by.len() >= min_acks {
                     ack_router.release(op_hash, rx);
-                    return Ok(DeliveryReport {
-                        op_hash,
-                        acked_by,
-                        elapsed_ms: start.elapsed().as_millis() as u64,
-                    });
+                    return Ok(report(acked_by, start));
                 }
             }
             // Lagged(n): we missed n messages but the channel is still
@@ -426,20 +456,18 @@ pub async fn publish_and_await_ack_namespace(
             // Closed: all senders dropped (typically because a concurrent
             // flow released the AckRouter entry as the last subscriber).
             // `recv()` would return immediately on every subsequent call —
-            // `continue` would burn CPU until the deadline. Treat as terminal.
+            // `continue` would burn CPU until the deadline. Treat as
+            // terminal but, like the deadline arm, return `Ok` with the
+            // partial `acked_by` rather than `Err` — the publish itself
+            // succeeded and the caller's local apply (if any) must not
+            // be invalidated by router GC.
             Ok(Err(broadcast::error::RecvError::Closed)) => {
                 ack_router.release(op_hash, rx);
-                return Err(GovernanceBroadcastError::NoAckReceived {
-                    waited_ms: start.elapsed().as_millis() as u64,
-                    op_hash,
-                });
+                return Ok(report(acked_by, start));
             }
             Err(_elapsed) => {
                 ack_router.release(op_hash, rx);
-                return Err(GovernanceBroadcastError::NoAckReceived {
-                    waited_ms: start.elapsed().as_millis() as u64,
-                    op_hash,
-                });
+                return Ok(report(acked_by, start));
             }
         }
     }

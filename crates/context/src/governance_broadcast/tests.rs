@@ -196,7 +196,13 @@ fn plant_namespace_member(
 }
 
 #[tokio::test]
-async fn publish_and_await_ack_times_out_when_no_ack_arrives() {
+async fn publish_and_await_ack_times_out_with_empty_acked_by() {
+    // Post-publish timeout: the publish succeeded (StubTransport returns
+    // Ok) but no ack ever arrives, so the deadline elapses. The function
+    // returns Ok(DeliveryReport) with empty `acked_by` — NOT an error.
+    // Failing here would tempt the caller to retry an already-applied op
+    // and double the local DAG advance; instead the caller inspects
+    // `acked_by` and decides what to do with the unconfirmed delivery.
     let store = empty_store();
     let router = AckRouter::default();
     let transport = StubTransport;
@@ -204,7 +210,7 @@ async fn publish_and_await_ack_times_out_when_no_ack_arrives() {
     let signer = PrivateKey::random(&mut rand::thread_rng());
     let signed_op = mk_signed_op(&signer, [42u8; 32]);
 
-    let res = publish_and_await_ack_namespace(
+    let report = publish_and_await_ack_namespace(
         &store,
         &transport,
         &router,
@@ -215,12 +221,10 @@ async fn publish_and_await_ack_times_out_when_no_ack_arrives() {
         1,
         None,
     )
-    .await;
+    .await
+    .expect("post-publish timeout must return Ok with partial DeliveryReport");
 
-    assert!(matches!(
-        res,
-        Err(GovernanceBroadcastError::NoAckReceived { .. })
-    ));
+    assert!(report.acked_by.is_empty());
 }
 
 #[tokio::test]
@@ -264,7 +268,7 @@ async fn publish_and_await_ack_dedups_acks_from_same_signer() {
         }
     });
 
-    let res = publish_and_await_ack_namespace(
+    let report = publish_and_await_ack_namespace(
         &store,
         &transport,
         &router,
@@ -275,11 +279,13 @@ async fn publish_and_await_ack_dedups_acks_from_same_signer() {
         2,
         None,
     )
-    .await;
-    assert!(
-        matches!(res, Err(GovernanceBroadcastError::NoAckReceived { .. })),
+    .await
+    .expect("post-publish dedup-only path returns Ok with partial DeliveryReport");
+    assert_eq!(
+        report.acked_by.len(),
+        1,
         "min_acks=2 must not be satisfied by 3 acks from one signer; got {:?}",
-        res
+        report.acked_by
     );
 }
 
