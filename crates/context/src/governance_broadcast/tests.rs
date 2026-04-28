@@ -499,3 +499,77 @@ async fn no_peers_with_min_acks_positive_returns_no_ack_received() {
         res
     );
 }
+
+// ---------------------------------------------------------------------------
+// verify_readiness_beacon
+// ---------------------------------------------------------------------------
+
+/// Build a properly-signed beacon for a given namespace, signed by `sk`.
+/// Mirrors `signed_ack` in shape — the signed body is the canonical
+/// `READINESS_BEACON_SIGN_DOMAIN || borsh(SignableReadinessBeacon)`
+/// payload from `wire.rs`.
+fn signed_beacon(
+    sk: &PrivateKey,
+    namespace_id: [u8; 32],
+    applied_through: u64,
+    strong: bool,
+) -> SignedReadinessBeacon {
+    let mut beacon = SignedReadinessBeacon {
+        namespace_id,
+        peer_pubkey: sk.public_key(),
+        dag_head: [9u8; 32],
+        applied_through,
+        ts_millis: 1_700_000_000_000,
+        strong,
+        signature: [0u8; 64],
+    };
+    beacon.signature = sk
+        .sign(&beacon.signable_bytes().expect("signable_bytes"))
+        .expect("sign")
+        .to_bytes();
+    beacon
+}
+
+#[tokio::test]
+async fn verify_readiness_beacon_accepts_signed_member_beacon() {
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ns_id = [42u8; 32];
+    plant_namespace_member(&store, ns_id, &sk.public_key());
+
+    let beacon = signed_beacon(&sk, ns_id, 17, true);
+    assert!(
+        verify_readiness_beacon(&store, &beacon),
+        "signed beacon from a member must verify"
+    );
+}
+
+#[tokio::test]
+async fn verify_readiness_beacon_rejects_non_member_signer() {
+    // Properly-signed beacon, but the signer has no membership row in
+    // the namespace — must be dropped to prevent unverified peers from
+    // populating other nodes' ReadinessCache.
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ns_id = [42u8; 32];
+    // No plant_namespace_member call.
+    let beacon = signed_beacon(&sk, ns_id, 17, true);
+    assert!(!verify_readiness_beacon(&store, &beacon));
+}
+
+#[tokio::test]
+async fn verify_readiness_beacon_rejects_bad_signature() {
+    // Defence-in-depth: even if a member's pubkey is in the namespace,
+    // a beacon with the wrong signature must fail. The tamper tests in
+    // wire.rs cover the per-field substitution paths; this test only
+    // verifies that `verify_readiness_beacon` short-circuits on
+    // `verify_signature` failure before consulting membership.
+    let store = empty_store();
+    let sk = PrivateKey::random(&mut rand::thread_rng());
+    let ns_id = [42u8; 32];
+    plant_namespace_member(&store, ns_id, &sk.public_key());
+
+    let mut beacon = signed_beacon(&sk, ns_id, 17, true);
+    beacon.signature = [0u8; 64]; // clobber the signature
+    assert!(!verify_readiness_beacon(&store, &beacon));
+}

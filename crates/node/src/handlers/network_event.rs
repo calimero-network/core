@@ -19,6 +19,7 @@ use crate::NodeManager;
 mod blobs;
 mod heartbeat;
 mod namespace;
+mod readiness;
 mod specialized;
 mod subscriptions;
 
