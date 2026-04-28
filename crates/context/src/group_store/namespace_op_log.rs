@@ -56,17 +56,74 @@ impl<'a> NamespaceOpLogService<'a> {
         let mut entries = Vec::new();
         let handle = self.store.handle();
         let start = calimero_store::key::NamespaceGovOp::new(self.namespace_id, [0u8; 32]);
-        let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
+        let mut iter = handle
+            .iter::<calimero_store::key::NamespaceGovOp>()
+            .map_err(|e| eyre::eyre!("iter::<NamespaceGovOp>: {e}"))?;
         let first = iter.seek(start).transpose();
 
-        for key_result in first.into_iter().chain(iter.keys()) {
-            let key = key_result?;
+        // The `Group` column family is shared by several key types
+        // sorted by their 1-byte prefix:
+        //
+        //   0x20 GroupMeta          (1+32 bytes)
+        //   0x32 GroupMemberContext (1+32+32 bytes)
+        //   0x38 NamespaceGovOp     (1+32+32 bytes) ← this iterator's type
+        //   0x39 NamespaceGovHead   (1+32 bytes)
+        //   0x3A GroupKey           (varies)
+        //
+        // `iter::<NamespaceGovOp>()` does NOT filter by prefix — it
+        // returns the entire column. After the last 0x38 entry the
+        // walk runs into 0x39 (`NamespaceGovHead`, 33 bytes) and
+        // borsh's `(GroupPrefix, GroupIdComponent, GroupIdComponent)`
+        // decoder (65 bytes) trips with `Unexpected length of input`.
+        // The previous unconditional `key_result?` turned that
+        // upper-bound signal into a propagated error that aborted the
+        // whole apply_kd closure on the receiver, leaving group keys
+        // un-stored and the next `join_context` failing with
+        // "identity is not a member of the group".
+        //
+        // The first key-decode error is therefore a *legitimate*
+        // upper-bound marker, not a corruption symptom: every
+        // subsequent key has a different-and-higher prefix and
+        // would fail the same way. Break once we hit it. The
+        // walk-end namespace_id check below stays as the bound for
+        // the in-prefix case (a key from a *later* namespace at the
+        // same 0x38 prefix).
+        let mut entries_iter = first.into_iter().chain(iter.keys());
+        loop {
+            let key = match entries_iter.next() {
+                None => break,
+                Some(Ok(k)) => k,
+                Some(Err(_)) => {
+                    // Past the 0x38 prefix — all remaining keys are
+                    // shorter-layout types in the same column family.
+                    // Recording a metric here is silent at apply time
+                    // but visible in dashboards if any genuine
+                    // corruption ever shows up alongside.
+                    record_namespace_decode_invalid("signed_iter_end");
+                    break;
+                }
+            };
             if key.namespace_id() != self.namespace_id {
                 break;
             }
-            let Some(value): Option<calimero_store::key::NamespaceGovOpValue> = handle.get(&key)?
-            else {
-                continue;
+            let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
+                Ok(Some(v)) => v,
+                Ok(None) => continue,
+                Err(e) => {
+                    // Per-value decode failure is genuine corruption
+                    // (the key parsed as `NamespaceGovOp`, so this is
+                    // ours). Skip and warn rather than abort the walk
+                    // — the rest of this namespace's ops are still
+                    // valid retry candidates.
+                    record_namespace_decode_invalid("signed_iter_value");
+                    tracing::warn!(
+                        namespace_id = %hex::encode(self.namespace_id),
+                        delta_id = %hex::encode(key.delta_id()),
+                        error = %e,
+                        "skipping undecodable NamespaceGovOpValue during retry walk"
+                    );
+                    continue;
+                }
             };
             let Some(signed_op) = decode_signed_namespace_op(&value.skeleton_bytes) else {
                 continue;
@@ -98,14 +155,37 @@ impl<'a> NamespaceOpLogService<'a> {
         let mut iter = handle.iter::<calimero_store::key::NamespaceGovOp>()?;
         let first = iter.seek(start).transpose();
 
-        for key_result in first.into_iter().chain(iter.keys()) {
-            let key = key_result?;
+        // Same prefix-collision termination as
+        // `collect_signed_group_ops_for_group` — see the long comment
+        // there. The first key-decode error means we've walked past
+        // the 0x38 prefix into a different-layout key type in the
+        // shared `Group` column, not actual corruption.
+        let mut entries_iter = first.into_iter().chain(iter.keys());
+        loop {
+            let key = match entries_iter.next() {
+                None => break,
+                Some(Ok(k)) => k,
+                Some(Err(_)) => {
+                    record_namespace_decode_invalid("opaque_iter_end");
+                    break;
+                }
+            };
             if key.namespace_id() != self.namespace_id {
                 break;
             }
-            let Some(value): Option<calimero_store::key::NamespaceGovOpValue> = handle.get(&key)?
-            else {
-                continue;
+            let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
+                Ok(Some(v)) => v,
+                Ok(None) => continue,
+                Err(e) => {
+                    record_namespace_decode_invalid("opaque_iter_value");
+                    tracing::warn!(
+                        namespace_id = %hex::encode(self.namespace_id),
+                        delta_id = %hex::encode(key.delta_id()),
+                        error = %e,
+                        "skipping undecodable NamespaceGovOpValue during opaque walk"
+                    );
+                    continue;
+                }
             };
             let Some(skeleton) = decode_opaque_skeleton(&value.skeleton_bytes) else {
                 continue;
