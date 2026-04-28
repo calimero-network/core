@@ -61,7 +61,6 @@ pub enum DemotionReason {
 pub struct ReadinessState {
     pub tier: ReadinessTier,
     pub local_applied_through: u64,
-    pub local_head: [u8; 32],
     pub local_pending_ops: usize,
     pub subscribed_at: Instant,
 }
@@ -548,12 +547,29 @@ impl ReadinessManager {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
+        // Read the canonical namespace DAG head from the store at emit
+        // time. Caching this on the actor (the original `state.local_head`
+        // approach) created a stale-state risk and — worse — was never
+        // updated, so beacons always carried `dag_head = [0u8; 32]`
+        // (cursor[bot] medium-severity, #2269). For multi-head namespaces
+        // we pick the lex-min so the same head set always serialises to
+        // the same beacon field; receivers treat `dag_head` as a sync
+        // hint, not authoritative state.
+        let dag_head = {
+            let handle = self.datastore.handle();
+            let key = calimero_store::key::NamespaceGovHead::new(ns_id);
+            match handle.get(&key) {
+                Ok(Some(head)) => head.dag_heads.iter().min().copied().unwrap_or([0u8; 32]),
+                Ok(None) | Err(_) => [0u8; 32],
+            }
+        };
+
         // Build with a placeholder signature, sign over the canonical
         // signable_bytes(), then write the real signature back.
         let mut beacon = SignedReadinessBeacon {
             namespace_id: ns_id,
             peer_pubkey,
-            dag_head: state.local_head,
+            dag_head,
             applied_through: state.local_applied_through,
             ts_millis,
             strong,
@@ -665,7 +681,6 @@ impl Handler<NamespaceOpApplied> for ReadinessManager {
                 .or_insert_with(|| ReadinessState {
                     tier: ReadinessTier::Bootstrapping,
                     local_applied_through: 0,
-                    local_head: [0u8; 32],
                     local_pending_ops: 0,
                     subscribed_at: Instant::now(),
                 });

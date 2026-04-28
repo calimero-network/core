@@ -7,7 +7,6 @@ fn base_state() -> ReadinessState {
     ReadinessState {
         tier: ReadinessTier::Bootstrapping,
         local_applied_through: 5,
-        local_head: [0u8; 32],
         local_pending_ops: 0,
         subscribed_at: Instant::now(),
     }
