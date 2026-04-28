@@ -453,46 +453,6 @@ pub(crate) fn read_local_applied_through(store: &Store, ns_id: [u8; 32]) -> u64 
     }
 }
 
-/// Enumerate every namespace that has a stored governance DAG head.
-///
-/// The previous design populated `state_per_namespace` only via
-/// `Handler<NamespaceOpApplied>`, which only fires from the gossipsub
-/// receive path (`network_event/namespace.rs::handle_namespace_governance_delta`).
-/// That left two important cases without an FSM entry — and therefore
-/// without a beacon emission:
-///
-///   1. **Publisher-only namespaces** — a node that creates a namespace
-///      and signs ops via `sign_apply_and_publish` never receives its
-///      own publish back through gossipsub, so `NamespaceOpApplied`
-///      never fires and no beacon is ever emitted on its behalf.
-///   2. **Direct-stream joiners** — a node that joins via
-///      `request_namespace_join` applies the bundled ops via
-///      `apply_signed_namespace_op` directly, bypassing the gossipsub
-///      receive path. Subsequent gossip ops do fire `NamespaceOpApplied`,
-///      but in short-lived sessions the beacon may never get a tick.
-///
-/// Reading the canonical `NamespaceGovHead` key set on every periodic
-/// tick closes both gaps without adding cross-crate plumbing for a new
-/// "publisher applied" message: the store is already the source of
-/// truth for what namespaces this node participates in. The cost is
-/// one prefix iteration per `beacon_interval` (5s default), which is
-/// negligible against the same store's per-op writes.
-fn scan_namespaces_with_state(store: &Store) -> Vec<[u8; 32]> {
-    let handle = store.handle();
-    let mut iter = match handle.iter::<calimero_store::key::NamespaceGovHead>() {
-        Ok(it) => it,
-        Err(_) => return Vec::new(),
-    };
-    let mut ns_ids = Vec::new();
-    for key_result in iter.keys() {
-        match key_result {
-            Ok(key) => ns_ids.push(key.namespace_id()),
-            Err(_) => break,
-        }
-    }
-    ns_ids
-}
-
 impl ReadinessManager {
     fn emit_periodic_beacons(&mut self) {
         // The freshness tick is the natural FSM-recompute checkpoint.
@@ -513,25 +473,6 @@ impl ReadinessManager {
         let ttl = self.config.ttl_heartbeat;
         let cfg = self.config;
         let mut to_emit: Vec<([u8; 32], ReadinessState)> = Vec::new();
-
-        // Reconcile the in-memory FSM with canonical store state on
-        // every tick: any namespace that has a stored governance head
-        // record but no FSM entry yet (publisher-only or direct-join
-        // path — see `scan_namespaces_with_state` doc) gets a fresh
-        // `Bootstrapping` entry. Re-running the scan on every tick
-        // also captures namespaces created at runtime after the
-        // actor mounted, without a separate event hookup.
-        for stored_ns in scan_namespaces_with_state(&self.datastore) {
-            self.state_per_namespace
-                .entry(stored_ns)
-                .or_insert_with(|| ReadinessState {
-                    tier: ReadinessTier::Bootstrapping,
-                    local_applied_through: 0,
-                    local_pending_ops: 0,
-                    subscribed_at: Instant::now(),
-                });
-        }
-
         let ns_ids: Vec<[u8; 32]> = self.state_per_namespace.keys().copied().collect();
         for ns_id in ns_ids {
             // Atomic single-lock snapshot per namespace — see
