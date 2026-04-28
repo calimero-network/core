@@ -307,11 +307,20 @@ pub async fn await_namespace_ready(
     // `join_namespace` returns, so the mesh may still be empty.
     // Poll briefly so the publish gate has a chance to pass before we
     // surface a `NamespaceNotReady` error (#2269 review issue #6).
-    let mesh_deadline = start
-        + std::cmp::min(
-            deadline.saturating_sub(start.elapsed()),
-            Duration::from_secs(3),
-        );
+    //
+    // Anchor at `Instant::now()` (not `start`) so the mesh-poll budget
+    // is "up to 3s from HERE", not "up to 3s from function entry".
+    // `start.elapsed()` already includes the prior backfill_wait sleep
+    // (up to 2s), so anchoring at `start + min(remaining, 3s)` would
+    // collapse the mesh window to as little as 1s on a 10s deadline
+    // — even though the caller's overall budget still has plenty of
+    // room. Saturating against `remaining` keeps total wall-clock
+    // within the caller's `deadline`.
+    let mesh_poll_window = std::cmp::min(
+        deadline.saturating_sub(start.elapsed()),
+        Duration::from_secs(3),
+    );
+    let mesh_deadline = Instant::now() + mesh_poll_window;
     let mesh_n_low = node_client.gossipsub_mesh_n_low();
     loop {
         let mesh = node_client
