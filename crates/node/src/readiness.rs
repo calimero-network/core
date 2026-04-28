@@ -25,6 +25,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use libp2p::PeerId;
+use zeroize::Zeroize;
 
 #[cfg(test)]
 mod tests;
@@ -496,7 +497,14 @@ impl ReadinessManager {
                     return;
                 }
             };
-        let (peer_pubkey, sk_bytes, _sender_key) = identity;
+        let (peer_pubkey, mut sk_bytes, mut sender_key) = identity;
+        // `sender_key` is unused on the beacon path — zeroize immediately.
+        // `sk_bytes` is consumed into `PrivateKey::from(...)` below;
+        // because `[u8; 32]: Copy`, that "move" actually leaves a copy
+        // of the bytes on the stack here, so we explicitly zeroize the
+        // local AFTER the signing block. `PrivateKey`'s `Drop` impl
+        // zeroizes its own internal copy.
+        sender_key.zeroize();
 
         let strong = matches!(state.tier, ReadinessTier::PeerValidatedReady);
         let ts_millis = std::time::SystemTime::now()
@@ -523,6 +531,10 @@ impl ReadinessManager {
             }
         };
         let signing_key = calimero_primitives::identity::PrivateKey::from(sk_bytes);
+        // Wipe the stack copy that `Copy`-move-into-PrivateKey left
+        // behind. `signing_key` itself is dropped at the end of the
+        // function and zeroizes via its own `Drop` impl.
+        sk_bytes.zeroize();
         let signature = match signing_key.sign(&signable) {
             Ok(sig) => sig.to_bytes(),
             Err(err) => {

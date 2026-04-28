@@ -333,14 +333,17 @@ pub async fn await_namespace_ready(
 
     // step 2: load the namespace identity for signing MemberJoined.
     let group_id = ContextGroupId::from(namespace_id);
-    let (_, my_pk, my_sk_bytes, mut sender_key) =
+    let (_, my_pk, mut my_sk_bytes, mut sender_key) =
         group_store::get_or_create_namespace_identity(store, &group_id)
             .map_err(|e| ReadyError::Local(e.to_string()))?;
-    // `PrivateKey::from(my_sk_bytes)` consumes and zeroizes my_sk_bytes
-    // on its own drop. `sender_key` is discarded here — zeroize the
-    // raw `[u8; 32]` before drop.
+    // `sender_key` is unused — zeroize immediately. `my_sk_bytes` is
+    // consumed by `PrivateKey::from(...)` below; because `[u8; 32]:
+    // Copy` the "move" copies the bytes, so the stack copy survives
+    // until we explicitly zeroize it after the call. `PrivateKey`'s
+    // `Drop` impl zeroizes its own internal copy.
     sender_key.zeroize();
     let signing_key = PrivateKey::from(my_sk_bytes);
+    my_sk_bytes.zeroize();
 
     // step 3: publish MemberJoined via three-phase contract.
     let op = NamespaceOp::Root(RootOp::MemberJoined {
