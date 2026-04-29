@@ -1149,7 +1149,7 @@ fn test_e2e_sync_flow_with_isolated_storage() {
         // Apply actions to Node-2's storage via sync
         let sync_artifact =
             borsh::to_vec(&crate::delta::StorageDelta::Actions(delta.actions)).unwrap();
-        Root::<LwwRegister<String>, NodeStorage>::sync(&sync_artifact, ApplyContext::empty())
+        Root::<LwwRegister<String>, NodeStorage>::sync(&sync_artifact, &ApplyContext::empty())
             .unwrap();
     }
 
@@ -1447,7 +1447,7 @@ fn test_e2e_counter_sync_with_isolated_storage() {
     // Apply delta via sync
     if let Some(delta) = update_delta {
         let sync_payload = borsh::to_vec(&StorageDelta::Actions(delta.actions)).unwrap();
-        Root::<Counter, NodeStorage>::sync(&sync_payload, ApplyContext::empty()).unwrap();
+        Root::<Counter, NodeStorage>::sync(&sync_payload, &ApplyContext::empty()).unwrap();
         println!("Update delta applied to Node-2");
     }
 

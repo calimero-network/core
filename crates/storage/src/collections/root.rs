@@ -131,8 +131,11 @@ where
     /// from that map and ignores the passed `ctx` for that variant. For
     /// [`StorageDelta::Actions`] the passed `ctx` is used as-is (typically
     /// empty — verifier falls back to v2 stored-writers).
+    ///
+    /// Takes `&ApplyContext` (not by-value) for parity with
+    /// [`Interface::apply_action`]; per #2272 review.
     #[expect(clippy::missing_errors_doc, reason = "NO")]
-    pub fn sync(args: &[u8], ctx: crate::interface::ApplyContext) -> Result<(), StorageError> {
+    pub fn sync(args: &[u8], ctx: &crate::interface::ApplyContext) -> Result<(), StorageError> {
         let artifact =
             from_slice::<StorageDelta>(args).map_err(StorageError::DeserializationError)?;
 
@@ -165,7 +168,7 @@ where
                     comparison_data,
                 } in comparisons
                 {
-                    <Interface<S>>::compare_affective(data, comparison_data, &ctx)?;
+                    <Interface<S>>::compare_affective(data, comparison_data, ctx)?;
                 }
             }
         }

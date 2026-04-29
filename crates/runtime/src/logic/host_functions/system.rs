@@ -937,7 +937,7 @@ impl VMHostFunctions<'_> {
                 // the verifier falls back to v2 stored-writers, which is
                 // safe for replicated state from a peer.
                 let sync_ctx = calimero_storage::interface::ApplyContext::empty();
-                calimero_storage::collections::Root::<Vec<u8>>::sync(&payload, sync_ctx)
+                calimero_storage::collections::Root::<Vec<u8>>::sync(&payload, &sync_ctx)
             })
             .map_err(|err| {
                 VMLogicError::from(HostError::Panic {

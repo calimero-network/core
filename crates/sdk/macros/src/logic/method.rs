@@ -186,7 +186,7 @@ impl ToTokens for PublicLogicMethod<'_> {
                     // `Root::sync` branches on the variant and builds a
                     // per-action ctx from the map, ignoring this template.
                     let __sync_ctx = ::calimero_storage::interface::ApplyContext::empty();
-                    ::calimero_storage::collections::Root::<#self_>::sync(&args, __sync_ctx).expect("fatal: sync failed");
+                    ::calimero_storage::collections::Root::<#self_>::sync(&args, &__sync_ctx).expect("fatal: sync failed");
                 }
 
                 impl ::calimero_sdk::state::AppStateInit for #self_ {
