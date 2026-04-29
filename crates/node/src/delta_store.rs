@@ -25,7 +25,8 @@ use calimero_storage::action::Action;
 use calimero_storage::address::Id;
 use calimero_storage::delta::StorageDelta;
 use calimero_storage::entities::StorageType;
-use calimero_storage::store::MainStorage;
+use calimero_storage::rotation_log::RotationLog;
+use calimero_storage::store::Key as StorageKey;
 use eyre::Result;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -574,15 +575,25 @@ impl ContextStorageApplier {
                 continue;
             }
 
-            let log = match calimero_storage::rotation_log::load::<MainStorage>(entity_id) {
-                Ok(Some(log)) => log,
-                Ok(None) => continue, // No log → verifier falls back to v2 stored-writers.
-                Err(e) => {
-                    return Err(eyre::eyre!(
-                        "rotation_log::load for entity {entity_id:?} failed: {e}"
-                    ))
-                }
-            };
+            // #2266 / #2272-review: read the rotation log directly from
+            // the datastore rather than via `MainStorage::storage_read`.
+            // `MainStorage` routes through the `RUNTIME_ENV` thread-local
+            // which is only installed inside `context_client.execute()` —
+            // i.e. *after* this function runs. Without this direct read
+            // the load fell through to an empty in-process mock in
+            // production, silently disabling the entire DAG-causal
+            // verifier path. See PR #2272 review thread "rotation_log::load
+            // called outside RuntimeEnv scope".
+            let log =
+                match load_rotation_log_direct(&self.context_client, self.context_id, entity_id) {
+                    Ok(Some(log)) => log,
+                    Ok(None) => continue, // No log → verifier falls back to v2 stored-writers.
+                    Err(e) => {
+                        return Err(eyre::eyre!(
+                            "rotation_log direct read for entity {entity_id:?} failed: {e}"
+                        ))
+                    }
+                };
 
             let resolved = rotation_log_reader::writers_at(&log, &delta.parents, |a, b| {
                 happens_before_in_topology(&topology_snapshot, a, b)
@@ -634,6 +645,44 @@ fn seed_topology(
     for (delta_id, parents) in deltas {
         let _previous = topology.insert(delta_id, parents);
     }
+}
+
+/// Read a `RotationLog` directly from the datastore for a given context
+/// + entity, bypassing `calimero_storage::rotation_log::load` (which
+/// goes through the `RUNTIME_ENV` thread-local that's only installed
+/// inside `context_client.execute()`).
+///
+/// The on-disk shape mirrors what
+/// `calimero_node_primitives::sync::storage_bridge::create_runtime_env`
+/// writes inside the WASM execute scope: `Key::RotationLog(entity_id)`
+/// is hashed to a 32-byte state key, and the value lives under
+/// `ContextState::new(context_id, state_key)`. Decoded via Borsh.
+///
+/// Returns `Ok(None)` for entities with no rotation log yet (every
+/// pre-rotation Shared entity), which is fine — the receiver verifier
+/// then falls back to v2 stored-writers, matching pre-#2266 behavior.
+fn load_rotation_log_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    entity_id: Id,
+) -> Result<Option<RotationLog>> {
+    let storage_key = StorageKey::RotationLog(entity_id).to_bytes();
+    let state_key = calimero_store::key::ContextState::new(context_id, storage_key);
+    let handle = context_client.datastore_handle();
+    // Copy the bytes out before `handle` is dropped — `state.value` is a
+    // `Slice<'_>` borrowed from the handle's read snapshot.
+    let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
+        Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
+        Ok(None) => None,
+        Err(e) => return Err(eyre::eyre!("rotation_log datastore read failed: {e:?}")),
+    };
+    drop(handle);
+    let Some(bytes) = bytes else {
+        return Ok(None);
+    };
+    let log = borsh::from_slice::<RotationLog>(&bytes)
+        .map_err(|e| eyre::eyre!("rotation_log decode failed: {e}"))?;
+    Ok(Some(log))
 }
 
 /// Reverse-BFS reachability over a `delta_id → parents` mirror of the
