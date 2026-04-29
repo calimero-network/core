@@ -39,6 +39,7 @@ calimero-crypto.workspace = true
 calimero-blobstore.workspace = true
 calimero-network.workspace = true
 dashmap.workspace = true
+indexmap.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }

@@ -28,10 +28,19 @@ use calimero_storage::entities::StorageType;
 use calimero_storage::rotation_log::RotationLog;
 use calimero_storage::store::Key as StorageKey;
 use eyre::Result;
+use indexmap::IndexMap;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::sync::rotation_log_reader;
+
+/// Maximum entries in the applier-local topology mirror. Exceeding this
+/// triggers oldest-first eviction (insertion-ordered via `IndexMap`)
+/// down to 90% of the cap. Applied both inside `apply()` (steady state)
+/// and at the end of `restore_topology` (startup seed) so a long-lived
+/// node persisting >10K deltas doesn't carry the full set in memory
+/// across restarts. Per #2272 review.
+const MAX_TOPOLOGY_ENTRIES: usize = 10_000;
 
 /// Result of adding a delta with cascaded event information
 #[derive(Debug)]
@@ -120,14 +129,16 @@ struct ContextStorageApplier {
     /// [`rotation_log_reader::writers_at`] needs — kept separate from
     /// the `Arc<RwLock<CoreDagStore>>` so reads here don't deadlock
     /// against the dag write lock the caller holds during `add_delta`.
-    /// (#2266)
-    topology: Arc<RwLock<HashMap<[u8; 32], Vec<[u8; 32]>>>>,
-    /// Cache for resolved writer sets keyed on `(entity_id, delta_id)`.
-    /// Each entry is the answer to "what was the writer set for this
-    /// Shared entity as of this delta's causal frontier?" Cache hits
-    /// dominate when chains of deltas all reference the same entity
-    /// against the same parent set. (#2266)
-    effective_writers_cache: Arc<RwLock<HashMap<(Id, [u8; 32]), BTreeSet<PublicKey>>>>,
+    ///
+    /// Stored as `IndexMap` so eviction at the `MAX_TOPOLOGY_ENTRIES`
+    /// cap iterates insertion order (oldest-first) — `HashMap`'s
+    /// iteration order is non-deterministic and could evict recent
+    /// ancestry links still needed by buffered children, which is
+    /// security-adjacent: a missing link makes `happens_before` return
+    /// false, `writers_at` returns `None`, and the verifier falls back
+    /// to v2 stored-writers, potentially admitting a revoked writer.
+    /// (#2266 + #2272 review)
+    topology: Arc<RwLock<IndexMap<[u8; 32], Vec<[u8; 32]>>>>,
 }
 
 #[async_trait::async_trait]
@@ -294,14 +305,11 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             let mut topology = self.topology.write().await;
             let _previous = topology.insert(delta.id, delta.parents.clone());
 
-            const MAX_TOPOLOGY_ENTRIES: usize = 10_000;
-            if topology.len() > MAX_TOPOLOGY_ENTRIES {
-                let excess = topology.len() - (MAX_TOPOLOGY_ENTRIES * 9 / 10);
-                let keys_to_remove: Vec<_> = topology.keys().take(excess).copied().collect();
-                for key in keys_to_remove {
-                    let _removed = topology.remove(&key);
-                }
-            }
+            // `IndexMap::shift_remove_index(0)` evicts oldest-first
+            // (insertion order), preserving recently-applied deltas
+            // whose ancestry links are still needed by buffered
+            // children. Cf. #2272 review on non-deterministic eviction.
+            cap_topology(&mut topology);
         }
 
         // Store the ACTUAL computed hash after applying this delta for future merge detection
@@ -536,11 +544,15 @@ impl ContextStorageApplier {
     /// Iterates the action payload, picks out Shared `Add`/`Update`/
     /// `DeleteRef`s, dedups by entity, and resolves each via
     /// [`rotation_log_reader::writers_at`] against this applier's
-    /// `topology` view of the DAG. Cache-keyed on `(entity_id, delta_id)`.
+    /// `topology` view of the DAG.
     ///
     /// Returns a map keyed by entity id; non-Shared entities are absent.
     /// An empty result is normal — a delta with only User/Frozen/Public
     /// actions has nothing to resolve.
+    ///
+    /// No caching: each delta is applied at most once (the DAG dedups
+    /// by content-addressed `delta.id`), so a per-`(entity, delta_id)`
+    /// cache could never hit. Removed per #2272 review.
     async fn resolve_effective_writers_for_delta(
         &self,
         delta: &CausalDelta<Vec<Action>>,
@@ -569,21 +581,11 @@ impl ContextStorageApplier {
         let topology_snapshot = self.topology.read().await.clone();
 
         for entity_id in shared_entities {
-            let cache_key = (entity_id, delta.id);
-            if let Some(cached) = self.effective_writers_cache.read().await.get(&cache_key) {
-                let _replaced = out.insert(entity_id, cached.clone());
-                continue;
-            }
-
-            // #2266 / #2272-review: read the rotation log directly from
-            // the datastore rather than via `MainStorage::storage_read`.
-            // `MainStorage` routes through the `RUNTIME_ENV` thread-local
-            // which is only installed inside `context_client.execute()` —
-            // i.e. *after* this function runs. Without this direct read
-            // the load fell through to an empty in-process mock in
-            // production, silently disabling the entire DAG-causal
-            // verifier path. See PR #2272 review thread "rotation_log::load
-            // called outside RuntimeEnv scope".
+            // Read the rotation log directly from the datastore rather
+            // than via `MainStorage::storage_read`. `MainStorage` routes
+            // through the `RUNTIME_ENV` thread-local which is only
+            // installed inside `context_client.execute()` — i.e. *after*
+            // this function runs. See `load_rotation_log_direct` doc.
             let log =
                 match load_rotation_log_direct(&self.context_client, self.context_id, entity_id) {
                     Ok(Some(log)) => log,
@@ -600,21 +602,7 @@ impl ContextStorageApplier {
             });
 
             if let Some(set) = resolved {
-                let _replaced = out.insert(entity_id, set.clone());
-
-                let mut cache = self.effective_writers_cache.write().await;
-                let _previous = cache.insert(cache_key, set);
-
-                // Bound the cache the same way as parent_hashes/topology
-                // to keep long-lived nodes from growing unboundedly.
-                const MAX_EFFECTIVE_WRITERS_ENTRIES: usize = 10_000;
-                if cache.len() > MAX_EFFECTIVE_WRITERS_ENTRIES {
-                    let excess = cache.len() - (MAX_EFFECTIVE_WRITERS_ENTRIES * 9 / 10);
-                    let keys_to_remove: Vec<_> = cache.keys().take(excess).copied().collect();
-                    for key in keys_to_remove {
-                        let _removed = cache.remove(&key);
-                    }
-                }
+                let _replaced = out.insert(entity_id, set);
             }
         }
 
@@ -632,6 +620,11 @@ impl ContextStorageApplier {
     async fn restore_topology(&self, deltas: impl IntoIterator<Item = ([u8; 32], Vec<[u8; 32]>)>) {
         let mut topology = self.topology.write().await;
         seed_topology(&mut topology, deltas);
+        // #2272 review: enforce the same `MAX_TOPOLOGY_ENTRIES` cap that
+        // `apply()` uses. Without this, a context with 100K persisted
+        // deltas would seed all of them at startup and consume ~10MB+
+        // until enough new deltas triggered the steady-state cap.
+        cap_topology(&mut topology);
     }
 }
 
@@ -639,11 +632,25 @@ impl ContextStorageApplier {
 /// (later entries overwrite earlier ones with the same delta id) can be
 /// unit-tested without standing up a `ContextStorageApplier`.
 fn seed_topology(
-    topology: &mut HashMap<[u8; 32], Vec<[u8; 32]>>,
+    topology: &mut IndexMap<[u8; 32], Vec<[u8; 32]>>,
     deltas: impl IntoIterator<Item = ([u8; 32], Vec<[u8; 32]>)>,
 ) {
     for (delta_id, parents) in deltas {
         let _previous = topology.insert(delta_id, parents);
+    }
+}
+
+/// Trim a topology mirror to `MAX_TOPOLOGY_ENTRIES` by evicting the
+/// oldest-inserted entries first (the `IndexMap` insertion-order
+/// invariant is what makes this deterministic). Targets 90% of the cap
+/// after eviction so we don't thrash on every insert near the boundary.
+fn cap_topology(topology: &mut IndexMap<[u8; 32], Vec<[u8; 32]>>) {
+    if topology.len() <= MAX_TOPOLOGY_ENTRIES {
+        return;
+    }
+    let excess = topology.len() - (MAX_TOPOLOGY_ENTRIES * 9 / 10);
+    for _ in 0..excess {
+        let _removed = topology.shift_remove_index(0);
     }
 }
 
@@ -688,8 +695,12 @@ fn load_rotation_log_direct(
 /// Reverse-BFS reachability over a `delta_id → parents` mirror of the
 /// DAG: returns true iff `a` is in the transitive ancestry of `b`. Pure
 /// over the snapshot — `happens_before(x, x) == false` (strict ancestry).
-fn happens_before_in_topology(
-    topology: &HashMap<[u8; 32], Vec<[u8; 32]>>,
+///
+/// Re-exported under `calimero_node::sync::happens_before_in_topology`
+/// for integration tests so they can mirror the production resolve
+/// flow without copying the function (#2272 review).
+pub fn happens_before_in_topology(
+    topology: &IndexMap<[u8; 32], Vec<[u8; 32]>>,
     a: &[u8; 32],
     b: &[u8; 32],
 ) -> bool {
@@ -745,12 +756,13 @@ impl DeltaStore {
             our_identity,
             parent_hashes: Arc::clone(&parent_hashes),
             merged_deltas: Arc::clone(&merged_deltas),
-            // #2266: applier-local DAG topology + per-(entity,delta) cache
-            // for the rotation-log-driven writer-set resolution. Populated
-            // by `apply()` and seeded by `load_persisted_deltas` →
+            // #2266: applier-local DAG topology mirror for the
+            // rotation-log-driven writer-set resolution. Populated by
+            // `apply()` and seeded by `load_persisted_deltas` →
             // `restore_topology` so cross-restart ancestry is preserved.
-            topology: Arc::new(RwLock::new(HashMap::new())),
-            effective_writers_cache: Arc::new(RwLock::new(HashMap::new())),
+            // Insertion-ordered (IndexMap) so the eviction at the
+            // `MAX_TOPOLOGY_ENTRIES` cap is deterministic (oldest-first).
+            topology: Arc::new(RwLock::new(IndexMap::new())),
         });
 
         Self {
@@ -2205,7 +2217,7 @@ mod happens_before_tests {
         [b; 32]
     }
 
-    fn topology(edges: &[(u8, &[u8])]) -> HashMap<[u8; 32], Vec<[u8; 32]>> {
+    fn topology(edges: &[(u8, &[u8])]) -> IndexMap<[u8; 32], Vec<[u8; 32]>> {
         edges
             .iter()
             .map(|(child, parents)| (id(*child), parents.iter().copied().map(id).collect()))
@@ -2303,7 +2315,7 @@ mod seed_topology_tests {
     #[test]
     fn seeded_chain_is_visible_to_happens_before() {
         // Pretend we restored a 1 → 2 → 3 chain from disk.
-        let mut topology = HashMap::new();
+        let mut topology = IndexMap::new();
         seed_topology(
             &mut topology,
             vec![(id(2), vec![id(1)]), (id(3), vec![id(2)])],
@@ -2319,7 +2331,7 @@ mod seed_topology_tests {
         // If the same id appears twice (shouldn't, but defensive), the
         // later one wins — same semantic as the `apply()` path's
         // `topology.insert(...)`.
-        let mut topology = HashMap::new();
+        let mut topology = IndexMap::new();
         seed_topology(&mut topology, vec![(id(2), vec![id(1)])]);
         seed_topology(&mut topology, vec![(id(2), vec![id(7)])]);
 
@@ -2328,10 +2340,60 @@ mod seed_topology_tests {
 
     #[test]
     fn seed_with_empty_iter_is_noop() {
-        let mut topology = HashMap::new();
+        let mut topology = IndexMap::new();
         let _ = topology.insert(id(2), vec![id(1)]);
         seed_topology(&mut topology, std::iter::empty());
         assert_eq!(topology.len(), 1);
         assert_eq!(topology.get(&id(2)), Some(&vec![id(1)]));
+    }
+
+    #[test]
+    fn cap_topology_evicts_oldest_first() {
+        // Insert MAX + extra entries; cap to 90% of MAX. The oldest
+        // inserts must be the ones evicted; the most recent must
+        // survive — that's the load-bearing security property
+        // (see comment on `topology` field).
+        let mut topology: IndexMap<[u8; 32], Vec<[u8; 32]>> = IndexMap::new();
+        let total = MAX_TOPOLOGY_ENTRIES + 50;
+        for i in 0..total {
+            let key = u32::try_from(i).unwrap().to_le_bytes();
+            let mut k32 = [0_u8; 32];
+            k32[..4].copy_from_slice(&key);
+            let _ = topology.insert(k32, vec![]);
+        }
+        cap_topology(&mut topology);
+
+        let target = MAX_TOPOLOGY_ENTRIES * 9 / 10;
+        assert_eq!(topology.len(), target);
+
+        // The first `total - target` inserts must be gone; the rest
+        // must be present (insertion order, deterministic).
+        let evicted_count = total - target;
+        for i in 0..evicted_count {
+            let mut k32 = [0_u8; 32];
+            k32[..4].copy_from_slice(&u32::try_from(i).unwrap().to_le_bytes());
+            assert!(
+                !topology.contains_key(&k32),
+                "expected oldest entry {i} to be evicted"
+            );
+        }
+        for i in evicted_count..total {
+            let mut k32 = [0_u8; 32];
+            k32[..4].copy_from_slice(&u32::try_from(i).unwrap().to_le_bytes());
+            assert!(
+                topology.contains_key(&k32),
+                "expected recent entry {i} to survive"
+            );
+        }
+    }
+
+    #[test]
+    fn cap_topology_under_cap_is_noop() {
+        let mut topology: IndexMap<[u8; 32], Vec<[u8; 32]>> = IndexMap::new();
+        for i in 0..100_u8 {
+            let _ = topology.insert([i; 32], vec![]);
+        }
+        cap_topology(&mut topology);
+        assert_eq!(topology.len(), 100);
     }
 }
