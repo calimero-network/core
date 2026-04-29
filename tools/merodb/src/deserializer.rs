@@ -347,6 +347,72 @@ fn deserialize_collection_with_crdt(
                     }
                 }
             }
+            CrdtCollectionType::AuthoredMap => {
+                // AuthoredMap<K, V> wraps UnorderedMap<K, V> and the
+                // CRDT payload byte layout is identical. Per-entry
+                // authorship lives in the per-entity metadata
+                // (`StorageType::User { owner }`) consumed at a higher
+                // layer in merodb, not in this payload.
+                match collection {
+                    CollectionType::Map { key, value } => {
+                        let len = u32::deserialize_reader(cursor)
+                            .wrap_err("Failed to deserialize AuthoredMap length")?;
+                        let mut map = serde_json::Map::new();
+                        for _ in 0..len {
+                            let key_value = deserialize_type_ref(cursor, key, manifest)?;
+                            let val_value = deserialize_type_ref(cursor, value, manifest)?;
+
+                            let mut element_id = [0_u8; 32];
+                            cursor
+                                .read_exact(&mut element_id)
+                                .wrap_err("Failed to read AuthoredMap element_id")?;
+
+                            let key_str = match key_value {
+                                Value::String(s) => s,
+                                other => other.to_string(),
+                            };
+
+                            drop(map.insert(
+                                key_str,
+                                json!({
+                                    "value": val_value,
+                                    "element_id": hex::encode(element_id)
+                                }),
+                            ));
+                        }
+                        Ok(json!({
+                            "entries": map,
+                            "crdt_type": "AuthoredMap"
+                        }))
+                    }
+                    _ => {
+                        eyre::bail!("AuthoredMap CRDT type must be a Map collection");
+                    }
+                }
+            }
+            CrdtCollectionType::AuthoredVector => {
+                // AuthoredVector<T> wraps Vector<T>; CRDT payload byte
+                // layout is identical. See AuthoredMap arm above for
+                // where authorship metadata is surfaced.
+                match collection {
+                    CollectionType::List { items } => {
+                        let len = u32::deserialize_reader(cursor)
+                            .wrap_err("Failed to deserialize AuthoredVector length")?;
+                        let mut array = Vec::new();
+                        for _ in 0..len {
+                            let value = deserialize_type_ref(cursor, items, manifest)?;
+                            array.push(value);
+                        }
+                        Ok(json!({
+                            "items": array,
+                            "crdt_type": "AuthoredVector"
+                        }))
+                    }
+                    _ => {
+                        eyre::bail!("AuthoredVector CRDT type must be a List collection");
+                    }
+                }
+            }
             CrdtCollectionType::UnorderedSet => {
                 // UnorderedSet<T> serializes similarly to Vec<T> but with CRDT metadata
                 match collection {
@@ -447,6 +513,14 @@ fn deserialize_collection_with_crdt(
                     "crdt_type": "ReplicatedGrowableArray"
                 }))
             }
+            // `CrdtCollectionType` is `#[non_exhaustive]`. Bail on unknown
+            // variants rather than silently mis-decoding — the cursor
+            // position would be wrong for any subsequent field.
+            other => eyre::bail!(
+                "merodb does not yet know how to deserialize CRDT type {:?} \
+                 — extend the match in deserializer.rs",
+                other
+            ),
         };
     }
 
