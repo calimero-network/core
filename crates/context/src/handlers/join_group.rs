@@ -17,14 +17,10 @@ use crate::{group_store, ContextManager};
 
 const NAMESPACE_MESH_GRACE: Duration = Duration::from_secs(2);
 
-/// Maximum time `join_group` waits on the gossip-fallback path for a
-/// `KeyDelivery` op addressed to the joiner. Reached only when the
-/// direct join response did not carry a key (served peer didn't hold
-/// it, or the direct stream request timed out). The wait fires
-/// after MemberJoined is on the wire, so the bound is "round-trip to
-/// any admin + their `publish_and_await_ack` budget", not the full
-/// gossipsub heartbeat reconciliation window.
-const KEY_DELIVERY_FALLBACK_WAIT: Duration = Duration::from_secs(5);
+// Maximum time `join_group` waits on the gossip-fallback path for a
+// `KeyDelivery` op addressed to the joiner now lives on
+// [`ContextManagerConfig::key_delivery_fallback_wait`] so operators can
+// override it without source patches. Default is preserved (5s).
 
 impl Handler<JoinGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinGroupRequest as Message>::Result>;
@@ -66,6 +62,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
         let context_client = self.context_client.clone();
+        let key_delivery_fallback_wait = self.config.key_delivery_fallback_wait;
 
         ActorResponse::r#async(
             async move {
@@ -226,7 +223,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 //
                 // If path 1 didn't deliver a key, we fall through to path 2
                 // here and block `join_group` until either a `KeyDelivery`
-                // for our identity arrives or `KEY_DELIVERY_FALLBACK_WAIT`
+                // for our identity arrives or `key_delivery_fallback_wait`
                 // elapses. Subscribing BEFORE publishing MemberJoined
                 // closes the race where an admin could see our op,
                 // immediately publish KeyDelivery, and have us miss it
@@ -264,7 +261,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 }
 
                 if let Some(rx) = op_event_rx.as_mut() {
-                    let deadline = Instant::now() + KEY_DELIVERY_FALLBACK_WAIT;
+                    let deadline = Instant::now() + key_delivery_fallback_wait;
                     loop {
                         // Re-check the store on every iteration: the apply
                         // path emits the event AFTER `store_group_key`, so
@@ -274,21 +271,47 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         // dropped via `RecvError::Lagged` before we got to
                         // it (broadcast channel is process-wide and other
                         // tasks may flood it).
-                        if group_store::load_current_group_key(&datastore, &group_id)?.is_some() {
-                            info!(
-                                ?group_id,
-                                "group key acquired via gossip KeyDelivery fallback"
-                            );
-                            break;
+                        //
+                        // Soft-fail on transient store errors: a single
+                        // failed read should not abort the join — the loop
+                        // already retries on every event tick and the
+                        // deadline branch handles permanent failure. This
+                        // mirrors the `RecvError::Lagged` arm's "we'll
+                        // observe it next tick" semantics.
+                        match group_store::load_current_group_key(&datastore, &group_id) {
+                            Ok(Some(_)) => {
+                                info!(
+                                    ?group_id,
+                                    "group key acquired via gossip KeyDelivery fallback"
+                                );
+                                break;
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                warn!(
+                                    ?group_id,
+                                    ?e,
+                                    "transient store error during KeyDelivery wait — retrying"
+                                );
+                            }
                         }
                         let now = Instant::now();
                         if now >= deadline {
-                            warn!(
-                                ?group_id,
-                                "timed out waiting for KeyDelivery via gossip fallback; \
-                                 group state will reconcile via heartbeat"
-                            );
-                            break;
+                            // Phase 12 (#2237) deferred this from a typed
+                            // `Err` to a `warn!` + Ok-no-key. Restoring the
+                            // typed-error contract: callers must be able to
+                            // distinguish "joined and ready" from "joined
+                            // but unusable yet". Returning Err here means
+                            // the admin endpoint surfaces a failure that
+                            // clients can retry, instead of clients
+                            // proceeding to write to a context whose
+                            // group key has not yet arrived.
+                            return Err(eyre::eyre!(
+                                "KeyDelivery timed out for group {group_id:?}: \
+                                 no group key arrived within {}s via the gossip fallback path; \
+                                 join cannot proceed without a usable group key",
+                                key_delivery_fallback_wait.as_secs()
+                            ));
                         }
                         let remaining = deadline - now;
                         match tokio::time::timeout(remaining, rx.recv()).await {
