@@ -60,7 +60,7 @@ on:
         default: ""
         type: string
       test_app:
-        description: "Run specific app test (kv-store, kv-store-with-handlers, or all)"
+        description: "Run specific app test (kv-store, kv-store-with-handlers, group-governance, or all)"
         required: false
         default: "all"
         type: choice
@@ -68,6 +68,7 @@ on:
           - all
           - kv-store
           - kv-store-with-handlers
+          - group-governance
       enable_profiling:
         description: "Use profiling image (merod:edge-profiling) with CPU and memory profiling enabled"
         required: false
@@ -668,9 +669,265 @@ jobs:
           retention-days: 30
           compression-level: 6
 
+  fuzzy-test-group-governance:
+    name: Run Group Governance Fuzzy Test with Profiling
+    needs: build
+    runs-on: big-machine
+    timeout-minutes: 150
+    outputs:
+      test_passed: ${{ steps.set-result-gov.outputs.passed }}
+      exit_code: ${{ steps.gov-test.outputs.exit_code }}
+    if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'group-governance' || github.event.inputs.test_app == ''
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Under workflow_run, github.sha is the default-branch HEAD —
+          # not the commit Release actually built from. Pin to the
+          # upstream commit so the fuzzy run's source tree matches the
+          # image. Falls back to github.sha for push / workflow_dispatch.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: fuzzy-test-build-artifacts
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Override test duration
+        # Default is 15 minutes for routine triggers and 60 minutes for
+        # the nightly schedule. See the equivalent step in
+        # fuzzy-test-kv-store for details.
+        run: |
+          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
+            DURATION="${{ github.event.inputs.duration_override }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            DURATION="60"
+          else
+            DURATION="15"
+          fi
+          echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
+          cd workflows/fuzzy-tests/group-governance
+          sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
+
+      - name: Create directories
+        run: |
+          mkdir -p fuzzy-test-logs/group-governance
+          mkdir -p profiling-data/group-governance
+          mkdir -p profiling-reports/group-governance
+
+      - name: Determine image to use
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x scripts/determine-image-tag.sh
+          if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
+            ./scripts/determine-image-tag.sh \
+              "${{ github.event_name }}" \
+              "${{ github.event.pull_request.number || '0' }}" \
+              "${{ github.repository_owner }}" \
+              "${{ github.repository }}" \
+              "${{ github.head_ref || github.ref_name }}" \
+              "${{ github.token }}"
+            echo "profiling=false" >> $GITHUB_OUTPUT
+          else
+            ./scripts/determine-image-tag.sh \
+              "${{ github.event_name }}" \
+              "${{ github.event.pull_request.number || '0' }}" \
+              "${{ github.repository_owner }}" \
+              "${{ github.repository }}" \
+              "${{ github.head_ref || github.ref_name }}" \
+              "${{ github.token }}" \
+              --profiling
+            echo "profiling=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Pull Docker image
+        run: |
+          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          docker pull "$IMAGE" || true
+
+      - name: Setup vmagent for metrics collection
+        id: setup-vmagent-gov
+        run: |
+          chmod +x scripts/setup-vmagent.sh
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          ./scripts/setup-vmagent.sh \
+            "group-governance" \
+            "group-governance-${SHORT_COMMIT}" \
+            "${{ github.run_id }}" \
+            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
+            "8431" \
+            "$COMMIT_HASH" \
+            "${{ github.ref_name }}"
+
+      - name: Run Group Governance Fuzzy Test with Metrics Collection
+        id: gov-test
+        run: |
+          chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
+          mkdir -p fuzzy-test-logs/group-governance/docker-logs
+          cd workflows/fuzzy-tests/group-governance
+
+          echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+          TEST_CASE="group-governance"
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
+          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+
+          VMAGENT_STARTED="false"
+          if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
+            "$TEST_CASE" "$INSTANCE_NAME" "${{ github.run_id }}" "$COMMIT_HASH" "${{ github.ref_name }}" \
+            "${{ steps.setup-vmagent-gov.outputs.vmagent_dir }}" \
+            "${{ steps.setup-vmagent-gov.outputs.victoria_url }}" \
+            "${{ steps.setup-vmagent-gov.outputs.auth_enabled }}" \
+            "${{ steps.setup-vmagent-gov.outputs.bearer_token_file }}" \
+            "8431" "fuzzy-gov-node" "4" "3001" "2"; then
+            VMAGENT_STARTED="true"
+          fi
+
+          UPDATE_PID=""
+          VMAGENT_PID=""
+          if [ "$VMAGENT_STARTED" = "true" ]; then
+            UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+            VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+          fi
+
+          # Live docker-logs watcher — see the kv-store job for the
+          # rationale (merobox tears containers down on exit).
+          LOGDIR="$GITHUB_WORKSPACE/fuzzy-test-logs/group-governance/docker-logs"
+          WATCHER_STATE_DIR="$(mktemp -d)"
+          (
+            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+              for c in $(docker ps --filter "label=calimero.node=true" \
+                                   --format "{{.Names}}" 2>/dev/null \
+                         | grep -v -- '-init$' || true); do
+                mark="$WATCHER_STATE_DIR/${c}"
+                if [ ! -f "$mark" ]; then
+                  touch "$mark"
+                  echo "[log-watcher] following $c"
+                  docker logs -f --timestamps "$c" \
+                    > "$LOGDIR/${c}.log" 2>&1 &
+                fi
+              done
+              sleep 1
+            done
+          ) &
+          WATCHER_PID=$!
+
+          set +e
+          set -o pipefail
+          merobox bootstrap run \
+              fuzzy-test.yml \
+              --image "$IMAGE" \
+              --e2e-mode \
+              --verbose 2>&1 | tee ../../../fuzzy-test-logs/group-governance/merobox-output.log
+
+          exit_code=$?
+          set +o pipefail
+
+          touch "$WATCHER_STATE_DIR/stop"
+          sleep 2
+          kill "$WATCHER_PID" 2>/dev/null || true
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
+
+          echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+
+          # Cleanup vmagent
+          "$GITHUB_WORKSPACE/scripts/cleanup-vmagent.sh" \
+            "$TEST_CASE" \
+            "$UPDATE_PID" \
+            "$VMAGENT_PID" \
+            "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
+            "/tmp/vmagent-${TEST_CASE}.log"
+
+          exit $exit_code
+
+      - name: Collect profiling data from containers
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          chmod +x scripts/profiling/collect-from-containers.sh
+          ./scripts/profiling/collect-from-containers.sh \
+            "group-governance" \
+            "fuzzy-test-logs/group-governance" \
+            "profiling-data/group-governance" \
+            "profiling-reports/group-governance"
+
+      - name: Collect profiling data from host-side bind mounts
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          chmod +x scripts/profiling/harvest-host-profiling.sh
+          ./scripts/profiling/harvest-host-profiling.sh \
+            "workflows/fuzzy-tests/group-governance/data" \
+            "profiling-data/group-governance"
+
+      - name: Set test result
+        id: set-result-gov
+        if: always()
+        run: |
+          EXIT_CODE="${{ steps.gov-test.outputs.exit_code }}"
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Collect Group Governance node logs
+        if: always()
+        run: |
+          find workflows/fuzzy-tests/group-governance -type d -name "logs" 2>/dev/null | while read logdir; do
+            relpath=$(echo "$logdir" | sed 's|workflows/fuzzy-tests/group-governance/||')
+            mkdir -p "fuzzy-test-logs/group-governance/$relpath"
+            cp -r "$logdir"/* "fuzzy-test-logs/group-governance/$relpath/" 2>/dev/null || true
+          done
+
+      - name: Collect and upload vmagent logs
+        if: always()
+        run: |
+          if [ -f /tmp/vmagent-group-governance.log ]; then
+            mkdir -p fuzzy-test-logs/group-governance
+            cp /tmp/vmagent-group-governance.log fuzzy-test-logs/group-governance/vmagent.log
+            [ -f /tmp/vmagent_scrape_group-governance.yml ] && \
+              cp /tmp/vmagent_scrape_group-governance.yml fuzzy-test-logs/group-governance/vmagent_config.yml
+          fi
+
+      - name: Upload Group Governance test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzzy-test-group-governance-${{ github.run_number }}-${{ github.run_id }}
+          path: fuzzy-test-logs/group-governance/
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload Group Governance profiling data
+        if: always() && steps.image.outputs.profiling == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-data-group-governance-${{ github.run_number }}-${{ github.run_id }}
+          path: profiling-data/group-governance/
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload Group Governance profiling reports
+        if: always() && steps.image.outputs.profiling == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-reports-group-governance-${{ github.run_number }}-${{ github.run_id }}
+          path: profiling-reports/group-governance/
+          retention-days: 30
+          compression-level: 6
+
   test-summary:
     name: Test Summary
-    needs: [fuzzy-test-kv-store, fuzzy-test-handlers]
+    needs: [fuzzy-test-kv-store, fuzzy-test-handlers, fuzzy-test-group-governance]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -715,6 +972,16 @@ jobs:
             echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
           else
             echo "**FAILED** (exit code: ${{ needs.fuzzy-test-handlers.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Group Governance Test" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.fuzzy-test-group-governance.result }}" = "skipped" ]; then
+            echo "**SKIPPED**" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.fuzzy-test-group-governance.outputs.test_passed }}" = "true" ]; then
+            echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**FAILED** (exit code: ${{ needs.fuzzy-test-group-governance.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 

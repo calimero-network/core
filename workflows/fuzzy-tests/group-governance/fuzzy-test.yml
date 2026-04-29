@@ -1,0 +1,354 @@
+name: "Group Governance Fuzzy Load Test"
+description: >
+  Long-running fuzzy load test that exercises the three-phase governance
+  contract (publish_and_await_ack, readiness FSM, key delivery) under
+  mixed traffic. Sets up a 4-node namespace with a group + subgroup,
+  runs the fuzzy_test step against group-context kv operations (every
+  data write traverses the governance topic for ack collection), then
+  exercises a post-load governance churn round (role updates,
+  add/remove) to validate the system can still service governance ops
+  after sustained load.
+
+  Closes the gap between the existing kv-store and kv-store-with-handlers
+  fuzzy tests, which exercise data-path churn but never exercise group
+  governance. This test catches regressions in #2237's three-phase
+  contract, KeyDelivery delivery, and the readiness FSM's coverage of
+  publisher-side / receive-side apply paths.
+
+# Test configuration
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  chain_id: calimero-testnet
+  count: 4
+  image: ghcr.io/calimero-network/merod:edge-profiling
+  prefix: fuzzy-gov-node
+  use_image_entrypoint: true
+
+steps:
+  # ── Phase 1: Bootstrap mesh + namespace ─────────────────────────────
+  - name: Install kv-store-with-handlers app on node-1
+    type: install_application
+    node: fuzzy-gov-node-1
+    path: ../../../apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: fuzzy-gov-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: fuzzy-gov-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: fuzzy-gov-node-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{invite_node2}}"
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: fuzzy-gov-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      invite_node3: invitation
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: fuzzy-gov-node-3
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{invite_node3}}"
+    outputs:
+      identity_node3: memberIdentity
+
+  - name: Invite node-4 to namespace
+    type: create_namespace_invitation
+    node: fuzzy-gov-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      invite_node4: invitation
+
+  - name: Node-4 joins namespace
+    type: join_namespace
+    node: fuzzy-gov-node-4
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{invite_node4}}"
+    outputs:
+      identity_node4: memberIdentity
+
+  - name: Verify all 4 nodes joined the namespace
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+      - "is_set({{identity_node2}})"
+      - "is_set({{identity_node3}})"
+      - "is_set({{identity_node4}})"
+
+  # ── Phase 2: Create context inside the namespace ────────────────────
+  # The namespace itself is the parent group. Data writes against this
+  # context exercise the governance topic on every state delta.
+  - name: Create group context
+    type: create_context
+    node: fuzzy-gov-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{namespace_id}}"
+    outputs:
+      group_ctx_id: contextId
+      group_ctx_key_node1: memberPublicKey
+
+  - name: Node-2 joins group context
+    type: join_context
+    node: fuzzy-gov-node-2
+    context_id: "{{group_ctx_id}}"
+    outputs:
+      group_ctx_key_node2: memberPublicKey
+
+  - name: Node-3 joins group context
+    type: join_context
+    node: fuzzy-gov-node-3
+    context_id: "{{group_ctx_id}}"
+    outputs:
+      group_ctx_key_node3: memberPublicKey
+
+  - name: Node-4 joins group context
+    type: join_context
+    node: fuzzy-gov-node-4
+    context_id: "{{group_ctx_id}}"
+    outputs:
+      group_ctx_key_node4: memberPublicKey
+
+  - name: Wait for context membership to converge
+    type: wait_for_sync
+    context_id: "{{group_ctx_id}}"
+    nodes:
+      - fuzzy-gov-node-1
+      - fuzzy-gov-node-2
+      - fuzzy-gov-node-3
+      - fuzzy-gov-node-4
+    timeout: 60
+    check_interval: 2
+
+  # ── Phase 3: Steady-state fuzzy load ────────────────────────────────
+  # Runs a weighted mix of kv operations against the group context.
+  # Every write produces a state delta that traverses the governance
+  # topic — so this exercises publish_and_await_ack, the readiness FSM,
+  # and the per-namespace ack collection under sustained load.
+  #
+  # 15 min default matches the existing kv-store and
+  # kv-store-with-handlers fuzzy tests; the nightly soak workflow
+  # overrides to 60 min via duration_override.
+  - name: Group governance fuzzy load
+    type: fuzzy_test
+    duration_minutes: 15
+    context_id: "{{group_ctx_id}}"
+    summary_interval_seconds: 60
+    operation_delay_ms: 50
+    success_threshold: 95.0
+
+    nodes:
+      - name: fuzzy-gov-node-1
+        executor_key: "{{group_ctx_key_node1}}"
+      - name: fuzzy-gov-node-2
+        executor_key: "{{group_ctx_key_node2}}"
+      - name: fuzzy-gov-node-3
+        executor_key: "{{group_ctx_key_node3}}"
+      - name: fuzzy-gov-node-4
+        executor_key: "{{group_ctx_key_node4}}"
+
+    operations:
+      # 50% of traffic: write + verify on a random node. Each write
+      # produces a state delta on the governance topic, exercising the
+      # full publish_and_await_ack contract per op.
+      - name: "set_and_verify"
+        weight: 50
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{group_ctx_id}}"
+            method: set
+            args:
+              key: "gkey_{{random_int(1, 10000)}}"
+              value: "gval_{{uuid}}_{{timestamp}}"
+            outputs:
+              set_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{set_result}})"
+          - type: wait
+            seconds: 1
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{group_ctx_id}}"
+            method: get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              get_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{get_result}})"
+              - "contains({{get_result}}, {{fuzzy_value}})"
+
+      # 25% of traffic: pure random reads. Tests key-not-found and
+      # mid-load read paths.
+      - name: "random_read"
+        weight: 25
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{group_ctx_id}}"
+            method: get
+            args:
+              key: "gkey_{{random_int(1, 10000)}}"
+            outputs:
+              get_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{get_result}})"
+
+      # 15% of traffic: list entries. Exercises a bigger read across
+      # the full state.
+      - name: "list_entries"
+        weight: 15
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{group_ctx_id}}"
+            method: entries
+            outputs:
+              entries_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{entries_result}})"
+
+      # 10% of traffic: cross-node consistency. Write on one node,
+      # read from another after a short sync window.
+      - name: "cross_node_write_read"
+        weight: 10
+        steps:
+          - type: call
+            node: fuzzy-gov-node-1
+            context_id: "{{group_ctx_id}}"
+            method: set
+            args:
+              key: "consistency_{{uuid}}"
+              value: "check_{{timestamp}}"
+          - type: wait
+            seconds: 2
+          - type: call
+            node: fuzzy-gov-node-3
+            context_id: "{{group_ctx_id}}"
+            method: get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              consistency_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - statement: "contains({{consistency_result}}, {{fuzzy_value}})"
+                message: "Cross-node value should match the set value"
+
+  # ── Phase 4: Post-load governance churn ─────────────────────────────
+  # Exercises the governance API surface after sustained load to make
+  # sure publish_and_await_ack still services typed governance ops on
+  # a hot mesh. This is the closest we can get to per-op governance
+  # fuzzing without extending merobox's fuzzy_test step (tracked as a
+  # follow-up; native governance op weighting in fuzzy_test would let
+  # us mix in role/cap changes during the load run rather than after).
+  #
+  # Step types here intentionally mirror those exercised in
+  # `apps/e2e-kv-store/workflows/group-{capabilities,membership,subgroup}.yml`
+  # so we stay within the merobox-supported step surface.
+  - name: Restrict node-3 capabilities (post-load)
+    type: set_member_capabilities
+    node: fuzzy-gov-node-1
+    group_id: "{{namespace_id}}"
+    member_id: "{{identity_node3}}"
+    capabilities: 3
+
+  - name: Restore node-3 capabilities (post-load)
+    type: set_member_capabilities
+    node: fuzzy-gov-node-1
+    group_id: "{{namespace_id}}"
+    member_id: "{{identity_node3}}"
+    capabilities: 7
+
+  - name: Create subgroup post-load
+    type: create_group_in_namespace
+    node: fuzzy-gov-node-1
+    namespace_id: "{{namespace_id}}"
+    group_alias: post-load-subgroup
+    outputs:
+      subgroup_id: groupId
+
+  - name: Add node-2 to post-load subgroup
+    type: add_group_members
+    node: fuzzy-gov-node-1
+    group_id: "{{subgroup_id}}"
+    members:
+      - identity: "{{identity_node2}}"
+        role: Member
+
+  - name: Remove node-2 from post-load subgroup
+    type: remove_group_members
+    node: fuzzy-gov-node-1
+    group_id: "{{subgroup_id}}"
+    members:
+      - "{{identity_node2}}"
+
+  # ── Phase 5: Final convergence + assertions ─────────────────────────
+  - name: Final mesh sync
+    type: wait_for_sync
+    context_id: "{{group_ctx_id}}"
+    nodes:
+      - fuzzy-gov-node-1
+      - fuzzy-gov-node-2
+      - fuzzy-gov-node-3
+      - fuzzy-gov-node-4
+    timeout: 180
+    check_interval: 2
+
+  - name: Final namespace member list
+    type: list_group_members
+    node: fuzzy-gov-node-1
+    group_id: "{{namespace_id}}"
+    outputs:
+      final_members: members
+
+  - name: Final entry count
+    type: call
+    node: fuzzy-gov-node-1
+    context_id: "{{group_ctx_id}}"
+    method: len
+    outputs:
+      final_count: result
+
+  - name: Log final statistics
+    type: assert
+    statements:
+      - "is_set({{final_members}})"
+      - "is_set({{final_count}})"
+      - "is_set({{subgroup_id}})"
+
+# Configuration options
+stop_all_nodes: false
+restart: false
+wait_timeout: 3600 # 1 hour timeout for long-running test
