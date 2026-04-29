@@ -620,9 +620,19 @@ impl ContextStorageApplier {
     /// restoration completes.
     async fn restore_topology(&self, deltas: impl IntoIterator<Item = ([u8; 32], Vec<[u8; 32]>)>) {
         let mut topology = self.topology.write().await;
-        for (delta_id, parents) in deltas {
-            let _previous = topology.insert(delta_id, parents);
-        }
+        seed_topology(&mut topology, deltas);
+    }
+}
+
+/// Pure seed of a topology mirror. Extracted so the seeding semantics
+/// (later entries overwrite earlier ones with the same delta id) can be
+/// unit-tested without standing up a `ContextStorageApplier`.
+fn seed_topology(
+    topology: &mut HashMap<[u8; 32], Vec<[u8; 32]>>,
+    deltas: impl IntoIterator<Item = ([u8; 32], Vec<[u8; 32]>)>,
+) {
+    for (delta_id, parents) in deltas {
+        let _previous = topology.insert(delta_id, parents);
     }
 }
 
@@ -2130,5 +2140,149 @@ impl DeltaStore {
         );
 
         added_count
+    }
+}
+
+#[cfg(test)]
+mod happens_before_tests {
+    //! Direct unit tests for the topology-snapshot reachability primitive
+    //! that drives Shared writer-set resolution at apply time. Covered
+    //! cases mirror the ADR 0001 examples and the bounded-cache reasoning
+    //! in `apply()`.
+
+    use super::*;
+
+    fn id(b: u8) -> [u8; 32] {
+        [b; 32]
+    }
+
+    fn topology(edges: &[(u8, &[u8])]) -> HashMap<[u8; 32], Vec<[u8; 32]>> {
+        edges
+            .iter()
+            .map(|(child, parents)| (id(*child), parents.iter().copied().map(id).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn self_is_not_strict_ancestor() {
+        let t = topology(&[(2, &[1])]);
+        assert!(!happens_before_in_topology(&t, &id(1), &id(1)));
+        assert!(!happens_before_in_topology(&t, &id(2), &id(2)));
+    }
+
+    #[test]
+    fn single_hop_ancestry() {
+        // 1 → 2
+        let t = topology(&[(2, &[1])]);
+        assert!(happens_before_in_topology(&t, &id(1), &id(2)));
+        assert!(!happens_before_in_topology(&t, &id(2), &id(1)));
+    }
+
+    #[test]
+    fn transitive_ancestry() {
+        // 1 → 2 → 3 → 4
+        let t = topology(&[(2, &[1]), (3, &[2]), (4, &[3])]);
+        assert!(happens_before_in_topology(&t, &id(1), &id(4)));
+        assert!(happens_before_in_topology(&t, &id(2), &id(4)));
+        assert!(!happens_before_in_topology(&t, &id(4), &id(1)));
+    }
+
+    #[test]
+    fn diamond_merge() {
+        //   1
+        //  / \
+        // 2   3
+        //  \ /
+        //   4
+        let t = topology(&[(2, &[1]), (3, &[1]), (4, &[2, 3])]);
+        assert!(happens_before_in_topology(&t, &id(1), &id(4)));
+        assert!(happens_before_in_topology(&t, &id(2), &id(4)));
+        assert!(happens_before_in_topology(&t, &id(3), &id(4)));
+        // Siblings 2 and 3 are concurrent — neither precedes the other.
+        assert!(!happens_before_in_topology(&t, &id(2), &id(3)));
+        assert!(!happens_before_in_topology(&t, &id(3), &id(2)));
+    }
+
+    #[test]
+    fn unknown_node_returns_false() {
+        // Querying a node the topology has never seen must be a clean
+        // false, not a panic — happens during sync when peers reference
+        // deltas we haven't received yet.
+        let t = topology(&[(2, &[1])]);
+        assert!(!happens_before_in_topology(&t, &id(1), &id(99)));
+        assert!(!happens_before_in_topology(&t, &id(99), &id(2)));
+    }
+
+    #[test]
+    fn missing_parent_terminates() {
+        // Topology references a parent it doesn't list (42 has no own
+        // entry). BFS must terminate cleanly at that leaf — and report
+        // 42 as a direct ancestor of 2, since 2's parent list contains
+        // it. Anything *behind* 42 is unknown and reports false.
+        let t = topology(&[(2, &[42])]);
+        assert!(happens_before_in_topology(&t, &id(42), &id(2)));
+        assert!(!happens_before_in_topology(&t, &id(1), &id(2)));
+        assert!(!happens_before_in_topology(&t, &id(99), &id(42)));
+    }
+
+    #[test]
+    fn cycle_is_resilient() {
+        // Causal DAGs cannot have cycles, but the BFS must still
+        // terminate if a malformed mirror ever produced one — the
+        // `seen` set is the load-bearing guard.
+        let t = topology(&[(1, &[2]), (2, &[1])]);
+        // The query terminates rather than spinning; ancestry result
+        // for cyclic input is best-effort.
+        let _ = happens_before_in_topology(&t, &id(1), &id(2));
+        let _ = happens_before_in_topology(&t, &id(2), &id(1));
+    }
+}
+
+#[cfg(test)]
+mod seed_topology_tests {
+    //! `seed_topology` is the cross-restart correctness hinge: without
+    //! the seeding step in `load_persisted_deltas`, the topology mirror
+    //! is empty after restart and `happens_before` returns false for all
+    //! ancestry that pre-dates the restart.
+
+    use super::*;
+
+    fn id(b: u8) -> [u8; 32] {
+        [b; 32]
+    }
+
+    #[test]
+    fn seeded_chain_is_visible_to_happens_before() {
+        // Pretend we restored a 1 → 2 → 3 chain from disk.
+        let mut topology = HashMap::new();
+        seed_topology(
+            &mut topology,
+            vec![(id(2), vec![id(1)]), (id(3), vec![id(2)])],
+        );
+
+        assert!(happens_before_in_topology(&topology, &id(1), &id(3)));
+        assert!(happens_before_in_topology(&topology, &id(2), &id(3)));
+        assert!(!happens_before_in_topology(&topology, &id(3), &id(1)));
+    }
+
+    #[test]
+    fn seed_overwrites_existing_entries() {
+        // If the same id appears twice (shouldn't, but defensive), the
+        // later one wins — same semantic as the `apply()` path's
+        // `topology.insert(...)`.
+        let mut topology = HashMap::new();
+        seed_topology(&mut topology, vec![(id(2), vec![id(1)])]);
+        seed_topology(&mut topology, vec![(id(2), vec![id(7)])]);
+
+        assert_eq!(topology.get(&id(2)), Some(&vec![id(7)]));
+    }
+
+    #[test]
+    fn seed_with_empty_iter_is_noop() {
+        let mut topology = HashMap::new();
+        let _ = topology.insert(id(2), vec![id(1)]);
+        seed_topology(&mut topology, std::iter::empty());
+        assert_eq!(topology.len(), 1);
+        assert_eq!(topology.get(&id(2)), Some(&vec![id(1)]));
     }
 }
