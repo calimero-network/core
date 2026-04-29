@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
+use calimero_context::governance_broadcast::ObserveDelivery;
 use calimero_context::group_store;
 use calimero_context_client::group::{JoinContextRequest, ListGroupContextsRequest};
 use calimero_context_config::types::ContextGroupId;
@@ -218,13 +219,7 @@ pub async fn handler(
                 .await
                 {
                     Ok(report) => {
-                        if let Some(report) = report.as_ref() {
-                            calimero_context::governance_broadcast::observe_handler_delivery(
-                                "fleet_join",
-                                "MemberSetAutoFollow",
-                                report,
-                            );
-                        }
+                        report.observe("fleet_join", "MemberSetAutoFollow");
                         info!(
                             group_id = %req.group_id,
                             "fleet-join: auto-follow enabled for self"

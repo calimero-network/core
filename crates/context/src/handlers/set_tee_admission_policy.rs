@@ -7,7 +7,7 @@ use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
-use crate::governance_broadcast::observe_handler_delivery;
+use crate::governance_broadcast::ObserveDelivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -113,13 +113,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                     },
                 )
                 .await?;
-                if let Some(report) = report.as_ref() {
-                    observe_handler_delivery(
-                        "set_tee_admission_policy",
-                        "TeeAdmissionPolicySet",
-                        report,
-                    );
-                }
+                report.observe("set_tee_admission_policy", "TeeAdmissionPolicySet");
 
                 info!(?group_id, accept_mock, "TEE admission policy updated");
 

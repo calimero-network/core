@@ -4,6 +4,7 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use axum::Json;
+use calimero_context::governance_broadcast::ObserveDelivery;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
@@ -105,11 +106,7 @@ pub async fn handler(
     .await
     {
         Ok(report) => {
-            calimero_context::governance_broadcast::observe_handler_delivery(
-                "create_group_in_namespace",
-                "GroupCreated",
-                &report,
-            );
+            report.observe("create_group_in_namespace", "GroupCreated");
             let group_id = calimero_context_config::types::ContextGroupId::from(group_id);
 
             // Store the creator's signing key for the new subgroup. Without

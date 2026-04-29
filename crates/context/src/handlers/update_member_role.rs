@@ -5,7 +5,7 @@ use calimero_context_client::group::UpdateMemberRoleRequest;
 use calimero_context_client::local_governance::GroupOp;
 use calimero_primitives::context::GroupMemberRole;
 
-use crate::governance_broadcast::observe_handler_delivery;
+use crate::governance_broadcast::ObserveDelivery;
 use crate::{group_store, ContextManager};
 
 impl Handler<UpdateMemberRoleRequest> for ContextManager {
@@ -82,9 +82,7 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
                     },
                 )
                 .await?;
-                if let Some(report) = report.as_ref() {
-                    observe_handler_delivery("update_member_role", "MemberRoleSet", report);
-                }
+                report.observe("update_member_role", "MemberRoleSet");
                 tracing::info!(?group_id, ?identity, "member role updated");
                 Ok(())
             }

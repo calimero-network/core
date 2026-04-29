@@ -7,7 +7,7 @@ use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
-use crate::governance_broadcast::observe_handler_delivery;
+use crate::governance_broadcast::ObserveDelivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -116,7 +116,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                     op,
                 )
                 .await?;
-                observe_handler_delivery("delete_group", "GroupDeleted", &report);
+                report.observe("delete_group", "GroupDeleted");
 
                 // Best-effort unsubscribe — the group is gone now, no point
                 // staying on its topic. Subscriptions for descendants likewise.
