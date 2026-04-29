@@ -315,6 +315,13 @@ steps:
       - "{{identity_node2}}"
 
   # ── Phase 5: Final convergence + assertions ─────────────────────────
+  # 600s timeout (vs 180s on the kv-store-only fuzzy test) because this
+  # test runs governance-mediated load — every kv `set` traverses the
+  # governance topic in addition to the data path, AND Phase 4 piles on
+  # capability/subgroup/membership churn after the load. Under that
+  # combined backlog the post-load mesh-sync window is meaningfully
+  # larger than the pure-data fuzzy test. Sized empirically against the
+  # observed sync lag during this PR's CI runs (#2271).
   - name: Final mesh sync
     type: wait_for_sync
     context_id: "{{group_ctx_id}}"
@@ -323,8 +330,8 @@ steps:
       - fuzzy-gov-node-2
       - fuzzy-gov-node-3
       - fuzzy-gov-node-4
-    timeout: 180
-    check_interval: 2
+    timeout: 600
+    check_interval: 5
 
   - name: Final namespace member list
     type: list_group_members
