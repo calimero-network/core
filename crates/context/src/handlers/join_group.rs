@@ -5,6 +5,7 @@ use std::time::Instant;
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{JoinGroupRequest, JoinGroupResponse};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+use calimero_context_client::messages::NamespaceApplyOutcome;
 use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key;
@@ -154,12 +155,27 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 }
 
                 // Apply governance ops so the local DAG is up to date.
+                let mut any_applied = false;
                 for op_bytes in &join_result.governance_ops {
                     if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(op_bytes) {
-                        if let Err(e) = context_client.apply_signed_namespace_op(op).await {
-                            warn!(?e, "failed to apply governance op from join response");
+                        match context_client.apply_signed_namespace_op(op).await {
+                            Ok(NamespaceApplyOutcome::Applied) => {
+                                any_applied = true;
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                warn!(?e, "failed to apply governance op from join response");
+                            }
                         }
                     }
+                }
+                // FSM notify after the batch — closes the gap where a
+                // joiner that catches up exclusively via the direct join
+                // response never tells the readiness FSM about its DAG
+                // advance. Same pattern as the receive-path notifies in
+                // `crates/node/src/handlers/network_event/namespace.rs`.
+                if any_applied {
+                    node_client.notify_namespace_op_applied(namespace_id);
                 }
 
                 // Pull any governance ops published during (or just before) the

@@ -2720,8 +2720,10 @@ impl SyncManager {
             return;
         }
 
+        use calimero_context_client::messages::NamespaceApplyOutcome;
         let ops_count = response.len();
         let mut applied = 0usize;
+        let mut newly_applied = 0usize;
         for (_delta_id, op_bytes) in response {
             let op = match borsh::from_slice::<
                 calimero_context_client::local_governance::SignedNamespaceOp,
@@ -2738,16 +2740,33 @@ impl SyncManager {
                     continue;
                 }
             };
-            if let Err(err) = self.context_client.apply_signed_namespace_op(op).await {
-                debug!(
-                    %context_id,
-                    %their_identity,
-                    %err,
-                    "failed to apply catch-up op"
-                );
-                continue;
+            match self.context_client.apply_signed_namespace_op(op).await {
+                Ok(NamespaceApplyOutcome::Applied) => {
+                    applied += 1;
+                    newly_applied += 1;
+                }
+                Ok(_) => {
+                    applied += 1;
+                }
+                Err(err) => {
+                    debug!(
+                        %context_id,
+                        %their_identity,
+                        %err,
+                        "failed to apply catch-up op"
+                    );
+                    continue;
+                }
             }
-            applied += 1;
+        }
+
+        // Single FSM notification after the batch when we actually
+        // advanced the local applied_through. `Pending` (parents missing)
+        // and `Duplicate` outcomes are no-progress from the FSM's POV,
+        // so we skip the mailbox hop in those cases. Mirrors the gate
+        // used at `network_event/namespace.rs:120`.
+        if newly_applied > 0 {
+            self.node_client.notify_namespace_op_applied(namespace_id);
         }
 
         debug!(
@@ -3157,48 +3176,56 @@ impl SyncManager {
                     ops = deltas.len(),
                     "received namespace governance ops from peer"
                 );
+                use calimero_context_client::messages::NamespaceApplyOutcome;
+                let mut newly_applied = false;
                 for (delta_id, op_bytes) in deltas {
                     match borsh::from_slice::<
                         calimero_context_client::local_governance::SignedNamespaceOp,
                     >(&op_bytes)
                     {
                         Ok(op) => {
-                            if let Err(err) = self
+                            match self
                                 .context_client
                                 .apply_signed_namespace_op(op.clone())
                                 .await
                             {
-                                // Capture enough context to diagnose codec/schema
-                                // mismatches (observed as "Unexpected length of
-                                // input" from the inner GroupOp decode when a
-                                // variant's binary layout has drifted). The
-                                // op-type tag + byte-length give us a fingerprint
-                                // without logging potentially sensitive payload.
-                                let op_kind = match &op.op {
-                                    calimero_context_client::local_governance::NamespaceOp::Root(r) => {
-                                        format!("Root::{r:?}").split('{').next().unwrap_or("Root").trim().to_owned()
+                                Err(err) => {
+                                    // Capture enough context to diagnose codec/schema
+                                    // mismatches (observed as "Unexpected length of
+                                    // input" from the inner GroupOp decode when a
+                                    // variant's binary layout has drifted). The
+                                    // op-type tag + byte-length give us a fingerprint
+                                    // without logging potentially sensitive payload.
+                                    let op_kind = match &op.op {
+                                        calimero_context_client::local_governance::NamespaceOp::Root(r) => {
+                                            format!("Root::{r:?}").split('{').next().unwrap_or("Root").trim().to_owned()
+                                        }
+                                        calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
+                                            "Group".to_owned()
+                                        }
+                                    };
+                                    warn!(
+                                        namespace_id = %hex::encode(namespace_id),
+                                        delta_id = %hex::encode(delta_id),
+                                        op_kind = %op_kind,
+                                        signer = %op.signer,
+                                        nonce = op.nonce,
+                                        op_bytes_len = op_bytes.len(),
+                                        ?err,
+                                        "failed to apply namespace governance op from backfill"
+                                    );
+                                }
+                                Ok(outcome) => {
+                                    if matches!(outcome, NamespaceApplyOutcome::Applied) {
+                                        newly_applied = true;
                                     }
-                                    calimero_context_client::local_governance::NamespaceOp::Group { .. } => {
-                                        "Group".to_owned()
-                                    }
-                                };
-                                warn!(
-                                    namespace_id = %hex::encode(namespace_id),
-                                    delta_id = %hex::encode(delta_id),
-                                    op_kind = %op_kind,
-                                    signer = %op.signer,
-                                    nonce = op.nonce,
-                                    op_bytes_len = op_bytes.len(),
-                                    ?err,
-                                    "failed to apply namespace governance op from backfill"
-                                );
-                            } else {
-                                crate::key_delivery::maybe_publish_key_delivery(
-                                    &self.context_client,
-                                    &self.node_client,
-                                    &op,
-                                )
-                                .await;
+                                    crate::key_delivery::maybe_publish_key_delivery(
+                                        &self.context_client,
+                                        &self.node_client,
+                                        &op,
+                                    )
+                                    .await;
+                                }
                             }
                         }
                         Err(err) => {
@@ -3212,6 +3239,12 @@ impl SyncManager {
                             );
                         }
                     }
+                }
+                // FSM notify after the batch — gated on at least one
+                // `Applied` outcome (Pending/Duplicate are no-progress).
+                // See the governance-catch-up notify above for rationale.
+                if newly_applied {
+                    self.node_client.notify_namespace_op_applied(namespace_id);
                 }
             }
             _ => {
