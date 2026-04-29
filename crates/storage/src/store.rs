@@ -167,7 +167,27 @@ pub mod mocked {
         pub(crate) static STORAGE: RefCell<BTreeMap<(Scope, Key), Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
     }
 
-    /// The mocked storage system.
+    /// In-memory mocked storage backend, scoped by a const generic so
+    /// multiple instances can coexist in one test process without
+    /// stepping on each other's state.
+    ///
+    /// # Scope contract
+    ///
+    /// The `SCOPE` const generic is the **only** thing isolating one
+    /// `MockedStorage<N>` from another. Two binaries linking
+    /// `calimero-storage` (e.g. a test binary that depends on both
+    /// `calimero-storage`'s tests and `calimero-node`'s tests via the
+    /// `testing` feature) share the same thread-local `STORAGE`, so a
+    /// scope-integer collision silently merges their state.
+    ///
+    /// Reserved scope ranges, to keep cross-crate usage from colliding:
+    ///
+    /// - `0..1_000`              — reserved for `calimero-storage`'s own tests.
+    /// - `usize::MAX`            — reserved for `DefaultStore` fallback (see `env.rs`).
+    /// - everything else         — available to dependent crates.
+    ///
+    /// New crates pulling in `MockedStorage` should pick a band well
+    /// outside the above. Per #2272 review.
     pub struct MockedStorage<const SCOPE: usize>;
 
     impl<const SCOPE: usize> StorageAdaptor for MockedStorage<SCOPE> {

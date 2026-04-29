@@ -130,6 +130,27 @@ impl ApplyContext {
 // storage dev-dependency. Production builds (no `testing` feature, no
 // `cfg(test)`) compile out the toggle entirely so the nonce check stays
 // live — `nonce_check_disabled_for_testing` reduces to `const false`.
+//
+// SECURITY: the `testing` feature disables replay protection for Shared
+// storage actions. The compile-error below blocks any release build that
+// accidentally activates it — the typical path is a downstream crate
+// declaring `calimero-storage = { ..., features = ["testing"] }` as a
+// regular dependency rather than `[dev-dependencies]`. Cargo's feature
+// unification would then propagate it into the production binary. The
+// guard fires only in release-without-test, so dev builds and `cargo test`
+// (with or without `--release` on test profile) keep working. Per #2272
+// review.
+
+#[cfg(all(feature = "testing", not(test), not(debug_assertions)))]
+compile_error!(
+    "calimero-storage `testing` feature enables `disable_nonce_check_for_testing`, \
+     which turns off replay protection for Shared storage actions. \
+     This must NEVER be enabled in a release build. \
+     If you see this error: a dependency declared `features = [\"testing\"]` \
+     outside `[dev-dependencies]` and Cargo's feature unification leaked \
+     it into the release graph. Move it into `[dev-dependencies]` or drop \
+     the feature."
+);
 
 #[cfg(any(test, feature = "testing"))]
 thread_local! {
@@ -140,11 +161,17 @@ thread_local! {
 /// that re-enables on drop, so a single test can scope the bypass without
 /// leaking it to the next test on the same thread.
 ///
-/// Tests should use this only when validating the **v3 target behavior**
-/// — i.e., the cross-node convergence properties that DAG-causal
-/// verification provides once the nonce check is retired. Tests of the
-/// nonce check itself (or of behavior expected to hold under the v2
-/// regime) should NOT bypass.
+/// # Security
+///
+/// **This disables replay protection for Shared storage actions.** Use
+/// it **only** when validating the v3 target behavior (post-#2266
+/// telemetry-soak nonce-check removal). Never call this from production
+/// code paths — the `testing` feature it depends on is rejected at
+/// compile time in release builds, but a stray call from a non-test code
+/// path inside a debug build would still create a window.
+///
+/// Tests of the nonce check itself (or of behavior expected to hold
+/// under the v2 regime) should NOT bypass.
 #[cfg(any(test, feature = "testing"))]
 #[must_use]
 pub fn disable_nonce_check_for_testing() -> NonceCheckGuard {
