@@ -48,12 +48,14 @@
 //! buffering → resolve → cache → Borsh artifact → verifier swap) for the
 //! partition / late-delivery cases #2266 was opened to fix.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+
+use indexmap::IndexMap;
 use std::sync::Arc;
 
 use borsh::{from_slice, to_vec};
 use calimero_dag::{ApplyError, CausalDelta, DagStore, DeltaApplier, DeltaKind};
-use calimero_node::sync::rotation_log_reader;
+use calimero_node::sync::{happens_before_in_topology, rotation_log_reader};
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
 use calimero_storage::address::Id;
@@ -149,34 +151,6 @@ fn build_signed_shared_action(
     action
 }
 
-/// Reverse-BFS reachability over a `delta_id → parents` mirror: returns
-/// true iff `a` is in the transitive ancestry of `b`. Mirrors the
-/// production `delta_store::happens_before_in_topology` so this probe
-/// resolves writer sets the same way the live sync layer does.
-fn happens_before_in_topology(
-    topology: &HashMap<[u8; 32], Vec<[u8; 32]>>,
-    a: &[u8; 32],
-    b: &[u8; 32],
-) -> bool {
-    if a == b {
-        return false;
-    }
-    let mut frontier: Vec<[u8; 32]> = topology.get(b).cloned().unwrap_or_default();
-    let mut seen: HashSet<[u8; 32]> = HashSet::new();
-    while let Some(node) = frontier.pop() {
-        if !seen.insert(node) {
-            continue;
-        }
-        if &node == a {
-            return true;
-        }
-        if let Some(parents) = topology.get(&node) {
-            frontier.extend(parents.iter().copied());
-        }
-    }
-    false
-}
-
 // =============================================================================
 // SharedRotationApplier — production-flow mirror minus the WASM hop
 // =============================================================================
@@ -188,18 +162,15 @@ fn happens_before_in_topology(
 ///
 /// - the per-Shared-entity resolution loop (`writers_at`),
 /// - the topology mirror that `happens_before_in_topology` consults,
-/// - the `(entity_id, delta_id)` cache,
 /// - Borsh roundtrip of [`StorageDelta::CausalActions`],
 /// - the receiver-side variant branching that builds a per-action
 ///   [`ApplyContext`] from the resolved map.
 struct SharedRotationApplier {
     /// `delta_id → parents` for every applied delta. Updated after a
     /// successful apply. Used as the snapshot the `happens_before`
-    /// closure runs against during resolution.
-    topology: Arc<RwLock<HashMap<[u8; 32], Vec<[u8; 32]>>>>,
-    /// Resolved writer-set cache. Same key/shape as
-    /// `ContextStorageApplier::effective_writers_cache`.
-    effective_writers_cache: Arc<RwLock<HashMap<(Id, [u8; 32]), BTreeSet<PublicKey>>>>,
+    /// closure runs against during resolution. `IndexMap` to mirror
+    /// production's deterministic insertion-order iteration.
+    topology: Arc<RwLock<IndexMap<[u8; 32], Vec<[u8; 32]>>>>,
     /// Successful-apply log (id + action count + serialized artifact
     /// size) for assertions.
     applied: Arc<RwLock<Vec<AppliedDelta>>>,
@@ -216,8 +187,7 @@ struct AppliedDelta {
 impl SharedRotationApplier {
     fn new() -> Self {
         Self {
-            topology: Arc::new(RwLock::new(HashMap::new())),
-            effective_writers_cache: Arc::new(RwLock::new(HashMap::new())),
+            topology: Arc::new(RwLock::new(IndexMap::new())),
             applied: Arc::new(RwLock::new(Vec::new())),
         }
     }
@@ -254,12 +224,6 @@ impl SharedRotationApplier {
         let topology_snapshot = self.topology.read().await.clone();
 
         for entity_id in shared_entities {
-            let cache_key = (entity_id, delta.id);
-            if let Some(cached) = self.effective_writers_cache.read().await.get(&cache_key) {
-                let _replaced = out.insert(entity_id, cached.clone());
-                continue;
-            }
-
             let log = match rotation_log::load::<MainStorage>(entity_id) {
                 Ok(Some(log)) => log,
                 Ok(None) => continue, // No log → verifier falls back to v2 stored-writers.
@@ -271,9 +235,7 @@ impl SharedRotationApplier {
             });
 
             if let Some(set) = resolved {
-                let _replaced = out.insert(entity_id, set.clone());
-                let mut cache = self.effective_writers_cache.write().await;
-                let _previous = cache.insert(cache_key, set);
+                let _replaced = out.insert(entity_id, set);
             }
         }
 

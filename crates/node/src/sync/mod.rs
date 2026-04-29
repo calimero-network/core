@@ -58,6 +58,9 @@ mod p3_dag_causal_tests;
 mod p5_partition_scenarios_tests;
 
 pub use config::SyncConfig;
+// Re-export for integration tests so they can mirror the production
+// resolve flow without copying the BFS body (#2272 review).
+pub use crate::delta_store::happens_before_in_topology;
 pub use hash_comparison_protocol::{
     HashComparisonConfig, HashComparisonFirstRequest, HashComparisonProtocol, HashComparisonStats,
 };
