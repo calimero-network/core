@@ -211,12 +211,7 @@ mod tests {
                     ancestors: vec![],
                     metadata: Metadata::default(),
                 },
-                ApplyContext {
-                    causal_parents: &[],
-                    delta_id: None,
-                    delta_hlc: None,
-                    happens_before: None,
-                },
+                &ApplyContext::empty(),
             )
         });
         assert!(write_result.is_ok(), "apply_action should succeed");

@@ -421,3 +421,51 @@ fn test_new_storage_types() {
         TypeRef::map(TypeRef::list(TypeRef::reference("Person"))) // [cite: 31, 290]
     );
 }
+
+#[test]
+fn test_authored_collections_preserve_crdt_type() {
+    use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType};
+
+    let mut resolver = MockResolver::new();
+    resolver.add_record("Person");
+
+    // `AuthoredMap<String, u64>` normalizes to a Map<string, u64> with
+    // `crdt_type = AuthoredMap`. Codegen consumers dispatch on this tag
+    // to emit the open-insert / owner-only-update API surface.
+    let normalized =
+        normalize_type(&parse_type("AuthoredMap<String, u64>"), true, &resolver).unwrap();
+    match normalized {
+        TypeRef::Collection {
+            collection,
+            crdt_type,
+            ..
+        } => {
+            assert_eq!(crdt_type, Some(CrdtCollectionType::AuthoredMap));
+            assert!(
+                matches!(collection, CollectionType::Map { .. }),
+                "AuthoredMap must surface as a Map collection"
+            );
+        }
+        other => panic!("expected Collection variant, got {other:?}"),
+    }
+
+    // `AuthoredVector<Person>` normalizes to a List<$ref:Person> with
+    // `crdt_type = AuthoredVector`. Mirrors the Vector arm except for
+    // the per-element author identity carried at the storage layer.
+    let normalized =
+        normalize_type(&parse_type("AuthoredVector<Person>"), true, &resolver).unwrap();
+    match normalized {
+        TypeRef::Collection {
+            collection,
+            crdt_type,
+            ..
+        } => {
+            assert_eq!(crdt_type, Some(CrdtCollectionType::AuthoredVector));
+            assert!(
+                matches!(collection, CollectionType::List { .. }),
+                "AuthoredVector must surface as a List collection"
+            );
+        }
+        other => panic!("expected Collection variant, got {other:?}"),
+    }
+}

@@ -1,45 +1,30 @@
 //! Phase **P5** of [#2233](https://github.com/calimero-network/core/issues/2233):
 //! cross-node integration tests for the four motivating partition scenarios.
 //!
-//! Each test simulates 2–3 "nodes" — each backed by its own
-//! [`MockedStorage`] scope — and feeds them the same [`CausalDelta`]s in
-//! different orders. With the P3 verifier swap and rotation-log write hook
-//! in place, the four #2197 scenarios should resolve correctly:
-//!
-//! - **Update-vs-rotation race** (Bob writes pre-rotation under partition;
-//!   rotation lands first on Carol; Bob's write must be accepted).
-//! - **Self-removal mid-flight** (writer rotates self out, in-flight updates
-//!   causally-before the rotation are accepted, after rejected).
-//! - **Concurrent conflicting rotations** (two writers issue rotations
-//!   concurrently — deterministic convergence per ADR 0001).
-//! - **Long-partition reconciliation** (many rotations + writes on each side,
-//!   then merge — both sides converge to the same final state).
-//!
-//! The fifth listed motivator (bootstrap race) is deferred per ADR 0001 —
-//! see "What we explicitly do NOT decide here".
-//!
-//! These tests run at the storage layer rather than via the WASM/sync
-//! harnesses because the production WASM ABI doesn't yet thread
-//! `CausalDelta.{id,hlc,parents}` through to `apply_action` — that's a
-//! separate follow-up. The storage-layer simulation gives us full control
-//! over delivery order and DAG ancestry, which is what the scenarios
-//! actually exercise.
+//! Migrated from `calimero_storage::tests::p5_partition_scenarios` per #2266
+//! step 5 — the storage crate no longer carries DAG-ancestry knowledge, so
+//! these scenarios live where the DAG does. The `deliver` helper now
+//! mirrors the production sync-layer flow: load the rotation log, resolve
+//! `effective_writers` via [`crate::sync::rotation_log_reader::writers_at`],
+//! and apply with the resolved set in `ApplyContext`. See ADR 0001.
 
 use core::num::NonZeroU128;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
-use ed25519_dalek::SigningKey;
+use calimero_primitives::identity::PublicKey;
+use calimero_storage::action::Action;
+use calimero_storage::address::Id;
+use calimero_storage::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+use calimero_storage::index::Index;
+use calimero_storage::interface::{
+    disable_nonce_check_for_testing, ApplyContext, Interface, StorageError,
+};
+use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+use calimero_storage::rotation_log;
+use calimero_storage::store::{MockedStorage, StorageAdaptor};
+use ed25519_dalek::{Signer, SigningKey};
 
-use crate::action::Action;
-use crate::address::Id;
-use crate::entities::{ChildInfo, Metadata};
-use crate::env;
-use crate::index::Index;
-use crate::interface::{disable_nonce_check_for_testing, ApplyContext, Interface, StorageError};
-use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-use crate::rotation_log;
-use crate::store::{MockedStorage, StorageAdaptor};
-use crate::tests::common::{build_signed_shared_action, pubkey_of};
+use crate::sync::rotation_log_reader;
 
 // =============================================================================
 // Harness
@@ -59,13 +44,10 @@ impl Dag {
         }
     }
 
-    /// Record a delta and its parents.
     fn record(&mut self, delta_id: [u8; 32], parents: Vec<[u8; 32]>) {
         self.parents.insert(delta_id, parents);
     }
 
-    /// `true` iff `ancestor` is in the transitive ancestry of `descendant`.
-    /// Same delta returns `false` (not strictly happens-before).
     fn happens_before(&self, ancestor: &[u8; 32], descendant: &[u8; 32]) -> bool {
         if ancestor == descendant {
             return false;
@@ -100,22 +82,84 @@ fn hlc(ns: u64) -> HybridTimestamp {
     HybridTimestamp::new(Timestamp::new(NTP64(ns), node_id))
 }
 
-/// Apply `delta` to a node identified by const-generic `SCOPE`. The DAG
-/// closure is taken by reference so the caller controls its lifetime; the
-/// rotation-log write hook and verifier both consult it.
+/// Apply `delta` to a node identified by const-generic `SCOPE`. Mirrors the
+/// production sync-layer flow from `delta_store::ContextStorageApplier::apply`:
+/// resolve `effective_writers` against the rotation log + DAG, build an
+/// `ApplyContext`, then `Interface::apply_action`.
 fn deliver<S: StorageAdaptor>(delta: &Delta, dag: &Dag) -> Result<(), StorageError> {
-    let happens_before: &dyn Fn(&[u8; 32], &[u8; 32]) -> bool = &|a, b| dag.happens_before(a, b);
+    let entity_id = delta.action.id();
+    let effective_writers: Option<BTreeSet<PublicKey>> = match rotation_log::load::<S>(entity_id)? {
+        Some(log) => {
+            rotation_log_reader::writers_at(&log, &delta.parents, |a, b| dag.happens_before(a, b))
+        }
+        None => None,
+    };
     let ctx = ApplyContext {
-        causal_parents: &delta.parents,
+        effective_writers,
         delta_id: Some(delta.id),
         delta_hlc: Some(hlc(delta.hlc_ns)),
-        happens_before: Some(happens_before),
     };
-    Interface::<S>::apply_action(delta.action.clone(), ctx)
+    Interface::<S>::apply_action(delta.action.clone(), &ctx)
 }
 
 fn make_signing_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
+}
+
+fn pubkey_of(sk: &SigningKey) -> PublicKey {
+    PublicKey::from(*sk.verifying_key().as_bytes())
+}
+
+/// Build a signed `Shared` storage action (Add or Update). Inlined from
+/// `calimero_storage::tests::common::build_signed_shared_action` because
+/// that module is `#[cfg(test)]` inside storage and not visible across crates.
+fn build_signed_shared_action(
+    add: bool,
+    id: Id,
+    data: Vec<u8>,
+    writers: BTreeSet<PublicKey>,
+    hlc_ns: u64,
+    signer_sk: &SigningKey,
+    ancestors: Vec<ChildInfo>,
+) -> Action {
+    let mut metadata = Metadata::new(hlc_ns, hlc_ns);
+    metadata.storage_type = StorageType::Shared {
+        writers,
+        signature_data: Some(SignatureData {
+            signature: [0; 64],
+            nonce: hlc_ns,
+            signer: Some(pubkey_of(signer_sk)),
+        }),
+    };
+    let mut action = if add {
+        Action::Add {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+    } else {
+        Action::Update {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+    };
+    let payload = action.payload_for_signing();
+    let signature = signer_sk.sign(&payload).to_bytes();
+    let metadata_mut = match &mut action {
+        Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata,
+        _ => unreachable!(),
+    };
+    if let StorageType::Shared {
+        signature_data: Some(sd),
+        ..
+    } = &mut metadata_mut.storage_type
+    {
+        sd.signature = signature;
+    }
+    action
 }
 
 fn setup_root<S: StorageAdaptor>() -> ChildInfo {
@@ -129,6 +173,21 @@ fn one_sec(n: u64) -> u64 {
     n.saturating_mul(1_000_000_000)
 }
 
+/// Resolve the writer set as-of a causal frontier by loading the log and
+/// running the node-side reader. Used by tests that assert convergence on
+/// rotated writer sets across nodes.
+fn writers_at_frontier<S: StorageAdaptor, F>(
+    id: Id,
+    frontier: &[[u8; 32]],
+    happens_before: F,
+) -> Option<BTreeSet<PublicKey>>
+where
+    F: Fn(&[u8; 32], &[u8; 32]) -> bool,
+{
+    let log = rotation_log::load::<S>(id).unwrap()?;
+    rotation_log_reader::writers_at(&log, frontier, happens_before)
+}
+
 // =============================================================================
 // Scenario 1: Update-vs-rotation race (#2197 motivator 1)
 // =============================================================================
@@ -140,14 +199,13 @@ fn one_sec(n: u64) -> u64 {
 /// rotation; from Bob's view he was authoritatively a writer when he
 /// authored the action.
 ///
-/// Without P3 this is the failure mode #2197 calls out: Carol's stored
-/// writer set after applying the rotation is {Alice}, so she'd reject
-/// Bob's signature against the stored set.
+/// Without the DAG-causal verifier this is the failure mode #2197 calls out:
+/// Carol's stored writer set after applying the rotation is {Alice}, so
+/// she'd reject Bob's signature against the stored set.
 #[test]
 fn update_vs_rotation_race_pre_rotation_write_accepted() {
-    env::reset_for_testing();
     let _nonce_off = disable_nonce_check_for_testing();
-    type Carol = MockedStorage<500>;
+    type Carol = MockedStorage<5500>;
     let root = setup_root::<Carol>();
 
     let alice_sk = make_signing_key(0xA1);
@@ -224,19 +282,6 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
     // The rotation log on Carol should have entries from D_root and D1; D2
     // was a value-write whose claimed `{Alice, Bob}` matches the bootstrap
     // set, so it doesn't trigger the rotation hook.
-    //
-    // KNOWN FRAGILITY (PR #2265 review): D2 is correctly skipped here only
-    // because the index's `storage_type.writers` is *frozen at bootstrap* —
-    // `Index::update_hash_for` updates `own_hash`/`full_hash`/`updated_at`
-    // but never touches `storage_type`. So `pre_apply_writers` returned to
-    // `maybe_append_rotation_log` is `{Alice, Bob}` (bootstrap), not the
-    // post-D1 `{Alice}`. The comparison `pre_apply_writers != action.writers`
-    // is thus `{A,B} != {A,B}` → not a rotation. If `update_hash_for` is
-    // ever changed to keep `storage_type` in sync, the rotation-detection
-    // logic must move to comparing against `writers_at(causal_parents)`
-    // instead of stored, or stale value-writes will be falsely logged.
-    // See `write_hook_relies_on_stale_stored_writers_for_rotation_detection`
-    // in p3_dag_causal.rs for the explicit demonstration. Tracked in #2233 P3.
     let log = rotation_log::load::<Carol>(id).unwrap().unwrap();
     assert_eq!(log.entries.len(), 2, "log has D_root and D1");
     assert_eq!(log.entries[0].delta_id, d_root_id);
@@ -254,9 +299,8 @@ fn update_vs_rotation_race_pre_rotation_write_accepted() {
 /// and tried to write anyway) should be rejected.
 #[test]
 fn self_removal_mid_flight_pre_accepted_post_rejected() {
-    env::reset_for_testing();
     let _nonce_off = disable_nonce_check_for_testing();
-    type Carol = MockedStorage<510>;
+    type Carol = MockedStorage<5510>;
     let root = setup_root::<Carol>();
 
     let alice_sk = make_signing_key(0xA2);
@@ -323,7 +367,6 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
     dag.record(d1.id, d1.parents.clone());
 
     // D3: Alice tries to write AFTER her own rotation — has D1 as parent.
-    // Per ADR she's no longer a writer at this causal point and must be rejected.
     let d3_id = [0xE3; 32];
     let d3 = Delta {
         id: d3_id,
@@ -350,8 +393,7 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
     let post_result = deliver::<Carol>(&d3, &dag);
     assert!(
         matches!(post_result, Err(StorageError::InvalidSignature)),
-        "post-rotation write by removed writer must be rejected; got {:?}",
-        post_result
+        "post-rotation write by removed writer must be rejected; got {post_result:?}",
     );
 }
 
@@ -366,10 +408,9 @@ fn self_removal_mid_flight_pre_accepted_post_rejected() {
 /// the same final writer set.
 #[test]
 fn concurrent_conflicting_rotations_deterministic_convergence() {
-    env::reset_for_testing();
     let _nonce_off = disable_nonce_check_for_testing();
-    type Carol = MockedStorage<520>;
-    type Dave = MockedStorage<521>;
+    type Carol = MockedStorage<5520>;
+    type Dave = MockedStorage<5521>;
     let carol_root = setup_root::<Carol>();
     let dave_root = setup_root::<Dave>();
 
@@ -471,12 +512,10 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
     let causal_frontier = [d1_id, d2_id];
     let happens_before = |a: &[u8; 32], b: &[u8; 32]| dag.happens_before(a, b);
 
-    let carol_writers = rotation_log::writers_at::<Carol, _>(id, &causal_frontier, &happens_before)
-        .unwrap()
-        .unwrap();
-    let dave_writers = rotation_log::writers_at::<Dave, _>(id, &causal_frontier, &happens_before)
-        .unwrap()
-        .unwrap();
+    let carol_writers =
+        writers_at_frontier::<Carol, _>(id, &causal_frontier, &happens_before).unwrap();
+    let dave_writers =
+        writers_at_frontier::<Dave, _>(id, &causal_frontier, &happens_before).unwrap();
 
     assert_eq!(carol_writers, dave_writers, "deterministic convergence");
     assert_eq!(
@@ -494,16 +533,11 @@ fn concurrent_conflicting_rotations_deterministic_convergence() {
 /// writes and rotations. After the partition heals, both nodes deliver each
 /// other's deltas. Both should agree on the same final answer for
 /// `writers_at` queried over the merged causal frontier.
-///
-/// The chains here are small (3 deltas per side) but the structure exercises
-/// the same logic at any depth: a long chain of causally-ordered rotations
-/// reduces to "the latest in causal order wins" per ADR 0001.
 #[test]
 fn long_partition_reconciliation_converges() {
-    env::reset_for_testing();
     let _nonce_off = disable_nonce_check_for_testing();
-    type Left = MockedStorage<530>;
-    type Right = MockedStorage<531>;
+    type Left = MockedStorage<5530>;
+    type Right = MockedStorage<5531>;
     let left_root = setup_root::<Left>();
     let right_root = setup_root::<Right>();
 
@@ -637,12 +671,8 @@ fn long_partition_reconciliation_converges() {
     let frontier = [l2, r2];
     let hb = |a: &[u8; 32], b: &[u8; 32]| dag.happens_before(a, b);
 
-    let left_writers = rotation_log::writers_at::<Left, _>(id, &frontier, &hb)
-        .unwrap()
-        .unwrap();
-    let right_writers = rotation_log::writers_at::<Right, _>(id, &frontier, &hb)
-        .unwrap()
-        .unwrap();
+    let left_writers = writers_at_frontier::<Left, _>(id, &frontier, &hb).unwrap();
+    let right_writers = writers_at_frontier::<Right, _>(id, &frontier, &hb).unwrap();
 
     assert_eq!(
         left_writers, right_writers,
