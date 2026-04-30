@@ -1,0 +1,25 @@
+name: Doc Auto-Update
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to generate docs for (leave blank to auto-detect)"
+        type: string
+        required: false
+      dry_run:
+        description: "Dry run: print changes without opening a PR"
+        type: boolean
+        default: false
+
+jobs:
+  doc-update:
+    uses: calimero-network/ai-code-reviewer/.github/workflows/doc-update.yaml@main
+    with:
+      dry_run: ${{ github.event.inputs.dry_run == 'true' }}
+      pr_number: ${{ github.event.inputs.pr_number }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GH_PAT: ${{ secrets.GH_PAT }}
