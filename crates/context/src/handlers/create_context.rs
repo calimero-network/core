@@ -24,6 +24,7 @@ use tracing::{debug, warn};
 
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::{group_store, ContextManager, ContextMeta};
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -99,6 +100,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         act.datastore.clone(),
                         act.node_client.clone(),
                         act.context_client.clone(),
+                        Arc::clone(&act.ack_router),
                         module,
                         external_config,
                         context_meta,
@@ -291,6 +293,7 @@ async fn create_context(
     datastore: Store,
     node_client: NodeClient,
     _context_client: ContextClient,
+    ack_router: Arc<calimero_context_client::local_governance::AckRouter>,
     module: calimero_runtime::Module,
     external_config: ContextConfigParams,
     mut context: Context,
@@ -327,6 +330,10 @@ async fn create_context(
         );
     }
 
+    // Returns `(db-row, actions)` — actions are kept alongside the
+    // serialized delta so we can notify the node-side DeltaStore to
+    // update its in-memory DAG without having to borsh-deserialize
+    // the serialized blob back out.
     let init_delta = if let Some(root_hash) = outcome.root_hash {
         context.root_hash = root_hash.into();
 
@@ -379,7 +386,7 @@ async fn create_context(
             "Created genesis delta with dag_heads"
         );
 
-        Some(delta)
+        Some((delta, actions))
     } else {
         None
     };
@@ -408,7 +415,7 @@ async fn create_context(
     )?;
 
     // Persist init delta if created
-    if let Some(delta) = init_delta {
+    if let Some((delta, actions)) = init_delta {
         handle.put(
             &key::ContextDagDelta::new(context.id, delta.delta_id),
             &delta,
@@ -418,6 +425,19 @@ async fn create_context(
             context_id = %context.id,
             delta_id = ?delta.delta_id,
             "Persisted init delta to database"
+        );
+
+        // Register into the in-memory DAG so sync doesn't have to
+        // rescan the DB to pick up this newly-persisted genesis delta.
+        node_client.notify_local_applied_delta(
+            calimero_node_primitives::client::LocalAppliedDelta {
+                context_id: context.id,
+                delta_id: delta.delta_id,
+                parents: delta.parents.clone(),
+                hlc: delta.hlc,
+                expected_root_hash: delta.expected_root_hash,
+                actions,
+            },
         );
     }
 
@@ -431,9 +451,10 @@ async fn create_context(
     // worst case is a single context associated with a since-removed member.
     {
         let sk = PrivateKey::from(*identity_secret);
-        group_store::sign_apply_and_publish(
+        let report = group_store::sign_apply_and_publish(
             &datastore,
             &node_client,
+            &ack_router,
             &group_id,
             &sk,
             GroupOp::ContextRegistered {
@@ -445,6 +466,9 @@ async fn create_context(
             },
         )
         .await?;
+        if let Some(report) = report.as_ref() {
+            observe_handler_delivery("create_context", "ContextRegistered", report);
+        }
     }
 
     // Write ContextIdentity so the sync key-share can find keys for this context.
@@ -464,9 +488,10 @@ async fn create_context(
 
     if let Some(ref alias_str) = alias {
         let sk = PrivateKey::from(*identity_secret);
-        group_store::sign_apply_and_publish(
+        let report = group_store::sign_apply_and_publish(
             &datastore,
             &node_client,
+            &ack_router,
             &group_id,
             &sk,
             GroupOp::ContextAliasSet {
@@ -475,6 +500,9 @@ async fn create_context(
             },
         )
         .await?;
+        if let Some(report) = report.as_ref() {
+            observe_handler_delivery("create_context", "ContextAliasSet", report);
+        }
     }
 
     Ok(context.root_hash)

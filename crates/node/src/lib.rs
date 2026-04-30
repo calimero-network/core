@@ -18,10 +18,12 @@ mod constants;
 mod delta_store;
 pub mod gc;
 pub mod handlers;
+pub mod join_namespace;
 pub mod key_delivery;
 mod manager;
 pub mod network_event_channel;
 pub mod network_event_processor;
+pub mod readiness;
 mod run;
 mod specialized_node_invite_state;
 mod state;
@@ -37,5 +39,7 @@ pub use run::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 pub(crate) use state::{CachedBlob, NodeClients, NodeManagers, NodeState};
 pub use sync::SyncManager;
 
+#[cfg(test)]
+mod delta_store_head_hashes_test;
 #[cfg(test)]
 mod local_governance_node_e2e;

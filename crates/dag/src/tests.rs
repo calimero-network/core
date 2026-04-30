@@ -134,6 +134,57 @@ async fn test_dag_duplicate_delta() {
     assert_eq!(applied[0], [1; 32]);
 }
 
+/// Regression: `add_delta_with_outcome` must distinguish Pending from
+/// Duplicate. The bool-returning `add_delta` collapses both into `Ok(false)`,
+/// which caused the namespace governance handler to trigger a wasteful
+/// network backfill on every duplicate gossip op.
+#[tokio::test]
+async fn test_dag_add_delta_with_outcome_tri_state() {
+    use crate::AddDeltaOutcome;
+
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    let delta1 = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+    let delta2 = CausalDelta::new_test([2; 32], vec![[1; 32]], TestPayload { value: 2 });
+    // delta3 has a parent we will never deliver, so it stays pending.
+    let delta3 = CausalDelta::new_test([3; 32], vec![[99; 32]], TestPayload { value: 3 });
+
+    assert_eq!(
+        dag.add_delta_with_outcome(delta1.clone(), &applier)
+            .await
+            .unwrap(),
+        AddDeltaOutcome::Applied,
+        "fresh delta with present parent applies immediately",
+    );
+
+    assert_eq!(
+        dag.add_delta_with_outcome(delta1, &applier).await.unwrap(),
+        AddDeltaOutcome::Duplicate,
+        "re-submitting the same delta must report Duplicate, NOT Pending",
+    );
+
+    assert_eq!(
+        dag.add_delta_with_outcome(delta2, &applier).await.unwrap(),
+        AddDeltaOutcome::Applied,
+        "chained delta with applied parent also applies immediately",
+    );
+
+    assert_eq!(
+        dag.add_delta_with_outcome(delta3.clone(), &applier)
+            .await
+            .unwrap(),
+        AddDeltaOutcome::Pending,
+        "delta with missing parent must report Pending",
+    );
+
+    assert_eq!(
+        dag.add_delta_with_outcome(delta3, &applier).await.unwrap(),
+        AddDeltaOutcome::Duplicate,
+        "re-submitting a pending delta must report Duplicate (already queued), not Pending again",
+    );
+}
+
 // ============================================================
 // Out-of-Order Delivery Tests
 // ============================================================
@@ -1019,6 +1070,61 @@ async fn test_extreme_random_order_1000_deltas() {
     let final_head = {
         let mut bytes = [0u8; 32];
         bytes[0..8].copy_from_slice(&(1000_u64).to_le_bytes());
+        bytes
+    };
+    assert_eq!(dag.get_heads(), vec![final_head]);
+}
+
+/// Deterministic worst-case for the cascade-recursion stack-overflow that
+/// `test_extreme_random_order_1000_deltas` was hitting flakily.
+///
+/// Build a 2000-delta linear chain and feed it in **strict reverse order**
+/// (delta 2000 first, root-child last). Every arrival before the last is
+/// missing its parent, so 1999 entries stack up in `pending`. When delta 1
+/// finally arrives, the cascade must apply 1999 children. With the legacy
+/// `apply_delta → apply_pending → apply_delta` mutual recursion the cascade
+/// nests stack frames per child and overflows the default 2 MB tokio test
+/// thread stack. With the flattened iteration, depth is constant.
+///
+/// Using `tokio::test(flavor = "current_thread")` and an explicit chain
+/// length guarantees the failure is reproducible — the existing
+/// `test_extreme_random_order_1000_deltas` shuffles randomly and only
+/// overflows when the shuffle happens to land on a long tail.
+#[tokio::test(flavor = "current_thread")]
+async fn test_cascade_does_not_grow_stack() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    const N: u64 = 2000;
+    let mut deltas = Vec::with_capacity(N as usize);
+    for i in 1..=N {
+        let id = {
+            let mut bytes = [0u8; 32];
+            bytes[0..8].copy_from_slice(&i.to_le_bytes());
+            bytes
+        };
+        let parent_id = {
+            let mut bytes = [0u8; 32];
+            bytes[0..8].copy_from_slice(&(i - 1).to_le_bytes());
+            bytes
+        };
+        deltas.push(CausalDelta::new_test(
+            id,
+            vec![parent_id],
+            TestPayload { value: i as u32 },
+        ));
+    }
+
+    // Reverse order: every arrival except the last goes pending.
+    for delta in deltas.into_iter().rev() {
+        dag.add_delta(delta, &applier).await.unwrap();
+    }
+
+    assert_eq!(dag.pending_stats().count, 0);
+    assert_eq!(dag.stats().applied_deltas, (N + 1) as usize);
+    let final_head = {
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(&N.to_le_bytes());
         bytes
     };
     assert_eq!(dag.get_heads(), vec![final_head]);

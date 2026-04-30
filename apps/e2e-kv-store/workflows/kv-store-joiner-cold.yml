@@ -1,0 +1,135 @@
+name: E2E KV Store - Cold Joiner First Execute (#2237)
+description: >
+  Exercises the cold-join → first-execute window that the Phase 9 KeyDelivery
+  wait closes. Node-1 creates a namespace+context and writes data. Node-2 joins
+  the namespace and the context, then IMMEDIATELY calls `set` without an
+  intervening `wait_for_sync`. With the three-phase governance contract in
+  place (publish_and_await_ack + KeyDelivery `required_signers` + the joiner-
+  side `KEY_DELIVERY_FALLBACK_WAIT` in `join_group`), the joiner must hold the
+  group key by the time `join_context` returns, so the immediate `set`
+  succeeds. Without the contract, the call would hit the new strict-error
+  branch in `execute/mod.rs` ("group key not yet delivered") and fail.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup: node-1 alone creates namespace and context ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Node-1 seeds initial state
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "seed"
+      value: "from_node_1"
+
+  # --- Cold join: node-2 joins WITHOUT a settle window ---
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+
+  - name: Node-2 joins context (KeyDelivery wait must complete inside this call)
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+
+  # --- The critical step: write IMMEDIATELY, no intervening wait_for_sync ---
+  #
+  # This is the regression guard for #2237. Phase 9.2's KEY_DELIVERY_FALLBACK_WAIT
+  # in `join_group` blocks until the group key is locally stored, so the
+  # `execute` call below has the key it needs. Phase 9.3 means a missing key
+  # surfaces as a hard `InternalError` rather than silently mis-encrypting,
+  # so any regression here surfaces as a workflow failure rather than as
+  # silent state divergence detected only by later read-back.
+
+  - name: Node-2 writes immediately after join (cold path)
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "cold_write"
+      value: "node2_first_op"
+
+  # --- Verify cluster convergence (sanity check that crypto wasn't mis-keyed) ---
+
+  - name: Wait for cluster convergence
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 30
+    trigger_sync: true
+
+  - name: Node-1 reads node-2's cold write
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "cold_write"
+    outputs:
+      cold_write_node1: result
+
+  - name: Assert node-2's cold write decrypts correctly on node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{cold_write_node1}}, {"output": "node2_first_op"})'
+
+  - name: Node-2 reads node-1's seed key
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "seed"
+    outputs:
+      seed_node2: result
+
+  - name: Assert node-2 sees node-1's seed
+    type: json_assert
+    statements:
+      - 'json_equal({{seed_node2}}, {"output": "from_node_1"})'
+
+stop_all_nodes: false

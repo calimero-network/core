@@ -20,6 +20,15 @@ use ed25519_dalek::SignatureError;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod wire;
+pub use wire::{
+    hash_scoped_group, hash_scoped_namespace, GroupTopicMsg, NamespaceTopicMsg, ReadinessProbe,
+    SignedAck, SignedReadinessBeacon,
+};
+
+pub mod ack_router;
+pub use ack_router::AckRouter;
+
 /// Wire/schema version for [`SignedGroupOp`].
 ///
 /// v3: Added `state_hash: [u8; 32]` — each op commits to the group's
@@ -85,8 +94,10 @@ pub enum GroupOp {
     },
     /// Unregister a context from this group.
     ContextDetached { context_id: ContextId },
-    /// Default visibility for new contexts (`0` = Open, `1` = Restricted).
-    DefaultVisibilitySet { mode: u8 },
+    /// Subgroup visibility (`0` = Open, `1` = Restricted). When `Open`,
+    /// parent-group members holding `CAN_JOIN_OPEN_SUBGROUPS` are inherited
+    /// as members of this subgroup. See [`crate::group::SetSubgroupVisibilityRequest`].
+    SubgroupVisibilitySet { mode: u8 },
     /// Human-readable alias for a context within the group.
     /// **Signer:** group admin.
     ContextAliasSet {
@@ -148,6 +159,41 @@ pub enum GroupOp {
         auto_follow_contexts: bool,
         auto_follow_subgroups: bool,
     },
+}
+
+impl GroupOp {
+    /// Stable observability label for `op_kind` on
+    /// `governance_publish_mesh_peers_at_publish` and other
+    /// per-variant metrics. Defined in the same crate as `GroupOp` so
+    /// the match is naturally exhaustive — adding a new variant
+    /// surfaces as a compile error here, keeping the metric label set
+    /// in sync with the wire format.
+    #[must_use]
+    pub fn op_kind_label(&self) -> &'static str {
+        match self {
+            GroupOp::Noop => "noop",
+            GroupOp::MemberAdded { .. } => "member_added",
+            GroupOp::MemberRemoved { .. } => "member_removed",
+            GroupOp::MemberRoleSet { .. } => "member_role_set",
+            GroupOp::MemberCapabilitySet { .. } => "member_capability_set",
+            GroupOp::DefaultCapabilitiesSet { .. } => "default_capabilities_set",
+            GroupOp::UpgradePolicySet { .. } => "upgrade_policy_set",
+            GroupOp::TargetApplicationSet { .. } => "target_application_set",
+            GroupOp::ContextRegistered { .. } => "context_registered",
+            GroupOp::ContextDetached { .. } => "context_detached",
+            GroupOp::SubgroupVisibilitySet { .. } => "subgroup_visibility_set",
+            GroupOp::ContextAliasSet { .. } => "context_alias_set",
+            GroupOp::MemberAliasSet { .. } => "member_alias_set",
+            GroupOp::GroupAliasSet { .. } => "group_alias_set",
+            GroupOp::GroupDelete => "group_delete",
+            GroupOp::GroupMigrationSet { .. } => "group_migration_set",
+            GroupOp::ContextCapabilityGranted { .. } => "context_capability_granted",
+            GroupOp::ContextCapabilityRevoked { .. } => "context_capability_revoked",
+            GroupOp::TeeAdmissionPolicySet { .. } => "tee_admission_policy_set",
+            GroupOp::MemberJoinedViaTeeAttestation { .. } => "member_joined_via_tee",
+            GroupOp::MemberSetAutoFollow { .. } => "member_set_auto_follow",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +298,27 @@ pub enum RootOp {
         group_id: [u8; 32],
         envelope: KeyEnvelope,
     },
+}
+
+impl NamespaceOp {
+    /// Stable observability label for `op_kind`. See
+    /// [`GroupOp::op_kind_label`] for the rationale around defining this
+    /// in the same crate as the enum: a new variant added here surfaces
+    /// as a compile error so metric labels stay in sync with the wire
+    /// format.
+    #[must_use]
+    pub fn op_kind_label(&self) -> &'static str {
+        match self {
+            NamespaceOp::Root(RootOp::GroupCreated { .. }) => "group_created",
+            NamespaceOp::Root(RootOp::GroupReparented { .. }) => "group_reparented",
+            NamespaceOp::Root(RootOp::GroupDeleted { .. }) => "group_deleted",
+            NamespaceOp::Root(RootOp::AdminChanged { .. }) => "admin_changed",
+            NamespaceOp::Root(RootOp::PolicyUpdated { .. }) => "policy_updated",
+            NamespaceOp::Root(RootOp::MemberJoined { .. }) => "member_joined",
+            NamespaceOp::Root(RootOp::KeyDelivery { .. }) => "key_delivery",
+            NamespaceOp::Group { .. } => "group_op",
+        }
+    }
 }
 
 /// An encrypted group operation payload. Only members of the group

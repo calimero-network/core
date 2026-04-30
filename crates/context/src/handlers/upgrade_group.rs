@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
@@ -12,6 +13,7 @@ use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use eyre::bail;
 use tracing::{debug, error, info, warn};
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::{group_store, ContextManager};
 
 impl Handler<UpgradeGroupRequest> for ContextManager {
@@ -104,6 +106,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         };
 
         let node_client = self.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
 
         // --- LazyOnAccess: update target and return without canary/propagator ---
         // Contexts will be upgraded individually on their next execution.
@@ -115,6 +118,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         // permanently block future upgrades since nothing transitions it out.
         if matches!(upgrade_policy, UpgradePolicy::LazyOnAccess) {
             let datastore = self.datastore.clone();
+            let ack_router_for_lazy = Arc::clone(&ack_router);
             return ActorResponse::r#async(
                 async move {
                     {
@@ -127,9 +131,10 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             .as_ref()
                             .ok_or_else(|| eyre::eyre!("target application not found"))?;
                         let app_key = *app_meta.bytecode.blob_id().as_ref();
-                        group_store::sign_apply_and_publish(
+                        let report = group_store::sign_apply_and_publish(
                             &datastore,
                             &node_client,
+                            &ack_router_for_lazy,
                             &group_id,
                             &sk,
                             GroupOp::TargetApplicationSet {
@@ -138,10 +143,18 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             },
                         )
                         .await?;
+                        if let Some(report) = report.as_ref() {
+                            observe_handler_delivery(
+                                "upgrade_group",
+                                "TargetApplicationSet",
+                                report,
+                            );
+                        }
                         if migration_bytes.is_some() {
-                            group_store::sign_apply_and_publish(
+                            let report = group_store::sign_apply_and_publish(
                                 &datastore,
                                 &node_client,
+                                &ack_router_for_lazy,
                                 &group_id,
                                 &sk,
                                 GroupOp::GroupMigrationSet {
@@ -149,6 +162,13 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                                 },
                             )
                             .await?;
+                            if let Some(report) = report.as_ref() {
+                                observe_handler_delivery(
+                                    "upgrade_group",
+                                    "GroupMigrationSet",
+                                    report,
+                                );
+                            }
                         }
                     }
 
@@ -253,6 +273,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let target_blob_info = app_meta_for_contract
             .as_ref()
             .map(|m| (m.bytecode.blob_id(), m.size));
+        let ack_router_for_canary = Arc::clone(&ack_router);
         let canary_task = async move {
             {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
@@ -262,9 +283,10 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     .as_ref()
                     .ok_or_else(|| eyre::eyre!("target application not found"))?;
                 let app_key = *app_meta.bytecode.blob_id().as_ref();
-                group_store::sign_apply_and_publish(
+                let report = group_store::sign_apply_and_publish(
                     &datastore_for_canary,
                     &node_client,
+                    &ack_router_for_canary,
                     &group_id,
                     &sk,
                     GroupOp::TargetApplicationSet {
@@ -273,10 +295,14 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     },
                 )
                 .await?;
+                if let Some(report) = report.as_ref() {
+                    observe_handler_delivery("upgrade_group", "TargetApplicationSet", report);
+                }
                 if migration_bytes.is_some() {
-                    group_store::sign_apply_and_publish(
+                    let report = group_store::sign_apply_and_publish(
                         &datastore_for_canary,
                         &node_client,
+                        &ack_router_for_canary,
                         &group_id,
                         &sk,
                         GroupOp::GroupMigrationSet {
@@ -284,6 +310,9 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         },
                     )
                     .await?;
+                    if let Some(report) = report.as_ref() {
+                        observe_handler_delivery("upgrade_group", "GroupMigrationSet", report);
+                    }
                 }
             }
 

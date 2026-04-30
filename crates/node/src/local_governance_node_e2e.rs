@@ -81,6 +81,7 @@ async fn apply_signed_group_op_via_context_client() {
         event_sender,
         sync_client,
         String::new(),
+        None,
     );
 
     let context_client = ContextClient::new(
@@ -115,6 +116,7 @@ async fn apply_signed_group_op_via_context_client() {
         sync_manager,
         context_client.clone(),
         node_client,
+        store.clone(),
         node_state,
     );
 

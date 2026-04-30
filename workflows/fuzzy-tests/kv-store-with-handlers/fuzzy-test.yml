@@ -60,9 +60,15 @@ steps:
 
   # Main fuzzy test for kv-store-with-handlers
   # Note: No seed data needed - fuzzy test generates its own data
+  #
+  # 15 min is the routine baseline used by every CI trigger (push,
+  # workflow_run, workflow_dispatch). The CI workflow overrides this to
+  # 60 min on the nightly schedule (cron 00:00 UTC) for soak coverage.
+  # Override on demand via the workflow_dispatch `duration_override`
+  # input. See `.github/workflows/fuzzy-load-test.yml`.
   - name: KV Store with Handlers Fuzzy Load Test
     type: fuzzy_test
-    duration_minutes: 45
+    duration_minutes: 15
     context_id: "{{handlers_context_id}}"
     summary_interval_seconds: 60
     operation_delay_ms: 50

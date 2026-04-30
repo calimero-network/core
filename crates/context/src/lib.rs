@@ -24,6 +24,7 @@ use crate::metrics::Metrics;
 pub mod auto_follow;
 pub mod config;
 pub mod error;
+pub mod governance_broadcast;
 pub mod governance_dag;
 pub mod group_store;
 pub mod handlers;
@@ -31,6 +32,8 @@ mod lifecycle;
 mod metrics;
 pub mod op_events;
 pub mod registration_notify;
+
+use calimero_context_client::local_governance::AckRouter;
 
 /// A metadata container for a single, in-memory context.
 ///
@@ -74,6 +77,26 @@ pub struct ContextManager {
     /// so we cannot blindly reuse compiled blobs across apps.
     applications: BTreeMap<ApplicationId, Application>,
 
+    /// In-memory cache of compiled WASM modules, keyed by
+    /// `(application_id, service_name)`. Populated on the first
+    /// `get_module` call for a given key; reused on every subsequent
+    /// execute. Cheap to clone (Arc-backed inside wasmer).
+    ///
+    /// Invalidated alongside `applications` on application updates or
+    /// migrations, and replaced when `get_module` has to recompile.
+    /// Without this, every execute request paid ~5% CPU to re-run
+    /// `Engine::from_precompiled` (observed in #2238 follow-up
+    /// profiling).
+    ///
+    /// Size-capped to `MAX_CACHED_MODULES` (see
+    /// `handlers/execute/mod.rs`). Compiled modules are 2–10× larger
+    /// than the source WASM, so we cap to prevent unbounded growth on
+    /// multi-tenant nodes that rotate through many applications.
+    /// Eviction is currently first-entry-by-key-order rather than
+    /// true LRU — good enough as a safety valve; upgrade tracked
+    /// alongside the `contexts` LRU TODO above.
+    modules: BTreeMap<(ApplicationId, Option<String>), calimero_runtime::Module>,
+
     /// Prometheus metrics for monitoring the health and performance of the manager,
     /// such as number of active contexts, message processing latency, etc.
     metrics: Option<Metrics>,
@@ -86,6 +109,13 @@ pub struct ContextManager {
     /// Per-namespace governance DAG. Single DAG per namespace containing both
     /// root ops and encrypted group-scoped ops.
     namespace_dags: HashMap<[u8; 32], Arc<tokio::sync::Mutex<DagStore<SignedNamespaceOp>>>>,
+
+    /// Routes incoming `SignedAck` messages from the wire receiver to the
+    /// in-flight `publish_and_await_ack` caller waiting on a specific
+    /// `op_hash`. Cloned from `context_client.ack_router()` so the
+    /// receiver-side and publish-side share the same instance. See
+    /// [`governance_broadcast`].
+    pub(crate) ack_router: Arc<AckRouter>,
 }
 
 /// Creates a new `ContextManager`.
@@ -103,6 +133,7 @@ impl ContextManager {
         context_client: ContextClient,
         prometheus_registry: Option<&mut Registry>,
     ) -> Self {
+        let ack_router = Arc::clone(context_client.ack_router());
         Self {
             datastore,
             node_client,
@@ -110,10 +141,12 @@ impl ContextManager {
 
             contexts: BTreeMap::new(),
             applications: BTreeMap::new(),
+            modules: BTreeMap::new(),
 
             metrics: prometheus_registry.map(Metrics::new),
             active_propagators: HashSet::new(),
             namespace_dags: HashMap::new(),
+            ack_router,
         }
     }
 
@@ -236,14 +269,22 @@ impl ContextManager {
 
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
         let sk = preflight.signer_sk();
         let group_id = *group_id;
         let op_debug = format!("{op:?}");
 
         ActorResponse::r#async(
             async move {
-                group_store::sign_apply_and_publish(&datastore, &node_client, &group_id, &sk, op)
-                    .await?;
+                let _report = group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &ack_router,
+                    &group_id,
+                    &sk,
+                    op,
+                )
+                .await?;
                 tracing::info!(?group_id, op = %op_debug, "governance op applied");
                 Ok(())
             }

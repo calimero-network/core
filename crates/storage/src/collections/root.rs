@@ -8,6 +8,7 @@ use std::ptr;
 use super::{Collection, ROOT_ID};
 use crate::address::Id;
 use crate::delta::{push_comparison, StorageDelta};
+use crate::index::DeferredAncestorScope;
 use crate::integration::Comparison;
 use crate::interface::{Action, Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
@@ -122,14 +123,28 @@ where
     }
 
     /// Syncs the root collection.
+    ///
+    /// `ctx` is the apply-time context for the inner [`Interface::apply_action`]
+    /// calls (DAG-causal parents of the delta the artifact came from). In phase
+    /// P1 of #2233 it is plumbed through but not consulted.
     #[expect(clippy::missing_errors_doc, reason = "NO")]
-    pub fn sync(args: &[u8]) -> Result<(), StorageError> {
+    pub fn sync(args: &[u8], ctx: crate::interface::ApplyContext<'_>) -> Result<(), StorageError> {
         let artifact =
             from_slice::<StorageDelta>(args).map_err(StorageError::DeserializationError)?;
 
         match artifact {
             StorageDelta::Actions(actions) => {
                 let mut root_snapshot: Option<(Vec<u8>, crate::entities::Metadata)> = None;
+
+                // #2238: defer ancestor-hash recomputation until the end of
+                // the action loop. Many deltas in a single merge often touch
+                // the same parent; without batching, each `add_child_to`
+                // walks from that parent to the root redoing the same O(K)
+                // hash work. The scope dedupes starting ids and flushes via
+                // `finish()?` after the loop so storage errors during flush
+                // propagate back to the caller (an error here means the
+                // merkle tree is left inconsistent).
+                let defer_scope = DeferredAncestorScope::<S>::new();
 
                 for action in actions {
                     match &action {
@@ -177,12 +192,15 @@ where
                                     updated_at = metadata.updated_at(),
                                     "SYNC CHILD: Applying Action::Add for child entity"
                                 );
-                                <Interface<S>>::apply_action(Action::Add {
-                                    id,
-                                    data,
-                                    metadata,
-                                    ancestors,
-                                })?;
+                                <Interface<S>>::apply_action(
+                                    Action::Add {
+                                        id,
+                                        data,
+                                        metadata,
+                                        ancestors,
+                                    },
+                                    ctx,
+                                )?;
                             }
                         }
                         Action::Update {
@@ -202,19 +220,27 @@ where
                                     updated_at = metadata.updated_at(),
                                     "SYNC CHILD: Applying Action::Update for child entity"
                                 );
-                                <Interface<S>>::apply_action(Action::Update {
-                                    id,
-                                    data,
-                                    metadata,
-                                    ancestors,
-                                })?;
+                                <Interface<S>>::apply_action(
+                                    Action::Update {
+                                        id,
+                                        data,
+                                        metadata,
+                                        ancestors,
+                                    },
+                                    ctx,
+                                )?;
                             }
                         }
                         Action::DeleteRef { .. } => {
-                            <Interface<S>>::apply_action(action)?;
+                            <Interface<S>>::apply_action(action, ctx)?;
                         }
                     };
                 }
+
+                // Flush deferred ancestor walks. Errors here indicate a
+                // partially-propagated merkle tree and must surface to the
+                // caller rather than being silently logged by Drop.
+                defer_scope.finish()?;
 
                 if let Some((payload, metadata)) = root_snapshot {
                     if <Interface<S>>::save_raw(Id::root(), payload, metadata)?.is_some() {
@@ -238,7 +264,7 @@ where
                     comparison_data,
                 } in comparisons
                 {
-                    <Interface<S>>::compare_affective(data, comparison_data)?;
+                    <Interface<S>>::compare_affective(data, comparison_data, ctx)?;
                 }
             }
         }

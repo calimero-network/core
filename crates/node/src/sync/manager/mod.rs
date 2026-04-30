@@ -1141,9 +1141,13 @@ impl SyncManager {
         // Check if we have pending deltas (incomplete DAG)
         // Even if node has some state, it might be missing parent deltas
         if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
-            // Reload persisted deltas to catch locally-created deltas from execute.rs
-            // that are in the database but not in the in-memory DeltaStore
-            let _ = delta_store.load_persisted_deltas().await;
+            // NOTE: previously called `load_persisted_deltas()` here to
+            // catch locally-created deltas from execute.rs that are in
+            // the DB but not in the in-memory DAG. That rescan was
+            // ~21% of CPU (pre #2244) and ~6% after. execute.rs and
+            // create_context.rs now notify the node-side drainer via
+            // `NodeClient::notify_local_applied_delta`, keeping the
+            // DAG current without the per-sync full-column scan.
             let missing_result = delta_store.get_missing_parents().await;
 
             // Note: Cascaded events from DB loads are handled in state_delta handler
@@ -1692,7 +1696,7 @@ impl SyncManager {
                 // This ensures we don't miss sibling heads that might be the missing parents
 
                 // Get or create DeltaStore for this context (do this once before the loop)
-                let delta_store_ref = {
+                let (delta_store_ref, is_new) = {
                     let mut is_new = false;
                     let delta_store = self
                         .node_state
@@ -1708,19 +1712,27 @@ impl SyncManager {
                             )
                         });
 
-                    delta_store.clone()
+                    (delta_store.clone(), is_new)
                 };
 
-                // Always reload persisted deltas from database before sync operations
-                // This is critical because local deltas created via execute.rs are persisted
-                // to the database but NOT added to the in-memory DeltaStore. Without this
-                // reload, the DeltaStore would be missing locally-created deltas.
-                if let Err(e) = delta_store_ref.load_persisted_deltas().await {
-                    warn!(
-                        ?e,
-                        %context_id,
-                        "Failed to load persisted deltas, starting with empty DAG"
-                    );
+                // The previous revision ran `load_persisted_deltas`
+                // unconditionally here on every sync — the rescan
+                // dominated the hot path. execute.rs now notifies the
+                // node-side drainer directly, so warm stores don't
+                // need rehydration. But when *this* path is the first
+                // to create the DeltaStore for a context (fresh boot,
+                // sync arrives before the first local execute), the
+                // in-memory DAG is empty and we still need a one-time
+                // load so `get_delta` can serve peers and missing-
+                // parent queries have the right picture.
+                if is_new {
+                    if let Err(e) = delta_store_ref.load_persisted_deltas().await {
+                        warn!(
+                            ?e,
+                            %context_id,
+                            "Failed to hydrate freshly-created DeltaStore from DB"
+                        );
+                    }
                 }
 
                 // Phase 1: Request and add ALL DAG heads
@@ -1828,19 +1840,100 @@ impl SyncManager {
                     );
                 }
 
-                if !missing_result.missing_ids.is_empty() {
+                // Steady-state: the initial DAG-heads response matched local
+                // state, so there are no missing parents to chase. Skip the
+                // entire retry-and-final-check machinery on the common path.
+                if missing_result.missing_ids.is_empty() {
+                    return Ok(SyncProtocol::DeltaSync {
+                        missing_delta_ids: vec![],
+                    });
+                }
+
+                info!(
+                    %context_id,
+                    missing_count = missing_result.missing_ids.len(),
+                    "DAG heads have missing parents, requesting them recursively"
+                );
+
+                // First attempt: the peer that served DAG heads.
+                if let Err(e) = self
+                    .request_missing_deltas(
+                        context_id,
+                        missing_result.missing_ids,
+                        peer_id,
+                        delta_store_ref.clone(),
+                        our_identity,
+                    )
+                    .await
+                {
+                    warn!(
+                        ?e,
+                        %context_id,
+                        "Failed to request missing parent deltas from initial peer"
+                    );
+                }
+
+                // Cross-peer fallback for cold-start race (#2198): if the
+                // initial peer did not resolve every missing parent, iterate
+                // other mesh peers for this context until the DAG is whole
+                // or the retry budget is exhausted.
+                let topic = TopicHash::from_raw(context_id);
+                let mut budget = super::parent_pull::ParentPullBudget::new(
+                    peer_id,
+                    self.sync_config.parent_pull_additional_peers,
+                    self.sync_config.parent_pull_budget,
+                );
+                let mut mesh_peers = self.network_client.mesh_peers(topic.clone()).await;
+
+                loop {
+                    let after = delta_store_ref.get_missing_parents().await;
+                    if after.missing_ids.is_empty() {
+                        break; // fully resolved
+                    }
+
+                    let next_peer = match budget.next(&mesh_peers) {
+                        super::parent_pull::NextPeer::Peer(p) => p,
+                        super::parent_pull::NextPeer::RefetchMesh => {
+                            mesh_peers = self.network_client.mesh_peers(topic.clone()).await;
+                            budget.record_refetch();
+                            match budget.next(&mesh_peers) {
+                                super::parent_pull::NextPeer::Peer(p) => p,
+                                other => {
+                                    debug!(
+                                        %context_id,
+                                        ?other,
+                                        "no additional mesh peers available for parent pull"
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        super::parent_pull::NextPeer::BudgetExhausted => {
+                            warn!(
+                                %context_id,
+                                "parent-pull budget exhausted"
+                            );
+                            break;
+                        }
+                        super::parent_pull::NextPeer::MaxPeersReached
+                        | super::parent_pull::NextPeer::NoMorePeers => break,
+                    };
+
+                    budget.record_attempt(next_peer);
+
                     info!(
                         %context_id,
-                        missing_count = missing_result.missing_ids.len(),
-                        "DAG heads have missing parents, requesting them recursively"
+                        ?next_peer,
+                        attempt = budget.attempts(),
+                        still_missing = after.missing_ids.len(),
+                        "retrying missing-parent fetch against additional mesh peer"
                     );
 
-                    // Request missing parents (this uses recursive topological fetching)
                     if let Err(e) = self
                         .request_missing_deltas(
                             context_id,
-                            missing_result.missing_ids,
-                            peer_id,
+                            after.missing_ids,
+                            next_peer,
                             delta_store_ref.clone(),
                             our_identity,
                         )
@@ -1849,12 +1942,33 @@ impl SyncManager {
                         warn!(
                             ?e,
                             %context_id,
-                            "Failed to request missing parent deltas during DAG catchup"
+                            ?next_peer,
+                            "cross-peer parent-pull attempt failed"
                         );
                     }
                 }
 
-                // Return a non-None protocol to signal success (prevents trying next peer)
+                // Final check: if pending parents still remain, the sync did
+                // NOT fully restore the DAG. Return an error so the caller
+                // (e.g. join_context) surfaces a real failure instead of
+                // silent success on a partially-applied DAG.
+                let final_missing = delta_store_ref.get_missing_parents().await;
+                if !final_missing.missing_ids.is_empty() {
+                    warn!(
+                        %context_id,
+                        remaining = final_missing.missing_ids.len(),
+                        peer_attempts = budget.total_attempts(),
+                        "DAG sync ended with unresolved missing parents"
+                    );
+                    bail!(
+                        "pending parents unresolved for context {}: {} remaining after {} peer attempt(s)",
+                        context_id,
+                        final_missing.missing_ids.len(),
+                        budget.total_attempts(),
+                    );
+                }
+
+                // Success: DAG is fully resolved.
                 Ok(SyncProtocol::DeltaSync {
                     missing_delta_ids: vec![],
                 })
@@ -1960,20 +2074,37 @@ impl SyncManager {
         // 2. Deltas that are ancestors of checkpoints (their state is included in snapshot)
         let mut covered_delta_ids: HashSet<[u8; 32]> = HashSet::new();
 
-        // Get the delta store to check for existing checkpoints
-        let delta_store = self
-            .node_state
-            .delta_stores
-            .entry(context_id)
-            .or_insert_with(|| {
-                crate::delta_store::DeltaStore::new(
-                    [0u8; 32],
-                    self.context_client.clone(),
-                    context_id,
-                    our_identity,
-                )
-            })
-            .clone();
+        // Get the delta store to check for existing checkpoints.
+        // If this path is the first to create the DeltaStore, hydrate
+        // from DB once — incremental updates via execute.rs handle the
+        // warm-store case, but a fresh store here would otherwise miss
+        // everything on disk and we'd later fail to match checkpoints.
+        let (delta_store, is_new) = {
+            let mut is_new = false;
+            let entry = self
+                .node_state
+                .delta_stores
+                .entry(context_id)
+                .or_insert_with(|| {
+                    is_new = true;
+                    crate::delta_store::DeltaStore::new(
+                        [0u8; 32],
+                        self.context_client.clone(),
+                        context_id,
+                        our_identity,
+                    )
+                });
+            (entry.clone(), is_new)
+        };
+        if is_new {
+            if let Err(e) = delta_store.load_persisted_deltas().await {
+                warn!(
+                    ?e,
+                    %context_id,
+                    "Failed to hydrate freshly-created DeltaStore from DB"
+                );
+            }
+        }
 
         // Build parent -> children map from buffered deltas
         let mut parent_to_children: HashMap<[u8; 32], Vec<[u8; 32]>> = HashMap::new();
@@ -2087,21 +2218,35 @@ impl SyncManager {
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
-        let delta_store = self
-            .node_state
-            .delta_stores
-            .entry(context_id)
-            .or_insert_with(|| {
-                crate::delta_store::DeltaStore::new(
-                    [0u8; 32],
-                    self.context_client.clone(),
-                    context_id,
-                    our_identity,
-                )
-            })
-            .clone();
-
-        let _ = delta_store.load_persisted_deltas().await;
+        // Fresh DeltaStore created here must be hydrated once from DB;
+        // warm stores are kept current by execute-side incremental
+        // notifications.
+        let (delta_store, is_new) = {
+            let mut is_new = false;
+            let entry = self
+                .node_state
+                .delta_stores
+                .entry(context_id)
+                .or_insert_with(|| {
+                    is_new = true;
+                    crate::delta_store::DeltaStore::new(
+                        [0u8; 32],
+                        self.context_client.clone(),
+                        context_id,
+                        our_identity,
+                    )
+                });
+            (entry.clone(), is_new)
+        };
+        if is_new {
+            if let Err(e) = delta_store.load_persisted_deltas().await {
+                warn!(
+                    ?e,
+                    %context_id,
+                    "Failed to hydrate freshly-created DeltaStore from DB"
+                );
+            }
+        }
 
         let request_msg = StreamMessage::Init {
             context_id,
@@ -2140,9 +2285,12 @@ impl SyncManager {
         Ok(())
     }
 
-    pub async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
+    pub async fn handle_opened_stream(&self, peer_id: PeerId, mut stream: Box<Stream>) {
         loop {
-            match self.internal_handle_opened_stream(&mut stream).await {
+            match self
+                .internal_handle_opened_stream(peer_id, &mut stream)
+                .await
+            {
                 Ok(None) => break,
                 Ok(Some(())) => {}
                 Err(err) => {
@@ -2159,7 +2307,11 @@ impl SyncManager {
         }
     }
 
-    async fn internal_handle_opened_stream(&self, stream: &mut Stream) -> eyre::Result<Option<()>> {
+    async fn internal_handle_opened_stream(
+        &self,
+        peer_id: PeerId,
+        stream: &mut Stream,
+    ) -> eyre::Result<Option<()>> {
         let Some(message) = self.recv(stream, None).await? else {
             return Ok(None);
         };
@@ -2205,14 +2357,46 @@ impl SyncManager {
         }
 
         let Some(context) = self.context_client.get_context(&context_id)? else {
-            bail!("context not found: {}", context_id);
+            // An inbound stream for a context this node does not know about
+            // must not tear down unrelated in-flight sync activity. This
+            // happens during cold-start `join_context` when a subgroup /
+            // app-internal context leaks onto the sync channel before the
+            // joining node has materialised it. Close the stream cleanly
+            // and let the concurrent legitimate sync continue. (#2198)
+            warn!(
+                %context_id,
+                ?their_identity,
+                "inbound stream for unknown context, closing cleanly"
+            );
+
+            if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
+                error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+            }
+
+            return Ok(None);
         };
 
         let mut _updated = None;
 
+        // Issue #2256: also accept inheritance-eligible parent members
+        // for sync auth. `has_member` only knows direct context-membership
+        // and direct group-membership; the parent-walk for `Open` subgroups
+        // lives in `calimero-context::group_store`, which we have access
+        // to here at the node layer.
+        let is_inherited_member = || -> eyre::Result<bool> {
+            let store = self.context_client.datastore();
+            let Some(group_id) =
+                calimero_context::group_store::get_group_for_context(store, &context_id)?
+            else {
+                return Ok(false);
+            };
+            calimero_context::group_store::check_group_membership(store, &group_id, &their_identity)
+        };
+
         if !self
             .context_client
             .has_member(&context_id, &their_identity)?
+            && !is_inherited_member()?
         {
             _updated = Some(
                 self.context_client
@@ -2223,27 +2407,38 @@ impl SyncManager {
             if !self
                 .context_client
                 .has_member(&context_id, &their_identity)?
+                && !is_inherited_member()?
             {
-                // The joiner may have just published a governance op announcing
-                // their membership. Wait briefly for gossip propagation and retry.
-                debug!(
-                    %context_id,
-                    %their_identity,
-                    "member not found yet, waiting for governance gossip"
-                );
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // The peer may have just published MemberAdded for themselves
+                // (or their side of the governance DAG is ahead of ours) and
+                // gossipsub hasn't delivered it yet. Instead of waiting and
+                // hoping the gossip arrives, ask this peer directly for the
+                // current namespace governance state on a separate stream —
+                // it's the fastest path out of the "unknown member" state and
+                // avoids a 30 s stall waiting for `NamespaceStateHeartbeat`.
+                //
+                // Fire-and-forget governance propagation (issue #2237) is the
+                // underlying bug; this is a narrower mitigation in the
+                // responder path that converts the terminal close into an
+                // active catch-up request.
+                self.request_governance_catchup_from_peer(peer_id, &context_id, &their_identity)
+                    .await;
 
                 if !self
                     .context_client
                     .has_member(&context_id, &their_identity)?
+                    && !is_inherited_member()?
                 {
-                    // Still not found after waiting — close stream gracefully so the
-                    // initiator retries on its next sync interval rather than treating
-                    // this as a hard error. Governance gossip may still be in-flight.
-                    warn!(
+                    // Catch-up didn't resolve it (peer returned nothing, peer
+                    // also doesn't know, or the op chain isn't valid locally).
+                    // Close gracefully — the initiator retries on their next
+                    // sync interval. Demoted from warn to debug because this
+                    // is expected during mesh formation and would otherwise
+                    // spam logs on every cold join.
+                    debug!(
                         %context_id,
                         %their_identity,
-                        "unknown context member after governance sync, closing stream"
+                        "unknown context member after namespace backfill request, closing stream"
                     );
                     return Ok(Some(()));
                 }
@@ -2394,6 +2589,177 @@ impl SyncManager {
 }
 
 impl SyncManager {
+    /// Actively request governance catch-up from a specific peer whose
+    /// identity we don't yet recognize as a context member.
+    ///
+    /// Scenario: a peer opens a sync stream to us, but their identity isn't
+    /// in our local governance DAG yet because fire-and-forget `MemberAdded`
+    /// gossip (issue #2237) hasn't reached us. The legacy path waited 2 s
+    /// for gossip and then closed the stream, stalling the initiator for
+    /// up to 30 s (`NamespaceStateHeartbeat` cadence). Instead, open a
+    /// separate stream back to the peer with `NamespaceBackfillRequest`
+    /// (empty `delta_ids` = "send everything you have for this namespace"),
+    /// apply every op they return, and let the caller re-check membership.
+    ///
+    /// Best-effort: any failure (no group resolved, stream open fails,
+    /// peer returns no ops, ops fail to apply) is logged at debug and the
+    /// caller proceeds to close the stream as before. The real fix is the
+    /// three-phase contract in #2237; this is a responder-side bandaid
+    /// that turns a 30 s stall into at worst a second round-trip.
+    async fn request_governance_catchup_from_peer(
+        &self,
+        peer_id: PeerId,
+        context_id: &ContextId,
+        their_identity: &PublicKey,
+    ) {
+        let store = self.context_client.datastore();
+        let namespace_id =
+            match calimero_context::group_store::get_group_for_context(store, context_id) {
+                Ok(Some(group_id)) => {
+                    match calimero_context::group_store::resolve_namespace(store, &group_id) {
+                        Ok(ns) => ns.to_bytes(),
+                        Err(err) => {
+                            debug!(
+                                %context_id,
+                                %their_identity,
+                                %err,
+                                "failed to resolve namespace for governance catch-up"
+                            );
+                            return;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    debug!(
+                        %context_id,
+                        %their_identity,
+                        "context not in a group — no namespace to request catch-up from"
+                    );
+                    return;
+                }
+                Err(err) => {
+                    debug!(
+                        %context_id,
+                        %their_identity,
+                        %err,
+                        "failed to resolve group for governance catch-up"
+                    );
+                    return;
+                }
+            };
+
+        let mut stream = match self.network_client.open_stream(peer_id).await {
+            Ok(s) => s,
+            Err(err) => {
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    %peer_id,
+                    %err,
+                    "failed to open catch-up stream to peer"
+                );
+                return;
+            }
+        };
+
+        let msg = StreamMessage::Init {
+            context_id: ContextId::from([0u8; 32]),
+            party_id: PublicKey::from([0u8; 32]),
+            payload: InitPayload::NamespaceBackfillRequest {
+                namespace_id,
+                delta_ids: Vec::new(),
+            },
+            next_nonce: rand::thread_rng().gen(),
+        };
+
+        if let Err(err) = super::stream::send(&mut stream, &msg, None).await {
+            debug!(
+                %context_id,
+                %their_identity,
+                %peer_id,
+                %err,
+                "failed to send NamespaceBackfillRequest during catch-up"
+            );
+            return;
+        }
+
+        let response = match super::stream::recv(&mut stream, None, self.sync_config.timeout).await
+        {
+            Ok(Some(StreamMessage::Message {
+                payload: MessagePayload::NamespaceBackfillResponse { deltas },
+                ..
+            })) => deltas,
+            Ok(_) => {
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    %peer_id,
+                    "unexpected response to NamespaceBackfillRequest during catch-up"
+                );
+                return;
+            }
+            Err(err) => {
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    %peer_id,
+                    %err,
+                    "catch-up NamespaceBackfillRequest timed out or failed"
+                );
+                return;
+            }
+        };
+
+        if response.is_empty() {
+            debug!(
+                %context_id,
+                %their_identity,
+                %peer_id,
+                "peer returned no namespace ops for catch-up"
+            );
+            return;
+        }
+
+        let ops_count = response.len();
+        let mut applied = 0usize;
+        for (_delta_id, op_bytes) in response {
+            let op = match borsh::from_slice::<
+                calimero_context_client::local_governance::SignedNamespaceOp,
+            >(&op_bytes)
+            {
+                Ok(o) => o,
+                Err(err) => {
+                    debug!(
+                        %context_id,
+                        %their_identity,
+                        %err,
+                        "failed to decode catch-up op"
+                    );
+                    continue;
+                }
+            };
+            if let Err(err) = self.context_client.apply_signed_namespace_op(op).await {
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    %err,
+                    "failed to apply catch-up op"
+                );
+                continue;
+            }
+            applied += 1;
+        }
+
+        debug!(
+            %context_id,
+            %their_identity,
+            %peer_id,
+            ops_received = ops_count,
+            ops_applied = applied,
+            "governance catch-up complete"
+        );
+    }
+
     /// Handle a namespace backfill request: look up full `SignedNamespaceOp`
     /// payloads for the requested delta IDs and send them back.
     ///
@@ -2475,8 +2841,8 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         use calimero_context::group_store::{
-            enumerate_group_contexts, load_current_group_key, load_group_meta,
-            wrap_group_key_for_member,
+            enumerate_group_contexts, get_default_capabilities, load_current_group_key,
+            load_group_meta, wrap_group_key_for_member,
         };
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::types::SignedGroupOpenInvitation;
@@ -2579,12 +2945,22 @@ impl SyncManager {
 
         let governance_ops = self.collect_namespace_governance_ops(namespace_id)?;
 
+        // Issue #2256: the namespace's default-capabilities value travels
+        // with the bundle so the joiner doesn't need to fall back to a
+        // hard-coded constant. Read whatever the responder currently
+        // believes (already reflects any admin-issued
+        // `DefaultCapabilitiesSet` ops because the local store is
+        // updated as those ops apply). `unwrap_or(0)` matches the
+        // pre-existing semantics for "default key absent."
+        let default_capabilities = get_default_capabilities(&store, &group_id)?.unwrap_or(0);
+
         debug!(
             namespace_id = %hex::encode(namespace_id),
             has_key = !key_envelope_bytes.is_empty(),
             context_count = context_ids.len(),
             app_id = %hex::encode(application_id),
             governance_ops_count = governance_ops.len(),
+            default_capabilities,
             "Sending NamespaceJoinResponse"
         );
 
@@ -2595,6 +2971,7 @@ impl SyncManager {
                 context_ids,
                 application_id,
                 governance_ops,
+                default_capabilities,
             },
             next_nonce: nonce,
         };
@@ -2707,6 +3084,7 @@ impl SyncManager {
                         context_ids,
                         application_id,
                         governance_ops,
+                        default_capabilities,
                     },
                 ..
             }) => Ok(JoinBundle {
@@ -2714,6 +3092,7 @@ impl SyncManager {
                 context_ids,
                 application_id: application_id.into(),
                 governance_ops,
+                default_capabilities,
             }),
             Some(StreamMessage::Message {
                 payload: MessagePayload::NamespaceJoinRejected { reason },

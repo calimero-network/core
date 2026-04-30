@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::AdmitTeeNodeRequest;
 use calimero_context_client::local_governance::GroupOp;
@@ -5,6 +7,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use tracing::info;
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -82,7 +85,13 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             return ActorResponse::reply(Err(eyre::eyre!("RTMR3 not in policy allowlist")));
         }
 
-        match group_store::check_group_membership(&self.datastore, &group_id, &member) {
+        // Direct-row check: TEE admission writes the node's direct
+        // membership row + signing key. An inherited match via the
+        // Open-subgroup chain (#2256) does not mean the node already has
+        // its own direct row, and skipping the write here would leave
+        // the TEE without a per-node row that subsequent direct-membership
+        // operations expect.
+        match group_store::has_direct_group_member(&self.datastore, &group_id, &member) {
             Ok(true) => return ActorResponse::reply(Ok(())),
             Ok(false) => {}
             Err(e) => return ActorResponse::reply(Err(e)),
@@ -106,6 +115,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
         let effective_signing_key = node_sk.or_else(|| {
             group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
                 .ok()
@@ -118,9 +128,10 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     PrivateKey::from(effective_signing_key.ok_or_else(|| {
                         eyre::eyre!("no signing key available for TEE admission")
                     })?);
-                group_store::sign_apply_and_publish(
+                let report = group_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
+                    &ack_router,
                     &group_id,
                     &sk,
                     GroupOp::MemberJoinedViaTeeAttestation {
@@ -136,6 +147,13 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     },
                 )
                 .await?;
+                if let Some(report) = report.as_ref() {
+                    observe_handler_delivery(
+                        "admit_tee_node",
+                        "MemberJoinedViaTeeAttestation",
+                        report,
+                    );
+                }
 
                 info!(%member, ?group_id, "TEE node admitted via attestation");
                 // Auto-follow flags for the admitted TEE member are

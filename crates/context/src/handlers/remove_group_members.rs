@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::RemoveGroupMembersRequest;
@@ -7,6 +8,7 @@ use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use tracing::info;
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -48,6 +50,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
         let self_identity = self.node_namespace_identity(&group_id).map(|(pk, _)| pk);
         let datastore = preflight.datastore.clone();
         let node_client = preflight.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
         let context_client = self.context_client.clone();
         let sk = preflight.signer_sk();
         let requester = preflight.requester;
@@ -56,14 +59,18 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 for identity in &members {
-                    group_store::sign_apply_and_publish_removal(
+                    let report = group_store::sign_apply_and_publish_removal(
                         &datastore,
                         &node_client,
+                        &ack_router,
                         &group_id,
                         &sk,
                         identity,
                     )
                     .await?;
+                    if let Some(report) = report.as_ref() {
+                        observe_handler_delivery("remove_group_members", "MemberRemoved", report);
+                    }
                 }
                 info!(
                     ?group_id,

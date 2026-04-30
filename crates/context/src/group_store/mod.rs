@@ -10,7 +10,7 @@ use calimero_store::types::PredefinedEntry;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+use calimero_context_client::local_governance::SignedNamespaceOp;
 
 mod aliases;
 mod capabilities;
@@ -46,10 +46,11 @@ pub use self::aliases::{
     get_group_alias, get_member_alias, set_context_alias, set_group_alias, set_member_alias,
 };
 pub use self::capabilities::{
-    delete_all_member_capabilities, delete_default_capabilities, delete_default_visibility,
+    delete_all_member_capabilities, delete_default_capabilities, delete_subgroup_visibility,
     enumerate_member_capabilities, get_context_member_capability, get_default_capabilities,
-    get_default_visibility, get_member_capability, set_context_member_capability,
-    set_default_capabilities, set_default_visibility, set_member_capability,
+    get_member_capability, get_subgroup_visibility, is_open_chain_to_namespace,
+    set_context_member_capability, set_default_capabilities, set_member_capability,
+    set_subgroup_visibility,
 };
 pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
@@ -71,10 +72,12 @@ pub use self::local_state::{
     set_local_gov_nonce, track_member_context_join,
 };
 pub use self::membership::{
-    add_group_member, add_group_member_with_keys, check_group_membership, count_group_admins,
-    count_group_members, get_group_member_role, get_group_member_value, is_direct_group_admin,
-    is_group_admin, is_group_admin_or_has_capability, list_group_members, remove_group_member,
-    require_group_admin, require_group_admin_or_capability, set_member_auto_follow,
+    add_group_member, add_group_member_with_keys, check_group_membership,
+    check_group_membership_path, count_group_admins, count_group_members, get_group_member_role,
+    get_group_member_value, has_direct_group_member, is_direct_group_admin, is_group_admin,
+    is_group_admin_or_has_capability, is_inherited_admin, list_group_members,
+    namespace_member_pubkeys, remove_group_member, require_group_admin,
+    require_group_admin_or_capability, set_member_auto_follow, MembershipPath,
 };
 pub use self::membership_policy::MembershipPolicy;
 pub use self::membership_view::GroupMembershipView;
@@ -518,11 +521,14 @@ impl<'a> GroupHandle<'a> {
     pub fn set_default_capabilities(&self, caps: u32) -> EyreResult<()> {
         set_default_capabilities(self.store, &self.group_id, caps)
     }
-    pub fn get_default_visibility(&self) -> EyreResult<Option<u8>> {
-        get_default_visibility(self.store, &self.group_id)
+    pub fn get_subgroup_visibility(&self) -> EyreResult<calimero_context_config::VisibilityMode> {
+        get_subgroup_visibility(self.store, &self.group_id)
     }
-    pub fn set_default_visibility(&self, mode: u8) -> EyreResult<()> {
-        set_default_visibility(self.store, &self.group_id, mode)
+    pub fn set_subgroup_visibility(
+        &self,
+        mode: calimero_context_config::VisibilityMode,
+    ) -> EyreResult<()> {
+        set_subgroup_visibility(self.store, &self.group_id, mode)
     }
 
     // --- Tree ---
@@ -686,75 +692,6 @@ impl<'a> NamespaceHandle<'a> {
 
     pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
         NamespaceGovernance::new(self.store, self.namespace_id).apply_signed_op(op)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// GovernancePublisher — sign + publish workflow for group/namespace ops
-// ---------------------------------------------------------------------------
-
-/// Encapsulates the sign-apply-publish workflow for governance operations.
-///
-/// Binds a `Store` and `NodeClient` reference, providing methods to publish
-/// group ops (encrypted under the namespace topic) and namespace ops.
-pub struct GovernancePublisher<'a> {
-    store: &'a Store,
-    node_client: &'a calimero_node_primitives::client::NodeClient,
-}
-
-impl<'a> GovernancePublisher<'a> {
-    pub fn new(
-        store: &'a Store,
-        node_client: &'a calimero_node_primitives::client::NodeClient,
-    ) -> Self {
-        Self { store, node_client }
-    }
-
-    pub async fn publish_group_op(
-        &self,
-        group_id: &ContextGroupId,
-        signer_sk: &PrivateKey,
-        op: GroupOp,
-    ) -> EyreResult<()> {
-        sign_apply_and_publish(self.store, self.node_client, group_id, signer_sk, op).await
-    }
-
-    pub async fn publish_group_removal(
-        &self,
-        group_id: &ContextGroupId,
-        signer_sk: &PrivateKey,
-        removed_member: &PublicKey,
-    ) -> EyreResult<()> {
-        sign_apply_and_publish_removal(
-            self.store,
-            self.node_client,
-            group_id,
-            signer_sk,
-            removed_member,
-        )
-        .await
-    }
-
-    pub async fn publish_namespace_op(
-        &self,
-        namespace_id: [u8; 32],
-        signer_sk: &PrivateKey,
-        op: NamespaceOp,
-    ) -> EyreResult<()> {
-        NamespaceGovernance::new(self.store, namespace_id)
-            .sign_apply_and_publish(self.node_client, signer_sk, op)
-            .await
-    }
-
-    pub async fn publish_namespace_op_without_apply(
-        &self,
-        namespace_id: [u8; 32],
-        signer_sk: &PrivateKey,
-        op: NamespaceOp,
-    ) -> EyreResult<()> {
-        NamespaceGovernance::new(self.store, namespace_id)
-            .sign_and_publish_without_apply(self.node_client, signer_sk, op)
-            .await
     }
 }
 
@@ -927,8 +864,12 @@ fn apply_group_op_mutations(
         GroupOp::ContextDetached { context_id } => {
             context_registration.detach(&permissions, signer, context_id)?;
         }
-        GroupOp::DefaultVisibilitySet { mode } => {
-            settings.set_default_visibility(signer, *mode)?;
+        GroupOp::SubgroupVisibilitySet { mode } => {
+            let visibility = match *mode {
+                0 => calimero_context_config::VisibilityMode::Open,
+                _ => calimero_context_config::VisibilityMode::Restricted,
+            };
+            settings.set_subgroup_visibility(signer, visibility)?;
         }
         GroupOp::ContextAliasSet { context_id, alias } => {
             permissions.require_admin(signer)?;
@@ -1201,30 +1142,38 @@ pub fn sign_apply_local_group_op_borsh(
 ///
 /// When `removed_member` is `Some`, a key rotation is generated and attached
 /// to the namespace op so the removed member loses access to future ops.
+///
+/// `Ok(None)` is a deliberate skip — see
+/// [`GroupGovernancePublisher::sign_apply_and_publish`].
 pub async fn sign_apply_and_publish(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
     group_id: &ContextGroupId,
     signer_sk: &PrivateKey,
     op: GroupOp,
-) -> EyreResult<()> {
+) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
     GroupGovernancePublisher::new(store, node_client, *group_id)
-        .sign_apply_and_publish(signer_sk, op)
+        .sign_apply_and_publish(ack_router, signer_sk, op)
         .await
 }
 
 /// Like [`sign_apply_and_publish`] but attaches a [`KeyRotation`] bundle to
 /// the encrypted `MemberRemoved` op. Generates a new group key, wraps it for
 /// all remaining members, and stores the new key locally.
+///
+/// `Ok(None)` is a deliberate skip — see
+/// [`GroupGovernancePublisher::sign_apply_and_publish_removal`].
 pub async fn sign_apply_and_publish_removal(
     store: &Store,
     node_client: &calimero_node_primitives::client::NodeClient,
+    ack_router: &calimero_context_client::local_governance::AckRouter,
     group_id: &ContextGroupId,
     signer_sk: &PrivateKey,
     removed_member: &PublicKey,
-) -> EyreResult<()> {
+) -> EyreResult<Option<crate::governance_broadcast::DeliveryReport>> {
     GroupGovernancePublisher::new(store, node_client, *group_id)
-        .sign_apply_and_publish_removal(signer_sk, removed_member)
+        .sign_apply_and_publish_removal(ack_router, signer_sk, removed_member)
         .await
 }
 

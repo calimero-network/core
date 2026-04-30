@@ -41,6 +41,8 @@ pub use error::StoreError;
 
 pub mod user;
 pub use user::UserStorage;
+pub mod shared;
+pub use shared::SharedStorage;
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
 pub mod authored_vector;

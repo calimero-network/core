@@ -4,7 +4,7 @@ use crate::store::MainStorage;
 mod index__public_methods {
     use super::*;
     use crate::entities::StorageType;
-    use crate::interface::{Action, Interface};
+    use crate::interface::{Action, ApplyContext, Interface};
     use crate::store::MockedStorage;
 
     #[test]
@@ -51,7 +51,16 @@ mod index__public_methods {
         // --------------------------------------------------------------
         // applying just the root, what do we find? just the root, simple
         // --------------------------------------------------------------
-        assert!(<Interface<MockedStorage<0>>>::apply_action(a1.clone()).is_ok());
+        assert!(<Interface<MockedStorage<0>>>::apply_action(
+            a1.clone(),
+            ApplyContext {
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
+            }
+        )
+        .is_ok());
 
         let e1 = <Index<MockedStorage<0>>>::get_index(root_id).unwrap();
         let e2 = <Index<MockedStorage<0>>>::get_index(p1_id).unwrap();
@@ -69,7 +78,16 @@ mod index__public_methods {
         // --------------------------------------------------------------
         // applying just a2, what do we find? a2 + a1 (sparse)
         // --------------------------------------------------------------
-        assert!(<Interface<MockedStorage<1>>>::apply_action(a2.clone()).is_ok());
+        assert!(<Interface<MockedStorage<1>>>::apply_action(
+            a2.clone(),
+            ApplyContext {
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
+            }
+        )
+        .is_ok());
 
         let e1 = <Index<MockedStorage<1>>>::get_index(root_id).unwrap();
         let e2 = <Index<MockedStorage<1>>>::get_index(p1_id).unwrap();
@@ -94,8 +112,26 @@ mod index__public_methods {
         // --------------------------------------------------------------
         // applying a1, and then a2, what do we find?
         // --------------------------------------------------------------
-        assert!(<Interface<MockedStorage<2>>>::apply_action(a1.clone()).is_ok());
-        assert!(<Interface<MockedStorage<2>>>::apply_action(a2.clone()).is_ok());
+        assert!(<Interface<MockedStorage<2>>>::apply_action(
+            a1.clone(),
+            ApplyContext {
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
+            }
+        )
+        .is_ok());
+        assert!(<Interface<MockedStorage<2>>>::apply_action(
+            a2.clone(),
+            ApplyContext {
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
+            }
+        )
+        .is_ok());
 
         let e1 = <Index<MockedStorage<2>>>::get_index(root_id).unwrap();
         let e2 = <Index<MockedStorage<2>>>::get_index(p1_id).unwrap();
@@ -120,8 +156,26 @@ mod index__public_methods {
         // --------------------------------------------------------------
         // applying a2, and then a1, what do we find?
         // --------------------------------------------------------------
-        assert!(<Interface<MockedStorage<3>>>::apply_action(a2.clone()).is_ok());
-        assert!(<Interface<MockedStorage<3>>>::apply_action(a1.clone()).is_ok());
+        assert!(<Interface<MockedStorage<3>>>::apply_action(
+            a2.clone(),
+            ApplyContext {
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
+            }
+        )
+        .is_ok());
+        assert!(<Interface<MockedStorage<3>>>::apply_action(
+            a1.clone(),
+            ApplyContext {
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
+            }
+        )
+        .is_ok());
 
         let e1 = <Index<MockedStorage<3>>>::get_index(root_id).unwrap();
         let e2 = <Index<MockedStorage<3>>>::get_index(p1_id).unwrap();
@@ -428,9 +482,17 @@ mod index__public_methods {
 
     #[test]
     fn get_hashes_for() {
+        use sha2::{Digest, Sha256};
         let root_id = Id::new([0_u8; 32]);
         let root_own_hash = [1_u8; 32];
-        let root_full_hash = [0_u8; 32];
+        // After #2238 Fix 1, add_root populates the stored full_hash
+        // eagerly (SHA256 over own_hash with no children). Compute the
+        // expected value from the invariant instead of assuming zero.
+        let root_full_hash: [u8; 32] = {
+            let mut hasher = Sha256::new();
+            hasher.update(root_own_hash);
+            hasher.finalize().into()
+        };
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
             root_id,
@@ -675,7 +737,7 @@ mod hashing {
     use super::*;
 
     #[test]
-    fn calculate_full_merkle_hash_for__with_children() {
+    fn get_full_merkle_hash_for__with_children() {
         let root_id = Id::from([0; 32]);
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
             root_id,
@@ -699,19 +761,19 @@ mod hashing {
         assert!(<Index<MainStorage>>::add_child_to(root_id, child3_info).is_ok());
 
         assert_eq!(
-            hex::encode(<Index<MainStorage>>::calculate_full_merkle_hash_for(child1_id).unwrap()),
+            hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(child1_id).unwrap()),
             "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
         );
         assert_eq!(
-            hex::encode(<Index<MainStorage>>::calculate_full_merkle_hash_for(child2_id).unwrap()),
+            hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(child2_id).unwrap()),
             "75877bb41d393b5fb8455ce60ecd8dda001d06316496b14dfa7f895656eeca4a",
         );
         assert_eq!(
-            hex::encode(<Index<MainStorage>>::calculate_full_merkle_hash_for(child3_id).unwrap()),
+            hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(child3_id).unwrap()),
             "648aa5c579fb30f38af744d97d6ec840c7a91277a499a0d780f3e7314eca090b",
         );
         assert_eq!(
-            hex::encode(<Index<MainStorage>>::calculate_full_merkle_hash_for(root_id).unwrap()),
+            hex::encode(<Index<MainStorage>>::get_full_merkle_hash_for(root_id).unwrap()),
             "866edea6f7ce51612ad0ea3bcde93b2494d77e8c466bc2a69817a6443f2a57f0",
         );
     }
@@ -732,7 +794,15 @@ mod hashing {
         .is_ok());
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
-        assert_eq!(root_index.full_hash, [0_u8; 32]);
+        // After #2238 Fix 1, add_root populates full_hash eagerly
+        // (SHA256 over own_hash with no children). Not zero.
+        let expected_empty_full_hash: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(root_hash);
+            h.finalize().into()
+        };
+        assert_eq!(root_index.full_hash, expected_empty_full_hash);
 
         let child_id = Id::random();
         let child_hash = [2_u8; 32];
@@ -790,7 +860,7 @@ mod hashing {
         let grandchild_index_with_greatgrandchild = <Index<MainStorage>>::get_index(grandchild_id)
             .unwrap()
             .unwrap();
-        let mut greatgrandchild_index = <Index<MainStorage>>::get_index(greatgrandchild_id)
+        let greatgrandchild_index = <Index<MainStorage>>::get_index(greatgrandchild_id)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -810,13 +880,10 @@ mod hashing {
             "9f4fb68f3e1dac82202f9aa581ce0bbf1f765df0e9ac3c8c57e20f685abab8ed"
         );
 
-        greatgrandchild_index.own_hash = [9_u8; 32];
-        <Index<MainStorage>>::save_index(&greatgrandchild_index).unwrap();
-        greatgrandchild_index.full_hash =
-            <Index<MainStorage>>::calculate_full_merkle_hash_for(greatgrandchild_id).unwrap();
-        <Index<MainStorage>>::save_index(&greatgrandchild_index).unwrap();
-
-        <Index<MainStorage>>::recalculate_ancestor_hashes_for(greatgrandchild_id).unwrap();
+        // Change greatgrandchild's own_hash. `update_hash_for` rewrites
+        // the stored own/full hashes and walks ancestors itself, so no
+        // separate `recalculate_ancestor_hashes_for` call is needed.
+        <Index<MainStorage>>::update_hash_for(greatgrandchild_id, [9_u8; 32], None).unwrap();
 
         let updated_root_index_with_greatgrandchild =
             <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
@@ -846,13 +913,8 @@ mod hashing {
             "8c0cc17a04942cc4f8e0fe0b302606d3108860c126428ba2ceeb5f9ed41c2b05"
         );
 
-        greatgrandchild_index.own_hash = [99_u8; 32];
-        <Index<MainStorage>>::save_index(&greatgrandchild_index).unwrap();
-        greatgrandchild_index.full_hash =
-            <Index<MainStorage>>::calculate_full_merkle_hash_for(greatgrandchild_id).unwrap();
-        <Index<MainStorage>>::save_index(&greatgrandchild_index).unwrap();
-
-        <Index<MainStorage>>::recalculate_ancestor_hashes_for(greatgrandchild_id).unwrap();
+        // Same pattern — update_hash_for handles the ancestor walk itself.
+        <Index<MainStorage>>::update_hash_for(greatgrandchild_id, [99_u8; 32], None).unwrap();
 
         let updated_root_index_with_greatgrandchild =
             <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
@@ -885,8 +947,8 @@ mod hashing {
 
     #[test]
     fn update_hash_for__full() {
+        use sha2::{Digest, Sha256};
         let root_id = Id::random();
-        let root_hash0 = [0_u8; 32];
         let root_hash1 = [1_u8; 32];
         let root_hash2 = [2_u8; 32];
         let root_full_hash: [u8; 32] =
@@ -894,6 +956,13 @@ mod hashing {
                 .unwrap()
                 .try_into()
                 .unwrap();
+        // After #2238 Fix 1, add_root seeds full_hash with SHA256(own_hash)
+        // rather than zero. Compute it from the invariant.
+        let initial_full_hash: [u8; 32] = {
+            let mut h = Sha256::new();
+            h.update(root_hash1);
+            h.finalize().into()
+        };
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
             root_id,
@@ -904,7 +973,7 @@ mod hashing {
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(root_index.id, root_id);
-        assert_eq!(root_index.full_hash, root_hash0);
+        assert_eq!(root_index.full_hash, initial_full_hash);
 
         assert!(<Index<MainStorage>>::update_hash_for(root_id, root_hash2, None).is_ok());
         let updated_root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
@@ -990,12 +1059,17 @@ mod minimal_struct_layout_compat {
             signature_data: Option<SignatureDataMinimal>,
         },
         Frozen,
+        Shared {
+            writers: std::collections::BTreeSet<[u8; 32]>,
+            signature_data: Option<SignatureDataMinimal>,
+        },
     }
 
     #[derive(BorshDeserialize)]
     struct SignatureDataMinimal {
         _signature: [u8; 64],
         _nonce: u64,
+        _signer: Option<[u8; 32]>,
     }
 
     fn make_index(
@@ -1070,6 +1144,7 @@ mod minimal_struct_layout_compat {
         let sig_data = SignatureData {
             signature: [0xEE; 64],
             nonce: 42,
+            signer: None,
         };
         let index = make_index(
             None,

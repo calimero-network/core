@@ -30,22 +30,23 @@ pub mod list_group_contexts;
 pub mod list_group_members;
 pub mod list_namespaces;
 pub mod list_namespaces_for_application;
+pub mod namespace_pending_op_count;
 pub mod remove_group_members;
 pub mod retry_group_upgrade;
 pub mod set_default_capabilities;
-pub mod set_default_visibility;
 pub mod set_group_alias;
 pub mod set_member_alias;
 pub mod set_member_capabilities;
+pub mod set_subgroup_visibility;
 pub mod set_tee_admission_policy;
 pub mod store_context_alias;
 pub mod store_default_capabilities;
-pub mod store_default_visibility;
 pub mod store_group_alias;
 pub mod store_group_context;
 pub mod store_group_meta;
 pub mod store_member_alias;
 pub mod store_member_capability;
+pub mod store_subgroup_visibility;
 pub mod sync;
 pub mod sync_group;
 pub mod update_application;
@@ -89,6 +90,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::ApplySignedNamespaceOp { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::NamespacePendingOpCount { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::RemoveGroupMembers { request, outcome } => {
@@ -154,7 +158,7 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::AdmitTeeNode { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::SetDefaultVisibility { request, outcome } => {
+            ContextMessage::SetSubgroupVisibility { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::StoreContextAlias { request, outcome } => {
@@ -172,7 +176,7 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::StoreDefaultCapabilities { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::StoreDefaultVisibility { request, outcome } => {
+            ContextMessage::StoreSubgroupVisibility { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetMemberAlias { request, outcome } => {

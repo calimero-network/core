@@ -1,6 +1,8 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
 use std::borrow::Cow;
+use std::collections::HashSet;
+use std::sync::{Arc, OnceLock};
 // Removed: NonZeroUsize (no longer using height)
 
 use async_stream::stream;
@@ -11,6 +13,7 @@ use calimero_primitives::events::NodeEvent;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
+use dashmap::DashMap;
 use eyre::{OptionExt, WrapErr};
 use futures_util::Stream;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
@@ -116,6 +119,41 @@ impl SyncClient {
     }
 }
 
+/// Notification payload sent by the execute path after a locally-created
+/// delta has been persisted to the DB, so the node-side can update its
+/// in-memory `DeltaStore` incrementally instead of re-scanning the DB on
+/// every interval sync. Kept as plain types so this crate doesn't need
+/// a direct dependency on `calimero-dag` — the receiver reconstructs
+/// `CausalDelta` internally.
+#[derive(Debug)]
+pub struct LocalAppliedDelta {
+    pub context_id: ContextId,
+    pub delta_id: [u8; 32],
+    pub parents: Vec<[u8; 32]>,
+    pub hlc: calimero_storage::logical_clock::HybridTimestamp,
+    pub expected_root_hash: [u8; 32],
+    pub actions: Vec<calimero_storage::action::Action>,
+}
+
+/// Read libp2p's `mesh_n_low` once from the live `gossipsub::Config::default()`
+/// and cache it. Used by Phase-1 readiness in
+/// `governance_broadcast::assert_transport_ready` as the upper bound for
+/// `required = min(mesh_n_low, known_subscribers)`.
+///
+/// Reading from `Config::default()` (instead of hardcoding) keeps this
+/// value in sync across libp2p version bumps — the upstream default has
+/// shifted between releases (4 → 5 between older crates and the 0.49.x
+/// line currently pinned), and a hardcoded mismatch would either reject
+/// healthy publishes (`required` too high) or admit publishes on an
+/// unhealthy mesh (`required` too low). Calimero constructs the
+/// gossipsub behaviour with `Config::default()` at
+/// `crates/network/src/behaviour.rs:111`, so reading the same default
+/// here is faithful to the actor's configuration.
+fn gossipsub_mesh_n_low_default() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| libp2p::gossipsub::Config::default().mesh_n_low())
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeClient {
     datastore: Store,
@@ -126,6 +164,19 @@ pub struct NodeClient {
     event_sender: broadcast::Sender<NodeEvent>,
     sync_client: SyncClient,
     specialized_node_invite_topic: String,
+    /// Channel for notifying the node about locally-applied deltas so
+    /// its in-memory `DeltaStore` stays in sync without re-scanning the
+    /// DB each `perform_interval_sync`. `None` in unit/integration
+    /// tests that construct `NodeClient` without a running node.
+    local_delta_tx: Option<mpsc::Sender<LocalAppliedDelta>>,
+    /// Per-topic set of remote peers we've observed `Subscribed` to,
+    /// minus those we've subsequently observed `Unsubscribed`. Populated
+    /// by `subscriptions::handle_subscribed/unsubscribed` in the node
+    /// crate; queried by `governance_broadcast::assert_transport_ready`
+    /// on the publish path. Shared by `Arc<DashMap>` so the writer
+    /// (NodeManager event handler) and readers (concurrent publishers)
+    /// see the same map without an actor mailbox round-trip.
+    known_subscribers: Arc<DashMap<TopicHash, HashSet<PeerId>>>,
 }
 
 impl NodeClient {
@@ -138,6 +189,7 @@ impl NodeClient {
         event_sender: broadcast::Sender<NodeEvent>,
         sync_client: SyncClient,
         specialized_node_invite_topic: String,
+        local_delta_tx: Option<mpsc::Sender<LocalAppliedDelta>>,
     ) -> Self {
         let topic_manager = TopicManager::new(network_client.clone());
         Self {
@@ -149,6 +201,86 @@ impl NodeClient {
             event_sender,
             sync_client,
             specialized_node_invite_topic,
+            local_delta_tx,
+            known_subscribers: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Record that `peer_id` subscribed to `topic`. Called from the
+    /// gossipsub `Subscribed` event handler. Idempotent: re-subscriptions
+    /// are deduped by the per-topic `HashSet`.
+    pub fn record_peer_subscribed(&self, peer_id: PeerId, topic: TopicHash) {
+        let _new = self
+            .known_subscribers
+            .entry(topic)
+            .or_default()
+            .insert(peer_id);
+    }
+
+    /// Record that `peer_id` unsubscribed from `topic`. The map entry is
+    /// removed once its set goes empty so [`known_subscribers`](Self::known_subscribers)
+    /// returns 0 instead of an empty-set marker — Phase-1 readiness
+    /// treats both identically, but the cleanup keeps the map bounded.
+    ///
+    /// The set-mutation and the empty-entry cleanup are split into two
+    /// shard-lock acquisitions, but the cleanup uses [`DashMap::remove_if`]
+    /// so a concurrent `record_peer_subscribed` for the same topic
+    /// arriving between them cannot have its insertion silently erased —
+    /// `remove_if` re-checks emptiness atomically inside the shard lock.
+    pub fn record_peer_unsubscribed(&self, peer_id: &PeerId, topic: &TopicHash) {
+        if let Some(mut set) = self.known_subscribers.get_mut(topic) {
+            let _ = set.remove(peer_id);
+        }
+        let _ = self
+            .known_subscribers
+            .remove_if(topic, |_, set| set.is_empty());
+    }
+
+    /// Number of distinct remote peers currently observed subscribed to
+    /// `topic` (NOT mesh members — subscription is the strict superset).
+    /// Used by Phase-1 governance readiness to cap the required mesh
+    /// quorum: a 2-node namespace cannot reach `mesh_n_low` regardless,
+    /// so the readiness gate must be aware of the population size.
+    pub fn known_subscribers(&self, topic: &TopicHash) -> usize {
+        self.known_subscribers
+            .get(topic)
+            .map(|set| set.len())
+            .unwrap_or(0)
+    }
+
+    /// Gossipsub `mesh_n_low` — see [`gossipsub_mesh_n_low_default`].
+    #[must_use]
+    pub fn gossipsub_mesh_n_low(&self) -> usize {
+        gossipsub_mesh_n_low_default()
+    }
+
+    /// Borrow the underlying `NetworkClient`. Used by
+    /// `governance_broadcast::publish_and_await_ack_*` to plug the
+    /// transport into the helper's `BroadcastTransport` trait, avoiding
+    /// a redundant clone on every publish.
+    #[must_use]
+    pub fn network_client(&self) -> &NetworkClient {
+        &self.network_client
+    }
+
+    /// Notify the node that a locally-applied delta was just persisted to
+    /// the DB. The node's `DeltaStore` will add it to the in-memory DAG
+    /// asynchronously, removing the need for periodic `load_persisted_
+    /// deltas` rescans on the sync hot path.
+    ///
+    /// Best-effort: if the channel is closed (node shutting down) or
+    /// full, logs and moves on. Worst case on restart,
+    /// `load_persisted_deltas` catches up at startup.
+    pub fn notify_local_applied_delta(&self, delta: LocalAppliedDelta) {
+        let Some(tx) = self.local_delta_tx.as_ref() else {
+            return;
+        };
+        if let Err(err) = tx.try_send(delta) {
+            warn!(
+                ?err,
+                "failed to enqueue local applied delta for in-memory DAG update — \
+                 next startup will recover via load_persisted_deltas"
+            );
         }
     }
 
@@ -309,6 +441,14 @@ impl NodeClient {
         let _ignored = self.network_client.publish(topic, payload).await?;
 
         Ok(())
+    }
+
+    /// Mesh peer count for the namespace topic `ns/<hex>` — used by callers
+    /// (governance publish sites) to observe `governance_publish_mesh_peers_at_publish`.
+    pub async fn mesh_peer_count_for_namespace(&self, namespace_id: [u8; 32]) -> usize {
+        let topic_str = format!("ns/{}", hex::encode(namespace_id));
+        let topic = TopicHash::from_raw(topic_str);
+        self.network_client.mesh_peer_count(topic).await
     }
 
     /// Publish a borsh-encoded `SignedNamespaceOp` on the namespace topic `ns/<hex>`.

@@ -9,7 +9,7 @@ description = "Core Calimero infrastructure and tools"
 # Update workspace metadata (see docs/RELEASE.md for versioning and release)
 [workspace.metadata.workspaces]
 # Shared version of all public crates; bump this when cutting a release.
-version = "0.10.1-rc.31"
+version = "0.10.1-rc.32"
 exclude = [
     "./apps/abi_conformance",
     "./apps/blobs",
@@ -18,6 +18,7 @@ exclude = [
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
+	"./apps/kv-store-with-shared-storage",
     "./apps/migrations/migration-suite-v1",
     "./apps/migrations/migration-suite-v2-add-field",
     "./apps/migrations/migration-suite-v3-remove-field",
@@ -78,6 +79,7 @@ members = [
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
+	"./apps/kv-store-with-shared-storage",
     "./apps/migrations/migration-suite-v1",
     "./apps/migrations/migration-suite-v2-add-field",
     "./apps/migrations/migration-suite-v3-remove-field",
@@ -105,6 +107,7 @@ async-stream = "0.3.5"
 async-trait = "0.1.89"
 axum = "0.7.4"
 base64 = "0.22.0"
+blake3 = "1.5.0"
 borsh = "1.3.1"
 bs58 = "0.5.0"
 bytes = "1.11.1"

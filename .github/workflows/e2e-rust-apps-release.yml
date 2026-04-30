@@ -111,29 +111,22 @@ jobs:
       - name: Run e2e-kv-store Workflow
         id: run_e2e_kv_store
         run: |
+          # Phase 11.3 (#2237): single attempt, fail loud. The retry loop +
+          # `merobox nuke --force` between attempts existed to mask
+          # cold-start governance flakes (#2198, #2225). With the
+          # three-phase contract in place (publish_and_await_ack +
+          # readiness FSM + parent_pull single-peer fallback), a flake
+          # here is a real bug worth surfacing rather than retrying past.
           mkdir -p docker-logs
           cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-              
-              if merobox bootstrap run \
-                  "workflows/e2e.yml" \
-                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  attempt=$((attempt + 1))
-              fi
-          done
+          if merobox bootstrap run \
+              "workflows/e2e.yml" \
+              --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+              --e2e-mode; then
+              failed=false
+          else
+              failed=true
+          fi
 
           # Collect logs
           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
@@ -145,37 +138,20 @@ jobs:
           merobox stop --all || true
           merobox nuke --force || true
 
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
+          echo "failed=$failed" >> $GITHUB_OUTPUT
 
       - name: Run e2e-kv-store Groups Workflow
         id: run_groups
         run: |
           cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/groups.yml" \
-                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  attempt=$((attempt + 1))
-              fi
-          done
+          if merobox bootstrap run \
+              "workflows/groups.yml" \
+              --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+              --e2e-mode; then
+              failed=false
+          else
+              failed=true
+          fi
 
           # Collect logs
           echo "Collecting Docker logs for groups workflow"
@@ -188,37 +164,20 @@ jobs:
           merobox stop --all || true
           merobox nuke --force || true
 
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
+          echo "failed=$failed" >> $GITHUB_OUTPUT
 
       - name: Run group-3node Workflow
         id: run_group_3node
         run: |
           cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/group-3node.yml" \
-                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  attempt=$((attempt + 1))
-              fi
-          done
+          if merobox bootstrap run \
+              "workflows/group-3node.yml" \
+              --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+              --e2e-mode; then
+              failed=false
+          else
+              failed=true
+          fi
 
           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
               if [ -n "$container" ]; then
@@ -229,37 +188,20 @@ jobs:
           merobox stop --all || true
           merobox nuke --force || true
 
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
+          echo "failed=$failed" >> $GITHUB_OUTPUT
 
       - name: Run group-context-isolation Workflow
         id: run_group_context_isolation
         run: |
           cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/group-context-isolation.yml" \
-                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  attempt=$((attempt + 1))
-              fi
-          done
+          if merobox bootstrap run \
+              "workflows/group-context-isolation.yml" \
+              --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+              --e2e-mode; then
+              failed=false
+          else
+              failed=true
+          fi
 
           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
               if [ -n "$container" ]; then
@@ -270,37 +212,20 @@ jobs:
           merobox stop --all || true
           merobox nuke --force || true
 
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
+          echo "failed=$failed" >> $GITHUB_OUTPUT
 
       - name: Run group-late-joiner Workflow
         id: run_group_late_joiner
         run: |
           cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/group-late-joiner.yml" \
-                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  attempt=$((attempt + 1))
-              fi
-          done
+          if merobox bootstrap run \
+              "workflows/group-late-joiner.yml" \
+              --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+              --e2e-mode; then
+              failed=false
+          else
+              failed=true
+          fi
 
           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
               if [ -n "$container" ]; then
@@ -311,37 +236,20 @@ jobs:
           merobox stop --all || true
           merobox nuke --force || true
 
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
+          echo "failed=$failed" >> $GITHUB_OUTPUT
 
       - name: Run group-subgroup Workflow
         id: run_group_subgroup
         run: |
           cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/group-subgroup.yml" \
-                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  attempt=$((attempt + 1))
-              fi
-          done
+          if merobox bootstrap run \
+              "workflows/group-subgroup.yml" \
+              --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+              --e2e-mode; then
+              failed=false
+          else
+              failed=true
+          fi
 
           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
               if [ -n "$container" ]; then
@@ -352,37 +260,20 @@ jobs:
           merobox stop --all || true
           merobox nuke --force || true
 
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
+          echo "failed=$failed" >> $GITHUB_OUTPUT
 
       - name: Run group-multi-service Workflow
         id: run_group_multi_service
         run: |
           cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/group-multi-service.yml" \
-                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  attempt=$((attempt + 1))
-              fi
-          done
+          if merobox bootstrap run \
+              "workflows/group-multi-service.yml" \
+              --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+              --e2e-mode; then
+              failed=false
+          else
+              failed=true
+          fi
 
           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
               if [ -n "$container" ]; then
@@ -393,37 +284,20 @@ jobs:
           merobox stop --all || true
           merobox nuke --force || true
 
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
+          echo "failed=$failed" >> $GITHUB_OUTPUT
 
       - name: Run handler-test Workflow
         id: run_handler_test
         run: |
           cd apps/e2e-kv-store
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/handler-test.yml" \
-                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  attempt=$((attempt + 1))
-              fi
-          done
+          if merobox bootstrap run \
+              "workflows/handler-test.yml" \
+              --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+              --e2e-mode; then
+              failed=false
+          else
+              failed=true
+          fi
 
           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
               if [ -n "$container" ]; then
@@ -434,37 +308,20 @@ jobs:
           merobox stop --all || true
           merobox nuke --force || true
 
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
-          else
-              echo "failed=false" >> $GITHUB_OUTPUT
-          fi
+          echo "failed=$failed" >> $GITHUB_OUTPUT
 
       - name: Run xcall-example Workflow
         id: run_xcall
         run: |
           cd apps/xcall-example
-          max_attempts=2
-          attempt=1
-          success=false
-
-          while [ $attempt -le $max_attempts ]; do
-              if [ $attempt -gt 1 ]; then
-                  merobox stop --all || true
-                  merobox nuke --force || true
-                  sleep 2
-              fi
-
-              if merobox bootstrap run \
-                  "workflows/xcall.yml" \
-                  --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
-                  --e2e-mode; then
-                  success=true
-                  break
-              else
-                  attempt=$((attempt + 1))
-              fi
-          done
+          if merobox bootstrap run \
+              "workflows/xcall.yml" \
+              --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+              --e2e-mode; then
+              failed=false
+          else
+              failed=true
+          fi
 
           # Collect logs
           for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
@@ -476,11 +333,36 @@ jobs:
           merobox stop --all || true
           merobox nuke --force || true
 
-          if [ "$success" = false ]; then
-              echo "failed=true" >> $GITHUB_OUTPUT
+          echo "failed=$failed" >> $GITHUB_OUTPUT
+
+      - name: Run kv-store-joiner-cold Workflow
+        id: run_joiner_cold
+        run: |
+          # Phase 12.2 (#2237): regression guard for the cold-join →
+          # first-execute window. Verifies that join_context returns with
+          # the group key locally stored, so the joiner's first call to
+          # `set` does not hit the strict "group key not yet delivered"
+          # error path in execute/mod.rs.
+          cd apps/e2e-kv-store
+          if merobox bootstrap run \
+              "workflows/kv-store-joiner-cold.yml" \
+              --image ghcr.io/calimero-network/merod:${{ steps.image-tag.outputs.tag }} \
+              --e2e-mode; then
+              failed=false
           else
-              echo "failed=false" >> $GITHUB_OUTPUT
+              failed=true
           fi
+
+          for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null || true); do
+              if [ -n "$container" ]; then
+                  docker logs "$container" > "$GITHUB_WORKSPACE/docker-logs/joiner-cold-${container}.log" 2>&1 || true
+              fi
+          done
+
+          merobox stop --all || true
+          merobox nuke --force || true
+
+          echo "failed=$failed" >> $GITHUB_OUTPUT
 
       - name: Upload Workflow Data Artifacts
         if: ${{ !cancelled() }}
@@ -517,7 +399,8 @@ jobs:
           steps.run_group_subgroup.outputs.failed == 'true' ||
           steps.run_group_multi_service.outputs.failed == 'true' ||
           steps.run_handler_test.outputs.failed == 'true' ||
-          steps.run_xcall.outputs.failed == 'true'
+          steps.run_xcall.outputs.failed == 'true' ||
+          steps.run_joiner_cold.outputs.failed == 'true'
         run: |
           echo "Workflow failures detected:"
           if [ "${{ steps.run_e2e_kv_store.outputs.failed }}" == "true" ]; then
@@ -546,5 +429,8 @@ jobs:
           fi
           if [ "${{ steps.run_xcall.outputs.failed }}" == "true" ]; then
             echo "  - xcall-example workflow failed"
+          fi
+          if [ "${{ steps.run_joiner_cold.outputs.failed }}" == "true" ]; then
+            echo "  - kv-store-joiner-cold workflow failed"
           fi
           exit 1

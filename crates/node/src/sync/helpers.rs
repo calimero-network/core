@@ -8,7 +8,7 @@ use calimero_primitives::context::ContextId;
 use calimero_storage::address::Id;
 use calimero_storage::entities::{ChildInfo, Metadata};
 use calimero_storage::index::Index;
-use calimero_storage::interface::{Action, Interface};
+use calimero_storage::interface::{Action, ApplyContext, Interface};
 use calimero_storage::store::MainStorage;
 use eyre::{bail, Result};
 use rand::Rng;
@@ -88,7 +88,16 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
                 ancestors: vec![],
                 metadata: Metadata::default(),
             };
-            Interface::<MainStorage>::apply_action(root_action)?;
+            // P1 of #2233: snapshot leaf push has no DAG-causal context.
+            Interface::<MainStorage>::apply_action(
+                root_action,
+                ApplyContext {
+                    causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
+                },
+            )?;
         }
 
         // Get root info for ancestor chain
@@ -113,7 +122,16 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         }
     };
 
-    Interface::<MainStorage>::apply_action(action)?;
+    // P1 of #2233: snapshot leaf push has no DAG-causal context.
+    Interface::<MainStorage>::apply_action(
+        action,
+        ApplyContext {
+            causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
+        },
+    )?;
     Ok(())
 }
 
@@ -167,24 +185,43 @@ pub fn handle_entity_push(
     })
 }
 
-/// Extract raw `SignedNamespaceOp` bytes from a `skeleton_bytes` store value.
+/// Extract a [`SignedNamespaceOp`](calimero_context_client::local_governance::SignedNamespaceOp)
+/// from a `skeleton_bytes` store value.
 ///
-/// The store encodes entries as `StoredNamespaceEntry::Signed(op)`. All wire
-/// paths (gossip, backfill, join response) expect bare `SignedNamespaceOp`
-/// bytes so the receiver can `borsh::from_slice::<SignedNamespaceOp>` directly.
-pub fn extract_signed_op_bytes(skeleton_bytes: &[u8]) -> Option<Vec<u8>> {
+/// The store encodes entries as `StoredNamespaceEntry::Signed(op)`. Returns
+/// `None` for opaque skeletons (non-member rows) or if the bytes do not
+/// decode as either form.
+///
+/// Prefer this over [`extract_signed_op_bytes`] when the caller needs the
+/// typed op (e.g. to wrap in `NamespaceTopicMsg::Op` for gossip publish) —
+/// it avoids a redundant `borsh::to_vec` + `borsh::from_slice` round-trip.
+pub fn extract_signed_op(
+    skeleton_bytes: &[u8],
+) -> Option<calimero_context_client::local_governance::SignedNamespaceOp> {
     use calimero_context_client::local_governance::{SignedNamespaceOp, StoredNamespaceEntry};
 
     if let Ok(StoredNamespaceEntry::Signed(op)) =
         borsh::from_slice::<StoredNamespaceEntry>(skeleton_bytes)
     {
-        return borsh::to_vec(&op).ok();
+        return Some(op);
     }
     // Fallback: already raw SignedNamespaceOp bytes (legacy / direct-publish path).
-    if borsh::from_slice::<SignedNamespaceOp>(skeleton_bytes).is_ok() {
-        return Some(skeleton_bytes.to_vec());
-    }
-    None
+    borsh::from_slice::<SignedNamespaceOp>(skeleton_bytes).ok()
+}
+
+/// Extract raw `SignedNamespaceOp` bytes from a `skeleton_bytes` store value.
+///
+/// The store encodes entries as `StoredNamespaceEntry::Signed(op)`. The
+/// **stream-based** wire paths (sync backfill response, namespace-join
+/// response) consume the bytes returned here directly so the receiver can
+/// `borsh::from_slice::<SignedNamespaceOp>(...)`.
+///
+/// The **gossip** publish path (`BroadcastMessage::NamespaceGovernanceDelta`)
+/// requires its payload to be a `NamespaceTopicMsg::Op(op)` envelope after
+/// Phase 2 of #2237 — gossip callers should prefer [`extract_signed_op`]
+/// to avoid an unnecessary serialization round-trip.
+pub fn extract_signed_op_bytes(skeleton_bytes: &[u8]) -> Option<Vec<u8>> {
+    extract_signed_op(skeleton_bytes).and_then(|op| borsh::to_vec(&op).ok())
 }
 
 // =============================================================================

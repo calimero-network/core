@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::PublicKey;
@@ -240,6 +240,7 @@ pub fn create_signed_user_add_action(
             signature_data: Some(SignatureData {
                 signature: [0; 64], // Placeholder
                 nonce,
+                signer: None,
             }),
         },
         crdt_type: None,
@@ -266,10 +267,82 @@ pub fn create_signed_user_add_action(
             ..
         } = metadata.storage_type
         {
-            *signature_data = Some(SignatureData { signature, nonce });
+            *signature_data = Some(SignatureData {
+                signature,
+                nonce,
+                signer: None,
+            });
         }
     }
 
+    action
+}
+
+/// Returns the `PublicKey` corresponding to a `SigningKey`.
+pub fn pubkey_of(sk: &SigningKey) -> PublicKey {
+    PublicKey::from(*sk.verifying_key().as_bytes())
+}
+
+/// Build a signed `Shared` storage action (Add or Update).
+///
+/// `hlc_ns` populates BOTH the action's `updated_at` and the signature's
+/// `nonce` — matching production where `sign_authorized_actions` stamps both
+/// with the action's HLC. Tests must pass strictly increasing values across
+/// sequential calls to satisfy per-entity replay protection.
+///
+/// `signer_sk` must be in `writers` (or the caller is intentionally testing
+/// a forged action).
+pub fn build_signed_shared_action(
+    add: bool,
+    id: Id,
+    data: Vec<u8>,
+    writers: BTreeSet<PublicKey>,
+    hlc_ns: u64,
+    signer_sk: &SigningKey,
+    ancestors: Vec<ChildInfo>,
+) -> Action {
+    let metadata = Metadata {
+        created_at: hlc_ns,
+        updated_at: hlc_ns.into(),
+        storage_type: StorageType::Shared {
+            writers,
+            signature_data: Some(SignatureData {
+                signature: [0; 64],
+                nonce: hlc_ns,
+                signer: Some(pubkey_of(signer_sk)),
+            }),
+        },
+        crdt_type: None,
+        field_name: None,
+    };
+    let mut action = if add {
+        Action::Add {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+    } else {
+        Action::Update {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+    };
+    let payload = action.payload_for_signing();
+    let signature = signer_sk.sign(&payload).to_bytes();
+    let metadata_mut = match &mut action {
+        Action::Add { metadata, .. } | Action::Update { metadata, .. } => metadata,
+        _ => unreachable!(),
+    };
+    if let StorageType::Shared {
+        signature_data: Some(sd),
+        ..
+    } = &mut metadata_mut.storage_type
+    {
+        sd.signature = signature;
+    }
     action
 }
 
@@ -292,6 +365,7 @@ pub fn create_signed_user_update_action(
             signature_data: Some(SignatureData {
                 signature: [0; 64],
                 nonce,
+                signer: None,
             }),
         },
         crdt_type: None,
@@ -316,7 +390,11 @@ pub fn create_signed_user_update_action(
             ..
         } = metadata.storage_type
         {
-            *signature_data = Some(SignatureData { signature, nonce });
+            *signature_data = Some(SignatureData {
+                signature,
+                nonce,
+                signer: None,
+            });
         }
     }
 

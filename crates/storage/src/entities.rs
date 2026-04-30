@@ -15,7 +15,7 @@ mod tests;
 
 use calimero_primitives::identity::PublicKey;
 use core::fmt::{self, Debug, Display, Formatter};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -348,6 +348,15 @@ impl Element {
         self.update(); // Mark as dirty
     }
 
+    /// Helper to set the storage domain to `Shared`.
+    pub fn set_shared_domain(&mut self, writers: BTreeSet<PublicKey>) {
+        self.metadata.storage_type = StorageType::Shared {
+            writers,
+            signature_data: None, // Will be signed later
+        };
+        self.update(); // Mark as dirty
+    }
+
     /// Reassigns the element's ID and field name for deterministic ID generation.
     ///
     /// This is called by the `#[app::state]` macro after `init()` returns to ensure
@@ -384,6 +393,12 @@ pub struct SignatureData {
     pub signature: [u8; 64],
     /// Nonce (counter/timestamp) to avoid replaying attacks.
     pub nonce: u64,
+    /// Optional hint identifying which key produced the signature. Used by
+    /// `StorageType::Shared` to make verification O(1) (skip the per-writer
+    /// linear scan); ignored for `User` where the owner is already known.
+    /// `None` means "fall back to scanning the writer set" — older actions
+    /// without this hint still verify.
+    pub signer: Option<PublicKey>,
 }
 
 /// Defines the type of storage and its associated authorization rules.
@@ -401,6 +416,17 @@ pub enum StorageType {
     },
     /// Data that can be set only once, can'be modified or deleted.
     Frozen,
+    /// Group-writable storage. Any signer in `writers` can modify; the writer set
+    /// itself is rotatable (signed by a current writer). The wrapper-level
+    /// `writers_frozen` flag (held on `SharedStorage<T>`, not in this stamp)
+    /// disables rotation at the API layer.
+    Shared {
+        /// The set of public keys authorized to write or rotate.
+        writers: BTreeSet<PublicKey>,
+        /// A signature and nonce. The signature must be from a key in `writers`
+        /// (the *currently stored* set, not the action's claimed set).
+        signature_data: Option<SignatureData>,
+    },
 }
 
 // Default to `Public` for backward compatibility

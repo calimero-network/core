@@ -928,7 +928,15 @@ impl VMHostFunctions<'_> {
             );
 
             with_runtime_env(env.clone(), || {
-                calimero_storage::collections::Root::<Vec<u8>>::sync(&payload)
+                // P1 of #2233: causal_parents is empty here. P3 will extend
+                // the ABI to pass CausalDelta.parents through to apply_action.
+                let sync_ctx = calimero_storage::interface::ApplyContext {
+                    causal_parents: &[],
+                    delta_id: None,
+                    delta_hlc: None,
+                    happens_before: None,
+                };
+                calimero_storage::collections::Root::<Vec<u8>>::sync(&payload, sync_ctx)
             })
             .map_err(|err| {
                 VMLogicError::from(HostError::Panic {

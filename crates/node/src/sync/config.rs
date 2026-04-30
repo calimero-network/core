@@ -65,6 +65,35 @@ pub const DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED: u64 = 1_000;
 /// it does not risk racing on per-context sync state.
 pub const DEFAULT_PEER_STATE_PROBE_CONCURRENCY: usize = 4;
 
+/// Maximum number of *additional* mesh peers to try for missing-parent
+/// fetches after the initial sync peer returns without fully resolving
+/// the DAG. The initial peer attempt is not counted toward this budget.
+///
+/// Applies to both data-delta parent pulls (cold-start join_context, #2198)
+/// and governance-op parent pulls (subgroup MemberAdded propagation, #2209).
+///
+/// Phase 11.1 (#2237) reduced this from 3 → 1 once `publish_and_await_ack`
+/// took over delivery confirmation: the publisher boundary now blocks until
+/// at least one mesh peer acks the op, so a "no peer has the parent" outcome
+/// is far rarer than under fire-and-forget gossipsub. A single fallback peer
+/// covers the residual transient (the acker just left the mesh, or our local
+/// pending-op record points to a peer that has since rotated their identity);
+/// fan-out beyond that is redundant work the heartbeat path already handles
+/// for genuinely-stuck divergence.
+pub const DEFAULT_PARENT_PULL_ADDITIONAL_PEERS: usize = 1;
+
+/// Total wall-clock budget (milliseconds) for the cross-peer
+/// missing-parent fetch loop, including the initial peer attempt.
+/// When exhausted, the sync session returns an error rather than
+/// reporting silent success on a partially-applied DAG.
+///
+/// Phase 11.1 (#2237) reduced this from 10s → 5s in tandem with
+/// `DEFAULT_PARENT_PULL_ADDITIONAL_PEERS` 3 → 1: with at most two peer
+/// attempts (initial + one fallback), the prior 10s window was mostly
+/// idle wall-clock time. 5s is two `BACKFILL_REQUEST_TIMEOUT` cycles
+/// (default 2s) plus margin for the mesh-snapshot refetch.
+pub const DEFAULT_PARENT_PULL_BUDGET_MS: u64 = 5_000;
+
 /// Synchronization configuration.
 ///
 /// Controls timing, concurrency, and protocol behavior for node synchronization.
@@ -90,6 +119,15 @@ pub struct SyncConfig {
 
     /// Max concurrent peer probes in `find_peer_with_state`.
     pub peer_state_probe_concurrency: usize,
+
+    /// Max additional mesh peers to try for missing-parent fetches
+    /// after the initial sync peer returns without fully resolving
+    /// the DAG. See [`DEFAULT_PARENT_PULL_ADDITIONAL_PEERS`].
+    pub parent_pull_additional_peers: usize,
+
+    /// Wall-clock budget for the cross-peer missing-parent fetch loop.
+    /// See [`DEFAULT_PARENT_PULL_BUDGET_MS`].
+    pub parent_pull_budget: time::Duration,
 }
 
 impl Default for SyncConfig {
@@ -102,6 +140,8 @@ impl Default for SyncConfig {
             snapshot_chunk_size: DEFAULT_SNAPSHOT_CHUNK_SIZE,
             delta_sync_threshold: DEFAULT_DELTA_SYNC_THRESHOLD,
             peer_state_probe_concurrency: DEFAULT_PEER_STATE_PROBE_CONCURRENCY,
+            parent_pull_additional_peers: DEFAULT_PARENT_PULL_ADDITIONAL_PEERS,
+            parent_pull_budget: time::Duration::from_millis(DEFAULT_PARENT_PULL_BUDGET_MS),
         }
     }
 }

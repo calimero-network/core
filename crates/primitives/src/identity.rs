@@ -121,11 +121,6 @@ impl Deref for PublicKey {
 }
 
 impl PublicKey {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-
     /// Verify a signature against this public key.
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), SignatureError> {
         VerifyingKey::from_bytes(self.as_ref())?.verify(message, signature)
@@ -149,19 +144,19 @@ impl PublicKey {
 
 impl fmt::Display for PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad(self.as_str())
+        fmt::Display::fmt(&self.0, f)
     }
 }
 
 impl From<PublicKey> for String {
     fn from(id: PublicKey) -> Self {
-        id.as_str().to_owned()
+        id.0.to_base58()
     }
 }
 
 impl From<&PublicKey> for String {
     fn from(id: &PublicKey) -> Self {
-        id.as_str().to_owned()
+        id.0.to_base58()
     }
 }
 

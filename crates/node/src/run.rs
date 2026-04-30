@@ -137,6 +137,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx);
 
+    // Channel for the execute path to notify the node about locally-
+    // applied deltas so the in-memory DeltaStore stays current without
+    // re-scanning the DB on every interval sync. Drained by a task
+    // spawned once `node_state` is available (below).
+    let (local_delta_tx, mut local_delta_rx) = mpsc::channel(256);
+
     let node_client = NodeClient::new(
         datastore.clone(),
         blob_manager.clone(),
@@ -145,6 +151,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         event_sender,
         sync_client,
         config.specialized_node.invite_topic.clone(),
+        Some(local_delta_tx),
     );
 
     let context_client = ContextClient::new(
@@ -167,6 +174,71 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let node_state = crate::NodeState::new(config.specialized_node.accept_mock_tee, config.mode);
 
+    // Drain locally-applied delta notifications from the execute path
+    // and register them into the in-memory DeltaStore. Replaces the
+    // per-interval-sync `load_persisted_deltas` rescan that existed
+    // solely to catch up on execute-side writes.
+    {
+        let delta_stores = node_state.delta_stores_handle();
+        let _drainer = tokio::spawn(async move {
+            while let Some(msg) = local_delta_rx.recv().await {
+                // Clone the DeltaStore value out of the DashMap and
+                // drop the Ref before awaiting — holding a shard lock
+                // across `.await` would block other context shards.
+                let store = match delta_stores.get(&msg.context_id) {
+                    Some(entry) => entry.value().clone(),
+                    None => {
+                        // Benign race: execute finished before the
+                        // DeltaStore entry was created (e.g. isolated
+                        // single-node test). Startup
+                        // `load_persisted_deltas` will pick the row up
+                        // when the store is eventually constructed.
+                        tracing::debug!(
+                            context_id = %msg.context_id,
+                            "no DeltaStore for local applied delta, skipping"
+                        );
+                        continue;
+                    }
+                };
+                let delta = calimero_dag::CausalDelta {
+                    id: msg.delta_id,
+                    parents: msg.parents,
+                    payload: msg.actions,
+                    hlc: msg.hlc,
+                    expected_root_hash: msg.expected_root_hash,
+                    kind: calimero_dag::DeltaKind::Regular,
+                };
+                match store.add_local_applied_delta(delta).await {
+                    Ok(cascaded_events) if !cascaded_events.is_empty() => {
+                        // Cascaded children's DB state + dag_heads were
+                        // persisted inside add_local_applied_delta; the
+                        // events list returned here carries payloads that
+                        // still need handler execution. Today the drainer
+                        // has no line into NodeClients / NodeManager, so
+                        // we rely on the restart-replay contract (#2185):
+                        // records stay `applied: true, events: Some(..)`
+                        // until the next `load_persisted_deltas` surfaces
+                        // them. Log at info so missed handler runs are
+                        // observable while plumbing is added.
+                        tracing::info!(
+                            context_id = %msg.context_id,
+                            cascaded_count = cascaded_events.len(),
+                            "Cascaded events persisted; awaiting restart replay for handler execution"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            error = ?e,
+                            context_id = %msg.context_id,
+                            "failed to register local applied delta in DAG"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
     let sync_manager = SyncManager::new(
         config.sync,
         node_client.clone(),
@@ -183,6 +255,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         sync_manager.clone(),
         context_client.clone(),
         node_client.clone(),
+        datastore.clone(),
         node_state.clone(),
     );
 

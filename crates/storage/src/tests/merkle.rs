@@ -6,12 +6,30 @@
 //! which subtrees differ and need synchronization.
 
 use super::common::{Page, Paragraph};
+use crate::address::Id;
 use crate::entities::{Data, Element};
-use crate::interface::Interface;
-use crate::store::MockedStorage;
+use crate::index::Index;
+use crate::interface::{ApplyContext, Interface};
+use crate::store::{MockedStorage, StorageAdaptor};
 
 type TestStorage = MockedStorage<8000>;
 type TestInterface = Interface<TestStorage>;
+
+/// Computes `full_hash` independently from the stored `own_hash` +
+/// `children`, without reading the stored `full_hash` field. After
+/// #2238 Fix 1, `Index::get_full_merkle_hash_for` is itself a stored
+/// read of `full_hash` — so using it as a "fresh recompute" against
+/// `get_hashes_for` would be tautological. This helper gives a real
+/// independent signal: if any write site forgot to refresh
+/// `full_hash`, the stored value and this recompute diverge.
+fn recompute_full_hash<S: StorageAdaptor>(id: Id) -> [u8; 32] {
+    let index = Index::<S>::get_index(id).unwrap().unwrap();
+    Index::<S>::calculate_full_hash_for_children(
+        index.own_hash(),
+        &index.children().map(<[_]>::to_vec),
+    )
+    .unwrap()
+}
 
 // ============================================================
 // Hash Propagation - Child Addition
@@ -235,7 +253,16 @@ fn merkle_hash_convergence_after_sync() {
         metadata: page1.element().metadata.clone(),
     };
 
-    Interface::<Storage2>::apply_action(action).unwrap();
+    Interface::<Storage2>::apply_action(
+        action,
+        ApplyContext {
+            causal_parents: &[],
+            delta_id: None,
+            delta_hlc: None,
+            happens_before: None,
+        },
+    )
+    .unwrap();
 
     // After sync, hashes should match
     let page2 = Interface::<Storage2>::find_by_id::<Page>(page1.id())
@@ -358,4 +385,410 @@ fn merkle_hash_child_removal_updates_parent() {
         hash_with_child, hash_without_child,
         "Parent hash must update when child removed"
     );
+}
+
+// ============================================================
+// #2238 — Deferred-ancestor scope must produce byte-identical hashes
+// ============================================================
+
+// All three tests use a 3-level hierarchy (root → parent → leaves) because
+// the scope's flush is specifically about WALKING ancestors — adding under
+// a root-level parent means the walk has zero steps and the flush is a no-op,
+// which wouldn't exercise the code path under test.
+
+#[test]
+fn deferred_ancestor_scope_propagates_through_ancestors() {
+    // Structural invariant: after scope flush, every ancestor's saved
+    // `full_hash` equals a fresh recompute from its current children.
+    // With a 3-level tree, the flush must walk parent → root and update
+    // the root's children list to reflect parent's new hash — catching
+    // any bug where the deferred flush leaves intermediate ancestors
+    // stale.
+    use crate::index::{DeferredAncestorScope, Index};
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    // root → parent (3-level so flush actually walks)
+    let mut root = Page::new_from_element("Root", Element::root());
+    TestInterface::save(&mut root).unwrap();
+    let mut parent = Paragraph::new_from_element("Parent", Element::new(None));
+    TestInterface::add_child_to(root.id(), &mut parent).unwrap();
+
+    let root_hash_before = Index::<TestStorage>::get_hashes_for(root.id())
+        .unwrap()
+        .unwrap()
+        .0;
+
+    {
+        let scope = DeferredAncestorScope::<TestStorage>::new();
+        for i in 0..10 {
+            let mut leaf = Paragraph::new_from_element(&format!("Leaf {i}"), Element::new(None));
+            TestInterface::add_child_to(parent.id(), &mut leaf).unwrap();
+        }
+        scope.finish().unwrap();
+    }
+
+    // Root's saved full_hash must match an independent recompute from
+    // its own_hash + children — catches a scope that forgot to flush.
+    let root_stored = Index::<TestStorage>::get_hashes_for(root.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let root_recomputed = recompute_full_hash::<TestStorage>(root.id());
+    assert_eq!(
+        hex::encode(root_stored),
+        hex::encode(root_recomputed),
+        "root's stored full_hash must equal independent recompute after scope flush",
+    );
+
+    // Same invariant for parent.
+    let parent_stored = Index::<TestStorage>::get_hashes_for(parent.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let parent_recomputed = recompute_full_hash::<TestStorage>(parent.id());
+    assert_eq!(
+        hex::encode(parent_stored),
+        hex::encode(parent_recomputed),
+        "parent's stored full_hash must equal independent recompute after scope flush",
+    );
+
+    // And the root hash must have CHANGED, proving the ancestor walk
+    // actually ran rather than being a no-op (a cheap signal that the
+    // flush did propagate new descendant hashes into root).
+    assert_ne!(
+        root_hash_before, root_stored,
+        "root hash should change after 10 leaves added under parent",
+    );
+}
+
+#[test]
+fn deferred_scope_dedupes_walks_from_same_parent() {
+    // Semantic test: after a scope flush, the parent's full_hash reflects
+    // all children added inside the scope. Uses 3-level hierarchy so the
+    // flush does actual work.
+    use crate::index::{DeferredAncestorScope, Index};
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut root = Page::new_from_element("Root", Element::root());
+    TestInterface::save(&mut root).unwrap();
+    let mut parent = Paragraph::new_from_element("Parent", Element::new(None));
+    TestInterface::add_child_to(root.id(), &mut parent).unwrap();
+
+    {
+        let scope = DeferredAncestorScope::<TestStorage>::new();
+        for i in 0..5 {
+            let mut child = Paragraph::new_from_element(&format!("Child {i}"), Element::new(None));
+            TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+        }
+        scope.finish().unwrap();
+    }
+
+    // Parent's index should record all 5 children.
+    let children = Index::<TestStorage>::get_children_of(parent.id()).unwrap();
+    assert_eq!(
+        children.len(),
+        5,
+        "all 5 children should be indexed under parent"
+    );
+}
+
+#[test]
+fn deferred_scope_handles_mixed_add_and_remove() {
+    // Reviewer follow-up: `DeferredAncestorScope` is active for the entire
+    // `Root::sync` action loop, including `Action::DeleteRef`. That path
+    // calls `recalculate_ancestor_hashes_for` after removing a child,
+    // and its ancestor walk is deferred along with the add-side walks.
+    //
+    // This test exercises that mixed case: inside a single scope, add
+    // some children, then remove one, then add more. After flush, the
+    // tree must be consistent — every ancestor's stored full_hash equals
+    // the fresh recompute from its current children.
+    use crate::index::{DeferredAncestorScope, Index};
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut root = Page::new_from_element("Root", Element::root());
+    TestInterface::save(&mut root).unwrap();
+    let mut parent = Paragraph::new_from_element("Parent", Element::new(None));
+    TestInterface::add_child_to(root.id(), &mut parent).unwrap();
+
+    // Seed two children before opening the scope so we have something
+    // to remove inside it.
+    let mut seed_a = Paragraph::new_from_element("Seed A", Element::new(None));
+    TestInterface::add_child_to(parent.id(), &mut seed_a).unwrap();
+    let mut seed_b = Paragraph::new_from_element("Seed B", Element::new(None));
+    TestInterface::add_child_to(parent.id(), &mut seed_b).unwrap();
+
+    {
+        let scope = DeferredAncestorScope::<TestStorage>::new();
+
+        // Add three new children.
+        for i in 0..3 {
+            let mut child = Paragraph::new_from_element(&format!("New {i}"), Element::new(None));
+            TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+        }
+        // Remove one of the seeds — this goes through Index::remove_child_from,
+        // which calls recalculate_ancestor_hashes_for (also deferred inside
+        // the scope). The apply_delete_ref_action path does the same thing
+        // via remote sync, so a test covering the local path covers both.
+        TestInterface::remove_child_from(parent.id(), seed_a.id()).unwrap();
+        // Add one more after the removal to make sure ordering in the
+        // deferred set doesn't matter.
+        let mut tail = Paragraph::new_from_element("Tail", Element::new(None));
+        TestInterface::add_child_to(parent.id(), &mut tail).unwrap();
+
+        scope.finish().unwrap();
+    }
+
+    // Post-flush: parent has seed_b + 3 new + tail = 5 children. Root and
+    // parent stored hashes must match fresh recomputes.
+    let children = Index::<TestStorage>::get_children_of(parent.id()).unwrap();
+    assert_eq!(
+        children.len(),
+        5,
+        "parent should hold 1 seed + 3 new + 1 tail after mixed add/remove",
+    );
+
+    let root_stored = Index::<TestStorage>::get_hashes_for(root.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let root_recomputed = recompute_full_hash::<TestStorage>(root.id());
+    assert_eq!(
+        hex::encode(root_stored),
+        hex::encode(root_recomputed),
+        "root stored full_hash must equal independent recompute after mixed add/remove in a scope",
+    );
+    let parent_stored = Index::<TestStorage>::get_hashes_for(parent.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let parent_recomputed = recompute_full_hash::<TestStorage>(parent.id());
+    assert_eq!(
+        hex::encode(parent_stored),
+        hex::encode(parent_recomputed),
+        "parent stored full_hash must equal independent recompute after mixed add/remove in a scope",
+    );
+}
+
+#[test]
+fn deferred_scope_of_different_adaptor_does_not_cross_contaminate() {
+    // Reviewer concern: a single untyped thread-local could let a scope
+    // opened against StorageAdaptor S1 defer calls targeting S2's Index,
+    // then flush them through S1's backend — corrupting whichever tree
+    // actually lives there.
+    //
+    // The implementation keys the thread-local on TypeId<S>, so a
+    // mismatched call goes direct. Verify: open a scope for another
+    // MockedStorage variant and assert calls on TestStorage still do
+    // work eagerly (not batched into the wrong backend).
+    use crate::index::{DeferredAncestorScope, Index};
+    use crate::store::MockedStorage;
+
+    type OtherStorage = MockedStorage<8099>;
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut root = Page::new_from_element("Root", Element::root());
+    TestInterface::save(&mut root).unwrap();
+    let mut parent = Paragraph::new_from_element("Parent", Element::new(None));
+    TestInterface::add_child_to(root.id(), &mut parent).unwrap();
+
+    // Open a scope for a DIFFERENT StorageAdaptor.
+    let foreign_scope = DeferredAncestorScope::<OtherStorage>::new();
+
+    // Add a child under parent on TestStorage. This should NOT be
+    // deferred — the foreign scope's TypeId doesn't match ours.
+    let mut child = Paragraph::new_from_element("Eager", Element::new(None));
+    TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+
+    // Root's stored hash must already reflect the change (not wait for
+    // the foreign scope to flush, which wouldn't propagate here anyway).
+    // Independent recompute catches the case where the foreign scope
+    // swallowed the update for TestStorage instead of running it eagerly.
+    let root_stored = Index::<TestStorage>::get_hashes_for(root.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let root_recomputed = recompute_full_hash::<TestStorage>(root.id());
+    assert_eq!(
+        hex::encode(root_stored),
+        hex::encode(root_recomputed),
+        "TestStorage walk must run eagerly under a foreign-adaptor scope",
+    );
+
+    foreign_scope.finish().unwrap();
+}
+
+// ============================================================
+// #2238 Fix 3 — sorted-insert path produces identical hashes
+// ============================================================
+
+#[test]
+fn sorted_insert_path_preserves_hash_semantics() {
+    // Add multiple children out of creation order; the binary_search + insert
+    // path must land them in the same sorted position a BTreeSet would have
+    // chosen. The final parent full_hash must equal a fresh recompute
+    // from the (ordered) children list — enforced by the existing merkle
+    // invariants, but we assert here to lock in the sort-order guarantee.
+    use crate::index::Index;
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut parent = Page::new_from_element("Parent", Element::root());
+    TestInterface::save(&mut parent).unwrap();
+
+    // Add children with interleaved names so the string-derived created_at
+    // / id hashes don't arrive in any particular sorted order.
+    let names = ["delta", "alpha", "gamma", "beta", "epsilon"];
+    for name in names {
+        let mut child = Paragraph::new_from_element(name, Element::new(None));
+        TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+    }
+
+    // The children list must be sorted after every insert (preserved by
+    // binary_search + insert). Read it back and verify.
+    let children = Index::<TestStorage>::get_children_of(parent.id()).unwrap();
+    assert_eq!(children.len(), 5);
+    for pair in children.windows(2) {
+        assert!(
+            pair[0] <= pair[1],
+            "children must stay sorted across binary-search inserts"
+        );
+    }
+
+    // Parent's stored full_hash must equal an independent recompute
+    // over the children in the order they landed — proves the sorted
+    // binary-search insert keeps the children slice consistent with
+    // what the hash function consumes.
+    let stored = Index::<TestStorage>::get_hashes_for(parent.id())
+        .unwrap()
+        .unwrap()
+        .0;
+    let recomputed = recompute_full_hash::<TestStorage>(parent.id());
+    assert_eq!(stored, recomputed);
+}
+
+#[test]
+fn sorted_insert_replaces_existing_child_in_place() {
+    // Re-adding a child with the same (created_at, id) but updated hash
+    // should replace the existing entry, not duplicate it.
+    use crate::entities::ChildInfo;
+    use crate::index::Index;
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut parent = Page::new_from_element("Parent", Element::root());
+    TestInterface::save(&mut parent).unwrap();
+
+    let mut child = Paragraph::new_from_element("Child", Element::new(None));
+    TestInterface::add_child_to(parent.id(), &mut child).unwrap();
+
+    // Second add_child_to with the same child but a new own_hash should
+    // replace the entry at the same position.
+    let initial_children = Index::<TestStorage>::get_children_of(parent.id()).unwrap();
+    assert_eq!(initial_children.len(), 1);
+
+    let replacement = ChildInfo::new(child.id(), [99_u8; 32], child.element().metadata.clone());
+    Index::<TestStorage>::add_child_to(parent.id(), replacement).unwrap();
+
+    let after_children = Index::<TestStorage>::get_children_of(parent.id()).unwrap();
+    assert_eq!(after_children.len(), 1, "replace should not duplicate");
+}
+
+// ============================================================
+// #2238 Fix 1 — Stored full_hash is always authoritative
+// ============================================================
+
+#[test]
+fn stored_full_hash_always_matches_fresh_recompute_after_add_root() {
+    // After #2238 Fix 1, add_root populates full_hash eagerly rather
+    // than leaving it at [0; 32]. Every subsequent read should see the
+    // correct SHA256(own_hash) without needing to re-hash.
+    use crate::address::Id;
+    use crate::entities::ChildInfo;
+    use crate::index::Index;
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let id = Id::random();
+    let own_hash = [7_u8; 32];
+    Index::<TestStorage>::add_root(ChildInfo::new(
+        id,
+        own_hash,
+        crate::entities::Metadata::default(),
+    ))
+    .unwrap();
+
+    let stored = Index::<TestStorage>::get_hashes_for(id).unwrap().unwrap();
+    assert_eq!(stored.1, own_hash, "own_hash should be stored verbatim");
+    assert_ne!(
+        stored.0, [0_u8; 32],
+        "full_hash must be computed eagerly by add_root (#2238 Fix 1), not left at default zero"
+    );
+
+    // get_full_merkle_hash_for should return the same value
+    // without touching children — it's just a stored read now.
+    let via_read = Index::<TestStorage>::get_full_merkle_hash_for(id).unwrap();
+    assert_eq!(
+        stored.0, via_read,
+        "get_full_merkle_hash_for returns stored full_hash (#2238 Fix 1)"
+    );
+}
+
+#[test]
+fn stored_full_hash_stays_authoritative_through_ancestor_walks() {
+    // After #2238 Fix 1, `get_full_merkle_hash_for` is an O(1)
+    // stored-read, so comparing it against `get_hashes_for` would be
+    // circular. Instead, independently recompute each node's full_hash
+    // from its children (via `calculate_full_hash_for_children` on the
+    // raw EntityIndex) and assert it matches the stored value. This
+    // catches the class of bug the reviewer flagged: a future write
+    // site that forgets to refresh `full_hash` would leave the stored
+    // value out of sync with what the children imply, and this test
+    // would catch it.
+    use crate::index::Index;
+
+    crate::env::reset_for_testing();
+    crate::tests::common::register_test_merge_functions();
+
+    let mut root = Page::new_from_element("Root", Element::root());
+    TestInterface::save(&mut root).unwrap();
+    let mut parent = Paragraph::new_from_element("Parent", Element::new(None));
+    TestInterface::add_child_to(root.id(), &mut parent).unwrap();
+    let mut leaf = Paragraph::new_from_element("Leaf", Element::new(None));
+    TestInterface::add_child_to(parent.id(), &mut leaf).unwrap();
+
+    // Modify the leaf's data so its own_hash changes, then propagate.
+    leaf.text = "Leaf modified".to_string();
+    leaf.element_mut().update();
+    TestInterface::save(&mut leaf).unwrap();
+
+    // Every node's stored full_hash must equal an INDEPENDENT recompute
+    // that walks its children's stored merkle_hashes — not another read
+    // of the stored full_hash value.
+    for id in [root.id(), parent.id(), leaf.id()] {
+        let index = Index::<TestStorage>::get_index(id).unwrap().unwrap();
+        let recomputed = recompute_full_hash::<TestStorage>(id);
+        assert_eq!(
+            index.full_hash(),
+            recomputed,
+            "stored full_hash must equal independent recompute for id {:?}",
+            id
+        );
+        assert_ne!(
+            index.full_hash(),
+            [0_u8; 32],
+            "full_hash must be set for every node after ops"
+        );
+    }
 }

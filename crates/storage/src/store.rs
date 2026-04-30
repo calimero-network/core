@@ -17,6 +17,14 @@ pub enum Key {
 
     /// Sync state key for tracking last sync time with a remote node.
     SyncState(Id),
+
+    /// Rotation log key for `SharedStorage<T>` writer-set history.
+    ///
+    /// Stores a [`RotationLog`](crate::rotation_log::RotationLog) per Shared
+    /// entity so the verifier (P3 of #2233) can resolve `writers_at(causal_point)`
+    /// for actions that pre-date the current writer set. Tag `3` to keep the
+    /// existing `Index`/`Entry`/`SyncState` byte layout stable.
+    RotationLog(Id),
 }
 
 impl Key {
@@ -37,6 +45,10 @@ impl Key {
                 bytes[0] = 2;
                 bytes[1..33].copy_from_slice(id.as_bytes());
             }
+            Self::RotationLog(id) => {
+                bytes[0] = 3;
+                bytes[1..33].copy_from_slice(id.as_bytes());
+            }
         }
         Sha256::digest(bytes).into()
     }
@@ -47,7 +59,16 @@ impl Key {
 /// Base trait for all storage backends. Provides fundamental CRUD operations
 /// without requiring iteration support.
 ///
-pub trait StorageAdaptor {
+/// # `'static` supertrait bound
+///
+/// Implementors must be `'static` so that `TypeId::of::<Self>()` works — it
+/// keys the per-adaptor thread-local state used by
+/// `DeferredAncestorScope` (#2238). In practice every implementor is a
+/// unit/const struct (`MainStorage`, `MockedStorage<N>`), so this is
+/// satisfied trivially; the explicit bound just removes the need for
+/// `+ 'static` at every use site of `Index<S>` / `Interface<S>` /
+/// `Collection<T, S>` across the crate.
+pub trait StorageAdaptor: 'static {
     /// Reads data from persistent storage.
     fn storage_read(key: Key) -> Option<Vec<u8>>;
 

@@ -48,6 +48,18 @@ pub mod storage;
 
 use storage::{ContextPrivateStorage, ContextStorage};
 
+/// Upper bound on entries in `ContextManager::modules` to prevent
+/// unbounded growth on nodes that cycle through many distinct
+/// applications (multi-tenant / churn-heavy workloads). Each entry
+/// holds native machine code that's 2–10× the WASM source size, so
+/// a cap here matters even if the peer `applications` map is larger.
+///
+/// TODO: this is a simple size cap with first-entry eviction — not
+/// true LRU. When the hot-path behaviour is understood better,
+/// upgrade to LRU or TTL-based eviction (tracked alongside the
+/// existing TODOs on `contexts` / `applications` in `lib.rs`).
+const MAX_CACHED_MODULES: usize = 32;
+
 impl Handler<ExecuteRequest> for ContextManager {
     type Result = ActorResponse<Self, <ExecuteRequest as Message>::Result>;
 
@@ -156,26 +168,116 @@ impl Handler<ExecuteRequest> for ContextManager {
             "infallible (verified before): missing private key in ContextIdentity for signing",
         );
 
+        // Issue #2256: align state-delta crypto with subgroup-visibility
+        // model. An `Open` subgroup *whose entire ancestor chain to the
+        // namespace is also Open* is by definition readable by every
+        // namespace member (including inheritance-eligible parent
+        // members), so its context state deltas are encrypted with the
+        // *namespace* key — not the subgroup's own per-subgroup key.
+        // This is symmetric with the governance-op encryption choice in
+        // `GroupGovernancePublisher`. The chain check (rather than just
+        // immediate visibility) prevents widening the crypto boundary
+        // for a subgroup that sits behind a `Restricted` ancestor — the
+        // membership walk would refuse inheritance there, so namespace
+        // members must not be given decrypt access to its content.
+        // Restricted (or unset) subgroups, and Open subgroups behind a
+        // Restricted ancestor, continue to use their own per-subgroup
+        // key.
         let (sender_key, broadcast_key_id) =
             match crate::group_store::get_group_for_context(&self.datastore, &context_id) {
                 Ok(Some(gid)) => {
-                    match crate::group_store::load_current_group_key(&self.datastore, &gid) {
+                    // Errors from `resolve_namespace` or
+                    // `is_open_chain_to_namespace` mean we cannot reliably
+                    // decide *which* key (subgroup vs. namespace) to encrypt
+                    // with — they signal store corruption (cyclic parent
+                    // edges, missing namespace metadata, etc.). Silently
+                    // falling back to the subgroup key would mask the
+                    // corruption *and* mis-encrypt for inheritance-eligible
+                    // receivers, who'd then fail to decrypt. Mirror the
+                    // governance-publisher path: propagate the error.
+                    let ns_id = match crate::group_store::resolve_namespace(&self.datastore, &gid) {
+                        Ok(ns_id) => ns_id,
+                        Err(err) => {
+                            error!(
+                                group_id = ?gid,
+                                ?context_id,
+                                %err,
+                                "state-delta encryption: resolve_namespace failed",
+                            );
+                            return ActorResponse::reply(Err(ExecuteError::InternalError));
+                        }
+                    };
+                    let key_group_id = match crate::group_store::is_open_chain_to_namespace(
+                        &self.datastore,
+                        &gid,
+                        &ns_id,
+                    ) {
+                        Ok(true) => ns_id,
+                        Ok(false) => gid,
+                        Err(err) => {
+                            error!(
+                                group_id = ?gid,
+                                namespace_id = ?ns_id,
+                                ?context_id,
+                                %err,
+                                "state-delta encryption: is_open_chain_to_namespace failed",
+                            );
+                            return ActorResponse::reply(Err(ExecuteError::InternalError));
+                        }
+                    };
+                    // Group-context branch: the group/namespace key is the
+                    // *authoritative* encryption key. Falling back to
+                    // `identity.sender_key` here would produce ciphertext
+                    // that other group members cannot decrypt — silent
+                    // state divergence across the cluster. With the
+                    // Phase 9 join-time KeyDelivery wait in place, the
+                    // joiner should already hold this key by the time
+                    // they call `execute`. If we get here with no key,
+                    // it's a real "key not yet delivered" condition and
+                    // the caller needs to know — surface it loudly
+                    // rather than silently mis-encrypting.
+                    match crate::group_store::load_current_group_key(&self.datastore, &key_group_id)
+                    {
                         Ok(Some((kid, gk))) => (PrivateKey::from(gk), kid),
-                        _ => {
-                            if let Some(sk) = identity.sender_key {
-                                (sk, [0u8; 32])
-                            } else {
-                                return ActorResponse::reply(Err(ExecuteError::InternalError));
-                            }
+                        Ok(None) => {
+                            error!(
+                                group_id = ?gid,
+                                key_group_id = ?key_group_id,
+                                ?context_id,
+                                "state-delta encryption: group key not yet delivered \
+                                 (KeyDelivery pending or failed) — refusing sender_key fallback \
+                                 to avoid mis-encrypting for inheritance-eligible receivers"
+                            );
+                            return ActorResponse::reply(Err(ExecuteError::InternalError));
+                        }
+                        Err(err) => {
+                            error!(
+                                group_id = ?gid,
+                                key_group_id = ?key_group_id,
+                                ?context_id,
+                                %err,
+                                "state-delta encryption: load_current_group_key failed",
+                            );
+                            return ActorResponse::reply(Err(ExecuteError::InternalError));
                         }
                     }
                 }
-                _ => {
+                Ok(None) => {
+                    // Non-group context: legitimately falls back to the
+                    // identity's own sender_key.
                     if let Some(sk) = identity.sender_key {
                         (sk, [0u8; 32])
                     } else {
                         return ActorResponse::reply(Err(ExecuteError::InternalError));
                     }
+                }
+                Err(err) => {
+                    error!(
+                        ?context_id,
+                        %err,
+                        "state-delta encryption: get_group_for_context failed",
+                    );
+                    return ActorResponse::reply(Err(ExecuteError::InternalError));
                 }
             };
 
@@ -698,7 +800,23 @@ impl ContextManager {
         service_name: Option<String>,
     ) -> impl ActorFuture<Self, Output = eyre::Result<calimero_runtime::Module>> + 'static {
         let service_name_for_bytes = service_name.clone();
+        let service_name_for_cache = service_name.clone();
         let blob_task = async {}.into_actor(self).map(move |_, act, _ctx| {
+            // Fast path: a compiled module is already cached for this
+            // (application_id, service_name) key. Every `get_module`
+            // call previously paid ~5% CPU to run
+            // `Engine::from_precompiled` (wasmer artifact deserialize)
+            // even though the same bytes were being deserialized. Serve
+            // the cached Module (cheap Arc clone) and skip the entire
+            // blob-fetch / deserialize path. Cache entries are
+            // invalidated in `update_application` / migration sites.
+            if let Some(cached) = act
+                .modules
+                .get(&(application_id, service_name_for_cache.clone()))
+            {
+                return Ok(CachedOrBlob::Cached(cached.clone()));
+            }
+
             let app = match act.applications.entry(application_id) {
                 btree_map::Entry::Vacant(vacant) => {
                     let Some(app) = act.node_client.get_application(&application_id)? else {
@@ -729,19 +847,43 @@ impl ContextManager {
                     )
                 })?;
 
-            Ok(blob)
+            Ok(CachedOrBlob::Blob(blob))
         });
 
-        let module_task = blob_task.and_then(move |mut blob, act, _ctx| {
+        let module_task = blob_task.and_then(move |cached_or_blob, act, _ctx| {
             let node_client = act.node_client.clone();
 
             async move {
+                let mut blob = match cached_or_blob {
+                    // Fast path: cache hit. Skip blob fetch + deserialize
+                    // + compile. `blob_info = None` signals the post-task
+                    // closure below that there's nothing new to write
+                    // back into `applications` or the module cache.
+                    CachedOrBlob::Cached(module) => return Ok((module, None)),
+                    CachedOrBlob::Blob(blob) => blob,
+                };
+
+                // Staleness anchor for the `map_ok` below. Captures the
+                // blob_id we loaded from *before* any recompile rewrites
+                // `blob.compiled`. A concurrent `update_application`
+                // migration between now and `map_ok` would evict and
+                // repopulate `applications[app_id]` with a different
+                // blob_id — the post-task closure compares against this
+                // anchor and drops both the blob writeback and the
+                // module cache insert when they disagree.
+                let original_blob_id = blob.compiled;
+
                 if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled, None).await? {
                     let module =
                         unsafe { calimero_runtime::Engine::headless().from_precompiled(&compiled) };
 
                     match module {
-                        Ok(module) => return Ok((module, None)),
+                        Ok(module) => {
+                            return Ok((
+                                module,
+                                Some((blob, service_name_for_bytes, original_blob_id)),
+                            ))
+                        }
                         Err(err) => {
                             debug!(
                                 ?err,
@@ -788,24 +930,106 @@ impl ContextManager {
                     service_name_for_bytes.as_deref(),
                 )?;
 
-                Ok((module, Some((blob, service_name_for_bytes))))
+                Ok((
+                    module,
+                    Some((blob, service_name_for_bytes, original_blob_id)),
+                ))
             }
             .into_actor(act)
         });
 
         module_task
             .map_ok(move |(module, blob_info), act, _ctx| {
-                if let Some((blob, svc_name)) = blob_info {
+                if let Some((blob, svc_name, original_blob_id)) = blob_info {
+                    // The `applications` map is the source of truth for
+                    // whether this app is still live. Tie both the blob
+                    // writeback and the module cache update to the same
+                    // guard, plus a staleness check on `original_blob_id`.
+                    //
+                    // Three cases we need to handle correctly:
+                    //
+                    // 1. App still present with the same blob_id we
+                    //    loaded from → our module is current, write
+                    //    back and cache.
+                    // 2. App evicted (`get_mut` → None) — an
+                    //    `update_application` migration ran and hasn't
+                    //    repopulated yet → our work is stale, drop.
+                    // 3. App repopulated with a different blob_id —
+                    //    another `get_module` call beat us to it with
+                    //    fresher data → our work is stale, drop both
+                    //    writeback and module cache insert so we don't
+                    //    stomp the fresh state.
                     if let Some(app) = act.applications.get_mut(&application_id) {
-                        match svc_name.as_deref() {
-                            Some(name) => {
-                                if let Some(svc_blob) = app.services.get_mut(name) {
-                                    *svc_blob = blob;
+                        // Both the staleness lookup and the writeback
+                        // must mirror `Application::resolve_service_blob`
+                        // exactly — that's where `blob` came from at
+                        // load time. For single-service bundles called
+                        // with `svc_name = None`, `resolve_service_blob`
+                        // returns `services.values().next()`, *not*
+                        // `app.blob`. Reading `app.blob.compiled` for
+                        // the staleness check would fail every time on
+                        // such bundles (the two blob_ids would never
+                        // match), defeating both the cache and the
+                        // recompile writeback.
+                        let current_blob_id = match svc_name.as_deref() {
+                            None if app.services.is_empty() => Some(app.blob.compiled),
+                            None if app.services.len() == 1 => {
+                                app.services.values().next().map(|b| b.compiled)
+                            }
+                            // Multi-service with no name is ambiguous —
+                            // `resolve_service_blob` returns None so we
+                            // never get here via the happy path. Treat
+                            // as stale.
+                            None => None,
+                            Some(name) => app.services.get(name).map(|b| b.compiled),
+                        };
+
+                        if current_blob_id == Some(original_blob_id) {
+                            // Writeback target must match the same
+                            // resolution. `services.len() == 1` with
+                            // `svc_name = None` means the single
+                            // service entry is the owner — pull its
+                            // key so we can `get_mut` into it without
+                            // iterating twice.
+                            let target_service_key =
+                                if svc_name.is_none() && app.services.len() == 1 {
+                                    app.services.keys().next().cloned()
+                                } else {
+                                    svc_name.clone()
+                                };
+                            match target_service_key.as_deref() {
+                                Some(name) => {
+                                    if let Some(svc_blob) = app.services.get_mut(name) {
+                                        *svc_blob = blob;
+                                    }
+                                }
+                                None => {
+                                    app.blob = blob;
                                 }
                             }
-                            None => {
-                                app.blob = blob;
+
+                            // Bounded insert: drop the oldest entry
+                            // before adding a new one when at capacity.
+                            // BTreeMap iteration order isn't LRU; this
+                            // is a simple size cap to prevent unbounded
+                            // growth on multi-tenant nodes. Upgrading
+                            // to proper LRU is a follow-up (see the
+                            // `modules` field doc in `lib.rs`).
+                            if !act.modules.contains_key(&(application_id, svc_name.clone()))
+                                && act.modules.len() >= MAX_CACHED_MODULES
+                            {
+                                let _ = act.modules.pop_first();
                             }
+                            let _ = act
+                                .modules
+                                .insert((application_id, svc_name), module.clone());
+                        } else {
+                            debug!(
+                                %application_id,
+                                loaded_blob = %original_blob_id,
+                                current_blob = ?current_blob_id,
+                                "module load result stale — applications was repopulated while loading, dropping"
+                            );
                         }
                     }
                 }
@@ -818,6 +1042,16 @@ impl ContextManager {
                 err
             })
     }
+}
+
+/// Result of the blob-resolution / cache-lookup phase inside
+/// [`ContextManager::get_module`]. Either we already have the compiled
+/// module (fast path — skip deserialize), or we have the blob metadata
+/// pointing at where the compiled bytes live and need to fetch +
+/// deserialize.
+enum CachedOrBlob {
+    Cached(calimero_runtime::Module),
+    Blob(calimero_primitives::application::ApplicationBlob),
 }
 
 async fn internal_execute(
@@ -951,7 +1185,7 @@ async fn internal_execute(
                     actions_count = actions.len(),
                     "Received several actions. Verify if there any user actions..."
                 );
-                sign_user_actions(&mut actions, identity_private_key)
+                sign_authorized_actions(&mut actions, identity_private_key)
                     .wrap_err("Failed to sign user actions")?;
 
                 // Re-serialize the *signed* actions into a new artifact
@@ -1070,6 +1304,22 @@ async fn internal_execute(
                 delta_id = ?delta.id,
                 "Persisted delta to database for future requests"
             );
+
+            // Keep the in-memory DeltaStore in sync with the write we
+            // just made. Without this the sync path would have to
+            // rescan the DB every ~2s to pick up locally-created
+            // deltas; instead the DAG is updated at write time and
+            // `load_persisted_deltas` only runs on startup.
+            node_client.notify_local_applied_delta(
+                calimero_node_primitives::client::LocalAppliedDelta {
+                    context_id: context.id,
+                    delta_id: delta.id,
+                    parents: delta.parents.clone(),
+                    hlc: delta.hlc,
+                    expected_root_hash: delta.expected_root_hash,
+                    actions: delta.actions.clone(),
+                },
+            );
         }
 
         debug!(
@@ -1167,7 +1417,13 @@ fn substitute_aliases_in_payload(
                 .map_err(|_| ExecuteError::InternalError)?
                 .ok_or_else(|| ExecuteError::AliasResolutionFailed { alias: *alias })?;
 
-            result.extend_from_slice(public_key.as_str().as_bytes());
+            // Substitution hot path: bs58-encode the 32-byte key into a
+            // stack buffer rather than allocating a fresh String per alias.
+            let mut buf = [0u8; 45];
+            let len = bs58::encode(public_key.as_ref() as &[u8; 32])
+                .onto(&mut buf[..])
+                .expect("base58 encoding cannot fail for fixed 32-byte input");
+            result.extend_from_slice(&buf[..len]);
 
             remaining = &remaining[pos + needle.len()..];
         }
@@ -1178,14 +1434,16 @@ fn substitute_aliases_in_payload(
     Ok(result)
 }
 
-/// Helper function to sign user actions
-/// Iterates over actions and signs any that are local, user-owned, and unsigned.
-fn sign_user_actions(
+/// Helper function to sign authorized actions (User and Shared storage).
+/// Iterates over actions and signs any that are local and unsigned.
+fn sign_authorized_actions(
     actions: &mut [Action],
     identity_private_key: &PrivateKey,
 ) -> eyre::Result<()> {
-    // Sign the actions
-    info!(actions_count = actions.len(), "Signing user actions...");
+    info!(
+        actions_count = actions.len(),
+        "Signing authorized actions..."
+    );
     for action in actions.iter_mut() {
         let action_id = action.id();
         let payload_for_signing = action.payload_for_signing();
@@ -1246,6 +1504,42 @@ fn sign_user_actions(
                     signature = ?sig_data.signature,
                     signature_len = sig_data.signature.len(),
                     "Signed user action"
+                );
+            }
+        }
+
+        if let StorageType::Shared {
+            writers,
+            signature_data: Some(sig_data),
+            ..
+        } = &mut metadata.storage_type
+        {
+            let executor_pk = identity_private_key.public_key();
+            debug!(
+                action_id = ?action_id,
+                writer_count = writers.len(),
+                executor = %executor_pk,
+                nonce = %nonce,
+                "Received shared action from the outcome"
+            );
+
+            // Sign whenever the placeholder is present. The stamping decision
+            // (whether the executor was authorized to act) was already made in
+            // save_raw / remove_child_from based on stored ∪ claimed writers,
+            // which correctly handles the rotate-self-out case where the
+            // executor is no longer in the action's claimed writer set.
+            if sig_data.signature == [0; 64] {
+                sig_data.nonce = nonce;
+                let signature = identity_private_key.sign(&payload_for_signing)?;
+                sig_data.signature = signature.to_bytes();
+
+                debug!(
+                    action_id = ?action_id,
+                    executor = %executor_pk,
+                    nonce = %nonce,
+                    payload_for_signing = ?payload_for_signing,
+                    ed25519_signature = ?signature,
+                    "Signed shared action"
                 );
             }
         }

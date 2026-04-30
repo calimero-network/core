@@ -21,13 +21,8 @@ install_kernel_tools() {
     local kernel_version=$(uname -r)
     echo "[Profiling] Detected kernel: $kernel_version"
 
-    # Helper: run the perf sanity check and, on failure, echo the first
-    # few lines of perf's own error output. Without this, failures look
-    # identical whether the cause is a missing binary, a version mismatch,
-    # or the kernel refusing sys_perf_event_open() due to missing
-    # capabilities (CAP_PERFMON / CAP_SYS_ADMIN). That last one was the
-    # actual blocker on Azure runners in recent investigations — we only
-    # found it by running perf manually inside a live container.
+    # Echo perf's own stderr on sanity-check failure so we can tell missing
+    # binary / ABI mismatch / EPERM (missing CAP_PERFMON) apart.
     perf_sanity_check() {
         local err
         err=$(perf record -o /dev/null -- true 2>&1)
@@ -54,47 +49,34 @@ install_kernel_tools() {
         fi
     fi
 
-    # Fallback: linux-tools-generic. Ships a version-agnostic perf binary
-    # that works for userspace sampling on most kernels. Needed on Azure
-    # runners like 6.17.0-1010-azure where linux-tools-<uname-r> isn't in
-    # the Ubuntu package index.
-    #
-    # The Ubuntu /usr/bin/perf wrapper looks up /usr/lib/linux-tools/$(uname -r)/perf
-    # and errors if it's missing, so we symlink the generic binary into place.
-    echo "[Profiling] Version-matched perf didn't work, trying linux-tools-generic..."
-    if apt-get install -y -qq linux-tools-generic 2>/dev/null; then
-        # Glob-based lookup — avoids parsing ls output and avoids regex
-        # pitfalls (dots in kernel_version are regex metacharacters).
-        local generic_perf=""
-        for candidate in /usr/lib/linux-tools/*/perf; do
-            [ -f "$candidate" ] || continue
-            # Skip the version-matched path (it's what the Ubuntu wrapper
-            # already tried and failed on).
-            if [ "$(basename "$(dirname "$candidate")")" = "$kernel_version" ]; then
-                continue
-            fi
-            generic_perf="$candidate"
-            break
-        done
-        if [ -n "$generic_perf" ]; then
-            local target_dir="/usr/lib/linux-tools/${kernel_version}"
-            if ! mkdir -p "$target_dir" 2>/dev/null; then
-                echo "[Profiling] WARNING: could not create $target_dir"
-            elif ! ln -sf "$generic_perf" "$target_dir/perf" 2>/dev/null; then
-                echo "[Profiling] WARNING: could not symlink $target_dir/perf -> $generic_perf"
-            elif perf_sanity_check; then
-                echo "[Profiling] perf is now working (linux-tools-generic via $generic_perf)"
-                return 0
-            fi
-        else
-            echo "[Profiling] linux-tools-generic installed but no perf binary found under /usr/lib/linux-tools/*/"
+    # Fallback: linux-tools-generic (pre-installed in the profiling image;
+    # try apt again for non-profiling deployments). The Ubuntu /usr/bin/perf
+    # wrapper requires /usr/lib/linux-tools/$(uname -r)/perf, so symlink the
+    # generic binary into place.
+    echo "[Profiling] Trying linux-tools-generic fallback..."
+    apt-get install -y -qq linux-tools-generic 2>/dev/null || true
+    local generic_perf=""
+    for candidate in /usr/lib/linux-tools/*/perf; do
+        [ -f "$candidate" ] || continue
+        # basename compare avoids regex metacharacter traps in kernel_version.
+        [ "$(basename "$(dirname "$candidate")")" = "$kernel_version" ] && continue
+        generic_perf="$candidate"
+        break
+    done
+    if [ -n "$generic_perf" ]; then
+        local target_dir="/usr/lib/linux-tools/${kernel_version}"
+        if ! mkdir -p "$target_dir" 2>/dev/null; then
+            echo "[Profiling] WARNING: could not create $target_dir"
+        elif ! ln -sf "$generic_perf" "$target_dir/perf" 2>/dev/null; then
+            echo "[Profiling] WARNING: could not symlink $target_dir/perf -> $generic_perf"
+        elif perf_sanity_check; then
+            echo "[Profiling] perf working (linux-tools-generic via $generic_perf)"
+            return 0
         fi
     fi
 
-    echo "[Profiling] WARNING: CPU profiling (flamegraphs) will not be available"
-    echo "[Profiling]   If the sanity-check stderr above mentions 'perf_event_paranoid'"
-    echo "[Profiling]   or 'Operation not permitted', the container is missing CAP_PERFMON /"
-    echo "[Profiling]   CAP_SYS_ADMIN. See crates/*/README for alternatives (e.g. samply)."
+    echo "[Profiling] WARNING: CPU profiling unavailable."
+    echo "[Profiling]   If stderr above shows 'Operation not permitted', container is missing CAP_PERFMON."
     return 1
 }
 
@@ -203,9 +185,7 @@ stop_profiling() {
         if kill -0 "$perf_pid" 2>/dev/null; then
             kill -INT "$perf_pid" 2>/dev/null || true
             
-            # 15s, not 5s: a 45-minute perf.data can be hundreds of MB and
-            # the final flush on SIGINT may take longer than expected. Capping
-            # too low truncates the output file.
+            # 15s to let perf flush its final buffer on SIGINT before SIGKILL.
             local wait_count=0
             while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 15 ]; do
                 sleep 1
@@ -266,39 +246,19 @@ stop_profiling() {
 }
 
 preserve_to_host_mount() {
-    # Copy profiling data under $CALIMERO_HOME so it survives container
-    # removal. /profiling/{data,reports} lives on the container rootfs and
-    # is lost when the container is removed — which happens during merobox
-    # graceful shutdown, before the GHA collector reaches the container.
-    #
-    # $CALIMERO_HOME resolves to a persistent path in both deployments:
-    #   - Merobox (CI): passes CALIMERO_HOME=/app/data and bind-mounts the
-    #     host dir workflows/fuzzy-tests/<test>/data/<node>/ to /app/data
-    #     (see merobox manager.py).
-    #   - Standalone docker run: prebuilt.profiling.Dockerfile sets
-    #     ENV CALIMERO_HOME=/data and VOLUME /data, so the path lives on a
-    #     Docker-managed volume even without explicit -v.
-    # We intentionally don't supply a fallback — if CALIMERO_HOME is unset,
-    # we'd only be guessing, and silent writes to the wrong path would
-    # defeat the point of this function.
-    #
-    # Must not fail under `set -e` even if the copy partially fails —
-    # this runs right before `exit $EXIT_CODE` in the mainline path, and
-    # a non-zero return here would replace merod's real exit code with
-    # the copy error.
+    # Copy /profiling/{data,reports} onto the CALIMERO_HOME bind mount so
+    # it survives container removal by merobox graceful shutdown. Must not
+    # fail under `set -e`: runs before `exit $EXIT_CODE` in the mainline
+    # path and a non-zero return here would replace merod's real exit code.
     local host_mount="${CALIMERO_HOME:-}"
     if [ -z "$host_mount" ]; then
-        echo "[Profiling] CALIMERO_HOME is unset — cannot locate persistent dir, skipping preserve step"
+        echo "[Profiling] CALIMERO_HOME unset, skipping preserve"
         return 0
     fi
     if [ ! -d "$host_mount" ]; then
-        echo "[Profiling] CALIMERO_HOME=$host_mount is not a directory, skipping preserve step"
+        echo "[Profiling] CALIMERO_HOME=$host_mount not a directory, skipping preserve"
         return 0
     fi
-    # mktemp instead of a fixed /tmp path — avoids a symlink race where a
-    # pre-existing /tmp/preserve.err symlink would redirect our 2> into an
-    # arbitrary file (CWE-377). Low risk inside a single-root container, but
-    # free to fix and keeps the function consistent with harvest-host-profiling.sh.
     local err_file
     err_file=$(mktemp -t preserve.err.XXXXXX 2>/dev/null) || err_file=/dev/null
     local dest="$host_mount/profiling-dump"
@@ -307,48 +267,62 @@ preserve_to_host_mount() {
         [ "$err_file" != /dev/null ] && rm -f "$err_file"
         return 0
     fi
-    # Diagnostics log — runtime-container stdout is not captured by the
-    # GHA collector (containers are removed before docker logs is called),
-    # so mirror preserve's view of the world onto the bind mount where
-    # harvest-host-profiling.sh can pick it up. Otherwise investigating
-    # "file X wasn't preserved" is blind.
-    local preserve_log="$dest/preserve.log"
-    {
-        echo "=== preserve_to_host_mount @ $(date -Iseconds) ==="
-        echo "PROFILING_OUTPUT_DIR=$PROFILING_OUTPUT_DIR"
-        echo "dest=$dest"
-        echo "--- ls -la $PROFILING_OUTPUT_DIR (source) ---"
-        ls -la "$PROFILING_OUTPUT_DIR" 2>&1 || true
-    } >> "$preserve_log" 2>&1
     if [ -d "$PROFILING_OUTPUT_DIR" ]; then
-        # Log cp stderr to both the preserve log (always) and err_file (for
-        # the summary WARNING below). Capture via tee so we see partial
-        # progress even if cp trips on one specific file.
-        if ! cp -rv "$PROFILING_OUTPUT_DIR/." "$dest/" >>"$preserve_log" 2> >(tee -a "$preserve_log" > "$err_file"); then
+        if ! cp -r "$PROFILING_OUTPUT_DIR/." "$dest/" 2>"$err_file"; then
             echo "[Profiling] WARNING: cp from $PROFILING_OUTPUT_DIR may be incomplete: $(head -3 "$err_file" 2>/dev/null | tr '\n' ' ')"
         fi
-        {
-            echo "--- ls -la $dest (after cp) ---"
-            ls -la "$dest" 2>&1 || true
-        } >> "$preserve_log" 2>&1
     fi
+
+    local node_name="${NODE_NAME:-merod}"
+    local dest_reports="$dest/reports"
+    if ! mkdir -p "$dest_reports" 2>"$err_file"; then
+        echo "[Profiling] WARNING: could not create $dest_reports: $(head -1 "$err_file" 2>/dev/null)"
+    fi
+
+    # Write flamegraphs directly to the bind mount so they survive even if
+    # a subsequent copy step fails.
+    local perf_data="$PROFILING_OUTPUT_DIR/perf-${node_name}.data"
+    if [ -d "$dest_reports" ] && [ -f "$perf_data" ] && [ -s "$perf_data" ] && command -v perf >/dev/null 2>&1; then
+        local cpu_svg="$dest_reports/flamegraph-cpu-${node_name}.svg"
+        if /profiling/scripts/generate-flamegraph.sh \
+            --input "$perf_data" \
+            --output "$cpu_svg" \
+            --title "CPU Flamegraph - ${node_name}" \
+            >/dev/null 2>"$err_file"; then
+            echo "[Profiling] ✓ CPU flamegraph -> $cpu_svg"
+        else
+            echo "[Profiling] WARNING: CPU flamegraph failed: $(head -1 "$err_file" 2>/dev/null)"
+        fi
+    fi
+
+    # Match generate-memory-flamegraph.sh's own glob (no dot between
+    # "jemalloc" and the PID) so the guard and the script agree.
+    if [ -d "$dest_reports" ] && ls "$PROFILING_OUTPUT_DIR"/jemalloc*.heap >/dev/null 2>&1; then
+        local mem_svg="$dest_reports/flamegraph-memory-${node_name}.svg"
+        if /profiling/scripts/generate-memory-flamegraph.sh \
+            --latest \
+            --input-dir "$PROFILING_OUTPUT_DIR" \
+            --output "$mem_svg" \
+            --title "Memory Flamegraph - ${node_name}" \
+            --colors mem \
+            >/dev/null 2>"$err_file"; then
+            echo "[Profiling] ✓ memory flamegraph -> $mem_svg"
+        else
+            echo "[Profiling] WARNING: memory flamegraph failed: $(head -1 "$err_file" 2>/dev/null)"
+        fi
+    fi
+
+    # Also pick up any pre-existing files a caller might have placed under
+    # $PROFILING_REPORTS_DIR (e.g. older scripts). No-op in the common case.
     local reports_dir="${PROFILING_REPORTS_DIR:-/profiling/reports}"
-    if [ -d "$reports_dir" ]; then
-        if ! mkdir -p "$dest/reports" 2>"$err_file"; then
-            echo "[Profiling] WARNING: could not create $dest/reports: $(head -1 "$err_file" 2>/dev/null)"
-        elif ! cp -r "$reports_dir/." "$dest/reports/" 2>"$err_file"; then
+    if [ -d "$reports_dir" ] && [ -d "$dest_reports" ]; then
+        if ! cp -r "$reports_dir/." "$dest_reports/" 2>"$err_file"; then
             echo "[Profiling] WARNING: cp from $reports_dir may be incomplete: $(head -3 "$err_file" 2>/dev/null | tr '\n' ' ')"
         fi
     fi
-    # Make preserved files readable by the host runner user. Merobox's
-    # container runs as root, so `perf record` writes perf-*.data with
-    # mode 600 — when harvest-host-profiling.sh runs on the GHA runner
-    # (unprivileged user), cp silently skips those files with EACCES.
-    # Non-.data files (jemalloc heaps, perf.map, logs) are already 644
-    # so they harvest fine; this brings .data in line with them.
-    # Use go+rX: adds read for non-owners, conditional-execute only on
-    # directories (not regular files) — never makes a data file
-    # executable. Doesn't remove owner write/execute.
+    # perf record writes perf-*.data with mode 600, so the unprivileged
+    # runner user doing host-side harvest can't read it. go+rX adds
+    # group/other read + conditional-execute for dirs only.
     chmod -R go+rX "$dest" 2>"$err_file" || {
         echo "[Profiling] WARNING: chmod on $dest failed: $(head -1 "$err_file" 2>/dev/null)"
     }
@@ -410,11 +384,23 @@ if [ "$ENABLE_PERF" = "true" ]; then
     install_kernel_tools || true
 fi
 
+# Resolve jemalloc preload path but DON'T export it. Globally exporting
+# LD_PRELOAD causes every helper this script and preserve_to_host_mount
+# spawn (mkdir, cp, mktemp, chmod, awk…) to also load libjemalloc and —
+# combined with `prof_final:true` in MALLOC_CONF — write its own
+# `jemalloc.<helper-pid>.<seq>.f.heap` on exit. Those tiny dumps end up
+# newer than merod's own dumps, so `generate-memory-flamegraph.sh
+# --latest` (`ls -t … | head -1`) ends up rendering a flamegraph from a
+# helper's heap whose MAPPED_LIBRARIES point at e.g. /usr/bin/mkdir, not
+# /usr/local/bin/merod — making jeprof's symbolisation of app frames
+# fall through to its `[$prog, 0, max_pc, 0]` catch-all and emit raw
+# hex addresses instead of function names.
+JEMALLOC_LD_PRELOAD=""
 if [ "$ENABLE_JEMALLOC" = "true" ]; then
     JEMALLOC_PATH="${LD_PRELOAD_JEMALLOC:-$(detect_jemalloc_path)}"
     if [ -n "$JEMALLOC_PATH" ] && [ -f "$JEMALLOC_PATH" ]; then
-        export LD_PRELOAD="$JEMALLOC_PATH"
-        echo "[Profiling] jemalloc enabled (LD_PRELOAD=$LD_PRELOAD)"
+        JEMALLOC_LD_PRELOAD="$JEMALLOC_PATH"
+        echo "[Profiling] jemalloc enabled (LD_PRELOAD=$JEMALLOC_LD_PRELOAD, scoped to main process only)"
         if [[ "$JEMALLOC_PATH" == "/usr/local/lib/"* ]]; then
             echo "[Profiling] Using source-built jemalloc with profiling support"
         fi
@@ -441,7 +427,7 @@ for arg in "$@"; do
 done
 
 if [ "$ENABLE_PROFILING" = "true" ] && [ "$ENABLE_PERF" = "true" ] && [ "$SHOULD_PROFILE_WITH_PERF" = "true" ]; then
-    "$@" &
+    LD_PRELOAD="$JEMALLOC_LD_PRELOAD" "$@" &
     MAIN_PID=$!
     echo "[Profiling] Process started with PID $MAIN_PID"
     
@@ -473,5 +459,5 @@ if [ "$ENABLE_PROFILING" = "true" ] && [ "$ENABLE_PERF" = "true" ] && [ "$SHOULD
     preserve_to_host_mount
     exit $EXIT_CODE
 else
-    exec "$@"
+    exec env LD_PRELOAD="$JEMALLOC_LD_PRELOAD" "$@"
 fi

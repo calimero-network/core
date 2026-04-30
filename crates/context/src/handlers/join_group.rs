@@ -1,4 +1,6 @@
+use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{JoinGroupRequest, JoinGroupResponse};
@@ -6,11 +8,23 @@ use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNames
 use calimero_primitives::context::{ContextConfigParams, GroupMemberRole};
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key;
+use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
+use crate::op_events::subscribe as subscribe_op_events;
+use crate::op_events::OpEvent;
 use crate::{group_store, ContextManager};
 
 const NAMESPACE_MESH_GRACE: Duration = Duration::from_secs(2);
+
+/// Maximum time `join_group` waits on the gossip-fallback path for a
+/// `KeyDelivery` op addressed to the joiner. Reached only when the
+/// direct join response did not carry a key (served peer didn't hold
+/// it, or the direct stream request timed out). The wait fires
+/// after MemberJoined is on the wire, so the bound is "round-trip to
+/// any admin + their `publish_and_await_ack` budget", not the full
+/// gossipsub heartbeat reconciliation window.
+const KEY_DELIVERY_FALLBACK_WAIT: Duration = Duration::from_secs(5);
 
 impl Handler<JoinGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinGroupRequest as Message>::Result>;
@@ -50,6 +64,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
         let namespace_id = ns_id.to_bytes();
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
         let context_client = self.context_client.clone();
 
         ActorResponse::r#async(
@@ -90,8 +105,14 @@ impl Handler<JoinGroupRequest> for ContextManager {
 
                     // Add the namespace admin to the member list so joining
                     // nodes see the creator in /admin-api/groups/:id/members.
-                    if !group_store::check_group_membership(&datastore, &group_id, &admin_identity)?
-                    {
+                    // Direct-row check: see joiner-side guard below for
+                    // why inheritance-aware `check_group_membership`
+                    // would be unsafe here.
+                    if !group_store::has_direct_group_member(
+                        &datastore,
+                        &group_id,
+                        &admin_identity,
+                    )? {
                         group_store::add_group_member(
                             &datastore,
                             &group_id,
@@ -99,16 +120,6 @@ impl Handler<JoinGroupRequest> for ContextManager {
                             calimero_primitives::context::GroupMemberRole::Admin,
                         )?;
                     }
-                }
-
-                if !group_store::check_group_membership(&datastore, &group_id, &joiner_identity)? {
-                    group_store::add_group_member(&datastore, &group_id, &joiner_identity, role)?;
-                } else {
-                    info!(
-                        ?group_id,
-                        %joiner_identity,
-                        "group member already recorded locally, skipping add_group_member"
-                    );
                 }
 
                 // -------------------------------------------------------
@@ -164,22 +175,156 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     );
                 }
 
+                // Issue #2256: write the namespace's `default_capabilities`
+                // from the bundle if no governance op set it. Governance
+                // ops are authoritative when present (they were applied
+                // above); the bundle's value is a fallback for the case
+                // where `create_group` populated defaults locally but
+                // never published a `DefaultCapabilitiesSet` op (today's
+                // codebase). Doing this *before* `add_group_member`
+                // ensures the joiner's individual capability inherits
+                // the right default — and reflects any admin-issued
+                // override that travelled in the bundle, closing the
+                // race where a stale joiner-side hard-coded constant
+                // could otherwise override admin intent.
+                if group_store::get_default_capabilities(&datastore, &group_id)?.is_none() {
+                    group_store::set_default_capabilities(
+                        &datastore,
+                        &group_id,
+                        join_result.default_capabilities,
+                    )?;
+                }
+
+                // Add the joiner as a direct member of the namespace. The
+                // call reads `default_capabilities` from the local store
+                // (just populated above) and assigns the bit set to the
+                // new member. Idempotent on the *direct*-row check — the
+                // inheritance-aware `check_group_membership` would
+                // wrongly skip the add when the joiner already inherits
+                // membership from a parent namespace, leaving them
+                // without the direct row that subsequent direct lookups
+                // (removal, capability writes, list_group_members) need.
+                if !group_store::has_direct_group_member(&datastore, &group_id, &joiner_identity)? {
+                    group_store::add_group_member(&datastore, &group_id, &joiner_identity, role)?;
+                } else {
+                    info!(
+                        ?group_id,
+                        %joiner_identity,
+                        "group member already recorded locally, skipping add_group_member"
+                    );
+                }
+
+                // The joiner needs the group key to decrypt subsequent
+                // group ops. Two delivery paths converge here:
+                //
+                //   1. Direct stream (`request_namespace_join` above).
+                //      Authoritative when the served peer holds the key.
+                //   2. Gossip `KeyDelivery` from any admin who applies our
+                //      `MemberJoined` op below — Phase 9.1 already targets
+                //      the recipient via `required_signers` so the admin
+                //      knows whether *we* acked.
+                //
+                // If path 1 didn't deliver a key, we fall through to path 2
+                // here and block `join_group` until either a `KeyDelivery`
+                // for our identity arrives or `KEY_DELIVERY_FALLBACK_WAIT`
+                // elapses. Subscribing BEFORE publishing MemberJoined
+                // closes the race where an admin could see our op,
+                // immediately publish KeyDelivery, and have us miss it
+                // before subscribing.
+                let needs_key_wait =
+                    group_store::load_current_group_key(&datastore, &group_id)?.is_none();
+                let mut op_event_rx = if needs_key_wait {
+                    Some(subscribe_op_events())
+                } else {
+                    None
+                };
+
                 // Publish MemberJoined so other namespace members learn
-                // about us (fire-and-forget, the joiner doesn't depend on it).
+                // about us. Joiner can't ack their own op (they're not yet
+                // a recognised member from the receiver's view until the
+                // op applies), so `required_signers = None` here — any
+                // ack from any current member is fine.
                 let member_joined_op = NamespaceOp::Root(RootOp::MemberJoined {
                     member: joiner_identity,
                     signed_invitation: invitation.clone(),
                 });
-                if let Err(e) = group_store::sign_and_publish_namespace_op(
+                match group_store::sign_and_publish_namespace_op(
                     &datastore,
                     &node_client,
+                    &ack_router,
                     namespace_id,
                     &sk,
                     member_joined_op,
+                    None,
                 )
                 .await
                 {
-                    warn!(?e, "failed to publish MemberJoined (non-fatal)");
+                    Ok(_report) => {}
+                    Err(e) => warn!(?e, "failed to publish MemberJoined (non-fatal)"),
+                }
+
+                if let Some(rx) = op_event_rx.as_mut() {
+                    let deadline = Instant::now() + KEY_DELIVERY_FALLBACK_WAIT;
+                    loop {
+                        // Re-check the store on every iteration: the apply
+                        // path emits the event AFTER `store_group_key`, so
+                        // any successful unwrap is observable as an
+                        // already-stored key by the time we get woken.
+                        // This also catches races where an event was
+                        // dropped via `RecvError::Lagged` before we got to
+                        // it (broadcast channel is process-wide and other
+                        // tasks may flood it).
+                        if group_store::load_current_group_key(&datastore, &group_id)?.is_some() {
+                            info!(
+                                ?group_id,
+                                "group key acquired via gossip KeyDelivery fallback"
+                            );
+                            break;
+                        }
+                        let now = Instant::now();
+                        if now >= deadline {
+                            warn!(
+                                ?group_id,
+                                "timed out waiting for KeyDelivery via gossip fallback; \
+                                 group state will reconcile via heartbeat"
+                            );
+                            break;
+                        }
+                        let remaining = deadline - now;
+                        match tokio::time::timeout(remaining, rx.recv()).await {
+                            Ok(Ok(OpEvent::GroupKeyDelivered {
+                                group_id: g,
+                                recipient,
+                            })) if g == group_id.to_bytes() && recipient == joiner_identity => {
+                                // Loop back to re-read the store — the
+                                // emitter publishes AFTER store_group_key
+                                // succeeded, so the next iteration's
+                                // `load_current_group_key` will hit and
+                                // break cleanly.
+                                continue;
+                            }
+                            Ok(Ok(_)) => continue, // unrelated event
+                            Ok(Err(RecvError::Lagged(_))) => {
+                                // Broadcast capacity exceeded — relevant
+                                // events may have been dropped. Re-check
+                                // store; if the key arrived during the
+                                // overflow window we'll observe it on the
+                                // next iteration and break cleanly.
+                                continue;
+                            }
+                            Ok(Err(RecvError::Closed)) => {
+                                // The static `op_events::NOTIFIER` cannot
+                                // be dropped at runtime today, so this
+                                // branch is functionally unreachable. If
+                                // a future refactor changes that, fall
+                                // through to the deadline check rather
+                                // than spinning on a permanently-closed
+                                // channel.
+                                break;
+                            }
+                            Err(_) => continue, // timeout slice — outer deadline check handles exit
+                        }
+                    }
                 }
 
                 // -------------------------------------------------------
@@ -215,6 +360,27 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                         },
                                     )?;
                                 }
+                            }
+                        }
+
+                        // Register the context-under-group mapping
+                        // (`ContextGroupRef`) directly from the bundle's
+                        // `context_ids`. The bundle's `governance_ops`
+                        // normally include a `ContextRegistered` op
+                        // that would write the same mapping on apply,
+                        // but the op list can be an incomplete snapshot
+                        // — missing the op leaves the mapping unwritten
+                        // and `get_group_for_context` returns `None`.
+                        // Idempotent with the governance-op path.
+                        for context_id in contexts {
+                            if let Err(err) = group_store::register_context_in_group(
+                                &datastore, &group_id, context_id,
+                            ) {
+                                warn!(
+                                    %context_id,
+                                    ?err,
+                                    "failed to register context under group during join"
+                                );
                             }
                         }
 

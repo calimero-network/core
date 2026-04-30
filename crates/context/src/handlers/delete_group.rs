@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{DeleteGroupRequest, DeleteGroupResponse};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
@@ -5,6 +7,7 @@ use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -91,6 +94,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
         let group_id_bytes = group_id.to_bytes();
         let (_, signer_sk_bytes) = namespace_identity;
 
@@ -103,14 +107,16 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                     cascade_context_ids,
                 });
 
-                group_store::sign_apply_and_publish_namespace_op(
+                let report = group_store::sign_apply_and_publish_namespace_op(
                     &datastore,
                     &node_client,
+                    &ack_router,
                     namespace_id_bytes,
                     &signer_sk,
                     op,
                 )
                 .await?;
+                observe_handler_delivery("delete_group", "GroupDeleted", &report);
 
                 // Best-effort unsubscribe — the group is gone now, no point
                 // staying on its topic. Subscriptions for descendants likewise.

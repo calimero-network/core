@@ -1,7 +1,7 @@
 // We get this warning as we allow to reimport self crate (`calimero_primitives`) inside the tests with a `borsh` feature.
 #![cfg_attr(test, allow(unused_extern_crates))]
 
-use core::fmt;
+use core::fmt::{self, Display};
 use core::ops::Deref;
 use core::str::FromStr;
 use core::time::Duration;
@@ -45,11 +45,6 @@ impl Deref for ContextId {
 }
 
 impl ContextId {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-
     /// Creates a special ContextID that contains all zeroes inside.
     ///
     /// This is useful as some modules use the zero context for special functions.
@@ -68,19 +63,19 @@ impl ContextId {
 
 impl fmt::Display for ContextId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad(self.as_str())
+        Display::fmt(&self.0, f)
     }
 }
 
 impl From<ContextId> for String {
     fn from(id: ContextId) -> Self {
-        id.as_str().to_owned()
+        id.0.to_base58()
     }
 }
 
 impl From<&ContextId> for String {
     fn from(id: &ContextId) -> Self {
-        id.as_str().to_owned()
+        id.0.to_base58()
     }
 }
 

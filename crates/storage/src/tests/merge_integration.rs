@@ -1044,7 +1044,7 @@ fn test_e2e_sync_flow_with_isolated_storage() {
     use crate::collections::Root;
     use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads};
     use crate::index::Index;
-    use crate::interface::Interface;
+    use crate::interface::{ApplyContext, Interface};
     use crate::store::MockedStorage;
 
     // Use a single storage scope - the test simulates nodes sharing state via delta sync
@@ -1149,7 +1149,16 @@ fn test_e2e_sync_flow_with_isolated_storage() {
         // Apply actions to Node-2's storage via sync
         let sync_artifact =
             borsh::to_vec(&crate::delta::StorageDelta::Actions(delta.actions)).unwrap();
-        Root::<LwwRegister<String>, NodeStorage>::sync(&sync_artifact).unwrap();
+        Root::<LwwRegister<String>, NodeStorage>::sync(
+            &sync_artifact,
+            ApplyContext {
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
+            },
+        )
+        .unwrap();
     }
 
     // Get Node-2's hash after sync
@@ -1201,7 +1210,7 @@ fn test_e2e_counter_sync_with_isolated_storage() {
     use crate::collections::Root;
     use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
     use crate::index::Index;
-    use crate::interface::Interface;
+    use crate::interface::{ApplyContext, Interface};
     use crate::store::MainStorage;
 
     // Use MainStorage directly - Counter::new() requires MainStorage
@@ -1446,7 +1455,16 @@ fn test_e2e_counter_sync_with_isolated_storage() {
     // Apply delta via sync
     if let Some(delta) = update_delta {
         let sync_payload = borsh::to_vec(&StorageDelta::Actions(delta.actions)).unwrap();
-        Root::<Counter, NodeStorage>::sync(&sync_payload).unwrap();
+        Root::<Counter, NodeStorage>::sync(
+            &sync_payload,
+            ApplyContext {
+                causal_parents: &[],
+                delta_id: None,
+                delta_hlc: None,
+                happens_before: None,
+            },
+        )
+        .unwrap();
         println!("Update delta applied to Node-2");
     }
 

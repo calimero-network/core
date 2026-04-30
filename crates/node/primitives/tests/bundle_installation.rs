@@ -164,6 +164,7 @@ async fn create_test_node_client(datastore: Option<Store>) -> (NodeClient, TempD
         event_sender,
         sync_client,
         String::new(), // Not used in tests
+        None,          // Not used in tests
     );
 
     (node_client, data_dir, blob_dir)

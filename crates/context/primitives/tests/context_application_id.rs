@@ -55,6 +55,7 @@ async fn setup_test_context_client() -> (ContextClient, TempDir) {
         event_sender,
         sync_client,
         String::new(),
+        None,
     );
 
     let context_manager = LazyRecipient::new();

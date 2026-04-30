@@ -214,7 +214,14 @@ impl Engine {
     }
 }
 
-#[derive(Debug)]
+/// A compiled WASM module ready for execution.
+///
+/// Cheap to clone: `wasmer::Engine` and `wasmer::Module` are both
+/// `Arc`-backed internally, so cloning shares the compiled artifact
+/// rather than re-deserializing it. Used by the `ContextManager`
+/// module cache to serve repeat execute requests without paying the
+/// `Engine::from_precompiled` cost each time.
+#[derive(Clone, Debug)]
 pub struct Module {
     limits: VMLimits,
     engine: wasmer::Engine,

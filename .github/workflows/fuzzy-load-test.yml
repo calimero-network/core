@@ -29,21 +29,35 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
-  # No `pull_request` trigger — fuzzy-load-test is a 45-minute soak/perf
-  # run whose job needs `ghcr.io/calimero-network/merod:pr-<N>-profiling`,
-  # and the `release-merod-profiling-container` job that would publish
-  # that tag is gated `if: github.event_name != 'pull_request'` in
-  # release.yml. Any PR that modifies this workflow's own paths — e.g.
-  # this YAML or `workflows/fuzzy-tests/**` — would fire the test and
-  # fail on `docker pull ... "manifest unknown"`. Run this job on
-  # master pushes (where the profiling image IS published) or manually
-  # via `workflow_dispatch`.
+  # PR trigger — fires only on PRs that touch profiling-image paths.
+  # release.yml's `prepare.outputs.profiling_paths_changed` gate the
+  # `release-merod-profiling-container` job on the SAME path set, so
+  # `pr-<N>-profiling` is published before fuzzy-load-test consumes it
+  # via `scripts/determine-image-tag.sh`. Other PR paths skip both —
+  # they keep their cheap default behaviour. Same-repo PRs only;
+  # `prepare.outputs.docker_push` keeps fork PRs from pushing.
+  pull_request:
+    paths:
+      - "scripts/profiling/**"
+      - ".github/workflows/deps/prebuilt.profiling.Dockerfile"
+      - ".github/workflows/fuzzy-load-test.yml"
+      - "workflows/fuzzy-tests/**"
+  #
+  # Nightly soak: a longer run (default 60 minutes per app vs the 15
+  # minutes used for routine triggers) fires at 00:00 UTC daily. The
+  # 15-minute baseline gives statistically usable CPU samples and
+  # exercises most code paths — enough for catching regressions on
+  # every push. The nightly extends the window so slow leaks, rare
+  # cascade orderings, and gradual degradation that need >15 min to
+  # materialize still get caught daily.
+  schedule:
+    - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
       duration_override:
-        description: "Override test duration (minutes per app)"
+        description: "Override test duration (minutes per app). Empty = default (15 normally, 60 for scheduled nightly soak)."
         required: false
-        default: "45"
+        default: ""
         type: string
       test_app:
         description: "Run specific app test (kv-store, kv-store-with-handlers, or all)"
@@ -161,8 +175,19 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
+        # Default is 15 minutes for routine triggers (push, workflow_run,
+        # workflow_dispatch with empty input) and 60 minutes for the
+        # nightly schedule. workflow_dispatch.inputs.duration_override
+        # wins over both when set.
         run: |
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
+            DURATION="${{ github.event.inputs.duration_override }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            DURATION="60"
+          else
+            DURATION="15"
+          fi
+          echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
           cd workflows/fuzzy-tests/kv-store
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
 
@@ -223,6 +248,7 @@ jobs:
         id: kv-test
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
+          mkdir -p fuzzy-test-logs/kv-store/docker-logs
           cd workflows/fuzzy-tests/kv-store
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
@@ -250,8 +276,37 @@ jobs:
             UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
             VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
           fi
+
+          # Stream docker logs live to disk so we keep them even when
+          # `merobox bootstrap run` tears containers down on exit — a
+          # post-run `docker logs` loop loses everything because the
+          # containers are already gone. Mirrors the pattern we settled
+          # on in e2e-rust-apps.yml (see merobox#207, #2179).
+          LOGDIR="$GITHUB_WORKSPACE/fuzzy-test-logs/kv-store/docker-logs"
+          WATCHER_STATE_DIR="$(mktemp -d)"
+          (
+            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+              # Label filter matches merobox-started containers; exclude
+              # short-lived `*-init` containers (setup-only, torn down
+              # quickly and not useful for diagnosing steady-state).
+              for c in $(docker ps --filter "label=calimero.node=true" \
+                                   --format "{{.Names}}" 2>/dev/null \
+                         | grep -v -- '-init$' || true); do
+                mark="$WATCHER_STATE_DIR/${c}"
+                if [ ! -f "$mark" ]; then
+                  touch "$mark"
+                  echo "[log-watcher] following $c"
+                  docker logs -f --timestamps "$c" \
+                    > "$LOGDIR/${c}.log" 2>&1 &
+                fi
+              done
+              sleep 1
+            done
+          ) &
+          WATCHER_PID=$!
+
           set +e
-          set -o pipefail 
+          set -o pipefail
           merobox bootstrap run \
               fuzzy-test.yml \
               --image "$IMAGE" \
@@ -260,6 +315,14 @@ jobs:
 
           exit_code=$?
           set +o pipefail
+
+          # Signal the watcher to stop and let the `docker logs -f`
+          # followers flush their final output before we move on.
+          touch "$WATCHER_STATE_DIR/stop"
+          sleep 2
+          kill "$WATCHER_PID" 2>/dev/null || true
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
 
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
@@ -377,8 +440,18 @@ jobs:
         uses: ./.github/actions/setup-merobox
 
       - name: Override test duration
+        # Default is 15 minutes for routine triggers and 60 minutes for
+        # the nightly schedule. See the equivalent step in
+        # fuzzy-test-kv-store for details.
         run: |
-          DURATION="${{ github.event.inputs.duration_override || '45' }}"
+          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
+            DURATION="${{ github.event.inputs.duration_override }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            DURATION="60"
+          else
+            DURATION="15"
+          fi
+          echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
           cd workflows/fuzzy-tests/kv-store-with-handlers
           sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
 
@@ -439,6 +512,7 @@ jobs:
         id: handlers-test
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
+          mkdir -p fuzzy-test-logs/kv-store-with-handlers/docker-logs
           cd workflows/fuzzy-tests/kv-store-with-handlers
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
@@ -466,8 +540,31 @@ jobs:
             UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
             VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
           fi
+
+          # Live docker-logs watcher — see the kv-store job for the
+          # rationale (merobox tears containers down on exit).
+          LOGDIR="$GITHUB_WORKSPACE/fuzzy-test-logs/kv-store-with-handlers/docker-logs"
+          WATCHER_STATE_DIR="$(mktemp -d)"
+          (
+            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+              for c in $(docker ps --filter "label=calimero.node=true" \
+                                   --format "{{.Names}}" 2>/dev/null \
+                         | grep -v -- '-init$' || true); do
+                mark="$WATCHER_STATE_DIR/${c}"
+                if [ ! -f "$mark" ]; then
+                  touch "$mark"
+                  echo "[log-watcher] following $c"
+                  docker logs -f --timestamps "$c" \
+                    > "$LOGDIR/${c}.log" 2>&1 &
+                fi
+              done
+              sleep 1
+            done
+          ) &
+          WATCHER_PID=$!
+
           set +e
-          set -o pipefail 
+          set -o pipefail
           merobox bootstrap run \
               fuzzy-test.yml \
               --image "$IMAGE" \
@@ -476,6 +573,12 @@ jobs:
 
           exit_code=$?
           set +o pipefail
+
+          touch "$WATCHER_STATE_DIR/stop"
+          sleep 2
+          kill "$WATCHER_PID" 2>/dev/null || true
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
 
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
@@ -572,9 +675,26 @@ jobs:
     if: always()
     steps:
       - name: Generate summary
+        # Priority must match the duration-resolution blocks in both
+        # fuzzy-test jobs above: `duration_override` first (it wins when
+        # set, regardless of trigger), schedule second, routine last.
+        # The three conditions are mutually exclusive in practice today
+        # because `schedule` events carry no `inputs`, but keeping the
+        # priority consistent avoids a silent drift if GitHub ever lets
+        # scheduled runs accept dispatch inputs or if a future operator
+        # adds another trigger that can set both.
         run: |
+          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
+            RUN_KIND="Manual override (${{ github.event.inputs.duration_override }} min)"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            RUN_KIND="Nightly soak (60 min)"
+          else
+            RUN_KIND="Routine (15 min)"
+          fi
           echo "## Fuzzy Load Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Run kind:** ${RUN_KIND}" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
           echo "**Profiling Enabled:** ${{ github.event.inputs.enable_profiling || 'true' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 

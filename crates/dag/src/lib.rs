@@ -190,6 +190,41 @@ pub struct PendingStats {
     pub total_missing_parents: usize,
 }
 
+/// Detailed outcome of [`DagStore::add_delta_with_outcome`].
+///
+/// The bool-returning [`DagStore::add_delta`] collapses `Pending` and
+/// `Duplicate` into `Ok(false)`. Callers that need to distinguish the two —
+/// e.g. to avoid triggering a network backfill on a duplicate gossip op —
+/// should use the `_with_outcome` variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddDeltaOutcome {
+    /// The delta was applied immediately (all parents present).
+    Applied,
+    /// The delta was stored as pending (at least one parent missing).
+    Pending,
+    /// The delta was already present in the DAG; no work performed.
+    Duplicate,
+}
+
+impl AddDeltaOutcome {
+    /// `true` when the outcome is [`AddDeltaOutcome::Applied`].
+    pub fn is_applied(&self) -> bool {
+        matches!(self, Self::Applied)
+    }
+
+    /// `true` when the outcome is [`AddDeltaOutcome::Pending`] — i.e. the
+    /// delta was accepted but is waiting for missing parents. This is the
+    /// only outcome that warrants proactive backfill.
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
+
+    /// `true` when the outcome is [`AddDeltaOutcome::Duplicate`].
+    pub fn is_duplicate(&self) -> bool {
+        matches!(self, Self::Duplicate)
+    }
+}
+
 /// DAG-based delta store
 ///
 /// Manages causal deltas in a DAG structure, applying them in topological order.
@@ -290,10 +325,13 @@ impl<T: Clone> DagStore<T> {
     /// This should be called after restoring checkpoints or other deltas that
     /// might unblock pending deltas. Unlike `apply_pending` which is called
     /// internally during `add_delta`, this method is for explicit triggering.
-    pub async fn try_process_pending(
+    pub async fn try_process_pending<A: DeltaApplier<T> + Sync>(
         &mut self,
-        applier: &impl DeltaApplier<T>,
-    ) -> Result<usize, DagError> {
+        applier: &A,
+    ) -> Result<usize, DagError>
+    where
+        T: Send + Sync,
+    {
         let mut applied_count = 0;
         let mut applied_any = true;
 
@@ -320,17 +358,45 @@ impl<T: Clone> DagStore<T> {
         Ok(applied_count)
     }
 
-    /// Add a delta to the DAG
+    /// Add a delta to the DAG.
     ///
+    /// Bool-returning compatibility wrapper over [`Self::add_delta_with_outcome`].
     /// Returns:
     /// - `Ok(true)` if applied immediately
-    /// - `Ok(false)` if pending (waiting for parents)
-    /// - `Err(DagError)` if delta already exists or application fails
-    pub async fn add_delta(
+    /// - `Ok(false)` if pending *or* a duplicate
+    ///
+    /// Callers that need to distinguish pending from duplicate (e.g. to avoid
+    /// triggering a network backfill on a duplicate gossip op) should use
+    /// [`Self::add_delta_with_outcome`] instead.
+    pub async fn add_delta<A: DeltaApplier<T> + Sync>(
         &mut self,
         delta: CausalDelta<T>,
-        applier: &impl DeltaApplier<T>,
-    ) -> Result<bool, DagError> {
+        applier: &A,
+    ) -> Result<bool, DagError>
+    where
+        T: Send + Sync,
+    {
+        Ok(matches!(
+            self.add_delta_with_outcome(delta, applier).await?,
+            AddDeltaOutcome::Applied
+        ))
+    }
+
+    /// Add a delta to the DAG and return the detailed outcome.
+    ///
+    /// Differentiates the three success states that `add_delta` collapses into
+    /// a bool:
+    /// - `AddDeltaOutcome::Applied`   — applied immediately
+    /// - `AddDeltaOutcome::Pending`   — stored pending, waiting for parents
+    /// - `AddDeltaOutcome::Duplicate` — already present in the DAG
+    pub async fn add_delta_with_outcome<A: DeltaApplier<T> + Sync>(
+        &mut self,
+        delta: CausalDelta<T>,
+        applier: &A,
+    ) -> Result<AddDeltaOutcome, DagError>
+    where
+        T: Send + Sync,
+    {
         let delta_id = delta.id;
 
         // Check if delta already exists
@@ -344,8 +410,7 @@ impl<T: Clone> DagStore<T> {
                     "Received real delta for existing checkpoint - skipping (state already present via snapshot)"
                 );
             }
-            // Skip duplicate
-            return Ok(false);
+            return Ok(AddDeltaOutcome::Duplicate);
         }
 
         // Store delta in memory
@@ -354,11 +419,17 @@ impl<T: Clone> DagStore<T> {
         // Check if we can apply immediately
         if self.can_apply(&delta) {
             self.apply_delta(delta, applier).await?;
-            Ok(true)
+            // Cascade any pending children that this delta unblocked.
+            // Cascading is now done iteratively at the call site rather
+            // than recursively from inside `apply_delta` so the stack
+            // depth stays constant regardless of cascade length. See
+            // `test_cascade_does_not_grow_stack`.
+            self.apply_pending(applier).await?;
+            Ok(AddDeltaOutcome::Applied)
         } else {
             // Missing parents - store as pending
             self.pending.insert(delta_id, PendingDelta::new(delta));
-            Ok(false)
+            Ok(AddDeltaOutcome::Pending)
         }
     }
 
@@ -379,11 +450,14 @@ impl<T: Clone> DagStore<T> {
     }
 
     /// Apply a delta using the provided applier
-    fn apply_delta<'a>(
+    fn apply_delta<'a, A: DeltaApplier<T> + Sync>(
         &'a mut self,
         delta: CausalDelta<T>,
-        applier: &'a impl DeltaApplier<T>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), DagError>> + 'a>> {
+        applier: &'a A,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), DagError>> + Send + 'a>>
+    where
+        T: Send + Sync,
+    {
         Box::pin(async move {
             // Apply via the applier
             applier.apply(&delta).await?;
@@ -397,15 +471,27 @@ impl<T: Clone> DagStore<T> {
             }
             self.heads.insert(delta.id);
 
-            // Try to apply pending deltas
-            self.apply_pending(applier).await?;
+            // Cascade is intentionally NOT triggered here. Doing so made
+            // `apply_delta` and `apply_pending` mutually recursive: each
+            // cascaded child added another `apply_delta` frame on the
+            // stack, overflowing the (default 2 MB) tokio test thread
+            // stack at ~1000-deep linear chains. Callers
+            // (`add_delta_with_outcome`, `apply_pending`,
+            // `try_process_pending`) drive the cascade iteratively
+            // instead. See `test_cascade_does_not_grow_stack`.
 
             Ok(())
         })
     }
 
     /// Apply pending deltas whose parents are now available
-    async fn apply_pending(&mut self, applier: &impl DeltaApplier<T>) -> Result<(), DagError> {
+    async fn apply_pending<A: DeltaApplier<T> + Sync>(
+        &mut self,
+        applier: &A,
+    ) -> Result<(), DagError>
+    where
+        T: Send + Sync,
+    {
         let mut applied_any = true;
 
         while applied_any {
@@ -767,6 +853,69 @@ mod basic_tests {
 
         // No more pending
         assert_eq!(dag.pending_stats().count, 0);
+    }
+
+    /// Regression: a child delta landed pending (parent missing), then
+    /// the parent was added via `restore_applied_delta` (how the
+    /// node-side `add_local_applied_delta` brings a locally-created
+    /// parent into the DAG without re-applying through WASM). The
+    /// caller MUST follow up with `try_process_pending` to cascade
+    /// the child — `restore_applied_delta` alone is topology-only.
+    ///
+    /// Guards against the bug cursor flagged on PR #2248: sync-
+    /// received child arrives before its locally-created parent is
+    /// visible in the DAG, parent arrives via notify/restore, child
+    /// stays stranded in the pending queue forever unless something
+    /// else (unrelated remote delta or restart) triggers the cascade.
+    #[tokio::test]
+    async fn test_restore_applied_delta_plus_try_process_pending_cascades_child() {
+        let applier = TestApplier {
+            applied: Arc::new(Mutex::new(Vec::new())),
+        };
+
+        let mut dag = DagStore::new([0; 32]);
+
+        let parent = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+        let child = CausalDelta::new_test(
+            [2; 32],
+            vec![[1; 32]], // parent=delta1
+            TestPayload { value: 2 },
+        );
+
+        // Child arrives first (simulates a gossip-delivered remote
+        // child whose parent hasn't reached this node yet).
+        let applied_child_first = dag.add_delta(child, &applier).await.unwrap();
+        assert!(!applied_child_first, "child should go pending");
+        assert_eq!(dag.pending_stats().count, 1);
+
+        // Parent arrives via `restore_applied_delta` — the topology-
+        // only path used by the local-write notify chain. Crucially,
+        // this does NOT call `apply_pending` internally.
+        let added = dag.restore_applied_delta(parent);
+        assert!(added, "parent should register as new");
+
+        // Without the explicit nudge below, child stays stranded.
+        assert_eq!(
+            dag.pending_stats().count,
+            1,
+            "child still pending — restore_applied_delta is topology-only"
+        );
+        assert_eq!(
+            applier.applied.lock().await.len(),
+            0,
+            "no delta should have been applied via the applier yet"
+        );
+
+        // Now the explicit nudge — matches the pattern in
+        // `DeltaStore::add_local_applied_delta` and in
+        // `get_missing_parents`.
+        let cascaded = dag.try_process_pending(&applier).await.unwrap();
+        assert_eq!(cascaded, 1, "child should cascade exactly once");
+
+        let applied = applier.applied.lock().await;
+        assert_eq!(applied.len(), 1, "child applied via applier");
+        assert_eq!(applied[0], [2; 32], "applied delta is the child");
+        assert_eq!(dag.pending_stats().count, 0, "pending queue drained");
     }
 
     #[tokio::test]
