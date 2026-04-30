@@ -305,10 +305,10 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             let mut topology = self.topology.write().await;
             let _previous = topology.insert(delta.id, delta.parents.clone());
 
-            // `IndexMap::shift_remove_index(0)` evicts oldest-first
-            // (insertion order), preserving recently-applied deltas
-            // whose ancestry links are still needed by buffered
-            // children. Cf. #2272 review on non-deterministic eviction.
+            // Evict oldest-first (insertion order) so recently-applied
+            // deltas — whose ancestry links are still needed by buffered
+            // children — survive the cap. Cf. #2272 review on
+            // non-deterministic eviction.
             cap_topology(&mut topology);
         }
 
@@ -644,14 +644,21 @@ fn seed_topology(
 /// oldest-inserted entries first (the `IndexMap` insertion-order
 /// invariant is what makes this deterministic). Targets 90% of the cap
 /// after eviction so we don't thrash on every insert near the boundary.
+///
+/// Uses `IndexMap::drain(0..excess)` for an O(n) eviction in a single
+/// memmove pass. A naive `shift_remove_index(0)` loop would be O(excess
+/// × n) — at 100K persisted deltas during `restore_topology`, that's
+/// ~9 billion shifts and a multi-second startup stall under the
+/// topology write lock. Cf. PR #2272 review on quadratic eviction cost.
 fn cap_topology(topology: &mut IndexMap<[u8; 32], Vec<[u8; 32]>>) {
     if topology.len() <= MAX_TOPOLOGY_ENTRIES {
         return;
     }
     let excess = topology.len() - (MAX_TOPOLOGY_ENTRIES * 9 / 10);
-    for _ in 0..excess {
-        let _removed = topology.shift_remove_index(0);
-    }
+    // The `Drain` iterator's destructor removes the front-range entries
+    // and shifts the tail left by `excess` in a single memmove. Letting
+    // it drop at end of statement is sufficient.
+    drop(topology.drain(0..excess));
 }
 
 /// Read a `RotationLog` directly from the datastore for a given context
@@ -2385,6 +2392,42 @@ mod seed_topology_tests {
                 "expected recent entry {i} to survive"
             );
         }
+    }
+
+    /// Stress test for the eviction's asymptotic cost.
+    ///
+    /// `restore_topology` may seed up to N entries from disk in one shot.
+    /// A naive `loop { shift_remove_index(0) }` would be O(excess × n)
+    /// — at the values exercised here (n=10× cap, excess=91% of n) that
+    /// reduces to ~9 billion shifts and a multi-second startup stall
+    /// under the topology write lock. The `drain(0..excess)` form is
+    /// O(n). This test runs in well under a second; if a future change
+    /// reverts to per-element eviction, the timeout makes it loud.
+    /// Cf. PR #2272 review on quadratic eviction cost.
+    #[test]
+    fn cap_topology_evicts_in_linear_time() {
+        let mut topology: IndexMap<[u8; 32], Vec<[u8; 32]>> = IndexMap::new();
+        let total = MAX_TOPOLOGY_ENTRIES * 10;
+        for i in 0..total {
+            let mut k32 = [0_u8; 32];
+            k32[..8].copy_from_slice(&u64::try_from(i).unwrap().to_le_bytes());
+            let _ = topology.insert(k32, vec![]);
+        }
+
+        let start = std::time::Instant::now();
+        cap_topology(&mut topology);
+        let elapsed = start.elapsed();
+
+        let target = MAX_TOPOLOGY_ENTRIES * 9 / 10;
+        assert_eq!(topology.len(), target);
+        // Generous bound — this should take milliseconds, not seconds.
+        // A regression to O(excess × n) at this size would take many
+        // seconds and trip this assertion.
+        assert!(
+            elapsed.as_secs() < 2,
+            "cap_topology({total} entries) took {elapsed:?} — likely a \
+             regression to O(excess × n) eviction"
+        );
     }
 
     #[test]
