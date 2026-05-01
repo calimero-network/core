@@ -26,3 +26,12 @@ calimero-storage.workspace = true
 borsh = ["borsh/derive"]
 serde = ["dep:serde", "dep:serde_json"]
 datatypes = ["borsh", "calimero-primitives/borsh"]
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+calimero-store-rocksdb.workspace = true
+
+[[bench]]
+name = "handle_ops"
+harness = false
