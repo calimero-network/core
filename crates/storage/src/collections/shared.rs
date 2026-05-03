@@ -133,6 +133,19 @@ where
         Ok(&self.value)
     }
 
+    /// Read the current writer set. Public so callers can present a
+    /// "members with edit rights" UI and compute incremental rotations
+    /// (current set + new mod) without mirroring the set elsewhere.
+    pub fn writers(&self) -> &BTreeSet<PublicKey> {
+        &self.writers
+    }
+
+    /// Whether the writer set has been frozen. Once frozen, `rotate_writers`
+    /// is permanently rejected.
+    pub fn is_frozen(&self) -> bool {
+        self.writers_frozen
+    }
+
     /// Returns the signature attached to the most recently applied state of
     /// this entity, if any. Reads from the wrapper field first; if unset
     /// (e.g., the wrapper was just deserialized and the field hasn't been
@@ -440,6 +453,49 @@ mod tests {
         // Storage is still functional — alice can still write.
         let _ = s.insert(TestVal(2)).expect("alice can still write");
         assert_eq!(s.get().unwrap(), &TestVal(2));
+    }
+
+    #[test]
+    #[serial]
+    fn writers_accessor_reflects_bootstrap_then_rotation() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+
+        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE, BOB]), false));
+
+        // Bootstrap-time writer set is observable.
+        assert_eq!(s.writers(), &writers(&[ALICE, BOB]));
+        assert!(!s.is_frozen());
+
+        // After a rotation, the accessor sees the new set without the
+        // caller having to mirror it elsewhere.
+        s.rotate_writers(writers(&[ALICE, CAROL])).unwrap();
+        assert_eq!(s.writers(), &writers(&[ALICE, CAROL]));
+        assert!(!s.is_frozen());
+    }
+
+    #[test]
+    #[serial]
+    fn is_frozen_accessor_reflects_construction_and_blocks_rotation() {
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+
+        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE]), true));
+
+        assert!(s.is_frozen());
+        assert_eq!(s.writers(), &writers(&[ALICE]));
+
+        // A frozen instance must reject rotation regardless of caller.
+        let err = s
+            .rotate_writers(writers(&[ALICE, BOB]))
+            .expect_err("rotation on frozen instance must fail");
+        assert!(
+            err.to_string().to_lowercase().contains("frozen"),
+            "error should mention frozen, got: {err}"
+        );
+
+        // The set is unchanged after the rejected rotation.
+        assert_eq!(s.writers(), &writers(&[ALICE]));
     }
 
     #[test]

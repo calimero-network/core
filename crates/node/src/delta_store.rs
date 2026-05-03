@@ -9,7 +9,7 @@
 //! This ensures that all nodes converge to the same state regardless of the
 //! order in which they receive concurrent deltas.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,10 +22,25 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::action::Action;
+use calimero_storage::address::Id;
 use calimero_storage::delta::StorageDelta;
+use calimero_storage::entities::StorageType;
+use calimero_storage::rotation_log::RotationLog;
+use calimero_storage::store::Key as StorageKey;
 use eyre::Result;
+use indexmap::IndexMap;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+
+use crate::sync::rotation_log_reader;
+
+/// Maximum entries in the applier-local topology mirror. Exceeding this
+/// triggers oldest-first eviction (insertion-ordered via `IndexMap`)
+/// down to 90% of the cap. Applied both inside `apply()` (steady state)
+/// and at the end of `restore_topology` (startup seed) so a long-lived
+/// node persisting >10K deltas doesn't carry the full set in memory
+/// across restarts. Per #2272 review.
+const MAX_TOPOLOGY_ENTRIES: usize = 10_000;
 
 /// Result of adding a delta with cascaded event information
 #[derive(Debug)]
@@ -107,6 +122,23 @@ struct ContextStorageApplier {
     /// while Node-B applies X sequentially → hash H2. When Node-B's child delta
     /// arrives, we must recognize that our parent hash differs from the author's.
     merged_deltas: Arc<RwLock<HashSet<[u8; 32]>>>,
+    /// `delta_id → parents` for every applied delta this node has seen.
+    /// Maintained inside `apply()` (after WASM success) and seeded by
+    /// `restore_topology` from `load_persisted_deltas`. Read-only inside
+    /// `apply()` to derive the `happens_before` predicate that
+    /// [`rotation_log_reader::writers_at`] needs — kept separate from
+    /// the `Arc<RwLock<CoreDagStore>>` so reads here don't deadlock
+    /// against the dag write lock the caller holds during `add_delta`.
+    ///
+    /// Stored as `IndexMap` so eviction at the `MAX_TOPOLOGY_ENTRIES`
+    /// cap iterates insertion order (oldest-first) — `HashMap`'s
+    /// iteration order is non-deterministic and could evict recent
+    /// ancestry links still needed by buffered children, which is
+    /// security-adjacent: a missing link makes `happens_before` return
+    /// false, `writers_at` returns `None`, and the verifier falls back
+    /// to v2 stored-writers, potentially admitting a revoked writer.
+    /// (#2266 + #2272 review)
+    topology: Arc<RwLock<IndexMap<[u8; 32], Vec<[u8; 32]>>>>,
 }
 
 #[async_trait::async_trait]
@@ -159,9 +191,28 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
             );
         }
 
-        // Serialize actions to StorageDelta
-        let artifact = borsh::to_vec(&StorageDelta::Actions(delta.payload.clone()))
-            .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {e}")))?;
+        // #2266: resolve `effective_writers` for every Shared entity
+        // touched by this delta, then ship the artifact as
+        // `StorageDelta::CausalActions` so the receiver's verifier
+        // validates Shared signatures against the pre-resolved set
+        // (per ADR 0001 / writers_at(delta.parents)) instead of
+        // falling back to v2 stored writers. Resolution reads `topology`
+        // (this applier's local copy of the DAG parent links) so it
+        // doesn't contend with the dag write lock held by our caller.
+        let effective_writers = self
+            .resolve_effective_writers_for_delta(delta)
+            .await
+            .map_err(|e| {
+                ApplyError::Application(format!("Failed to resolve effective writers: {e}"))
+            })?;
+
+        let artifact = borsh::to_vec(&StorageDelta::CausalActions {
+            actions: delta.payload.clone(),
+            delta_id: delta.id,
+            delta_hlc: delta.hlc,
+            effective_writers,
+        })
+        .map_err(|e| ApplyError::Application(format!("Failed to serialize delta: {e}")))?;
 
         let wasm_start = std::time::Instant::now();
 
@@ -242,6 +293,23 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
                     "Hash mismatch (concurrent state) - CRDT merge ensures consistency"
                 );
             }
+        }
+
+        // #2266: record this delta's parent links into the applier's
+        // topology mirror so cascaded children's `apply()` can resolve
+        // happens_before against an up-to-date view. Done after WASM
+        // success so a failed apply doesn't pollute the topology with
+        // an unapplied delta. Bounded the same way as `parent_hashes`
+        // below so it can't grow without limit on long-lived nodes.
+        {
+            let mut topology = self.topology.write().await;
+            let _previous = topology.insert(delta.id, delta.parents.clone());
+
+            // Evict oldest-first (insertion order) so recently-applied
+            // deltas — whose ancestry links are still needed by buffered
+            // children — survive the cap. Cf. #2272 review on
+            // non-deterministic eviction.
+            cap_topology(&mut topology);
         }
 
         // Store the ACTUAL computed hash after applying this delta for future merge detection
@@ -470,6 +538,196 @@ impl ContextStorageApplier {
         );
         true
     }
+
+    /// Resolve the writer set for every Shared entity touched by `delta`.
+    ///
+    /// Iterates the action payload, picks out Shared `Add`/`Update`/
+    /// `DeleteRef`s, dedups by entity, and resolves each via
+    /// [`rotation_log_reader::writers_at`] against this applier's
+    /// `topology` view of the DAG.
+    ///
+    /// Returns a map keyed by entity id; non-Shared entities are absent.
+    /// An empty result is normal — a delta with only User/Frozen/Public
+    /// actions has nothing to resolve.
+    ///
+    /// No caching: each delta is applied at most once (the DAG dedups
+    /// by content-addressed `delta.id`), so a per-`(entity, delta_id)`
+    /// cache could never hit. Removed per #2272 review.
+    async fn resolve_effective_writers_for_delta(
+        &self,
+        delta: &CausalDelta<Vec<Action>>,
+    ) -> Result<BTreeMap<Id, BTreeSet<PublicKey>>> {
+        let mut shared_entities: BTreeSet<Id> = BTreeSet::new();
+        for action in &delta.payload {
+            let metadata = match action {
+                Action::Add { metadata, .. }
+                | Action::Update { metadata, .. }
+                | Action::DeleteRef { metadata, .. } => metadata,
+                Action::Compare { .. } => continue,
+            };
+            if matches!(metadata.storage_type, StorageType::Shared { .. }) {
+                let _inserted = shared_entities.insert(action.id());
+            }
+        }
+
+        let mut out: BTreeMap<Id, BTreeSet<PublicKey>> = BTreeMap::new();
+        if shared_entities.is_empty() {
+            return Ok(out);
+        }
+
+        // Snapshot topology once per delta apply. The `happens_before`
+        // closure consults this snapshot for every reachability test
+        // inside `writers_at`, avoiding repeated lock acquisitions.
+        let topology_snapshot = self.topology.read().await.clone();
+
+        for entity_id in shared_entities {
+            // Read the rotation log directly from the datastore rather
+            // than via `MainStorage::storage_read`. `MainStorage` routes
+            // through the `RUNTIME_ENV` thread-local which is only
+            // installed inside `context_client.execute()` — i.e. *after*
+            // this function runs. See `load_rotation_log_direct` doc.
+            let log =
+                match load_rotation_log_direct(&self.context_client, self.context_id, entity_id) {
+                    Ok(Some(log)) => log,
+                    Ok(None) => continue, // No log → verifier falls back to v2 stored-writers.
+                    Err(e) => {
+                        return Err(eyre::eyre!(
+                            "rotation_log direct read for entity {entity_id:?} failed: {e}"
+                        ))
+                    }
+                };
+
+            let resolved = rotation_log_reader::writers_at(&log, &delta.parents, |a, b| {
+                happens_before_in_topology(&topology_snapshot, a, b)
+            });
+
+            if let Some(set) = resolved {
+                let _replaced = out.insert(entity_id, set);
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Seed `topology` with deltas restored by `load_persisted_deltas`.
+    ///
+    /// Persisted deltas are restored into the dag via
+    /// `restore_applied_delta` without going through `apply()`, so the
+    /// topology mirror would otherwise miss them and `happens_before`
+    /// would incorrectly return false for ancestry that crosses the
+    /// pre-restart boundary. Call this once after persisted-delta
+    /// restoration completes.
+    async fn restore_topology(&self, deltas: impl IntoIterator<Item = ([u8; 32], Vec<[u8; 32]>)>) {
+        let mut topology = self.topology.write().await;
+        seed_topology(&mut topology, deltas);
+        // #2272 review: enforce the same `MAX_TOPOLOGY_ENTRIES` cap that
+        // `apply()` uses. Without this, a context with 100K persisted
+        // deltas would seed all of them at startup and consume ~10MB+
+        // until enough new deltas triggered the steady-state cap.
+        cap_topology(&mut topology);
+    }
+}
+
+/// Pure seed of a topology mirror. Extracted so the seeding semantics
+/// (later entries overwrite earlier ones with the same delta id) can be
+/// unit-tested without standing up a `ContextStorageApplier`.
+fn seed_topology(
+    topology: &mut IndexMap<[u8; 32], Vec<[u8; 32]>>,
+    deltas: impl IntoIterator<Item = ([u8; 32], Vec<[u8; 32]>)>,
+) {
+    for (delta_id, parents) in deltas {
+        let _previous = topology.insert(delta_id, parents);
+    }
+}
+
+/// Trim a topology mirror to `MAX_TOPOLOGY_ENTRIES` by evicting the
+/// oldest-inserted entries first (the `IndexMap` insertion-order
+/// invariant is what makes this deterministic). Targets 90% of the cap
+/// after eviction so we don't thrash on every insert near the boundary.
+///
+/// Uses `IndexMap::drain(0..excess)` for an O(n) eviction in a single
+/// memmove pass. A naive `shift_remove_index(0)` loop would be O(excess
+/// × n) — at 100K persisted deltas during `restore_topology`, that's
+/// ~9 billion shifts and a multi-second startup stall under the
+/// topology write lock. Cf. PR #2272 review on quadratic eviction cost.
+fn cap_topology(topology: &mut IndexMap<[u8; 32], Vec<[u8; 32]>>) {
+    if topology.len() <= MAX_TOPOLOGY_ENTRIES {
+        return;
+    }
+    let excess = topology.len() - (MAX_TOPOLOGY_ENTRIES * 9 / 10);
+    // The `Drain` iterator's destructor removes the front-range entries
+    // and shifts the tail left by `excess` in a single memmove. Letting
+    // it drop at end of statement is sufficient.
+    drop(topology.drain(0..excess));
+}
+
+/// Read a `RotationLog` directly from the datastore for a given context
+/// + entity, bypassing `calimero_storage::rotation_log::load` (which
+/// goes through the `RUNTIME_ENV` thread-local that's only installed
+/// inside `context_client.execute()`).
+///
+/// The on-disk shape mirrors what
+/// `calimero_node_primitives::sync::storage_bridge::create_runtime_env`
+/// writes inside the WASM execute scope: `Key::RotationLog(entity_id)`
+/// is hashed to a 32-byte state key, and the value lives under
+/// `ContextState::new(context_id, state_key)`. Decoded via Borsh.
+///
+/// Returns `Ok(None)` for entities with no rotation log yet (every
+/// pre-rotation Shared entity), which is fine — the receiver verifier
+/// then falls back to v2 stored-writers, matching pre-#2266 behavior.
+fn load_rotation_log_direct(
+    context_client: &ContextClient,
+    context_id: ContextId,
+    entity_id: Id,
+) -> Result<Option<RotationLog>> {
+    let storage_key = StorageKey::RotationLog(entity_id).to_bytes();
+    let state_key = calimero_store::key::ContextState::new(context_id, storage_key);
+    let handle = context_client.datastore_handle();
+    // Copy the bytes out before `handle` is dropped — `state.value` is a
+    // `Slice<'_>` borrowed from the handle's read snapshot.
+    let bytes: Option<Vec<u8>> = match handle.get(&state_key) {
+        Ok(Some(state)) => Some(state.value.into_boxed().into_vec()),
+        Ok(None) => None,
+        Err(e) => return Err(eyre::eyre!("rotation_log datastore read failed: {e:?}")),
+    };
+    drop(handle);
+    let Some(bytes) = bytes else {
+        return Ok(None);
+    };
+    let log = borsh::from_slice::<RotationLog>(&bytes)
+        .map_err(|e| eyre::eyre!("rotation_log decode failed: {e}"))?;
+    Ok(Some(log))
+}
+
+/// Reverse-BFS reachability over a `delta_id → parents` mirror of the
+/// DAG: returns true iff `a` is in the transitive ancestry of `b`. Pure
+/// over the snapshot — `happens_before(x, x) == false` (strict ancestry).
+///
+/// Re-exported under `calimero_node::sync::happens_before_in_topology`
+/// for integration tests so they can mirror the production resolve
+/// flow without copying the function (#2272 review).
+pub fn happens_before_in_topology(
+    topology: &IndexMap<[u8; 32], Vec<[u8; 32]>>,
+    a: &[u8; 32],
+    b: &[u8; 32],
+) -> bool {
+    if a == b {
+        return false;
+    }
+    let mut frontier: Vec<[u8; 32]> = topology.get(b).cloned().unwrap_or_default();
+    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    while let Some(node) = frontier.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        if &node == a {
+            return true;
+        }
+        if let Some(parents) = topology.get(&node) {
+            frontier.extend(parents.iter().copied());
+        }
+    }
+    false
 }
 
 /// Node-level delta store that wraps calimero-dag
@@ -505,6 +763,13 @@ impl DeltaStore {
             our_identity,
             parent_hashes: Arc::clone(&parent_hashes),
             merged_deltas: Arc::clone(&merged_deltas),
+            // #2266: applier-local DAG topology mirror for the
+            // rotation-log-driven writer-set resolution. Populated by
+            // `apply()` and seeded by `load_persisted_deltas` →
+            // `restore_topology` so cross-restart ancestry is preserved.
+            // Insertion-ordered (IndexMap) so the eviction at the
+            // `MAX_TOPOLOGY_ENTRIES` cap is deterministic (oldest-first).
+            topology: Arc::new(RwLock::new(IndexMap::new())),
         });
 
         Self {
@@ -679,6 +944,12 @@ impl DeltaStore {
         let mut loaded_count = 0;
         let mut remaining = all_deltas;
         let mut progress_made = true;
+        // #2266: collect (delta_id, parents) for the applier-local
+        // topology mirror. Persisted deltas bypass `apply()` (they're
+        // restored as already-applied), so without this seed the mirror
+        // would be empty after restart and `happens_before` would
+        // incorrectly return false for any cross-restart ancestry.
+        let mut topology_seed: Vec<([u8; 32], Vec<[u8; 32]>)> = Vec::new();
 
         while progress_made && !remaining.is_empty() {
             progress_made = false;
@@ -698,6 +969,7 @@ impl DeltaStore {
                     if dag.restore_applied_delta(dag_delta.clone()) {
                         loaded_count += 1;
                         to_remove.push(*delta_id);
+                        topology_seed.push((*delta_id, dag_delta.parents.clone()));
                         progress_made = true;
                     }
                 }
@@ -706,6 +978,11 @@ impl DeltaStore {
             for delta_id in to_remove {
                 drop(remaining.remove(&delta_id));
             }
+        }
+
+        // Seed the applier topology with everything we just restored.
+        if !topology_seed.is_empty() {
+            self.applier.restore_topology(topology_seed).await;
         }
 
         // Count + small bs58 sample rather than full-list Debug —
@@ -1931,5 +2208,235 @@ impl DeltaStore {
         );
 
         added_count
+    }
+}
+
+#[cfg(test)]
+mod happens_before_tests {
+    //! Direct unit tests for the topology-snapshot reachability primitive
+    //! that drives Shared writer-set resolution at apply time. Covered
+    //! cases mirror the ADR 0001 examples and the bounded-cache reasoning
+    //! in `apply()`.
+
+    use super::*;
+
+    fn id(b: u8) -> [u8; 32] {
+        [b; 32]
+    }
+
+    fn topology(edges: &[(u8, &[u8])]) -> IndexMap<[u8; 32], Vec<[u8; 32]>> {
+        edges
+            .iter()
+            .map(|(child, parents)| (id(*child), parents.iter().copied().map(id).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn self_is_not_strict_ancestor() {
+        let t = topology(&[(2, &[1])]);
+        assert!(!happens_before_in_topology(&t, &id(1), &id(1)));
+        assert!(!happens_before_in_topology(&t, &id(2), &id(2)));
+    }
+
+    #[test]
+    fn single_hop_ancestry() {
+        // 1 → 2
+        let t = topology(&[(2, &[1])]);
+        assert!(happens_before_in_topology(&t, &id(1), &id(2)));
+        assert!(!happens_before_in_topology(&t, &id(2), &id(1)));
+    }
+
+    #[test]
+    fn transitive_ancestry() {
+        // 1 → 2 → 3 → 4
+        let t = topology(&[(2, &[1]), (3, &[2]), (4, &[3])]);
+        assert!(happens_before_in_topology(&t, &id(1), &id(4)));
+        assert!(happens_before_in_topology(&t, &id(2), &id(4)));
+        assert!(!happens_before_in_topology(&t, &id(4), &id(1)));
+    }
+
+    #[test]
+    fn diamond_merge() {
+        //   1
+        //  / \
+        // 2   3
+        //  \ /
+        //   4
+        let t = topology(&[(2, &[1]), (3, &[1]), (4, &[2, 3])]);
+        assert!(happens_before_in_topology(&t, &id(1), &id(4)));
+        assert!(happens_before_in_topology(&t, &id(2), &id(4)));
+        assert!(happens_before_in_topology(&t, &id(3), &id(4)));
+        // Siblings 2 and 3 are concurrent — neither precedes the other.
+        assert!(!happens_before_in_topology(&t, &id(2), &id(3)));
+        assert!(!happens_before_in_topology(&t, &id(3), &id(2)));
+    }
+
+    #[test]
+    fn unknown_node_returns_false() {
+        // Querying a node the topology has never seen must be a clean
+        // false, not a panic — happens during sync when peers reference
+        // deltas we haven't received yet.
+        let t = topology(&[(2, &[1])]);
+        assert!(!happens_before_in_topology(&t, &id(1), &id(99)));
+        assert!(!happens_before_in_topology(&t, &id(99), &id(2)));
+    }
+
+    #[test]
+    fn missing_parent_terminates() {
+        // Topology references a parent it doesn't list (42 has no own
+        // entry). BFS must terminate cleanly at that leaf — and report
+        // 42 as a direct ancestor of 2, since 2's parent list contains
+        // it. Anything *behind* 42 is unknown and reports false.
+        let t = topology(&[(2, &[42])]);
+        assert!(happens_before_in_topology(&t, &id(42), &id(2)));
+        assert!(!happens_before_in_topology(&t, &id(1), &id(2)));
+        assert!(!happens_before_in_topology(&t, &id(99), &id(42)));
+    }
+
+    #[test]
+    fn cycle_is_resilient() {
+        // Causal DAGs cannot have cycles, but the BFS must still
+        // terminate if a malformed mirror ever produced one — the
+        // `seen` set is the load-bearing guard.
+        let t = topology(&[(1, &[2]), (2, &[1])]);
+        // The query terminates rather than spinning; ancestry result
+        // for cyclic input is best-effort.
+        let _ = happens_before_in_topology(&t, &id(1), &id(2));
+        let _ = happens_before_in_topology(&t, &id(2), &id(1));
+    }
+}
+
+#[cfg(test)]
+mod seed_topology_tests {
+    //! `seed_topology` is the cross-restart correctness hinge: without
+    //! the seeding step in `load_persisted_deltas`, the topology mirror
+    //! is empty after restart and `happens_before` returns false for all
+    //! ancestry that pre-dates the restart.
+
+    use super::*;
+
+    fn id(b: u8) -> [u8; 32] {
+        [b; 32]
+    }
+
+    #[test]
+    fn seeded_chain_is_visible_to_happens_before() {
+        // Pretend we restored a 1 → 2 → 3 chain from disk.
+        let mut topology = IndexMap::new();
+        seed_topology(
+            &mut topology,
+            vec![(id(2), vec![id(1)]), (id(3), vec![id(2)])],
+        );
+
+        assert!(happens_before_in_topology(&topology, &id(1), &id(3)));
+        assert!(happens_before_in_topology(&topology, &id(2), &id(3)));
+        assert!(!happens_before_in_topology(&topology, &id(3), &id(1)));
+    }
+
+    #[test]
+    fn seed_overwrites_existing_entries() {
+        // If the same id appears twice (shouldn't, but defensive), the
+        // later one wins — same semantic as the `apply()` path's
+        // `topology.insert(...)`.
+        let mut topology = IndexMap::new();
+        seed_topology(&mut topology, vec![(id(2), vec![id(1)])]);
+        seed_topology(&mut topology, vec![(id(2), vec![id(7)])]);
+
+        assert_eq!(topology.get(&id(2)), Some(&vec![id(7)]));
+    }
+
+    #[test]
+    fn seed_with_empty_iter_is_noop() {
+        let mut topology = IndexMap::new();
+        let _ = topology.insert(id(2), vec![id(1)]);
+        seed_topology(&mut topology, std::iter::empty());
+        assert_eq!(topology.len(), 1);
+        assert_eq!(topology.get(&id(2)), Some(&vec![id(1)]));
+    }
+
+    #[test]
+    fn cap_topology_evicts_oldest_first() {
+        // Insert MAX + extra entries; cap to 90% of MAX. The oldest
+        // inserts must be the ones evicted; the most recent must
+        // survive — that's the load-bearing security property
+        // (see comment on `topology` field).
+        let mut topology: IndexMap<[u8; 32], Vec<[u8; 32]>> = IndexMap::new();
+        let total = MAX_TOPOLOGY_ENTRIES + 50;
+        for i in 0..total {
+            let key = u32::try_from(i).unwrap().to_le_bytes();
+            let mut k32 = [0_u8; 32];
+            k32[..4].copy_from_slice(&key);
+            let _ = topology.insert(k32, vec![]);
+        }
+        cap_topology(&mut topology);
+
+        let target = MAX_TOPOLOGY_ENTRIES * 9 / 10;
+        assert_eq!(topology.len(), target);
+
+        // The first `total - target` inserts must be gone; the rest
+        // must be present (insertion order, deterministic).
+        let evicted_count = total - target;
+        for i in 0..evicted_count {
+            let mut k32 = [0_u8; 32];
+            k32[..4].copy_from_slice(&u32::try_from(i).unwrap().to_le_bytes());
+            assert!(
+                !topology.contains_key(&k32),
+                "expected oldest entry {i} to be evicted"
+            );
+        }
+        for i in evicted_count..total {
+            let mut k32 = [0_u8; 32];
+            k32[..4].copy_from_slice(&u32::try_from(i).unwrap().to_le_bytes());
+            assert!(
+                topology.contains_key(&k32),
+                "expected recent entry {i} to survive"
+            );
+        }
+    }
+
+    /// Stress test for the eviction's asymptotic cost.
+    ///
+    /// `restore_topology` may seed up to N entries from disk in one shot.
+    /// A naive `loop { shift_remove_index(0) }` would be O(excess × n)
+    /// — at the values exercised here (n=10× cap, excess=91% of n) that
+    /// reduces to ~9 billion shifts and a multi-second startup stall
+    /// under the topology write lock. The `drain(0..excess)` form is
+    /// O(n). This test runs in well under a second; if a future change
+    /// reverts to per-element eviction, the timeout makes it loud.
+    /// Cf. PR #2272 review on quadratic eviction cost.
+    #[test]
+    fn cap_topology_evicts_in_linear_time() {
+        let mut topology: IndexMap<[u8; 32], Vec<[u8; 32]>> = IndexMap::new();
+        let total = MAX_TOPOLOGY_ENTRIES * 10;
+        for i in 0..total {
+            let mut k32 = [0_u8; 32];
+            k32[..8].copy_from_slice(&u64::try_from(i).unwrap().to_le_bytes());
+            let _ = topology.insert(k32, vec![]);
+        }
+
+        let start = std::time::Instant::now();
+        cap_topology(&mut topology);
+        let elapsed = start.elapsed();
+
+        let target = MAX_TOPOLOGY_ENTRIES * 9 / 10;
+        assert_eq!(topology.len(), target);
+        // Generous bound — this should take milliseconds, not seconds.
+        // A regression to O(excess × n) at this size would take many
+        // seconds and trip this assertion.
+        assert!(
+            elapsed.as_secs() < 2,
+            "cap_topology({total} entries) took {elapsed:?} — likely a \
+             regression to O(excess × n) eviction"
+        );
+    }
+
+    #[test]
+    fn cap_topology_under_cap_is_noop() {
+        let mut topology: IndexMap<[u8; 32], Vec<[u8; 32]>> = IndexMap::new();
+        for i in 0..100_u8 {
+            let _ = topology.insert([i; 32], vec![]);
+        }
+        cap_topology(&mut topology);
+        assert_eq!(topology.len(), 100);
     }
 }

@@ -1402,6 +1402,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
+ "indexmap 2.13.0",
  "libp2p",
  "lz4_flex",
  "prometheus-client",

@@ -39,6 +39,7 @@ calimero-crypto.workspace = true
 calimero-blobstore.workspace = true
 calimero-network.workspace = true
 dashmap.workspace = true
+indexmap.workspace = true
 calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
@@ -53,5 +54,7 @@ calimero-utils-actix.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 calimero-dag = { workspace = true, features = ["testing"] }
+calimero-storage = { workspace = true, features = ["testing"] }
+ed25519-dalek.workspace = true
 rand_chacha = "0.3"
 tempfile.workspace = true
