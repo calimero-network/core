@@ -11,7 +11,7 @@ use calimero_store::Store;
 use rand::Rng;
 use tracing::{info, warn};
 
-use crate::governance_broadcast::observe_handler_delivery;
+use crate::governance_broadcast::ObserveDelivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -183,7 +183,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     .await
                     {
                         Ok(report) => {
-                            observe_handler_delivery("create_group", "GroupCreated", &report);
+                            report.observe("create_group", "GroupCreated");
                         }
                         Err(e) => {
                             tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");

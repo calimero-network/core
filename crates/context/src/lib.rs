@@ -4,6 +4,7 @@
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use actix::prelude::{ActorResponse, WrapFuture};
 use actix::Actor;
@@ -34,6 +35,34 @@ pub mod op_events;
 pub mod registration_notify;
 
 use calimero_context_client::local_governance::AckRouter;
+
+/// Runtime-tunable knobs for `ContextManager` behavior.
+///
+/// Distinct from the on-disk [`config::ContextConfig`] (which holds the
+/// chain/client config). This struct centralises timing constants that
+/// were previously hard-coded in handler modules so future operator
+/// tooling can override them without source patches. Defaults match the
+/// values that shipped with #2237 Phase 12.
+#[derive(Clone, Copy, Debug)]
+pub struct ContextManagerConfig {
+    /// How long `join_group` will wait for a `KeyDelivery` op to arrive
+    /// via the gossip-fallback path after publishing `MemberJoined` and
+    /// before failing the join. Reached only when the direct join
+    /// response did not carry a key (served peer didn't hold it, or the
+    /// direct stream request timed out). The wait fires after
+    /// `MemberJoined` is on the wire, so the bound is "round-trip to any
+    /// admin + their `publish_and_await_ack` budget", not the full
+    /// gossipsub heartbeat reconciliation window.
+    pub key_delivery_fallback_wait: Duration,
+}
+
+impl Default for ContextManagerConfig {
+    fn default() -> Self {
+        Self {
+            key_delivery_fallback_wait: Duration::from_secs(5),
+        }
+    }
+}
 
 /// A metadata container for a single, in-memory context.
 ///
@@ -116,6 +145,10 @@ pub struct ContextManager {
     /// receiver-side and publish-side share the same instance. See
     /// [`governance_broadcast`].
     pub(crate) ack_router: Arc<AckRouter>,
+
+    /// Runtime-tunable timing knobs (see [`ContextManagerConfig`]).
+    /// Populated with [`ContextManagerConfig::default`] by [`Self::new`].
+    pub(crate) config: ContextManagerConfig,
 }
 
 /// Creates a new `ContextManager`.
@@ -147,6 +180,7 @@ impl ContextManager {
             active_propagators: HashSet::new(),
             namespace_dags: HashMap::new(),
             ack_router,
+            config: ContextManagerConfig::default(),
         }
     }
 

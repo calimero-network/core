@@ -13,7 +13,7 @@ use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use eyre::bail;
 use tracing::{debug, error, info, warn};
 
-use crate::governance_broadcast::observe_handler_delivery;
+use crate::governance_broadcast::ObserveDelivery;
 use crate::{group_store, ContextManager};
 
 impl Handler<UpgradeGroupRequest> for ContextManager {
@@ -143,13 +143,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             },
                         )
                         .await?;
-                        if let Some(report) = report.as_ref() {
-                            observe_handler_delivery(
-                                "upgrade_group",
-                                "TargetApplicationSet",
-                                report,
-                            );
-                        }
+                        report.observe("upgrade_group", "TargetApplicationSet");
                         if migration_bytes.is_some() {
                             let report = group_store::sign_apply_and_publish(
                                 &datastore,
@@ -162,13 +156,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                                 },
                             )
                             .await?;
-                            if let Some(report) = report.as_ref() {
-                                observe_handler_delivery(
-                                    "upgrade_group",
-                                    "GroupMigrationSet",
-                                    report,
-                                );
-                            }
+                            report.observe("upgrade_group", "GroupMigrationSet");
                         }
                     }
 
@@ -295,9 +283,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     },
                 )
                 .await?;
-                if let Some(report) = report.as_ref() {
-                    observe_handler_delivery("upgrade_group", "TargetApplicationSet", report);
-                }
+                report.observe("upgrade_group", "TargetApplicationSet");
                 if migration_bytes.is_some() {
                     let report = group_store::sign_apply_and_publish(
                         &datastore_for_canary,
@@ -310,9 +296,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         },
                     )
                     .await?;
-                    if let Some(report) = report.as_ref() {
-                        observe_handler_delivery("upgrade_group", "GroupMigrationSet", report);
-                    }
+                    report.observe("upgrade_group", "GroupMigrationSet");
                 }
             }
 

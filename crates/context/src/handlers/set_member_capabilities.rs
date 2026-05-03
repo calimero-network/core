@@ -4,7 +4,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::SetMemberCapabilitiesRequest;
 use calimero_context_client::local_governance::GroupOp;
 
-use crate::governance_broadcast::observe_handler_delivery;
+use crate::governance_broadcast::ObserveDelivery;
 use crate::{group_store, ContextManager};
 
 impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
@@ -55,13 +55,7 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
                     },
                 )
                 .await?;
-                if let Some(report) = report.as_ref() {
-                    observe_handler_delivery(
-                        "set_member_capabilities",
-                        "MemberCapabilitySet",
-                        report,
-                    );
-                }
+                report.observe("set_member_capabilities", "MemberCapabilitySet");
                 tracing::info!(?group_id, %member, capabilities, "member capabilities updated");
                 Ok(())
             }

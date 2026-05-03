@@ -116,6 +116,16 @@ pub enum ExecuteError {
     InternalError,
     #[error("error resolving identity alias '{alias}'")]
     AliasResolutionFailed { alias: Alias<PublicKey> },
+    /// Group-context execute attempted before its `KeyDelivery` op
+    /// arrived. The local DAG is healthy and the membership row exists,
+    /// but the group key needed to encrypt the resulting state delta has
+    /// not yet been received via either the direct join response or the
+    /// gossip-fallback wait. Distinct from `Uninitialized` (which means
+    /// state-sync is still in progress) and from `InternalError` (which
+    /// is a permanent failure). Surfaced to clients as a transient
+    /// retry-able condition.
+    #[error("group key not yet delivered for context '{context_id}' — retry shortly")]
+    GroupKeyPending { context_id: ContextId },
 }
 
 #[derive(Copy, Clone, Debug)]

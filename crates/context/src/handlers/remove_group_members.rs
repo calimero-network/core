@@ -8,7 +8,7 @@ use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use tracing::info;
 
-use crate::governance_broadcast::observe_handler_delivery;
+use crate::governance_broadcast::ObserveDelivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -68,9 +68,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                         identity,
                     )
                     .await?;
-                    if let Some(report) = report.as_ref() {
-                        observe_handler_delivery("remove_group_members", "MemberRemoved", report);
-                    }
+                    report.observe("remove_group_members", "MemberRemoved");
                 }
                 info!(
                     ?group_id,

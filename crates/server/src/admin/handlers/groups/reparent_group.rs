@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
+use calimero_context::governance_broadcast::ObserveDelivery;
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::{ReparentGroupApiRequest, ReparentGroupApiResponse};
@@ -93,11 +94,7 @@ pub async fn handler(
     .await
     {
         Ok(report) => {
-            calimero_context::governance_broadcast::observe_handler_delivery(
-                "reparent_group",
-                "GroupReparented",
-                &report,
-            );
+            report.observe("reparent_group", "GroupReparented");
             ApiResponse {
                 payload: ReparentGroupApiResponse {
                     reparented: !was_already_there,
