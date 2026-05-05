@@ -1,0 +1,7 @@
+error: (calimero)> `HashMap` is not allowed here — std collections are not CRDTs and would silently diverge across replicas. Use `UnorderedMap<K, V>` from `calimero_storage::collections` instead.
+
+       If you genuinely need a non-CRDT type, skip `#[app::state]` / `#[derive(Mergeable)]` and implement `Mergeable` by hand — but understand that any non-CRDT field will not converge across replicas.
+ --> tests/compile_fail/state_hashmap_field.rs:9:12
+  |
+9 |     items: HashMap<String, String>,
+  |            ^^^^^^^

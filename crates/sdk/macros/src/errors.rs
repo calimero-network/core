@@ -86,6 +86,26 @@ pub enum ParseError<'a> {
     InitMethodWithoutInitAttribute,
     #[error("method annotated with `#[app::init]` must be named `init`")]
     AppInitMethodNotNamedInit,
+    #[error(
+        "`{type_name}` is not allowed here — std collections are not CRDTs and would silently \
+         diverge across replicas. Use `{suggestion}` from `calimero_storage::collections` instead.\n\n\
+         If you genuinely need a non-CRDT type, skip `#[app::state]` / `#[derive(Mergeable)]` \
+         and implement `Mergeable` by hand — but understand that any non-CRDT field will not converge across replicas."
+    )]
+    ForbiddenStdCollection {
+        type_name: &'static str,
+        suggestion: &'static str,
+    },
+    #[error(
+        "bare `{type_name}` is not allowed as a mergeable field — it has no merge semantics and \
+         would silently diverge across replicas. Wrap it: `{suggestion}`.\n\n\
+         If you genuinely need a non-CRDT type, skip `#[app::state]` / `#[derive(Mergeable)]` \
+         and implement `Mergeable` by hand — but understand that any non-CRDT field will not converge across replicas."
+    )]
+    ForbiddenBarePrimitive {
+        type_name: &'static str,
+        suggestion: &'static str,
+    },
 }
 
 impl AsRef<Self> for ParseError<'_> {

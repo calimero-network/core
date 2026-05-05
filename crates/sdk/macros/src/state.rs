@@ -7,6 +7,7 @@ use syn::{
 };
 
 use crate::errors::{Errors, ParseError, Pretty};
+use crate::forbidden_types::validate_fields;
 use crate::items::StructOrEnumItem;
 use crate::macros::infallible;
 use crate::reserved::idents;
@@ -303,6 +304,17 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
             }
         }
 
+        match input.item {
+            StructOrEnumItem::Struct(item) => {
+                validate_fields(&item.fields, &errors);
+            }
+            StructOrEnumItem::Enum(item) => {
+                for variant in &item.variants {
+                    validate_fields(&variant.fields, &errors);
+                }
+            }
+        }
+
         errors.check()?;
 
         Ok(StateImpl {
@@ -333,68 +345,47 @@ fn generate_mergeable_impl(
         }
     };
 
-    // Generate merge calls for each field
-    // Only merge fields that are known CRDT types
+    // Call merge on every field. The forbidden-type lint above guarantees
+    // each field is either an SDK CRDT, an `Option<T>` / `Box<T>` of one, or a
+    // user struct that derives / implements Mergeable. If a user manages to
+    // smuggle in a non-Mergeable type, the trait bound below produces a clean
+    // compile error pointing at that field — much better than the silent skip
+    // this code used to do (which lost concurrent updates with no diagnostic).
     let merge_calls: Vec<_> = fields
         .iter()
         .enumerate()
-        .filter_map(|(idx, field)| {
-            let field_type = &field.ty;
-
-            // Check if this is a known CRDT type by examining the type path
-            let type_str = quote! { #field_type }.to_string();
-
-            // Only generate merge for CRDT collections
-            // Non-CRDT fields (String, u64, etc.) are handled by storage layer's LWW
-            let is_crdt = type_str.contains("UnorderedMap")
-                || type_str.contains("Vector")
-                || type_str.contains("UnorderedSet")
-                || type_str.contains("Counter")
-                || type_str.contains("ReplicatedGrowableArray")
-                || type_str.contains("LwwRegister")
-                || type_str.contains("UserStorage")
-                || type_str.contains("FrozenStorage")
-                || type_str.contains("SharedStorage");
-
-            if !is_crdt {
-                // Skip non-CRDT fields
-                return None;
-            }
-
-            // Handle both named fields and tuple struct fields
+        .map(|(idx, field)| {
             if let Some(field_name) = &field.ident {
-                // Named field
-                Some(quote! {
+                quote! {
                     ::calimero_storage::collections::Mergeable::merge(
                         &mut self.#field_name,
-                        &other.#field_name
+                        &other.#field_name,
                     ).map_err(|e| {
                         ::calimero_storage::collections::crdt_meta::MergeError::StorageError(
-                            format!(
+                            ::std::format!(
                                 "Failed to merge field '{}': {:?}",
-                                stringify!(#field_name),
+                                ::core::stringify!(#field_name),
                                 e
                             )
                         )
                     })?;
-                })
+                }
             } else {
-                // Tuple struct field
                 let field_index = syn::Index::from(idx);
-                Some(quote! {
+                quote! {
                     ::calimero_storage::collections::Mergeable::merge(
                         &mut self.#field_index,
-                        &other.#field_index
+                        &other.#field_index,
                     ).map_err(|e| {
                         ::calimero_storage::collections::crdt_meta::MergeError::StorageError(
-                            format!(
+                            ::std::format!(
                                 "Failed to merge field {}: {:?}",
                                 #idx,
                                 e
                             )
                         )
                     })?;
-                })
+                }
             }
         })
         .collect();
@@ -413,14 +404,13 @@ fn generate_mergeable_impl(
         //
         // Performance:
         // - Local ops: O(1) - this is NOT called
-        // - Remote sync: O(N) where N = number of CRDT fields (typically 3-10)
-        // - Happens during network sync (already slow), so overhead is negligible
+        // - Remote sync: O(N) where N = number of state fields
         //
         // What it does:
-        // - Merges each CRDT field (Map, Counter, RGA, etc.)
-        // - Skips non-CRDT fields (String, u64, etc.) - handled by storage LWW
-        // - Recursive merging for nested CRDTs
-        // - Guarantees no divergence!
+        // - Calls Mergeable::merge on every field. The forbidden-type lint
+        //   guarantees every field implements Mergeable (CRDT collection,
+        //   LwwRegister, Option/Box of same, or user struct deriving Mergeable).
+        // - Recursive: each field's merge handles its own subtree.
         //
         impl #impl_generics ::calimero_storage::collections::Mergeable for #ident #ty_generics #where_clause {
             fn merge(&mut self, other: &Self)
@@ -545,6 +535,71 @@ fn generate_assign_deterministic_ids_impl(
             pub fn __assign_deterministic_ids(&mut self) {
                 #(#reassign_calls)*
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use syn::parse_quote;
+
+    use super::*;
+
+    /// Helper: render the merge body for a given struct definition.
+    fn render_merge(item: syn::ItemStruct) -> String {
+        let ident = item.ident.clone();
+        let generics = item.generics.clone();
+        let orig = StructOrEnumItem::Struct(item);
+        generate_mergeable_impl(&ident, &generics, &orig).to_string()
+    }
+
+    /// Regression: the generator used to skip any field whose type string
+    /// didn't contain a hardcoded CRDT name (UnorderedMap, Counter, ...). User
+    /// types with their own `Mergeable` impl — including those produced by
+    /// `#[derive(Mergeable)]` — would silently fall through, dropping all
+    /// concurrent updates to those fields with no diagnostic. Today every
+    /// field gets a merge call; the trait bound enforces correctness.
+    #[test]
+    fn merge_impl_calls_every_field_including_user_types() {
+        let item: syn::ItemStruct = parse_quote! {
+            pub struct AppRoot {
+                pub counter: Counter,
+                pub user: UserDerivedStruct,
+                pub items: UnorderedMap<String, LwwRegister<String>>,
+            }
+        };
+
+        let rendered = render_merge(item);
+
+        for field in ["counter", "user", "items"] {
+            let needle = format!("self . {field}");
+            assert!(
+                rendered.contains(&needle),
+                "expected merge call referencing `self.{field}` in:\n{rendered}",
+            );
+        }
+        assert_eq!(
+            rendered
+                .matches(":: calimero_storage :: collections :: Mergeable :: merge")
+                .count(),
+            3,
+            "expected exactly one merge call per field in:\n{rendered}",
+        );
+    }
+
+    #[test]
+    fn merge_impl_handles_tuple_struct_fields() {
+        let item: syn::ItemStruct = parse_quote! {
+            pub struct Wrap(pub Counter, pub UserDerivedStruct);
+        };
+
+        let rendered = render_merge(item);
+
+        for index in ["self . 0", "self . 1"] {
+            assert!(
+                rendered.contains(index),
+                "expected merge call referencing `{index}` in:\n{rendered}",
+            );
         }
     }
 }

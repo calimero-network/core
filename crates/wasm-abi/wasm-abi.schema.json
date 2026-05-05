@@ -85,6 +85,19 @@
         }
       }
     },
+    "CrdtType": {
+      "type": "string",
+      "enum": [
+        "lww_register",
+        "counter",
+        "vector",
+        "unordered_map",
+        "authored_map",
+        "unordered_set",
+        "replicated_growable_array",
+        "authored_vector"
+      ]
+    },
     "CollectionType": {
       "oneOf": [
         {
@@ -97,6 +110,9 @@
             },
             "items": {
               "$ref": "#/definitions/TypeRef"
+            },
+            "crdt_type": {
+              "$ref": "#/definitions/CrdtType"
             }
           }
         },
@@ -113,6 +129,9 @@
             },
             "value": {
               "$ref": "#/definitions/TypeRef"
+            },
+            "crdt_type": {
+              "$ref": "#/definitions/CrdtType"
             }
           }
         },
@@ -129,6 +148,12 @@
               "items": {
                 "$ref": "#/definitions/Field"
               }
+            },
+            "crdt_type": {
+              "$ref": "#/definitions/CrdtType"
+            },
+            "inner_type": {
+              "$ref": "#/definitions/TypeRef"
             }
           }
         }

@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
+use calimero_storage::collections::{LwwRegister, UnorderedMap, Vector};
 use thiserror::Error;
 
 // Test multi-file ABI generation
@@ -104,13 +105,20 @@ pub enum Event {
     StructEvent { id: u32, name: String }, // Struct variant with multiple named fields
 }
 
-// State
+// State.
+//
+// Uses CRDT analogues of the previously-bare std types: `UnorderedMap` for the
+// map field and `Vector` for the list, with primitive values wrapped in
+// `LwwRegister` to satisfy the `V: Mergeable` bound. The full std-type matrix
+// is still exercised through the method signatures below — that's where ABI
+// generation actually has to handle them. State schemas are covered separately
+// by the `state-schema-conformance` app.
 #[app::state(emits = Event)]
-#[derive(Debug, PartialEq, Eq, PartialOrd, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct AbiState {
-    counters: BTreeMap<String, u32>, // map<string,u32>
-    users: Vec<UserId32>,            // list<UserId32>
+    counters: UnorderedMap<String, LwwRegister<u32>>,
+    users: Vector<LwwRegister<UserId32>>,
 }
 
 // Implementation
@@ -118,10 +126,10 @@ pub struct AbiState {
 impl AbiState {
     #[app::init]
     #[must_use]
-    pub const fn init() -> Self {
+    pub fn init() -> Self {
         Self {
-            counters: BTreeMap::new(),
-            users: Vec::new(),
+            counters: UnorderedMap::new_with_field_name("counters"),
+            users: Vector::new_with_field_name("users"),
         }
     }
 
