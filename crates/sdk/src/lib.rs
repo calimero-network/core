@@ -40,4 +40,3 @@ pub mod app {
 pub mod __private {
     pub use crate::returns::{IntoResult, WrappedReturn};
 }
-

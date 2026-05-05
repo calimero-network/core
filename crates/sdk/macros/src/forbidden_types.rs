@@ -149,7 +149,10 @@ mod tests {
 
     #[test]
     fn allowed_option_of_crdt() {
-        assert!(check(parse_quote!(Option<UnorderedMap<String, LwwRegister<String>>>)).is_none());
+        assert!(check(parse_quote!(
+            Option<UnorderedMap<String, LwwRegister<String>>>
+        ))
+        .is_none());
     }
 
     #[test]
@@ -204,8 +207,8 @@ mod tests {
 
     #[test]
     fn rejects_hashmap_inside_unordered_map_value() {
-        let err = check(parse_quote!(UnorderedMap<String, HashMap<String, u64>>))
-            .expect("should error");
+        let err =
+            check(parse_quote!(UnorderedMap<String, HashMap<String, u64>>)).expect("should error");
         assert!(err.contains("`HashMap`"), "{err}");
     }
 
