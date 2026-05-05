@@ -32,16 +32,11 @@ pub mod app {
     pub type Result<T, E = Error> = core::result::Result<T, E>;
 
     pub use calimero_sdk_macros::{
-        bail, destroy, emit, err, event, init, log, logic, migrate, private, state,
+        bail, destroy, emit, err, event, init, log, logic, migrate, private, state, Mergeable,
     };
 }
 
 #[doc(hidden)]
 pub mod __private {
     pub use crate::returns::{IntoResult, WrappedReturn};
-}
-
-#[cfg(test)]
-mod integration_tests_package_usage {
-    use trybuild as _;
 }
