@@ -1,4 +1,4 @@
-name: "E2E KV Store Fuzzy Load Test"
+name: "Scaffolding E2E Fuzzy Load Test"
 description: "Long-running fuzzy load test for the comprehensive scaffolding-e2e application"
 
 # Test configuration
@@ -10,10 +10,10 @@ nodes:
   count: 4
   image: ghcr.io/calimero-network/merod:edge-profiling
   prefix: fuzzy-e2e-node
-  use_image_entrypoint: false
+  use_image_entrypoint: true
 
 steps:
-  - name: Install E2E KV Store on Node 1
+  - name: Install Scaffolding E2E on Node 1
     type: install_application
     node: fuzzy-e2e-node-1
     path: apps/scaffolding-e2e/res/scaffolding_e2e.wasm
@@ -21,7 +21,7 @@ steps:
     outputs:
       e2e_app_id: applicationId
 
-  - name: Create Mesh for E2E KV Store
+  - name: Create Mesh for Scaffolding E2E
     type: create_mesh
     context_node: fuzzy-e2e-node-1
     application_id: "{{e2e_app_id}}"
@@ -117,7 +117,7 @@ steps:
   # 60 min on the nightly schedule (cron 00:00 UTC) for soak coverage.
   # Override on demand via the workflow_dispatch `duration_override`
   # input. See `.github/workflows/fuzzy-load-test.yml`.
-  - name: E2E KV Store Fuzzy Load Test
+  - name: Scaffolding E2E Fuzzy Load Test
     type: fuzzy_test
     duration_minutes: 15
     context_id: "{{e2e_context_id}}"
@@ -136,7 +136,7 @@ steps:
         executor_key: "{{public_key_fuzzy-e2e-node-4}}"
 
     operations:
-      # KV write-and-verify — 30% of traffic
+      # KV write-and-verify — 25% of traffic
       # Primary sync benchmark: write on random node, read back after 1s
       - name: "kv_write_read"
         weight: 25
@@ -170,7 +170,7 @@ steps:
               - "is_set({{kv_get_result}})"
               - "contains({{kv_get_result}}, {{fuzzy_value}})"
 
-      # KV handler write-and-verify — 15% of traffic
+      # KV handler write-and-verify — 12% of traffic
       # Tests event handler invocation under concurrent load
       - name: "kv_handler_write_read"
         weight: 12
@@ -203,7 +203,7 @@ steps:
             statements:
               - "is_set({{h_get_result}})"
 
-      # G-Counter increment — 10% of traffic
+      # G-Counter increment — 8% of traffic
       # Benchmarks CRDT counter merge latency under concurrent increments
       - name: "g_counter_ops"
         weight: 8
@@ -221,7 +221,7 @@ steps:
             statements:
               - "is_set({{g_counter_result}})"
 
-      # PN-Counter operations — 5% of traffic
+      # PN-Counter operations — 4% of traffic
       - name: "pn_counter_ops"
         weight: 4
         steps:
@@ -238,7 +238,7 @@ steps:
             statements:
               - "is_set({{pn_result}})"
 
-      # LWW register write-and-read — 10% of traffic
+      # LWW register write-and-read — 9% of traffic
       # Benchmarks last-write-wins convergence under concurrent writes
       - name: "register_ops"
         weight: 9
@@ -271,7 +271,7 @@ steps:
             statements:
               - "is_set({{reg_get_result}})"
 
-      # User storage set-and-read (same node) — 8% of traffic
+      # User storage set-and-read (same node) — 6% of traffic
       # User storage is executor-bound — read must happen on the same node as write
       - name: "user_storage_ops"
         weight: 6
@@ -299,7 +299,7 @@ steps:
             statements:
               - "is_set({{user_get_result}})"
 
-      # Nested metadata map writes — 7% of traffic
+      # Nested metadata map writes — 4% of traffic
       # Exercises field-level merge of nested UnorderedMap under load
       - name: "metadata_ops"
         weight: 4
@@ -319,7 +319,7 @@ steps:
             statements:
               - "is_set({{meta_result}})"
 
-      # Tag set operations — 5% of traffic
+      # Tag set operations — 4% of traffic
       - name: "tag_ops"
         weight: 4
         steps:
@@ -337,7 +337,7 @@ steps:
             statements:
               - "is_set({{tag_result}})"
 
-      # RGA text append + length check — 5% of traffic
+      # RGA text append + length check — 4% of traffic
       - name: "rga_text_ops"
         weight: 4
         steps:
@@ -386,7 +386,7 @@ steps:
               - statement: "contains({{sync_result}}, {{fuzzy_value}})"
                 message: "Cross-node value should propagate within 2s"
 
-      # KV entries scan — 5% of traffic
+      # KV entries scan — 4% of traffic
       # Benchmarks full-scan read overhead under high concurrent write load
       - name: "kv_entries_scan"
         weight: 4
@@ -402,7 +402,7 @@ steps:
             statements:
               - "is_set({{entries_result}})"
 
-      # Vector push + read — 5% of traffic
+      # Vector push + read — 4% of traffic
       # Benchmarks Vector<Counter> element-wise merge under concurrent appends
       - name: "vector_ops"
         weight: 4
@@ -432,7 +432,7 @@ steps:
             statements:
               - "is_set({{vec_val}})"
 
-      # FrozenStorage write + read — 5% of traffic
+      # FrozenStorage write + read — 4% of traffic
       # Content-addressed immutable storage: same value always yields same hash
       - name: "frozen_ops"
         weight: 4
@@ -464,7 +464,7 @@ steps:
             statements:
               - "is_set({{frozen_val}})"
 
-      # Nested UserStorage set-and-read (same node) — 5% of traffic
+      # Nested UserStorage set-and-read (same node) — 4% of traffic
       # UserStorage<NestedMap>: per-user nested KV, executor-bound
       - name: "nested_user_ops"
         weight: 4
