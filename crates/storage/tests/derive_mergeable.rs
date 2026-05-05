@@ -64,3 +64,7 @@ fn derive_supports_unit_structs() {
     let b = EmptyMarker;
     a.merge(&b).unwrap();
 }
+
+// Regression coverage for the silent-skip bug in `#[app::state]`'s generated
+// merge lives in `crates/sdk/macros/src/state.rs::tests` (the generator is a
+// private function and easier to inspect directly via TokenStream).
