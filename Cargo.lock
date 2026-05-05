@@ -1530,7 +1530,6 @@ dependencies = [
  "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk-macros",
- "calimero-storage",
  "calimero-sys",
  "calimero-wasm-abi",
  "serde",
@@ -1632,6 +1631,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 1.0.69",
  "tracing",
+ "trybuild",
  "velcro",
 ]
 
