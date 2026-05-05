@@ -237,4 +237,15 @@ mod tests {
         assert!(check(parse_quote!(MyCustomStruct)).is_none());
         assert!(check(parse_quote!(LwwRegister<MyCustomStruct>)).is_none());
     }
+
+    #[test]
+    fn box_is_pass_through() {
+        // `Box<T>` is in the lint's pass_through list — the inner type is what
+        // matters for merge semantics. The corresponding `Mergeable for Box<T>`
+        // impl in crates/storage/src/collections/crdt_impls.rs makes this honest.
+        assert!(check(parse_quote!(Box<Counter>)).is_none());
+        // Inner type is checked at the top level via pass-through.
+        assert!(check(parse_quote!(Box<String>)).is_some());
+        assert!(check(parse_quote!(Box<HashMap<String, String>>)).is_some());
+    }
 }

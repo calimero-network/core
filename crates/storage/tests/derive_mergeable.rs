@@ -68,3 +68,26 @@ fn derive_supports_unit_structs() {
 // Regression coverage for the silent-skip bug in `#[app::state]`'s generated
 // merge lives in `crates/sdk/macros/src/state.rs::tests` (the generator is a
 // private function and easier to inspect directly via TokenStream).
+
+#[derive(Mergeable)]
+struct BoxedField {
+    boxed_counter: Box<Counter>,
+}
+
+#[test]
+fn box_delegates_merge_to_inner() {
+    // Sanity check that `Mergeable for Box<T>` actually composes with the
+    // derive — the lint's `pass_through` list claims Box is OK at the type
+    // level, this confirms the impl exists and merges field-by-field.
+    let mut a = BoxedField {
+        boxed_counter: Box::new(Counter::new()),
+    };
+    let mut b = BoxedField {
+        boxed_counter: Box::new(Counter::new()),
+    };
+    b.boxed_counter.increment().unwrap();
+
+    a.merge(&b).unwrap();
+
+    assert!(a.boxed_counter.value().unwrap() >= 1);
+}

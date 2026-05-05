@@ -77,6 +77,17 @@ impl<T: Mergeable + Clone> Mergeable for Option<T> {
     }
 }
 
+// `Box<T>` is just heap indirection — merge semantics are unchanged from `T`.
+// Without this impl, the `#[app::state]` lint would let `Box<Counter>` fields
+// through (`Box` is in the lint's pass-through list) only for the trait bound
+// to fail later with an unhelpful diagnostic. Trivial delegation makes the
+// claim honest.
+impl<T: Mergeable> Mergeable for Box<T> {
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        (**self).merge(&**other)
+    }
+}
+
 // ============================================================================
 // LwwRegister
 // ============================================================================
