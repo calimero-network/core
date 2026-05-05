@@ -33,7 +33,7 @@ use macros::parse_macro_input;
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, ToTokens};
-use syn::{Expr, ItemImpl};
+use syn::{DeriveInput, Expr, ItemImpl};
 
 use crate::event::{EventImpl, EventImplInput};
 use crate::items::{Empty, StructOrEnumItem};
@@ -43,9 +43,11 @@ use crate::state::{StateArgs, StateImpl, StateImplInput};
 
 mod errors;
 mod event;
+mod forbidden_types;
 mod items;
 mod logic;
 mod macros;
+mod mergeable;
 mod migration;
 mod private;
 mod reserved;
@@ -312,6 +314,32 @@ pub fn bail(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as TokenStream2);
 
     quote!(::calimero_sdk::__bail__!(#input)).into()
+}
+
+/// Derives `Mergeable` for a user-defined struct so it can be used as a value
+/// inside Calimero CRDT collections (`UnorderedMap<_, V>`, `Vector<V>`, ...).
+///
+/// The derive applies the same forbidden-type lint as `#[app::state]` to every
+/// field — `std::collections::*`, bare `Vec`, bare `String`, and bare
+/// primitives are rejected because they have no merge semantics and would
+/// silently diverge across replicas. Use SDK CRDT types or `LwwRegister<T>`
+/// instead.
+///
+/// # Generated impl
+///
+/// `merge()` calls each field's own `Mergeable::merge()` in declaration order.
+/// Every field must therefore implement `Mergeable`. If you really need a
+/// non-CRDT field, skip the derive and implement `Mergeable` by hand.
+///
+/// # Limitations
+///
+/// Enums are rejected — there's no canonical way to merge values from
+/// different variants. Wrap in `LwwRegister<MyEnum>` for last-write-wins, or
+/// implement `Mergeable` by hand.
+#[proc_macro_derive(Mergeable)]
+pub fn derive_mergeable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    mergeable::derive(input).into()
 }
 
 /// Logs a message to the runtime's logging system.

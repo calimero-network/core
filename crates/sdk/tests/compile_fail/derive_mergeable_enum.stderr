@@ -1,0 +1,5 @@
+error: (calimero)> #[derive(Mergeable)] on enums is not supported — enum variants have no canonical merge rule. Implement Mergeable manually or wrap the enum in `LwwRegister<MyEnum>` for last-write-wins semantics.
+ --> tests/compile_fail/derive_mergeable_enum.rs:8:10
+  |
+8 | pub enum BadEnum {
+  |          ^^^^^^^

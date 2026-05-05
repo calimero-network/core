@@ -9,7 +9,7 @@
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env};
-use calimero_storage::collections::UnorderedMap;
+use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap};
 
 // === CONSTANTS ===
 
@@ -101,37 +101,19 @@ pub struct FileRecord {
     pub uploaded_at: u64,
 }
 
-// Implement Mergeable for FileRecord
+// Manual `Mergeable` impl for `FileRecord` — opaque LWW per file ID.
 //
-// **Why is this needed?**
-// The auto-generated merge for FileShareState includes:
-//   self.files.merge(&other.files)?;
-//
-// UnorderedMap::merge() requires V: Mergeable, so FileRecord must implement it.
-//
-// **When is this actually called?**
-// - NOT on different files (DAG handles via element IDs)
-// - NOT on sequential updates (HLC provides ordering)
-// - ONLY on concurrent updates to the SAME file key (rare!)
-//
-// **What does it do?**
-// Simple LWW based on uploaded_at timestamp. For file uploads, this is correct
-// since uploads are atomic (you upload the whole file, not partial updates).
-//
-// **Could we avoid this?**
-// Yes! If FileShareState used proper CRDT types for root fields:
-//   owner: LwwRegister<String> instead of String
-//   file_counter: Counter instead of u64
-// Then this Mergeable impl wouldn't be needed at all - DAG would handle everything!
-//
-// See: crates/storage/DAG_VS_MERGE.md for full explanation
+// Why manual instead of `#[derive(Mergeable)]`? `FileRecord` is treated
+// atomically (one full record per file_id). Deriving would require every
+// inner field (`String`, `u64`, ...) to be Mergeable, forcing each to be
+// wrapped in `LwwRegister` / `Counter` — overkill for an immutable upload
+// record. The hand-rolled impl uses `uploaded_at` as the LWW tiebreaker,
+// which is correct for atomic uploads.
 impl calimero_storage::collections::Mergeable for FileRecord {
     fn merge(
         &mut self,
         other: &Self,
     ) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
-        // Simple LWW: take the version with later uploaded_at timestamp
-        // This is correct for file uploads (atomic operations)
         if other.uploaded_at > self.uploaded_at {
             *self = other.clone();
         }
@@ -139,22 +121,21 @@ impl calimero_storage::collections::Mergeable for FileRecord {
     }
 }
 
-/// Application state for the file sharing system
+/// Application state for the file sharing system.
 #[app::state(emits = FileShareEvent)]
 #[derive(BorshDeserialize, BorshSerialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct FileShareState {
-    /// Context owner's identity as base58-encoded public key
-    /// Set during initialization from `env::executor_id()`
-    pub owner: String,
+    /// Context owner's identity as base58-encoded public key.
+    /// Set during initialization from `env::executor_id()`.
+    pub owner: LwwRegister<String>,
 
-    /// Map of file ID to file metadata records
-    /// Key: file ID (e.g., "file_0"), Value: FileRecord
+    /// Map of file ID to file metadata records.
+    /// Key: file ID (e.g., "file_0"), Value: FileRecord.
     pub files: UnorderedMap<String, FileRecord>,
 
-    /// Counter for generating unique file IDs
-    /// Incremented on each file upload
-    pub file_counter: u64,
+    /// Monotonic counter used to generate unique file IDs.
+    pub file_counter: Counter,
 }
 
 /// Events emitted by the application
@@ -195,9 +176,9 @@ impl FileShareState {
         app::log!("Initializing file sharing app for owner: {}", owner);
 
         FileShareState {
-            owner,
-            files: UnorderedMap::new(),
-            file_counter: 0,
+            owner: LwwRegister::new(owner),
+            files: UnorderedMap::new_with_field_name("files"),
+            file_counter: Counter::new_with_field_name("file_counter"),
         }
     }
 
@@ -225,8 +206,18 @@ impl FileShareState {
     ) -> Result<String, String> {
         let blob_id = parse_blob_id_base58(&blob_id_str)?;
 
-        let file_id = format!("file_{}", self.file_counter);
-        self.file_counter += 1;
+        // Counter is a monotonic CRDT — it converges across replicas (taking
+        // the per-source max on merge). Using its current value as the file ID
+        // means concurrent uploads on different nodes can still pick the same
+        // ID; that limitation existed with the previous bare `u64` too.
+        let next_id = self
+            .file_counter
+            .value()
+            .map_err(|e| format!("Failed to read file counter: {e:?}"))?;
+        let file_id = format!("file_{next_id}");
+        self.file_counter
+            .increment()
+            .map_err(|e| format!("Failed to increment file counter: {e:?}"))?;
 
         let uploader_id = env::executor_id();
         let uploader = encode_blob_id_base58(&uploader_id);
@@ -436,7 +427,10 @@ impl FileShareState {
              - Total files: {}\n\
              - Total storage: {:.2} MB ({} bytes)\n\
              - Owner: {}",
-            file_count, total_mb, total_size, self.owner
+            file_count,
+            total_mb,
+            total_size,
+            self.owner.get()
         ))
     }
 }

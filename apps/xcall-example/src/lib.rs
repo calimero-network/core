@@ -2,13 +2,14 @@
 
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_storage::collections::Counter;
 
 #[app::state(emits = Event)]
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct XCallExample {
-    /// Counter for tracking pongs received
-    counter: u64,
+    /// Counter for tracking pongs received.
+    counter: Counter,
 }
 
 #[app::event]
@@ -26,7 +27,9 @@ pub enum Event {
 impl XCallExample {
     #[app::init]
     pub fn init() -> XCallExample {
-        XCallExample { counter: 0 }
+        XCallExample {
+            counter: Counter::new_with_field_name("counter"),
+        }
     }
 
     /// Send a ping to another context via cross-context call
@@ -84,8 +87,8 @@ impl XCallExample {
 
     /// Receive a pong from another context
     ///
-    /// This function is called via xcall from other contexts
-    /// It increments the counter when a pong is received
+    /// This function is called via xcall from other contexts.
+    /// It increments the counter when a pong is received.
     ///
     /// # Arguments
     /// * `from_context` - The 32-byte ID of the context sending the pong
@@ -98,30 +101,23 @@ impl XCallExample {
             from_context
         );
 
-        // Increment the counter
-        self.counter += 1;
+        self.counter.increment()?;
+        let counter = self.counter.value()?;
 
-        // Emit an event to notify that a pong was received
         app::emit!(Event::PongReceived {
             from_context,
-            counter: self.counter,
+            counter,
         });
 
-        app::log!("Pong received! Counter is now: {}", self.counter);
+        app::log!("Pong received! Counter is now: {}", counter);
 
         Ok(())
     }
 
     /// Get the current counter value
     pub fn get_counter(&self) -> app::Result<u64> {
-        app::log!("Getting counter value: {}", self.counter);
-        Ok(self.counter)
-    }
-
-    /// Reset the counter to zero
-    pub fn reset_counter(&mut self) -> app::Result<()> {
-        app::log!("Resetting counter");
-        self.counter = 0;
-        Ok(())
+        let value = self.counter.value()?;
+        app::log!("Getting counter value: {}", value);
+        Ok(value)
     }
 }
