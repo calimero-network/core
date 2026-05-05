@@ -1,0 +1,7 @@
+error: (calimero)> bare `String` is not allowed as a mergeable field — it has no merge semantics and would silently diverge across replicas. Wrap it: `LwwRegister<String>`.
+
+       If you genuinely need a non-CRDT type, skip `#[app::state]` / `#[derive(Mergeable)]` and implement `Mergeable` by hand — but understand that any non-CRDT field will not converge across replicas.
+ --> tests/compile_fail/state_bare_string.rs:7:11
+  |
+7 |     name: String,
+  |           ^^^^^^

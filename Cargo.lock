@@ -1530,6 +1530,7 @@ dependencies = [
  "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk-macros",
+ "calimero-storage",
  "calimero-sys",
  "calimero-wasm-abi",
  "serde",
