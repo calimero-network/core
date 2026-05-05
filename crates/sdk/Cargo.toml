@@ -21,4 +21,3 @@ calimero-wasm-abi.workspace = true
 
 [dev-dependencies]
 trybuild.workspace = true
-calimero-storage.workspace = true
