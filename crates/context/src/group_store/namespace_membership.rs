@@ -8,7 +8,7 @@ use eyre::{bail, Result as EyreResult};
 use sha2::Digest;
 
 use super::{
-    add_group_member, check_group_membership, is_group_admin, is_group_admin_or_has_capability,
+    add_group_member, has_direct_group_member, is_group_admin, is_group_admin_or_has_capability,
     resolve_namespace,
 };
 
@@ -39,7 +39,13 @@ impl<'a> NamespaceMembershipService<'a> {
         let inviter_pk = PublicKey::from(inv.inviter_identity.to_bytes());
         self.require_inviter_permission(&group_id, &inviter_pk)?;
 
-        if check_group_membership(self.store, &group_id, member)? {
+        // Direct-row dedup: a `MemberJoined` op materializes the joiner's
+        // direct membership row. An identity that already inherits
+        // membership from an Open parent (#2256) is *not* the same as
+        // having a direct row — they still need the explicit row written
+        // so subsequent direct-membership lookups (e.g. removal,
+        // capability writes, list_group_members) reflect their join.
+        if has_direct_group_member(self.store, &group_id, member)? {
             return Ok(());
         }
 

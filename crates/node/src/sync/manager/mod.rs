@@ -2285,9 +2285,12 @@ impl SyncManager {
         Ok(())
     }
 
-    pub async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
+    pub async fn handle_opened_stream(&self, peer_id: PeerId, mut stream: Box<Stream>) {
         loop {
-            match self.internal_handle_opened_stream(&mut stream).await {
+            match self
+                .internal_handle_opened_stream(peer_id, &mut stream)
+                .await
+            {
                 Ok(None) => break,
                 Ok(Some(())) => {}
                 Err(err) => {
@@ -2304,7 +2307,11 @@ impl SyncManager {
         }
     }
 
-    async fn internal_handle_opened_stream(&self, stream: &mut Stream) -> eyre::Result<Option<()>> {
+    async fn internal_handle_opened_stream(
+        &self,
+        peer_id: PeerId,
+        stream: &mut Stream,
+    ) -> eyre::Result<Option<()>> {
         let Some(message) = self.recv(stream, None).await? else {
             return Ok(None);
         };
@@ -2371,9 +2378,25 @@ impl SyncManager {
 
         let mut _updated = None;
 
+        // Issue #2256: also accept inheritance-eligible parent members
+        // for sync auth. `has_member` only knows direct context-membership
+        // and direct group-membership; the parent-walk for `Open` subgroups
+        // lives in `calimero-context::group_store`, which we have access
+        // to here at the node layer.
+        let is_inherited_member = || -> eyre::Result<bool> {
+            let store = self.context_client.datastore();
+            let Some(group_id) =
+                calimero_context::group_store::get_group_for_context(store, &context_id)?
+            else {
+                return Ok(false);
+            };
+            calimero_context::group_store::check_group_membership(store, &group_id, &their_identity)
+        };
+
         if !self
             .context_client
             .has_member(&context_id, &their_identity)?
+            && !is_inherited_member()?
         {
             _updated = Some(
                 self.context_client
@@ -2384,27 +2407,38 @@ impl SyncManager {
             if !self
                 .context_client
                 .has_member(&context_id, &their_identity)?
+                && !is_inherited_member()?
             {
-                // The joiner may have just published a governance op announcing
-                // their membership. Wait briefly for gossip propagation and retry.
-                debug!(
-                    %context_id,
-                    %their_identity,
-                    "member not found yet, waiting for governance gossip"
-                );
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // The peer may have just published MemberAdded for themselves
+                // (or their side of the governance DAG is ahead of ours) and
+                // gossipsub hasn't delivered it yet. Instead of waiting and
+                // hoping the gossip arrives, ask this peer directly for the
+                // current namespace governance state on a separate stream —
+                // it's the fastest path out of the "unknown member" state and
+                // avoids a 30 s stall waiting for `NamespaceStateHeartbeat`.
+                //
+                // Fire-and-forget governance propagation (issue #2237) is the
+                // underlying bug; this is a narrower mitigation in the
+                // responder path that converts the terminal close into an
+                // active catch-up request.
+                self.request_governance_catchup_from_peer(peer_id, &context_id, &their_identity)
+                    .await;
 
                 if !self
                     .context_client
                     .has_member(&context_id, &their_identity)?
+                    && !is_inherited_member()?
                 {
-                    // Still not found after waiting — close stream gracefully so the
-                    // initiator retries on its next sync interval rather than treating
-                    // this as a hard error. Governance gossip may still be in-flight.
-                    warn!(
+                    // Catch-up didn't resolve it (peer returned nothing, peer
+                    // also doesn't know, or the op chain isn't valid locally).
+                    // Close gracefully — the initiator retries on their next
+                    // sync interval. Demoted from warn to debug because this
+                    // is expected during mesh formation and would otherwise
+                    // spam logs on every cold join.
+                    debug!(
                         %context_id,
                         %their_identity,
-                        "unknown context member after governance sync, closing stream"
+                        "unknown context member after namespace backfill request, closing stream"
                     );
                     return Ok(Some(()));
                 }
@@ -2555,6 +2589,177 @@ impl SyncManager {
 }
 
 impl SyncManager {
+    /// Actively request governance catch-up from a specific peer whose
+    /// identity we don't yet recognize as a context member.
+    ///
+    /// Scenario: a peer opens a sync stream to us, but their identity isn't
+    /// in our local governance DAG yet because fire-and-forget `MemberAdded`
+    /// gossip (issue #2237) hasn't reached us. The legacy path waited 2 s
+    /// for gossip and then closed the stream, stalling the initiator for
+    /// up to 30 s (`NamespaceStateHeartbeat` cadence). Instead, open a
+    /// separate stream back to the peer with `NamespaceBackfillRequest`
+    /// (empty `delta_ids` = "send everything you have for this namespace"),
+    /// apply every op they return, and let the caller re-check membership.
+    ///
+    /// Best-effort: any failure (no group resolved, stream open fails,
+    /// peer returns no ops, ops fail to apply) is logged at debug and the
+    /// caller proceeds to close the stream as before. The real fix is the
+    /// three-phase contract in #2237; this is a responder-side bandaid
+    /// that turns a 30 s stall into at worst a second round-trip.
+    async fn request_governance_catchup_from_peer(
+        &self,
+        peer_id: PeerId,
+        context_id: &ContextId,
+        their_identity: &PublicKey,
+    ) {
+        let store = self.context_client.datastore();
+        let namespace_id =
+            match calimero_context::group_store::get_group_for_context(store, context_id) {
+                Ok(Some(group_id)) => {
+                    match calimero_context::group_store::resolve_namespace(store, &group_id) {
+                        Ok(ns) => ns.to_bytes(),
+                        Err(err) => {
+                            debug!(
+                                %context_id,
+                                %their_identity,
+                                %err,
+                                "failed to resolve namespace for governance catch-up"
+                            );
+                            return;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    debug!(
+                        %context_id,
+                        %their_identity,
+                        "context not in a group — no namespace to request catch-up from"
+                    );
+                    return;
+                }
+                Err(err) => {
+                    debug!(
+                        %context_id,
+                        %their_identity,
+                        %err,
+                        "failed to resolve group for governance catch-up"
+                    );
+                    return;
+                }
+            };
+
+        let mut stream = match self.network_client.open_stream(peer_id).await {
+            Ok(s) => s,
+            Err(err) => {
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    %peer_id,
+                    %err,
+                    "failed to open catch-up stream to peer"
+                );
+                return;
+            }
+        };
+
+        let msg = StreamMessage::Init {
+            context_id: ContextId::from([0u8; 32]),
+            party_id: PublicKey::from([0u8; 32]),
+            payload: InitPayload::NamespaceBackfillRequest {
+                namespace_id,
+                delta_ids: Vec::new(),
+            },
+            next_nonce: rand::thread_rng().gen(),
+        };
+
+        if let Err(err) = super::stream::send(&mut stream, &msg, None).await {
+            debug!(
+                %context_id,
+                %their_identity,
+                %peer_id,
+                %err,
+                "failed to send NamespaceBackfillRequest during catch-up"
+            );
+            return;
+        }
+
+        let response = match super::stream::recv(&mut stream, None, self.sync_config.timeout).await
+        {
+            Ok(Some(StreamMessage::Message {
+                payload: MessagePayload::NamespaceBackfillResponse { deltas },
+                ..
+            })) => deltas,
+            Ok(_) => {
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    %peer_id,
+                    "unexpected response to NamespaceBackfillRequest during catch-up"
+                );
+                return;
+            }
+            Err(err) => {
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    %peer_id,
+                    %err,
+                    "catch-up NamespaceBackfillRequest timed out or failed"
+                );
+                return;
+            }
+        };
+
+        if response.is_empty() {
+            debug!(
+                %context_id,
+                %their_identity,
+                %peer_id,
+                "peer returned no namespace ops for catch-up"
+            );
+            return;
+        }
+
+        let ops_count = response.len();
+        let mut applied = 0usize;
+        for (_delta_id, op_bytes) in response {
+            let op = match borsh::from_slice::<
+                calimero_context_client::local_governance::SignedNamespaceOp,
+            >(&op_bytes)
+            {
+                Ok(o) => o,
+                Err(err) => {
+                    debug!(
+                        %context_id,
+                        %their_identity,
+                        %err,
+                        "failed to decode catch-up op"
+                    );
+                    continue;
+                }
+            };
+            if let Err(err) = self.context_client.apply_signed_namespace_op(op).await {
+                debug!(
+                    %context_id,
+                    %their_identity,
+                    %err,
+                    "failed to apply catch-up op"
+                );
+                continue;
+            }
+            applied += 1;
+        }
+
+        debug!(
+            %context_id,
+            %their_identity,
+            %peer_id,
+            ops_received = ops_count,
+            ops_applied = applied,
+            "governance catch-up complete"
+        );
+    }
+
     /// Handle a namespace backfill request: look up full `SignedNamespaceOp`
     /// payloads for the requested delta IDs and send them back.
     ///
@@ -2636,8 +2841,8 @@ impl SyncManager {
         nonce: Nonce,
     ) -> eyre::Result<()> {
         use calimero_context::group_store::{
-            enumerate_group_contexts, load_current_group_key, load_group_meta,
-            wrap_group_key_for_member,
+            enumerate_group_contexts, get_default_capabilities, load_current_group_key,
+            load_group_meta, wrap_group_key_for_member,
         };
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::types::SignedGroupOpenInvitation;
@@ -2740,12 +2945,22 @@ impl SyncManager {
 
         let governance_ops = self.collect_namespace_governance_ops(namespace_id)?;
 
+        // Issue #2256: the namespace's default-capabilities value travels
+        // with the bundle so the joiner doesn't need to fall back to a
+        // hard-coded constant. Read whatever the responder currently
+        // believes (already reflects any admin-issued
+        // `DefaultCapabilitiesSet` ops because the local store is
+        // updated as those ops apply). `unwrap_or(0)` matches the
+        // pre-existing semantics for "default key absent."
+        let default_capabilities = get_default_capabilities(&store, &group_id)?.unwrap_or(0);
+
         debug!(
             namespace_id = %hex::encode(namespace_id),
             has_key = !key_envelope_bytes.is_empty(),
             context_count = context_ids.len(),
             app_id = %hex::encode(application_id),
             governance_ops_count = governance_ops.len(),
+            default_capabilities,
             "Sending NamespaceJoinResponse"
         );
 
@@ -2756,6 +2971,7 @@ impl SyncManager {
                 context_ids,
                 application_id,
                 governance_ops,
+                default_capabilities,
             },
             next_nonce: nonce,
         };
@@ -2868,6 +3084,7 @@ impl SyncManager {
                         context_ids,
                         application_id,
                         governance_ops,
+                        default_capabilities,
                     },
                 ..
             }) => Ok(JoinBundle {
@@ -2875,6 +3092,7 @@ impl SyncManager {
                 context_ids,
                 application_id: application_id.into(),
                 governance_ops,
+                default_capabilities,
             }),
             Some(StreamMessage::Message {
                 payload: MessagePayload::NamespaceJoinRejected { reason },

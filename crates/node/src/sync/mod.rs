@@ -43,11 +43,24 @@ mod manager;
 pub mod metrics;
 pub(crate) mod parent_pull;
 pub mod prometheus_metrics;
+pub mod rotation_log_reader;
 mod snapshot;
 pub(crate) mod stream;
 mod tracking;
 
+// Cross-node integration tests for the four motivating partition scenarios
+// of #2197 / ADR 0001. Migrated from `calimero_storage::tests` per #2266
+// step 5 — they exercise the production sync-layer flow: load rotation log,
+// resolve `effective_writers` via `rotation_log_reader::writers_at`, apply.
+#[cfg(test)]
+mod p3_dag_causal_tests;
+#[cfg(test)]
+mod p5_partition_scenarios_tests;
+
 pub use config::SyncConfig;
+// Re-export for integration tests so they can mirror the production
+// resolve flow without copying the BFS body (#2272 review).
+pub use crate::delta_store::happens_before_in_topology;
 pub use hash_comparison_protocol::{
     HashComparisonConfig, HashComparisonFirstRequest, HashComparisonProtocol, HashComparisonStats,
 };

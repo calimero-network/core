@@ -70,6 +70,7 @@ pub mod interface;
 pub mod js;
 pub mod logical_clock;
 pub mod merge;
+pub mod rotation_log;
 pub mod snapshot;
 pub mod store;
 
@@ -112,6 +113,9 @@ pub mod tests {
     pub mod merkle;
     /// RGA (Replicated Growable Array) CRDT tests.
     pub mod rga;
+    /// Storage-internal regression: the rotation-write hook depends on the
+    /// stored-writers field staying frozen at bootstrap (see #2266 step 5).
+    pub mod write_hook_stale_writers;
     // TODO: Re-enable once Clone is implemented for collections
     // /// Nested CRDT merge behavior tests.
     // pub mod nested_crdt_merge;

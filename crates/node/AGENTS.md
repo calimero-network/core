@@ -30,11 +30,18 @@ src/
 ├── handlers.rs               # Handler module parent
 ├── handlers/
 │   ├── network_event.rs      # Network event handler
+│   ├── network_event/
+│   │   ├── namespace.rs      # ns/<id> topic dispatch (Op/Ack/ReadinessBeacon/ReadinessProbe)
+│   │   └── readiness.rs      # ReadinessBeacon + ReadinessProbe receiver-side handlers
 │   ├── state_delta.rs        # State delta handler
 │   ├── stream_opened.rs      # Stream opened handler
 │   ├── blob_protocol.rs      # Blob protocol handler
 │   ├── get_blob_bytes.rs     # Get blob bytes handler
 │   └── specialized_node_invite.rs  # Specialized node invitation handler
+├── readiness.rs              # ReadinessTier FSM + ReadinessCache + ReadinessManager actor
+├── readiness/
+│   └── tests.rs              # FSM transition tests + cache picker / atomicity tests
+├── join_namespace.rs         # J6 namespace-join: join_namespace/await_namespace_ready/with_retry
 ├── sync/
 │   ├── mod.rs                # Sync module (exception to no mod.rs rule)
 │   ├── manager.rs            # SyncManager
@@ -108,6 +115,53 @@ pub struct SyncManager {
 }
 ```
 
+### ReadinessManager
+
+Per-namespace readiness-beacon emitter and FSM driver. Closes the
+cold-start gap between joining a namespace and being able to publish
+governance ops without losing them to gossipsub's GRAFT handshake.
+See #2237 and the `crates/node/src/readiness.rs` module doc.
+
+```rust
+// src/readiness.rs
+pub struct ReadinessManager {
+    pub cache: Arc<ReadinessCache>,           // shared with receiver
+    pub config: ReadinessConfig,
+    pub state_per_namespace: HashMap<[u8; 32], ReadinessState>,
+    pub node_client: NodeClient,              // raw publish (bypasses 10s mesh-wait)
+    pub datastore: Store,                     // namespace-identity loading
+    pub last_probe_response_at: HashMap<(PeerId, [u8; 32]), Instant>,
+}
+```
+
+- Beacons signed via `READINESS_BEACON_SIGN_DOMAIN` (canonical
+  `signable_bytes`) and verified by
+  `calimero_context::governance_broadcast::verify_readiness_beacon`
+  (signature + namespace member set).
+- Periodic emission on `beacon_interval` ticks for `*Ready` tiers.
+- Edge-trigger emission on tier transition into `*Ready` (via
+  `LocalStateChanged` / `ApplyBeaconLocal`).
+- Probe-response rate-limit at `BEACON_INTERVAL / 2` per
+  `(peer, namespace)` to close traffic + mailbox amplification.
+
+### J6 namespace-join (Phase 8)
+
+Free functions in `src/join_namespace.rs` (not on `ContextClient`
+because of a Cargo dep cycle):
+
+```rust
+pub async fn join_namespace(...) -> Result<JoinStarted, JoinError>;
+pub async fn await_namespace_ready(...) -> Result<ReadyReport, ReadyError>;
+pub async fn join_and_wait_ready(...) -> Result<ReadyReport, ReadyError>;
+pub async fn join_namespace_with_retry(...) -> Result<JoinStarted, JoinError>;
+```
+
+The fast path (`join_namespace`) provisions the namespace identity,
+seeds local trust by writing a minimal `GroupMetaValue` with the
+invitation's inviter as `admin_identity` (so beacons signed by the
+inviter pass `verify_readiness_beacon`), subscribes to `ns/<id>`,
+publishes a `ReadinessProbe`, and awaits the first fresh beacon.
+
 ## Key Files
 
 | File                            | Purpose                        |
@@ -115,7 +169,11 @@ pub struct SyncManager {
 | `src/lib.rs`                    | NodeManager actor definition   |
 | `src/run.rs`                    | `start()` function, NodeConfig |
 | `src/handlers/network_event.rs` | Network event handling         |
+| `src/handlers/network_event/namespace.rs` | `ns/<id>` topic dispatch (Op/Ack/Beacon/Probe) |
+| `src/handlers/network_event/readiness.rs` | Beacon receive + probe forwarding |
 | `src/handlers/state_delta.rs`   | State delta processing         |
+| `src/readiness.rs`              | Readiness FSM + cache + manager (#2237) |
+| `src/join_namespace.rs`         | J6 namespace-join flow         |
 | `src/sync/manager.rs`           | Sync coordination              |
 | `primitives/src/client.rs`      | NodeClient interface           |
 
@@ -153,3 +211,13 @@ cargo test -p calimero-node --test network_simulation
 - NodeManager is an actix Actor - use message passing
 - Sync operations are async - use proper await handling
 - Delta stores are per-context (ContextId key)
+- `ReadinessCache` and `ReadinessCacheNotify` use poison-recoverable
+  mutex helpers (`entries_lock` / `waiters_lock`); never call `.lock()`
+  directly on those fields
+- `ReadinessCache::insert` does NOT verify signatures or membership —
+  the receiver-side gate `verify_readiness_beacon` is the choke point;
+  callers from outside the receiver path must verify first
+- `ns/<id>` topic publishes wrap inner `NamespaceTopicMsg` in
+  `BroadcastMessage::NamespaceGovernanceDelta { namespace_id, delta_id,
+  parent_ids, payload: borsh(NamespaceTopicMsg) }` — sender-side
+  envelope skips break receive-side decoding silently

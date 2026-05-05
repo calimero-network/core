@@ -128,7 +128,7 @@ pub struct GroupInfoResponse {
     pub context_count: u64,
     pub active_upgrade: Option<GroupUpgradeInfo>,
     pub default_capabilities: u32,
-    pub default_visibility: String,
+    pub subgroup_visibility: String,
     pub alias: Option<String>,
 }
 
@@ -438,26 +438,26 @@ impl Message for AdmitTeeNodeRequest {
 }
 
 #[derive(Debug)]
-pub struct SetDefaultVisibilityRequest {
+pub struct SetSubgroupVisibilityRequest {
     pub group_id: ContextGroupId,
-    pub default_visibility: calimero_context_config::VisibilityMode,
+    pub subgroup_visibility: calimero_context_config::VisibilityMode,
     pub requester: Option<PublicKey>,
 }
 
-impl Message for SetDefaultVisibilityRequest {
+impl Message for SetSubgroupVisibilityRequest {
     type Result = eyre::Result<()>;
 }
 
 /// Direct local persist — used when applying replicated governance ops.
-/// For user-initiated changes, use [`SetDefaultVisibilityRequest`] instead, which
+/// For user-initiated changes, use [`SetSubgroupVisibilityRequest`] instead, which
 /// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
-pub struct StoreDefaultVisibilityRequest {
+pub struct StoreSubgroupVisibilityRequest {
     pub group_id: ContextGroupId,
     pub mode: u8,
 }
 
-impl Message for StoreDefaultVisibilityRequest {
+impl Message for StoreSubgroupVisibilityRequest {
     type Result = eyre::Result<()>;
 }
 

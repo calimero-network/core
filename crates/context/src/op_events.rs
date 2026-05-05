@@ -83,6 +83,18 @@ pub enum OpEvent {
         contexts: bool,
         subgroups: bool,
     },
+    /// `RootOp::KeyDelivery` — the local node successfully unwrapped and
+    /// stored a group key from a `KeyDelivery` op addressed to it.
+    /// Subscribers (notably `join_group`) use this as the wake-up signal
+    /// for the gossip-fallback path when the direct join response did
+    /// not deliver a key. Only fires for *our* identity (the apply path
+    /// already filters by `envelope.recipient == our_pk`); subscribers
+    /// must still match on `group_id` because the broadcast channel is
+    /// process-wide.
+    GroupKeyDelivered {
+        group_id: [u8; 32],
+        recipient: PublicKey,
+    },
 }
 
 /// The process-wide broadcast channel. Tests share this channel, so
@@ -172,6 +184,34 @@ mod tests {
             group_id: [0xCC; 32],
             member: PublicKey::from([0xDD; 32]),
         });
+    }
+
+    #[tokio::test]
+    async fn notify_delivers_groupkeydelivered_to_subscriber() {
+        let mut rx = subscribe();
+        // Tag the group_id uniquely so the parallel-test broadcast channel
+        // doesn't bleed into unrelated assertions in other test cases.
+        let group_id = [0xA1; 32];
+        let recipient = PublicKey::from([0xB2; 32]);
+        notify(OpEvent::GroupKeyDelivered {
+            group_id,
+            recipient,
+        });
+        let event = recv_matching(&mut rx, |e| {
+            matches!(
+                e,
+                OpEvent::GroupKeyDelivered { group_id: g, .. } if *g == group_id,
+            )
+        })
+        .await
+        .expect("GroupKeyDelivered event delivered");
+        match event {
+            OpEvent::GroupKeyDelivered {
+                recipient: got_recipient,
+                ..
+            } => assert_eq!(got_recipient, recipient),
+            _ => unreachable!(),
+        }
     }
 
     #[tokio::test]

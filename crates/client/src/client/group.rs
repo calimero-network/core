@@ -27,10 +27,10 @@ use calimero_server_primitives::admin::ReparentGroupApiResponse;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiResponse;
-use calimero_server_primitives::admin::SetDefaultVisibilityApiRequest;
-use calimero_server_primitives::admin::SetDefaultVisibilityApiResponse;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiResponse;
+use calimero_server_primitives::admin::SetSubgroupVisibilityApiRequest;
+use calimero_server_primitives::admin::SetSubgroupVisibilityApiResponse;
 use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiRequest;
 use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiResponse;
 use calimero_server_primitives::admin::SyncGroupApiRequest;
@@ -310,15 +310,15 @@ where
         Ok(response)
     }
 
-    pub async fn set_default_visibility(
+    pub async fn set_subgroup_visibility(
         &self,
         group_id: &str,
-        request: SetDefaultVisibilityApiRequest,
-    ) -> Result<SetDefaultVisibilityApiResponse> {
+        request: SetSubgroupVisibilityApiRequest,
+    ) -> Result<SetSubgroupVisibilityApiResponse> {
         let response = self
             .connection
             .put_json(
-                &format!("admin-api/groups/{group_id}/settings/default-visibility"),
+                &format!("admin-api/groups/{group_id}/settings/subgroup-visibility"),
                 request,
             )
             .await?;

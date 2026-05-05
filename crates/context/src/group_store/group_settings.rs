@@ -1,15 +1,16 @@
 use calimero_context_config::types::ContextGroupId;
+use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{eyre, Result as EyreResult};
 
 use super::permission_checker::PermissionChecker;
 use super::{
     cascade_target_application, load_group_meta, save_group_meta, set_default_capabilities,
-    set_default_visibility, set_group_alias,
+    set_group_alias, set_subgroup_visibility,
 };
 
 /// Group-level settings mutation service.
@@ -59,13 +60,14 @@ impl<'a> GroupSettingsService<'a> {
         cascade_target_application(self.store, &self.group_id, target_application_id, app_key)
     }
 
-    pub fn set_default_visibility(&self, signer: &PublicKey, mode: u8) -> EyreResult<()> {
+    pub fn set_subgroup_visibility(
+        &self,
+        signer: &PublicKey,
+        mode: VisibilityMode,
+    ) -> EyreResult<()> {
         let permissions = self.permissions();
         permissions.require_admin(signer)?;
-        if mode > 1 {
-            bail!("visibility mode must be 0 (Open) or 1 (Restricted), got {mode}");
-        }
-        set_default_visibility(self.store, &self.group_id, mode)
+        set_subgroup_visibility(self.store, &self.group_id, mode)
     }
 
     pub fn set_group_alias(&self, signer: &PublicKey, alias: &str) -> EyreResult<()> {

@@ -14,6 +14,13 @@ pub struct JoinBundle {
     pub application_id: ApplicationId,
     /// All namespace governance ops (borsh-serialized SignedNamespaceOp).
     pub governance_ops: Vec<Vec<u8>>,
+    /// Namespace's `default_capabilities` value at the moment the
+    /// invitation is fulfilled (issue #2256). Carries the bit set that
+    /// new direct members of the namespace should inherit, replacing
+    /// the previous joiner-side hard-coded fallback that could ignore
+    /// admin overrides if the `DefaultCapabilitiesSet` governance op
+    /// hadn't propagated by join time.
+    pub default_capabilities: u32,
 }
 
 impl JoinBundle {

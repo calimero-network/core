@@ -24,7 +24,7 @@ pub const GROUP_UPGRADE_PREFIX: u8 = 0x24;
 pub const GROUP_SIGNING_KEY_PREFIX: u8 = 0x25;
 pub const GROUP_MEMBER_CAPABILITY_PREFIX: u8 = 0x26;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
-pub const GROUP_DEFAULT_VIS_PREFIX: u8 = 0x2A;
+pub const GROUP_SUBGROUP_VIS_PREFIX: u8 = 0x2A;
 pub const GROUP_CONTEXT_LAST_MIGRATION_PREFIX: u8 = 0x2B;
 /// Last applied signed group-op nonce per `(group_id, signer)` for local governance replay protection.
 pub const GROUP_LOCAL_GOV_NONCE_PREFIX: u8 = 0x2C;
@@ -542,16 +542,20 @@ pub struct GroupDefaultCapsValue {
     pub capabilities: u32,
 }
 
-/// Key for group default visibility: prefix + group_id.
+/// Key for subgroup visibility: prefix + group_id.
+///
+/// Stores the [`crate::key::GroupSubgroupVisValue`] for a subgroup, which
+/// governs whether parent-group members are inherited as members of this
+/// subgroup (see `check_group_membership` in `calimero-context`).
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupDefaultVis(Key<(GroupPrefix, GroupIdComponent)>);
+pub struct GroupSubgroupVis(Key<(GroupPrefix, GroupIdComponent)>);
 
-impl GroupDefaultVis {
+impl GroupSubgroupVis {
     #[must_use]
     pub fn new(group_id: [u8; 32]) -> Self {
         Self(Key(
-            GenericArray::from([GROUP_DEFAULT_VIS_PREFIX]).concat(GenericArray::from(group_id))
+            GenericArray::from([GROUP_SUBGROUP_VIS_PREFIX]).concat(GenericArray::from(group_id))
         ))
     }
 
@@ -563,7 +567,7 @@ impl GroupDefaultVis {
     }
 }
 
-impl AsKeyParts for GroupDefaultVis {
+impl AsKeyParts for GroupSubgroupVis {
     type Components = (GroupPrefix, GroupIdComponent);
 
     fn column() -> Column {
@@ -575,7 +579,7 @@ impl AsKeyParts for GroupDefaultVis {
     }
 }
 
-impl FromKeyParts for GroupDefaultVis {
+impl FromKeyParts for GroupSubgroupVis {
     type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
@@ -583,18 +587,18 @@ impl FromKeyParts for GroupDefaultVis {
     }
 }
 
-impl Debug for GroupDefaultVis {
+impl Debug for GroupSubgroupVis {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupDefaultVis")
+        f.debug_struct("GroupSubgroupVis")
             .field("group_id", &self.group_id())
             .finish()
     }
 }
 
-/// Value for [`GroupDefaultVis`]. `mode`: 0 = Open, 1 = Restricted.
+/// Value for [`GroupSubgroupVis`]. `mode`: 0 = Open, 1 = Restricted.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupDefaultVisValue {
+pub struct GroupSubgroupVisValue {
     pub mode: u8,
 }
 
@@ -1889,7 +1893,7 @@ mod tests {
             GROUP_SIGNING_KEY_PREFIX,
             GROUP_MEMBER_CAPABILITY_PREFIX,
             GROUP_DEFAULT_CAPS_PREFIX,
-            GROUP_DEFAULT_VIS_PREFIX,
+            GROUP_SUBGROUP_VIS_PREFIX,
             GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
             GROUP_LOCAL_GOV_NONCE_PREFIX,
             GROUP_MEMBER_ALIAS_PREFIX,

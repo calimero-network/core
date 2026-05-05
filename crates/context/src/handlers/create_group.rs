@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{CreateGroupRequest, CreateGroupResponse};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
@@ -9,6 +11,7 @@ use calimero_store::Store;
 use rand::Rng;
 use tracing::{info, warn};
 
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -81,6 +84,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
 
         // Auto-store signing key for future use (group is about to be created with
         // admin_identity as the first admin, so store it keyed to that identity)
@@ -119,11 +123,12 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     GroupMemberRole::Admin,
                 )?;
 
-                // Set default capabilities so new members can join open contexts
+                // Set default capabilities so new members can be inherited
+                // into Open subgroups beneath this group.
                 group_store::set_default_capabilities(
                     &datastore,
                     &group_id,
-                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_CONTEXTS,
+                    calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
                 )?;
 
                 // Generate and store the group encryption key.
@@ -167,16 +172,22 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         group_id: group_id.to_bytes(),
                         parent_id: parent_id.to_bytes(),
                     });
-                    if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
+                    match group_store::sign_apply_and_publish_namespace_op(
                         &datastore,
                         &node_client,
+                        &ack_router,
                         namespace_id.to_bytes(),
                         &signer_sk,
                         create_op,
                     )
                     .await
                     {
-                        tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");
+                        Ok(report) => {
+                            observe_handler_delivery("create_group", "GroupCreated", &report);
+                        }
+                        Err(e) => {
+                            tracing::warn!(?e, "failed to publish GroupCreated on namespace DAG");
+                        }
                     }
                 }
 

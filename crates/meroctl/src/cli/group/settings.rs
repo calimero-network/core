@@ -1,6 +1,6 @@
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    SetDefaultCapabilitiesApiRequest, SetDefaultVisibilityApiRequest,
+    SetDefaultCapabilitiesApiRequest, SetSubgroupVisibilityApiRequest,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::Result;
@@ -30,10 +30,11 @@ pub enum SettingsSubCommands {
     )]
     SetDefaultCapabilities(SetDefaultCapabilitiesCommand),
     #[command(
-        alias = "set-default-vis",
-        about = "Set default visibility mode for new contexts"
+        alias = "set-subgroup-vis",
+        about = "Set this subgroup's visibility (Open inherits parent members; \
+                 Restricted requires explicit add)"
     )]
-    SetDefaultVisibility(SetDefaultVisibilityCommand),
+    SetSubgroupVisibility(SetSubgroupVisibilityCommand),
 }
 
 impl SettingsCommand {
@@ -41,7 +42,7 @@ impl SettingsCommand {
         match self.subcommand {
             SettingsSubCommands::Get(cmd) => cmd.run(environment).await,
             SettingsSubCommands::SetDefaultCapabilities(cmd) => cmd.run(environment).await,
-            SettingsSubCommands::SetDefaultVisibility(cmd) => cmd.run(environment).await,
+            SettingsSubCommands::SetSubgroupVisibility(cmd) => cmd.run(environment).await,
         }
     }
 }
@@ -59,7 +60,7 @@ impl SettingsGetCommand {
         let response = client.get_group_info(&self.group_id).await?;
 
         let caps = response.data.default_capabilities;
-        let vis = &response.data.default_visibility;
+        let vis = &response.data.subgroup_visibility;
 
         use comfy_table::{Cell, Color, Table};
         let mut table = Table::new();
@@ -67,7 +68,7 @@ impl SettingsGetCommand {
             Cell::new("Default Setting").fg(Color::Blue),
             Cell::new("Value").fg(Color::Blue),
         ]);
-        let _ = table.add_row(vec!["Default Visibility", vis.as_str()]);
+        let _ = table.add_row(vec!["Subgroup Visibility", vis.as_str()]);
         let _ = table.add_row(vec![
             "CAN_CREATE_CONTEXT",
             if caps & (1 << 0) != 0 {
@@ -85,7 +86,7 @@ impl SettingsGetCommand {
             },
         ]);
         let _ = table.add_row(vec![
-            "CAN_JOIN_OPEN_CONTEXTS",
+            "CAN_JOIN_OPEN_SUBGROUPS",
             if caps & (1 << 2) != 0 {
                 "true"
             } else {
@@ -110,8 +111,8 @@ pub struct SetDefaultCapabilitiesCommand {
     #[clap(long, help = "Allow new members to invite others by default")]
     pub can_invite_members: bool,
 
-    #[clap(long, help = "Allow new members to join open contexts by default")]
-    pub can_join_open_contexts: bool,
+    #[clap(long, help = "Allow new members to join open subgroups by default")]
+    pub can_join_open_subgroups: bool,
 
     #[clap(
         long,
@@ -129,7 +130,7 @@ impl SetDefaultCapabilitiesCommand {
         if self.can_invite_members {
             capabilities |= 1 << 1;
         }
-        if self.can_join_open_contexts {
+        if self.can_join_open_subgroups {
             capabilities |= 1 << 2;
         }
 
@@ -150,12 +151,17 @@ impl SetDefaultCapabilitiesCommand {
 }
 
 #[derive(Clone, Debug, Parser)]
-#[command(about = "Set default visibility mode for new contexts in the group (admin-only)")]
-pub struct SetDefaultVisibilityCommand {
+#[command(
+    about = "Set this subgroup's visibility (admin-only). When Open, parent-group \
+             members holding CAN_JOIN_OPEN_SUBGROUPS are inherited as members of \
+             this subgroup. When Restricted, membership requires explicit \
+             add_group_members"
+)]
+pub struct SetSubgroupVisibilityCommand {
     #[clap(name = "GROUP_ID", help = "The hex-encoded group ID")]
     pub group_id: String,
 
-    #[clap(long, value_enum, help = "Default visibility: open or restricted")]
+    #[clap(long, value_enum, help = "Subgroup visibility: open or restricted")]
     pub mode: VisibilityModeArg,
 
     #[clap(
@@ -165,21 +171,21 @@ pub struct SetDefaultVisibilityCommand {
     pub requester: Option<PublicKey>,
 }
 
-impl SetDefaultVisibilityCommand {
+impl SetSubgroupVisibilityCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let mode_str = match self.mode {
             VisibilityModeArg::Open => "open",
             VisibilityModeArg::Restricted => "restricted",
         };
 
-        let request = SetDefaultVisibilityApiRequest {
-            default_visibility: mode_str.to_owned(),
+        let request = SetSubgroupVisibilityApiRequest {
+            subgroup_visibility: mode_str.to_owned(),
             requester: self.requester,
         };
 
         let client = environment.client()?;
         let response = client
-            .set_default_visibility(&self.group_id, request)
+            .set_subgroup_visibility(&self.group_id, request)
             .await?;
 
         environment.output.write(&response);

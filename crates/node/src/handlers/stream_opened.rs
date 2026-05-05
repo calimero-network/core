@@ -42,7 +42,7 @@ pub fn handle_stream_opened(
         let sync_manager = node_manager.managers.sync.clone();
         let _ignored = ctx.spawn(
             async move {
-                sync_manager.handle_opened_stream(stream).await;
+                sync_manager.handle_opened_stream(peer_id, stream).await;
             }
             .into_actor(node_manager),
         );

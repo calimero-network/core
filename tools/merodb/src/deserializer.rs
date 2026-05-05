@@ -347,6 +347,72 @@ fn deserialize_collection_with_crdt(
                     }
                 }
             }
+            CrdtCollectionType::AuthoredMap => {
+                // AuthoredMap<K, V> wraps UnorderedMap<K, V> and the
+                // CRDT payload byte layout is identical. Per-entry
+                // authorship lives in the per-entity metadata
+                // (`StorageType::User { owner }`) consumed at a higher
+                // layer in merodb, not in this payload.
+                match collection {
+                    CollectionType::Map { key, value } => {
+                        let len = u32::deserialize_reader(cursor)
+                            .wrap_err("Failed to deserialize AuthoredMap length")?;
+                        let mut map = serde_json::Map::new();
+                        for _ in 0..len {
+                            let key_value = deserialize_type_ref(cursor, key, manifest)?;
+                            let val_value = deserialize_type_ref(cursor, value, manifest)?;
+
+                            let mut element_id = [0_u8; 32];
+                            cursor
+                                .read_exact(&mut element_id)
+                                .wrap_err("Failed to read AuthoredMap element_id")?;
+
+                            let key_str = match key_value {
+                                Value::String(s) => s,
+                                other => other.to_string(),
+                            };
+
+                            drop(map.insert(
+                                key_str,
+                                json!({
+                                    "value": val_value,
+                                    "element_id": hex::encode(element_id)
+                                }),
+                            ));
+                        }
+                        Ok(json!({
+                            "entries": map,
+                            "crdt_type": "AuthoredMap"
+                        }))
+                    }
+                    _ => {
+                        eyre::bail!("AuthoredMap CRDT type must be a Map collection");
+                    }
+                }
+            }
+            CrdtCollectionType::AuthoredVector => {
+                // AuthoredVector<T> wraps Vector<T>; CRDT payload byte
+                // layout is identical. See AuthoredMap arm above for
+                // where authorship metadata is surfaced.
+                match collection {
+                    CollectionType::List { items } => {
+                        let len = u32::deserialize_reader(cursor)
+                            .wrap_err("Failed to deserialize AuthoredVector length")?;
+                        let mut array = Vec::new();
+                        for _ in 0..len {
+                            let value = deserialize_type_ref(cursor, items, manifest)?;
+                            array.push(value);
+                        }
+                        Ok(json!({
+                            "items": array,
+                            "crdt_type": "AuthoredVector"
+                        }))
+                    }
+                    _ => {
+                        eyre::bail!("AuthoredVector CRDT type must be a List collection");
+                    }
+                }
+            }
             CrdtCollectionType::UnorderedSet => {
                 // UnorderedSet<T> serializes similarly to Vec<T> but with CRDT metadata
                 match collection {
@@ -447,6 +513,14 @@ fn deserialize_collection_with_crdt(
                     "crdt_type": "ReplicatedGrowableArray"
                 }))
             }
+            // `CrdtCollectionType` is `#[non_exhaustive]`. Bail on unknown
+            // variants rather than silently mis-decoding — the cursor
+            // position would be wrong for any subsequent field.
+            other => eyre::bail!(
+                "merodb does not yet know how to deserialize CRDT type {:?} \
+                 — extend the match in deserializer.rs",
+                other
+            ),
         };
     }
 
@@ -1117,5 +1191,163 @@ mod tests {
         assert_eq!(result, json!({}));
 
         Ok(())
+    }
+
+    /// AuthoredMap byte layout is identical to UnorderedMap: length (u32)
+    /// then per entry `(key, value, element_id [u8;32])`. The decoder
+    /// must consume the element_id and surface it hex-encoded under
+    /// each entry, with `crdt_type: "AuthoredMap"` on the wrapper.
+    #[test]
+    fn test_deserialize_authored_map() -> Result<()> {
+        let manifest = create_manifest_with_type(
+            "AuthoredStringToU32",
+            TypeDef::Alias {
+                target: TypeRef::Collection {
+                    collection: CollectionType::Map {
+                        key: Box::new(TypeRef::string()),
+                        value: Box::new(TypeRef::u32()),
+                    },
+                    crdt_type: Some(CrdtCollectionType::AuthoredMap),
+                    inner_type: Some(Box::new(TypeRef::u32())),
+                },
+            },
+        );
+
+        let element_id_a: [u8; 32] = [0x11; 32];
+        let element_id_b: [u8; 32] = [0x22; 32];
+
+        let mut data = Vec::new();
+        2_u32.serialize(&mut data)?; // length
+
+        // entry 1: ("a", 1, element_id_a)
+        "a".to_owned().serialize(&mut data)?;
+        1_u32.serialize(&mut data)?;
+        data.extend_from_slice(&element_id_a);
+
+        // entry 2: ("b", 2, element_id_b)
+        "b".to_owned().serialize(&mut data)?;
+        2_u32.serialize(&mut data)?;
+        data.extend_from_slice(&element_id_b);
+
+        let result = deserialize_with_abi(&data, &manifest, "AuthoredStringToU32")?;
+        assert_eq!(
+            result,
+            json!({
+                "entries": {
+                    "a": { "value": 1, "element_id": hex::encode(element_id_a) },
+                    "b": { "value": 2, "element_id": hex::encode(element_id_b) },
+                },
+                "crdt_type": "AuthoredMap"
+            })
+        );
+
+        Ok(())
+    }
+
+    /// Empty AuthoredMap must round-trip cleanly — verifies the length-0
+    /// short-circuit doesn't accidentally consume bytes.
+    #[test]
+    fn test_deserialize_authored_map_empty() -> Result<()> {
+        let manifest = create_manifest_with_type(
+            "EmptyAuthored",
+            TypeDef::Alias {
+                target: TypeRef::Collection {
+                    collection: CollectionType::Map {
+                        key: Box::new(TypeRef::string()),
+                        value: Box::new(TypeRef::u32()),
+                    },
+                    crdt_type: Some(CrdtCollectionType::AuthoredMap),
+                    inner_type: Some(Box::new(TypeRef::u32())),
+                },
+            },
+        );
+
+        let mut data = Vec::new();
+        0_u32.serialize(&mut data)?;
+
+        let result = deserialize_with_abi(&data, &manifest, "EmptyAuthored")?;
+        assert_eq!(result, json!({ "entries": {}, "crdt_type": "AuthoredMap" }));
+
+        Ok(())
+    }
+
+    /// AuthoredVector byte layout is identical to plain Vector — length
+    /// (u32) then values, no element_id per entry. The wrapper carries
+    /// `crdt_type: "AuthoredVector"` so a UI consumer can distinguish it.
+    #[test]
+    fn test_deserialize_authored_vector() -> Result<()> {
+        let manifest = create_manifest_with_type(
+            "AuthoredU32Vec",
+            TypeDef::Alias {
+                target: TypeRef::Collection {
+                    collection: CollectionType::List {
+                        items: Box::new(TypeRef::u32()),
+                    },
+                    crdt_type: Some(CrdtCollectionType::AuthoredVector),
+                    inner_type: Some(Box::new(TypeRef::u32())),
+                },
+            },
+        );
+
+        let items = vec![10_u32, 20_u32, 30_u32];
+        let data = borsh::to_vec(&items)?;
+
+        let result = deserialize_with_abi(&data, &manifest, "AuthoredU32Vec")?;
+        assert_eq!(
+            result,
+            json!({
+                "items": [10, 20, 30],
+                "crdt_type": "AuthoredVector"
+            })
+        );
+
+        Ok(())
+    }
+
+    /// AuthoredMap on a non-Map collection must bail rather than mis-decode.
+    #[test]
+    fn test_authored_map_on_list_collection_errors() {
+        let manifest = create_manifest_with_type(
+            "Wrong",
+            TypeDef::Alias {
+                target: TypeRef::Collection {
+                    collection: CollectionType::List {
+                        items: Box::new(TypeRef::u32()),
+                    },
+                    crdt_type: Some(CrdtCollectionType::AuthoredMap),
+                    inner_type: Some(Box::new(TypeRef::u32())),
+                },
+            },
+        );
+        let data = vec![0_u8; 4];
+        let result = deserialize_with_abi(&data, &manifest, "Wrong");
+        assert!(
+            result.is_err(),
+            "AuthoredMap with non-Map collection must error, got {result:?}"
+        );
+    }
+
+    /// AuthoredVector on a non-List collection must bail rather than mis-decode.
+    #[test]
+    fn test_authored_vector_on_map_collection_errors() {
+        let manifest = create_manifest_with_type(
+            "Wrong",
+            TypeDef::Alias {
+                target: TypeRef::Collection {
+                    collection: CollectionType::Map {
+                        key: Box::new(TypeRef::string()),
+                        value: Box::new(TypeRef::u32()),
+                    },
+                    crdt_type: Some(CrdtCollectionType::AuthoredVector),
+                    inner_type: Some(Box::new(TypeRef::u32())),
+                },
+            },
+        );
+        let data = vec![0_u8; 4];
+        let result = deserialize_with_abi(&data, &manifest, "Wrong");
+        assert!(
+            result.is_err(),
+            "AuthoredVector with non-List collection must error, got {result:?}"
+        );
     }
 }

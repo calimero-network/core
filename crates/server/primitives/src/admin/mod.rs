@@ -1686,7 +1686,7 @@ pub struct GroupInfoApiResponseData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_upgrade: Option<GroupUpgradeStatusApiData>,
     pub default_capabilities: u32,
-    pub default_visibility: String,
+    pub subgroup_visibility: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
 }
@@ -2402,18 +2402,18 @@ impl GetTeeAdmissionPolicyApiResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SetDefaultVisibilityApiRequest {
-    pub default_visibility: String,
+pub struct SetSubgroupVisibilityApiRequest {
+    pub subgroup_visibility: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
 }
 
-impl Validate for SetDefaultVisibilityApiRequest {
+impl Validate for SetSubgroupVisibilityApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
-        if self.default_visibility != "open" && self.default_visibility != "restricted" {
+        if self.subgroup_visibility != "open" && self.subgroup_visibility != "restricted" {
             errors.push(ValidationError::InvalidFormat {
-                field: "default_visibility",
+                field: "subgroup_visibility",
                 reason: "must be 'open' or 'restricted'".into(),
             });
         }
@@ -2422,7 +2422,7 @@ impl Validate for SetDefaultVisibilityApiRequest {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SetDefaultVisibilityApiResponse {}
+pub struct SetSubgroupVisibilityApiResponse {}
 
 #[cfg(test)]
 mod tests {

@@ -36,11 +36,10 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
             let default_capabilities =
                 group_store::get_default_capabilities(&self.datastore, &group_id)?.unwrap_or(0);
 
-            let default_visibility =
-                match group_store::get_default_visibility(&self.datastore, &group_id)?.unwrap_or(0)
-                {
-                    1 => "restricted".to_owned(),
-                    _ => "open".to_owned(),
+            let subgroup_visibility =
+                match group_store::get_subgroup_visibility(&self.datastore, &group_id)? {
+                    calimero_context_config::VisibilityMode::Open => "open".to_owned(),
+                    calimero_context_config::VisibilityMode::Restricted => "restricted".to_owned(),
                 };
 
             let alias = group_store::get_group_alias(&self.datastore, &group_id)?;
@@ -54,7 +53,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 context_count,
                 active_upgrade,
                 default_capabilities,
-                default_visibility,
+                subgroup_visibility,
                 alias,
             })
         })();

@@ -44,7 +44,7 @@ pub async fn handler(
                         context_count: info.context_count,
                         active_upgrade,
                         default_capabilities: info.default_capabilities,
-                        default_visibility: info.default_visibility,
+                        subgroup_visibility: info.subgroup_visibility,
                         alias: info.alias,
                     },
                 },

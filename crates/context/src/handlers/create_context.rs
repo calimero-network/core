@@ -24,6 +24,7 @@ use tracing::{debug, warn};
 
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
+use crate::governance_broadcast::observe_handler_delivery;
 use crate::{group_store, ContextManager, ContextMeta};
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -99,6 +100,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         act.datastore.clone(),
                         act.node_client.clone(),
                         act.context_client.clone(),
+                        Arc::clone(&act.ack_router),
                         module,
                         external_config,
                         context_meta,
@@ -291,6 +293,7 @@ async fn create_context(
     datastore: Store,
     node_client: NodeClient,
     _context_client: ContextClient,
+    ack_router: Arc<calimero_context_client::local_governance::AckRouter>,
     module: calimero_runtime::Module,
     external_config: ContextConfigParams,
     mut context: Context,
@@ -448,9 +451,10 @@ async fn create_context(
     // worst case is a single context associated with a since-removed member.
     {
         let sk = PrivateKey::from(*identity_secret);
-        group_store::sign_apply_and_publish(
+        let report = group_store::sign_apply_and_publish(
             &datastore,
             &node_client,
+            &ack_router,
             &group_id,
             &sk,
             GroupOp::ContextRegistered {
@@ -462,6 +466,9 @@ async fn create_context(
             },
         )
         .await?;
+        if let Some(report) = report.as_ref() {
+            observe_handler_delivery("create_context", "ContextRegistered", report);
+        }
     }
 
     // Write ContextIdentity so the sync key-share can find keys for this context.
@@ -481,9 +488,10 @@ async fn create_context(
 
     if let Some(ref alias_str) = alias {
         let sk = PrivateKey::from(*identity_secret);
-        group_store::sign_apply_and_publish(
+        let report = group_store::sign_apply_and_publish(
             &datastore,
             &node_client,
+            &ack_router,
             &group_id,
             &sk,
             GroupOp::ContextAliasSet {
@@ -492,6 +500,9 @@ async fn create_context(
             },
         )
         .await?;
+        if let Some(report) = report.as_ref() {
+            observe_handler_delivery("create_context", "ContextAliasSet", report);
+        }
     }
 
     Ok(context.root_hash)

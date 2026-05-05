@@ -1075,6 +1075,61 @@ async fn test_extreme_random_order_1000_deltas() {
     assert_eq!(dag.get_heads(), vec![final_head]);
 }
 
+/// Deterministic worst-case for the cascade-recursion stack-overflow that
+/// `test_extreme_random_order_1000_deltas` was hitting flakily.
+///
+/// Build a 2000-delta linear chain and feed it in **strict reverse order**
+/// (delta 2000 first, root-child last). Every arrival before the last is
+/// missing its parent, so 1999 entries stack up in `pending`. When delta 1
+/// finally arrives, the cascade must apply 1999 children. With the legacy
+/// `apply_delta → apply_pending → apply_delta` mutual recursion the cascade
+/// nests stack frames per child and overflows the default 2 MB tokio test
+/// thread stack. With the flattened iteration, depth is constant.
+///
+/// Using `tokio::test(flavor = "current_thread")` and an explicit chain
+/// length guarantees the failure is reproducible — the existing
+/// `test_extreme_random_order_1000_deltas` shuffles randomly and only
+/// overflows when the shuffle happens to land on a long tail.
+#[tokio::test(flavor = "current_thread")]
+async fn test_cascade_does_not_grow_stack() {
+    let applier = TestApplier::new();
+    let mut dag = DagStore::new([0; 32]);
+
+    const N: u64 = 2000;
+    let mut deltas = Vec::with_capacity(N as usize);
+    for i in 1..=N {
+        let id = {
+            let mut bytes = [0u8; 32];
+            bytes[0..8].copy_from_slice(&i.to_le_bytes());
+            bytes
+        };
+        let parent_id = {
+            let mut bytes = [0u8; 32];
+            bytes[0..8].copy_from_slice(&(i - 1).to_le_bytes());
+            bytes
+        };
+        deltas.push(CausalDelta::new_test(
+            id,
+            vec![parent_id],
+            TestPayload { value: i as u32 },
+        ));
+    }
+
+    // Reverse order: every arrival except the last goes pending.
+    for delta in deltas.into_iter().rev() {
+        dag.add_delta(delta, &applier).await.unwrap();
+    }
+
+    assert_eq!(dag.pending_stats().count, 0);
+    assert_eq!(dag.stats().applied_deltas, (N + 1) as usize);
+    let final_head = {
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(&N.to_le_bytes());
+        bytes
+    };
+    assert_eq!(dag.get_heads(), vec![final_head]);
+}
+
 #[tokio::test]
 async fn test_extreme_mixed_topology_500_deltas() {
     let applier = TestApplier::new();

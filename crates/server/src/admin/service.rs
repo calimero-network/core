@@ -246,8 +246,8 @@ pub(crate) fn setup(
                 .put(groups::set_tee_admission_policy::handler),
         )
         .route(
-            "/groups/:group_id/settings/default-visibility",
-            put(groups::set_default_visibility::handler),
+            "/groups/:group_id/settings/subgroup-visibility",
+            put(groups::set_subgroup_visibility::handler),
         )
         // Legacy subgroup invitation/join routes kept for backwards compatibility.
         .route(

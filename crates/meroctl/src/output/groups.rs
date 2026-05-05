@@ -7,7 +7,7 @@ use calimero_server_primitives::admin::{
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
     NamespaceApiResponse, NamespaceIdentityApiResponse, RegisterGroupSigningKeyApiResponse,
     RemoveGroupMembersApiResponse, ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetDefaultVisibilityApiResponse, SetMemberCapabilitiesApiResponse, SyncGroupApiResponse,
+    SetMemberCapabilitiesApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
     UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
@@ -449,7 +449,7 @@ impl Report for GetMemberCapabilitiesApiResponse {
             if caps & (1 << 1) != 0 { "yes" } else { "no" }.to_owned(),
         ]);
         let _ = table.add_row(vec![
-            "CAN_JOIN_OPEN_CONTEXTS".to_owned(),
+            "CAN_JOIN_OPEN_SUBGROUPS".to_owned(),
             if caps & (1 << 2) != 0 { "yes" } else { "no" }.to_owned(),
         ]);
         let _ = table.add_row(vec![
@@ -469,11 +469,8 @@ impl Report for SetDefaultCapabilitiesApiResponse {
     }
 }
 
-impl Report for SetDefaultVisibilityApiResponse {
+impl Report for SetSubgroupVisibilityApiResponse {
     fn report(&self) {
-        println!(
-            "{}",
-            "Default context visibility updated successfully".green()
-        );
+        println!("{}", "Subgroup visibility updated successfully".green());
     }
 }

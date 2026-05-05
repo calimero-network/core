@@ -78,6 +78,18 @@ pub enum StorageError {
     /// An unexpected ID was encountered.
     #[error("Unexpected ID: {0}")]
     UnexpectedId(Id),
+
+    /// A second rotation-log entry for the same `delta_id` was attempted with
+    /// contents that differ from the entry already on file. The rotation log
+    /// dedups on `delta_id` alone, so multiple rotations on the same entity
+    /// inside one `CausalDelta` are not supported and must be split into
+    /// separate deltas at construction time. See [`crate::rotation_log::append`]
+    /// for the invariant. Tracked in #2233 P3.
+    #[error(
+        "Duplicate rotation entries for delta_id {0:?} with differing contents \
+         (multi-rotation-per-entity-per-delta is not supported)"
+    )]
+    DuplicateRotationInDelta([u8; 32]),
 }
 
 impl Serialize for StorageError {
@@ -103,6 +115,9 @@ impl Serialize for StorageError {
                 serializer.serialize_str(&format!("Nonce replay for {}: {}", pk, nonce))
             }
             Self::StoreError(ref err) => serializer.serialize_str(&err.to_string()),
+            Self::DuplicateRotationInDelta(delta_id) => serializer.serialize_str(&format!(
+                "Duplicate rotation entries for delta_id {delta_id:?} with differing contents"
+            )),
         }
     }
 }

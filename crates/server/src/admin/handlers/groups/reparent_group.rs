@@ -85,18 +85,26 @@ pub async fn handler(
     match calimero_context::group_store::sign_apply_and_publish_namespace_op(
         &state.store,
         &state.node_client,
+        state.ctx_client.ack_router(),
         namespace_id.to_bytes(),
         &signer_sk,
         op,
     )
     .await
     {
-        Ok(()) => ApiResponse {
-            payload: ReparentGroupApiResponse {
-                reparented: !was_already_there,
-            },
+        Ok(report) => {
+            calimero_context::governance_broadcast::observe_handler_delivery(
+                "reparent_group",
+                "GroupReparented",
+                &report,
+            );
+            ApiResponse {
+                payload: ReparentGroupApiResponse {
+                    reparented: !was_already_there,
+                },
+            }
+            .into_response()
         }
-        .into_response(),
         Err(err) => {
             error!(child=%group_id_str, new_parent=%req.new_parent_id, error=?err, "Failed to reparent subgroup");
             parse_api_error(err).into_response()

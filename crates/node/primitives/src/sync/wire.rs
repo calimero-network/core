@@ -327,6 +327,13 @@ pub enum MessagePayload<'a> {
         /// All namespace governance ops (borsh-serialized SignedNamespaceOp)
         /// so the joiner can replay the full governance history.
         governance_ops: Vec<Vec<u8>>,
+        /// Namespace's `default_capabilities` value at the moment the
+        /// invitation is fulfilled. Issue #2256: traveling this with the
+        /// bundle eliminates the joiner-side hard-coded fallback (the
+        /// `create_group` constant) so admin overrides via
+        /// `DefaultCapabilitiesSet` are respected even before the
+        /// governance op finishes propagating to the joiner.
+        default_capabilities: u32,
     },
 
     /// The responder rejected the join request.

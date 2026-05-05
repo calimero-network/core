@@ -1,5 +1,7 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
+use std::sync::Arc;
+
 use async_stream::try_stream;
 use borsh::BorshDeserialize;
 use calimero_context_config::types::{ContextGroupId, InvitationFromMember, SignedOpenInvitation};
@@ -30,13 +32,14 @@ use crate::group::{
     ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, NamespaceSummary,
     RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest,
-    SetDefaultVisibilityRequest, SetGroupAliasRequest, SetMemberAliasRequest,
-    SetMemberCapabilitiesRequest, SetTeeAdmissionPolicyRequest, StoreContextAliasRequest,
-    StoreDefaultCapabilitiesRequest, StoreDefaultVisibilityRequest, StoreGroupAliasRequest,
-    StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
-    StoreMemberCapabilityRequest, SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    SetGroupAliasRequest, SetMemberAliasRequest, SetMemberCapabilitiesRequest,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextAliasRequest,
+    StoreDefaultCapabilitiesRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest,
+    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
+use crate::local_governance::AckRouter;
 use crate::messages::{
     ApplySignedGroupOpRequest, ApplySignedNamespaceOpRequest, ContextMessage, CreateContextRequest,
     CreateContextResponse, DeleteContextRequest, DeleteContextResponse, ExecuteError,
@@ -630,6 +633,13 @@ pub struct ContextClient {
     /// A lazy-initialized sender handle to the `ContextManager` actor. This is used
     /// to send asynchronous messages for processing.
     context_manager: LazyRecipient<ContextMessage>,
+    /// Routes incoming `SignedAck` messages from the gossipsub receiver
+    /// to the in-flight `publish_and_await_ack` caller waiting on a
+    /// specific `op_hash`. Shared with `ContextManager` (which wires
+    /// publish-side subscriptions) — both hold a clone of the same Arc
+    /// so acks routed here reach the awaiter without an actor mailbox
+    /// hop. See `calimero_context::governance_broadcast`.
+    ack_router: Arc<AckRouter>,
 }
 
 /// Generates a simple async send method on `ContextClient` that forwards a request
@@ -654,7 +664,7 @@ macro_rules! forward_to_actor {
 
 impl ContextClient {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         datastore: Store,
         node_client: NodeClient,
         context_manager: LazyRecipient<ContextMessage>,
@@ -663,7 +673,17 @@ impl ContextClient {
             registry: ContextRegistry::new(datastore),
             node_client,
             context_manager,
+            ack_router: Arc::new(AckRouter::default()),
         }
+    }
+
+    /// Shared `AckRouter` for the three-phase governance contract. The
+    /// gossipsub receiver in calimero-node calls `route()` on this when
+    /// it sees a `NamespaceTopicMsg::Ack`; `publish_and_await_ack`
+    /// inside calimero-context subscribes via the same instance.
+    #[must_use]
+    pub fn ack_router(&self) -> &Arc<AckRouter> {
+        &self.ack_router
     }
 
     /// Returns a reference to the underlying `ContextRegistry`.
@@ -1118,9 +1138,9 @@ impl ContextClient {
         eyre::Result<()>
     );
     forward_to_actor!(
-        store_default_visibility,
-        StoreDefaultVisibility,
-        StoreDefaultVisibilityRequest,
+        store_subgroup_visibility,
+        StoreSubgroupVisibility,
+        StoreSubgroupVisibilityRequest,
         eyre::Result<()>
     );
     forward_to_actor!(
@@ -1262,9 +1282,9 @@ impl ContextClient {
         eyre::Result<()>
     );
     forward_to_actor!(
-        set_default_visibility,
-        SetDefaultVisibility,
-        SetDefaultVisibilityRequest,
+        set_subgroup_visibility,
+        SetSubgroupVisibility,
+        SetSubgroupVisibilityRequest,
         eyre::Result<()>
     );
     forward_to_actor!(

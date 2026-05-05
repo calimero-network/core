@@ -143,7 +143,8 @@
 <div class="g2">
 <div>
 <h4>Membership Inheritance</h4>
-<p>Membership checks walk up the ancestor chain (max depth 16). A member of the parent group is automatically a member of all descendant groups. Direct membership in the child takes priority over inherited membership.</p>
+<p>Each subgroup carries a <span class="code">subgroup_visibility</span> flag &mdash; <strong>Open</strong> or <strong>Restricted</strong> (absent = Restricted, the safe default). The membership check (<span class="code">check_group_membership_path</span>) walks up the ancestor chain (max depth 16) only through unbroken <strong>Open</strong> chains, anchored at the deepest ancestor where the identity holds a direct membership row. Direct membership in the target subgroup short-circuits to <span class="code">Direct</span>; otherwise the walk returns <span class="code">Inherited{anchor, via_admin}</span>. A <strong>Restricted</strong> ancestor is a wall &mdash; the walk stops with <span class="code">None</span>.</p>
+<p style="margin-top:8px;">At the anchor, admins inherit <strong>unconditionally</strong>; non-admins need the <span class="code">CAN_JOIN_OPEN_SUBGROUPS</span> capability bit at that anchor.</p>
 </div>
 <div>
 <h4>Admin Authority</h4>
@@ -151,10 +152,18 @@
 </div>
 </div>
 
-<h4 style="margin-top:16px;">Restricting Access via Subgroups</h4>
-<p>To restrict access to specific contexts, create a <strong>subgroup</strong> and register those contexts under it. Only members of that subgroup (direct or inherited from its parent) can join its contexts. This replaces the former per-context visibility/allowlist model with a simpler group-membership-based approach.</p>
+<h4 style="margin-top:16px;">Open vs Restricted Subgroups</h4>
+<p><strong>Restricted</strong> subgroups are sealed: only direct members can read their governance ops or context state. Their per-subgroup encryption key is delivered via <span class="code">KeyDelivery</span> to direct joiners only.</p>
+<p style="margin-top:8px;"><strong>Open</strong> subgroups align the cryptographic boundary with the access boundary: their governance ops <em>and</em> context state deltas are encrypted with the <strong>parent namespace's key</strong> rather than a per-subgroup key. Every namespace member already holds the namespace key, so no separate key-delivery path is needed for inheritance-eligible members. The trade-off is explicit: the read-confidentiality boundary for an Open subgroup is namespace-wide, while the join/write boundary remains capability-gated by <span class="code">CAN_JOIN_OPEN_SUBGROUPS</span>.</p>
+<p style="margin-top:8px;">Receivers don't need a wire flag for the encryption choice &mdash; the <span class="code">key_id</span> resolves uniquely to either the subgroup or the namespace keyring, with the namespace keyring tried as a fallback after the subgroup keyring miss.</p>
 
-<p style="margin-top:12px;">Create a subgroup with <span class="code">--parent-group-id</span> on <span class="code">meroctl group create</span> or via the <span class="code">parentGroupId</span> field in the API. The <span class="code">SubgroupCreated</span> governance op is published on the parent group's gossip topic.</p>
+<h4 style="margin-top:16px;">Sync-Stream Authorization</h4>
+<p>The responder-side stream-auth gate (<span class="code">DagHeadsRequest</span>, <span class="code">DeltaRequest</span>, snapshot stream) accepts both direct context membership <em>and</em> inheritance-eligible parent membership. Without this, an inheritance joiner's snapshot probe would be silently closed, leaving them stuck on the all-zero initial root hash. The auth gate uses the same parent-walk that powers join-time authorization, so the contract is consistent end-to-end: <em>namespace member + <span class="code">CAN_JOIN_OPEN_SUBGROUPS</span> = read + write + sync, with no extra round-trips</em>.</p>
+
+<h4 style="margin-top:16px;">Restricting Access via Subgroups</h4>
+<p>To restrict access to specific contexts, create a <strong>subgroup</strong> and either leave its visibility unset (Restricted by default) or register those contexts under it. Only members of that subgroup (direct or inherited via the Open-chain walk above) can join its contexts.</p>
+
+<p style="margin-top:12px;">Create a subgroup with <span class="code">--parent-group-id</span> on <span class="code">meroctl group create</span> or via the <span class="code">parentGroupId</span> field in the API. The <span class="code">SubgroupCreated</span> governance op is published on the parent group's gossip topic. Flip visibility with <span class="code">PUT /groups/:id/settings/subgroup-visibility</span> or <span class="code">meroctl group set-subgroup-visibility</span>.</p>
 <p style="margin-top:8px;">When joining a parent group with <span class="code">auto_join</span> (default: true), the node subscribes to gossip topics and contexts in all descendant subgroups. <span class="code">MemberRemoved</span> cascades to descendant subgroup contexts (skipping child groups where the member has direct membership).</p>
 </div>
 
