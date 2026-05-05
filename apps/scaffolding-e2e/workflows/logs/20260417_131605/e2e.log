@@ -1,0 +1,831 @@
+run_workflow: incoming log_level='debug'
+run_workflow: incoming rust_backtrace='0'
+WorkflowExecutor: resolved log_level='debug', binary_mode=False
+WorkflowExecutor: workflow_id='f4667760' (for test isolation)
+WorkflowExecutor: resolved rust_backtrace='0', binary_mode=False
+
+🚀 Executing Workflow: E2E KV Store - Consolidated Backend Tests
+
+Step 1: Checking workflow nodes (restart=false)...
+Will reuse existing nodes if they're running...
+
+Step 2: Managing nodes...
+Checking 3 nodes with prefix 'e2e-node' (no restart mode)...
+✓ Image ghcr.io/calimero-network/merod:edge already available locally
+✓ Cleaned up existing container e2e-node-1-init
+Setting RUST_LOG for node e2e-node-1: debug
+Setting RUST_BACKTRACE for node e2e-node-1: 0
+Environment variables for e2e-node-1:
+  CALIMERO_HOME=/app/data
+  NODE_NAME=e2e-node-1
+  RUST_LOG=debug
+  RUST_BACKTRACE=0
+Using default fresh WebUI fetch for node e2e-node-1
+Initializing node e2e-node-1...
+✓ Node e2e-node-1 initialized successfully
+Starting node e2e-node-1...
+✓ Started Calimero node e2e-node-1 (ID: 1ac50d65bbe8)
+  - P2P Port: 2428
+  - RPC/Admin Port: 2528
+  - Data Directory: ./data/e2e-node-1
+  - Non Auth Node URL: http://localhost:2528
+✓ Image ghcr.io/calimero-network/merod:edge already available locally
+✓ Cleaned up existing container e2e-node-2-init
+Setting RUST_LOG for node e2e-node-2: debug
+Setting RUST_BACKTRACE for node e2e-node-2: 0
+Environment variables for e2e-node-2:
+  CALIMERO_HOME=/app/data
+  NODE_NAME=e2e-node-2
+  RUST_LOG=debug
+  RUST_BACKTRACE=0
+Using default fresh WebUI fetch for node e2e-node-2
+Initializing node e2e-node-2...
+✓ Node e2e-node-2 initialized successfully
+Starting node e2e-node-2...
+✓ Started Calimero node e2e-node-2 (ID: 3c192a7e87ba)
+  - P2P Port: 2429
+  - RPC/Admin Port: 2529
+  - Data Directory: ./data/e2e-node-2
+  - Non Auth Node URL: http://localhost:2529
+✓ Image ghcr.io/calimero-network/merod:edge already available locally
+✓ Cleaned up existing container e2e-node-3-init
+Setting RUST_LOG for node e2e-node-3: debug
+Setting RUST_BACKTRACE for node e2e-node-3: 0
+Environment variables for e2e-node-3:
+  CALIMERO_HOME=/app/data
+  NODE_NAME=e2e-node-3
+  RUST_LOG=debug
+  RUST_BACKTRACE=0
+Using default fresh WebUI fetch for node e2e-node-3
+Initializing node e2e-node-3...
+✓ Node e2e-node-3 initialized successfully
+Starting node e2e-node-3...
+✓ Started Calimero node e2e-node-3 (ID: 9f01d4139c61)
+  - P2P Port: 2430
+  - RPC/Admin Port: 2530
+  - Data Directory: ./data/e2e-node-3
+  - Non Auth Node URL: http://localhost:2530
+✓ Node management completed
+
+Step 3: Waiting for nodes to be ready...
+Waiting up to 120 seconds for 3 nodes to be ready...
+✓ Admin server accessible on localhost:2528 for e2e-node-3
+✓ Node e2e-node-3 is ready (health check passed)
+✓ Admin server accessible on localhost:2528 for e2e-node-1
+✓ Node e2e-node-1 is ready (health check passed)
+✓ Admin server accessible on localhost:2528 for e2e-node-2
+✓ Node e2e-node-2 is ready (health check passed)
+  Waiting for nodes... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+✓ All nodes are ready
+
+Step 4: Executing workflow steps...
+
+Executing Install application on node-1 (install_application)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Connecting to http://localhost:2528 (node: e2e-node-1)...
+Copied file to container data directory: data/e2e-node-1/e2e_kv_store.wasm
+Installing dev application using container path: /app/data/e2e_kv_store.wasm
+🔍 Install API Response for e2e-node-1:
+  Success: True
+  Data:
+{
+  "data": {
+    "applicationId": "5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw"
+  }
+}
+📝 Install result data: {'data': {'applicationId': '5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw'}}
+� Exporting variables from e2e-node-1 response:
+   ✓ app_id = 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+📝 Fallback: Captured application ID for e2e-node-1: 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+✓ Step 'Install application on node-1' completed
+
+Executing Assert application installed (assert)...
+✓ Assertion #1: is_set({{app_id}})
+✓ Step 'Assert application installed' completed
+
+Executing Create mesh with node-2 (create_mesh)...
+Creating mesh: context on e2e-node-1, connecting 1 nodes
+✅ Custom outputs configuration validated: 3 outputs defined
+
+Step 1: Creating namespace on e2e-node-1
+✓ Namespace created: 17abd80cd6e8b2943443907a97465b86c14afe8ab3bcedb01222c976da87541d
+
+Step 2: Creating context on e2e-node-1
+🔍 Context Creation API Response:
+  Success: True
+  Data:
+{
+  "data": {
+    "contextId": "8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L",
+    "groupCreated": false,
+    "groupId": "17abd80cd6e8b2943443907a97465b86c14afe8ab3bcedb01222c976da87541d",
+    "memberPublicKey": "AGRJ38xyRBtZMhyX6vkDUmrZ63wAu7knX5RzbYm7hq9e"
+  }
+}
+✓ Context created: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+✓ Member public key: AGRJ38xyRBtZMhyX6vkDUmrZ63wAu7knX5RzbYm7hq9e
+✓ Namespace ID: 17abd80cd6e8b2943443907a97465b86c14afe8ab3bcedb01222c976da87541d
+� Exporting variables from e2e-node-1 response:
+   ✓ context_id = 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+   ✓ node1_key = AGRJ38xyRBtZMhyX6vkDUmrZ63wAu7knX5RzbYm7hq9e
+   ✓ group_id = 17abd80cd6e8b2943443907a97465b86c14afe8ab3bcedb01222c976da87541d
+
+Pre-installing application on joining nodes
+Copied file to container data directory: data/e2e-node-2/e2e_kv_store.wasm
+  ✓ Pre-installed application on e2e-node-2
+
+Processing node: e2e-node-2
+  Creating identity on e2e-node-2...
+🔍 Identity Creation API Response for e2e-node-2:
+  Success: True
+  Data:
+{
+  "data": {
+    "publicKey": "8s4dWbFk35UqMn3vdrgkc2Wr8BXgqg1vmvrfpQbM7H1Q"
+  }
+}
+  ✓ Identity created: 8s4dWbFk35UqMn3vdrgkc2Wr8BXgqg1vmvrfpQbM7H1Q
+  Creating namespace invitation from e2e-node-1...
+  ✓ Namespace invitation created
+  Joining namespace from e2e-node-2...
+  ✓ Joined namespace successfully
+  ✓ Member identity: EHYx3iB8xMhYTNEuZScbLkGwNTZt1U4epvPSs1pVtoY9
+
+✓ Mesh created successfully!
+  Context: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L on e2e-node-1
+  Namespace: 17abd80cd6e8b2943443907a97465b86c14afe8ab3bcedb01222c976da87541d
+  Connected nodes: e2e-node-1, e2e-node-2
+✓ Step 'Create mesh with node-2' completed
+
+Executing Set initial value on node-1 (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: set
+  args: {'key': 'greeting', 'value': 'Hello, World!'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Set initial value on node-1' completed
+
+Executing Set another value on node-1 (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: set
+  args: {'key': 'count', 'value': '42'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Set another value on node-1' completed
+
+Executing Wait for sync after node-1 sets (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 2 node(s) to sync on context 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L...
+  Nodes: e2e-node-1, e2e-node-2
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+Attempt 1 (0.0s): Root hashes don't match - 2 unique hash(es) found
+  GzkyUTBYtsuA2uyXhvCk7jgwxAWpfYrTBtY62Vub1kpb: e2e-node-1
+  B2F5wFBUiWXBQv2PMrnJKVbdSaaazqXHJF7msvubpKFv: e2e-node-2
+✓ All nodes synced after 2.29s (2 attempts)!
+  Root hash: GzkyUTBYtsuA2uyXhvCk7jgwxAWpfYrTBtY62Vub1kpb
+✓ Step 'Wait for sync after node-1 sets' completed
+
+Executing Verify value on node-2 (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: get
+  args: {'key': 'greeting'}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "Hello, World!"
+  }
+}
+� Exporting variables from e2e-node-2 response:
+   ✓ greeting_value = {'output': 'Hello, World!'}
+✓ Step 'Verify value on node-2' completed
+
+Executing Assert greeting synced (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert greeting synced' completed
+
+Executing Set value on node-2 (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: set
+  args: {'key': 'from_node2', 'value': 'Cross-node value'}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Set value on node-2' completed
+
+Executing Wait for sync after node-2 sets (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 2 node(s) to sync on context 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L...
+  Nodes: e2e-node-1, e2e-node-2
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+Attempt 1 (0.0s): Root hashes don't match - 2 unique hash(es) found
+  GzkyUTBYtsuA2uyXhvCk7jgwxAWpfYrTBtY62Vub1kpb: e2e-node-1
+  6sGcomQo3xPforvWPjYJPPQreevfivWXrASrVSTrwUsC: e2e-node-2
+✓ All nodes synced after 2.25s (2 attempts)!
+  Root hash: 6sGcomQo3xPforvWPjYJPPQreevfivWXrASrVSTrwUsC
+✓ Step 'Wait for sync after node-2 sets' completed
+
+Executing Verify node-2 value on node-1 (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: get
+  args: {'key': 'from_node2'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "Cross-node value"
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ node2_value = {'output': 'Cross-node value'}
+✓ Step 'Verify node-2 value on node-1' completed
+
+Executing Assert node-2 value synced (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert node-2 value synced' completed
+
+Executing Create namespace invitation for node-3 (create_namespace_invitation)...
+� Exporting variables from e2e-node-1 response:
+   ✓ open_invitation_3 = {'invitation': {'expiration_timestamp': 1807960586, 'group_id': [23, 171, 216, 12, 214, 232, 178,...
+✓ Namespace invitation created on e2e-node-1
+✓ Step 'Create namespace invitation for node-3' completed
+
+Executing Join namespace - node-3 (join_namespace)...
+Auto-installed application on e2e-node-3
+� Exporting variables from e2e-node-3 response:
+   ✓ node3_key = Evvv21feuXrEMimhi1Q4SngN3hTg321sXuGxdpteY6TD
+✓ Node e2e-node-3 joined namespace successfully
+✓ Step 'Join namespace - node-3' completed
+
+Executing Wait for sync after node-3 joins (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 3 node(s) to sync on context 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L...
+  Nodes: e2e-node-1, e2e-node-2, e2e-node-3
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+✓ All nodes synced after 0.02s (1 attempts)!
+  Root hash: 6sGcomQo3xPforvWPjYJPPQreevfivWXrASrVSTrwUsC
+✓ Step 'Wait for sync after node-3 joins' completed
+
+Executing Verify greeting on node-3 (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: get
+  args: {'key': 'greeting'}
+🔍 Execute API Response for e2e-node-3 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "Hello, World!"
+  }
+}
+� Exporting variables from e2e-node-3 response:
+   ✓ greeting_value_node3 = {'output': 'Hello, World!'}
+✓ Step 'Verify greeting on node-3' completed
+
+Executing Verify node-2 value on node-3 (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: get
+  args: {'key': 'from_node2'}
+🔍 Execute API Response for e2e-node-3 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "Cross-node value"
+  }
+}
+� Exporting variables from e2e-node-3 response:
+   ✓ node2_value_on_node3 = {'output': 'Cross-node value'}
+✓ Step 'Verify node-2 value on node-3' completed
+
+Executing Assert node-3 sees pre-join state (json_assert)...
+✓ JSON equality passed
+✓ JSON equality passed
+✓ Step 'Assert node-3 sees pre-join state' completed
+
+Executing Set value on node-3 (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: set
+  args: {'key': 'from_node3', 'value': 'Hello from node3'}
+🔍 Execute API Response for e2e-node-3 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Set value on node-3' completed
+
+Executing Wait for sync after node-3 sets (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 3 node(s) to sync on context 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L...
+  Nodes: e2e-node-1, e2e-node-2, e2e-node-3
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+Attempt 1 (0.0s): Root hashes don't match - 2 unique hash(es) found
+  6sGcomQo3xPforvWPjYJPPQreevfivWXrASrVSTrwUsC: e2e-node-1
+  2inY1cMGBSs89XuSAkD5QAxNs6aqyD8yXGuyjzhoVnG6: e2e-node-2, e2e-node-3
+✓ All nodes synced after 2.24s (2 attempts)!
+  Root hash: 2inY1cMGBSs89XuSAkD5QAxNs6aqyD8yXGuyjzhoVnG6
+✓ Step 'Wait for sync after node-3 sets' completed
+
+Executing Verify node-3 value on node-1 (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: get
+  args: {'key': 'from_node3'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "Hello from node3"
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ node3_value_on_node1 = {'output': 'Hello from node3'}
+✓ Step 'Verify node-3 value on node-1' completed
+
+Executing Verify node-3 value on node-2 (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: get
+  args: {'key': 'from_node3'}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "Hello from node3"
+  }
+}
+� Exporting variables from e2e-node-2 response:
+   ✓ node3_value_on_node2 = {'output': 'Hello from node3'}
+✓ Step 'Verify node-3 value on node-2' completed
+
+Executing Assert node-3 value synced to existing members (json_assert)...
+✓ JSON equality passed
+✓ JSON equality passed
+✓ Step 'Assert node-3 value synced to existing members' completed
+
+Executing Get all entries (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: entries
+  args: {}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": {
+      "count": "42",
+      "from_node2": "Cross-node value",
+      "from_node3": "Hello from node3",
+      "greeting": "Hello, World!"
+    }
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ all_entries = {'output': {'count': '42', 'from_node2': 'Cross-node value', 'from_node3': 'Hello from node3', 'g...
+✓ Step 'Get all entries' completed
+
+Executing Assert entries is non-empty (assert)...
+✓ Assertion #1: is_set({{all_entries}})
+✓ Step 'Assert entries is non-empty' completed
+
+Executing Get result (throws on missing) (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: get_result
+  args: {'key': 'greeting'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "Hello, World!"
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ greeting_result = {'output': 'Hello, World!'}
+✓ Step 'Get result (throws on missing)' completed
+
+Executing Assert get_result returns value (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert get_result returns value' completed
+
+Executing Get length (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: len
+  args: {}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": 4
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ kv_len = {'output': 4}
+✓ Step 'Get length' completed
+
+Executing Assert length is 4 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert length is 4' completed
+
+Executing Remove a key (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: remove
+  args: {'key': 'count'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "42"
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Remove a key' completed
+
+Executing Wait for sync after remove (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 3 node(s) to sync on context 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L...
+  Nodes: e2e-node-1, e2e-node-2, e2e-node-3
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+✓ All nodes synced after 0.02s (1 attempts)!
+  Root hash: 9GSVmWtMNQhiheNS1JeGooFm4bH7aefHYAcsFHxPr4ir
+✓ Step 'Wait for sync after remove' completed
+
+Executing Verify key removed on node-2 (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: get
+  args: {'key': 'count'}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+� Exporting variables from e2e-node-2 response:
+   ✓ removed_value = {'output': None}
+✓ Step 'Verify key removed on node-2' completed
+
+Executing Assert removed key returns null on node-2 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert removed key returns null on node-2' completed
+
+Executing Verify key removed on node-3 (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: get
+  args: {'key': 'count'}
+🔍 Execute API Response for e2e-node-3 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+� Exporting variables from e2e-node-3 response:
+   ✓ removed_value_node3 = {'output': None}
+✓ Step 'Verify key removed on node-3' completed
+
+Executing Assert removed key returns null on node-3 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert removed key returns null on node-3' completed
+
+Executing Get initial handler count on Node 2 (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: get_handler_execution_count
+  args: {}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": 0
+  }
+}
+� Exporting variables from e2e-node-2 response:
+   ✓ initial_handler_count = {'output': 0}
+✓ Step 'Get initial handler count on Node 2' completed
+
+Executing Assert initial handler count is 0 on node-2 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert initial handler count is 0 on node-2' completed
+
+Executing Get initial handler count on Node 3 (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: get_handler_execution_count
+  args: {}
+🔍 Execute API Response for e2e-node-3 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": 0
+  }
+}
+� Exporting variables from e2e-node-3 response:
+   ✓ initial_handler_count_node3 = {'output': 0}
+✓ Step 'Get initial handler count on Node 3' completed
+
+Executing Assert initial handler count is 0 on node-3 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert initial handler count is 0 on node-3' completed
+
+Executing Set with handler (triggers insert_handler on receivers) (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: set_with_handler
+  args: {'key': 'handler_test', 'value': 'initial'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Set with handler (triggers insert_handler on receivers)' completed
+
+Executing Wait for handler sync after insert (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 3 node(s) to sync on context 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L...
+  Nodes: e2e-node-1, e2e-node-2, e2e-node-3
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+✓ All nodes synced after 0.03s (1 attempts)!
+  Root hash: 8QTwiqCMUFy9bSTo383nvaQHw57LLiorHJYzCUs9aiCC
+✓ Step 'Wait for handler sync after insert' completed
+
+Executing Set with handler again (triggers update_handler on receivers) (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L
+  exec_type: None
+  method: set_with_handler
+  args: {'key': 'handler_test', 'value': 'updated'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Set with handler again (triggers update_handler on receivers)' completed
+
+Executing Wait for handler sync after update (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 3 node(s) to sync on context 8d5eq1PJ5sXRuePvPfkmdwLutScwEbqDVyzXz6tD8y3L...
+  Nodes: e2e-node-1, e2e-node-2, e2e-node-3
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+Attempt 1 (0.0s): Root hashes don't match - 3 unique hash(es) found
+  Csm2BbyegXBwwqXwBYhg3mdwfim6KbuKoAg4jqY7jiSb: e2e-node-1
+  3ke5GKaaZce1DvnrnJjAHGWBEiKPX5UMeejTvhH75c8z: e2e-node-2
+  E2EGexEsYcaWapbEJL6F7LsSQo1DyRpYALRCJ78rR789: e2e-node-3
+Attempt 2 (2.0s): Root hashes don't match - 3 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+  Cm7bp4gvHwnT11G6E9ctKrWFrFe72BQYpuQB9jCeuyq2: e2e-node-3
+Attempt 3 (4.3s): Root hashes don't match - 3 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+  Cm7bp4gvHwnT11G6E9ctKrWFrFe72BQYpuQB9jCeuyq2: e2e-node-3
+Attempt 4 (6.3s): Root hashes don't match - 3 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+  Cm7bp4gvHwnT11G6E9ctKrWFrFe72BQYpuQB9jCeuyq2: e2e-node-3
+Attempt 5 (8.5s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 6 (10.7s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 7 (12.7s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 8 (14.8s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 9 (17.1s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 10 (19.1s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 11 (21.2s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 12 (23.5s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 13 (25.5s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 14 (27.6s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 15 (29.9s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 16 (31.9s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 17 (34.0s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 18 (36.3s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 19 (38.3s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 20 (40.4s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 21 (42.7s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 22 (44.7s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 23 (46.8s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 24 (49.1s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 25 (51.1s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 26 (53.2s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 27 (55.5s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 28 (57.5s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+Attempt 29 (59.6s): Root hashes don't match - 2 unique hash(es) found
+  92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz: e2e-node-1, e2e-node-3
+  HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt: e2e-node-2
+✗ Sync verification failed after 61.88s (29 attempts)
+  Final state:
+    e2e-node-1: 92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz
+    e2e-node-2: HdL5h9yqTqwUpBiYQCuB5UmwL4DZZrQm6LSk7EsxHbZt
+    e2e-node-3: 92KqZfDr1dYb8CjWQihyHWkYsT1iagU3SQseiPmmtUiz
+❌ Step 'Wait for handler sync after update' failed
+❌ Workflow steps failed - stopping workflow
+
+❌ Workflow failed!
+Stopping managed containers with graceful shutdown...
+Initiating graceful shutdown for 3 containers...
+Waiting 3s for connection draining...
+✓ Gracefully stopped and removed e2e-node-1
+✓ Gracefully stopped and removed e2e-node-2
+✓ Gracefully stopped and removed e2e-node-3

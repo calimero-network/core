@@ -1,0 +1,66 @@
+Workflow configuration validation failed:
+  - Step 'List namespace members on node-1' (index 6): Invalid step type 'list_group_members'. Valid types are: assert, call, create_context, 
+create_group, create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, 
+fuzzy_test, get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, 
+join_context, join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group,
+parallel, repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+  - Step 'Add node-2 to subgroup' (index 10): Invalid step type 'add_group_members'. Valid types are: assert, call, create_context, create_group, 
+create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, fuzzy_test, 
+get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, join_context, 
+join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group, parallel, 
+repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+  - Step 'List subgroup members' (index 11): Invalid step type 'list_group_members'. Valid types are: assert, call, create_context, create_group, 
+create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, fuzzy_test, 
+get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, join_context, 
+join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group, parallel, 
+repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+  - Step 'Remove node-2 from subgroup' (index 21): Invalid step type 'remove_group_members'. Valid types are: assert, call, create_context, 
+create_group, create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, 
+fuzzy_test, get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, 
+join_context, join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group,
+parallel, repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+  - Step 'List subgroup members after removal' (index 22): Invalid step type 'list_group_members'. Valid types are: assert, call, create_context, 
+create_group, create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, 
+fuzzy_test, get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, 
+join_context, join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group,
+parallel, repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+  - Step 'Get subgroup info' (index 25): Invalid step type 'get_group_info'. Valid types are: assert, call, create_context, create_group, 
+create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, fuzzy_test, 
+get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, join_context, 
+join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group, parallel, 
+repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+
+Please check your workflow YAML file and fix the issues above.
+Failed to execute workflow: Workflow configuration validation failed:
+  - Step 'List namespace members on node-1' (index 6): Invalid step type 'list_group_members'. Valid types are: assert, call, create_context, 
+create_group, create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, 
+fuzzy_test, get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, 
+join_context, join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group,
+parallel, repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+  - Step 'Add node-2 to subgroup' (index 10): Invalid step type 'add_group_members'. Valid types are: assert, call, create_context, create_group, 
+create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, fuzzy_test, 
+get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, join_context, 
+join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group, parallel, 
+repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+  - Step 'List subgroup members' (index 11): Invalid step type 'list_group_members'. Valid types are: assert, call, create_context, create_group, 
+create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, fuzzy_test, 
+get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, join_context, 
+join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group, parallel, 
+repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+  - Step 'Remove node-2 from subgroup' (index 21): Invalid step type 'remove_group_members'. Valid types are: assert, call, create_context, 
+create_group, create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, 
+fuzzy_test, get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, 
+join_context, join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group,
+parallel, repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+  - Step 'List subgroup members after removal' (index 22): Invalid step type 'list_group_members'. Valid types are: assert, call, create_context, 
+create_group, create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, 
+fuzzy_test, get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, 
+join_context, join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group,
+parallel, repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+  - Step 'Get subgroup info' (index 25): Invalid step type 'get_group_info'. Valid types are: assert, call, create_context, create_group, 
+create_group_in_namespace, create_group_invitation, create_identity, create_mesh, create_namespace, create_namespace_invitation, fuzzy_test, 
+get_namespace_identity, get_proposal, get_proposal_approvers, install_application, invite, invite_identity, invite_open, join, join_context, 
+join_group, join_namespace, join_open, json_assert, list_namespace_groups, list_namespaces, list_proposals, list_subgroups, nest_group, parallel, 
+repeat, script, unnest_group, upload_blob, wait, wait_for_sync
+
+Please check your workflow YAML file and fix the issues above.

@@ -30,7 +30,7 @@ exclude = [
     "./apps/private_data",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
-    "./apps/e2e-kv-store",
+    "./apps/scaffolding-e2e",
     "./crates/merod",
     "./crates/meroctl",
     "./crates/build-utils",
@@ -74,7 +74,7 @@ members = [
     "./crates/utils/actix",
     "./crates/wasm-abi",
 
-    "./apps/e2e-kv-store",
+    "./apps/scaffolding-e2e",
     "./apps/kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",

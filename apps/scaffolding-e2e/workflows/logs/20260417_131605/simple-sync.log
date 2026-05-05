@@ -1,0 +1,67 @@
+run_workflow: incoming log_level='debug'
+run_workflow: incoming rust_backtrace='0'
+WorkflowExecutor: resolved log_level='debug', binary_mode=False
+WorkflowExecutor: workflow_id='0704f216' (for test isolation)
+WorkflowExecutor: resolved rust_backtrace='0', binary_mode=False
+
+🚀 Executing Workflow: Simple Sync Test (No Handlers)
+
+Step 1: Checking workflow nodes (restart=false)...
+Will reuse existing nodes if they're running...
+
+Step 2: Managing nodes...
+Checking 2 nodes with prefix 'e2e-node' (no restart mode)...
+✓ Image ghcr.io/calimero-network/merod:edge already available locally
+✓ Cleaned up existing container e2e-node-1-init
+Setting RUST_LOG for node e2e-node-1: debug
+Setting RUST_BACKTRACE for node e2e-node-1: 0
+Environment variables for e2e-node-1:
+  CALIMERO_HOME=/app/data
+  NODE_NAME=e2e-node-1
+  RUST_LOG=debug
+  RUST_BACKTRACE=0
+Using default fresh WebUI fetch for node e2e-node-1
+Initializing node e2e-node-1...
+✓ Node e2e-node-1 initialized successfully
+Starting node e2e-node-1...
+✓ Started Calimero node e2e-node-1 (ID: 8586dd6565f5)
+  - P2P Port: 2428
+  - RPC/Admin Port: 2528
+  - Data Directory: ./data/e2e-node-1
+  - Non Auth Node URL: http://localhost:2528
+✓ Image ghcr.io/calimero-network/merod:edge already available locally
+✓ Cleaned up existing container e2e-node-2-init
+Setting RUST_LOG for node e2e-node-2: debug
+Setting RUST_BACKTRACE for node e2e-node-2: 0
+Environment variables for e2e-node-2:
+  CALIMERO_HOME=/app/data
+  NODE_NAME=e2e-node-2
+  RUST_LOG=debug
+  RUST_BACKTRACE=0
+Using default fresh WebUI fetch for node e2e-node-2
+Initializing node e2e-node-2...
+✓ Node e2e-node-2 initialized successfully
+Starting node e2e-node-2...
+✓ Started Calimero node e2e-node-2 (ID: 9b01085356a1)
+  - P2P Port: 2429
+  - RPC/Admin Port: 2529
+  - Data Directory: ./data/e2e-node-2
+  - Non Auth Node URL: http://localhost:2529
+✓ Node management completed
+
+Step 3: Waiting for nodes to be ready...
+Waiting up to 60 seconds for 2 nodes to be ready...
+✓ Admin server accessible on localhost:2528 for e2e-node-1
+Node e2e-node-1 admin binding OK, waiting for health check...
+✓ Admin server accessible on localhost:2528 for e2e-node-2
+✓ Node e2e-node-2 is ready (health check passed)
+⠹ Waiting for nodes... ━━━━━━━━━━━━━━━━━━━━                      50% 0:01:04
+❌ Nodes not ready: e2e-node-1
+❌ Nodes not ready - stopping workflow
+
+❌ Workflow failed!
+Stopping managed containers with graceful shutdown...
+Initiating graceful shutdown for 2 containers...
+Waiting 3s for connection draining...
+✓ Gracefully stopped and removed e2e-node-1
+✓ Gracefully stopped and removed e2e-node-2

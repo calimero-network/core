@@ -1,6 +1,6 @@
 name: E2E - Rust Apps
 
-# Tests e2e-kv-store and xcall-example apps using locally-built Docker image.
+# Tests scaffolding-e2e and xcall-example apps using locally-built Docker image.
 # Parallel build: merod image + WASM apps build concurrently, then all test
 # workflows run in parallel via matrix.
 # Self-contained: doesn't depend on release.yml
@@ -13,7 +13,7 @@ on:
     branches: [master]
     paths:
       - "crates/**"
-      - "apps/e2e-kv-store/**"
+      - "apps/scaffolding-e2e/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - ".github/workflows/e2e-rust-apps.yml"
@@ -22,7 +22,7 @@ on:
     branches: [master]
     paths:
       - "crates/**"
-      - "apps/e2e-kv-store/**"
+      - "apps/scaffolding-e2e/**"
       - "apps/xcall-example/**"
       - "apps/kv-store-with-shared-storage/**"
       - ".github/workflows/e2e-rust-apps.yml"
@@ -92,14 +92,14 @@ jobs:
           shared-key: e2e-wasm-apps
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      - name: Build e2e-kv-store app
+      - name: Build scaffolding-e2e app
         run: |
-          cd apps/e2e-kv-store
+          cd apps/scaffolding-e2e
           ./build.sh
 
-      - name: Build e2e-kv-store multi-service bundle
+      - name: Build scaffolding-e2e multi-service bundle
         run: |
-          cd apps/e2e-kv-store
+          cd apps/scaffolding-e2e
           ./build-multi-service-bundle.sh
 
       - name: Build xcall-example app
@@ -117,10 +117,10 @@ jobs:
         with:
           name: e2e-apps
           path: |
-            apps/e2e-kv-store/res/*.wasm
-            apps/e2e-kv-store/res/abi.json
-            apps/e2e-kv-store/res/*.mpk
-            apps/e2e-kv-store/res/state-schema.json
+            apps/scaffolding-e2e/res/*.wasm
+            apps/scaffolding-e2e/res/abi.json
+            apps/scaffolding-e2e/res/*.mpk
+            apps/scaffolding-e2e/res/state-schema.json
             apps/xcall-example/res/*.wasm
             apps/xcall-example/res/abi.json
             apps/kv-store-with-shared-storage/res/*.wasm
@@ -137,54 +137,54 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - workflow: e2e-kv-store
+          - workflow: scaffolding-e2e
             file: workflows/e2e.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: groups
             file: workflows/groups.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-3node
             file: workflows/group-3node.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-context-isolation
             file: workflows/group-context-isolation.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-late-joiner
             file: workflows/group-late-joiner.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-subgroup
             file: workflows/group-subgroup.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-subgroup-cold-sync
             file: workflows/group-subgroup-cold-sync.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-subgroup-queued-deltas
             file: workflows/group-subgroup-queued-deltas.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-membership
             file: workflows/group-membership.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-capabilities
             file: workflows/group-capabilities.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-default-capabilities-propagation
             file: workflows/group-default-capabilities-propagation.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-reparent
             file: workflows/group-reparent.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-reparent-and-cascade-delete
             file: workflows/group-reparent-and-cascade-delete.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: group-multi-service
             file: workflows/group-multi-service.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: handler-test
             file: workflows/handler-test.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
           - workflow: xcall-example
             file: workflows/xcall.yml
             app: xcall-example
@@ -193,7 +193,7 @@ jobs:
             app: kv-store-with-shared-storage
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
-            app: e2e-kv-store
+            app: scaffolding-e2e
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -320,7 +320,7 @@ jobs:
         run: |
           message="## E2E Rust Apps Failed
 
-          One or more E2E workflows (e2e-kv-store, xcall-example) failed.
+          One or more E2E workflows (scaffolding-e2e, xcall-example) failed.
 
           Please check the workflow logs for more details."
 

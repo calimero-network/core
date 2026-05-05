@@ -1,0 +1,564 @@
+run_workflow: incoming log_level='debug'
+run_workflow: incoming rust_backtrace='0'
+WorkflowExecutor: resolved log_level='debug', binary_mode=False
+WorkflowExecutor: workflow_id='4fdcc59f' (for test isolation)
+WorkflowExecutor: resolved rust_backtrace='0', binary_mode=False
+
+🚀 Executing Workflow: E2E KV Store - Group 3-Node Convergence
+
+Step 1: Checking workflow nodes (restart=false)...
+Will reuse existing nodes if they're running...
+
+Step 2: Managing nodes...
+Checking 3 nodes with prefix 'e2e-node' (no restart mode)...
+✓ Image ghcr.io/calimero-network/merod:edge already available locally
+✓ Cleaned up existing container e2e-node-1-init
+Setting RUST_LOG for node e2e-node-1: debug
+Setting RUST_BACKTRACE for node e2e-node-1: 0
+Environment variables for e2e-node-1:
+  CALIMERO_HOME=/app/data
+  NODE_NAME=e2e-node-1
+  RUST_LOG=debug
+  RUST_BACKTRACE=0
+Using default fresh WebUI fetch for node e2e-node-1
+Initializing node e2e-node-1...
+✓ Node e2e-node-1 initialized successfully
+Starting node e2e-node-1...
+✓ Started Calimero node e2e-node-1 (ID: 58cd97927bc3)
+  - P2P Port: 2428
+  - RPC/Admin Port: 2528
+  - Data Directory: ./data/e2e-node-1
+  - Non Auth Node URL: http://localhost:2528
+✓ Image ghcr.io/calimero-network/merod:edge already available locally
+✓ Cleaned up existing container e2e-node-2-init
+Setting RUST_LOG for node e2e-node-2: debug
+Setting RUST_BACKTRACE for node e2e-node-2: 0
+Environment variables for e2e-node-2:
+  CALIMERO_HOME=/app/data
+  NODE_NAME=e2e-node-2
+  RUST_LOG=debug
+  RUST_BACKTRACE=0
+Using default fresh WebUI fetch for node e2e-node-2
+Initializing node e2e-node-2...
+✓ Node e2e-node-2 initialized successfully
+Starting node e2e-node-2...
+✓ Started Calimero node e2e-node-2 (ID: 565efc64ccd6)
+  - P2P Port: 2429
+  - RPC/Admin Port: 2529
+  - Data Directory: ./data/e2e-node-2
+  - Non Auth Node URL: http://localhost:2529
+✓ Image ghcr.io/calimero-network/merod:edge already available locally
+✓ Cleaned up existing container e2e-node-3-init
+Setting RUST_LOG for node e2e-node-3: debug
+Setting RUST_BACKTRACE for node e2e-node-3: 0
+Environment variables for e2e-node-3:
+  CALIMERO_HOME=/app/data
+  NODE_NAME=e2e-node-3
+  RUST_LOG=debug
+  RUST_BACKTRACE=0
+Using default fresh WebUI fetch for node e2e-node-3
+Initializing node e2e-node-3...
+✓ Node e2e-node-3 initialized successfully
+Starting node e2e-node-3...
+✓ Started Calimero node e2e-node-3 (ID: dfa8c7b32543)
+  - P2P Port: 2430
+  - RPC/Admin Port: 2530
+  - Data Directory: ./data/e2e-node-3
+  - Non Auth Node URL: http://localhost:2530
+✓ Node management completed
+
+Step 3: Waiting for nodes to be ready...
+Waiting up to 60 seconds for 3 nodes to be ready...
+✓ Admin server accessible on localhost:2528 for e2e-node-2
+✓ Node e2e-node-2 is ready (health check passed)
+✓ Admin server accessible on localhost:2528 for e2e-node-3
+✓ Node e2e-node-3 is ready (health check passed)
+✓ Admin server accessible on localhost:2528 for e2e-node-1
+✓ Node e2e-node-1 is ready (health check passed)
+  Waiting for nodes... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+✓ All nodes are ready
+
+Step 4: Executing workflow steps...
+
+Executing Install application on node-1 (install_application)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Connecting to http://localhost:2528 (node: e2e-node-1)...
+Copied file to container data directory: data/e2e-node-1/e2e_kv_store.wasm
+Installing dev application using container path: /app/data/e2e_kv_store.wasm
+🔍 Install API Response for e2e-node-1:
+  Success: True
+  Data:
+{
+  "data": {
+    "applicationId": "5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw"
+  }
+}
+📝 Install result data: {'data': {'applicationId': '5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw'}}
+� Exporting variables from e2e-node-1 response:
+   ✓ app_id = 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+📝 Fallback: Captured application ID for e2e-node-1: 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+✓ Step 'Install application on node-1' completed
+
+Executing Assert application installed (assert)...
+✓ Assertion #1: is_set({{app_id}})
+✓ Step 'Assert application installed' completed
+
+Executing Create namespace on node-1 (create_namespace)...
+� Exporting variables from e2e-node-1 response:
+   ✓ namespace_id = d6cf91f308441814855595b934358851f43a985a379076fa436cdc393697dd94
+Captured namespace ID for e2e-node-1: d6cf91f308441814855595b934358851f43a985a379076fa436cdc393697dd94
+✓ Namespace created on e2e-node-1: d6cf91f308441814855595b934358851f43a985a379076fa436cdc393697dd94
+✓ Step 'Create namespace on node-1' completed
+
+Executing Assert namespace created (assert)...
+✓ Assertion #1: is_set({{namespace_id}})
+✓ Step 'Assert namespace created' completed
+
+Executing Create context in namespace on node-1 (create_context)...
+Debug: CreateContext resolved values:
+  node: e2e-node-1
+  application_id (resolved): 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+  dynamic_values keys: ['app_path_e2e-node-1', 'app_id', 'app_id_e2e-node-1', 'namespace_id', 'namespace_id_e2e-node-1']
+  workflow_results keys: ['install_e2e-node-1', 'namespace_e2e-node-1']
+✅ Custom outputs configuration validated: 1 outputs defined
+🔍 Context Creation API Response for e2e-node-1:
+  Success: True
+  Data:
+{
+  "data": {
+    "contextId": "XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA",
+    "groupCreated": false,
+    "groupId": "d6cf91f308441814855595b934358851f43a985a379076fa436cdc393697dd94",
+    "memberPublicKey": "4Q6TaUU36wR5vKzpSceLUZ2t3BfA3oRuERA5FY1QeAVL"
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ ctx_id = XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+📝 Fallback: Captured context ID for e2e-node-1: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+✓ Step 'Create context in namespace on node-1' completed
+
+Executing Assert context created (assert)...
+✓ Assertion #1: is_set({{ctx_id}})
+✓ Step 'Assert context created' completed
+
+Executing Create namespace invitation for node-2 (create_namespace_invitation)...
+� Exporting variables from e2e-node-1 response:
+   ✓ invite_node2 = {'invitation': {'expiration_timestamp': 1807960699, 'group_id': [214, 207, 145, 243, 8, 68, 24, 2...
+✓ Namespace invitation created on e2e-node-1
+✓ Step 'Create namespace invitation for node-2' completed
+
+Executing Node-2 joins namespace (join_namespace)...
+Auto-installed application on e2e-node-2
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Node e2e-node-2 joined namespace successfully
+✓ Step 'Node-2 joins namespace' completed
+
+Executing Node-2 joins context via group membership (join_context)...
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Node e2e-node-2 joined context XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+✓ Step 'Node-2 joins context via group membership' completed
+
+Executing Create namespace invitation for node-3 (create_namespace_invitation)...
+� Exporting variables from e2e-node-1 response:
+   ✓ invite_node3 = {'invitation': {'expiration_timestamp': 1807960701, 'group_id': [214, 207, 145, 243, 8, 68, 24, 2...
+✓ Namespace invitation created on e2e-node-1
+✓ Step 'Create namespace invitation for node-3' completed
+
+Executing Node-3 joins namespace (join_namespace)...
+Auto-installed application on e2e-node-3
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Node e2e-node-3 joined namespace successfully
+✓ Step 'Node-3 joins namespace' completed
+
+Executing Node-3 joins context via group membership (join_context)...
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Node e2e-node-3 joined context XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+✓ Step 'Node-3 joins context via group membership' completed
+
+Executing Node-1 writes key-A (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: set
+  args: {'key': 'key_a', 'value': 'from_node1'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Node-1 writes key-A' completed
+
+Executing Wait for sync after node-1 write (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 3 node(s) to sync on context XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA...
+  Nodes: e2e-node-1, e2e-node-2, e2e-node-3
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+Attempt 1 (0.0s): Root hashes don't match - 2 unique hash(es) found
+  4KDchrRFgNc74cQMnepHox9AQpqpMGhCND9MLpAuouxU: e2e-node-1
+  DvrKJRc1cEo9pVhpY82wcusH8SWMH2J3dNG58Uy2Yhag: e2e-node-2, e2e-node-3
+✓ All nodes synced after 2.26s (2 attempts)!
+  Root hash: 4KDchrRFgNc74cQMnepHox9AQpqpMGhCND9MLpAuouxU
+✓ Step 'Wait for sync after node-1 write' completed
+
+Executing Node-2 reads key-A (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: get
+  args: {'key': 'key_a'}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "from_node1"
+  }
+}
+� Exporting variables from e2e-node-2 response:
+   ✓ key_a_node2 = {'output': 'from_node1'}
+✓ Step 'Node-2 reads key-A' completed
+
+Executing Assert key-A on node-2 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert key-A on node-2' completed
+
+Executing Node-3 reads key-A (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: get
+  args: {'key': 'key_a'}
+🔍 Execute API Response for e2e-node-3 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "from_node1"
+  }
+}
+� Exporting variables from e2e-node-3 response:
+   ✓ key_a_node3 = {'output': 'from_node1'}
+✓ Step 'Node-3 reads key-A' completed
+
+Executing Assert key-A on node-3 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert key-A on node-3' completed
+
+Executing Node-2 writes key-B (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: set
+  args: {'key': 'key_b', 'value': 'from_node2'}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Node-2 writes key-B' completed
+
+Executing Wait for sync after node-2 write (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 3 node(s) to sync on context XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA...
+  Nodes: e2e-node-1, e2e-node-2, e2e-node-3
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+Attempt 1 (0.0s): Root hashes don't match - 2 unique hash(es) found
+  4KDchrRFgNc74cQMnepHox9AQpqpMGhCND9MLpAuouxU: e2e-node-1
+  C6sdE4cMWbkaebNR3qnGrdAiswwr8Wa2xPE9qFaWL2wU: e2e-node-2, e2e-node-3
+✓ All nodes synced after 2.24s (2 attempts)!
+  Root hash: C6sdE4cMWbkaebNR3qnGrdAiswwr8Wa2xPE9qFaWL2wU
+✓ Step 'Wait for sync after node-2 write' completed
+
+Executing Node-1 reads key-B (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: get
+  args: {'key': 'key_b'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "from_node2"
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ key_b_node1 = {'output': 'from_node2'}
+✓ Step 'Node-1 reads key-B' completed
+
+Executing Assert key-B on node-1 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert key-B on node-1' completed
+
+Executing Node-3 reads key-B (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: get
+  args: {'key': 'key_b'}
+🔍 Execute API Response for e2e-node-3 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "from_node2"
+  }
+}
+� Exporting variables from e2e-node-3 response:
+   ✓ key_b_node3 = {'output': 'from_node2'}
+✓ Step 'Node-3 reads key-B' completed
+
+Executing Assert key-B on node-3 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert key-B on node-3' completed
+
+Executing Node-3 writes key-C (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: set
+  args: {'key': 'key_c', 'value': 'from_node3'}
+🔍 Execute API Response for e2e-node-3 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Node-3 writes key-C' completed
+
+Executing Wait for sync after node-3 write (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 3 node(s) to sync on context XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA...
+  Nodes: e2e-node-1, e2e-node-2, e2e-node-3
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+Attempt 1 (0.0s): Root hashes don't match - 2 unique hash(es) found
+  C6sdE4cMWbkaebNR3qnGrdAiswwr8Wa2xPE9qFaWL2wU: e2e-node-1
+  8YNzUCG7Ra8ojA5TboQyUzYXwk1JfDYnUznDYyXT2oqN: e2e-node-2, e2e-node-3
+✓ All nodes synced after 2.24s (2 attempts)!
+  Root hash: 8YNzUCG7Ra8ojA5TboQyUzYXwk1JfDYnUznDYyXT2oqN
+✓ Step 'Wait for sync after node-3 write' completed
+
+Executing Node-1 reads key-C (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: get
+  args: {'key': 'key_c'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "from_node3"
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ key_c_node1 = {'output': 'from_node3'}
+✓ Step 'Node-1 reads key-C' completed
+
+Executing Assert key-C on node-1 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert key-C on node-1' completed
+
+Executing Node-2 reads key-C (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: get
+  args: {'key': 'key_c'}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "from_node3"
+  }
+}
+� Exporting variables from e2e-node-2 response:
+   ✓ key_c_node2 = {'output': 'from_node3'}
+✓ Step 'Node-2 reads key-C' completed
+
+Executing Assert key-C on node-2 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert key-C on node-2' completed
+
+Executing Node-1 reads all entries (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: entries
+  args: {}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": {
+      "key_a": "from_node1",
+      "key_b": "from_node2",
+      "key_c": "from_node3"
+    }
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ entries_node1 = {'output': {'key_a': 'from_node1', 'key_b': 'from_node2', 'key_c': 'from_node3'}}
+✓ Step 'Node-1 reads all entries' completed
+
+Executing Node-2 reads all entries (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: entries
+  args: {}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": {
+      "key_a": "from_node1",
+      "key_b": "from_node2",
+      "key_c": "from_node3"
+    }
+  }
+}
+� Exporting variables from e2e-node-2 response:
+   ✓ entries_node2 = {'output': {'key_a': 'from_node1', 'key_b': 'from_node2', 'key_c': 'from_node3'}}
+✓ Step 'Node-2 reads all entries' completed
+
+Executing Node-3 reads all entries (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  exec_type: None
+  method: entries
+  args: {}
+🔍 Execute API Response for e2e-node-3 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": {
+      "key_a": "from_node1",
+      "key_b": "from_node2",
+      "key_c": "from_node3"
+    }
+  }
+}
+� Exporting variables from e2e-node-3 response:
+   ✓ entries_node3 = {'output': {'key_a': 'from_node1', 'key_b': 'from_node2', 'key_c': 'from_node3'}}
+✓ Step 'Node-3 reads all entries' completed
+
+Executing Assert all nodes see same entry count (json_assert)...
+✓ JSON equality passed
+✓ JSON equality passed
+✓ Step 'Assert all nodes see same entry count' completed
+
+Step 5: Leaving nodes running (stop_all_nodes=false)...
+Nodes will continue running for future workflows
+
+🎉 Workflow 'E2E KV Store - Group 3-Node Convergence' completed successfully!
+
+📋 Captured Dynamic Values:
+  app_path_e2e-node-1: /Users/frandomovic/Desktop/things/SIMPLE/core/apps/e2e-kv-store/res/e2e_kv_store.wasm
+  app_id: 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+  app_id_e2e-node-1: 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+  namespace_id: d6cf91f308441814855595b934358851f43a985a379076fa436cdc393697dd94
+  namespace_id_e2e-node-1: d6cf91f308441814855595b934358851f43a985a379076fa436cdc393697dd94
+  ctx_id: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  context_id_e2e-node-1: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  invite_node2: {'invitation': {'expiration_timestamp': 1807960699, 'group_id': [214, 207, 145, 243, 8, 68, 24, 20, 133, 85, 149, 185, 52, 53, 136, 
+81, 244, 58, 152, 90, 55, 144, 118, 250, 67, 108, 220, 57, 54, 151, 221, 148], 'invited_role': 1, 'inviter_identity': [50, 125, 151, 77, 89, 209, 
+205, 28, 215, 66, 94, 105, 149, 11, 113, 252, 230, 219, 55, 150, 128, 195, 97, 193, 12, 232, 52, 93, 231, 45, 27, 167], 'secret_salt': [14, 111, 144,
+8, 136, 29, 102, 218, 206, 237, 130, 161, 186, 246, 143, 96, 142, 143, 203, 42, 53, 198, 155, 30, 238, 181, 205, 2, 130, 28, 142, 23]}, 
+'inviter_signature': 
+'198b0f4692c4d826bc6e3bb655f47ed1b929d8d250df42ad2e5fa7dc1f4c47d18b8619b7880accfc69a21b967635ebc8eeff7c419645c7fd0d23e145903b5106'}
+  app_path_e2e-node-2: /Users/frandomovic/Desktop/things/SIMPLE/core/apps/e2e-kv-store/res/e2e_kv_store.wasm
+  context_id_e2e-node-2: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  context_member_public_key_e2e-node-2: AAUMHwMVtNFQuJdd4AW65z3Zey3Yya6LgYDPewpx6Yrp
+  invite_node3: {'invitation': {'expiration_timestamp': 1807960701, 'group_id': [214, 207, 145, 243, 8, 68, 24, 20, 133, 85, 149, 185, 52, 53, 136, 
+81, 244, 58, 152, 90, 55, 144, 118, 250, 67, 108, 220, 57, 54, 151, 221, 148], 'invited_role': 1, 'inviter_identity': [50, 125, 151, 77, 89, 209, 
+205, 28, 215, 66, 94, 105, 149, 11, 113, 252, 230, 219, 55, 150, 128, 195, 97, 193, 12, 232, 52, 93, 231, 45, 27, 167], 'secret_salt': [214, 104, 
+205, 253, 59, 217, 31, 184, 172, 81, 17, 7, 227, 189, 142, 228, 133, 225, 234, 0, 119, 99, 183, 121, 214, 223, 165, 89, 42, 194, 106, 59]}, 
+'inviter_signature': 
+'9e1360361cf7d875994131019d5d762bab91fa72c9143d08efe9eb903ce41d0fd3cebd3764142405d4d09d4b43044c9da799f1bfe66aee783798fa1d6f356c09'}
+  app_path_e2e-node-3: /Users/frandomovic/Desktop/things/SIMPLE/core/apps/e2e-kv-store/res/e2e_kv_store.wasm
+  context_id_e2e-node-3: XnvST2C3NSt8Dgsyftn2QcSPdLxJroehaeuBq3P6qiA
+  context_member_public_key_e2e-node-3: ATmFfpRYffjC5ZXYYU5GkLHyothcdDph1EuvvSyV8Ue9
+  key_a_node2: {'output': 'from_node1'}
+  key_a_node3: {'output': 'from_node1'}
+  key_b_node1: {'output': 'from_node2'}
+  key_b_node3: {'output': 'from_node2'}
+  key_c_node1: {'output': 'from_node3'}
+  key_c_node2: {'output': 'from_node3'}
+  entries_node1: {'output': {'key_a': 'from_node1', 'key_b': 'from_node2', 'key_c': 'from_node3'}}
+  entries_node2: {'output': {'key_a': 'from_node1', 'key_b': 'from_node2', 'key_c': 'from_node3'}}
+  entries_node3: {'output': {'key_a': 'from_node1', 'key_b': 'from_node2', 'key_c': 'from_node3'}}
+
+🎉 Workflow completed successfully!
+Stopping managed containers with graceful shutdown...
+Initiating graceful shutdown for 3 containers...
+Waiting 3s for connection draining...
+✓ Gracefully stopped and removed e2e-node-1
+✓ Gracefully stopped and removed e2e-node-2
+✓ Gracefully stopped and removed e2e-node-3

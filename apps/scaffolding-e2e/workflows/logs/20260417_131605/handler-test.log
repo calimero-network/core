@@ -1,0 +1,374 @@
+run_workflow: incoming log_level='debug'
+run_workflow: incoming rust_backtrace='0'
+WorkflowExecutor: resolved log_level='debug', binary_mode=False
+WorkflowExecutor: workflow_id='70b5cf6f' (for test isolation)
+WorkflowExecutor: resolved rust_backtrace='0', binary_mode=False
+
+🚀 Executing Workflow: E2E KV Store - Event Handler Dispatch
+
+Step 1: Checking workflow nodes (restart=false)...
+Will reuse existing nodes if they're running...
+
+Step 2: Managing nodes...
+Checking 2 nodes with prefix 'e2e-node' (no restart mode)...
+✓ Image ghcr.io/calimero-network/merod:edge already available locally
+✓ Cleaned up existing container e2e-node-1-init
+Setting RUST_LOG for node e2e-node-1: debug
+Setting RUST_BACKTRACE for node e2e-node-1: 0
+Environment variables for e2e-node-1:
+  CALIMERO_HOME=/app/data
+  NODE_NAME=e2e-node-1
+  RUST_LOG=debug
+  RUST_BACKTRACE=0
+Using default fresh WebUI fetch for node e2e-node-1
+Initializing node e2e-node-1...
+✓ Node e2e-node-1 initialized successfully
+Starting node e2e-node-1...
+✓ Started Calimero node e2e-node-1 (ID: ea45a0a4661b)
+  - P2P Port: 2428
+  - RPC/Admin Port: 2528
+  - Data Directory: ./data/e2e-node-1
+  - Non Auth Node URL: http://localhost:2528
+✓ Image ghcr.io/calimero-network/merod:edge already available locally
+✓ Cleaned up existing container e2e-node-2-init
+Setting RUST_LOG for node e2e-node-2: debug
+Setting RUST_BACKTRACE for node e2e-node-2: 0
+Environment variables for e2e-node-2:
+  CALIMERO_HOME=/app/data
+  NODE_NAME=e2e-node-2
+  RUST_LOG=debug
+  RUST_BACKTRACE=0
+Using default fresh WebUI fetch for node e2e-node-2
+Initializing node e2e-node-2...
+✓ Node e2e-node-2 initialized successfully
+Starting node e2e-node-2...
+✓ Started Calimero node e2e-node-2 (ID: 9ca92c8c8267)
+  - P2P Port: 2429
+  - RPC/Admin Port: 2529
+  - Data Directory: ./data/e2e-node-2
+  - Non Auth Node URL: http://localhost:2529
+✓ Node management completed
+
+Step 3: Waiting for nodes to be ready...
+Waiting up to 60 seconds for 2 nodes to be ready...
+✓ Admin server accessible on localhost:2528 for e2e-node-1
+✓ Node e2e-node-1 is ready (health check passed)
+✓ Admin server accessible on localhost:2528 for e2e-node-2
+✓ Node e2e-node-2 is ready (health check passed)
+  Waiting for nodes... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 0:00:00
+✓ All nodes are ready
+
+Step 4: Executing workflow steps...
+
+Executing Install application on node-1 (install_application)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Connecting to http://localhost:2528 (node: e2e-node-1)...
+Copied file to container data directory: data/e2e-node-1/e2e_kv_store.wasm
+Installing dev application using container path: /app/data/e2e_kv_store.wasm
+🔍 Install API Response for e2e-node-1:
+  Success: True
+  Data:
+{
+  "data": {
+    "applicationId": "5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw"
+  }
+}
+📝 Install result data: {'data': {'applicationId': '5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw'}}
+� Exporting variables from e2e-node-1 response:
+   ✓ app_id = 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+📝 Fallback: Captured application ID for e2e-node-1: 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+✓ Step 'Install application on node-1' completed
+
+Executing Assert application installed (assert)...
+✓ Assertion #1: is_set({{app_id}})
+✓ Step 'Assert application installed' completed
+
+Executing Create namespace on node-1 (create_namespace)...
+� Exporting variables from e2e-node-1 response:
+   ✓ namespace_id = 3058f67bb4e1be8e80e1641e5fed28129fd888074281139dde236569a1068fd2
+Captured namespace ID for e2e-node-1: 3058f67bb4e1be8e80e1641e5fed28129fd888074281139dde236569a1068fd2
+✓ Namespace created on e2e-node-1: 3058f67bb4e1be8e80e1641e5fed28129fd888074281139dde236569a1068fd2
+✓ Step 'Create namespace on node-1' completed
+
+Executing Assert namespace created (assert)...
+✓ Assertion #1: is_set({{namespace_id}})
+✓ Step 'Assert namespace created' completed
+
+Executing Create context in namespace on node-1 (create_context)...
+Debug: CreateContext resolved values:
+  node: e2e-node-1
+  application_id (resolved): 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+  dynamic_values keys: ['app_path_e2e-node-1', 'app_id', 'app_id_e2e-node-1', 'namespace_id', 'namespace_id_e2e-node-1']
+  workflow_results keys: ['install_e2e-node-1', 'namespace_e2e-node-1']
+✅ Custom outputs configuration validated: 2 outputs defined
+🔍 Context Creation API Response for e2e-node-1:
+  Success: True
+  Data:
+{
+  "data": {
+    "contextId": "6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu",
+    "groupCreated": false,
+    "groupId": "3058f67bb4e1be8e80e1641e5fed28129fd888074281139dde236569a1068fd2",
+    "memberPublicKey": "FzFDAu6FMDW3vTexYwn5b7kMYVWuwnsALEYxCQUM727y"
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ context_id = 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+   ✓ ctx_key_node1 = FzFDAu6FMDW3vTexYwn5b7kMYVWuwnsALEYxCQUM727y
+📝 Fallback: Captured context ID for e2e-node-1: 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+✓ Step 'Create context in namespace on node-1' completed
+
+Executing Assert context created (assert)...
+✓ Assertion #1: is_set({{context_id}})
+✓ Step 'Assert context created' completed
+
+Executing Create namespace invitation for node-2 (create_namespace_invitation)...
+� Exporting variables from e2e-node-1 response:
+   ✓ namespace_invitation = {'invitation': {'expiration_timestamp': 1807960909, 'group_id': [48, 88, 246, 123, 180, 225, 190,...
+✓ Namespace invitation created on e2e-node-1
+✓ Step 'Create namespace invitation for node-2' completed
+
+Executing Node-2 joins namespace (join_namespace)...
+Auto-installed application on e2e-node-2
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Node e2e-node-2 joined namespace successfully
+✓ Step 'Node-2 joins namespace' completed
+
+Executing Node-2 joins context via namespace membership (join_context)...
+� Exporting variables from e2e-node-2 response:
+   ✓ ctx_key_node2 = 9QmPog9DhsNqYZCMiezRAFdwphzp9CsAJ9Nb1a5UMo1U
+✓ Node e2e-node-2 joined context 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+✓ Step 'Node-2 joins context via namespace membership' completed
+
+Executing Node-1 calls set_with_handler (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+  exec_type: None
+  method: set_with_handler
+  args: {'key': 'test_key', 'value': 'test_value'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Node-1 calls set_with_handler' completed
+
+Executing Wait for handler sync (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 2 node(s) to sync on context 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu...
+  Nodes: e2e-node-1, e2e-node-2
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+Attempt 1 (0.0s): Root hashes don't match - 2 unique hash(es) found
+  Fz671MFK9Dg8soJZCKosmZowNtN3QSFYnuxXAXnM5mQ6: e2e-node-1
+  11111111111111111111111111111111: e2e-node-2
+✓ All nodes synced after 2.24s (2 attempts)!
+  Root hash: 8uYHDS3xY6ajJf3CAxmKgJ3hZFQhvUqJ1f2dpkQZ5gHi
+✓ Step 'Wait for handler sync' completed
+
+Executing Node-2 reads the handler-written value (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+  exec_type: None
+  method: get
+  args: {'key': 'test_key'}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "test_value"
+  }
+}
+� Exporting variables from e2e-node-2 response:
+   ✓ read_result = {'output': 'test_value'}
+✓ Step 'Node-2 reads the handler-written value' completed
+
+Executing Assert handler value synced to node-2 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert handler value synced to node-2' completed
+
+Executing Node-1 reads back handler-written value (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+  exec_type: None
+  method: get
+  args: {'key': 'test_key'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "test_value"
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ read_result_node1 = {'output': 'test_value'}
+✓ Step 'Node-1 reads back handler-written value' completed
+
+Executing Assert handler value present on node-1 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert handler value present on node-1' completed
+
+Executing Node-1 gets handler execution count (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+  exec_type: None
+  method: get_handler_execution_count
+  args: {}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": 1
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ handler_count_node1 = {'output': 1}
+✓ Step 'Node-1 gets handler execution count' completed
+
+Executing Assert handler was executed at least once on node-1 (assert)...
+✓ Assertion #1: is_set({{handler_count_node1}})
+✓ Step 'Assert handler was executed at least once on node-1' completed
+
+Executing Node-2 gets handler execution count (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+  exec_type: None
+  method: get_handler_execution_count
+  args: {}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": 1
+  }
+}
+� Exporting variables from e2e-node-2 response:
+   ✓ handler_count_node2 = {'output': 1}
+✓ Step 'Node-2 gets handler execution count' completed
+
+Executing Assert handler was executed at least once on node-2 (assert)...
+✓ Assertion #1: is_set({{handler_count_node2}})
+✓ Step 'Assert handler was executed at least once on node-2' completed
+
+Executing Node-2 calls set_with_handler a second time (call)...
+⚠️  Step ExecuteStep has no exportable variables defined
+⚠️  Execute step export configuration validation failed
+Debug: Resolved values for execute step:
+  context_id: 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+  exec_type: None
+  method: set_with_handler
+  args: {'key': 'test_key2', 'value': 'second_value'}
+🔍 Execute API Response for e2e-node-2 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": null
+  }
+}
+⚠️  No outputs configured for this step. Variables will not be exported automatically.
+   To export variables, add an 'outputs' section to your step configuration.
+✓ Step 'Node-2 calls set_with_handler a second time' completed
+
+Executing Wait for second handler sync (wait_for_sync)...
+
+⏳ Waiting for node synchronization...
+🔄 Waiting for 2 node(s) to sync on context 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu...
+  Nodes: e2e-node-1, e2e-node-2
+  Timeout: 60s, Check interval: 2s, Trigger sync: enabled
+Attempt 1 (0.0s): Root hashes don't match - 2 unique hash(es) found
+  8uYHDS3xY6ajJf3CAxmKgJ3hZFQhvUqJ1f2dpkQZ5gHi: e2e-node-1
+  5k8ztKKwNuj4okmiTa5GzbzGezVQY3x8pSo21CH3FLAf: e2e-node-2
+✓ All nodes synced after 2.24s (2 attempts)!
+  Root hash: HnyYufAC8gxh6DmwR6As13CaQ5BHbwZp1ZiC44eziQR
+✓ Step 'Wait for second handler sync' completed
+
+Executing Node-1 reads second handler-written value (call)...
+✅ Custom outputs configuration validated: 1 outputs defined
+Debug: Resolved values for execute step:
+  context_id: 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+  exec_type: None
+  method: get
+  args: {'key': 'test_key2'}
+🔍 Execute API Response for e2e-node-1 (attempt 1/5):
+  Success: True
+  Data:
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": {
+    "output": "second_value"
+  }
+}
+� Exporting variables from e2e-node-1 response:
+   ✓ second_read = {'output': 'second_value'}
+✓ Step 'Node-1 reads second handler-written value' completed
+
+Executing Assert second handler value synced to node-1 (json_assert)...
+✓ JSON equality passed
+✓ Step 'Assert second handler value synced to node-1' completed
+
+Step 5: Leaving nodes running (stop_all_nodes=false)...
+Nodes will continue running for future workflows
+
+🎉 Workflow 'E2E KV Store - Event Handler Dispatch' completed successfully!
+
+📋 Captured Dynamic Values:
+  app_path_e2e-node-1: /Users/frandomovic/Desktop/things/SIMPLE/core/apps/e2e-kv-store/res/e2e_kv_store.wasm
+  app_id: 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+  app_id_e2e-node-1: 5w4mYTwQKFAf9pGGfX5zppYrsjtfS4JGjRsMNszJW7Fw
+  namespace_id: 3058f67bb4e1be8e80e1641e5fed28129fd888074281139dde236569a1068fd2
+  namespace_id_e2e-node-1: 3058f67bb4e1be8e80e1641e5fed28129fd888074281139dde236569a1068fd2
+  context_id: 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+  ctx_key_node1: FzFDAu6FMDW3vTexYwn5b7kMYVWuwnsALEYxCQUM727y
+  context_id_e2e-node-1: 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+  namespace_invitation: {'invitation': {'expiration_timestamp': 1807960909, 'group_id': [48, 88, 246, 123, 180, 225, 190, 142, 128, 225, 100, 30, 95,
+237, 40, 18, 159, 216, 136, 7, 66, 129, 19, 157, 222, 35, 101, 105, 161, 6, 143, 210], 'invited_role': 1, 'inviter_identity': [222, 173, 202, 74, 
+178, 150, 181, 166, 68, 153, 149, 216, 82, 230, 225, 239, 88, 95, 164, 140, 78, 36, 197, 87, 247, 138, 78, 207, 172, 132, 149, 8], 'secret_salt': 
+[30, 73, 31, 55, 48, 128, 112, 183, 19, 8, 180, 22, 23, 144, 156, 60, 192, 193, 158, 81, 215, 253, 19, 29, 186, 236, 208, 115, 225, 186, 61, 254]}, 
+'inviter_signature': 
+'8bcd08d663beb0f07a467502148aced511d824a9d2025efe691e0342455bef97f730667ae3c3b0128e967d3c14f761c447f94c4202450e8f3de870de72f1d108'}
+  app_path_e2e-node-2: /Users/frandomovic/Desktop/things/SIMPLE/core/apps/e2e-kv-store/res/e2e_kv_store.wasm
+  ctx_key_node2: 9QmPog9DhsNqYZCMiezRAFdwphzp9CsAJ9Nb1a5UMo1U
+  context_id_e2e-node-2: 6CwR4184Qed22JBSqm8FxsHbHhPFGjCfnMDv25iJCYCu
+  context_member_public_key_e2e-node-2: 9QmPog9DhsNqYZCMiezRAFdwphzp9CsAJ9Nb1a5UMo1U
+  read_result: {'output': 'test_value'}
+  read_result_node1: {'output': 'test_value'}
+  handler_count_node1: {'output': 1}
+  handler_count_node2: {'output': 1}
+  second_read: {'output': 'second_value'}
+
+🎉 Workflow completed successfully!
+Stopping managed containers with graceful shutdown...
+Initiating graceful shutdown for 2 containers...
+Waiting 3s for connection draining...
+✓ Gracefully stopped and removed e2e-node-1
+✓ Gracefully stopped and removed e2e-node-2
