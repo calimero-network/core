@@ -1,0 +1,418 @@
+name: "E2E KV Store Fuzzy Load Test"
+description: "Long-running fuzzy load test for the comprehensive e2e-kv-store application"
+
+# Test configuration
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 4
+  image: ghcr.io/calimero-network/merod:edge-profiling
+  prefix: fuzzy-e2e-node
+  use_image_entrypoint: false
+
+steps:
+  - name: Install E2E KV Store on Node 1
+    type: install_application
+    node: fuzzy-e2e-node-1
+    path: apps/e2e-kv-store/res/e2e_kv_store.wasm
+    dev: true
+    outputs:
+      e2e_app_id: applicationId
+
+  - name: Create Mesh for E2E KV Store
+    type: create_mesh
+    context_node: fuzzy-e2e-node-1
+    application_id: "{{e2e_app_id}}"
+    protocol: calimero
+    path: apps/e2e-kv-store/res/e2e_kv_store.wasm
+    nodes:
+      - fuzzy-e2e-node-2
+      - fuzzy-e2e-node-3
+      - fuzzy-e2e-node-4
+    capability: member
+    outputs:
+      e2e_context_id: contextId
+      node1_key: memberPublicKey
+
+  - name: Wait for mesh formation and sync
+    type: wait_for_sync
+    context_id: "{{e2e_context_id}}"
+    nodes:
+      - fuzzy-e2e-node-1
+      - fuzzy-e2e-node-2
+      - fuzzy-e2e-node-3
+      - fuzzy-e2e-node-4
+    timeout: 60
+    check_interval: 2
+
+  - name: Verify all nodes synced
+    type: assert
+    statements:
+      - "is_set({{e2e_context_id}})"
+      - "is_set({{node1_key}})"
+      - "is_set({{public_key_fuzzy-e2e-node-2}})"
+      - "is_set({{public_key_fuzzy-e2e-node-3}})"
+      - "is_set({{public_key_fuzzy-e2e-node-4}})"
+
+  # Pre-populate KV data so read operations have something to work with
+  - name: Seed initial KV data
+    type: repeat
+    count: 10
+    variable: seed_idx
+    steps:
+      - type: call
+        node: fuzzy-e2e-node-1
+        context_id: "{{e2e_context_id}}"
+        executor_public_key: "{{node1_key}}"
+        method: set
+        args:
+          key: "seed_key_{{seed_idx}}"
+          value: "seed_value_{{seed_idx}}"
+
+  # Pre-populate CRDT counters so increment operations always have existing state
+  - name: Seed initial CRDT counters
+    type: repeat
+    count: 5
+    variable: cnt_idx
+    steps:
+      - type: call
+        node: fuzzy-e2e-node-1
+        context_id: "{{e2e_context_id}}"
+        executor_public_key: "{{node1_key}}"
+        method: increment_g_counter
+        args:
+          key: "perf_counter_{{cnt_idx}}"
+
+  - name: Wait for seed data sync
+    type: wait_for_sync
+    context_id: "{{e2e_context_id}}"
+    nodes:
+      - fuzzy-e2e-node-1
+      - fuzzy-e2e-node-2
+      - fuzzy-e2e-node-3
+      - fuzzy-e2e-node-4
+    timeout: 30
+    check_interval: 2
+
+  # Main fuzzy test for e2e-kv-store
+  #
+  # 15 min is the routine baseline used by every CI trigger (push,
+  # workflow_run, workflow_dispatch). The CI workflow overrides this to
+  # 60 min on the nightly schedule (cron 00:00 UTC) for soak coverage.
+  # Override on demand via the workflow_dispatch `duration_override`
+  # input. See `.github/workflows/fuzzy-load-test.yml`.
+  - name: E2E KV Store Fuzzy Load Test
+    type: fuzzy_test
+    duration_minutes: 15
+    context_id: "{{e2e_context_id}}"
+    summary_interval_seconds: 60
+    operation_delay_ms: 50
+    success_threshold: 95.0
+
+    nodes:
+      - name: fuzzy-e2e-node-1
+        executor_key: "{{node1_key}}"
+      - name: fuzzy-e2e-node-2
+        executor_key: "{{public_key_fuzzy-e2e-node-2}}"
+      - name: fuzzy-e2e-node-3
+        executor_key: "{{public_key_fuzzy-e2e-node-3}}"
+      - name: fuzzy-e2e-node-4
+        executor_key: "{{public_key_fuzzy-e2e-node-4}}"
+
+    operations:
+      # KV write-and-verify — 30% of traffic
+      # Primary sync benchmark: write on random node, read back after 1s
+      - name: "kv_write_read"
+        weight: 30
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: set
+            args:
+              key: "key_{{random_int(1, 5000)}}"
+              value: "value_{{uuid}}_{{timestamp}}"
+            outputs:
+              kv_set_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{kv_set_result}})"
+          - type: wait
+            seconds: 1
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              kv_get_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{kv_get_result}})"
+              - "contains({{kv_get_result}}, {{fuzzy_value}})"
+
+      # KV handler write-and-verify — 15% of traffic
+      # Tests event handler invocation under concurrent load
+      - name: "kv_handler_write_read"
+        weight: 15
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: set_with_handler
+            args:
+              key: "hkey_{{random_int(1, 5000)}}"
+              value: "hvalue_{{uuid}}_{{timestamp}}"
+            outputs:
+              h_set_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{h_set_result}})"
+          - type: wait
+            seconds: 1
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              h_get_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{h_get_result}})"
+
+      # G-Counter increment — 10% of traffic
+      # Benchmarks CRDT counter merge latency under concurrent increments
+      - name: "g_counter_ops"
+        weight: 10
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: increment_g_counter
+            args:
+              key: "perf_counter_{{random_int(0, 5)}}"
+            outputs:
+              g_counter_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{g_counter_result}})"
+
+      # PN-Counter operations — 5% of traffic
+      - name: "pn_counter_ops"
+        weight: 5
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: increment_pn_counter
+            args:
+              key: "balance_{{random_int(0, 10)}}"
+            outputs:
+              pn_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{pn_result}})"
+
+      # LWW register write-and-read — 10% of traffic
+      # Benchmarks last-write-wins convergence under concurrent writes
+      - name: "register_ops"
+        weight: 10
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: set_register
+            args:
+              key: "reg_{{random_int(0, 20)}}"
+              value: "val_{{uuid}}"
+            outputs:
+              reg_set_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{reg_set_result}})"
+          - type: wait
+            seconds: 1
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: get_register
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              reg_get_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{reg_get_result}})"
+
+      # User storage set-and-read (same node) — 8% of traffic
+      # User storage is executor-bound — read must happen on the same node as write
+      - name: "user_storage_ops"
+        weight: 8
+        steps:
+          - type: call
+            node: fuzzy-e2e-node-1
+            context_id: "{{e2e_context_id}}"
+            method: set_user_simple
+            args:
+              value: "profile_{{uuid}}"
+            outputs:
+              user_set_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{user_set_result}})"
+          - type: call
+            node: fuzzy-e2e-node-1
+            context_id: "{{e2e_context_id}}"
+            method: get_user_simple
+            outputs:
+              user_get_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{user_get_result}})"
+
+      # Nested metadata map writes — 7% of traffic
+      # Exercises field-level merge of nested UnorderedMap under load
+      - name: "metadata_ops"
+        weight: 7
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: set_metadata
+            args:
+              outer_key: "entity_{{random_int(0, 20)}}"
+              inner_key: "field_{{random_int(0, 5)}}"
+              value: "data_{{uuid}}"
+            outputs:
+              meta_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{meta_result}})"
+
+      # Tag set operations — 5% of traffic
+      - name: "tag_ops"
+        weight: 5
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: add_tag
+            args:
+              key: "category_{{random_int(0, 10)}}"
+              tag: "tag_{{random_int(0, 50)}}"
+            outputs:
+              tag_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{tag_result}})"
+
+      # RGA text append + length check — 5% of traffic
+      - name: "rga_text_ops"
+        weight: 5
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: rga_append_text
+            args:
+              text: "x"
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: rga_get_length
+            outputs:
+              rga_len_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{rga_len_result}})"
+
+      # Cross-node consistency check — 5% of traffic
+      # Write on node-1, wait 2s, read on node-4 — primary sync-time benchmark
+      - name: "cross_node_kv_sync"
+        weight: 5
+        steps:
+          - type: call
+            node: fuzzy-e2e-node-1
+            context_id: "{{e2e_context_id}}"
+            method: set
+            args:
+              key: "sync_check_{{uuid}}"
+              value: "sync_val_{{timestamp}}"
+          - type: wait
+            seconds: 2
+          - type: call
+            node: fuzzy-e2e-node-4
+            context_id: "{{e2e_context_id}}"
+            method: get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              sync_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - statement: "contains({{sync_result}}, {{fuzzy_value}})"
+                message: "Cross-node value should propagate within 2s"
+
+      # KV entries scan — 5% of traffic
+      # Benchmarks full-scan read overhead under high concurrent write load
+      - name: "kv_entries_scan"
+        weight: 5
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: entries
+            outputs:
+              entries_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{entries_result}})"
+
+  - name: Get final KV entry count
+    type: call
+    node: fuzzy-e2e-node-1
+    context_id: "{{e2e_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: len
+    outputs:
+      final_kv_count: result
+
+  - name: Get final handler execution count
+    type: call
+    node: fuzzy-e2e-node-1
+    context_id: "{{e2e_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: get_handler_execution_count
+    outputs:
+      final_handler_count: result
+
+  - name: Log final statistics
+    type: assert
+    statements:
+      - "is_set({{final_kv_count}})"
+      - "is_set({{final_handler_count}})"
+
+# Configuration options
+stop_all_nodes: false
+restart: false
+wait_timeout: 3600 # 1 hour timeout for long-running test

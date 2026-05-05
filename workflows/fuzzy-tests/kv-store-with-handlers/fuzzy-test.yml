@@ -17,7 +17,7 @@ steps:
   - name: Install KV Store with Handlers on Node 1
     type: install_application
     node: fuzzy-handlers-node-1
-    path: ../../../apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
     dev: true
     outputs:
       handlers_app_id: applicationId
@@ -26,7 +26,7 @@ steps:
     type: create_mesh
     context_node: fuzzy-handlers-node-1
     application_id: "{{handlers_app_id}}"
-    path: ../../../apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
     protocol: near
     nodes:
       - fuzzy-handlers-node-2
