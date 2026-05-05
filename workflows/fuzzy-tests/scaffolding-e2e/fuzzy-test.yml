@@ -139,7 +139,7 @@ steps:
       # KV write-and-verify — 30% of traffic
       # Primary sync benchmark: write on random node, read back after 1s
       - name: "kv_write_read"
-        weight: 30
+        weight: 25
         steps:
           - type: call
             node: "{{random_node}}"
@@ -173,7 +173,7 @@ steps:
       # KV handler write-and-verify — 15% of traffic
       # Tests event handler invocation under concurrent load
       - name: "kv_handler_write_read"
-        weight: 15
+        weight: 12
         steps:
           - type: call
             node: "{{random_node}}"
@@ -206,7 +206,7 @@ steps:
       # G-Counter increment — 10% of traffic
       # Benchmarks CRDT counter merge latency under concurrent increments
       - name: "g_counter_ops"
-        weight: 10
+        weight: 8
         steps:
           - type: call
             node: "{{random_node}}"
@@ -223,7 +223,7 @@ steps:
 
       # PN-Counter operations — 5% of traffic
       - name: "pn_counter_ops"
-        weight: 5
+        weight: 4
         steps:
           - type: call
             node: "{{random_node}}"
@@ -241,7 +241,7 @@ steps:
       # LWW register write-and-read — 10% of traffic
       # Benchmarks last-write-wins convergence under concurrent writes
       - name: "register_ops"
-        weight: 10
+        weight: 9
         steps:
           - type: call
             node: "{{random_node}}"
@@ -274,7 +274,7 @@ steps:
       # User storage set-and-read (same node) — 8% of traffic
       # User storage is executor-bound — read must happen on the same node as write
       - name: "user_storage_ops"
-        weight: 8
+        weight: 6
         steps:
           - type: call
             node: fuzzy-e2e-node-1
@@ -302,7 +302,7 @@ steps:
       # Nested metadata map writes — 7% of traffic
       # Exercises field-level merge of nested UnorderedMap under load
       - name: "metadata_ops"
-        weight: 7
+        weight: 4
         steps:
           - type: call
             node: "{{random_node}}"
@@ -321,7 +321,7 @@ steps:
 
       # Tag set operations — 5% of traffic
       - name: "tag_ops"
-        weight: 5
+        weight: 4
         steps:
           - type: call
             node: "{{random_node}}"
@@ -339,7 +339,7 @@ steps:
 
       # RGA text append + length check — 5% of traffic
       - name: "rga_text_ops"
-        weight: 5
+        weight: 4
         steps:
           - type: call
             node: "{{random_node}}"
@@ -389,7 +389,7 @@ steps:
       # KV entries scan — 5% of traffic
       # Benchmarks full-scan read overhead under high concurrent write load
       - name: "kv_entries_scan"
-        weight: 5
+        weight: 4
         steps:
           - type: call
             node: "{{random_node}}"
@@ -405,7 +405,7 @@ steps:
       # Vector push + read — 5% of traffic
       # Benchmarks Vector<Counter> element-wise merge under concurrent appends
       - name: "vector_ops"
-        weight: 5
+        weight: 4
         steps:
           - type: call
             node: "{{random_node}}"
@@ -435,7 +435,7 @@ steps:
       # FrozenStorage write + read — 5% of traffic
       # Content-addressed immutable storage: same value always yields same hash
       - name: "frozen_ops"
-        weight: 5
+        weight: 4
         steps:
           - type: call
             node: "{{random_node}}"
@@ -467,7 +467,7 @@ steps:
       # Nested UserStorage set-and-read (same node) — 5% of traffic
       # UserStorage<NestedMap>: per-user nested KV, executor-bound
       - name: "nested_user_ops"
-        weight: 5
+        weight: 4
         steps:
           - type: call
             node: fuzzy-e2e-node-1
