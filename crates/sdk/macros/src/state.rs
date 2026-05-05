@@ -7,6 +7,7 @@ use syn::{
 };
 
 use crate::errors::{Errors, ParseError, Pretty};
+use crate::forbidden_types::validate_fields;
 use crate::items::StructOrEnumItem;
 use crate::macros::infallible;
 use crate::reserved::idents;
@@ -300,6 +301,17 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
                     }
                 }
                 GenericParam::Const(_) => {}
+            }
+        }
+
+        match input.item {
+            StructOrEnumItem::Struct(item) => {
+                validate_fields(&item.fields, &errors);
+            }
+            StructOrEnumItem::Enum(item) => {
+                for variant in &item.variants {
+                    validate_fields(&variant.fields, &errors);
+                }
             }
         }
 
