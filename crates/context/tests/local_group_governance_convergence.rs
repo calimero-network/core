@@ -42,6 +42,7 @@ fn sample_meta(admin: PublicKey) -> GroupMetaValue {
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
+        owner_identity: admin,
         migration: None,
         auto_join: true,
     }

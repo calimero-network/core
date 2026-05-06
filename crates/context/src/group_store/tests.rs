@@ -25,6 +25,7 @@ fn test_meta() -> GroupMetaValue {
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: PublicKey::from([0x01; 32]),
+        owner_identity: PublicKey::from([0x01; 32]),
         migration: None,
         auto_join: true,
     }
@@ -2617,6 +2618,7 @@ fn auto_group_node_identity_is_admin_member() {
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
             admin_identity: node_pk,
+            owner_identity: node_pk,
             migration: None,
             auto_join: true,
         },
@@ -3840,6 +3842,7 @@ fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
+        owner_identity: admin,
         migration: None,
         auto_join: true,
     }
@@ -4606,6 +4609,7 @@ fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
+        owner_identity: admin,
         migration: None,
         auto_join: true,
     };
@@ -4635,6 +4639,7 @@ fn namespace_member_pubkeys_dedups_admin_with_member_row() {
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
+        owner_identity: admin,
         migration: None,
         auto_join: true,
     };
