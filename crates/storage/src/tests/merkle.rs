@@ -253,16 +253,7 @@ fn merkle_hash_convergence_after_sync() {
         metadata: page1.element().metadata.clone(),
     };
 
-    Interface::<Storage2>::apply_action(
-        action,
-        ApplyContext {
-            causal_parents: &[],
-            delta_id: None,
-            delta_hlc: None,
-            happens_before: None,
-        },
-    )
-    .unwrap();
+    Interface::<Storage2>::apply_action(action, &ApplyContext::empty()).unwrap();
 
     // After sync, hashes should match
     let page2 = Interface::<Storage2>::find_by_id::<Page>(page1.id())

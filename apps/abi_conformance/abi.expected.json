@@ -12,8 +12,14 @@
               "kind": "string"
             },
             "value": {
-              "kind": "u32"
-            }
+              "kind": "record",
+              "fields": [],
+              "crdt_type": "lww_register",
+              "inner_type": {
+                "kind": "u32"
+              }
+            },
+            "crdt_type": "unordered_map"
           }
         },
         {
@@ -21,8 +27,14 @@
           "type": {
             "kind": "list",
             "items": {
-              "$ref": "UserId32"
-            }
+              "kind": "record",
+              "fields": [],
+              "crdt_type": "lww_register",
+              "inner_type": {
+                "$ref": "UserId32"
+              }
+            },
+            "crdt_type": "vector"
           }
         }
       ]

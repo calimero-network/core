@@ -111,12 +111,11 @@ pub mod tests {
     pub mod merge_integration;
     /// Merkle hash propagation tests.
     pub mod merkle;
-    /// P3 (DAG-causal) verifier swap + rotation-log write hook tests.
-    pub mod p3_dag_causal;
-    /// P5 (DAG-causal) cross-node partition scenario tests.
-    pub mod p5_partition_scenarios;
     /// RGA (Replicated Growable Array) CRDT tests.
     pub mod rga;
+    /// Storage-internal regression: the rotation-write hook depends on the
+    /// stored-writers field staying frozen at bootstrap (see #2266 step 5).
+    pub mod write_hook_stale_writers;
     // TODO: Re-enable once Clone is implemented for collections
     // /// Nested CRDT merge behavior tests.
     // pub mod nested_crdt_merge;

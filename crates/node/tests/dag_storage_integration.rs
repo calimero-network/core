@@ -61,16 +61,8 @@ impl DeltaApplier<Vec<Action>> for StorageApplier {
 
         // Actually apply each action to storage
         for action in &delta.payload {
-            Interface::<MainStorage>::apply_action(
-                action.clone(),
-                ApplyContext {
-                    causal_parents: &[],
-                    delta_id: None,
-                    delta_hlc: None,
-                    happens_before: None,
-                },
-            )
-            .map_err(|e| ApplyError::Application(e.to_string()))?;
+            Interface::<MainStorage>::apply_action(action.clone(), &ApplyContext::empty())
+                .map_err(|e| ApplyError::Application(e.to_string()))?;
         }
 
         // Track that this delta was applied

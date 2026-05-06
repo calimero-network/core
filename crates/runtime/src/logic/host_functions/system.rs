@@ -928,15 +928,16 @@ impl VMHostFunctions<'_> {
             );
 
             with_runtime_env(env.clone(), || {
-                // P1 of #2233: causal_parents is empty here. P3 will extend
-                // the ABI to pass CausalDelta.parents through to apply_action.
-                let sync_ctx = calimero_storage::interface::ApplyContext {
-                    causal_parents: &[],
-                    delta_id: None,
-                    delta_hlc: None,
-                    happens_before: None,
-                };
-                calimero_storage::collections::Root::<Vec<u8>>::sync(&payload, sync_ctx)
+                // #2266: empty ctx is the TEMPLATE here. `payload` is a
+                // pre-built `StorageDelta` artifact — when its variant is
+                // `CausalActions`, `Root::sync` builds per-action ctxs
+                // from the embedded `effective_writers` map and ignores
+                // this template. For `Actions` (host-side replay of
+                // already-verified state) the template is used as-is and
+                // the verifier falls back to v2 stored-writers, which is
+                // safe for replicated state from a peer.
+                let sync_ctx = calimero_storage::interface::ApplyContext::empty();
+                calimero_storage::collections::Root::<Vec<u8>>::sync(&payload, &sync_ctx)
             })
             .map_err(|err| {
                 VMLogicError::from(HostError::Panic {

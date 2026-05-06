@@ -4,15 +4,20 @@
 //! across nodes using a DAG (Directed Acyclic Graph) structure.
 
 use core::cell::RefCell;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::io;
 
+use borsh::{to_vec, BorshDeserialize, BorshSerialize};
+use calimero_primitives::identity::PublicKey;
+use sha2::{Digest, Sha256};
+
 use crate::action::Action;
+use crate::address::Id;
 use crate::entities::{Metadata, SignatureData, StorageType};
 use crate::env;
 use crate::integration::Comparison;
 use crate::logical_clock::HybridTimestamp;
-use borsh::{to_vec, BorshDeserialize, BorshSerialize};
-use sha2::{Digest, Sha256};
 
 /// A causal delta in the DAG representing a set of CRDT actions.
 ///
@@ -128,14 +133,47 @@ impl CausalDelta {
 
 /// Delta produced by storage operations for synchronization.
 ///
-/// Contains either a list of actions (operation-based CRDT) or comparisons
-/// (state-based CRDT for Merkle tree reconciliation).
+/// Three variants:
+/// - [`StorageDelta::Actions`] — local apply, snapshot leaf push,
+///   SDK→host commits. The verifier falls back to v2 stored-writers
+///   semantics for `Shared` actions in this variant.
+/// - [`StorageDelta::Comparisons`] — state-based Merkle tree sync.
+/// - [`StorageDelta::CausalActions`] — DAG-causal sync (#2266). The
+///   sync layer pre-resolves the writer set per Shared entity using
+///   the rotation log + DAG ancestry; the receiver's verifier
+///   validates Shared signatures against that pre-resolved set
+///   instead of stored writers.
 #[derive(Debug, BorshSerialize)]
 pub enum StorageDelta {
     /// A list of actions from direct operations.
     Actions(Vec<Action>),
     /// A list of comparisons for Merkle tree sync.
     Comparisons(Vec<Comparison>),
+    /// Actions delivered with DAG-causal context (#2266).
+    ///
+    /// `effective_writers` carries the pre-resolved writer set for
+    /// every `Shared` entity touched by `actions`, computed by the
+    /// sender's sync layer via
+    /// `rotation_log_reader::writers_at(rotation_log, delta.parents, happens_before)`.
+    /// Entries for non-Shared entities are omitted (the verifier
+    /// doesn't consult them).
+    CausalActions {
+        /// Actions to apply.
+        actions: Vec<Action>,
+        /// Hash of the originating `CausalDelta`. Used by the
+        /// rotation-log write hook to record the delta on detected
+        /// writer-set changes.
+        delta_id: [u8; 32],
+        /// Hybrid timestamp of the originating `CausalDelta`. Used by
+        /// the rotation-log write hook for sibling tiebreak (ADR 0001).
+        delta_hlc: HybridTimestamp,
+        /// Pre-resolved writer set per Shared entity touched by
+        /// `actions`. The receiver's verifier validates Shared
+        /// signatures against the entry for the action's entity id;
+        /// non-Shared entities (User / Frozen / Public) are absent
+        /// from the map.
+        effective_writers: BTreeMap<Id, BTreeSet<PublicKey>>,
+    },
 }
 
 impl BorshDeserialize for StorageDelta {
@@ -147,6 +185,12 @@ impl BorshDeserialize for StorageDelta {
         match tag {
             0 => Ok(StorageDelta::Actions(Vec::deserialize_reader(reader)?)),
             1 => Ok(StorageDelta::Comparisons(Vec::deserialize_reader(reader)?)),
+            2 => Ok(StorageDelta::CausalActions {
+                actions: Vec::deserialize_reader(reader)?,
+                delta_id: <[u8; 32]>::deserialize_reader(reader)?,
+                delta_hlc: HybridTimestamp::deserialize_reader(reader)?,
+                effective_writers: BTreeMap::deserialize_reader(reader)?,
+            }),
             _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid tag")),
         }
     }
@@ -339,6 +383,153 @@ pub fn reset_delta_context() {
     DELTA_CONTEXT.with(|ctx| {
         *ctx.borrow_mut() = DeltaContext::new();
     });
+}
+
+#[cfg(test)]
+mod borsh_roundtrip_tests {
+    //! `StorageDelta` has a custom `BorshDeserialize` impl that branches
+    //! on a leading u8 tag (0=Actions, 1=Comparisons, 2=CausalActions).
+    //! These tests guard the wire format: a regression here silently
+    //! corrupts every delta sent over the network.
+
+    use core::num::NonZeroU128;
+
+    use borsh::{from_slice, to_vec};
+
+    use super::*;
+    use crate::logical_clock::{Timestamp, ID, NTP64};
+
+    fn make_action(byte: u8) -> Action {
+        Action::Add {
+            id: Id::from([byte; 32]),
+            data: vec![byte; 4],
+            ancestors: vec![],
+            metadata: Metadata::new(100, 200),
+        }
+    }
+
+    fn make_hlc(time: u64) -> HybridTimestamp {
+        let ts = Timestamp::new(NTP64(time), ID::from(NonZeroU128::new(1).unwrap()));
+        HybridTimestamp::new(ts)
+    }
+
+    fn assert_actions_equal(a: &[Action], b: &[Action]) {
+        assert_eq!(a.len(), b.len(), "action count mismatch");
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(x, y, "action mismatch");
+        }
+    }
+
+    #[test]
+    fn actions_variant_roundtrips() {
+        let original = StorageDelta::Actions(vec![make_action(1), make_action(2)]);
+        let bytes = to_vec(&original).unwrap();
+        // Tag 0 prefix preserved.
+        assert_eq!(bytes[0], 0);
+
+        let decoded: StorageDelta = from_slice(&bytes).unwrap();
+        match decoded {
+            StorageDelta::Actions(actions) => {
+                assert_actions_equal(&actions, &[make_action(1), make_action(2)]);
+            }
+            other => panic!("expected Actions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn comparisons_variant_roundtrips_and_empty_input_falls_back() {
+        let original = StorageDelta::Comparisons(vec![]);
+        let bytes = to_vec(&original).unwrap();
+        assert_eq!(bytes[0], 1);
+
+        let decoded: StorageDelta = from_slice(&bytes).unwrap();
+        assert!(
+            matches!(&decoded, StorageDelta::Comparisons(v) if v.is_empty()),
+            "expected empty Comparisons, got {decoded:?}"
+        );
+
+        // The custom deserializer falls back to `Comparisons(vec![])` on
+        // empty input — exercised by legacy senders that send no artifact.
+        let empty: StorageDelta = from_slice(&[]).unwrap();
+        assert!(
+            matches!(&empty, StorageDelta::Comparisons(v) if v.is_empty()),
+            "expected fallback Comparisons(vec![]), got {empty:?}"
+        );
+    }
+
+    #[test]
+    fn causal_actions_variant_roundtrips() {
+        // The #2266 wire format: actions + delta_id + delta_hlc +
+        // BTreeMap<Id, BTreeSet<PublicKey>>.
+        let entity_a = Id::from([0xA1_u8; 32]);
+        let entity_b = Id::from([0xB2_u8; 32]);
+        let writer1 = PublicKey::from([0xAA_u8; 32]);
+        let writer2 = PublicKey::from([0xBB_u8; 32]);
+
+        let mut effective_writers = BTreeMap::new();
+        let _ = effective_writers.insert(entity_a, BTreeSet::from([writer1, writer2]));
+        let _ = effective_writers.insert(entity_b, BTreeSet::from([writer1]));
+
+        let original = StorageDelta::CausalActions {
+            actions: vec![make_action(0xFE)],
+            delta_id: [0xCD; 32],
+            delta_hlc: make_hlc(12_345),
+            effective_writers: effective_writers.clone(),
+        };
+
+        let bytes = to_vec(&original).unwrap();
+        assert_eq!(bytes[0], 2, "CausalActions must use tag 2");
+
+        let decoded: StorageDelta = from_slice(&bytes).unwrap();
+        match decoded {
+            StorageDelta::CausalActions {
+                actions,
+                delta_id,
+                delta_hlc,
+                effective_writers: ew,
+            } => {
+                assert_actions_equal(&actions, &[make_action(0xFE)]);
+                assert_eq!(delta_id, [0xCD; 32]);
+                assert_eq!(delta_hlc, make_hlc(12_345));
+                assert_eq!(ew, effective_writers);
+            }
+            other => panic!("expected CausalActions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn causal_actions_with_empty_effective_writers_roundtrips() {
+        // Non-Shared-only deltas resolve nothing; the map is empty.
+        // Receiver verifier sees None for every entity → v2 fallback.
+        let original = StorageDelta::CausalActions {
+            actions: vec![make_action(7)],
+            delta_id: [0; 32],
+            delta_hlc: make_hlc(0),
+            effective_writers: BTreeMap::new(),
+        };
+        let bytes = to_vec(&original).unwrap();
+        let decoded: StorageDelta = from_slice(&bytes).unwrap();
+        assert!(
+            matches!(
+                &decoded,
+                StorageDelta::CausalActions { effective_writers, .. }
+                    if effective_writers.is_empty()
+            ),
+            "expected CausalActions with empty effective_writers, got {decoded:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_tag_errors() {
+        // Forward-compat guard: a tag the receiver doesn't know must
+        // surface as an error, not silent misinterpretation.
+        let bytes = vec![99_u8];
+        let result: Result<StorageDelta, _> = from_slice(&bytes);
+        assert!(
+            result.is_err(),
+            "expected error for unknown tag, got {result:?}"
+        );
+    }
 }
 
 // Helper function to hash Metadata storage type

@@ -336,15 +336,7 @@ impl SimStorage {
                 ancestors: vec![],
                 metadata: Metadata::default(),
             };
-            let _ = Interface::<MainStorage>::apply_action(
-                action,
-                ApplyContext {
-                    causal_parents: &[],
-                    delta_id: None,
-                    delta_hlc: None,
-                    happens_before: None,
-                },
-            );
+            let _ = Interface::<MainStorage>::apply_action(action, &ApplyContext::empty());
         });
     }
 
@@ -375,15 +367,7 @@ impl SimStorage {
                 ancestors: vec![ancestor],
                 metadata,
             };
-            let _ = Interface::<MainStorage>::apply_action(
-                action,
-                ApplyContext {
-                    causal_parents: &[],
-                    delta_id: None,
-                    delta_hlc: None,
-                    happens_before: None,
-                },
-            );
+            let _ = Interface::<MainStorage>::apply_action(action, &ApplyContext::empty());
         });
     }
 
@@ -423,15 +407,7 @@ impl SimStorage {
                     ancestors: vec![],
                     metadata: Metadata::default(),
                 };
-                let _ = Interface::<MainStorage>::apply_action(
-                    action,
-                    ApplyContext {
-                        causal_parents: &[],
-                        delta_id: None,
-                        delta_hlc: None,
-                        happens_before: None,
-                    },
-                );
+                let _ = Interface::<MainStorage>::apply_action(action, &ApplyContext::empty());
             } else {
                 // Create new entity as child of root
                 // First ensure root exists
@@ -447,15 +423,8 @@ impl SimStorage {
                         ancestors: vec![],
                         metadata: Metadata::default(),
                     };
-                    let _ = Interface::<MainStorage>::apply_action(
-                        root_action,
-                        ApplyContext {
-                            causal_parents: &[],
-                            delta_id: None,
-                            delta_hlc: None,
-                            happens_before: None,
-                        },
-                    );
+                    let _ =
+                        Interface::<MainStorage>::apply_action(root_action, &ApplyContext::empty());
                 }
 
                 // Add new entity under root
@@ -465,15 +434,7 @@ impl SimStorage {
                     ancestors: vec![ChildInfo::new(root_id, [0; 32], Metadata::default())],
                     metadata: Metadata::default(),
                 };
-                let _ = Interface::<MainStorage>::apply_action(
-                    action,
-                    ApplyContext {
-                        causal_parents: &[],
-                        delta_id: None,
-                        delta_hlc: None,
-                        happens_before: None,
-                    },
-                );
+                let _ = Interface::<MainStorage>::apply_action(action, &ApplyContext::empty());
             }
         });
     }
@@ -487,15 +448,7 @@ impl SimStorage {
                     deleted_at: calimero_storage::env::time_now(),
                     metadata: index.metadata.clone(),
                 };
-                let _ = Interface::<MainStorage>::apply_action(
-                    action,
-                    ApplyContext {
-                        causal_parents: &[],
-                        delta_id: None,
-                        delta_hlc: None,
-                        happens_before: None,
-                    },
-                );
+                let _ = Interface::<MainStorage>::apply_action(action, &ApplyContext::empty());
             }
         });
     }

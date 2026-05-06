@@ -165,16 +165,7 @@ mod interface__apply_actions {
             metadata: page.element().metadata.clone(),
         };
 
-        assert!(MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
 
         // Verify the page was added
         let retrieved_page = MainInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -198,16 +189,7 @@ mod interface__apply_actions {
             metadata: page.element().metadata.clone(),
         };
 
-        assert!(MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
 
         // Verify the page was updated
         let retrieved_page = MainInterface::find_by_id::<Page>(page.id())
@@ -227,16 +209,7 @@ mod interface__apply_actions {
             metadata: Metadata::default(),
         };
 
-        assert!(MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
 
         // Verify the page was deleted
         let retrieved_page = MainInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -256,16 +229,7 @@ mod interface__apply_actions {
             metadata: Metadata::default(),
         };
 
-        assert!(MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
 
         // Verify the page was deleted (tombstone)
         let retrieved_page = MainInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -295,16 +259,7 @@ mod interface__apply_actions {
             metadata: Metadata::default(),
         };
 
-        assert!(MainInterface::apply_action(
-            old_delete,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(old_delete, &ApplyContext::empty()).is_ok());
 
         // Page should still exist (update wins)
         let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -318,16 +273,7 @@ mod interface__apply_actions {
             metadata: Metadata::default(),
         };
 
-        assert!(MainInterface::apply_action(
-            new_delete,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(new_delete, &ApplyContext::empty()).is_ok());
 
         // Page should be deleted (deletion wins)
         let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -340,16 +286,7 @@ mod interface__apply_actions {
         let action = Action::Compare { id: page.id() };
 
         // Compare should fail
-        assert!(MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_err());
+        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_err());
     }
 
     #[test]
@@ -364,16 +301,7 @@ mod interface__apply_actions {
         };
 
         // Updating a non-existent page should still succeed (it will be added)
-        assert!(MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
 
         // Verify the page was added
         let retrieved_page = MainInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -798,16 +726,7 @@ mod user_storage_signature_verification {
             create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce);
 
         // Valid signature should succeed
-        assert!(MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
 
         // Verify the page was added
         let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -834,15 +753,7 @@ mod user_storage_signature_verification {
             create_signed_user_add_action(&wrong_signing_key, owner, page.id(), serialized, nonce);
 
         // Invalid signature should fail
-        let result = MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidSignature) => {}
@@ -881,15 +792,7 @@ mod user_storage_signature_verification {
         };
 
         // Missing signature should fail
-        let result = MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidData(msg)) => {
@@ -936,15 +839,7 @@ mod user_storage_signature_verification {
         }
 
         // Corrupted signature should fail
-        let result = MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidSignature) => {}
@@ -968,16 +863,7 @@ mod user_storage_signature_verification {
         let nonce1 = env::time_now();
         let action1 =
             create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce1);
-        assert!(MainInterface::apply_action(
-            action1,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
 
         // Wait a bit to ensure different timestamp
         sleep(Duration::from_millis(2));
@@ -997,16 +883,7 @@ mod user_storage_signature_verification {
             page.element().created_at(),
         );
 
-        assert!(MainInterface::apply_action(
-            action2,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action2, &ApplyContext::empty()).is_ok());
 
         // Verify the update
         let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -1048,16 +925,7 @@ mod user_storage_replay_protection {
             serialized.clone(),
             nonce,
         );
-        assert!(MainInterface::apply_action(
-            action1,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -1071,15 +939,7 @@ mod user_storage_replay_protection {
             page.element().created_at(),
         );
 
-        let result = MainInterface::apply_action(
-            action2,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action2, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::NonceReplay(_)) => {}
@@ -1107,16 +967,7 @@ mod user_storage_replay_protection {
             serialized.clone(),
             nonce1,
         );
-        assert!(MainInterface::apply_action(
-            action1,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -1131,15 +982,7 @@ mod user_storage_replay_protection {
             page.element().created_at(),
         );
 
-        let result = MainInterface::apply_action(
-            action2,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action2, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::NonceReplay(_)) => {}
@@ -1162,16 +1005,7 @@ mod user_storage_replay_protection {
         let nonce1 = env::time_now();
         let action1 =
             create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce1);
-        assert!(MainInterface::apply_action(
-            action1,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
 
         // Multiple updates with increasing nonces
         for i in 2..=5 {
@@ -1189,16 +1023,7 @@ mod user_storage_replay_protection {
                 page.element().created_at(),
             );
             assert!(
-                MainInterface::apply_action(
-                    action,
-                    ApplyContext {
-                        causal_parents: &[],
-                        delta_id: None,
-                        delta_hlc: None,
-                        happens_before: None,
-                    }
-                )
-                .is_ok(),
+                MainInterface::apply_action(action, &ApplyContext::empty()).is_ok(),
                 "Update {} should succeed",
                 i
             );
@@ -1230,16 +1055,7 @@ mod user_storage_replay_protection {
             serialized1.clone(),
             first_nonce,
         );
-        assert!(MainInterface::apply_action(
-            action_first,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action_first, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(10));
 
@@ -1255,15 +1071,7 @@ mod user_storage_replay_protection {
             page.element().created_at(),
         );
 
-        let result = MainInterface::apply_action(
-            action_old,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action_old, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::NonceReplay(_)) => {}
@@ -1329,16 +1137,7 @@ mod frozen_storage_verification {
             },
         };
 
-        assert!(MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
 
         // Verify it was stored
         let stored = MainInterface::get(id);
@@ -1368,15 +1167,7 @@ mod frozen_storage_verification {
             },
         };
 
-        let result = MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidData(msg)) => {
@@ -1413,16 +1204,7 @@ mod frozen_storage_verification {
                 field_name: None,
             },
         };
-        assert!(MainInterface::apply_action(
-            add_action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(add_action, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -1444,15 +1226,7 @@ mod frozen_storage_verification {
             },
         };
 
-        let result = MainInterface::apply_action(
-            update_action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(update_action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::ActionNotAllowed(msg)) => {
@@ -1489,16 +1263,7 @@ mod frozen_storage_verification {
                 field_name: None,
             },
         };
-        assert!(MainInterface::apply_action(
-            add_action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(add_action, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -1509,15 +1274,7 @@ mod frozen_storage_verification {
             metadata: Metadata::default(),
         };
 
-        let result = MainInterface::apply_action(
-            delete_action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(delete_action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::ActionNotAllowed(msg)) => {
@@ -1555,15 +1312,7 @@ mod frozen_storage_verification {
             },
         };
 
-        let result = MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidData(msg)) => {
@@ -1606,16 +1355,7 @@ mod frozen_storage_verification {
         };
 
         // This should succeed since the hash of empty [] matches
-        assert!(MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
     }
 }
 
@@ -1652,15 +1392,7 @@ mod timestamp_drift_protection {
             },
         };
 
-        let result = MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidTimestamp(ts, local)) => {
@@ -1695,16 +1427,7 @@ mod timestamp_drift_protection {
         };
 
         // Should succeed since within tolerance
-        assert!(MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
     }
 
     #[test]
@@ -1732,16 +1455,7 @@ mod timestamp_drift_protection {
         };
 
         // Past timestamps are fine
-        assert!(MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action, &ApplyContext::empty()).is_ok());
     }
 
     #[test]
@@ -1761,15 +1475,7 @@ mod timestamp_drift_protection {
             metadata: Metadata::default(),
         };
 
-        let result = MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidTimestamp(_, _)) => {}
@@ -1869,16 +1575,7 @@ mod storage_type_edge_cases {
             serialized.clone(),
             nonce1,
         );
-        assert!(MainInterface::apply_action(
-            action1,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -1893,15 +1590,7 @@ mod storage_type_edge_cases {
             page.element().created_at(),
         );
 
-        let result = MainInterface::apply_action(
-            action2,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action2, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::ActionNotAllowed(msg)) => {
@@ -1926,16 +1615,7 @@ mod storage_type_edge_cases {
         let nonce1 = env::time_now();
         let action1 =
             create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce1);
-        assert!(MainInterface::apply_action(
-            action1,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -1943,16 +1623,7 @@ mod storage_type_edge_cases {
         let nonce2 = env::time_now();
         let delete_action = create_signed_delete_action(&signing_key, owner, page.id(), nonce2);
 
-        assert!(MainInterface::apply_action(
-            delete_action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(delete_action, &ApplyContext::empty()).is_ok());
 
         // Verify entity is deleted
         let retrieved = MainInterface::find_by_id::<Page>(page.id()).unwrap();
@@ -1975,16 +1646,7 @@ mod storage_type_edge_cases {
         let nonce1 = env::time_now();
         let action1 =
             create_signed_user_add_action(&signing_key1, owner1, page.id(), serialized, nonce1);
-        assert!(MainInterface::apply_action(
-            action1,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -1992,15 +1654,7 @@ mod storage_type_edge_cases {
         let nonce2 = env::time_now();
         let delete_action = create_signed_delete_action(&signing_key2, owner2, page.id(), nonce2);
 
-        let result = MainInterface::apply_action(
-            delete_action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(delete_action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidSignature) => {}
@@ -2023,16 +1677,7 @@ mod storage_type_edge_cases {
         let nonce1 = env::time_now();
         let action1 =
             create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce1);
-        assert!(MainInterface::apply_action(
-            action1,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -2052,15 +1697,7 @@ mod storage_type_edge_cases {
             },
         };
 
-        let result = MainInterface::apply_action(
-            delete_action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(delete_action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::InvalidData(msg)) => {
@@ -2097,15 +1734,7 @@ mod storage_type_edge_cases {
             page.element().created_at(),
         );
 
-        let result = MainInterface::apply_action(
-            action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::ActionNotAllowed(msg)) => {
@@ -2139,16 +1768,7 @@ mod storage_type_edge_cases {
             serialized.clone(),
             nonce,
         );
-        assert!(MainInterface::apply_action(
-            action1,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -2167,15 +1787,7 @@ mod storage_type_edge_cases {
             },
         };
 
-        let result = MainInterface::apply_action(
-            action2,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(action2, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::ActionNotAllowed(msg)) => {
@@ -2210,16 +1822,7 @@ mod storage_type_edge_cases {
             serialized.clone(),
             nonce1,
         );
-        assert!(MainInterface::apply_action(
-            action1,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
@@ -2233,31 +1836,14 @@ mod storage_type_edge_cases {
             nonce2,
             page.element().created_at(),
         );
-        assert!(MainInterface::apply_action(
-            action2,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            }
-        )
-        .is_ok());
+        assert!(MainInterface::apply_action(action2, &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
         // Try to delete with old nonce (replay attack)
         let delete_action = create_signed_delete_action(&signing_key, owner, page.id(), nonce1);
 
-        let result = MainInterface::apply_action(
-            delete_action,
-            ApplyContext {
-                causal_parents: &[],
-                delta_id: None,
-                delta_hlc: None,
-                happens_before: None,
-            },
-        );
+        let result = MainInterface::apply_action(delete_action, &ApplyContext::empty());
         assert!(result.is_err());
         match result {
             Err(StorageError::NonceReplay(_)) => {}

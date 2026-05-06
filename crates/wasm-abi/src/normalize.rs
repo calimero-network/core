@@ -201,9 +201,9 @@ fn normalize_generic_type(
             Ok(TypeRef::list(item_type))
         }
         // Collection types - normalize to semantic ABI types
-        "BTreeMap" | "HashMap" | "UnorderedMap" | "IndexMap" => {
+        "BTreeMap" | "HashMap" | "UnorderedMap" | "IndexMap" | "AuthoredMap" => {
             // All map types -> map<K, V> (normalize to semantic type)
-            // UnorderedMap preserves CRDT type metadata
+            // UnorderedMap and AuthoredMap preserve CRDT type metadata
             if args.args.len() != 2 {
                 return Err(NormalizeError::TypePathError(format!(
                     "invalid {ident_str} type - expected 2 type arguments"
@@ -229,11 +229,11 @@ fn normalize_generic_type(
             let _key_type = normalize_type(key_ty, wasm32, resolver)?;
             let value_type = normalize_type(value_ty, wasm32, resolver)?;
 
-            // Preserve CRDT type for UnorderedMap
-            let crdt_type = if ident_str == "UnorderedMap" {
-                Some(CrdtCollectionType::UnorderedMap)
-            } else {
-                None
+            // Preserve CRDT type for UnorderedMap / AuthoredMap
+            let crdt_type = match ident_str.as_str() {
+                "UnorderedMap" => Some(CrdtCollectionType::UnorderedMap),
+                "AuthoredMap" => Some(CrdtCollectionType::AuthoredMap),
+                _ => None,
             };
 
             Ok(TypeRef::Collection {
@@ -296,6 +296,7 @@ fn normalize_generic_type(
         | "Counter"
         | "ReplicatedGrowableArray"
         | "Vector"
+        | "AuthoredVector"
         | "UnorderedSet"
         | "FrozenValue" => {
             // These CRDT wrappers unwrap to their inner type for ABI purposes
@@ -363,6 +364,16 @@ fn normalize_generic_type(
                         },
                         crdt_type: Some(CrdtCollectionType::Vector),
                         inner_type: None, // Inner type is in List.items
+                    })
+                }
+                "AuthoredVector" => {
+                    // AuthoredVector<T> -> List<T> with per-element author metadata
+                    Ok(TypeRef::Collection {
+                        collection: CollectionType::List {
+                            items: Box::new(inner_type),
+                        },
+                        crdt_type: Some(CrdtCollectionType::AuthoredVector),
+                        inner_type: None,
                     })
                 }
                 "UnorderedSet" => {

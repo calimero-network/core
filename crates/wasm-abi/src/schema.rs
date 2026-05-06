@@ -177,6 +177,7 @@ pub enum ScalarType {
 /// (timestamps, node IDs, element IDs, etc.) and must be preserved for correct deserialization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CrdtCollectionType {
     /// Last-Write-Wins Register: `(value: T, timestamp, node_id)`
     LwwRegister,
@@ -186,10 +187,15 @@ pub enum CrdtCollectionType {
     Vector,
     /// UnorderedMap: Map with element IDs and CRDT metadata
     UnorderedMap,
+    /// AuthoredMap: Map with per-entry author identity (insert is open;
+    /// update/remove gated by stored owner == executor)
+    AuthoredMap,
     /// UnorderedSet: Set with CRDT metadata
     UnorderedSet,
     /// ReplicatedGrowableArray: String with character-level CRDT
     ReplicatedGrowableArray,
+    /// AuthoredVector: List with per-element author identity
+    AuthoredVector,
 }
 
 /// Collection types
