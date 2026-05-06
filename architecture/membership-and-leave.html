@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Membership &amp; Leave Operations — Calimero Core Architecture</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="main">
+<div class="content">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Membership &amp; Leave</span></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     1. TITLE + STATS
+     ═══════════════════════════════════════════════════════════════════ -->
+<h1>Membership &amp; <em>Leave Operations</em></h1>
+<p class="page-subtitle">Voluntary leave and Owner role across namespaces, groups, and contexts</p>
+
+<div class="g4" style="margin-bottom:36px;">
+  <div class="stat"><div class="v">3 leaves</div><div class="l">context · group · namespace</div></div>
+  <div class="stat"><div class="v">1 op</div><div class="l">TransferOwnership</div></div>
+  <div class="stat"><div class="v">Direct</div><div class="l">leave deletes a row</div></div>
+  <div class="stat"><div class="v">Owner≠Admin</div><div class="l">exclusive role</div></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     2. PROBLEM &amp; MOTIVATION
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Problem</h2>
+<p>
+Today, the only way out of a Calimero group or namespace is to be removed by an admin —
+<code>MemberRemoved</code> is admin-initiated and there is no self-leave op. Users cannot
+voluntarily exit a workspace they joined; muting a context they're auto-followed into requires
+client-side filtering rather than a real opt-out, because auto-follow re-adds them on the next
+<code>ContextRegistered</code> event.
+</p>
+<p>
+Separately, every group already records a single "creator / fallback admin" identity
+(<code>GroupMetaValue.admin_identity</code>) but no role distinguishes that creator from any other
+admin. There is no way to express "this person owns the group, others administrate it" — admins
+can demote each other, kick each other, and leave a group ownerless. There is no
+<code>TransferOwnership</code> op to designate a successor.
+</p>
+<p>
+This page proposes three new leave operations and formalizes Owner as a real, exclusive,
+transferable role distinct from Admin. The four pieces share infrastructure: Owner blocks
+<code>leave_group</code>/<code>leave_namespace</code>; leave operations reuse the existing
+<code>MemberRemoved</code> key-rotation pipeline; <code>leave_namespace</code> is
+<code>leave_group</code> plus the cascade handler.
+</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     3. MEMBERSHIP MODEL RECAP
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Membership Model Recap</h2>
+<p>
+Background on the data shapes the leave operations operate over. Names match the code as it
+exists today.
+</p>
+
+<h3>Hierarchy</h3>
+<ul>
+  <li><b>Namespace.</b> A <code>ContextGroupId</code> with no parent. The trust anchor for everything
+  beneath it. There is no separate <code>Namespace</code> type — a namespace is a root group.</li>
+  <li><b>Group / subgroup.</b> A <code>ContextGroup</code> with a <code>parent_group_id</code>.
+  Forms a strict tree under a single namespace.</li>
+  <li><b>Context.</b> A unit of replicated state. Belongs to exactly one group via
+  <code>ContextGroupRef</code>. Members of the group can join, sync, and write to it.</li>
+</ul>
+
+<h3>Direct vs inherited membership</h3>
+<p>
+Group membership is computed by <code>check_group_membership_path</code>
+(<code>crates/context/src/group_store/membership.rs:217-291</code>):
+</p>
+<ul>
+  <li><b>Direct membership</b> = a stored <code>(member, group)</code> row exists. Created by
+  <code>add_group_members</code> (explicit invitation). Required for Restricted groups; possible
+  but redundant for Open subgroups.</li>
+  <li><b>Inherited membership</b> = no row exists; the walker concludes membership by walking the
+  parent chain through Open subgroups when the member holds the
+  <code>CAN_JOIN_OPEN_SUBGROUPS</code> capability in the parent.</li>
+</ul>
+<p>
+This distinction is critical for leave operations. <b>Leave deletes a direct row.</b> If the only
+path to membership is inheritance, there is no row to delete — the member must leave whichever
+ancestor provides the inheritance.
+</p>
+
+<h3>Visibility (Open vs Restricted)</h3>
+<p>
+A per-group flag (<code>VisibilityMode::{Open, Restricted}</code> in
+<code>crates/context/config/src/lib.rs:134-137</code>) that controls whether the parent-walk
+inherits into this subgroup or stops cold:
+</p>
+<ul>
+  <li><b>Open</b>: parent members with <code>CAN_JOIN_OPEN_SUBGROUPS</code> inherit membership.</li>
+  <li><b>Restricted</b>: walks halt; only direct invitations admit members.</li>
+</ul>
+<p>
+At leave-time, visibility doesn't change behavior — it only affects whether a row exists in the
+first place. Most members of Open subgroups have no row (inherited); most members of Restricted
+subgroups have one (direct invite).
+</p>
+
+<h3>Roles &amp; capabilities</h3>
+<p>
+Roles defined in <code>crates/primitives/src/context.rs:253-265</code>:
+</p>
+<ul>
+  <li><code>Admin</code>, <code>Member</code>, <code>ReadOnly</code>, <code>ReadOnlyTee</code>.</li>
+  <li>This proposal adds <code>Owner</code> as a fifth role — exactly one per group, transferable.</li>
+</ul>
+<p>
+Per-member capability bits (<code>crates/context/config/src/lib.rs:144-156</code>):
+</p>
+<ul>
+  <li><code>CAN_CREATE_CONTEXT</code>, <code>CAN_INVITE_MEMBERS</code>,
+  <code>CAN_JOIN_OPEN_SUBGROUPS</code>, <code>MANAGE_MEMBERS</code>,
+  <code>MANAGE_APPLICATION</code>.</li>
+</ul>
+
+<h3>Existing protections</h3>
+<ul>
+  <li><b>Last-admin protection</b> (<code>membership_policy.rs:39-46</code>):
+  <code>MemberRemoved</code> rejects with <code>LastAdmin</code> if it would leave a group with
+  zero admins. Also enforced on demotion.</li>
+  <li><b>Key rotation on removal</b> (<code>group_governance_publisher.rs:216-220</code>):
+  publishing <code>MemberRemoved</code> automatically generates a fresh group key, wraps it for
+  remaining members, and emits <code>RootOp::KeyDelivery</code>. The leave operations in this
+  proposal hook into the same pipeline.</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     4. leave_context
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>leave_context — local-only opt-out</h2>
+<p>
+Stop syncing a context on this node. No DAG op, no broadcast, no key rotation. Other members
+never observe the leave; from their perspective the leaver is still in the membership list (which
+is implicit anyway, computed from group membership + auto-follow).
+</p>
+
+<h3>Storage</h3>
+<p>
+Add a single nullable timestamp field to <code>ContextIdentity</code>
+(<code>crates/store/src/key/context.rs:120</code>):
+</p>
+<div class="typedef">
+<span class="kw">struct</span> <span class="ty">ContextIdentity</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// existing fields...</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">pub</span> <span class="field">manually_left_at</span>: <span class="ty">Option</span>&lt;<span class="ty">Timestamp</span>&gt;,<br>
+}
+</div>
+
+<h3>Flow</h3>
+<ol>
+  <li>Client calls <code>leave_context(context_id)</code>.</li>
+  <li>Local node sets <code>manually_left_at = now()</code> on the <code>ContextIdentity</code>
+  row for this <code>(member, context)</code> pair.</li>
+  <li>Sync layer reads the flag on next tick; stops sending and accepting deltas for that pair.</li>
+  <li>Auto-follow handler (<code>auto_follow.rs:255</code>) gains a check: if
+  <code>manually_left_at.is_some()</code>, skip the auto-rejoin.</li>
+  <li>Done. One local DB write. No network involvement.</li>
+</ol>
+
+<h3>Properties</h3>
+<table class="properties">
+  <tr><td><b>Scope</b></td><td>Local only</td></tr>
+  <tr><td><b>DAG entry</b></td><td>None</td></tr>
+  <tr><td><b>Key rotation</b></td><td>None — leaver still holds the group key</td></tr>
+  <tr><td><b>Coordination</b></td><td>None — cannot fail</td></tr>
+  <tr><td><b>Reversibility</b></td><td>Trivial — flip the flag back via <code>JoinContextRequest</code> or a dedicated <code>rejoin_context</code></td></tr>
+  <tr><td><b>Other members observe</b></td><td>No</td></tr>
+  <tr><td><b>Forward secrecy</b></td><td>Not provided — leaver retains the key, can decrypt anything they sync later if they rejoin</td></tr>
+</table>
+
+<h3>What this is not</h3>
+<ul>
+  <li><b>Not a kick.</b> Leaver still appears in any "members of this context" query.</li>
+  <li><b>Not a cryptographic leave.</b> If the user wants forward secrecy on a context, they must
+  leave the group containing it (which rotates the group key).</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     5. leave_group
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>leave_group — distributed, two-phase, no cascade</h2>
+<p>
+Self-removal from a single group. Reuses the existing <code>MemberRemoved</code> key-rotation
+pipeline but the publisher/rotation responsibility splits across two parties: the leaver
+publishes the leave op, then a remaining admin publishes the <code>KeyDelivery</code> with the
+fresh group key. The leaver never holds the new key.
+</p>
+
+<h3>New op</h3>
+<div class="typedef">
+<span class="kw">enum</span> <span class="ty">GroupOp</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// existing variants...</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="ty">MemberLeft</span> { <span class="field">member</span>: <span class="ty">PublicKey</span> },<br>
+}
+</div>
+<p>
+Distinct from <code>MemberRemoved</code> for audit clarity — "this member chose to leave" vs
+"this member was removed" are semantically different events even when they have similar effects.
+</p>
+
+<h3>Preconditions</h3>
+<ul>
+  <li>Signer has a <b>direct row</b> in the group (computed via
+  <code>check_group_membership_path</code>; reject with <code>NotADirectMember</code> if the
+  signer is only an inherited member — they must leave the anchor instead).</li>
+  <li>Signer is not the Owner (<code>OwnerCannotLeave</code>; must
+  <code>TransferOwnership</code> first).</li>
+  <li>If signer is admin, removing them does not leave the group with zero admins
+  (<code>LastAdmin</code> via existing <code>ensure_not_last_admin_removal</code>).</li>
+</ul>
+
+<h3>Flow</h3>
+<ol>
+  <li>Leaver's client calls <code>leave_group(group_id)</code>.</li>
+  <li>Server-side validation runs the preconditions above.</li>
+  <li>Leaver publishes <code>MemberLeft { member: signer }</code> via the governance DAG. Signed
+  by the leaver. Targets this group.</li>
+  <li>Op broadcasts to all members of the group. Each receiver applies it: deletes the
+  <code>(leaver, group_id)</code> row from local membership state. Leaver's own node also drops
+  sync state for this group's contexts and (optionally) purges encrypted blobs.</li>
+  <li>The first remaining admin to ack the op enters <b>phase two</b>:
+  <ol>
+    <li>Generates a fresh group key via <code>build_key_rotation</code>
+    (<code>group_keys.rs:266</code>).</li>
+    <li>Wraps it for each remaining member (leaver excluded).</li>
+    <li>Publishes <code>RootOp::KeyDelivery</code> carrying the wrapped bundles.</li>
+  </ol>
+  </li>
+  <li>Each remaining member receives <code>KeyDelivery</code>, unwraps their bundle, replaces the
+  active group key. New writes use the new key from now on. The leaver's old key still decrypts
+  historical content but not new writes.</li>
+</ol>
+
+<h3>Cascade behavior</h3>
+<table class="properties">
+  <tr><td><b>Direct rows in subgroups under this group</b></td><td>Untouched. Leaver keeps those memberships. (You can be invited to a child while explicitly leaving the parent.)</td></tr>
+  <tr><td><b>Inherited memberships in Open subgroups</b></td><td>Resolve themselves. The walker stops finding the leaver once their parent row is gone — no extra work needed.</td></tr>
+</table>
+
+<h3>Failure modes</h3>
+<ul>
+  <li><b>Network partition between phase one and phase two.</b> <code>MemberLeft</code> lands but
+  <code>KeyDelivery</code> is delayed. Forward secrecy briefly weak — the leaver is no longer in
+  the membership list but new writes are still under the old key (which they hold). Heals on
+  partition resolve.</li>
+  <li><b>All admins offline.</b> <code>MemberLeft</code> lands; rotation never fires until an
+  admin returns. Operational mitigation: alert when no rotation follows a leave within a
+  configurable window.</li>
+</ul>
+
+<h3>Rejoin</h3>
+<ul>
+  <li><b>Restricted group</b>: requires fresh <code>add_group_members</code> from a remaining
+  admin. New keys delivered via the existing membership-add path.</li>
+  <li><b>Open group</b> (if leaver had a redundant direct row): same. If leaver's path to the
+  group was via inheritance from a parent, that inheritance is automatically restored as soon as
+  they rejoin the parent.</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     6. leave_namespace
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>leave_namespace — cascading, heaviest</h2>
+<p>
+A namespace is the root group. Leaving it cascades through every descendant where the leaver has
+a direct row, rotating each scope's group key independently. Plus the namespace's own root key.
+This is the only operation in the proposal that fans out across multiple scopes.
+</p>
+
+<h3>Preconditions</h3>
+<ul>
+  <li>Signer has a direct row at the namespace root.</li>
+  <li>Signer does not own the namespace OR any subgroup beneath it. If they do →
+  <code>MustTransferOwnership { groups: [...] }</code> listing every owned scope.</li>
+  <li>Removing the signer doesn't leave any scope (namespace or descendant) admin-less. If it
+  would → <code>LastAdmin { group: G }</code> reports the offending scope, forcing a successor
+  promotion before retry.</li>
+</ul>
+
+<h3>Flow</h3>
+<ol>
+  <li>Client calls <code>leave_namespace(namespace_id)</code>.</li>
+  <li>Server-side validation walks the subgroup tree:
+    <ul>
+      <li>Compute <code>direct_groups = [namespace, G1, G2, ...]</code> — every group in the
+      namespace where the signer has a direct row.</li>
+      <li>Run owner check + last-admin check across all of them. If any fails, surface the
+      offending scope and bail before publishing anything.</li>
+    </ul>
+  </li>
+  <li>Signer publishes a single <code>MemberLeft { member: signer }</code> at the namespace root.</li>
+  <li>The cascade handler (<code>cascade_remove_member_from_group_tree</code>,
+  <code>mod.rs:811</code>) fans out: locally and on each receiver, fire the
+  <code>MemberLeft</code>-equivalent for each scope in <code>direct_groups</code>.</li>
+  <li>Per-scope key rotation runs the same phase-two pattern as <code>leave_group</code>, in
+  parallel. Total network ops: one root-level <code>MemberLeft</code> +
+  <span class="ty">N</span> <code>KeyDelivery</code> ops where <span class="ty">N</span> = number
+  of direct memberships in the subtree.</li>
+  <li>Local cleanup on the leaver's node:
+    <ul>
+      <li><b>Soft mode (default):</b> archive namespace data as read-only. Leaver can browse their
+      historical view.</li>
+      <li><b>Hard mode (opt-in):</b> purge keys, DAG entries, encrypted blobs.</li>
+    </ul>
+  </li>
+</ol>
+
+<h3>Edge case — last member of the namespace</h3>
+<p>
+If the leaver is the last remaining member, <code>MemberLeft</code> writes locally but has no
+peers to broadcast to. The namespace effectively dies on the leaver's node.
+</p>
+<p>
+If the leaver is also the owner AND last member, they're stuck in the cycle — they must transfer
+ownership but there's no one to transfer to. Use a dedicated <code>DeleteNamespace</code> op
+(analogous to <code>DeleteGroup</code> but at root) that bypasses the owner-cannot-leave rule.
+</p>
+
+<h3>Failure modes</h3>
+<ul>
+  <li>Same as <code>leave_group</code>, multiplied across scopes. Each rotation can fail
+  independently.</li>
+  <li>Partial cascade: if some sub-rotations succeed and others don't, the leaver's root row is
+  gone everywhere but some peers may have lingering ghost rows in subgroups. Eventually
+  consistent — peers detect the leaver-not-in-root state and reconcile on next sync.</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     7. OWNER ROLE
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gd">
+<h2>Owner Role</h2>
+<p>
+Promotes the existing <code>GroupMetaValue.admin_identity</code> field
+(<code>crates/store/src/key/group/mod.rs:1160-1169</code>) from "fallback creator-admin" to a
+real, exclusive, transferable role. Every group has exactly one Owner. Owner is also an admin —
+all admin permissions cascade. The distinction is exclusive privileges no admin can perform, plus
+the property that Owner cannot be involuntarily removed.
+</p>
+
+<h3>Storage change</h3>
+<p>
+Semantic rename of <code>admin_identity</code> to <code>owner_identity</code>. Field shape and
+serialization unchanged — every existing group's current <code>admin_identity</code> becomes
+its Owner. No migration needed at the data layer; the change is at the type and access-path
+layer (rename callsites, expose as a real role).
+</p>
+
+<h3>New op</h3>
+<div class="typedef">
+<span class="kw">enum</span> <span class="ty">GroupOp</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// existing variants + MemberLeft...</span><br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="ty">TransferOwnership</span> { <span class="field">new_owner</span>: <span class="ty">PublicKey</span> },<br>
+}
+</div>
+<ul>
+  <li>Signer must equal current <code>owner_identity</code>.</li>
+  <li><code>new_owner</code> must already be a member of the group.</li>
+  <li>Apply: update <code>owner_identity</code> to <code>new_owner</code>. Old owner becomes a
+  regular admin (retains admin powers; doesn't lose them as a side-effect of transfer).</li>
+  <li>No key rotation (membership unchanged).</li>
+</ul>
+
+<h3>Privilege matrix</h3>
+<table class="properties">
+  <tr><th>Action</th><th>Member</th><th>Admin</th><th>Owner</th></tr>
+  <tr><td>Invite members (with <code>CAN_INVITE_MEMBERS</code>)</td><td>✓</td><td>✓</td><td>✓</td></tr>
+  <tr><td>Create context (with <code>CAN_CREATE_CONTEXT</code>)</td><td>✓</td><td>✓</td><td>✓</td></tr>
+  <tr><td>Remove non-owner members (<code>MANAGE_MEMBERS</code>)</td><td>—</td><td>✓</td><td>✓</td></tr>
+  <tr><td>Promote member → admin</td><td>—</td><td>✓</td><td>✓</td></tr>
+  <tr><td>Demote admin → member</td><td>—</td><td>✓<sup>1</sup></td><td>✓</td></tr>
+  <tr><td><code>TransferOwnership</code></td><td>—</td><td>—</td><td>✓</td></tr>
+  <tr><td><code>DeleteGroup</code> / <code>DeleteContext</code> / <code>DeleteNamespace</code></td><td>—</td><td>—</td><td>✓</td></tr>
+  <tr><td>Be involuntarily removed (<code>MemberRemoved</code>)</td><td>✓</td><td>✓</td><td>✗ — <code>CannotRemoveOwner</code></td></tr>
+  <tr><td>Self-leave via <code>leave_group</code> / <code>leave_namespace</code></td><td>✓</td><td>✓ (last-admin permitting)</td><td>✗ — must <code>TransferOwnership</code> first</td></tr>
+</table>
+<p style="font-size:0.9em; color:#6b6b80; margin-top:8px;">
+<sup>1</sup> Open question. The existing code allows admins to demote each other
+(<code>mod.rs:823</code>); restricting to Owner-only would tighten centralization. This proposal
+preserves the current behavior (admins can demote each other), but the doc author may want to
+revisit.
+</p>
+
+<h3>Owner per context</h3>
+<p>
+Same model. <code>CreateContext</code> records its creator as <code>owner_identity</code> on
+the context's metadata. The context owner can <code>TransferContextOwnership</code> and
+<code>DeleteContext</code>. Other than that, regular context membership is governed by the
+parent group as before.
+</p>
+
+<h3>Interactions with leave operations</h3>
+<ul>
+  <li><b><code>leave_context</code></b>: no owner constraint. Local opt-out doesn't touch
+  governance — even an owner can mute a context locally.</li>
+  <li><b><code>leave_group</code></b>: rejected for owner. Error fast-paths to
+  <code>TransferOwnership</code>.</li>
+  <li><b><code>leave_namespace</code></b>: rejected if signer owns the namespace OR any subgroup
+  beneath it. Error lists every owned scope. UI may bundle these into a single multi-transfer
+  flow.</li>
+</ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     8. SINGLE-PAGE REFERENCE
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card ga">
+<h2>Single-Page Reference</h2>
+<table class="properties">
+  <tr>
+    <th>Op</th>
+    <th>Scope</th>
+    <th>DAG?</th>
+    <th>Key rotation?</th>
+    <th>Cascade?</th>
+    <th>Reversible?</th>
+  </tr>
+  <tr>
+    <td><code>leave_context</code></td>
+    <td>Local only</td>
+    <td>None</td>
+    <td>None</td>
+    <td>n/a</td>
+    <td>Trivial — flip flag</td>
+  </tr>
+  <tr>
+    <td><code>leave_group</code></td>
+    <td>Single group</td>
+    <td><code>MemberLeft</code></td>
+    <td>Yes (1 group)</td>
+    <td>None</td>
+    <td>Re-invite (Restricted) / re-inherit (Open)</td>
+  </tr>
+  <tr>
+    <td><code>leave_namespace</code></td>
+    <td>Whole subtree</td>
+    <td><code>MemberLeft</code> at root</td>
+    <td>Yes (1 + N)</td>
+    <td>All direct-row scopes</td>
+    <td>Re-invite at root + re-inherit</td>
+  </tr>
+  <tr>
+    <td><code>TransferOwnership</code></td>
+    <td>Single group/context</td>
+    <td>Op</td>
+    <td>None (membership unchanged)</td>
+    <td>None</td>
+    <td>Transfer back</td>
+  </tr>
+  <tr>
+    <td><code>DeleteGroup</code> (Owner)</td>
+    <td>Single group + descendants</td>
+    <td>Op</td>
+    <td>n/a (everyone gets removed)</td>
+    <td>Yes</td>
+    <td>None — destructive</td>
+  </tr>
+  <tr>
+    <td><code>DeleteNamespace</code> (Owner)</td>
+    <td>Whole subtree</td>
+    <td>Op</td>
+    <td>n/a</td>
+    <td>Yes</td>
+    <td>None — destructive</td>
+  </tr>
+</table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     9. STATUS LEGEND
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gb">
+<h2>Implementation Status</h2>
+<p>
+This page commits the design before any code lands. Status flips from <b>proposed</b> to
+<b>implemented</b> as each feature ships, in PRs that update the corresponding section.
+</p>
+<table class="properties">
+  <tr><th>Section</th><th>Status</th><th>Tracking</th></tr>
+  <tr><td>Membership Model Recap</td><td>Documents existing code</td><td>—</td></tr>
+  <tr><td><code>leave_context</code></td><td>Proposed</td><td>—</td></tr>
+  <tr><td><code>leave_group</code></td><td>Proposed</td><td>—</td></tr>
+  <tr><td><code>leave_namespace</code></td><td>Proposed</td><td>—</td></tr>
+  <tr><td>Owner Role + <code>TransferOwnership</code></td><td>Proposed</td><td>—</td></tr>
+  <tr><td><code>DeleteGroup</code> / <code>DeleteNamespace</code> Owner-gating</td><td>Proposed</td><td>—</td></tr>
+</table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     10. OPEN QUESTIONS
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Open Questions</h2>
+<ol>
+  <li><b>Soft vs hard local cleanup default for <code>leave_namespace</code>.</b> This proposal
+  defaults to soft (archive). Privacy-conscious products may want hard (purge) as the default.</li>
+  <li><b>Admin-mutual demote.</b> Today admins can demote each other. Should this be restricted
+  to Owner-only? This proposal preserves current behavior; revisit if a security concern surfaces.</li>
+  <li><b>Old owner after <code>TransferOwnership</code>.</b> Becomes a regular admin (this
+  proposal) or just a member (alternative)? Admin retains operational continuity; member is a
+  cleaner "step-down" semantic.</li>
+  <li><b>Multi-scope transfer ergonomics.</b> If an owner of a namespace + 5 subgroups wants to
+  leave, does the UI surface 6 separate prompts or one bulk-transfer flow?</li>
+  <li><b>Cascade visibility in <code>leave_namespace</code>.</b> Remaining peers see one
+  user-facing event (<code>MemberLeft</code>) or N events (one per cascading scope's
+  <code>KeyDelivery</code>)? Recommend collapsing to one user-facing event with internal fan-out.</li>
+  <li><b>Owner-leaves-with-no-successor edge case.</b> Dedicated <code>DeleteNamespace</code> op
+  (this proposal) or refuse outright?</li>
+</ol>
+</div>
+
+</div>
+</div>
+</body>
+</html>
