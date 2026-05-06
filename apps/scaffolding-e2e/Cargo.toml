@@ -1,5 +1,5 @@
 [package]
-name = "e2e-kv-store"
+name = "scaffolding-e2e"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

@@ -19,9 +19,9 @@ fi
 
 RUSTFLAGS="--remap-path-prefix $HOME=~" cargo build --target wasm32-unknown-unknown --profile "$PROFILE"
 
-cp $TARGET/wasm32-unknown-unknown/$PROFILE/e2e_kv_store.wasm ./res/
+cp $TARGET/wasm32-unknown-unknown/$PROFILE/scaffolding_e2e.wasm ./res/
 
 # Skip wasm-opt for profiling builds to preserve debug info
 if [ "$PROFILE" = "app-release" ] && command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz --enable-bulk-memory ./res/e2e_kv_store.wasm -o ./res/e2e_kv_store.wasm
+  wasm-opt -Oz --enable-bulk-memory ./res/scaffolding_e2e.wasm -o ./res/scaffolding_e2e.wasm
 fi

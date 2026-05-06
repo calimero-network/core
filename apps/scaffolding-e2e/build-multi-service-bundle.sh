@@ -11,8 +11,8 @@ mkdir -p res/multi-bundle-temp
 
 # Both services use the same WASM — this is what we want to test:
 # the multi-service bundle install + service_name selection path in merod.
-cp res/e2e_kv_store.wasm res/multi-bundle-temp/store-a.wasm
-cp res/e2e_kv_store.wasm res/multi-bundle-temp/store-b.wasm
+cp res/scaffolding_e2e.wasm res/multi-bundle-temp/store-a.wasm
+cp res/scaffolding_e2e.wasm res/multi-bundle-temp/store-b.wasm
 
 ABI_ARGS=""
 if [ -f res/abi.json ]; then
@@ -21,7 +21,7 @@ if [ -f res/abi.json ]; then
     ABI_ARGS="store-a-abi.json store-b-abi.json"
 fi
 
-WASM_SIZE=$(stat -f%z res/e2e_kv_store.wasm 2>/dev/null || stat -c%s res/e2e_kv_store.wasm 2>/dev/null || echo 0)
+WASM_SIZE=$(stat -f%z res/scaffolding_e2e.wasm 2>/dev/null || stat -c%s res/scaffolding_e2e.wasm 2>/dev/null || echo 0)
 ABI_SIZE=0
 if [ -f res/abi.json ]; then
     ABI_SIZE=$(stat -f%z res/abi.json 2>/dev/null || stat -c%s res/abi.json 2>/dev/null || echo 0)
@@ -30,7 +30,7 @@ fi
 cat > res/multi-bundle-temp/manifest.json <<EOF
 {
   "version": "1.0",
-  "package": "com.calimero.e2e-kv-store-multi",
+  "package": "com.calimero.scaffolding-e2e-multi",
   "appVersion": "0.1.0",
   "minRuntimeVersion": "0.0.0",
   "services": [
@@ -66,10 +66,10 @@ cat > res/multi-bundle-temp/manifest.json <<EOF
 EOF
 
 cd res/multi-bundle-temp
-tar -czf ../e2e-kv-store-multi-0.1.0.mpk manifest.json store-a.wasm store-b.wasm ${ABI_ARGS} 2>/dev/null || \
-tar -czf ../e2e-kv-store-multi-0.1.0.mpk manifest.json store-a.wasm store-b.wasm 2>/dev/null
+tar -czf ../scaffolding-e2e-multi-0.1.0.mpk manifest.json store-a.wasm store-b.wasm ${ABI_ARGS} 2>/dev/null || \
+tar -czf ../scaffolding-e2e-multi-0.1.0.mpk manifest.json store-a.wasm store-b.wasm 2>/dev/null
 
 cd ..
 rm -rf multi-bundle-temp
 
-echo "Multi-service bundle created: res/e2e-kv-store-multi-0.1.0.mpk"
+echo "Multi-service bundle created: res/scaffolding-e2e-multi-0.1.0.mpk"
