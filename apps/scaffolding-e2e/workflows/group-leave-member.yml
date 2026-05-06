@@ -60,6 +60,13 @@ steps:
     outputs:
       identity_node3: memberIdentity
 
+  - name: Get node-1 namespace identity
+    type: get_namespace_identity
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      identity_node1: publicKey
+
   - name: Create subgroup with all three nodes
     type: create_group_in_namespace
     node: e2e-node-1
@@ -105,9 +112,26 @@ steps:
       - "not_contains({{members_after_leave}}, {{identity_node2}})"
       - "contains({{members_after_leave}}, {{identity_node3}})"
 
-  # --- SCENARIO 2: A node not in the group cannot leave ---
-  # leave_group requires a direct row. A non-member who calls
-  # leave_group is rejected.
+  # Verify a third peer (node-3) also observes node-2's departure.
+  # Cross-checking propagation to a non-leader peer catches bugs in
+  # MemberLeft fan-out that would only be visible from one node.
+
+  - name: List subgroup members on node-3 after node-2 left
+    type: list_group_members
+    node: e2e-node-3
+    group_id: '{{subgroup_id}}'
+    outputs:
+      members_after_leave_node3: members
+
+  - name: Assert node-3 also sees node-2 absent
+    type: assert
+    statements:
+      - "not_contains({{members_after_leave_node3}}, {{identity_node2}})"
+      - "contains({{members_after_leave_node3}}, {{identity_node3}})"
+
+  # --- SCENARIO 2: leave is idempotent — repeated leave is rejected ---
+  # Node-2 already left in scenario 1, so the direct-row precondition
+  # is no longer satisfied. A second leave_group call must be rejected.
 
   - name: Node-2 cannot leave again (already left)
     type: leave_group
@@ -126,6 +150,23 @@ steps:
     node: e2e-node-1
     group_id: '{{subgroup_id}}'
     expected_failure: true
+
+  # Verify the failed leave didn't partially succeed: node-1 (admin)
+  # and node-3 (member) must both still be present in the subgroup.
+
+  - name: List subgroup members after failed admin leave
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      members_after_admin_fail: members
+
+  - name: Assert subgroup still has node-1 admin and node-3 member
+    type: assert
+    statements:
+      - "contains({{members_after_admin_fail}}, {{identity_node1}})"
+      - "contains({{members_after_admin_fail}}, {{identity_node3}})"
+      - "not_contains({{members_after_admin_fail}}, {{identity_node2}})"
 
 stop_all_nodes: false
 restart: false

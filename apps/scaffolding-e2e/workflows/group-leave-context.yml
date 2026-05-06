@@ -131,10 +131,22 @@ steps:
       key: "phase"
       value: "while-left"
 
+  # Use a separate key so we can later assert catch-up sync delivers
+  # writes that landed while node-2 was absent. The "phase" key is
+  # overwritten post-rejoin; "during_leave_marker" stays untouched.
+  - name: Node-1 writes a marker key node-2 missed
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "during_leave_marker"
+      value: "missed-by-node-2"
+
   - name: Wait for gossip propagation window
     type: wait
     seconds: 5
-    message: long enough for sync to deliver if it were active
+    message: long enough for sync to deliver if it were active — a 5s wait is the standard idiom for negative-sync assertions because there is no deterministic primitive for "sync did NOT happen"
 
   - name: Node-2 reads phase while left
     type: call
@@ -192,6 +204,25 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{post_rejoin_read}}, {"output": "post-rejoin"})'
+
+  # Catch-up semantic: rejoining must also deliver writes that landed
+  # while node-2 was in the left state. The marker key was set during
+  # the leave window and never overwritten — node-2 should see it now.
+
+  - name: Node-2 reads marker written during leave window
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "during_leave_marker"
+    outputs:
+      marker_read: result
+
+  - name: Assert rejoin delivered the missed write
+    type: json_assert
+    statements:
+      - 'json_equal({{marker_read}}, {"output": "missed-by-node-2"})'
 
 stop_all_nodes: false
 restart: false

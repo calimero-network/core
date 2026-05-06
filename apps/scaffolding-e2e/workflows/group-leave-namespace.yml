@@ -46,6 +46,13 @@ steps:
     outputs:
       identity_node2: memberIdentity
 
+  - name: Get node-1 namespace identity
+    type: get_namespace_identity
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      identity_node1: publicKey
+
   - name: Create subgroup A
     type: create_group_in_namespace
     node: e2e-node-1
@@ -78,6 +85,34 @@ steps:
       - identity: '{{identity_node2}}'
         role: Member
 
+  # --- Pre-condition: node-2 is actually in both subgroups before the leave ---
+  # Without this, a silent failure in add_group_members would make the
+  # cascade test trivially pass (nothing to remove).
+
+  - name: List subgroup-A members before leave
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_a_id}}'
+    outputs:
+      subgroup_a_before: members
+
+  - name: Assert node-2 is in subgroup-A before leave
+    type: assert
+    statements:
+      - "contains({{subgroup_a_before}}, {{identity_node2}})"
+
+  - name: List subgroup-B members before leave
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_b_id}}'
+    outputs:
+      subgroup_b_before: members
+
+  - name: Assert node-2 is in subgroup-B before leave
+    type: assert
+    statements:
+      - "contains({{subgroup_b_before}}, {{identity_node2}})"
+
   # --- SCENARIO: Node-2 leaves the namespace root ---
   # The apply path detects a no-parent (root) MemberLeft and cascades
   # through every descendant subgroup where node-2 has a direct row,
@@ -90,8 +125,8 @@ steps:
 
   - name: Wait for cascade MemberLeft to propagate to node-1
     type: wait
-    seconds: 5
-    message: governance DAG op needs gossip propagation before listing on a different node
+    seconds: 10
+    message: cascade applies state changes to namespace + every descendant subgroup, so allow extra propagation time
 
   # --- Verification: node-2 is gone from the namespace and both subgroups ---
 
@@ -106,6 +141,7 @@ steps:
     type: assert
     statements:
       - "not_contains({{ns_members_after}}, {{identity_node2}})"
+      - "contains({{ns_members_after}}, {{identity_node1}})"
 
   - name: List subgroup-A members on node-1
     type: list_group_members
@@ -114,10 +150,11 @@ steps:
     outputs:
       subgroup_a_after: members
 
-  - name: Assert node-2 absent from subgroup-A membership
+  - name: Assert node-2 absent from subgroup-A but node-1 still present
     type: assert
     statements:
       - "not_contains({{subgroup_a_after}}, {{identity_node2}})"
+      - "contains({{subgroup_a_after}}, {{identity_node1}})"
 
   - name: List subgroup-B members on node-1
     type: list_group_members
@@ -126,10 +163,11 @@ steps:
     outputs:
       subgroup_b_after: members
 
-  - name: Assert node-2 absent from subgroup-B membership
+  - name: Assert node-2 absent from subgroup-B but node-1 still present
     type: assert
     statements:
       - "not_contains({{subgroup_b_after}}, {{identity_node2}})"
+      - "contains({{subgroup_b_after}}, {{identity_node1}})"
 
 stop_all_nodes: false
 restart: false
