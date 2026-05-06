@@ -7,6 +7,7 @@ nuke_on_start: true
 nuke_on_end: false
 
 nodes:
+  chain_id: calimero-testnet
   count: 4
   image: ghcr.io/calimero-network/merod:edge-profiling
   prefix: fuzzy-e2e-node
@@ -100,19 +101,52 @@ steps:
           value: 1
 
   # Pre-populate AuthoredMap so authored_update_seed has stable owner-keyed entries
-  - name: Seed initial AuthoredMap entries
-    type: repeat
-    count: 5
-    variable: amap_idx
-    steps:
-      - type: call
-        node: fuzzy-e2e-node-1
-        context_id: "{{e2e_context_id}}"
-        executor_public_key: "{{node1_key}}"
-        method: authored_insert
-        args:
-          key: "authored_seed_{{amap_idx}}"
-          value: "authored_val_{{amap_idx}}"
+  # (repeat variable substitution is broken in merobox for args; use explicit steps)
+  - name: Seed AuthoredMap entry 0
+    type: call
+    node: fuzzy-e2e-node-1
+    context_id: "{{e2e_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: authored_insert
+    args:
+      key: "authored_seed_0"
+      value: "authored_val_0"
+  - name: Seed AuthoredMap entry 1
+    type: call
+    node: fuzzy-e2e-node-1
+    context_id: "{{e2e_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: authored_insert
+    args:
+      key: "authored_seed_1"
+      value: "authored_val_1"
+  - name: Seed AuthoredMap entry 2
+    type: call
+    node: fuzzy-e2e-node-1
+    context_id: "{{e2e_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: authored_insert
+    args:
+      key: "authored_seed_2"
+      value: "authored_val_2"
+  - name: Seed AuthoredMap entry 3
+    type: call
+    node: fuzzy-e2e-node-1
+    context_id: "{{e2e_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: authored_insert
+    args:
+      key: "authored_seed_3"
+      value: "authored_val_3"
+  - name: Seed AuthoredMap entry 4
+    type: call
+    node: fuzzy-e2e-node-1
+    context_id: "{{e2e_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: authored_insert
+    args:
+      key: "authored_seed_4"
+      value: "authored_val_4"
 
   # Add all nodes as SharedStorage writers so any node can write during the fuzzy test
   - name: Add node-2 as shared writer
