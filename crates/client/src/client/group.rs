@@ -297,10 +297,7 @@ where
     /// owner + last-admin checks run upfront. Rejects with
     /// `MustTransferOwnership` if the leaver owns any group in the
     /// subtree. See `architecture/membership-and-leave.html` § 6.
-    pub async fn leave_namespace(
-        &self,
-        namespace_id: &str,
-    ) -> Result<LeaveNamespaceApiResponse> {
+    pub async fn leave_namespace(&self, namespace_id: &str) -> Result<LeaveNamespaceApiResponse> {
         let response = self
             .connection
             .post_no_body(&format!("admin-api/namespaces/{namespace_id}/leave"))
