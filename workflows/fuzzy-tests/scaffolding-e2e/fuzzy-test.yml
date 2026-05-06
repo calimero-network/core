@@ -25,7 +25,7 @@ steps:
     type: create_mesh
     context_node: fuzzy-e2e-node-1
     application_id: "{{e2e_app_id}}"
-    protocol: calimero
+    protocol: near
     path: apps/scaffolding-e2e/res/scaffolding_e2e.wasm
     nodes:
       - fuzzy-e2e-node-2
@@ -591,7 +591,7 @@ steps:
             context_id: "{{e2e_context_id}}"
             method: authored_update
             args:
-              key: "authored_seed_{{random_int(0, 5)}}"
+              key: "authored_seed_{{random_int(0, 4)}}"
               value: "updated_{{uuid}}"
             outputs:
               authored_upd_result: result

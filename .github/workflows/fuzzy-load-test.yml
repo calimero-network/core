@@ -676,7 +676,7 @@ jobs:
           compression-level: 6
 
   fuzzy-test-scaffolding-e2e:
-    name: Run E2E KV Store Fuzzy Test with Profiling
+    name: Run Scaffolding E2E Fuzzy Test with Profiling
     needs: build
     runs-on: big-machine
     timeout-minutes: 150
@@ -766,7 +766,7 @@ jobs:
             "$COMMIT_HASH" \
             "${{ github.ref_name }}"
 
-      - name: Run E2E KV Store Fuzzy Test with Metrics Collection
+      - name: Run Scaffolding E2E Fuzzy Test with Metrics Collection
         id: e2e-test
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
