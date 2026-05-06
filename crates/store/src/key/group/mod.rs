@@ -1163,6 +1163,17 @@ pub struct GroupMetaValue {
     pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
     pub admin_identity: PrimitivePublicKey,
+    /// Single-instance Owner of this group. Distinct from the legacy
+    /// `admin_identity` (which is now a fallback creator-admin marker for
+    /// pre-existing groups). The Owner has exclusive privileges no other
+    /// admin can perform: `TransferOwnership`, `DeleteGroup`/
+    /// `DeleteNamespace`, and immunity from involuntary `MemberRemoved`.
+    /// See `architecture/membership-and-leave.html` § 7.
+    ///
+    /// Set to the signer of `CreateGroupRequest` on group creation. New
+    /// groups have `owner_identity == admin_identity` initially.
+    /// Transferable via `GroupOp::TransferOwnership { new_owner }`.
+    pub owner_identity: PrimitivePublicKey,
     pub migration: Option<Vec<u8>>,
     /// When true, joining members auto-subscribe to all visible contexts.
     pub auto_join: bool,
@@ -1980,6 +1991,7 @@ mod tests {
                 upgrade_policy: UpgradePolicy::Automatic,
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0xCC; 32]),
+                owner_identity: PrimitivePublicKey::from([0xCC; 32]),
                 migration: None,
                 auto_join: true,
             };
@@ -2006,6 +2018,7 @@ mod tests {
                 },
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0x33; 32]),
+                owner_identity: PrimitivePublicKey::from([0x33; 32]),
                 migration: None,
                 auto_join: true,
             };

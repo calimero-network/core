@@ -61,6 +61,16 @@ pub enum GroupOp {
     },
     /// Remove a member.
     MemberRemoved { member: PublicKey },
+    /// Self-leave: a member voluntarily exits the group. Distinct from
+    /// `MemberRemoved` for audit clarity (this is a member choosing to
+    /// leave; `MemberRemoved` is admin-initiated). Apply requires
+    /// `signer == member`. Does NOT trigger the key-rotation pipeline —
+    /// the leaver cannot generate the new key without retaining it, and
+    /// proper forward secrecy requires a follow-up two-phase rotation
+    /// (planned as a follow-up). For full cryptographic leave today,
+    /// pair with admin-initiated `MemberRemoved`.
+    /// See `architecture/membership-and-leave.html` § 5.
+    MemberLeft { member: PublicKey },
     /// Set a member’s role (same as upsert member with new role).
     MemberRoleSet {
         member: PublicKey,
@@ -159,6 +169,12 @@ pub enum GroupOp {
         auto_follow_contexts: bool,
         auto_follow_subgroups: bool,
     },
+    /// Transfer ownership of this group to `new_owner`. Signer must be the
+    /// current Owner; `new_owner` must already be a member. Updates
+    /// `GroupMetaValue.owner_identity`. The previous owner remains a
+    /// regular admin (no automatic role change beyond the owner field).
+    /// See `architecture/membership-and-leave.html` § 7.
+    TransferOwnership { new_owner: PublicKey },
 }
 
 impl GroupOp {
@@ -174,6 +190,7 @@ impl GroupOp {
             GroupOp::Noop => "noop",
             GroupOp::MemberAdded { .. } => "member_added",
             GroupOp::MemberRemoved { .. } => "member_removed",
+            GroupOp::MemberLeft { .. } => "member_left",
             GroupOp::MemberRoleSet { .. } => "member_role_set",
             GroupOp::MemberCapabilitySet { .. } => "member_capability_set",
             GroupOp::DefaultCapabilitiesSet { .. } => "default_capabilities_set",
@@ -189,6 +206,7 @@ impl GroupOp {
             GroupOp::GroupMigrationSet { .. } => "group_migration_set",
             GroupOp::ContextCapabilityGranted { .. } => "context_capability_granted",
             GroupOp::ContextCapabilityRevoked { .. } => "context_capability_revoked",
+            GroupOp::TransferOwnership { .. } => "transfer_ownership",
             GroupOp::TeeAdmissionPolicySet { .. } => "tee_admission_policy_set",
             GroupOp::MemberJoinedViaTeeAttestation { .. } => "member_joined_via_tee",
             GroupOp::MemberSetAutoFollow { .. } => "member_set_auto_follow",
