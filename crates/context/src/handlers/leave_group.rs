@@ -33,6 +33,25 @@ impl Handler<LeaveGroupRequest> for ContextManager {
         // Resolve this node's identity for the group's namespace. If the
         // node has no namespace identity, it can't be a member of any
         // subgroup under it — nothing to leave.
+        // Reject if the caller passed a namespace (root group) here.
+        // Although the apply path's `MemberLeft` arm correctly cascades
+        // for root-group leaves, this handler does NOT call
+        // `unsubscribe_namespace` (it can't, because the leaver may still
+        // be in other groups under the same namespace). For a namespace
+        // leave, the proper handler is `leave_namespace`, which both
+        // applies the cascade AND unsubscribes from gossipsub.
+        match group_store::resolve_namespace(&self.datastore, &group_id) {
+            Ok(ns) if ns == group_id => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "{:?} is a namespace (root group); use leave_namespace, \
+                     which also unsubscribes from the namespace gossipsub topic",
+                    group_id
+                )))
+            }
+            Ok(_) => {}
+            Err(err) => return ActorResponse::reply(Err(err)),
+        }
+
         let self_identity = match self.node_namespace_identity(&group_id) {
             Some((pk, sk_bytes)) => (pk, sk_bytes),
             None => {
