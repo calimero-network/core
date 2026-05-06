@@ -362,6 +362,83 @@ pub struct JoinContextResponse {
     pub member_public_key: PublicKey,
 }
 
+/// Request to leave a context locally on this node. Purely a node-local opt-out:
+/// no governance op is published, no key rotation is performed, peers never
+/// observe the leave. The handler:
+///
+/// 1. Deletes the local `ContextIdentity` row, which stops sync (the sync layer
+///    iterates `ContextIdentity` rows to determine what to replicate).
+/// 2. Writes a `ContextLeftMarker` tombstone in the `Column::ContextLocal`
+///    column, which the auto-follow handler checks before re-joining.
+///
+/// Cleared by an explicit `JoinContextRequest` from the user, which removes the
+/// marker as a side effect of joining.
+#[derive(Debug)]
+pub struct LeaveContextRequest {
+    pub context_id: ContextId,
+}
+
+impl Message for LeaveContextRequest {
+    type Result = eyre::Result<LeaveContextResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct LeaveContextResponse {
+    pub context_id: ContextId,
+    pub member_public_key: PublicKey,
+}
+
+/// Self-leave from a single group. Distributed governance op:
+/// publishes `GroupOp::MemberLeft { member: signer }` which deletes
+/// the leaver's direct membership row across all peers and cascades
+/// the per-context identity rows under the group.
+///
+/// Preconditions enforced at apply: signer must be a direct member
+/// (not just inherited), must not be Owner, and last-admin protection
+/// applies (admin can't leave if they're the only admin).
+///
+/// **Forward-secrecy note:** this op deliberately does not trigger
+/// the key-rotation pipeline that admin-initiated `MemberRemoved`
+/// does. For full cryptographic leave today, pair with admin
+/// follow-up; the proper two-phase rotation is a deferred follow-up.
+#[derive(Debug)]
+pub struct LeaveGroupRequest {
+    pub group_id: ContextGroupId,
+}
+
+impl Message for LeaveGroupRequest {
+    type Result = eyre::Result<LeaveGroupResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct LeaveGroupResponse {
+    pub group_id: ContextGroupId,
+    pub member_public_key: PublicKey,
+}
+
+/// Self-leave from a namespace (root group). Operationally a `MemberLeft`
+/// at the namespace root, but the apply path detects "this group has no
+/// parent" and cascades through every descendant group where the leaver
+/// has a direct row — running owner + last-admin checks across all of
+/// them BEFORE any mutation. See § 6 of the design doc.
+///
+/// Same forward-secrecy caveat as `leave_group`: row-removal cascade
+/// only, no per-scope key rotation in this PR.
+#[derive(Debug)]
+pub struct LeaveNamespaceRequest {
+    pub namespace_id: ContextGroupId,
+}
+
+impl Message for LeaveNamespaceRequest {
+    type Result = eyre::Result<LeaveNamespaceResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct LeaveNamespaceResponse {
+    pub namespace_id: ContextGroupId,
+    pub member_public_key: PublicKey,
+}
+
 // ---- Group Permission Types ----
 
 #[derive(Debug)]

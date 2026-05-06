@@ -12,6 +12,7 @@ pub mod groups;
 pub mod identity;
 pub mod invite;
 pub mod join;
+pub mod leave;
 pub mod list;
 
 pub const EXAMPLES: &str = r"
@@ -53,6 +54,8 @@ pub enum NamespaceSubCommands {
     Delete(delete::DeleteCommand),
     Invite(invite::InviteCommand),
     Join(join::JoinCommand),
+    /// Voluntarily leave a namespace (cascades through descendant groups).
+    Leave(leave::LeaveCommand),
     Groups(groups::GroupsCommand),
     CreateGroup(create_group::CreateGroupCommand),
     #[command(alias = "ls")]
@@ -69,6 +72,7 @@ impl NamespaceCommand {
             NamespaceSubCommands::Delete(cmd) => cmd.run(environment).await,
             NamespaceSubCommands::Invite(cmd) => cmd.run(environment).await,
             NamespaceSubCommands::Join(cmd) => cmd.run(environment).await,
+            NamespaceSubCommands::Leave(cmd) => cmd.run(environment).await,
             NamespaceSubCommands::Groups(cmd) => cmd.run(environment).await,
             NamespaceSubCommands::CreateGroup(cmd) => cmd.run(environment).await,
             NamespaceSubCommands::List(cmd) => cmd.run(environment).await,

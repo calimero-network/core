@@ -807,6 +807,18 @@ fn apply_group_op_mutations(
         GroupOp::MemberRemoved { member } => {
             permissions.require_manage_members(signer, "remove member")?;
             permissions.require_admin_to_remove_admin(signer, member)?;
+            // Owner is immune to involuntary removal. Owner must
+            // `TransferOwnership` first to step down, then they can be
+            // removed (or self-leave once that op exists).
+            if let Some(meta) = load_group_meta(store, group_id)? {
+                if meta.owner_identity == *member {
+                    bail!(
+                        "cannot remove owner of group {}; owner must \
+                         TransferOwnership to a successor before removal",
+                        hex::encode(group_id.to_bytes())
+                    );
+                }
+            }
             membership_policy.ensure_not_last_admin_removal(member)?;
             cascade_remove_member_from_group_tree(store, group_id, member)?;
             remove_group_member(store, group_id, member)?;
@@ -883,7 +895,22 @@ fn apply_group_op_mutations(
             settings.set_group_alias(signer, alias)?;
         }
         GroupOp::GroupDelete => {
-            permissions.require_admin(signer)?;
+            // Owner-only. Admins can no longer delete the group on their
+            // own — only the owner can. Tightens the previous policy
+            // (`require_admin`) which let any admin destroy the group.
+            let meta = load_group_meta(store, group_id)?.ok_or_else(|| {
+                eyre::eyre!(
+                    "cannot delete unknown group {}",
+                    hex::encode(group_id.to_bytes())
+                )
+            })?;
+            if meta.owner_identity != *signer {
+                bail!(
+                    "only the owner of group {} can delete it; \
+                     transfer ownership first if a non-owner needs to remove it",
+                    hex::encode(group_id.to_bytes())
+                );
+            }
             if count_group_contexts(store, group_id)? > 0 {
                 bail!("cannot delete group: one or more contexts are still registered");
             }
@@ -988,6 +1015,149 @@ fn apply_group_op_mutations(
                 contexts: *auto_follow_contexts,
                 subgroups: *auto_follow_subgroups,
             });
+        }
+        GroupOp::MemberLeft { member } => {
+            // Self-leave: signer must equal the member being removed.
+            // No capability check beyond self-equality — any member can
+            // leave themselves without admin involvement.
+            if signer != member {
+                bail!("MemberLeft is self-leave only: signer must equal the leaving member");
+            }
+
+            // Direct-row check. If `signer` is only an inherited member
+            // (Open subgroup with no stored row), there's nothing to delete
+            // here — they have to leave whichever ancestor anchors their
+            // membership instead.
+            if get_group_member_role(store, group_id, member)?.is_none() {
+                bail!(
+                    "member is not a direct member of group {}; \
+                     leave the parent group where the membership anchor lives",
+                    hex::encode(group_id.to_bytes())
+                );
+            }
+
+            // Owner cannot self-leave. Must TransferOwnership first.
+            if let Some(meta) = load_group_meta(store, group_id)? {
+                if meta.owner_identity == *member {
+                    bail!(
+                        "owner of group {} cannot self-leave; \
+                         transfer ownership to a successor first",
+                        hex::encode(group_id.to_bytes())
+                    );
+                }
+            }
+
+            // Last-admin protection — same helper used by MemberRemoved.
+            membership_policy.ensure_not_last_admin_removal(member)?;
+
+            // Detect namespace-leave: if this group has no parent it IS the
+            // namespace, and leaving must cascade through every descendant
+            // group where the leaver has a direct row. Per the design's
+            // "no cascade for leave_group" rule, non-namespace groups don't
+            // touch siblings or descendants. See § 6 for cascade semantics.
+            let is_namespace_leave =
+                crate::group_store::namespace::resolve_namespace(store, group_id)? == *group_id;
+
+            if is_namespace_leave {
+                // Walk subtree, gather descendants where leaver has a direct
+                // row. Run owner + last-admin checks across all of them
+                // BEFORE mutating anything, so a failure surfaces the
+                // offending scope to the user with no half-applied cleanup.
+                let descendants =
+                    crate::group_store::namespace::collect_descendant_groups(store, group_id)?;
+
+                let mut direct_descendants: Vec<ContextGroupId> = Vec::new();
+                for sub in &descendants {
+                    if get_group_member_role(store, sub, member)?.is_some() {
+                        if let Some(sub_meta) = load_group_meta(store, sub)? {
+                            if sub_meta.owner_identity == *member {
+                                bail!(
+                                    "cannot leave namespace: leaver owns subgroup {}; \
+                                     transfer ownership of every owned scope first",
+                                    hex::encode(sub.to_bytes())
+                                );
+                            }
+                        }
+                        let sub_policy = MembershipPolicy::new(store, *sub);
+                        sub_policy.ensure_not_last_admin_removal(member)?;
+                        direct_descendants.push(*sub);
+                    }
+                }
+
+                for sub in &direct_descendants {
+                    cascade_remove_member_from_group_tree(store, sub, member)?;
+                    remove_group_member(store, sub, member)?;
+                    crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
+                        group_id: sub.to_bytes(),
+                        member: *member,
+                    });
+                }
+            }
+
+            cascade_remove_member_from_group_tree(store, group_id, member)?;
+            remove_group_member(store, group_id, member)?;
+
+            // NOTE on forward secrecy: this op deliberately does NOT trigger
+            // the key-rotation pipeline that `MemberRemoved` does, because
+            // the publisher (the leaver) cannot generate the new key without
+            // also retaining it — which would defeat forward secrecy.
+            // Proper forward secrecy on self-leave requires a follow-up
+            // two-phase rotation (a remaining admin's apply hook publishes
+            // KeyDelivery), which is tracked as a follow-up to this PR. For
+            // now, an admin-initiated `MemberRemoved` is the path to a
+            // cryptographically-complete leave; `MemberLeft` is the
+            // governance-level departure (membership row removed, peers
+            // observe the leave) without the rotation. Same caveat applies
+            // to the namespace cascade above — row-removal only.
+            crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
+                group_id: group_id.to_bytes(),
+                member: *member,
+            });
+        }
+        GroupOp::TransferOwnership { new_owner } => {
+            // Owner-only — current owner is the only signer who can transfer.
+            let mut meta = load_group_meta(store, group_id)?.ok_or_else(|| {
+                eyre::eyre!(
+                    "cannot transfer ownership of unknown group {}",
+                    hex::encode(group_id.to_bytes())
+                )
+            })?;
+
+            if meta.owner_identity != *signer {
+                bail!(
+                    "only the current owner of group {} can transfer ownership; \
+                     signer is not the owner",
+                    hex::encode(group_id.to_bytes())
+                );
+            }
+
+            // The new owner must already be an Admin of the group. Transfer
+            // does not implicitly invite or promote — the successor must
+            // already be in place at admin tier. This prevents two awkward
+            // states:
+            //   * Transferring to a non-member: would create an absentee
+            //     owner.
+            //   * Transferring to a plain Member: Owner has all Admin
+            //     privileges by design (see doc § 7 privilege matrix), so
+            //     a plain-Member owner would have a confusing "owner with
+            //     reduced capabilities" status. Require Admin first;
+            //     promote then transfer if needed.
+            match get_group_member_role(store, group_id, new_owner)? {
+                Some(GroupMemberRole::Admin) => {}
+                Some(other) => bail!(
+                    "new owner of group {} must be an Admin, but is currently {:?}; \
+                     promote them to Admin before transferring ownership",
+                    hex::encode(group_id.to_bytes()),
+                    other
+                ),
+                None => bail!(
+                    "new owner is not a member of group {}; invite and promote them first",
+                    hex::encode(group_id.to_bytes())
+                ),
+            }
+
+            meta.owner_identity = *new_owner;
+            save_group_meta(store, group_id, &meta)?;
         }
         #[allow(unreachable_patterns)]
         _ => return Ok(false),

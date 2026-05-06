@@ -3,7 +3,8 @@ use calimero_server_primitives::admin::{
     CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
     DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
     GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinContextApiResponse,
-    JoinGroupApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
+    JoinGroupApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
+    LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
     NamespaceApiResponse, NamespaceIdentityApiResponse, RegisterGroupSigningKeyApiResponse,
     RemoveGroupMembersApiResponse, ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse,
@@ -399,6 +400,54 @@ impl Report for JoinContextApiResponse {
             Cell::new("Value").fg(Color::Blue),
         ]);
         let _ = table.add_row(vec!["Context ID", &self.data.context_id.to_string()]);
+        let _ = table.add_row(vec![
+            "Member Public Key",
+            &self.data.member_public_key.to_string(),
+        ]);
+        println!("{table}");
+    }
+}
+
+impl Report for LeaveContextApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Left Context (local-only)").fg(Color::Yellow),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Context ID", &self.data.context_id.to_string()]);
+        let _ = table.add_row(vec![
+            "Member Public Key",
+            &self.data.member_public_key.to_string(),
+        ]);
+        println!("{table}");
+    }
+}
+
+impl Report for LeaveGroupApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Left Group (MemberLeft published)").fg(Color::Yellow),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Group ID", &self.data.group_id]);
+        let _ = table.add_row(vec![
+            "Member Public Key",
+            &self.data.member_public_key.to_string(),
+        ]);
+        println!("{table}");
+    }
+}
+
+impl Report for LeaveNamespaceApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Left Namespace (cascaded through descendants)").fg(Color::Yellow),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Namespace ID", &self.data.namespace_id]);
         let _ = table.add_row(vec![
             "Member Public Key",
             &self.data.member_public_key.to_string(),

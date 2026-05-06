@@ -42,6 +42,7 @@ fn sample_meta(admin: PublicKey) -> GroupMetaValue {
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
+        owner_identity: admin,
         migration: None,
         auto_join: true,
     }
@@ -954,8 +955,17 @@ fn state_hash_prevents_concurrent_op_divergence() {
     let admin_c_pk = admin_c_sk.public_key();
     let new_member_d = PrivateKey::random(&mut rng).public_key();
 
+    // Test exercises admin-removing-admin semantics under concurrent state.
+    // The owner-immunity gate (`CannotRemoveOwner`) would block op_c if
+    // admin_a were the owner — assign owner to a separate "founder" identity
+    // so neither admin_a nor admin_c is owner-protected.
+    let founder_pk = PrivateKey::random(&mut rng).public_key();
+    let mut meta = sample_meta(admin_a_pk);
+    meta.owner_identity = founder_pk;
+
     for store in [&node_b, &node_c] {
-        save_group_meta(store, &gid, &sample_meta(admin_a_pk)).unwrap();
+        save_group_meta(store, &gid, &meta).unwrap();
+        add_group_member(store, &gid, &founder_pk, GroupMemberRole::Admin).unwrap();
         add_group_member(store, &gid, &admin_a_pk, GroupMemberRole::Admin).unwrap();
         add_group_member(store, &gid, &admin_c_pk, GroupMemberRole::Admin).unwrap();
     }

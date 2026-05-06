@@ -2227,6 +2227,51 @@ pub struct JoinContextApiResponseData {
     pub member_public_key: PublicKey,
 }
 
+// ---- Leave Context (local-only opt-out) ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveContextApiResponse {
+    pub data: LeaveContextApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveContextApiResponseData {
+    pub context_id: ContextId,
+    pub member_public_key: PublicKey,
+}
+
+// ---- Leave Group (distributed self-leave op) ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveGroupApiResponse {
+    pub data: LeaveGroupApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveGroupApiResponseData {
+    pub group_id: String,
+    pub member_public_key: PublicKey,
+}
+
+// ---- Leave Namespace (cascading self-leave) ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveNamespaceApiResponse {
+    pub data: LeaveNamespaceApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveNamespaceApiResponseData {
+    pub namespace_id: String,
+    pub member_public_key: PublicKey,
+}
+
 // ---- Get Context Group ----
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
