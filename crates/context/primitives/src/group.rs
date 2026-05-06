@@ -362,6 +362,32 @@ pub struct JoinContextResponse {
     pub member_public_key: PublicKey,
 }
 
+/// Request to leave a context locally on this node. Purely a node-local opt-out:
+/// no governance op is published, no key rotation is performed, peers never
+/// observe the leave. The handler:
+///
+/// 1. Deletes the local `ContextIdentity` row, which stops sync (the sync layer
+///    iterates `ContextIdentity` rows to determine what to replicate).
+/// 2. Writes a `ContextLeftMarker` tombstone in the `Column::ContextLocal`
+///    column, which the auto-follow handler checks before re-joining.
+///
+/// Cleared by an explicit `JoinContextRequest` from the user, which removes the
+/// marker as a side effect of joining.
+#[derive(Debug)]
+pub struct LeaveContextRequest {
+    pub context_id: ContextId,
+}
+
+impl Message for LeaveContextRequest {
+    type Result = eyre::Result<LeaveContextResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct LeaveContextResponse {
+    pub context_id: ContextId,
+    pub member_public_key: PublicKey,
+}
+
 // ---- Group Permission Types ----
 
 #[derive(Debug)]

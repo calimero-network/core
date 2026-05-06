@@ -15,14 +15,15 @@ use crate::group::{
     DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
     GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetNamespaceIdentityRequest, JoinContextRequest,
-    JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
-    ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest, SetGroupAliasRequest,
-    SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetSubgroupVisibilityRequest,
-    SetTeeAdmissionPolicyRequest, StoreContextAliasRequest, StoreDefaultCapabilitiesRequest,
-    StoreGroupAliasRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreMemberAliasRequest, StoreMemberCapabilityRequest, StoreSubgroupVisibilityRequest,
-    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    JoinGroupRequest, LeaveContextRequest, ListAllGroupsRequest, ListGroupContextsRequest,
+    ListGroupMembersRequest, ListNamespacesForApplicationRequest, ListNamespacesRequest,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest,
+    SetGroupAliasRequest, SetMemberAliasRequest, SetMemberCapabilitiesRequest,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextAliasRequest,
+    StoreDefaultCapabilitiesRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest,
+    StoreSubgroupVisibilityRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
+    UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -321,6 +322,10 @@ pub enum ContextMessage {
     JoinContext {
         request: JoinContextRequest,
         outcome: oneshot::Sender<<JoinContextRequest as Message>::Result>,
+    },
+    LeaveContext {
+        request: LeaveContextRequest,
+        outcome: oneshot::Sender<<LeaveContextRequest as Message>::Result>,
     },
     SetMemberCapabilities {
         request: SetMemberCapabilitiesRequest,

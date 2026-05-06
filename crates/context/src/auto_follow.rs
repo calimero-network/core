@@ -255,6 +255,18 @@ async fn handle_context_registered(
     if !should_auto_follow_contexts(store, &gid, &self_pk) {
         return;
     }
+    if has_left_context(store, &context_id, &self_pk) {
+        // The user explicitly opted out of this context on this node via
+        // `leave_context`. Do not auto-rejoin even if `auto_follow.contexts`
+        // is true at the group level. Cleared by an explicit
+        // `JoinContextRequest` from the user.
+        debug!(
+            %context_id,
+            group_id = %hex::encode(group_id),
+            "auto-follow: skipping context-registered event — member has explicitly left this context"
+        );
+        return;
+    }
     if limiter.acquire().await.is_err() {
         debug!("auto-follow: rate limiter closed, skipping context event (shutdown)");
         return;
@@ -386,6 +398,28 @@ fn should_auto_follow_contexts(
                 group_id = %hex::encode(group_id.to_bytes()),
                 ?err,
                 "auto-follow: failed to read member value"
+            );
+            false
+        }
+    }
+}
+
+/// Returns `true` if the member has explicitly called `leave_context` on this
+/// node for `(member, context_id)`. Looked up in the node-local
+/// `Column::ContextLocal` column — never synced to peers.
+fn has_left_context(
+    store: &Store,
+    context_id: &calimero_primitives::context::ContextId,
+    member: &PublicKey,
+) -> bool {
+    let key = calimero_store::key::ContextLeftMarker::new(*context_id, *member);
+    match store.handle().has(&key) {
+        Ok(present) => present,
+        Err(err) => {
+            warn!(
+                %context_id,
+                ?err,
+                "auto-follow: failed to read leave marker — defaulting to not-left"
             );
             false
         }

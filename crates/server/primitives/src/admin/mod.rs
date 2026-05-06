@@ -2227,6 +2227,21 @@ pub struct JoinContextApiResponseData {
     pub member_public_key: PublicKey,
 }
 
+// ---- Leave Context (local-only opt-out) ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveContextApiResponse {
+    pub data: LeaveContextApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveContextApiResponseData {
+    pub context_id: ContextId,
+    pub member_public_key: PublicKey,
+}
+
 // ---- Get Context Group ----
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

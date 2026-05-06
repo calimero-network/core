@@ -28,16 +28,17 @@ use crate::group::{
     GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GetNamespaceIdentityRequest,
     GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo, JoinContextRequest,
-    JoinContextResponse, JoinGroupRequest, JoinGroupResponse, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
-    ListNamespacesForApplicationRequest, ListNamespacesRequest, NamespaceSummary,
-    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest,
-    SetGroupAliasRequest, SetMemberAliasRequest, SetMemberCapabilitiesRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextAliasRequest,
-    StoreDefaultCapabilitiesRequest, StoreGroupAliasRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreMemberAliasRequest, StoreMemberCapabilityRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse,
-    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
+    JoinContextResponse, JoinGroupRequest, JoinGroupResponse, LeaveContextRequest,
+    LeaveContextResponse, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    ListGroupMembersResponse, ListNamespacesForApplicationRequest, ListNamespacesRequest,
+    NamespaceSummary, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    SetDefaultCapabilitiesRequest, SetGroupAliasRequest, SetMemberAliasRequest,
+    SetMemberCapabilitiesRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextAliasRequest, StoreDefaultCapabilitiesRequest, StoreGroupAliasRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
+    StoreMemberCapabilityRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -1250,6 +1251,12 @@ impl ContextClient {
         JoinContext,
         JoinContextRequest,
         eyre::Result<JoinContextResponse>
+    );
+    forward_to_actor!(
+        leave_context,
+        LeaveContext,
+        LeaveContextRequest,
+        eyre::Result<LeaveContextResponse>
     );
     forward_to_actor!(
         set_member_capabilities,
