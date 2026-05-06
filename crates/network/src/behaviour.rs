@@ -108,7 +108,28 @@ impl Behaviour {
                     },
                     gossipsub: gossipsub::Behaviour::new(
                         gossipsub::MessageAuthenticity::Signed(key.clone()),
-                        gossipsub::Config::default(),
+                        // libp2p-gossipsub default `unsubscribe_backoff` is 10s.
+                        // When a peer unsubscribes from a topic, both the
+                        // unsubscriber and its mesh peers store a 10s backoff
+                        // entry preventing remesh until expiry. For
+                        // `leave_context` followed quickly by `join_context`
+                        // (the reversibility contract documented in the
+                        // membership-and-leave design doc) this means the
+                        // gossipsub topic mesh stays empty for ≥10s after
+                        // resubscribe, and post-rejoin state deltas published
+                        // by other members never reach the rejoiner via
+                        // gossip. Drop the backoff to 1s so a typical
+                        // leave→rejoin cycle can re-form the mesh within
+                        // ~2 heartbeats. The DDoS rationale for the larger
+                        // default does not apply here: gossipsub topics are
+                        // already gated by namespace membership at the
+                        // governance layer, and the connection limits in
+                        // `with_idle_connection_timeout` cap raw resource
+                        // exhaustion.
+                        gossipsub::ConfigBuilder::default()
+                            .unsubscribe_backoff(1)
+                            .build()
+                            .map_err(|e| eyre::eyre!("invalid gossipsub config: {e}"))?,
                     )?,
                     ping: ping::Behaviour::default(),
                     rendezvous: rendezvous::client::Behaviour::new(key.clone()),

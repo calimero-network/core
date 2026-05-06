@@ -161,6 +161,15 @@ steps:
     node: e2e-node-2
     context_id: '{{ctx_id}}'
 
+  # With unsubscribe_backoff lowered to 1s in the gossipsub config,
+  # mesh re-formation completes within ~2 heartbeats. Give it a small
+  # window before publishing so the post-rejoin delta lands on a peer
+  # that's actually in the mesh.
+  - name: Wait for gossipsub mesh to re-form after rejoin
+    type: wait
+    seconds: 5
+    message: 1s unsubscribe_backoff + slack + heartbeat propagation
+
   - name: Node-1 writes post-rejoin value
     type: call
     node: e2e-node-1

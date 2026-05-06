@@ -765,16 +765,22 @@ fn get_local_tree_node(
         // Leaf node
         if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
             let Some(crdt_type) = index.metadata.crdt_type.clone() else {
-                // No CRDT type — treat as opaque node; sync via delta exchange, not EntityPush.
+                // No CRDT type — we can't build a valid `TreeNode::leaf` here
+                // (it requires a populated `TreeLeafData`). Returning a
+                // children-empty `TreeNode::internal` would fail the
+                // structural-invariant check at the receiver
+                // (`subtree.rs`: `has_children == has_data` is invalid),
+                // so the receiver would log "Invalid TreeNode, skipping"
+                // and the entity would never converge through this
+                // protocol. Signal "no representable node" instead — the
+                // responder converts `None` to `TreeNodeResponse::not_found`
+                // and the receiver proceeds gracefully.
                 warn!(
                     %entity_id,
-                    "leaf has no CRDT type, treating as opaque node"
+                    "leaf has no CRDT type, treating as opaque node — \
+                     signalling not_found so receiver doesn't see invalid TreeNode"
                 );
-                return Ok(Some(TreeNode::internal(
-                    *entity_id.as_bytes(),
-                    full_hash,
-                    vec![],
-                )));
+                return Ok(None);
             };
             let metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32]);
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
@@ -784,11 +790,14 @@ fn get_local_tree_node(
                 leaf_data,
             )))
         } else {
-            Ok(Some(TreeNode::internal(
-                *entity_id.as_bytes(),
-                full_hash,
-                vec![],
-            )))
+            // Index entry exists but `find_by_id_raw` returned no payload.
+            // Likely a tombstoned/deleted entity that survives in the index
+            // without storage data. Same reasoning as the `no CRDT type`
+            // arm above: returning a children-empty `TreeNode::internal`
+            // creates a structurally invalid response. Signal `None` so
+            // the responder reports `not_found` and the receiver doesn't
+            // burn a `nodes_compared` slot on a node it can't merge.
+            Ok(None)
         }
     } else {
         Ok(Some(TreeNode::internal(
