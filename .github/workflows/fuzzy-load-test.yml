@@ -876,7 +876,7 @@ jobs:
             echo "passed=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Collect E2E KV Store node logs
+      - name: Collect Scaffolding E2E node logs
         if: always()
         run: |
           find workflows/fuzzy-tests/scaffolding-e2e -type d -name "logs" 2>/dev/null | while read logdir; do
@@ -895,7 +895,7 @@ jobs:
               cp /tmp/vmagent_scrape_scaffolding-e2e.yml fuzzy-test-logs/scaffolding-e2e/vmagent_config.yml
           fi
 
-      - name: Upload E2E KV Store test artifacts
+      - name: Upload Scaffolding E2E test artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -904,7 +904,7 @@ jobs:
           retention-days: 30
           compression-level: 6
 
-      - name: Upload E2E KV Store profiling data
+      - name: Upload Scaffolding E2E profiling data
         if: always() && steps.image.outputs.profiling == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -913,7 +913,7 @@ jobs:
           retention-days: 30
           compression-level: 6
 
-      - name: Upload E2E KV Store profiling reports
+      - name: Upload Scaffolding E2E profiling reports
         if: always() && steps.image.outputs.profiling == 'true'
         uses: actions/upload-artifact@v4
         with:

@@ -300,7 +300,7 @@ steps:
             context_id: "{{e2e_context_id}}"
             method: increment_g_counter
             args:
-              key: "perf_counter_{{random_int(0, 5)}}"
+              key: "perf_counter_{{random_int(0, 4)}}"
             outputs:
               g_counter_result: result
           - type: assert
