@@ -388,6 +388,34 @@ pub struct LeaveContextResponse {
     pub member_public_key: PublicKey,
 }
 
+/// Self-leave from a single group. Distributed governance op:
+/// publishes `GroupOp::MemberLeft { member: signer }` which deletes
+/// the leaver's direct membership row across all peers and cascades
+/// the per-context identity rows under the group.
+///
+/// Preconditions enforced at apply: signer must be a direct member
+/// (not just inherited), must not be Owner, and last-admin protection
+/// applies (admin can't leave if they're the only admin).
+///
+/// **Forward-secrecy note:** this op deliberately does not trigger
+/// the key-rotation pipeline that admin-initiated `MemberRemoved`
+/// does. For full cryptographic leave today, pair with admin
+/// follow-up; the proper two-phase rotation is a deferred follow-up.
+#[derive(Debug)]
+pub struct LeaveGroupRequest {
+    pub group_id: ContextGroupId,
+}
+
+impl Message for LeaveGroupRequest {
+    type Result = eyre::Result<LeaveGroupResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct LeaveGroupResponse {
+    pub group_id: ContextGroupId,
+    pub member_public_key: PublicKey,
+}
+
 // ---- Group Permission Types ----
 
 #[derive(Debug)]

@@ -192,6 +192,10 @@ pub(crate) fn setup(
             post(groups::remove_group_members::handler),
         )
         .route(
+            "/groups/:group_id/leave",
+            post(groups::leave_group::handler),
+        )
+        .route(
             "/groups/:group_id/members/:identity/role",
             put(groups::update_member_role::handler),
         )

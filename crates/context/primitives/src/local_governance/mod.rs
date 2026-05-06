@@ -61,6 +61,16 @@ pub enum GroupOp {
     },
     /// Remove a member.
     MemberRemoved { member: PublicKey },
+    /// Self-leave: a member voluntarily exits the group. Distinct from
+    /// `MemberRemoved` for audit clarity (this is a member choosing to
+    /// leave; `MemberRemoved` is admin-initiated). Apply requires
+    /// `signer == member`. Does NOT trigger the key-rotation pipeline —
+    /// the leaver cannot generate the new key without retaining it, and
+    /// proper forward secrecy requires a follow-up two-phase rotation
+    /// (planned as a follow-up). For full cryptographic leave today,
+    /// pair with admin-initiated `MemberRemoved`.
+    /// See `architecture/membership-and-leave.html` § 5.
+    MemberLeft { member: PublicKey },
     /// Set a member’s role (same as upsert member with new role).
     MemberRoleSet {
         member: PublicKey,
@@ -180,6 +190,7 @@ impl GroupOp {
             GroupOp::Noop => "noop",
             GroupOp::MemberAdded { .. } => "member_added",
             GroupOp::MemberRemoved { .. } => "member_removed",
+            GroupOp::MemberLeft { .. } => "member_left",
             GroupOp::MemberRoleSet { .. } => "member_role_set",
             GroupOp::MemberCapabilitySet { .. } => "member_capability_set",
             GroupOp::DefaultCapabilitiesSet { .. } => "default_capabilities_set",

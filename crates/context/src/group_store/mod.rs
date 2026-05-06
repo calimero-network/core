@@ -1016,6 +1016,59 @@ fn apply_group_op_mutations(
                 subgroups: *auto_follow_subgroups,
             });
         }
+        GroupOp::MemberLeft { member } => {
+            // Self-leave: signer must equal the member being removed.
+            // No capability check beyond self-equality — any member can
+            // leave themselves without admin involvement.
+            if signer != member {
+                bail!("MemberLeft is self-leave only: signer must equal the leaving member");
+            }
+
+            // Direct-row check. If `signer` is only an inherited member
+            // (Open subgroup with no stored row), there's nothing to delete
+            // here — they have to leave whichever ancestor anchors their
+            // membership instead.
+            if get_group_member_role(store, group_id, member)?.is_none() {
+                bail!(
+                    "member is not a direct member of group {}; \
+                     leave the parent group where the membership anchor lives",
+                    hex::encode(group_id.to_bytes())
+                );
+            }
+
+            // Owner cannot self-leave. Must TransferOwnership first.
+            if let Some(meta) = load_group_meta(store, group_id)? {
+                if meta.owner_identity == *member {
+                    bail!(
+                        "owner of group {} cannot self-leave; \
+                         transfer ownership to a successor first",
+                        hex::encode(group_id.to_bytes())
+                    );
+                }
+            }
+
+            // Last-admin protection — same helper used by MemberRemoved.
+            membership_policy.ensure_not_last_admin_removal(member)?;
+
+            cascade_remove_member_from_group_tree(store, group_id, member)?;
+            remove_group_member(store, group_id, member)?;
+
+            // NOTE on forward secrecy: this op deliberately does NOT trigger
+            // the key-rotation pipeline that `MemberRemoved` does, because
+            // the publisher (the leaver) cannot generate the new key without
+            // also retaining it — which would defeat forward secrecy.
+            // Proper forward secrecy on self-leave requires a follow-up
+            // two-phase rotation (a remaining admin's apply hook publishes
+            // KeyDelivery), which is tracked as a follow-up to this PR. For
+            // now, an admin-initiated `MemberRemoved` is the path to a
+            // cryptographically-complete leave; `MemberLeft` is the
+            // governance-level departure (membership row removed, peers
+            // observe the leave) without the rotation.
+            crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
+                group_id: group_id.to_bytes(),
+                member: *member,
+            });
+        }
         GroupOp::TransferOwnership { new_owner } => {
             // Owner-only — current owner is the only signer who can transfer.
             let mut meta = load_group_meta(store, group_id)?.ok_or_else(|| {
