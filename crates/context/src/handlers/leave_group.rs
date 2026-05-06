@@ -89,13 +89,15 @@ impl Handler<LeaveGroupRequest> for ContextManager {
                     observe_handler_delivery("leave_group", "MemberLeft", report);
                 }
 
-                // Unsubscribe from the namespace topic if this was our
-                // last anchor in the namespace tree. Conservative: only
-                // unsubscribe if the leaver is no longer a member of any
-                // group in the namespace. For simplicity in this PR, we
-                // always attempt the unsubscribe; it's a no-op if other
-                // memberships remain.
-                let _ = node_client.unsubscribe_namespace(group_id.to_bytes()).await;
+                // Note: we deliberately do NOT call
+                // `node_client.unsubscribe_namespace` here. Namespace
+                // subscription tracks namespace-level governance traffic
+                // and a member who leaves a single subgroup can still be
+                // a member of other groups under the same namespace —
+                // unsubscribing prematurely would cut them off from
+                // governance ops they still need. The namespace topic is
+                // only safe to unsubscribe in `leave_namespace`, where
+                // the member is leaving the whole subtree.
 
                 info!(
                     ?group_id,

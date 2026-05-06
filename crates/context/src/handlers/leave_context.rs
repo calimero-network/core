@@ -105,12 +105,29 @@ impl Handler<LeaveContextRequest> for ContextManager {
                 let marker_value = types::ContextLeftMarker { left_at_ms: now_ms };
                 let identity_key = key::ContextIdentity::new(context_id, member_public_key);
 
-                // Write the marker AND delete the identity row through the
-                // same handle so they land in the same batched commit. This
-                // closes the window where a crash between the two writes
-                // would leave a dangling marker (or worse, no marker but
-                // the identity row already gone — which would let
-                // auto-follow re-add freely on next event).
+                // The two writes are sequential, not atomic — `Handle`
+                // forwards each `put`/`delete` directly to the underlying
+                // DB layer, which commits per-call. The store does have a
+                // batched `WriteLayer::apply(&Transaction)` primitive
+                // (crates/store/src/layer.rs:44) we could thread through,
+                // but ordering + idempotency get us the same correctness
+                // guarantee here:
+                //
+                //   * Marker first → if the delete then fails, the marker
+                //     still gates auto-follow (it returns `false` for any
+                //     concurrent `ContextRegistered` event). Sync stays
+                //     active until the delete succeeds, but auto-follow
+                //     can't re-register a row that's already there.
+                //   * Marker put is idempotent (same key, fresher
+                //     timestamp on retry).
+                //   * Delete is idempotent (no-op on already-gone row).
+                //   * Both errors bubble up; the caller can retry the
+                //     whole leave without producing inconsistent state.
+                //
+                // The window where "marker exists but identity row still
+                // present" is observable but coherent: leaver still
+                // appears in member lists, sync continues, but
+                // auto-follow won't re-add. Calling leave again succeeds.
                 {
                     let mut handle = datastore.handle();
                     handle

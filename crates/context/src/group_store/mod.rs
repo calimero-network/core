@@ -1131,14 +1131,29 @@ fn apply_group_op_mutations(
                 );
             }
 
-            // The new owner must already be a member of the group. Transfer
-            // does not implicitly invite — the successor must already be in
-            // place. Prevents accidental ownership leaks to non-members.
-            if get_group_member_role(store, group_id, new_owner)?.is_none() {
-                bail!(
-                    "new owner is not a member of group {}; invite them first",
+            // The new owner must already be an Admin of the group. Transfer
+            // does not implicitly invite or promote — the successor must
+            // already be in place at admin tier. This prevents two awkward
+            // states:
+            //   * Transferring to a non-member: would create an absentee
+            //     owner.
+            //   * Transferring to a plain Member: Owner has all Admin
+            //     privileges by design (see doc § 7 privilege matrix), so
+            //     a plain-Member owner would have a confusing "owner with
+            //     reduced capabilities" status. Require Admin first;
+            //     promote then transfer if needed.
+            match get_group_member_role(store, group_id, new_owner)? {
+                Some(GroupMemberRole::Admin) => {}
+                Some(other) => bail!(
+                    "new owner of group {} must be an Admin, but is currently {:?}; \
+                     promote them to Admin before transferring ownership",
+                    hex::encode(group_id.to_bytes()),
+                    other
+                ),
+                None => bail!(
+                    "new owner is not a member of group {}; invite and promote them first",
                     hex::encode(group_id.to_bytes())
-                );
+                ),
             }
 
             meta.owner_identity = *new_owner;
