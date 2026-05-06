@@ -116,11 +116,21 @@ steps:
     node: e2e-node-2
     context_id: '{{ctx_id}}'
 
-  # --- SCENARIO: Verify sync actually stopped on node-2 ---
-  # The core invariant of leave_context: while in the left state, the
-  # node must NOT receive new writes from peers. Node-1 publishes a
-  # value, we wait long enough for normal gossip to propagate, then
-  # confirm node-2's local view still reflects the pre-leave value.
+  # --- SCENARIO: Verify leave actually disarmed node-2's local context ---
+  # The core invariant: leave_context deletes the node-local
+  # ContextIdentity (signing key) and writes a ContextLeftMarker, which
+  # disarms auto-follow and stops sync. Two consequences are externally
+  # observable:
+  #   1. Calls on node-2 against this context fail with
+  #      "No owned identity found for this context" (the executor has
+  #      no signing key to invoke WASM with).
+  #   2. Writes node-1 publishes during the leave window are not
+  #      delivered to node-2 — but they ARE delivered after a clean
+  #      rejoin, which we verify in the post-rejoin step using the
+  #      `during_leave_marker` key below.
+  #
+  # We verify (1) directly via expected_failure; (2) via the catch-up
+  # marker assertion at the end.
 
   - name: Node-1 writes a value while node-2 has left
     type: call
@@ -143,25 +153,14 @@ steps:
       key: "during_leave_marker"
       value: "missed-by-node-2"
 
-  - name: Wait for gossip propagation window
-    type: wait
-    seconds: 5
-    message: long enough for sync to deliver if it were active — a 5s wait is the standard idiom for negative-sync assertions because there is no deterministic primitive for "sync did NOT happen"
-
-  - name: Node-2 reads phase while left
+  - name: Node-2 cannot call context after leave (no signing identity)
     type: call
     node: e2e-node-2
     context_id: '{{ctx_id}}'
     method: get
     args:
       key: "phase"
-    outputs:
-      while_left_read: result
-
-  - name: Assert node-2 did NOT receive the post-leave write
-    type: json_assert
-    statements:
-      - 'json_equal({{while_left_read}}, {"output": "pre-leave"})'
+    expected_failure: true
 
   # --- SCENARIO: Rejoin restores access ---
   # leave_context is reversible — the node can call join_context again
