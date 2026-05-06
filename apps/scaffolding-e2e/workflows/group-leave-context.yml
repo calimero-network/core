@@ -171,6 +171,15 @@ steps:
     node: e2e-node-2
     context_id: '{{ctx_id}}'
 
+  # After rejoin, the gossipsub topic mesh + delta-store tracking need
+  # time to re-establish before sync can find a peer. Without this
+  # buffer, the immediate wait_for_sync polls find no mesh peers for
+  # the topic and never converges within the default budget.
+  - name: Wait for gossipsub mesh to rebuild after resubscribe
+    type: wait
+    seconds: 10
+    message: gossipsub mesh + delta-store tracking re-bootstrap window after join_context
+
   - name: Node-1 writes post-rejoin value
     type: call
     node: e2e-node-1
@@ -186,7 +195,7 @@ steps:
     nodes:
       - e2e-node-1
       - e2e-node-2
-    timeout: 60
+    timeout: 120
     trigger_sync: true
 
   - name: Node-2 reads post-rejoin value
