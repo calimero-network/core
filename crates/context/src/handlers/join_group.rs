@@ -93,6 +93,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     );
                     let meta = calimero_store::key::GroupMetaValue {
                         admin_identity,
+                        owner_identity: admin_identity,
                         target_application_id:
                             calimero_primitives::application::ApplicationId::from([0u8; 32]),
                         app_key: [0u8; 32],

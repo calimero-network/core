@@ -175,6 +175,69 @@ impl Debug for ContextIdentity {
     }
 }
 
+/// Per-(member, context) tombstone written when a member calls `leave_context`.
+/// Lives in the node-local `ContextLocal` column — not synchronized.
+///
+/// Presence of this row signals: the member explicitly opted out of this context
+/// on this node, and auto-follow must NOT re-create the corresponding
+/// `ContextIdentity` row on auto-rejoin events. An explicit `JoinContextRequest`
+/// from the user clears the marker.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextLeftMarker(Key<(ContextId, PublicKeyComponent)>);
+
+impl ContextLeftMarker {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId, context_pk: PrimitivePublicKey) -> Self {
+        Self(Key(
+            GenericArray::from(*context_id).concat(GenericArray::from(*context_pk))
+        ))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut context_id = [0; 32];
+        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+        context_id.into()
+    }
+
+    #[must_use]
+    pub fn public_key(&self) -> PrimitivePublicKey {
+        let mut public_key = [0; 32];
+        public_key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+        public_key.into()
+    }
+}
+
+impl AsKeyParts for ContextLeftMarker {
+    type Components = (ContextId, PublicKeyComponent);
+
+    fn column() -> Column {
+        Column::ContextLocal
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for ContextLeftMarker {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for ContextLeftMarker {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextLeftMarker")
+            .field("context_id", &self.context_id())
+            .field("public_key", &self.public_key())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct StateKey;
 

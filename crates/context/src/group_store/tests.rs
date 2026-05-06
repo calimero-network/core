@@ -25,6 +25,7 @@ fn test_meta() -> GroupMetaValue {
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: PublicKey::from([0x01; 32]),
+        owner_identity: PublicKey::from([0x01; 32]),
         migration: None,
         auto_join: true,
     }
@@ -1251,7 +1252,12 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    // GroupDelete is now Owner-only; align the meta's owner_identity with
+    // the signing key so the delete at the end passes the owner gate.
+    let mut meta = test_meta();
+    meta.admin_identity = admin_pk;
+    meta.owner_identity = admin_pk;
+    save_group_meta(&store, &gid, &meta).unwrap();
     add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
 
     let member_m = PrivateKey::random(&mut rng).public_key();
@@ -2617,6 +2623,7 @@ fn auto_group_node_identity_is_admin_member() {
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
             admin_identity: node_pk,
+            owner_identity: node_pk,
             migration: None,
             auto_join: true,
         },
@@ -3840,6 +3847,7 @@ fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
+        owner_identity: admin,
         migration: None,
         auto_join: true,
     }
@@ -4606,6 +4614,7 @@ fn namespace_member_pubkeys_includes_meta_admin_without_member_row() {
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
+        owner_identity: admin,
         migration: None,
         auto_join: true,
     };
@@ -4635,6 +4644,7 @@ fn namespace_member_pubkeys_dedups_admin_with_member_row() {
         upgrade_policy: UpgradePolicy::Automatic,
         created_at: 1_700_000_000,
         admin_identity: admin,
+        owner_identity: admin,
         migration: None,
         auto_join: true,
     };

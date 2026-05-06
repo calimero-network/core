@@ -15,6 +15,9 @@ use calimero_server_primitives::admin::GetMemberCapabilitiesApiResponse;
 use calimero_server_primitives::admin::GetTeeAdmissionPolicyApiResponse;
 use calimero_server_primitives::admin::GroupInfoApiResponse;
 use calimero_server_primitives::admin::JoinContextApiResponse;
+use calimero_server_primitives::admin::LeaveContextApiResponse;
+use calimero_server_primitives::admin::LeaveGroupApiResponse;
+use calimero_server_primitives::admin::LeaveNamespaceApiResponse;
 use calimero_server_primitives::admin::ListGroupContextsApiResponse;
 use calimero_server_primitives::admin::ListGroupMembersApiResponse;
 use calimero_server_primitives::admin::ListSubgroupsApiResponse;
@@ -259,6 +262,45 @@ where
         let response = self
             .connection
             .post_no_body(&format!("admin-api/contexts/{context_id}/join"))
+            .await?;
+        Ok(response)
+    }
+
+    /// Local-only opt-out from a single context. Stops sync and disarms
+    /// auto-follow on this node only — peers do not observe the leave.
+    /// Reversal: call [`Self::join_context`] which clears the marker.
+    /// See `architecture/membership-and-leave.html` § 4 for semantics.
+    pub async fn leave_context(&self, context_id: &str) -> Result<LeaveContextApiResponse> {
+        let response = self
+            .connection
+            .post_no_body(&format!("admin-api/contexts/{context_id}/leave"))
+            .await?;
+        Ok(response)
+    }
+
+    /// Distributed self-leave from a single group. Publishes a
+    /// `MemberLeft` op that all peers apply, deleting the leaver's
+    /// direct membership row. Subject to apply-side validation:
+    /// signer must be a direct member, must not be Owner, and must
+    /// not be the only admin (`LastAdmin` rejection). See
+    /// `architecture/membership-and-leave.html` § 5.
+    pub async fn leave_group(&self, group_id: &str) -> Result<LeaveGroupApiResponse> {
+        let response = self
+            .connection
+            .post_no_body(&format!("admin-api/groups/{group_id}/leave"))
+            .await?;
+        Ok(response)
+    }
+
+    /// Self-leave from a namespace (root group). Cascades through
+    /// every descendant where the leaver has a direct row; multi-scope
+    /// owner + last-admin checks run upfront. Rejects with
+    /// `MustTransferOwnership` if the leaver owns any group in the
+    /// subtree. See `architecture/membership-and-leave.html` § 6.
+    pub async fn leave_namespace(&self, namespace_id: &str) -> Result<LeaveNamespaceApiResponse> {
+        let response = self
+            .connection
+            .post_no_body(&format!("admin-api/namespaces/{namespace_id}/leave"))
             .await?;
         Ok(response)
     }

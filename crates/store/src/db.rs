@@ -27,6 +27,11 @@ pub enum Column {
     Alias,
     Generic,
     Group,
+    /// Node-local context-scoped state. NOT synchronized across nodes.
+    /// Used for things like the per-(member, context) `leave_context`
+    /// tombstone — sync-and-auto-follow stop on the node where the user
+    /// opted out, while peers see no change.
+    ContextLocal,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {

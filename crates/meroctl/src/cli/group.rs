@@ -8,6 +8,8 @@ pub mod contexts;
 pub mod delete;
 pub mod get;
 pub mod join_context;
+pub mod leave;
+pub mod leave_context;
 pub mod members;
 pub mod reparent;
 pub mod settings;
@@ -73,6 +75,11 @@ pub enum GroupSubCommands {
     Sync(sync::SyncCommand),
     #[command(alias = "join-context")]
     JoinContext(join_context::JoinContextCommand),
+    /// Leave a context locally (no DAG op published).
+    #[command(alias = "leave-context")]
+    LeaveContext(leave_context::LeaveContextCommand),
+    /// Voluntarily leave a group (publishes MemberLeft).
+    Leave(leave::LeaveCommand),
     Settings(settings::SettingsCommand),
 }
 
@@ -90,6 +97,8 @@ impl GroupCommand {
             GroupSubCommands::Upgrade(cmd) => cmd.run(environment).await,
             GroupSubCommands::Sync(cmd) => cmd.run(environment).await,
             GroupSubCommands::JoinContext(cmd) => cmd.run(environment).await,
+            GroupSubCommands::LeaveContext(cmd) => cmd.run(environment).await,
+            GroupSubCommands::Leave(cmd) => cmd.run(environment).await,
             GroupSubCommands::Settings(cmd) => cmd.run(environment).await,
         }
     }
