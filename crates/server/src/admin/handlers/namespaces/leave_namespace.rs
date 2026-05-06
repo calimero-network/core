@@ -9,19 +9,24 @@ use tracing::{error, info};
 
 use crate::admin::handlers::groups::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiResponse};
+use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(namespace_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
 ) -> impl IntoResponse {
     let namespace_id = match parse_group_id(&namespace_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
 
+    let auth_caller = auth_key.map(|Extension(k)| k.0);
+
     info!(
         namespace_id=%namespace_id_str,
+        ?auth_caller,
         "Leaving namespace (publishing MemberLeft at root, cascading through descendants)"
     );
 

@@ -1252,7 +1252,12 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    // GroupDelete is now Owner-only; align the meta's owner_identity with
+    // the signing key so the delete at the end passes the owner gate.
+    let mut meta = test_meta();
+    meta.admin_identity = admin_pk;
+    meta.owner_identity = admin_pk;
+    save_group_meta(&store, &gid, &meta).unwrap();
     add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
 
     let member_m = PrivateKey::random(&mut rng).public_key();

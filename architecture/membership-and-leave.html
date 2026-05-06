@@ -148,25 +148,56 @@ is implicit anyway, computed from group membership + auto-follow).
 
 <h3>Storage</h3>
 <p>
-Add a single nullable timestamp field to <code>ContextIdentity</code>
-(<code>crates/store/src/key/context.rs:120</code>):
+Two separate stores live side by side: the synced <code>ContextIdentity</code> row
+(<code>key</code> at <code>crates/store/src/key/context.rs:120</code>, value at
+<code>crates/store/src/types/context.rs:117</code>) and a node-local
+<code>ContextLeftMarker</code> tombstone in a new column.
+</p>
+<p>
+The marker lives in <code>Column::ContextLocal</code> (a new column
+specifically for node-local context-scoped state — never synchronized).
+Keying is identical to <code>ContextIdentity</code> so the
+<code>(context_id, member_pk)</code> pair is the unit of opt-out:
 </p>
 <div class="typedef">
-<span class="kw">struct</span> <span class="ty">ContextIdentity</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// existing fields...</span><br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">pub</span> <span class="field">manually_left_at</span>: <span class="ty">Option</span>&lt;<span class="ty">Timestamp</span>&gt;,<br>
+<span class="kw">pub struct</span> <span class="ty">ContextLeftMarker</span>(<span class="ty">Key</span>&lt;(ContextId, PublicKeyComponent)&gt;);<br><br>
+<span class="comment">// Borsh value:</span><br>
+<span class="kw">pub struct</span> <span class="ty">ContextLeftMarker</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">pub</span> <span class="field">left_at_ms</span>: <span class="ty">u64</span>,<br>
 }
 </div>
+<p>
+A separate column instead of a flag on <code>ContextIdentity</code> for two
+reasons: (a) <code>ContextIdentity</code> is part of the synced membership
+shape, so adding a node-local field to it would conflate replicated and
+node-local state; (b) extending the existing Borsh value would break
+deserialization of pre-existing on-disk rows, requiring a migration.
+The dedicated column makes the node-local-ness explicit at the storage
+layer and keeps the synced shape clean.
+</p>
 
 <h3>Flow</h3>
 <ol>
   <li>Client calls <code>leave_context(context_id)</code>.</li>
-  <li>Local node sets <code>manually_left_at = now()</code> on the <code>ContextIdentity</code>
-  row for this <code>(member, context)</code> pair.</li>
-  <li>Sync layer reads the flag on next tick; stops sending and accepting deltas for that pair.</li>
-  <li>Auto-follow handler (<code>auto_follow.rs:255</code>) gains a check: if
-  <code>manually_left_at.is_some()</code>, skip the auto-rejoin.</li>
-  <li>Done. One local DB write. No network involvement.</li>
+  <li>Handler resolves the local <code>ContextIdentity</code> via
+  <code>find_local_signing_identity</code> — scans the column for the row
+  where this node holds the private key. Falls back to the namespace
+  identity if no local row exists.</li>
+  <li>In a single batched store handle (so they land in one commit), the
+  handler:
+    <ol type="a">
+      <li>Writes the <code>ContextLeftMarker</code> row in
+      <code>Column::ContextLocal</code>.</li>
+      <li>Deletes the corresponding <code>ContextIdentity</code> row,
+      which stops sync (the sync layer iterates these rows).</li>
+    </ol>
+  </li>
+  <li>Calls <code>node_client.unsubscribe(&amp;context_id)</code> to leave
+  the gossipsub topic, mirroring <code>join_context</code>'s subscribe.</li>
+  <li>Auto-follow handler (<code>auto_follow.rs:255</code>) checks for the
+  marker via <code>has_left_context</code> on every
+  <code>ContextRegistered</code> event and skips the auto-rejoin if it
+  finds one.</li>
 </ol>
 
 <h3>Properties</h3>
@@ -175,7 +206,7 @@ Add a single nullable timestamp field to <code>ContextIdentity</code>
   <tr><td><b>DAG entry</b></td><td>None</td></tr>
   <tr><td><b>Key rotation</b></td><td>None — leaver still holds the group key</td></tr>
   <tr><td><b>Coordination</b></td><td>None — cannot fail</td></tr>
-  <tr><td><b>Reversibility</b></td><td>Trivial — flip the flag back via <code>JoinContextRequest</code> or a dedicated <code>rejoin_context</code></td></tr>
+  <tr><td><b>Reversibility</b></td><td>Trivial — <code>JoinContextRequest</code> deletes the marker as a side-effect of joining and writes a fresh <code>ContextIdentity</code> row</td></tr>
   <tr><td><b>Other members observe</b></td><td>No</td></tr>
   <tr><td><b>Forward secrecy</b></td><td>Not provided — leaver retains the key, can decrypt anything they sync later if they rejoin</td></tr>
 </table>
@@ -528,5 +559,6 @@ This page commits the design before any code lands. Status flips from <b>propose
 
 </div>
 </div>
+<script src="nav.js"></script>
 </body>
 </html>

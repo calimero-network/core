@@ -9,18 +9,26 @@ use tracing::{error, info};
 
 use super::parse_group_id;
 use crate::admin::service::{parse_api_error, ApiResponse};
+use crate::auth::AuthenticatedKey;
 use crate::AdminState;
 
 pub async fn handler(
     Path(group_id_str): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    auth_key: Option<Extension<AuthenticatedKey>>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
         Ok(id) => id,
         Err(err) => return err.into_response(),
     };
 
-    info!(group_id=%group_id_str, "Leaving group (publishing MemberLeft)");
+    let auth_caller = auth_key.map(|Extension(k)| k.0);
+
+    info!(
+        group_id=%group_id_str,
+        ?auth_caller,
+        "Leaving group (publishing MemberLeft)"
+    );
 
     let result = state
         .ctx_client
