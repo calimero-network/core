@@ -116,32 +116,30 @@ steps:
     node: e2e-node-2
     context_id: '{{ctx_id}}'
 
-  # --- SCENARIO: Verify leave actually disarmed node-2's local context ---
+  # --- SCENARIO: Verify leave disarmed node-2's local context ---
   # leave_context deletes the local ContextIdentity (signing key) and
   # writes a ContextLeftMarker. The directly observable consequence on
   # node-2 is that calls against the left context fail with
   # "No owned identity found for this context" — the executor has no
-  # signing key to invoke WASM with. This expected_failure is the
-  # positive verification that leave_context did its work.
-  #
-  # NOTE — rejoin reversibility is not tested here.
-  # An earlier version of this workflow attempted to verify that
-  # join_context after leave_context restores sync (per the design
-  # doc's "leave_context is reversible" claim). Empirically that
-  # convergence does not happen: 120s of wait_for_sync polls yields
-  # stable non-converging hashes between node-1 and node-2 (final
-  # hashes shown below). Adding post-rejoin gossipsub mesh wait did
-  # not help. Filed as a follow-up to investigate at the core sync
-  # layer:
-  #   * node-1 keeps writing after rejoin → its DAG advances normally
-  #   * node-2's DAG stays at the pre-leave head despite repeated
-  #     sync_context triggers on node-2
-  #   * no apply errors visible at debug log level on either node
-  # Hypotheses worth investigating: (a) join_context returns before
-  # the gossipsub mesh has re-established, so sync triggers find no
-  # mesh peers; (b) post-leave delta_store tracking is removed and
-  # not re-installed by join_context; (c) there's a state machine
-  # in sync/manager that filters out previously-left contexts.
+  # signing key to invoke WASM with.
+
+  - name: Node-1 writes a value while node-2 has left
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "phase"
+      value: "while-left"
+
+  - name: Node-1 writes a marker key node-2 missed
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "during_leave_marker"
+      value: "missed-by-node-2"
 
   - name: Node-2 cannot call context after leave (no signing identity)
     type: call
@@ -151,6 +149,69 @@ steps:
     args:
       key: "phase"
     expected_failure: true
+
+  # --- SCENARIO: Rejoin restores access and catches up on missed writes ---
+  # leave_context is reversible: join_context recreates the local identity
+  # and clears the leave marker. The HashComparison sync (sync/manager
+  # post-merge fix in this PR) reconciles ContextMeta.root_hash with the
+  # actual storage state after entities are merged from the peer.
+
+  - name: Node-2 rejoins context after leaving
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+
+  - name: Node-1 writes post-rejoin value
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "phase"
+      value: "post-rejoin"
+
+  - name: Sync post-rejoin state
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-2 reads phase after rejoin
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "phase"
+    outputs:
+      post_rejoin_phase: result
+
+  - name: Assert node-2 sees the latest phase write
+    type: json_assert
+    statements:
+      - 'json_equal({{post_rejoin_phase}}, {"output": "post-rejoin"})'
+
+  # Catch-up semantic: rejoin must also deliver writes that landed
+  # while node-2 was in the left state. The marker key was set during
+  # the leave window and never overwritten — node-2 should see it now.
+
+  - name: Node-2 reads marker written during leave window
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "during_leave_marker"
+    outputs:
+      marker_read: result
+
+  - name: Assert rejoin delivered the missed write
+    type: json_assert
+    statements:
+      - 'json_equal({{marker_read}}, {"output": "missed-by-node-2"})'
 
 stop_all_nodes: false
 restart: false
