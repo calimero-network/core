@@ -116,6 +116,41 @@ steps:
     node: e2e-node-2
     context_id: '{{ctx_id}}'
 
+  # --- SCENARIO: Verify sync actually stopped on node-2 ---
+  # The core invariant of leave_context: while in the left state, the
+  # node must NOT receive new writes from peers. Node-1 publishes a
+  # value, we wait long enough for normal gossip to propagate, then
+  # confirm node-2's local view still reflects the pre-leave value.
+
+  - name: Node-1 writes a value while node-2 has left
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "phase"
+      value: "while-left"
+
+  - name: Wait for gossip propagation window
+    type: wait
+    seconds: 5
+    message: long enough for sync to deliver if it were active
+
+  - name: Node-2 reads phase while left
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "phase"
+    outputs:
+      while_left_read: result
+
+  - name: Assert node-2 did NOT receive the post-leave write
+    type: json_assert
+    statements:
+      - 'json_equal({{while_left_read}}, {"output": "pre-leave"})'
+
   # --- SCENARIO: Rejoin restores access ---
   # leave_context is reversible — the node can call join_context again
   # and resume syncing where it left off.

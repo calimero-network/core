@@ -87,6 +87,11 @@ steps:
     node: e2e-node-2
     group_id: '{{subgroup_id}}'
 
+  - name: Wait for MemberLeft to propagate to node-1
+    type: wait
+    seconds: 5
+    message: governance DAG op needs gossip propagation before listing on a different node
+
   - name: List subgroup members on node-1 after node-2 left
     type: list_group_members
     node: e2e-node-1
@@ -94,10 +99,11 @@ steps:
     outputs:
       members_after_leave: members
 
-  - name: Assert subgroup membership shrunk
+  - name: Assert node-2 absent from subgroup membership
     type: assert
     statements:
-      - "is_set({{members_after_leave}})"
+      - "not_contains({{members_after_leave}}, {{identity_node2}})"
+      - "contains({{members_after_leave}}, {{identity_node3}})"
 
   # --- SCENARIO 2: A node not in the group cannot leave ---
   # leave_group requires a direct row. A non-member who calls
@@ -110,9 +116,10 @@ steps:
     expected_failure: true
 
   # --- SCENARIO 3: Last-admin protection rejects sole admin's leave ---
-  # Demote node-3 first (already a Member), then try to remove the
-  # last admin (node-1) by having node-1 leave its own subgroup —
-  # that's blocked by the last-admin check in apply_group_op_mutations.
+  # Node-1 is the only Admin in the subgroup (node-2 left in scenario 1,
+  # node-3 was added as Member). The last-admin check in
+  # apply_group_op_mutations rejects a leave that would leave the group
+  # with no admins.
 
   - name: Node-1 (sole admin) tries to leave subgroup
     type: leave_group

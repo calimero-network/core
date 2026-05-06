@@ -88,7 +88,12 @@ steps:
     node: e2e-node-2
     namespace_id: '{{namespace_id}}'
 
-  # --- Verification: node-2 is gone from both subgroups ---
+  - name: Wait for cascade MemberLeft to propagate to node-1
+    type: wait
+    seconds: 5
+    message: governance DAG op needs gossip propagation before listing on a different node
+
+  # --- Verification: node-2 is gone from the namespace and both subgroups ---
 
   - name: List namespace members on node-1
     type: list_group_members
@@ -97,10 +102,10 @@ steps:
     outputs:
       ns_members_after: members
 
-  - name: Assert namespace membership shrunk
+  - name: Assert node-2 absent from namespace membership
     type: assert
     statements:
-      - "is_set({{ns_members_after}})"
+      - "not_contains({{ns_members_after}}, {{identity_node2}})"
 
   - name: List subgroup-A members on node-1
     type: list_group_members
@@ -109,10 +114,10 @@ steps:
     outputs:
       subgroup_a_after: members
 
-  - name: Assert subgroup-A membership shrunk
+  - name: Assert node-2 absent from subgroup-A membership
     type: assert
     statements:
-      - "is_set({{subgroup_a_after}})"
+      - "not_contains({{subgroup_a_after}}, {{identity_node2}})"
 
   - name: List subgroup-B members on node-1
     type: list_group_members
@@ -121,10 +126,10 @@ steps:
     outputs:
       subgroup_b_after: members
 
-  - name: Assert subgroup-B membership shrunk
+  - name: Assert node-2 absent from subgroup-B membership
     type: assert
     statements:
-      - "is_set({{subgroup_b_after}})"
+      - "not_contains({{subgroup_b_after}}, {{identity_node2}})"
 
 stop_all_nodes: false
 restart: false
