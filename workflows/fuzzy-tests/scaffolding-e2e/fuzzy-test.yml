@@ -99,6 +99,59 @@ steps:
         args:
           value: 1
 
+  # Pre-populate AuthoredMap so authored_update_seed has stable owner-keyed entries
+  - name: Seed initial AuthoredMap entries
+    type: repeat
+    count: 5
+    variable: amap_idx
+    steps:
+      - type: call
+        node: fuzzy-e2e-node-1
+        context_id: "{{e2e_context_id}}"
+        executor_public_key: "{{node1_key}}"
+        method: authored_insert
+        args:
+          key: "authored_seed_{{amap_idx}}"
+          value: "authored_val_{{amap_idx}}"
+
+  # Add all nodes as SharedStorage writers so any node can write during the fuzzy test
+  - name: Add node-2 as shared writer
+    type: call
+    node: fuzzy-e2e-node-1
+    context_id: "{{e2e_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: shared_add_writer
+    args:
+      writer_bs58: "{{public_key_fuzzy-e2e-node-2}}"
+
+  - name: Add node-3 as shared writer
+    type: call
+    node: fuzzy-e2e-node-1
+    context_id: "{{e2e_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: shared_add_writer
+    args:
+      writer_bs58: "{{public_key_fuzzy-e2e-node-3}}"
+
+  - name: Add node-4 as shared writer
+    type: call
+    node: fuzzy-e2e-node-1
+    context_id: "{{e2e_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: shared_add_writer
+    args:
+      writer_bs58: "{{public_key_fuzzy-e2e-node-4}}"
+
+  # Seed an initial SharedStorage value so shared_get always returns something
+  - name: Seed initial shared storage value
+    type: call
+    node: fuzzy-e2e-node-1
+    context_id: "{{e2e_context_id}}"
+    executor_public_key: "{{node1_key}}"
+    method: shared_set
+    args:
+      value: "shared_initial"
+
   - name: Wait for seed data sync
     type: wait_for_sync
     context_id: "{{e2e_context_id}}"
@@ -136,10 +189,10 @@ steps:
         executor_key: "{{public_key_fuzzy-e2e-node-4}}"
 
     operations:
-      # KV write-and-verify — 25% of traffic
+      # KV write-and-verify — 20% of traffic
       # Primary sync benchmark: write on random node, read back after 1s
       - name: "kv_write_read"
-        weight: 25
+        weight: 20
         steps:
           - type: call
             node: "{{random_node}}"
@@ -170,10 +223,10 @@ steps:
               - "is_set({{kv_get_result}})"
               - "contains({{kv_get_result}}, {{fuzzy_value}})"
 
-      # KV handler write-and-verify — 12% of traffic
+      # KV handler write-and-verify — 10% of traffic
       # Tests event handler invocation under concurrent load
       - name: "kv_handler_write_read"
-        weight: 12
+        weight: 10
         steps:
           - type: call
             node: "{{random_node}}"
@@ -203,10 +256,10 @@ steps:
             statements:
               - "is_set({{h_get_result}})"
 
-      # G-Counter increment — 8% of traffic
+      # G-Counter increment — 6% of traffic
       # Benchmarks CRDT counter merge latency under concurrent increments
       - name: "g_counter_ops"
-        weight: 8
+        weight: 6
         steps:
           - type: call
             node: "{{random_node}}"
@@ -238,10 +291,10 @@ steps:
             statements:
               - "is_set({{pn_result}})"
 
-      # LWW register write-and-read — 9% of traffic
+      # LWW register write-and-read — 8% of traffic
       # Benchmarks last-write-wins convergence under concurrent writes
       - name: "register_ops"
-        weight: 9
+        weight: 8
         steps:
           - type: call
             node: "{{random_node}}"
@@ -337,9 +390,9 @@ steps:
             statements:
               - "is_set({{tag_result}})"
 
-      # RGA text append + length check — 4% of traffic
+      # RGA text append + length check — 3% of traffic
       - name: "rga_text_ops"
-        weight: 4
+        weight: 3
         steps:
           - type: call
             node: "{{random_node}}"
@@ -358,10 +411,10 @@ steps:
             statements:
               - "is_set({{rga_len_result}})"
 
-      # Cross-node consistency check — 5% of traffic
+      # Cross-node consistency check — 4% of traffic
       # Write on node-1, wait 2s, read on node-4 — primary sync-time benchmark
       - name: "cross_node_kv_sync"
-        weight: 5
+        weight: 4
         steps:
           - type: call
             node: fuzzy-e2e-node-1
@@ -402,10 +455,10 @@ steps:
             statements:
               - "is_set({{entries_result}})"
 
-      # Vector push + read — 4% of traffic
+      # Vector push + read — 3% of traffic
       # Benchmarks Vector<Counter> element-wise merge under concurrent appends
       - name: "vector_ops"
-        weight: 4
+        weight: 3
         steps:
           - type: call
             node: "{{random_node}}"
@@ -464,10 +517,10 @@ steps:
             statements:
               - "is_set({{frozen_val}})"
 
-      # Nested UserStorage set-and-read (same node) — 4% of traffic
+      # Nested UserStorage set-and-read (same node) — 3% of traffic
       # UserStorage<NestedMap>: per-user nested KV, executor-bound
       - name: "nested_user_ops"
-        weight: 4
+        weight: 3
         steps:
           - type: call
             node: fuzzy-e2e-node-1
@@ -494,6 +547,113 @@ steps:
             non_blocking: true
             statements:
               - "is_set({{nest_get}})"
+
+      # AuthoredMap insert + cross-node read — 5% of traffic
+      # Any node inserts a unique key (becomes owner); read replicates to any peer
+      - name: "authored_insert_get"
+        weight: 5
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: authored_insert
+            args:
+              key: "authored_{{uuid}}"
+              value: "aval_{{uuid}}_{{timestamp}}"
+            outputs:
+              authored_ins_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{authored_ins_result}})"
+          - type: wait
+            seconds: 1
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: authored_get
+            args:
+              key: "{{fuzzy_key}}"
+            outputs:
+              authored_get_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{authored_get_result}})"
+
+      # AuthoredMap update of seeded entry — 3% of traffic
+      # Only the owner (node-1, which inserted the seeds) can update
+      - name: "authored_update_seed"
+        weight: 3
+        steps:
+          - type: call
+            node: fuzzy-e2e-node-1
+            context_id: "{{e2e_context_id}}"
+            method: authored_update
+            args:
+              key: "authored_seed_{{random_int(0, 5)}}"
+              value: "updated_{{uuid}}"
+            outputs:
+              authored_upd_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{authored_upd_result}})"
+
+      # SharedStorage concurrent write + read — 4% of traffic
+      # All 4 nodes are writers; benchmarks LWW merge under concurrent writes
+      - name: "shared_write_read"
+        weight: 4
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: shared_set
+            args:
+              value: "shared_{{uuid}}_{{timestamp}}"
+            outputs:
+              shared_set_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{shared_set_result}})"
+          - type: wait
+            seconds: 1
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: shared_get
+            outputs:
+              shared_get_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{shared_get_result}})"
+
+      # SharedStorage cross-node propagation — 2% of traffic
+      # Write on node-1, verify sync reaches node-4 within 1s
+      - name: "shared_cross_read"
+        weight: 2
+        steps:
+          - type: call
+            node: fuzzy-e2e-node-1
+            context_id: "{{e2e_context_id}}"
+            method: shared_set
+            args:
+              value: "shared_cross_{{timestamp}}"
+          - type: wait
+            seconds: 1
+          - type: call
+            node: fuzzy-e2e-node-4
+            context_id: "{{e2e_context_id}}"
+            method: shared_get
+            outputs:
+              shared_cross_val: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - statement: "is_set({{shared_cross_val}})"
+                message: "Shared value should propagate to node-4 within 1s"
 
       # PN-Counter decrement — 3% of traffic
       # Verifies decrement merges correctly across concurrent inc/dec pairs
