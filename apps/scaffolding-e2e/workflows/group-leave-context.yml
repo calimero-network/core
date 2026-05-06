@@ -1,0 +1,163 @@
+name: E2E KV Store - Leave Context (Local Opt-Out)
+description: >
+  Tests `leave_context`: a node-local opt-out that stops sync and
+  disarms auto-follow without publishing a DAG op. Verifies the
+  leaver can rejoin via `join_context` and resume syncing.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup: namespace + subgroup with both nodes + context ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Create subgroup
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: leave-context-subgroup
+    outputs:
+      subgroup_id: groupId
+
+  - name: Add node-2 to subgroup
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+
+  - name: Create context in subgroup
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Node-2 joins context
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+
+  # --- Sanity: both nodes see the same value before leaving ---
+
+  - name: Node-1 writes pre-leave value
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "phase"
+      value: "pre-leave"
+
+  - name: Sync pre-leave write
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-2 reads pre-leave value
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "phase"
+    outputs:
+      pre_leave_read: result
+
+  - name: Assert node-2 saw pre-leave write
+    type: json_assert
+    statements:
+      - 'json_equal({{pre_leave_read}}, {"output": "pre-leave"})'
+
+  # --- SCENARIO: Node-2 leaves context locally ---
+
+  - name: Node-2 leaves context (local opt-out)
+    type: leave_context
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+
+  # --- SCENARIO: Rejoin restores access ---
+  # leave_context is reversible — the node can call join_context again
+  # and resume syncing where it left off.
+
+  - name: Node-2 rejoins context after leaving
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+
+  - name: Node-1 writes post-rejoin value
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "phase"
+      value: "post-rejoin"
+
+  - name: Sync post-rejoin write
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-2 reads post-rejoin value
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "phase"
+    outputs:
+      post_rejoin_read: result
+
+  - name: Assert node-2 sees post-rejoin write
+    type: json_assert
+    statements:
+      - 'json_equal({{post_rejoin_read}}, {"output": "post-rejoin"})'
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

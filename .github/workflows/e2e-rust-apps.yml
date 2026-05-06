@@ -164,6 +164,15 @@ jobs:
           - workflow: group-membership
             file: workflows/group-membership.yml
             app: scaffolding-e2e
+          - workflow: group-leave-context
+            file: workflows/group-leave-context.yml
+            app: scaffolding-e2e
+          - workflow: group-leave-member
+            file: workflows/group-leave-member.yml
+            app: scaffolding-e2e
+          - workflow: group-leave-namespace
+            file: workflows/group-leave-namespace.yml
+            app: scaffolding-e2e
           - workflow: group-capabilities
             file: workflows/group-capabilities.yml
             app: scaffolding-e2e

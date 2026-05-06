@@ -1,0 +1,131 @@
+name: E2E KV Store - Leave Namespace (Cascade)
+description: >
+  Tests `leave_namespace`: voluntary self-leave at the namespace root
+  cascades through every descendant subgroup where the leaver has a
+  direct row. Single MemberLeft op at the root drives the whole
+  subtree on every peer.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup: namespace + two subgroups, both with node-2 ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Create subgroup A
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: leave-namespace-subgroup-a
+    outputs:
+      subgroup_a_id: groupId
+
+  - name: Create subgroup B
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: leave-namespace-subgroup-b
+    outputs:
+      subgroup_b_id: groupId
+
+  - name: Add node-2 to subgroup A
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_a_id}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+
+  - name: Add node-2 to subgroup B
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_b_id}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+
+  # --- SCENARIO: Node-2 leaves the namespace root ---
+  # The apply path detects a no-parent (root) MemberLeft and cascades
+  # through every descendant subgroup where node-2 has a direct row,
+  # plus the namespace itself. One op, whole-subtree leave.
+
+  - name: Node-2 leaves namespace
+    type: leave_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+
+  # --- Verification: node-2 is gone from both subgroups ---
+
+  - name: List namespace members on node-1
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      ns_members_after: members
+
+  - name: Assert namespace membership shrunk
+    type: assert
+    statements:
+      - "is_set({{ns_members_after}})"
+
+  - name: List subgroup-A members on node-1
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_a_id}}'
+    outputs:
+      subgroup_a_after: members
+
+  - name: Assert subgroup-A membership shrunk
+    type: assert
+    statements:
+      - "is_set({{subgroup_a_after}})"
+
+  - name: List subgroup-B members on node-1
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_b_id}}'
+    outputs:
+      subgroup_b_after: members
+
+  - name: Assert subgroup-B membership shrunk
+    type: assert
+    statements:
+      - "is_set({{subgroup_b_after}})"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

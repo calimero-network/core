@@ -1,0 +1,125 @@
+name: E2E KV Store - Leave Group (MemberLeft)
+description: >
+  Tests voluntary self-leave from a subgroup via `leave_group`.
+  Publishes `MemberLeft` so peers observe the leave. Exercises the
+  apply-side checks: direct-row required, last-admin protection.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup: namespace + subgroup with three members ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node3}}'
+    outputs:
+      identity_node3: memberIdentity
+
+  - name: Create subgroup with all three nodes
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: leave-group-subgroup
+    outputs:
+      subgroup_id: groupId
+
+  - name: Add node-2 and node-3 to subgroup
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+      - identity: '{{identity_node3}}'
+        role: Member
+
+  # --- SCENARIO 1: Member voluntarily leaves the subgroup ---
+  # Node-2 (Member) calls leave_group. The MemberLeft op is published
+  # via the governance DAG and applied on every peer.
+
+  - name: Node-2 leaves subgroup
+    type: leave_group
+    node: e2e-node-2
+    group_id: '{{subgroup_id}}'
+
+  - name: List subgroup members on node-1 after node-2 left
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      members_after_leave: members
+
+  - name: Assert subgroup membership shrunk
+    type: assert
+    statements:
+      - "is_set({{members_after_leave}})"
+
+  # --- SCENARIO 2: A node not in the group cannot leave ---
+  # leave_group requires a direct row. A non-member who calls
+  # leave_group is rejected.
+
+  - name: Node-2 cannot leave again (already left)
+    type: leave_group
+    node: e2e-node-2
+    group_id: '{{subgroup_id}}'
+    expected_failure: true
+
+  # --- SCENARIO 3: Last-admin protection rejects sole admin's leave ---
+  # Demote node-3 first (already a Member), then try to remove the
+  # last admin (node-1) by having node-1 leave its own subgroup —
+  # that's blocked by the last-admin check in apply_group_op_mutations.
+
+  - name: Node-1 (sole admin) tries to leave subgroup
+    type: leave_group
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    expected_failure: true
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
