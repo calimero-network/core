@@ -2257,6 +2257,21 @@ pub struct LeaveGroupApiResponseData {
     pub member_public_key: PublicKey,
 }
 
+// ---- Leave Namespace (cascading self-leave) ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveNamespaceApiResponse {
+    pub data: LeaveNamespaceApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveNamespaceApiResponseData {
+    pub namespace_id: String,
+    pub member_public_key: PublicKey,
+}
+
 // ---- Get Context Group ----
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

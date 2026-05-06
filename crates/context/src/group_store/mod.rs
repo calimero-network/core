@@ -1050,6 +1050,50 @@ fn apply_group_op_mutations(
             // Last-admin protection — same helper used by MemberRemoved.
             membership_policy.ensure_not_last_admin_removal(member)?;
 
+            // Detect namespace-leave: if this group has no parent it IS the
+            // namespace, and leaving must cascade through every descendant
+            // group where the leaver has a direct row. Per the design's
+            // "no cascade for leave_group" rule, non-namespace groups don't
+            // touch siblings or descendants. See § 6 for cascade semantics.
+            let is_namespace_leave =
+                crate::group_store::namespace::resolve_namespace(store, group_id)? == *group_id;
+
+            if is_namespace_leave {
+                // Walk subtree, gather descendants where leaver has a direct
+                // row. Run owner + last-admin checks across all of them
+                // BEFORE mutating anything, so a failure surfaces the
+                // offending scope to the user with no half-applied cleanup.
+                let descendants =
+                    crate::group_store::namespace::collect_descendant_groups(store, group_id)?;
+
+                let mut direct_descendants: Vec<ContextGroupId> = Vec::new();
+                for sub in &descendants {
+                    if get_group_member_role(store, sub, member)?.is_some() {
+                        if let Some(sub_meta) = load_group_meta(store, sub)? {
+                            if sub_meta.owner_identity == *member {
+                                bail!(
+                                    "cannot leave namespace: leaver owns subgroup {}; \
+                                     transfer ownership of every owned scope first",
+                                    hex::encode(sub.to_bytes())
+                                );
+                            }
+                        }
+                        let sub_policy = MembershipPolicy::new(store, *sub);
+                        sub_policy.ensure_not_last_admin_removal(member)?;
+                        direct_descendants.push(*sub);
+                    }
+                }
+
+                for sub in &direct_descendants {
+                    cascade_remove_member_from_group_tree(store, sub, member)?;
+                    remove_group_member(store, sub, member)?;
+                    crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
+                        group_id: sub.to_bytes(),
+                        member: *member,
+                    });
+                }
+            }
+
             cascade_remove_member_from_group_tree(store, group_id, member)?;
             remove_group_member(store, group_id, member)?;
 
@@ -1063,7 +1107,8 @@ fn apply_group_op_mutations(
             // now, an admin-initiated `MemberRemoved` is the path to a
             // cryptographically-complete leave; `MemberLeft` is the
             // governance-level departure (membership row removed, peers
-            // observe the leave) without the rotation.
+            // observe the leave) without the rotation. Same caveat applies
+            // to the namespace cascade above — row-removal only.
             crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
                 group_id: group_id.to_bytes(),
                 member: *member,

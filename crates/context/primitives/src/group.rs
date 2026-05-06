@@ -416,6 +416,29 @@ pub struct LeaveGroupResponse {
     pub member_public_key: PublicKey,
 }
 
+/// Self-leave from a namespace (root group). Operationally a `MemberLeft`
+/// at the namespace root, but the apply path detects "this group has no
+/// parent" and cascades through every descendant group where the leaver
+/// has a direct row — running owner + last-admin checks across all of
+/// them BEFORE any mutation. See § 6 of the design doc.
+///
+/// Same forward-secrecy caveat as `leave_group`: row-removal cascade
+/// only, no per-scope key rotation in this PR.
+#[derive(Debug)]
+pub struct LeaveNamespaceRequest {
+    pub namespace_id: ContextGroupId,
+}
+
+impl Message for LeaveNamespaceRequest {
+    type Result = eyre::Result<LeaveNamespaceResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct LeaveNamespaceResponse {
+    pub namespace_id: ContextGroupId,
+    pub member_public_key: PublicKey,
+}
+
 // ---- Group Permission Types ----
 
 #[derive(Debug)]

@@ -281,6 +281,10 @@ pub(crate) fn setup(
             post(namespaces::join_namespace::handler),
         )
         .route(
+            "/namespaces/:namespace_id/leave",
+            post(namespaces::leave_namespace::handler),
+        )
+        .route(
             "/namespaces/:namespace_id/identity",
             get(namespaces::get_identity::handler),
         )

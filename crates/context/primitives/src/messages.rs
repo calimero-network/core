@@ -15,15 +15,15 @@ use crate::group::{
     DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
     GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetNamespaceIdentityRequest, JoinContextRequest,
-    JoinGroupRequest, LeaveContextRequest, LeaveGroupRequest, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
-    SetDefaultCapabilitiesRequest, SetGroupAliasRequest, SetMemberAliasRequest,
-    SetMemberCapabilitiesRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
-    StoreContextAliasRequest, StoreDefaultCapabilitiesRequest, StoreGroupAliasRequest,
-    StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
-    StoreMemberCapabilityRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    JoinGroupRequest, LeaveContextRequest, LeaveGroupRequest, LeaveNamespaceRequest,
+    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
+    RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest, SetGroupAliasRequest,
+    SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetSubgroupVisibilityRequest,
+    SetTeeAdmissionPolicyRequest, StoreContextAliasRequest, StoreDefaultCapabilitiesRequest,
+    StoreGroupAliasRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
+    StoreMemberAliasRequest, StoreMemberCapabilityRequest, StoreSubgroupVisibilityRequest,
+    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -330,6 +330,10 @@ pub enum ContextMessage {
     LeaveGroup {
         request: LeaveGroupRequest,
         outcome: oneshot::Sender<<LeaveGroupRequest as Message>::Result>,
+    },
+    LeaveNamespace {
+        request: LeaveNamespaceRequest,
+        outcome: oneshot::Sender<<LeaveNamespaceRequest as Message>::Result>,
     },
     SetMemberCapabilities {
         request: SetMemberCapabilitiesRequest,

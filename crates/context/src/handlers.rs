@@ -27,6 +27,7 @@ pub mod join_context;
 pub mod join_group;
 pub mod leave_context;
 pub mod leave_group;
+pub mod leave_namespace;
 pub mod list_all_groups;
 pub mod list_group_contexts;
 pub mod list_group_members;
@@ -149,6 +150,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::LeaveGroup { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::LeaveNamespace { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetMemberCapabilities { request, outcome } => {
