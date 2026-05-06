@@ -159,6 +159,12 @@ pub enum GroupOp {
         auto_follow_contexts: bool,
         auto_follow_subgroups: bool,
     },
+    /// Transfer ownership of this group to `new_owner`. Signer must be the
+    /// current Owner; `new_owner` must already be a member. Updates
+    /// `GroupMetaValue.owner_identity`. The previous owner remains a
+    /// regular admin (no automatic role change beyond the owner field).
+    /// See `architecture/membership-and-leave.html` § 7.
+    TransferOwnership { new_owner: PublicKey },
 }
 
 impl GroupOp {
@@ -189,6 +195,7 @@ impl GroupOp {
             GroupOp::GroupMigrationSet { .. } => "group_migration_set",
             GroupOp::ContextCapabilityGranted { .. } => "context_capability_granted",
             GroupOp::ContextCapabilityRevoked { .. } => "context_capability_revoked",
+            GroupOp::TransferOwnership { .. } => "transfer_ownership",
             GroupOp::TeeAdmissionPolicySet { .. } => "tee_admission_policy_set",
             GroupOp::MemberJoinedViaTeeAttestation { .. } => "member_joined_via_tee",
             GroupOp::MemberSetAutoFollow { .. } => "member_set_auto_follow",

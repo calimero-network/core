@@ -495,11 +495,11 @@ This page commits the design before any code lands. Status flips from <b>propose
 <table class="properties">
   <tr><th>Section</th><th>Status</th><th>Tracking</th></tr>
   <tr><td>Membership Model Recap</td><td>Documents existing code</td><td>—</td></tr>
-  <tr><td><code>leave_context</code></td><td>Proposed</td><td>—</td></tr>
-  <tr><td><code>leave_group</code></td><td>Proposed</td><td>—</td></tr>
-  <tr><td><code>leave_namespace</code></td><td>Proposed</td><td>—</td></tr>
-  <tr><td>Owner Role + <code>TransferOwnership</code></td><td>Proposed</td><td>—</td></tr>
-  <tr><td><code>DeleteGroup</code> / <code>DeleteNamespace</code> Owner-gating</td><td>Proposed</td><td>—</td></tr>
+  <tr><td><code>leave_context</code></td><td><b>Implemented</b> (PR #2280)</td><td><code>crates/context/src/handlers/leave_context.rs</code>, <code>auto_follow.rs</code> gate, <code>POST /admin-api/contexts/:id/leave</code></td></tr>
+  <tr><td><code>leave_group</code></td><td>Proposed (planned PR #2)</td><td>—</td></tr>
+  <tr><td><code>leave_namespace</code></td><td>Proposed (planned PR #3)</td><td>—</td></tr>
+  <tr><td>Owner Role + <code>TransferOwnership</code></td><td><b>Implemented</b> (PR #2280)</td><td><code>GroupMetaValue.owner_identity</code>, <code>GroupOp::TransferOwnership</code>, <code>CannotRemoveOwner</code> gate in <code>MemberRemoved</code></td></tr>
+  <tr><td><code>DeleteGroup</code> Owner-gating</td><td><b>Implemented</b> (PR #2280)</td><td>Group-scope only — root <code>GroupDeleted</code> + <code>DeleteNamespace</code> Owner-gating planned with <code>leave_namespace</code> in PR #3</td></tr>
 </table>
 </div>
 

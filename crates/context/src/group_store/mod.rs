@@ -807,6 +807,18 @@ fn apply_group_op_mutations(
         GroupOp::MemberRemoved { member } => {
             permissions.require_manage_members(signer, "remove member")?;
             permissions.require_admin_to_remove_admin(signer, member)?;
+            // Owner is immune to involuntary removal. Owner must
+            // `TransferOwnership` first to step down, then they can be
+            // removed (or self-leave once that op exists).
+            if let Some(meta) = load_group_meta(store, group_id)? {
+                if meta.owner_identity == *member {
+                    bail!(
+                        "cannot remove owner of group {}; owner must \
+                         TransferOwnership to a successor before removal",
+                        hex::encode(group_id.to_bytes())
+                    );
+                }
+            }
             membership_policy.ensure_not_last_admin_removal(member)?;
             cascade_remove_member_from_group_tree(store, group_id, member)?;
             remove_group_member(store, group_id, member)?;
@@ -883,7 +895,22 @@ fn apply_group_op_mutations(
             settings.set_group_alias(signer, alias)?;
         }
         GroupOp::GroupDelete => {
-            permissions.require_admin(signer)?;
+            // Owner-only. Admins can no longer delete the group on their
+            // own — only the owner can. Tightens the previous policy
+            // (`require_admin`) which let any admin destroy the group.
+            let meta = load_group_meta(store, group_id)?.ok_or_else(|| {
+                eyre::eyre!(
+                    "cannot delete unknown group {}",
+                    hex::encode(group_id.to_bytes())
+                )
+            })?;
+            if meta.owner_identity != *signer {
+                bail!(
+                    "only the owner of group {} can delete it; \
+                     transfer ownership first if a non-owner needs to remove it",
+                    hex::encode(group_id.to_bytes())
+                );
+            }
             if count_group_contexts(store, group_id)? > 0 {
                 bail!("cannot delete group: one or more contexts are still registered");
             }
@@ -988,6 +1015,36 @@ fn apply_group_op_mutations(
                 contexts: *auto_follow_contexts,
                 subgroups: *auto_follow_subgroups,
             });
+        }
+        GroupOp::TransferOwnership { new_owner } => {
+            // Owner-only — current owner is the only signer who can transfer.
+            let mut meta = load_group_meta(store, group_id)?.ok_or_else(|| {
+                eyre::eyre!(
+                    "cannot transfer ownership of unknown group {}",
+                    hex::encode(group_id.to_bytes())
+                )
+            })?;
+
+            if meta.owner_identity != *signer {
+                bail!(
+                    "only the current owner of group {} can transfer ownership; \
+                     signer is not the owner",
+                    hex::encode(group_id.to_bytes())
+                );
+            }
+
+            // The new owner must already be a member of the group. Transfer
+            // does not implicitly invite — the successor must already be in
+            // place. Prevents accidental ownership leaks to non-members.
+            if get_group_member_role(store, group_id, new_owner)?.is_none() {
+                bail!(
+                    "new owner is not a member of group {}; invite them first",
+                    hex::encode(group_id.to_bytes())
+                );
+            }
+
+            meta.owner_identity = *new_owner;
+            save_group_meta(store, group_id, &meta)?;
         }
         #[allow(unreachable_patterns)]
         _ => return Ok(false),
