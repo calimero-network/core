@@ -344,7 +344,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 </div>
 
 <h3 style="margin-top:18px;">Authorization-Aware Primitives</h3>
-<p style="margin-bottom:14px;">Wrappers that bind writes to specific identities. The runtime handles signing and verification automatically: after your method returns, the context manager signs the executor's actions with their identity key, and peers verify those signatures at merge time using the runtime's <span class="code">ed25519_verify</span> host function. WASM code itself does not produce signatures — it only stamps placeholders that get filled in post-execution. You don't need to call any signing API; pick the primitive whose access shape matches your data and the trust model follows from the type. See <a href="store.html#crdt-collections">crates/store</a> for the full enforcement details.</p>
+<p style="margin-bottom:14px;">Wrappers that bind writes to specific identities. The runtime handles signing and verification automatically: after your method returns, the context manager signs the executor's actions with their identity key, and peers verify those signatures at merge time using the runtime's <span class="code">ed25519_verify</span> host function. WASM code itself does not produce signatures — it only stamps placeholders that get filled in post-execution. You don't need to call any signing API; pick the primitive whose access shape matches your data and the trust model follows from the type. See <a href="store.html#storage-primitives">crates/store</a> for the full enforcement details.</p>
 
 <div style="font-family:'JetBrains Mono', monospace; font-size:.82rem; line-height:1.7; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 18px; margin-bottom:16px; white-space:pre; overflow-x:auto;">need authorization?
   ├── no  → <span style="color:#06b6d4;">UnorderedMap / Vector / Set / LwwRegister / Counter</span>
@@ -356,7 +356,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
            ├── shared keyspace, per-entry author  → <span style="color:#22c55e;font-weight:600;">AuthoredMap&lt;K,V&gt;</span>
            └── shared sequence, per-entry author  → <span style="color:#22c55e;font-weight:600;">AuthoredVector&lt;V&gt;</span></div>
 
-<p style="margin-bottom:14px;font-size:.85rem;color:var(--text-dim);">See <a href="store.html#crdt-collections" style="color:var(--cyan);">crates/store</a> for the full comparison table including storage stamps, mutation rules, and when composition does (and does not) substitute for these primitives.</p>
+<p style="margin-bottom:14px;font-size:.85rem;color:var(--text-dim);">See <a href="store.html#storage-primitives" style="color:var(--cyan);">crates/store</a> for the full comparison table including storage stamps, mutation rules, and when composition does (and does not) substitute for these primitives.</p>
 
 <div class="g2" style="margin-bottom:16px;">
   <div class="cb">
@@ -384,7 +384,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 <div class="g2" style="margin-bottom:16px;">
   <div class="cb">
     <h4 style="color:#22c55e;">FrozenStorage&lt;T&gt;</h4>
-    <p style="margin-top:8px;">Content-addressable immutable storage. <span class="code">insert</span> returns a SHA-256 hash; reads are by hash. Same value always yields the same hash; entries cannot be updated. Use for attachments, snapshots, or any data that should be append-only and de-duplicated.</p>
+    <p style="margin-top:8px;">Content-addressable immutable storage. <span class="code">insert</span> returns a SHA-256 hash; reads are by hash. Same value always yields the same hash; entries cannot be updated. Use for attachments, snapshots, or any data that should be append-only and de-duplicated. <em>Note:</em> unlike the others in this section, <span class="code">FrozenStorage</span>'s authorization is <strong>structural</strong> — anyone can insert, immutability is enforced by content-addressing, no per-identity signature is checked at merge time.</p>
     <div class="typedef" style="margin-top:10px;">
 <span class="kw">use</span> calimero_sdk::collections::<span class="ty">FrozenStorage</span>;<br><br>
 <span class="kw">struct</span> <span class="ty">State</span> {<br>

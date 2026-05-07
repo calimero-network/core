@@ -408,7 +408,7 @@
 </style>
 
 <div class="card gc">
-<h3>Storage Primitives</h3>
+<h3 id="storage-primitives">Storage Primitives</h3>
 <p style="margin-bottom:10px;">Beyond the public CRDT collections above (<span class="code">UnorderedMap</span>, <span class="code">Vector</span>, <span class="code">Set</span>, <span class="code">LwwRegister</span>, <span class="code">Counter</span>) the storage layer provides wrappers that constrain who can write what. Three flavours of constraint:</p>
 <ul style="margin-bottom:14px;padding-left:20px;">
   <li><strong>Signature-based</strong> (<span class="code">UserStorage</span>, <span class="code">SharedStorage</span>, <span class="code">AuthoredMap</span>, <span class="code">AuthoredVector</span>) — the context manager signs each mutating action with the executor's private key (<span class="code">sign_authorized_actions</span> in <span class="code">crates/context/src/handlers/execute/mod.rs</span>) after WASM returns its outcome. Peers verify the signature at merge time in <span class="code">Interface::apply_action</span> (<span class="code">crates/storage/src/interface.rs</span>) using the runtime's <span class="code">ed25519_verify</span> host function and reject the action with <span class="code">InvalidSignature</span> on mismatch.</li>
@@ -444,7 +444,7 @@
   <td><span class="pt-desc">everyone (<span class="code">get_for_user</span>)</span></td>
 </tr>
 <tr>
-  <td><span class="pt-name">FrozenStorage&lt;T&gt;</span></td>
+  <td><span class="pt-name">FrozenStorage&lt;T&gt;</span><div class="pt-desc">(structural — no signature check)</div></td>
   <td><span class="pt-code">Frozen</span></td>
   <td><span class="pt-desc">Hash(value) → T, content-addressed</span></td>
   <td><span class="pt-desc">anyone</span></td>
@@ -496,7 +496,7 @@
   </div>
   <div class="cb">
     <h4>SharedStorage&lt;T&gt;</h4>
-    <p style="margin-top:8px;">A single value writable by any signer in a mutable <span class="code">writers</span> set. Any current writer can rotate the set unless it is frozen. The context manager signs each write after WASM returns its outcome; peers verify the signature against the stored writer set at merge time. See <a href="https://github.com/calimero-network/core/blob/master/docs/adr/0001-shared-storage-concurrent-rotation.md" target="_blank" rel="noopener">ADR&nbsp;0001</a> for the rotation-during-concurrent-write contract.</p>
+    <p style="margin-top:8px;">A single value writable by any signer in a mutable <span class="code">writers</span> set. Any current writer can rotate the set unless it is frozen. The context manager signs each write after WASM returns its outcome; peers verify the signature against the stored writer set at merge time. See <a href="https://github.com/calimero-network/core/blob/HEAD/docs/adr/0001-shared-storage-concurrent-rotation.md" target="_blank" rel="noopener">ADR&nbsp;0001</a> for the rotation-during-concurrent-write contract.</p>
   </div>
 </div>
 <div class="g2" style="margin-bottom:14px;">
@@ -516,7 +516,7 @@
   </div>
   <div class="cb">
     <h4>Merge-time enforcement (signature-based primitives)</h4>
-    <p style="margin-top:8px;">Local <span class="code">update</span>/<span class="code">remove</span> calls short-circuit non-owner attempts so bugs surface in-process, but the load-bearing check is at merge time: <span class="code">Interface::apply_action</span> calls the runtime's <span class="code">ed25519_verify</span> host function against the entry's stored <span class="code">owner</span> (or, for <span class="code">SharedStorage</span>, the current writer set) and rejects the action with <span class="code">InvalidSignature</span> on mismatch. Replay protection is enforced via a <strong>per-entity</strong> monotonic nonce: each storage entity stores its own <span class="code">updated_at</span> in <span class="code">SignatureData</span>, and incoming actions whose nonce is ≤ the stored value are rejected as <span class="code">NonceReplay</span>. Note that the nonce is scoped to the individual entity, not the owner globally, so signed actions targeting one entity cannot be replayed against a different entity even if the owner is the same.</p>
+    <p style="margin-top:8px;">Local <span class="code">update</span>/<span class="code">remove</span> calls short-circuit non-owner attempts so bugs surface in-process, but the load-bearing check is at merge time: <span class="code">Interface::apply_action</span> calls the runtime's <span class="code">ed25519_verify</span> host function against the entry's stored <span class="code">owner</span> (or, for <span class="code">SharedStorage</span>, the current writer set) and rejects the action with <span class="code">InvalidSignature</span> on mismatch. Replay protection is enforced via a <strong>per-entity</strong> monotonic nonce: each storage entity stores its own <span class="code">updated_at</span> in <span class="code">SignatureData</span>, and incoming actions whose nonce is ≤ the stored value are rejected as <span class="code">NonceReplay</span>. The nonce is scoped to the individual entity (the row in the storage index keyed by entity <span class="code">id</span>), not the owner globally — so for <span class="code">AuthoredMap</span> each map key is its own entity with its own nonce, for <span class="code">UserStorage</span> each per-user slot is its own entity, and for <span class="code">SharedStorage</span> the single value is one entity. A signed action targeting one entity cannot be replayed against a different entity even when the same key signed both.</p>
   </div>
 </div>
 
