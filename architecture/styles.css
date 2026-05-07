@@ -752,6 +752,32 @@ html.light .typedef { background: #f0f3f6; border-color: #d0d7de; color: #24292f
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
 
+/* ── STORAGE-PRIMITIVES TABLE / DECISION TREE (used in crates/store and crates/sdk) ── */
+.prim-table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: .82rem; }
+.prim-table th {
+  text-align: left; padding: 10px 12px; font-family: 'JetBrains Mono', monospace; font-size: .7rem;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px;
+  border-bottom: 2px solid var(--border); background: var(--surface2);
+}
+.prim-table th:first-child { border-radius: 8px 0 0 0; }
+.prim-table th:last-child { border-radius: 0 8px 0 0; }
+.prim-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.prim-table tr:hover td { background: var(--surface2); }
+.prim-table .pt-name { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: var(--green); white-space: nowrap; }
+.prim-table .pt-code { font-family: 'JetBrains Mono', monospace; font-size: .76rem; color: var(--cyan); }
+.prim-table .pt-desc { color: var(--text-dim); font-size: .78rem; }
+.prim-table tr.baseline td { background: rgba(255,255,255,0.02); }
+.prim-table tr.baseline .pt-name { color: var(--text-dim); font-weight: 500; }
+
+.prim-tree {
+  font-family: 'JetBrains Mono', monospace; font-size: .82rem; line-height: 1.7;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 18px; margin: 6px 0 16px 0; white-space: pre; overflow-x: auto;
+}
+.prim-tree .arrow { color: var(--cyan); }
+.prim-tree .target { color: var(--green); font-weight: 600; }
+.prim-tree .public { color: var(--cyan); }
+
 /* ── MOBILE ── */
 @media (max-width: 860px) {
  .sidebar { transform: translateX(-100%); transition: transform .25s; }

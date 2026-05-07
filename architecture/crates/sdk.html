@@ -343,18 +343,17 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
   </div>
 </div>
 
-<h3 style="margin-top:18px;">Authorization-Aware Primitives</h3>
-<p style="margin-bottom:14px;">Wrappers that bind writes to specific identities. The runtime handles signing and verification automatically: after your method returns, the context manager signs the executor's actions with their identity key, and peers verify those signatures at merge time using the runtime's <span class="code">ed25519_verify</span> host function. WASM code itself does not produce signatures — it only stamps placeholders that get filled in post-execution. You don't need to call any signing API; pick the primitive whose access shape matches your data and the trust model follows from the type. See <a href="store.html#storage-primitives">crates/store</a> for the full enforcement details.</p>
+<h3 style="margin-top:18px;">Storage Primitives</h3>
+<p style="margin-bottom:14px;">Beyond the public CRDT collections above, the storage layer offers wrappers that constrain who can write what. Most are <strong>signature-based</strong>: after your method returns, the context manager signs the executor's actions with their identity key, and peers verify those signatures at merge time using the runtime's <span class="code">ed25519_verify</span> host function. WASM code itself does not produce signatures — it only stamps placeholders that get filled in post-execution. <span class="code">FrozenStorage</span> is the exception: it has no per-identity check, immutability is <strong>structural</strong> (enforced by content-addressing). You don't need to call any signing API; pick the primitive whose guarantee matches your data and the trust model follows from the type. See <a href="store.html#storage-primitives">crates/store</a> for the full enforcement details.</p>
 
-<div style="font-family:'JetBrains Mono', monospace; font-size:.82rem; line-height:1.7; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 18px; margin-bottom:16px; white-space:pre; overflow-x:auto;">need authorization?
-  ├── no  → <span style="color:#06b6d4;">UnorderedMap / Vector / Set / LwwRegister / Counter</span>
-  └── yes ↓
-        data shape?
-           ├── immutable, content-addressed       → <span style="color:#22c55e;font-weight:600;">FrozenStorage&lt;T&gt;</span>
-           ├── one slot per user, disjoint        → <span style="color:#22c55e;font-weight:600;">UserStorage&lt;T&gt;</span>
-           ├── one shared slot, group-owned       → <span style="color:#22c55e;font-weight:600;">SharedStorage&lt;T&gt;</span>
-           ├── shared keyspace, per-entry author  → <span style="color:#22c55e;font-weight:600;">AuthoredMap&lt;K,V&gt;</span>
-           └── shared sequence, per-entry author  → <span style="color:#22c55e;font-weight:600;">AuthoredVector&lt;V&gt;</span></div>
+<div class="prim-tree">what guarantee do you need?
+  ├── none, public                              <span class="arrow">→</span> <span class="public">UnorderedMap / Vector / Set / LwwRegister / Counter</span>
+  ├── immutable, content-addressed              <span class="arrow">→</span> <span class="target">FrozenStorage&lt;T&gt;</span>
+  └── identity-bound writes ↓
+        ├── one slot per user, disjoint          <span class="arrow">→</span> <span class="target">UserStorage&lt;T&gt;</span>
+        ├── one shared slot, named writer set    <span class="arrow">→</span> <span class="target">SharedStorage&lt;T&gt;</span>
+        ├── shared keyspace, per-entry author    <span class="arrow">→</span> <span class="target">AuthoredMap&lt;K,V&gt;</span>
+        └── shared sequence, per-entry author    <span class="arrow">→</span> <span class="target">AuthoredVector&lt;V&gt;</span></div>
 
 <p style="margin-bottom:14px;font-size:.85rem;color:var(--text-dim);">See <a href="store.html#storage-primitives" style="color:var(--cyan);">crates/store</a> for the full comparison table including storage stamps, mutation rules, and when composition does (and does not) substitute for these primitives.</p>
 
