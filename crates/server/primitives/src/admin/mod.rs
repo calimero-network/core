@@ -1689,6 +1689,10 @@ pub struct GroupInfoApiResponseData {
     pub subgroup_visibility: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// Hex-encoded SHA-256 hash of the group's authorization-relevant
+    /// state. Mirrors `contextStateHash` on context responses; lets
+    /// clients poll for governance convergence across nodes.
+    pub group_state_hash: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
