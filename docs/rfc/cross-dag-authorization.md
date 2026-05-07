@@ -98,7 +98,7 @@ Reorganized around the **unification thesis** (§2 decisions 20-21): the load-be
 |---|---|---|---|
 | **1 — Observability** | ~~A1~~, ~~A2~~, E2 | Convergence detection across nodes; foundation for E1 bootstrap. | A1+A2 done ([#2289](https://github.com/calimero-network/core/pull/2289), [merobox#223](https://github.com/calimero-network/merobox/pull/223)+[#224](https://github.com/calimero-network/merobox/pull/224)); E2 left. |
 | **2 — The Unifier** (sequential) | B1 → B2 → B3 → C4, plus C1, C2 | The cross-DAG primitive. After this, B3 is the only authorization rule. C1/C2 deterministic cuts make removals well-defined causally. | not started |
-| **3 — Codebase cleanup** | S1–S12 | Collapse the patchwork B3 makes redundant; close key-lifecycle gaps; consolidate authorization-check duplication; decouple cryptography from visibility model; centralize writer-set resolution. **Net code deletion.** | not started |
+| **3 — Codebase cleanup** | S1–S16 | Collapse the patchwork B3 makes redundant; close key-lifecycle gaps; consolidate authorization-check duplication; decouple cryptography from visibility model; centralize writer-set resolution; type-shape refactors of surviving code (illegal-states-unrepresentable, newtype discipline, unified error contract). **Net code deletion + tighter types on what stays.** S13 + S15 are pre-requisites for B3 and slot into Phase 2. | not started |
 | **4 — Removal flow & recovery** | C3, C5, C6 | Owner override, snapshots, rebuild tool. Built on the unifier. | not started |
 | **5 — Encrypted-by-default & anchored sync** | D5, E1, E3, E4 | Encrypt RootOps with namespace key; eclipse-resistant join via Owner/TEE anchors; ongoing sync targets the trusted-anchor set. | not started |
 | **6 — Defense-in-depth** | D1, D3, D4, A3 | Now-clearly-optional layers: network deny-list, K0 deprecation, rate limits, hierarchical Merkle. | not started |
@@ -768,6 +768,77 @@ These issues *delete code* that becomes redundant once B3 is the load-bearing au
 
 ---
 
+#### S13 — `MembershipStatus` enum (make illegal states unrepresentable)
+
+**Phase**: 2 (pre-requisite for B3) · **Size**: S · **Depends on**: — · **Blocks**: B3, S10
+
+**Summary**: `crates/context/src/group_store/mod.rs:748-780` and surrounding lookup paths express membership as `Option<GroupMemberRole>` — `None` silently means "not a member." Call sites that forget to add an explicit membership check pass through the `None` arm without flagging. B3's apply-time check needs richer information than this: *was this signer a member at governance_position X, and if not, are they removed (cut-position known) or never a member?* The bool/Option encoding cannot carry that distinction.
+
+**Scope**:
+- Introduce `enum MembershipStatus { Member(Role), Removed { at: GovernancePosition }, NeverMember }` in the membership module
+- Replace `Option<GroupMemberRole>` returns at the membership-check boundary with `MembershipStatus`
+- Call sites that previously fell through the `None` arm now must match all three variants — caught at compile time
+- B3's authorization check consumes `MembershipStatus` directly
+
+**Acceptance criteria**: no `Option<GroupMemberRole>` at the membership-check boundary; B3 takes `MembershipStatus` as input; "forgot to check membership" produces a non-exhaustive-match warning.
+
+**References**: `crates/context/src/group_store/mod.rs:748-780`, §2 decisions 1, 2, 3 (B1/B2/B3), audit finding #5
+
+---
+
+#### S14 — `WriterContext` enum replacing `Option<BTreeSet<PublicKey>>`
+
+**Phase**: 3 · **Size**: S · **Depends on**: — · **Blocks**: S12
+
+**Summary**: `crates/storage/src/interface.rs:86-100` carries `effective_writers: Option<BTreeSet<PublicKey>>` on `ApplyContext`. Two valid states are encoded ambiguously: `Some(∅)` ("pre-resolved to empty — no one can write"), and `None` ("not pre-resolved — fall back to stored writers"). Caller must read comments to disambiguate intent. B3 will extend `ApplyContext` to carry `governance_position` (B1); piling another optional field onto an already-ambiguous one compounds the smell.
+
+**Scope**:
+- Replace `effective_writers: Option<BTreeSet<PublicKey>>` with `enum WriterContext { PreResolved(BTreeSet<PublicKey>), FallbackToStored }`
+- Update construction sites (`crates/node/src/sync/helpers.rs:91-120` and storage callers)
+- Match arms force callers to consider both cases explicitly
+
+**Acceptance criteria**: no `Option<BTreeSet<PublicKey>>` field on `ApplyContext`; intent of "empty pre-resolved" vs "use stored" is encoded in the type, not in comments.
+
+**References**: `crates/storage/src/interface.rs:86-100`, §2 decisions 22, 25, audit finding #6
+
+---
+
+#### S15 — `SignerId` newtype (newtype discipline at the auth boundary)
+
+**Phase**: 2 (pre-requisite for B3) · **Size**: S · **Depends on**: — · **Blocks**: B3
+
+**Summary**: Storage and group_store both pass `PublicKey` as a raw type for two distinct roles: "owner of a slot" and "signer of an op." When B3's apply-time membership check lands, signature verification (storage) and membership check (group_store) happen at different call sites — confusing one for the other today is a runtime bug that nothing prevents. Extracting a `SignerId` newtype distinct from owner/key types makes the auth boundary type-checked.
+
+**Scope**:
+- Define `pub struct SignerId(PublicKey)` in the membership module (or a shared types crate)
+- B3's authorization function takes `SignerId`, not raw `PublicKey`
+- Storage's `apply_action` takes `SignerId` for the writer claim; existing `owner: PublicKey` slot ownership stays as `PublicKey` (or extracts into `OwnerKey`)
+- Conversions are explicit at module boundaries
+
+**Acceptance criteria**: B3's signature is `fn check(signer: SignerId, group: GroupId, position: GovernancePosition) -> Result<()>`; mixing up signer and slot-owner becomes a compile error.
+
+**References**: `crates/storage/src/interface.rs:277-328` (User arm), §2 decisions 1-3, audit finding #9
+
+---
+
+#### S16 — Unify error types at the handler boundary
+
+**Phase**: 3 · **Size**: M · **Depends on**: S2, S3 · **Blocks**: —
+
+**Summary**: Three error conventions collide today. `crates/context/src/handlers/*.rs` use ad-hoc `eyre::eyre!("...")` strings; `crates/context/src/group_store/mod.rs` returns `EyreResult` (an alias for `eyre::Result`); `crates/storage/src/interface.rs` returns typed `StorageError`. Library crates leak `eyre` upward instead of exposing a typed contract. After S2 (one delivery pipeline) and S3 (consolidate verification), a single error contract becomes both feasible and necessary — without it, the unified pipeline keeps one foot in stringly-typed errors.
+
+**Scope**:
+- Define `enum ContextOperationError` at the handler boundary, wrapping `StorageError`, `MembershipError`, `SignatureError`, `NetworkError`
+- Library crates (`calimero-context`, `calimero-storage`) return their typed errors; only the handler/HTTP layer maps to `eyre::Result`
+- Remove `eyre::eyre!("...")` ad-hoc constructions from library code
+- `EyreResult` alias retired in library crates (kept only at the binary/HTTP boundary)
+
+**Acceptance criteria**: no `eyre::eyre!` calls inside library crates; handler boundary has one typed error enum; error variants enumerate the failure modes that callers can branch on.
+
+**References**: `crates/context/src/handlers/*`, `crates/context/src/group_store/mod.rs`, `crates/storage/src/interface.rs`, audit finding #10
+
+---
+
 ---
 
 #### E1 — Owner peer-id-authenticated bootstrap endpoint
@@ -882,7 +953,7 @@ These issues *delete code* that becomes redundant once B3 is the load-bearing au
 
 ## 7. Issue tracking suggestion
 
-34 issues across 6 categories (S category expanded to S1-S12 after the codebase audit; D5 added; D2 dropped). Recommended GitHub structure:
+38 issues across 6 categories (S category expanded to S1-S16 after the codebase audit + structural-engineering pass; D5 added; D2 dropped). Recommended GitHub structure:
 
 - **One umbrella tracking issue** linking the six phases.
 - **Per-category epic labels** (`area/observability`, `area/cross-dag-auth`, `area/removal-semantics`, `area/cleanup`, `area/dos-defense`, `area/bootstrap`).
