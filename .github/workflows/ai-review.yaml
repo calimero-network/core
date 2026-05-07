@@ -1,0 +1,75 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review"
+        required: true
+        type: number
+      agents:
+        description: "Number of agents (1-5)"
+        required: false
+        default: "3"
+        type: choice
+        options: ["1", "2", "3", "4", "5"]
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Skip on draft PRs and on PRs from forks (forks don't get repo secrets,
+    # so the run would attempt to call Claude with no key and fail noisily).
+    # Maintainers can review fork PRs manually via workflow_dispatch after
+    # auditing the diff.
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Pinned to a specific SHA on calimero-network/ai-code-reviewer to
+      # prevent an upstream change from running with this repo's secrets.
+      # Bump deliberately when adopting new reviewer features.
+      - name: Install ai-code-reviewer
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@71b0895c1908504b18f07f2856adfc9c8c8d1e4e
+
+      - name: Determine PR number and agent count
+        id: pr
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=${{ github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
+            echo "agents=${{ github.event.inputs.agents }}"    >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+            echo "agents=3"                                        >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run AI Code Review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          ai-reviewer review-pr \
+            ${{ github.repository }} \
+            ${{ steps.pr.outputs.number }} \
+            --agents ${{ steps.pr.outputs.agents }} \
+            --reviewer-name "MeroReviewer" \
+            --output github

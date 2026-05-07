@@ -1,0 +1,28 @@
+# AI Code Reviewer config for calimero-network/core.
+# Driven by .github/workflows/ai-review.yaml and .github/workflows/doc-update.yaml.
+# Reusable workflows from calimero-network/ai-code-reviewer pin to a SHA;
+# this file pins the model and doc-generation behaviour for this repo.
+
+version: 1
+
+# Anthropic Messages API.
+# We deliberately use Sonnet (cheaper than Opus) for review agents and Haiku
+# (cheaper still) for doc-prose generation. Do not switch to Opus without an
+# explicit cost discussion.
+anthropic:
+  default_model: claude-sonnet-4-6
+  enable_prompt_caching: true
+
+# Doc auto-update — opens a draft PR on merges to master with proposed
+# changes to the architecture site (and any Markdown docs that go stale).
+# Disabled by default upstream; enabled here so doc-update.yaml has work to do.
+doc_generation:
+  enabled: true
+  model: claude-haiku-4-5-20251001  # Haiku is sufficient for prose / HTML drafting
+  max_files: 15
+  static_docs_dirs:
+    - architecture/   # GitHub Pages source for the architecture site
+  pr_labels:
+    - automated-docs
+    - documentation
+  pr_draft: true
