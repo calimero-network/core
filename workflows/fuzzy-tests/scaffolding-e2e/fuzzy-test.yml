@@ -636,6 +636,36 @@ steps:
             statements:
               - "is_set({{authored_upd_result}})"
 
+      # AuthoredVector push + read — 3% of traffic
+      # Any node pushes, becomes owner of the new slot; index propagates to all peers
+      - name: "authored_vec_push_get"
+        weight: 3
+        steps:
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: authored_vec_push
+            args:
+              value: "vec_{{uuid}}_{{timestamp}}"
+            outputs:
+              vec_push_index: result.output
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{vec_push_index}})"
+          - type: wait
+            seconds: 1
+          - type: call
+            node: "{{random_node}}"
+            context_id: "{{e2e_context_id}}"
+            method: authored_vec_len
+            outputs:
+              vec_len_result: result
+          - type: assert
+            non_blocking: true
+            statements:
+              - "is_set({{vec_len_result}})"
+
       # SharedStorage concurrent write + read — 4% of traffic
       # All 4 nodes are writers; benchmarks LWW merge under concurrent writes
       - name: "shared_write_read"
