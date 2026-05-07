@@ -1290,49 +1290,6 @@ impl SyncManager {
                                 nodes_skipped = stats.nodes_skipped,
                                 "HashComparison sync completed successfully"
                             );
-
-                            // The protocol has merged remote entities into local
-                            // storage via `apply_leaf_with_crdt_merge`, but the
-                            // ContextMeta.root_hash field is updated by the
-                            // execute path (apply of a `ContextDagDelta`), not
-                            // by direct storage writes. When sync runs in the
-                            // absence of incoming gossiped deltas — e.g. after
-                            // a leave_context+join_context cycle on this node
-                            // where mesh re-establishment misses the in-flight
-                            // deltas — ContextMeta.root_hash stays pinned at
-                            // the pre-sync value even though storage is now
-                            // up-to-date. Mirrors snapshot.rs:293-323.
-                            if stats.entities_merged > 0 {
-                                match self.context_client.compute_root_hash(&context_id) {
-                                    Ok(computed) => {
-                                        if let Err(err) = self
-                                            .context_client
-                                            .force_root_hash(&context_id, computed.into())
-                                        {
-                                            warn!(
-                                                %context_id,
-                                                error = %err,
-                                                "HashComparison sync: failed to persist post-merge root_hash"
-                                            );
-                                        } else {
-                                            info!(
-                                                %context_id,
-                                                root_hash = %hex::encode(computed),
-                                                entities_merged = stats.entities_merged,
-                                                "HashComparison sync: persisted post-merge root_hash"
-                                            );
-                                        }
-                                    }
-                                    Err(err) => {
-                                        warn!(
-                                            %context_id,
-                                            error = %err,
-                                            "HashComparison sync: could not compute post-merge root_hash"
-                                        );
-                                    }
-                                }
-                            }
-
                             return Ok(Some(SyncProtocol::HashComparison {
                                 root_hash,
                                 divergent_subtrees: vec![],

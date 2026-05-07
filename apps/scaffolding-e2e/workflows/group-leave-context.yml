@@ -13,8 +13,6 @@ nodes:
   prefix: e2e-node
 
 steps:
-  # --- Setup: namespace + subgroup with both nodes + context ---
-
   - name: Install application on node-1
     type: install_application
     node: e2e-node-1
@@ -74,8 +72,6 @@ steps:
     node: e2e-node-2
     context_id: '{{ctx_id}}'
 
-  # --- Sanity: both nodes see the same value before leaving ---
-
   - name: Node-1 writes pre-leave value
     type: call
     node: e2e-node-1
@@ -109,19 +105,13 @@ steps:
     statements:
       - 'json_equal({{pre_leave_read}}, {"output": "pre-leave"})'
 
-  # --- SCENARIO: Node-2 leaves context locally ---
-
   - name: Node-2 leaves context (local opt-out)
     type: leave_context
     node: e2e-node-2
     context_id: '{{ctx_id}}'
 
-  # --- SCENARIO: Verify leave disarmed node-2's local context ---
-  # leave_context deletes the local ContextIdentity (signing key) and
-  # writes a ContextLeftMarker. The directly observable consequence on
-  # node-2 is that calls against the left context fail with
-  # "No owned identity found for this context" — the executor has no
-  # signing key to invoke WASM with.
+  # leave_context deletes the local ContextIdentity. Calls against the
+  # left context fail because the executor has no signing key.
 
   - name: Node-1 writes a value while node-2 has left
     type: call
@@ -150,25 +140,18 @@ steps:
       key: "phase"
     expected_failure: true
 
-  # --- SCENARIO: Rejoin restores access and catches up on missed writes ---
-  # leave_context is reversible: join_context recreates the local identity
-  # and clears the leave marker. The HashComparison sync (sync/manager
-  # post-merge fix in this PR) reconciles ContextMeta.root_hash with the
-  # actual storage state after entities are merged from the peer.
+  # join_context recreates the local identity and clears the leave marker.
 
   - name: Node-2 rejoins context after leaving
     type: join_context
     node: e2e-node-2
     context_id: '{{ctx_id}}'
 
-  # With unsubscribe_backoff lowered to 1s in the gossipsub config,
-  # mesh re-formation completes within ~2 heartbeats. Give it a small
-  # window before publishing so the post-rejoin delta lands on a peer
-  # that's actually in the mesh.
+  # Let the gossipsub mesh re-form before the next publish so the delta
+  # lands on a peer that's actually in the mesh.
   - name: Wait for gossipsub mesh to re-form after rejoin
     type: wait
     seconds: 5
-    message: 1s unsubscribe_backoff + slack + heartbeat propagation
 
   - name: Node-1 writes post-rejoin value
     type: call
@@ -203,9 +186,7 @@ steps:
     statements:
       - 'json_equal({{post_rejoin_phase}}, {"output": "post-rejoin"})'
 
-  # Catch-up semantic: rejoin must also deliver writes that landed
-  # while node-2 was in the left state. The marker key was set during
-  # the leave window and never overwritten — node-2 should see it now.
+  # Rejoin must deliver writes node-2 missed while in the left state.
 
   - name: Node-2 reads marker written during leave window
     type: call

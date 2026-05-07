@@ -108,29 +108,11 @@ impl Behaviour {
                     },
                     gossipsub: gossipsub::Behaviour::new(
                         gossipsub::MessageAuthenticity::Signed(key.clone()),
-                        // libp2p-gossipsub defaults are tuned for large
-                        // permissionless networks: `unsubscribe_backoff = 10s`
-                        // and `prune_backoff = 60s`. After `leave_context`
-                        // calls unsubscribe, both nodes store a backoff entry
-                        // for each former mesh peer per topic. The receiver
-                        // side is the trickier case — when our PRUNE arrives
-                        // at the peer, gossipsub at the peer enters
-                        // `remove_peer_from_mesh`. If the PRUNE message
-                        // carried `backoff: Some(N)` (gossipsub v1.1+), the
-                        // peer uses N seconds. **But for plain Gossipsub
-                        // v1.0 peers, `make_prune` returns `backoff: None`**
-                        // (libp2p-gossipsub-0.49.4 behaviour.rs:1483) — the
-                        // receiver then falls back to its own
-                        // `config.prune_backoff()` which is 60s by default.
-                        // Net result: even with our `unsubscribe_backoff(1)`
-                        // on the leaver side, the peer still treats us as
-                        // backoffed for 60s and refuses to remesh us.
-                        // Lower BOTH to 1 second — gossipsub topics are
-                        // already gated by namespace membership at the
-                        // governance layer, and connection-level resource
-                        // exhaustion is bounded by
-                        // `with_idle_connection_timeout(30s)`, so the larger
-                        // defaults are not load-bearing for our threat model.
+                        // Lower backoffs so a leave/rejoin cycle on a
+                        // gossipsub topic re-forms the mesh within a few
+                        // heartbeats. Topic admission is gated by namespace
+                        // membership at the governance layer, so the
+                        // permissionless defaults are not needed.
                         gossipsub::ConfigBuilder::default()
                             .unsubscribe_backoff(1)
                             .prune_backoff(Duration::from_secs(1))
