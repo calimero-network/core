@@ -106,23 +106,33 @@ The following questions were considered and decided; they are recorded in §2 an
 
 ---
 
-#### A1 — Expose `state_hash` on group info admin API
+#### A1 — Expose `group_state_hash` on group info admin API + rename context's `root_hash`
 
 **Phase**: 1 · **Size**: S · **Depends on**: — · **Blocks**: A2, A3, E1, E2
 
-**Summary**: Wire `compute_group_state_hash` through the admin API so callers can read the current group state hash. Mirrors `rootHash` on context info. Immediate value: e2e tests can poll for governance convergence instead of fixed-sleep.
+**Summary**: Wire `compute_group_state_hash` through the admin API so callers can read the current group's governance state hash. Mirrors the existing context-state-hash on context info responses. Immediate value: e2e tests can poll for governance convergence instead of fixed-sleep waits. Includes a small API-level rename for naming consistency.
+
+**Naming convention**: the existing `root_hash` field on context responses is the **context state hash** (Merkle root over storage entries). The new field is the **group state hash** (governance state). To make the distinction unambiguous at the API surface:
+- Existing: `ContextWithExecutors.root_hash` → renamed to `context_state_hash` (Rust + JSON, snake_case throughout)
+- New: `GroupInfoApiResponseData.group_state_hash` (Rust + JSON, snake_case)
+- **Internal storage primitive `Snapshot::root_hash`** stays as-is (it really is the Merkle root hash of the storage tree; that's the right name in storage terminology, and renaming would cascade across ~50+ call sites for cosmetic gain).
 
 **Scope**:
-- Add `state_hash: [u8; 32]` to `GroupInfoApiResponseData` (`crates/server/primitives/src/admin/mod.rs:84`)
+- Add `group_state_hash: String` (hex-encoded) to `GroupInfoApiResponseData` (`crates/server/primitives/src/admin/mod.rs:84`)
 - Compute via `compute_group_state_hash` (`crates/context/src/group_store/meta.rs:75`) in the handler
+- Rename `root_hash` → `context_state_hash` on `ContextWithExecutors` and any other admin-API response struct that exposes the context state hash today
+- Update merobox `WaitForSyncStep` to poll the renamed `context_state_hash` field (release cascade — paired update to merobox repo)
 - Document in admin API reference
 
 **Acceptance criteria**:
-- `GET /admin-api/groups/:group_id` returns `state_hash` as hex
-- Two nodes that have converged on governance state return identical `state_hash`
-- Two nodes that diverge (e.g. one missing a `MemberRemoved`) return different `state_hash`
+- `GET /admin-api/groups/:group_id` returns `group_state_hash` as hex string
+- Two nodes that have converged on governance state return identical `group_state_hash`
+- Two nodes that diverge (e.g. one missing a `MemberRemoved`) return different `group_state_hash`
+- Existing context endpoints return `context_state_hash` instead of `root_hash`
+- merobox e2e tests still work after the field rename
+- No internal references to `Snapshot::root_hash` are touched (verify with a `git diff` audit)
 
-**References**: §3.1 of the design doc, `crates/context/src/group_store/meta.rs:75`
+**References**: §1 (problem — "no governance state hash on admin API"), `crates/context/src/group_store/meta.rs:75`, `crates/storage/src/snapshot.rs:35`
 
 ---
 
@@ -133,12 +143,12 @@ The following questions were considered and decided; they are recorded in §2 an
 **Summary**: New merobox workflow step that polls `state_hash` across nodes and waits for convergence. Replaces fixed `wait, seconds: N` sleeps used today for governance ops in e2e tests.
 
 **Scope**:
-- Mirror `WaitForSyncStep` (which polls `rootHash`) for governance state hash
+- Mirror `WaitForSyncStep` (which polls the renamed `context_state_hash` after A1) for the governance equivalent — a new step polls `group_state_hash`
 - Configurable timeout, poll interval, target node set
 - Document in merobox workflow reference
 
 **Acceptance criteria**:
-- e2e test using `wait_for_governance_sync` waits exactly until all listed nodes converge on the same `state_hash`, not a fixed duration
+- e2e test using `wait_for_governance_sync` waits exactly until all listed nodes converge on the same `group_state_hash`, not a fixed duration
 - Test with intentional divergence: step times out cleanly without false success
 - At least one existing e2e test (e.g. leave-context) migrated from `wait, seconds: N` to `wait_for_governance_sync`
 
