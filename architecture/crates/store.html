@@ -393,9 +393,11 @@
 .prim-table th:last-child { border-radius: 0 8px 0 0; }
 .prim-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .prim-table tr:hover td { background: var(--surface2); }
-.prim-table .pn { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: var(--green); white-space: nowrap; }
-.prim-table .pc { font-family: 'JetBrains Mono', monospace; font-size: .76rem; color: var(--cyan); }
-.prim-table .pd { color: var(--text-dim); font-size: .78rem; }
+.prim-table .pt-name { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: var(--green); white-space: nowrap; }
+.prim-table .pt-code { font-family: 'JetBrains Mono', monospace; font-size: .76rem; color: var(--cyan); }
+.prim-table .pt-desc { color: var(--text-dim); font-size: .78rem; }
+.prim-table tr.baseline td { background: rgba(255,255,255,0.02); }
+.prim-table tr.baseline .pt-name { color: var(--text-dim); font-weight: 500; }
 .prim-tree {
   font-family: 'JetBrains Mono', monospace; font-size: .82rem; line-height: 1.7;
   background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
@@ -406,8 +408,13 @@
 </style>
 
 <div class="card gc">
-<h3>Authorization-Aware Primitives</h3>
-<p style="margin-bottom:14px;">Storage wrappers that bind writes to specific identities. After WASM execution, the context manager fills in placeholder signatures with the executor's private key (<span class="code">sign_authorized_actions</span> in <span class="code">crates/context/src/handlers/execute/mod.rs</span>). Peers then enforce authorization at merge time in <span class="code">Interface::apply_action</span> (<span class="code">crates/storage/src/interface.rs</span>), verifying each entry's owner stamp against the action signer via the runtime's <span class="code">ed25519_verify</span> host function before accepting the delta. This lets applications express trust boundaries directly in their state shape rather than building access control on top of plain CRDTs.</p>
+<h3>Storage Primitives</h3>
+<p style="margin-bottom:10px;">Beyond the public CRDT collections above (<span class="code">UnorderedMap</span>, <span class="code">Vector</span>, <span class="code">Set</span>, <span class="code">LwwRegister</span>, <span class="code">Counter</span>) the storage layer provides wrappers that constrain who can write what. Three flavours of constraint:</p>
+<ul style="margin-bottom:14px;padding-left:20px;">
+  <li><strong>Signature-based</strong> (<span class="code">UserStorage</span>, <span class="code">SharedStorage</span>, <span class="code">AuthoredMap</span>, <span class="code">AuthoredVector</span>) — the context manager signs each mutating action with the executor's private key (<span class="code">sign_authorized_actions</span> in <span class="code">crates/context/src/handlers/execute/mod.rs</span>) after WASM returns its outcome. Peers verify the signature at merge time in <span class="code">Interface::apply_action</span> (<span class="code">crates/storage/src/interface.rs</span>) using the runtime's <span class="code">ed25519_verify</span> host function and reject the action with <span class="code">InvalidSignature</span> on mismatch.</li>
+  <li><strong>Structural</strong> (<span class="code">FrozenStorage</span>) — no per-identity signature; immutability after first write is enforced by content-addressing. Once the SHA-256 hash → value mapping is published, attempts to overwrite the same hash are rejected.</li>
+  <li><strong>None</strong> (the public collections) — anyone in the context can write, update, or remove any entry. Listed below for contrast.</li>
+</ul>
 
 <h4 style="margin-top:18px;margin-bottom:10px;">Comparison</h4>
 <table class="prim-table">
@@ -420,53 +427,53 @@
   <th>Reads</th>
 </tr></thead>
 <tbody>
-<tr>
-  <td><span class="pn">UnorderedMap&lt;K,V&gt;</span><div class="pd">(public baseline)</div></td>
-  <td><span class="pc">—</span></td>
-  <td><span class="pd">K → V</span></td>
-  <td><span class="pd">anyone</span></td>
-  <td><span class="pd">anyone</span></td>
-  <td><span class="pd">everyone</span></td>
+<tr class="baseline">
+  <td><span class="pt-name">UnorderedMap&lt;K,V&gt;</span><div class="pt-desc">(public baseline — no auth)</div></td>
+  <td><span class="pt-code">—</span></td>
+  <td><span class="pt-desc">K → V</span></td>
+  <td><span class="pt-desc">anyone</span></td>
+  <td><span class="pt-desc">anyone</span></td>
+  <td><span class="pt-desc">everyone</span></td>
 </tr>
 <tr>
-  <td><span class="pn">UserStorage&lt;T&gt;</span></td>
-  <td><span class="pc">User { owner = executor_id }</span></td>
-  <td><span class="pd">PublicKey → T, disjoint per-user slots</span></td>
-  <td><span class="pd">only into your own slot</span></td>
-  <td><span class="pd">only your own slot</span></td>
-  <td><span class="pd">everyone (<span class="code">get_for_user</span>)</span></td>
+  <td><span class="pt-name">UserStorage&lt;T&gt;</span></td>
+  <td><span class="pt-code">User { owner = executor_id }</span></td>
+  <td><span class="pt-desc">PublicKey → T, disjoint per-user slots</span></td>
+  <td><span class="pt-desc">only into your own slot</span></td>
+  <td><span class="pt-desc">only your own slot</span></td>
+  <td><span class="pt-desc">everyone (<span class="code">get_for_user</span>)</span></td>
 </tr>
 <tr>
-  <td><span class="pn">FrozenStorage&lt;T&gt;</span></td>
-  <td><span class="pc">Frozen</span></td>
-  <td><span class="pd">Hash(value) → T, content-addressed</span></td>
-  <td><span class="pd">anyone</span></td>
-  <td><span class="pd">nobody — immutable</span></td>
-  <td><span class="pd">everyone</span></td>
+  <td><span class="pt-name">FrozenStorage&lt;T&gt;</span></td>
+  <td><span class="pt-code">Frozen</span></td>
+  <td><span class="pt-desc">Hash(value) → T, content-addressed</span></td>
+  <td><span class="pt-desc">anyone</span></td>
+  <td><span class="pt-desc">nobody — immutable</span></td>
+  <td><span class="pt-desc">everyone</span></td>
 </tr>
 <tr>
-  <td><span class="pn">SharedStorage&lt;T&gt;</span></td>
-  <td><span class="pc">Shared { writers, frozen }</span></td>
-  <td><span class="pd">one slot with T (T often a nested map)</span></td>
-  <td><span class="pd">signer ∈ writers</span></td>
-  <td><span class="pd">signer ∈ writers; writers rotatable if !frozen</span></td>
-  <td><span class="pd">everyone</span></td>
+  <td><span class="pt-name">SharedStorage&lt;T&gt;</span></td>
+  <td><span class="pt-code">Shared { writers, frozen }</span></td>
+  <td><span class="pt-desc">one slot with T (T often a nested map)</span></td>
+  <td><span class="pt-desc">signer ∈ writers</span></td>
+  <td><span class="pt-desc">signer ∈ writers; writers rotatable if !frozen</span></td>
+  <td><span class="pt-desc">everyone</span></td>
 </tr>
 <tr>
-  <td><span class="pn">AuthoredMap&lt;K,V&gt;</span></td>
-  <td><span class="pc">User { owner }</span> per-entry</td>
-  <td><span class="pd">shared keyspace, K → V</span></td>
-  <td><span class="pd">anyone (becomes owner)</span></td>
-  <td><span class="pd">only owner</span></td>
-  <td><span class="pd">everyone</span></td>
+  <td><span class="pt-name">AuthoredMap&lt;K,V&gt;</span></td>
+  <td><span class="pt-code">User { owner }</span> per-entry</td>
+  <td><span class="pt-desc">shared keyspace, K → V</span></td>
+  <td><span class="pt-desc">anyone (becomes owner)</span></td>
+  <td><span class="pt-desc">only owner</span></td>
+  <td><span class="pt-desc">everyone</span></td>
 </tr>
 <tr>
-  <td><span class="pn">AuthoredVector&lt;V&gt;</span></td>
-  <td><span class="pc">User { owner }</span> per-entry</td>
-  <td><span class="pd">shared sequence, index → V</span></td>
-  <td><span class="pd">anyone (push, becomes owner)</span></td>
-  <td><span class="pd">only owner (update / tombstone)</span></td>
-  <td><span class="pd">everyone</span></td>
+  <td><span class="pt-name">AuthoredVector&lt;V&gt;</span></td>
+  <td><span class="pt-code">User { owner }</span> per-entry</td>
+  <td><span class="pt-desc">shared sequence, index → V</span></td>
+  <td><span class="pt-desc">anyone (push, becomes owner)</span></td>
+  <td><span class="pt-desc">only owner (update / tombstone)</span></td>
+  <td><span class="pt-desc">everyone</span></td>
 </tr>
 </tbody>
 </table>
@@ -489,7 +496,7 @@
   </div>
   <div class="cb">
     <h4>SharedStorage&lt;T&gt;</h4>
-    <p style="margin-top:8px;">A single value writable by any signer in a mutable <span class="code">writers</span> set. Any current writer can rotate the set unless it is frozen. The context manager signs each write after WASM returns its outcome; peers verify the signature against the stored writer set at merge time. See ADR&nbsp;0001 for the rotation-during-concurrent-write contract.</p>
+    <p style="margin-top:8px;">A single value writable by any signer in a mutable <span class="code">writers</span> set. Any current writer can rotate the set unless it is frozen. The context manager signs each write after WASM returns its outcome; peers verify the signature against the stored writer set at merge time. See <a href="https://github.com/calimero-network/core/blob/master/docs/adr/0001-shared-storage-concurrent-rotation.md" target="_blank" rel="noopener">ADR&nbsp;0001</a> for the rotation-during-concurrent-write contract.</p>
   </div>
 </div>
 <div class="g2" style="margin-bottom:14px;">
@@ -508,8 +515,8 @@
     <p style="margin-top:8px;">Ordered shared vector with per-entry ownership. Any member can <span class="code">push</span>; only the pusher can <span class="code">update</span> or <span class="code">tombstone</span> their entry. There is no physical <span class="code">remove</span> — shifting indices would complicate concurrent-push merge semantics. Use <span class="code">tombstone(idx)</span> to retract a slot.</p>
   </div>
   <div class="cb">
-    <h4>Merge-time enforcement</h4>
-    <p style="margin-top:8px;">Local <span class="code">update</span>/<span class="code">remove</span> calls short-circuit non-owner attempts so bugs surface in-process, but the load-bearing check is at merge time: <span class="code">Interface::apply_action</span> calls <span class="code">ed25519_verify</span> against the entry's stored <span class="code">owner</span> (or, for <span class="code">SharedStorage</span>, the current writer set) and rejects the action with <span class="code">InvalidSignature</span> on mismatch. Replay protection is enforced via a per-owner monotonic nonce stored in <span class="code">SignatureData</span>.</p>
+    <h4>Merge-time enforcement (signature-based primitives)</h4>
+    <p style="margin-top:8px;">Local <span class="code">update</span>/<span class="code">remove</span> calls short-circuit non-owner attempts so bugs surface in-process, but the load-bearing check is at merge time: <span class="code">Interface::apply_action</span> calls the runtime's <span class="code">ed25519_verify</span> host function against the entry's stored <span class="code">owner</span> (or, for <span class="code">SharedStorage</span>, the current writer set) and rejects the action with <span class="code">InvalidSignature</span> on mismatch. Replay protection is enforced via a <strong>per-entity</strong> monotonic nonce: each storage entity stores its own <span class="code">updated_at</span> in <span class="code">SignatureData</span>, and incoming actions whose nonce is ≤ the stored value are rejected as <span class="code">NonceReplay</span>. Note that the nonce is scoped to the individual entity, not the owner globally, so signed actions targeting one entity cannot be replayed against a different entity even if the owner is the same.</p>
   </div>
 </div>
 
