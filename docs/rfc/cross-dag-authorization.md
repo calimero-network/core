@@ -1,478 +1,557 @@
-# RFC — Cross-DAG Authorization & Convergence
+# Cross-DAG Authorization & Convergence — Implementation Roadmap
 
 | | |
 |---|---|
-| **Status** | Draft |
+| **Status** | Roadmap — issue-ready |
 | **Date** | 2026-05-07 |
 | **Authors** | sandi@calimero.network |
 | **Scope** | Governance DAG ↔ State DAG coordination, member removal & leave semantics, convergence detection, eclipse / DoS surface |
-| **Related** | [#2233](https://github.com/calimero-network/core/issues/2233) (DAG-causal Shared verification), [#2237](https://github.com/calimero-network/core/issues/2237) (governance broadcast core), [#2280](https://github.com/calimero-network/core/pull/2280) (leave operations + Owner role), [#2284](https://github.com/calimero-network/core/pull/2284) (state hash + leave_group guard), [`docs/adr/0001-shared-storage-concurrent-rotation.md`](../adr/0001-shared-storage-concurrent-rotation.md) |
+| **Related** | [#2233](https://github.com/calimero-network/core/issues/2233), [#2237](https://github.com/calimero-network/core/issues/2237), [#2280](https://github.com/calimero-network/core/pull/2280), [#2284](https://github.com/calimero-network/core/pull/2284), [`docs/adr/0001-shared-storage-concurrent-rotation.md`](../adr/0001-shared-storage-concurrent-rotation.md) |
 
-> **Status note.** This RFC captures the architectural context behind several open design questions surfaced while implementing leave_*, the e2e workflows, and the `wait_for_governance_sync` follow-up. Nothing here is implemented; the doc exists so future work has a single place to start from. The "categorized issues" section below is the candidate decomposition into actionable work — each could become its own GitHub issue, or together they could form one tracking epic.
-
----
-
-## 1. Summary
-
-Calimero today runs two logically independent DAGs per group: a **governance DAG** (membership/role ops) and a **state DAG** (CRDT writes). They are not causally cross-referenced. As a result:
-
-- A removed member's writes can be applied on a peer that has not yet observed `MemberRemoved`, then propagate further as legitimate descendants build on them. Storage diverges.
-- For `User`-storage actions there is **no membership check** at receive time — only signature + nonce.
-- For `Shared`-storage actions there is a causally-aware writer-set check, but it is not automatically driven by `MemberRemoved` — only by explicit rotation actions.
-- The wire-format field `governance_epoch` exists on every state delta but is sent as `vec![]` and ignored on receive since #2237 Phase 11.2.
-- There is no API surface for a **governance state hash** comparable to `rootHash` — so e2e workflows fall back to `wait, seconds: N` to confirm governance has propagated.
-
-The proposed design closes this gap with a single primitive — `governance_position` on every state delta — combined with a deterministic governance-DAG cut for removal, network-layer isolation of removed peers, and an Owner/TEE-anchored bootstrap to prevent eclipse on join. **Quorum/voting schemes are explicitly out of scope** as a design choice — they don't fit Calimero's CRDT-style permissionless-within-the-set model and create a liveness regression for small groups and partitions.
+> **About this document.** Roadmap form. Each entry below is sized for direct conversion into a GitHub issue. Full design rationale (alternatives considered, divergence scenarios, attack analysis) is preserved in the git history of this file — see commit `c29b3565` and `cd5ece66` for the design-doc form.
 
 ---
 
-## 2. Goals & Non-goals
+## 1. Problem (one paragraph)
 
-### Goals
+Calimero runs two logically independent DAGs per group — a governance DAG (membership/role ops) and a state DAG (CRDT writes) — and they are not causally cross-referenced. A removed member's writes can be applied on a peer that has not yet observed `MemberRemoved`, then propagate further as legitimate descendants build on them. The wire-format `governance_epoch` field that was meant to bridge the two DAGs is dead (sent as `vec![]`, ignored on receive since #2237 Phase 11.2). The receive-path membership check is partial — only `ReadOnly`/`ReadOnlyTee` are rejected; outright removal silently passes. There is no governance-state-hash on the admin API, so e2e tests fall back to fixed sleeps to confirm governance has propagated. There is no eclipse-resistant bootstrap path; a late joiner that connects to a malicious peer (incl. a removed one) can be fed a stale governance view.
 
-1. **Convergence between honest peers.** Apply-lag, partition heal, and arrival-order variations must never produce a permanent fork between honest peers running the same protocol.
-2. **Bounded effect of a removed member.** After `MemberRemoved`, the removed peer's ability to inject content into the group must be cut off within gossip-propagation time, not "indefinitely."
-3. **Causally-stable validity rule.** Whether a state delta is valid must be a pure function of `(delta.governance_position, canonical governance DAG)` — same answer on every peer, no dependence on local clock or apply-time.
-4. **Forward-only semantic.** Pre-cut writes from a removed member are valid regardless of arrival order. Post-cut writes are rejected. No retroactive invalidation of legitimately-authored history.
-5. **Eclipse-resistant bootstrap.** A late-joining peer cannot be silently fed a stale or doctored governance view by a malicious peer.
-6. **Convergence detection in tests.** e2e workflows must be able to wait deterministically on governance state, not by sleep.
+## 2. Key design decisions
 
-### Non-goals
+These are decided. Don't relitigate inside individual issues.
 
-1. **Closing the long-range surface entirely.** A Byzantine ex-member who keeps their key can sign valid-looking deltas claiming a pre-removal `governance_position`. This is fundamentally undecidable in async consensus (no global clock, no way to disprove a negative observation). The design **bounds** this — to gossip-propagation time of `MemberRemoved` plus partition duration — rather than preventing it.
-2. **Quorum / M-of-N voting / multisig-style approval.** Off the table. See §1 and §5.1 for rationale. Resolution mechanisms must be deterministic-causal (governance-DAG positions) or role-hierarchical (Owner override), not vote-based.
-3. **Token-economic incentives or BFT consensus on every governance op.** Calimero is not a public chain.
-4. **Hardware-backed identity** beyond what `ReadOnlyTee` already provides.
+1. **`governance_position` on every state delta.** A struct `{ group_id, group_state_hash, governance_dag_heads }` embedded in `ContextDagDelta` / `CausalDelta`, replacing the dead `governance_epoch`.
+2. **Validity rule is a pure function of `(delta.governance_position, canonical governance DAG)`.** Same answer on every peer, regardless of apply-time or local clock.
+3. **Buffer-on-unknown.** Receivers buffer state deltas whose `governance_position` references governance heads not yet observed locally. Decision is deferred until governance catches up.
+4. **Forward-only semantic.** Writes from a pre-cut `governance_position` are valid forever, regardless of arrival order or partition path. No retroactive invalidation.
+5. **Cut declarations are per-actor signed, not vote-based.** Forced removal: admin embeds an explicit `cut: GovernancePosition` in the signed `MemberRemoved` op. Voluntary leave: leaver embeds their own `governance_position` in `MemberLeft`.
+6. **Owner override is the recovery path.** Owner can sign `MemberRestored` to reverse an admin's `MemberRemoved`. Replaces what a quorum design would have offered.
+7. **D1 (network-layer deny-list keyed on signer identity) is load-bearing.** Collapses the long-range attack surface to gossip-propagation time of `MemberRemoved`. D2 (time-window), D3 (K0 deprecation), D4 (rate limits) are defense-in-depth.
+8. **Bootstrap pins to Owner / TEE peer.** Late joiner dials Owner by peer-id; libp2p handshake authenticates that the responder holds the corresponding private key. TEE peer is a redundancy alternative. Multi-source bootstrap is the fallback when Owner/TEE is unreachable.
+9. **Snapshots are scoped to recovery, not long-range defense.** Owner-signed (single-sig). Bound rebuild scope; provide a bootstrap floor for stale-position rejection.
+10. **No quorum / M-of-N voting / multisig anywhere.** This is a hard constraint, not a preference. See `out of scope`.
 
----
+## 3. Phases & sequencing
 
-## 3. Background — what Calimero does today
-
-### 3.1 The two hashes
-
-| | State sync | Governance sync |
+| Phase | Items | Goal |
 |---|---|---|
-| **Covers** | WASM-level storage entries | group meta + members + roles + admin/owner identity + target app |
-| **Storage column** | `Column::Identity` | `Column::Group*` |
-| **Mutated via** | state DAG (`ContextDagDelta`) | governance DAG (`NamespaceOp` / `GroupOp`) |
-| **Hash primitive** | `Snapshot::root_hash` (`crates/storage/src/snapshot.rs:35`) — Merkle root over storage entries | `compute_group_state_hash` (`crates/context/src/group_store/meta.rs:75`) — SHA-256 over members + roles + admin + owner + app |
-| **API surface** | `rootHash` on `GET /admin-api/contexts/:ctx_id` | **none today** |
+| **1 — Quick wins** (parallel) | A1, A2, D1, E2 | Observability + immediate DoS surface reduction. No wire-format changes. |
+| **2 — Foundational** (sequential) | B1 → B2 → B3 → C4 | The cross-DAG primitive. After this, validity is well-defined. |
+| **3 — Removal flow + recovery** | C1, C2, C3, D2, D3, C5, C6 (parallel where possible) | Deterministic cuts + Owner override + defense-in-depth + bounded rebuild. |
+| **4 — Bootstrap & long-tail** | E1, E3, E4, A3, D4 | Eclipse-resistant join + whole-subtree convergence + rate limits. |
 
-### 3.2 What `MemberRemoved` actually does in code
+---
 
-`crates/context/src/group_store/mod.rs:823-825` — the apply path does three things:
+## 4. Unknowns to resolve before / during implementation
 
-1. `cascade_remove_member_from_group_tree` — walks every context in the subtree and deletes the corresponding `ContextIdentity` row.
-2. `remove_group_member` — deletes the `GroupMember` row.
-3. Fires `OpEvent::MemberRemoved` → triggers the key rotation pipeline (new group key K1, wrapped only for current members).
+### 4.1 Blocking unknowns — must answer before the listed issue can start
 
-The deleted `ContextIdentity` row is used for "do I have a private key for this context?" — it is **not** consulted on incoming state deltas. Its absence does not cause subsequent deltas from the removed member to be rejected.
+| # | Question | Blocks | Suggested resolution path |
+|---|---|---|---|
+| **U1** | **Wire-format breaking change strategy.** Versioned protocol message vs. hard cut at a release boundary? How are in-flight deltas authored under the old shape handled during the rollout window? | B1 | Design call; coordinate with release manager. Probably hard cut at a release with explicit upgrade notes. |
+| **U2** | **Governance state history storage.** B3 needs to look up "was X a member at state hash H?" — requires retaining a ring buffer of recent group state hashes → membership snapshots. How big? Eviction policy? Replay-from-checkpoint strategy when the lookup target is older than the buffer? | B3 | Discovery as part of B3. Reasonable default: ring buffer of last 1000 governance ops, replay from genesis if older. Storage cost analysis needed. |
+| **U3** | **HLC semantics for `governance_position.applied_at`.** D2 time-window needs a concrete clock semantic. Is `applied_at` the peer-local wall-clock time of apply, or an HLC timestamp embedded in the governance op itself? Local time means each peer evaluates the window differently — leak surface. Op-included HLC means the admin's clock is authoritative — different leak surface. | D2 | Design call. Lean toward op-included HLC (consistent with the rest of the rule being a pure function of governance state). |
+| **U4** | **TEE peer designation for bootstrap (E1's TEE branch).** Is `ReadOnlyTee` role sufficient, or do we need an explicit "trusted bootstrap source" flag? How is the TEE peer's hardware attestation surfaced to a joining peer that wants to verify it? | E1 (TEE part — Owner part is independent) | Discovery as part of E1. May defer TEE branch to a follow-up if `ReadOnlyTee` is insufficient. |
 
-### 3.3 What the state-delta receive path checks today
+### 4.2 Per-issue design questions — resolve during the issue's discovery phase
 
-`crates/node/src/handlers/state_delta/mod.rs:96` (`handle_state_delta`) runs this membership check:
-
-```rust
-if calimero_context::group_store::is_read_only_for_context(
-    node_clients.context.datastore(),
-    &context_id,
-    &author_id,
-).unwrap_or(false) {
-    // reject
-}
-```
-
-`is_read_only_for_context` (`crates/context/src/group_store/namespace.rs:64`):
-
-```rust
-match get_group_member_role(store, &group_id, identity)? {
-    Some(ReadOnly | ReadOnlyTee) => Ok(true),   // reject
-    _ => Ok(false),                              // pass through
-}
-```
-
-A removed member returns `None` from `get_group_member_role`, falls into the `_ => false` arm, **passes the check**. Only `ReadOnly` / `ReadOnlyTee` roles trigger rejection; "not a member" is treated identically to "Admin/Member."
-
-### 3.4 Per-action verification (`crates/storage/src/interface.rs::apply_action`)
-
-| Storage type | Check | Lines |
+| # | Question | Issue |
 |---|---|---|
-| `User` (single-owner) | Ed25519 verify against the action's claimed `owner` + nonce monotonicity. **No membership check.** | 277–330 |
-| `Shared` (multi-writer CRDT) | Signature verified against `ctx.effective_writers`, resolved at receive via `writers_at(delta.parents)` per [ADR-0001](../adr/0001-shared-storage-concurrent-rotation.md) / #2266. Causally aware. | 339–410 |
+| **U5** | `NamespaceStateHeartbeat` currently carries `{namespace_id, dag_heads}` (`crates/node/src/handlers/network_event.rs:189`). E2 needs to extend it with `state_hash`, `hlc`, signature. New broadcast variant or extend existing? | E2 |
+| **U6** | Network deny-list scope: per-group, per-namespace, or global per-signer-identity? Same signer can be a member of group X (where they were removed) and group Y (where they're still active). | D1 |
+| **U7** | Snapshot trigger and frequency. Periodic (every N ops, every T seconds) or Owner-triggered? Per-namespace configurable? | C5 |
+| **U8** | Time-window W concrete default value. 24h working assumption; per-namespace configurable? | D2 |
+| **U9** | K0 grace period length. Per-namespace configurable? | D3 |
+| **U10** | Bootstrap unreachability default policy. Strict (block) or fall back to multi-source (E3)? Per-deployment configurable, but what's the default? | E1 / E3 |
+| **U11** | `MemberRestored` semantics. Is the restored member assigned to a specific role (Member by default), or restored to whatever role they had before removal? Are post-cut writes that were buffered now applied, or do they remain rejected? | C3 |
+| **U12** | B2 buffer eviction policy. Bounded buffer for buffered-on-unknown deltas creates a DoS surface (attacker floods with deltas referencing future governance state). Max size, eviction strategy, rate limit? | B2 |
 
-The `Shared`-arm causal awareness comes from rotation log entries. Those are appended only from explicit rotation actions in `CausalDelta`s — there is **no automatic link from a governance `MemberRemoved` op to a rotation entry** on every Shared entity the removed member could write to. Coverage is limited to rotations the application explicitly performs.
+### 4.3 Migration & rollout
 
-### 3.5 The `governance_epoch` field — wire-format-only since #2237 Phase 11.2
-
-`crates/node/src/handlers/state_delta/mod.rs:33` deserializes `governance_epoch: Vec<[u8; 32]>` from incoming state deltas. This was originally the cross-DAG reference. But:
-
-- `crates/context/src/handlers/execute/mod.rs:731` populates it as `vec![]` on the sender side.
-- `state_delta/mod.rs:122-131` says: *"Governance catch-up is now handled by the namespace heartbeat (`NamespaceStateHeartbeat`). The `governance_epoch` field on state deltas is retained for informational logging only."*
-- `NamespaceStateHeartbeat` itself (`crates/node/src/handlers/network_event.rs:189`) is **liveness-only** as of #2237 Phase 11.2 — it logs divergence at debug level and does not take action.
-
-So the field exists in the wire format but is functionally dead.
-
----
-
-## 4. Divergence scenarios
-
-### 4.1 Apply-lag race
-
-Group {A, B, X}. A publishes `MemberRemoved {X}`.
-
-| | Node A | Node B |
+| # | Question | Affects |
 |---|---|---|
-| T0 | publishes `MemberRemoved {X}`; state op S' from X is in flight | — |
-| T1 | applies `MemberRemoved`, cascade deletes `ContextIdentity`, rotates K0 → K1 | receives S' (still has K0), checks signer X, `get_group_member_role` returns `Member`, **applies S'** |
-| T2 | receives S' encrypted with K0 — A still applies because the receive path doesn't check membership | receives `MemberRemoved`, applies, rotates key |
-
-End state: A's storage and B's storage may differ depending on the precise message ordering and decryption availability. `root_hash(A) ≠ root_hash(B)`. Permanent divergence — there's no rollback mechanism today.
-
-#### 4.1.1 Why isn't K0 → K1 rotation alone sufficient?
-
-A natural objection: *the key is rotated when `MemberRemoved` applies — the removed member can't encrypt to the new key, so the explicit membership check is redundant.* It isn't. The encryption-layer defense and the membership-layer defense fail at different times:
-
-1. **Rotation itself is async.** At T1 above, A is on K1 but B is still on K0. X's delta S' encrypted with K0 decrypts cleanly on B; the receive path runs `is_read_only_for_context` against a still-present `Member` row, hits the `_ => false` arm, and **applies S'**. The window during which at least one peer is post-rotation while at least one is pre-rotation is exactly the apply-lag.
-
-2. **K1 rotation is an interactive-channel defense.** It closes "X reads responses encrypted under the new key" — i.e. it stops X from participating in two-way protocols. It does not stop one-way K0-encrypted writes during the grace window.
-
-3. **Causal entanglement makes the window permanent.** Once B has applied S', B publishes its own legitimate delta T with `parents=[S']`. T is signed by B with K1; T propagates to A via the normal gossip path and to other peers post-rotation. Rejecting S' after the fact means rejecting T (and everything causally downstream of T) — see §4.3. So a single delta admitted during the lag window can taint an unbounded subgraph of post-rotation, legitimately-signed history.
-
-4. **Partition-heal paths bring K0-era messages through non-rotated peers.** §4.2 spells this out: if C is on a partition that hasn't yet seen `MemberRemoved`, C accepts and re-broadcasts X's K0 messages. Once A↔C heals, the messages arrive at A through C's still-K0 view. Encryption-layer rotation on A doesn't help when the message reached A via a peer that legitimately still had K0.
-
-### 4.2 Cross-partition state propagation
-
-Group {A, B, C}. B has shared state deltas with C that A hasn't yet observed. A proposes `MemberRemoved {B}`:
-
-1. A's local view of B's state-DAG heads is incomplete.
-2. If `MemberRemoved` declared an enumerated cut `cut_dag_heads = [A's view of B's heads]`, B's writes that propagated to C are not in the cut's ancestry.
-3. Once partition heals, A receives those deltas via C. Each is "after the cut" by enumeration → A rejects them. C accepts them. Permanent divergence, this time *caused by* the cut declaration itself.
-
-This is why an enumerated-heads cut is the wrong primitive. The cut must be a **governance-DAG position**, not a state-DAG-heads enumeration.
-
-### 4.3 Taint cascade
-
-B applies illegal S from removed X before `MemberRemoved` arrives. B then publishes its own delta T with `parents=[S]`. T is signed by B (legitimate). Other peers receive T → fetch S → S also propagates. Once `MemberRemoved` reaches those peers, they would want to reject S, but T (signed by B) structurally depends on S. Rejecting S means rejecting T. CRDT commutativity does not help — the dependency graph entangles authorization and data.
+| **U13** | How are existing groups migrated when B1 lands? Pre-B1 deltas have no `governance_position`; post-B1 receivers must accept them or fail to bootstrap from groups created before the upgrade. | B1 rollout |
+| **U14** | Backwards compat for `MemberRemoved` ops in the governance DAG that pre-date C1 (no embedded cut). C1 receivers need to handle "old-shape `MemberRemoved`" by deriving an implicit cut from the op's position. | C1 rollout |
 
 ---
 
-## 5. Proposed design
-
-The design is built on a single primitive (`governance_position`) plus a deterministic cut declaration. There is no synchronous gate, no quorum, no global clock dependency.
-
-### 5.1 Why no quorum
-
-Quorum-acked `MemberRemoved` was an obvious-looking solution to "bound the apply-lag window," and is explicitly rejected here:
-
-- **Liveness regression.** Quorum requires M responsive members. Offline / partitioned members stall removal. This breaks the CRDT-style permissionless-within-the-set model the rest of Calimero relies on.
-- **Doesn't fit small groups.** N=1 and N=2 groups have no meaningful M-of-N value.
-- **Doesn't actually solve the underlying problem.** §5.4's apply-time check using `governance_position` already gives correctness regardless of apply-lag. Quorum was solving a *latency-bounding* problem, and §6 layered defenses bound that latency without a synchronous gate.
-- **K-of-K admin signatures (the "lighter" multi-admin variant)** has the same shape and is also out of scope.
-
-The right primitives are **deterministic causal** (governance-DAG position), **per-actor signed** (admin signs the cut, leaver signs their own departure), and **role-hierarchical** (Owner can reverse Admin actions). All three are detailed below.
-
-### 5.2 `governance_position` on every state delta
-
-Extend `ContextDagDelta` / `CausalDelta`:
-
-```rust
-pub struct GovernancePosition {
-    pub group_id: ContextGroupId,
-    pub group_state_hash: [u8; 32],        // from compute_group_state_hash
-    pub governance_dag_heads: Vec<[u8; 32]>,
-}
-```
-
-This restores the original semantic of the dead `governance_epoch` field with stronger content (state hash, not just heads). Senders compute `compute_group_state_hash` + governance DAG heads at sign time and embed them in the delta. Wire-format breaking change — replaces the empty-vec `governance_epoch`.
-
-### 5.3 Buffer on unknown governance state
-
-On receive of a state delta whose `governance_position.governance_dag_heads` references heads not yet observed locally:
-
-- **Buffer the delta. Do not apply.**
-- When the local governance DAG reaches those heads (via normal sync), check `compute_group_state_hash` matches the delta's claimed `group_state_hash`.
-- If matches → safe to apply. The writer was authorized at a governance state we now share.
-- If doesn't match → reject. Byzantine sender or stale claim.
-
-This is what makes the validity rule a pure function of `(delta.governance_position, governance DAG)`: receivers never apply a delta whose governance reference is undecidable. They wait until it is.
-
-### 5.4 Apply-time membership check uses `governance_position`, not local state
-
-Replace today's *"is the signer currently a member?"* with *"was the signer a member at the governance state this delta references?"* The lookup uses governance state history (a small ring buffer of recent group state hashes → membership snapshots; older states can be derived by replaying ops to a checkpoint).
-
-This subsumes `is_read_only_for_context` and makes the membership check work for `User`-storage actions too (which today have no membership check at all).
-
-### 5.5 Cut declarations: admin-signed (forced) and self-signed (voluntary)
-
-Two distinct flows, both producing a deterministic cut:
-
-**Forced removal (admin-signed deterministic cut).** The admin includes the cut position explicitly inside the signed `MemberRemoved` op:
-
-```rust
-pub struct MemberRemovedOp {
-    pub group_id: ContextGroupId,
-    pub removed_member: PublicKey,
-    pub cut: GovernancePosition,           // embedded — signed by admin
-    pub admin_signature: Signature,
-    // ... existing fields
-}
-```
-
-The validity rule for state deltas from `removed_member`:
-
-> Delta `D` from `X` is valid iff `D.governance_position` does not descend from `MemberRemovedOp.cut` in the governance DAG.
-
-Because the cut is embedded (not implicit at `position_of(MemberRemoved)` in each peer's DAG view), every peer evaluates the same rule against the same cut value, even if their governance DAG has not fully converged. No quorum needed.
-
-**Voluntary leave (self-signed).** `MemberLeft` is signed by the leaver themselves and carries their own `governance_position` at sign time. There is no admin gating; the leaver attests "from this position onward, I am no longer participating." Every peer applies the same forward-only rule with the leaver-signed cut. This is the easy case — the leaver is honest by definition (a Byzantine leaver who continues authoring is the same surface as a Byzantine ex-member, handled by §6).
-
-### 5.6 Forward-only semantic
-
-For both forced removal and self-leave: **deltas authored from a pre-cut `governance_position` are valid forever, regardless of arrival order or partition path.** They are never retroactively invalidated. Reasons:
-
-- Retroactive invalidation entangles authorization with CRDT data (§4.3 taint cascade) and has no convergent answer in async settings.
-- Forward-only is the realistic stance — also taken by every async access-control-CRDT system in the literature.
-- The bound on long-range "valid pre-cut" spam is provided by §6 layered defenses, not by the validity rule itself.
-
-### 5.7 Owner override as recovery
-
-Single-admin async `MemberRemoved` can be wrong (a Byzantine admin removes a legitimate member). The recovery path is **role-hierarchical**: Owner can sign a `MemberRestored` op that supersedes the admin's `MemberRemoved`. The restored member's pre-`MemberRemoved` history is unaffected by the spurious removal (forward-only; their writes were valid at their `governance_position`). Their post-removal writes — buffered or rejected during the window — get re-evaluated once `MemberRestored` propagates.
-
-This replaces what a quorum design would have offered ("multiple admins must agree before removal takes effect") with a hierarchical alternative ("Owner can reverse Admin"). It does not require multiple admins to be online; it only requires Owner to be reachable when reversal is needed.
-
----
-
-## 6. Long-range attack surface & layered defenses
-
-### 6.1 The fundamental impossibility
-
-A Byzantine ex-member X who keeps their old signing key can author state deltas claiming `governance_position = H_old` (any pre-removal state). The signature is valid; X was a real member at H_old. There is no externally-verifiable distinction between:
-
-- **Honest:** X authored at wall-clock T, before observing `MemberRemoved`.
-- **Byzantine:** X authored at T'>T, after observing `MemberRemoved`, lying about timing.
-
-Async consensus has no global clock, and X's claim is cryptographically self-consistent. This is the standard **long-range attack** in PoS / asynchronous systems and is not Calimero-specific. The §5 design **cannot prevent** this; it can only **bound** it.
-
-### 6.2 Load-bearing defense — D1 network-layer deny-list
-
-On `MemberRemoved` apply, every peer adds the removed member's identity to a deny-list and **drops gossip messages whose inner Calimero signer matches** at the libp2p apply boundary (after decryption, before further processing). Critical implementation detail: the deny-list is keyed on **signer identity** (the Calimero-layer key inside the message), not on libp2p peer-id — otherwise X can rotate their libp2p peer-id and bypass.
-
-With universal D1, the long-range attack surface collapses to gossip-propagation time of `MemberRemoved`:
-
-| Window | Bound |
-|---|---|
-| Healthy mesh | Gossip propagation of `MemberRemoved` (seconds) |
-| Network partition | Partition heal time + propagation time |
-| Long-offline rejoining peer | Reconnects to live peers → receives `MemberRemoved` first → enables D1 before processing X-authored content |
-
-Anything X did slip through during these windows carries a pre-cut `governance_position` (X authored before peers had `MemberRemoved` to deny-list against), so by §5.6 forward-only, the resulting deltas converge identically on every honest peer. **No fork.**
-
-Promote D1 from "highest leverage" to "the actual answer." It is not optional.
-
-### 6.3 Defense-in-depth — D2, D3, D4
-
-**D2 — time-window validity.** `delta.hlc < governance_position.applied_at + W`. After window W elapses, no new deltas claiming that position are accepted. Largely redundant with D1 if D1 is universal and correctly keyed on signer identity, but worth keeping as belt-and-suspenders against D1 implementation bugs. Reasonable W: 24h, per-namespace configurable.
-
-**D3 — old-key (K0) deprecation.** After `MemberRemoved` + grace period, drop K0-encrypted gossip at receive. Defends against malicious *active* members who haven't been removed but are using K0 maliciously after a rotation triggered by some other event — distinct surface from "removed member," still earns its keep.
-
-**D4 — per-peer rate limits.** Bandwidth / msg-rate caps per signer at the gossip apply layer. Generic gossipsub hygiene; only worth implementing if empirical evidence of slow-leak attacks emerges.
-
-### 6.4 Bootstrap & eclipse resistance
-
-A late-joining peer P that knows only one peer faces an **eclipse attack**: that peer can serve P a stale or doctored governance view (omit `MemberRemoved {X}`, claim X is still a member). P's view ends up stale, not divergent — anything P applies under the stale view has pre-cut `governance_position` and is forward-only-valid → converges with the rest of the network once P escapes the eclipse. But until escape, P is vulnerable to applying X's content.
-
-**X cannot forge** governance ops (every op is signed by its actual author, chain back to genesis verifiable locally). The only attack X can mount as a bootstrap source is **censorship** — a strict prefix of the honest DAG.
-
-The bootstrap design pins to the **role hierarchy**, leveraging libp2p's built-in peer-id authentication:
-
-**Primary trust anchor — Owner / TEE peer.** P knows the Owner's peer-id from group genesis (it's part of `compute_group_state_hash`, fixed at creation, verifiable on every governance op). P dials the Owner by peer-id; libp2p's handshake authenticates that the responder holds the corresponding private key. X cannot impersonate Owner. The Owner returns the current member set, current state hash, and current governance DAG heads. P now has an authoritative anchor; from there P fetches full state from any peer in the returned member set and verifies against the anchor's state hash.
-
-TEE peers are a natural redundancy layer (`ReadOnlyTee` already exists in the role model). Multiple TEEs can serve the same role; any single one is sufficient.
-
-**Alive-beacons — `NamespaceStateHeartbeat` promoted from informational.** Each current member periodically signs and gossips `{group_id, state_hash, governance_dag_heads, hlc}`. P listens for a short bootstrap window and sees what state hash multiple distinct members agree on. Wire-format infrastructure already exists (§3.5); the promotion is from "debug-log only" to "load-bearing input to bootstrap convergence detection."
-
-**Multi-source bootstrap fallback.** If Owner/TEE is offline and unreachable, fall back to dialing ≥2 distinct peers and taking the longest valid governance DAG. X can only fully eclipse P by controlling **all** of P's bootstrap candidates — eclipse is then a network-layer assumption, not a Calimero-layer guarantee. Configurable per-deployment whether to block bootstrap on Owner/TEE unreachability (strict) or fall back to multi-source (light-touch).
-
-**Owner-transfer chain verification.** If the role model permits Owner-transfer, P's bootstrap-known Owner peer-id may be stale. P fetches the governance DAG from the supposedly-current Owner, verifies the OwnerTransfer chain back to genesis (each transfer signed by the previous Owner), and trusts the latest Owner the chain resolves to.
-
----
-
-## 7. Recovery
-
-### 7.1 Owner-signed snapshots
-
-Periodic snapshots of group state, **signed by Owner** (not by quorum). Cap rebuild scope when a peer needs to recover from wrongly-applied deltas (e.g. a bug regression, not a Byzantine attack). Used in two ways:
-
-1. **Bounded rebuild.** A peer that detects taint rebuilds from the most recent snapshot + valid deltas only, instead of from genesis.
-2. **Bootstrap floor.** Deltas claiming `governance_position` older than the most recent sealed snapshot are rejected outright. (This is the weak-subjectivity-checkpoint pattern from PoS chains.)
-
-Snapshot frequency and trigger are deployment-configurable. Reasonable defaults: every N governance ops or every T seconds, whichever comes first; Owner triggers manually for high-stakes deployments.
-
-### 7.2 Local rebuild tool
-
-Detect tainted state (deltas with rejected `governance_position`), re-derive from most recent valid snapshot + replay only valid deltas. Operator-invoked; not part of automatic recovery in v1.
-
----
-
-## 8. Edge cases
-
-### 8.1 Concurrent governance ops across partitions
-
-Two admins on disjoint partitions concurrently propose conflicting ops (one removes X, another promotes X to admin). Each propagates; receivers see both at concurrent governance-DAG positions. With quorum off the table, resolution is purely **HLC tiebreak** — last-writer-wins on membership state, with the loser becoming a no-op. Calimero's existing `SignedGroupOp.current_state_hash` divergence check (`compute_group_state_hash` embedded in the op for #2284) already provides fork *detection*; HLC tiebreak is the resolution policy.
-
-For the case where the wrong admin wins the tiebreak, recovery is via §5.7 Owner override — Owner can sign the corrective op.
-
-### 8.2 Honest-claimed-old `governance_position`
-
-Byzantine X signs a delta claiming `governance_position = H_old` despite having actually observed `H_remove`. There is no way to disprove the negative observation in async consensus (§6.1). With universal D1, this attack is bounded by gossip-propagation time of `MemberRemoved` — X has at most that window to slip messages through before every honest peer drops them at the libp2p layer. After the window, X is fully cut off.
-
-The defense is **detection plus bounding**, not prevention: §6.2 D1 bounds the time window, §6.3 D2 / D3 add belt-and-suspenders, and forensic tooling can flag inconsistencies if X is sloppy enough to also ack newer governance ops (which would contradict their claim of "I hadn't observed `MemberRemoved` when I signed").
-
-### 8.3 Authored-but-unobserved-cut
-
-Group {A, B, C}. A removes B; B has shared state with C that A doesn't have; A proposes the removal. Under §5:
-
-- B's writes that went to C carry `governance_position = H_old` (some pre-removal state).
-- C eventually propagates them to A.
-- A validates: `H_old` does not descend from `MemberRemovedOp.cut` in A's governance DAG → valid → applies.
-- Final state on A and C: identical.
-
-The reason there's no divergence is that the validity rule is stable across peers (a function of `governance_position` and the embedded cut, both of which all peers eventually agree on), rather than a function of "what the proposer happened to observe at proposal time."
-
----
-
-## 9. Implementation plan — categorized issues
-
-Five categories. Sizes: **S** = ~1 week, **M** = 2–4 weeks, **L** = multi-month.
+## 5. Issues — ready for conversion to GitHub issues
 
 ### A. Observability & convergence detection
 
-| # | Issue | Size | Depends on |
-|---|---|---|---|
-| **A1** | Expose `state_hash` on `GET /admin-api/groups/:group_id` by wiring `compute_group_state_hash` through `GroupInfoApiResponseData` (`crates/server/primitives/src/admin/mod.rs:84`) | S | — |
-| **A2** | Add `wait_for_governance_sync` workflow step in merobox; polls `state_hash` across nodes (mirrors `WaitForSyncStep`) | M | A1 + release cascade |
-| **A3** | Hierarchical Merkle: `NamespaceMerkle { meta, members, governance_dag_root, subgroups, contexts }` exposed via API for whole-subtree convergence checks | L | A1, B1, C1 |
+---
+
+#### A1 — Expose `state_hash` on group info admin API
+
+**Phase**: 1 · **Size**: S · **Depends on**: — · **Blocks**: A2, A3, E1, E2
+
+**Summary**: Wire `compute_group_state_hash` through the admin API so callers can read the current group state hash. Mirrors `rootHash` on context info. Immediate value: e2e tests can poll for governance convergence instead of fixed-sleep.
+
+**Scope**:
+- Add `state_hash: [u8; 32]` to `GroupInfoApiResponseData` (`crates/server/primitives/src/admin/mod.rs:84`)
+- Compute via `compute_group_state_hash` (`crates/context/src/group_store/meta.rs:75`) in the handler
+- Document in admin API reference
+
+**Acceptance criteria**:
+- `GET /admin-api/groups/:group_id` returns `state_hash` as hex
+- Two nodes that have converged on governance state return identical `state_hash`
+- Two nodes that diverge (e.g. one missing a `MemberRemoved`) return different `state_hash`
+
+**References**: §3.1 of the design doc, `crates/context/src/group_store/meta.rs:75`
+
+---
+
+#### A2 — `wait_for_governance_sync` workflow step in merobox
+
+**Phase**: 1 · **Size**: M (release cascade) · **Depends on**: A1 · **Blocks**: e2e tests for any governance-related work
+
+**Summary**: New merobox workflow step that polls `state_hash` across nodes and waits for convergence. Replaces fixed `wait, seconds: N` sleeps used today for governance ops in e2e tests.
+
+**Scope**:
+- Mirror `WaitForSyncStep` (which polls `rootHash`) for governance state hash
+- Configurable timeout, poll interval, target node set
+- Document in merobox workflow reference
+
+**Acceptance criteria**:
+- e2e test using `wait_for_governance_sync` waits exactly until all listed nodes converge on the same `state_hash`, not a fixed duration
+- Test with intentional divergence: step times out cleanly without false success
+- At least one existing e2e test (e.g. leave-context) migrated from `wait, seconds: N` to `wait_for_governance_sync`
+
+**References**: A1, `merobox` repository
+
+---
+
+#### A3 — Hierarchical `NamespaceMerkle` for whole-subtree convergence
+
+**Phase**: 4 · **Size**: L · **Depends on**: A1, B1, C1 · **Blocks**: —
+
+**Summary**: Single hash that covers `meta + members + governance_dag_root + subgroups + contexts` for a namespace. Lets a peer detect whole-subtree convergence in one comparison instead of walking each context individually.
+
+**Scope**:
+- Define `NamespaceMerkle` struct + hash function
+- Expose via admin API
+- Update `NamespaceStateHeartbeat` to optionally carry it (post-E2)
+
+**Acceptance criteria**:
+- `NamespaceMerkle` is deterministic across peers with the same governance + state
+- Test: drift in a deeply nested context propagates to root hash difference
+- API consumers can poll one hash to detect any subtree change
+
+**References**: §3.1, A1, E2
+
+---
 
 ### B. Cross-DAG causal authorization
 
-The foundational change: state deltas reference governance state, receivers enforce it.
+---
 
-| # | Issue | Size | Depends on |
-|---|---|---|---|
-| **B1** | Add `governance_position` field to `ContextDagDelta` / `CausalDelta`. Wire-format breaking change. Replace today's empty-vec `governance_epoch`. | M | — |
-| **B2** | Receiver-side: buffer state deltas whose `governance_position` references governance state not yet observed locally; release once governance catches up | M | B1 |
-| **B3** | Apply-time check: `delta.signer` must have been a member at `delta.governance_position`. Replaces the partial `is_read_only_for_context` check; covers `User`-storage actions too. | M | B1, B2 |
+#### B1 — Add `governance_position` field to ContextDagDelta / CausalDelta
+
+**Phase**: 2 · **Size**: M · **Depends on**: U1 resolved (wire-format strategy) · **Blocks**: B2, B3, C1, C2, C4, D2, A3
+
+**Summary**: Replace the dead `governance_epoch: Vec<[u8; 32]>` field on state deltas with a `GovernancePosition` struct that carries the full cross-DAG reference (group_id, state_hash, governance DAG heads) at sign time. This is the foundational primitive that lets receivers enforce cross-DAG authorization.
+
+**Scope**:
+- Define `GovernancePosition { group_id: ContextGroupId, group_state_hash: [u8; 32], governance_dag_heads: Vec<[u8; 32]> }`
+- Replace `governance_epoch` field on `ContextDagDelta` / `CausalDelta`
+- Sender side: compute and embed accurate values (`crates/context/src/handlers/execute/mod.rs:731` is where the empty vec is populated today)
+- Receiver side: deserialize and pass through to apply path (`crates/node/src/handlers/state_delta/mod.rs:33,88`)
+- Migration: handle pre-B1 deltas in flight per U13 / U1
+
+**Acceptance criteria**:
+- New field present in wire format
+- Senders embed accurate state_hash + governance DAG heads at sign time
+- Receivers deserialize without errors
+- Existing e2e tests pass
+- Roundtrip serialization test
+- Migration plan documented and reviewed
+
+**Open questions**: U1 (wire-format strategy), U13 (migration)
+
+**References**: §5.2 of design doc, `crates/node/src/handlers/state_delta/mod.rs:33`, `crates/context/src/handlers/execute/mod.rs:731`
+
+---
+
+#### B2 — Receiver-side buffering on unknown governance state
+
+**Phase**: 2 · **Size**: M · **Depends on**: B1 · **Blocks**: B3
+
+**Summary**: When a state delta arrives whose `governance_position` references governance DAG heads the receiver doesn't have yet, buffer the delta. Apply only after the local governance DAG has caught up and the referenced state hash matches. If the state hash mismatches after catch-up, reject (Byzantine sender or stale claim).
+
+**Scope**:
+- Add buffer keyed on unresolved governance head set
+- On governance DAG advance, scan buffer for now-resolvable deltas
+- Apply or reject based on state_hash comparison
+- Bounded buffer (DoS surface — see U12)
+
+**Acceptance criteria**:
+- Unit test: delta with future governance_position is buffered, applied only after governance catch-up
+- Replay-attack test: delta with stale state_hash is rejected after governance catches up
+- Buffer-overflow test: bounded eviction works under flood
+- e2e test: cross-partition delivery of a delta whose governance_position only resolves after partition heal
+
+**Open questions**: U12 (buffer eviction)
+
+**References**: §5.3 of design doc
+
+---
+
+#### B3 — Apply-time membership check via governance_position
+
+**Phase**: 2 · **Size**: M · **Depends on**: B1, B2 · **Blocks**: C4, C6
+
+**Summary**: Replace today's "is the signer currently a member?" with "was the signer a member at the governance state this delta references?" The check is a pure function of `(delta.signer, delta.governance_position, governance DAG)`. Subsumes `is_read_only_for_context` and extends membership check to `User`-storage actions (which today have no membership check at all).
+
+**Scope**:
+- Implement governance state history (ring buffer of state hash → membership snapshot — see U2)
+- Replace `is_read_only_for_context` check at `crates/node/src/handlers/state_delta/mod.rs:96`
+- Extend to `User`-storage actions in `crates/storage/src/interface.rs::apply_action` (lines 277–330)
+- Keep `Shared`-storage causal writer-set check (#2266) — they compose
+
+**Acceptance criteria**:
+- Removed member's deltas with post-`MemberRemoved` governance_position are rejected
+- Removed member's deltas with pre-removal governance_position are applied (forward-only)
+- `User`-storage actions from non-members are rejected
+- `Shared`-storage path still works per #2266
+- e2e test: member removed mid-test, attempts to publish, deltas rejected on all peers post-removal
+
+**Open questions**: U2 (history storage strategy)
+
+**References**: §5.4 of design doc, `crates/context/src/group_store/namespace.rs:64` (current is_read_only_for_context), `crates/storage/src/interface.rs:260`
+
+---
 
 ### C. Removal semantics & recovery
 
-| # | Issue | Size | Depends on |
-|---|---|---|---|
-| **C1** | Admin-signed deterministic cut on `MemberRemoved` — embed `cut: GovernancePosition` in the signed op | M | B1 |
-| **C2** | Self-signed `MemberLeft` cut — leaver embeds their own `governance_position` at sign time | S | B1 |
-| **C3** | Owner override / `MemberRestored` — Owner can sign a reversal of an admin's `MemberRemoved` | M | C1 |
-| **C4** | Forward-only semantic — declare and enforce: writes from a pre-cut `governance_position` are honored regardless of arrival order | S | B3, C1 |
-| **C5** | Owner-signed snapshot mechanism — periodic checkpoints of group state for bounded rebuild | L | C1 |
-| **C6** | Local rebuild tool — operator-invoked, replays from most recent snapshot using valid deltas only | M | C5, B3 |
+---
+
+#### C1 — Admin-signed deterministic cut on `MemberRemoved`
+
+**Phase**: 3 · **Size**: M · **Depends on**: B1, B3 · **Blocks**: C3, C4, C5, D3
+
+**Summary**: Embed the cut position explicitly inside the signed `MemberRemoved` op (rather than letting it be implicit at each peer's apply-time). All peers evaluate B3's validity rule against the same embedded cut value, even if their governance DAG views differ.
+
+**Scope**:
+- Add `cut: GovernancePosition` field to `MemberRemovedOp`
+- Admin computes cut at sign time
+- B3 uses `MemberRemovedOp.cut` for the descend-from check, not `position_of(op)`
+- Backwards compat for old-shape `MemberRemoved` in pre-existing governance DAGs (U14)
+
+**Acceptance criteria**:
+- New field present and signed
+- Concurrent-partition test: peers on different governance DAG positions evaluate the same answer for a given delta
+- Migration: old-shape `MemberRemoved` ops still honored (or upgrade-path documented)
+
+**Open questions**: U14 (backwards compat)
+
+**References**: §5.5 of design doc
+
+---
+
+#### C2 — Self-signed `MemberLeft` cut
+
+**Phase**: 3 · **Size**: S · **Depends on**: B1 · **Blocks**: —
+
+**Summary**: For voluntary departures, the leaver embeds their own `governance_position` at sign time. No admin gating. Forward-only applies the same way as for `MemberRemoved`.
+
+**Scope**:
+- Add `cut: GovernancePosition` field to `MemberLeftOp`
+- Leaver computes at sign time
+- B3 honors leaver-signed cut as authoritative for "X is no longer a writer"
+
+**Acceptance criteria**:
+- Self-leave test: leaver's pre-leave writes preserved on all peers
+- Self-leave test: post-leave writes from same identity rejected
+- Composes with existing `leave_context` / `leave_group` infra from #2280
+
+**References**: §5.5 of design doc, [Membership & Leave architecture](../architecture/membership-and-leave.html)
+
+---
+
+#### C3 — Owner override / `MemberRestored`
+
+**Phase**: 3 · **Size**: M · **Depends on**: C1 · **Blocks**: —
+
+**Summary**: Owner can sign a `MemberRestored` op that reverses an admin's `MemberRemoved`. Recovery path for the case where a Byzantine or mistaken admin removed a legitimate member. Replaces what a quorum design would have offered.
+
+**Scope**:
+- Define `MemberRestoredOp { restored_member, prior_cut, role_to_restore }` signed by Owner
+- Re-add the member to the group; reset the deny-list (D1) for that signer
+- Re-evaluate buffered post-cut deltas: now valid post-restore?
+
+**Acceptance criteria**:
+- e2e test: admin removes X; Owner restores X; X's pre-removal state preserved; X can author new deltas after restoration
+- Convergence test: peers that received different orderings of `MemberRemoved` and `MemberRestored` end up identical
+
+**Open questions**: U11 (semantics of post-cut buffered deltas, role assignment)
+
+**References**: §5.7 of design doc
+
+---
+
+#### C4 — Forward-only semantic: declare and enforce
+
+**Phase**: 2 · **Size**: S · **Depends on**: B3, C1, C2 · **Blocks**: —
+
+**Summary**: Document and enforce: pre-cut `governance_position` writes from a removed/left member are valid forever, regardless of arrival order. No retroactive invalidation.
+
+**Scope**:
+- Document in `docs/architecture/membership-and-leave.md`
+- Add e2e tests for the partition-heal cases that exercise the rule
+
+**Acceptance criteria**:
+- e2e test: removed member's pre-removal writes that arrive via partition heal are applied identically on all peers
+- Documented rule with rationale
+
+**References**: §5.6 of design doc
+
+---
+
+#### C5 — Owner-signed snapshots for bounded rebuild
+
+**Phase**: 3 · **Size**: L · **Depends on**: C1 · **Blocks**: C6
+
+**Summary**: Periodic snapshots of group state, signed by Owner. Two uses: bounded rebuild from corruption, and bootstrap floor (deltas claiming pre-snapshot `governance_position` are rejected).
+
+**Scope**:
+- Snapshot data structure (state hash + governance DAG cut + Owner signature)
+- Periodic / triggered creation (U7)
+- Snapshot replay primitive
+- Bootstrap floor enforcement in B3
+
+**Acceptance criteria**:
+- Owner can produce a valid signed snapshot
+- Replay from snapshot + valid deltas reaches the same state as full genesis-replay
+- Pre-snapshot-position deltas are rejected after the floor advances
+- Test: forge snapshot fails signature verification
+
+**Open questions**: U7 (frequency / trigger)
+
+**References**: §7.1 of design doc
+
+---
+
+#### C6 — Local rebuild tool
+
+**Phase**: 3 · **Size**: M · **Depends on**: C5, B3 · **Blocks**: —
+
+**Summary**: Operator-invoked. Detects tainted state (deltas with rejected `governance_position`), rebuilds from most recent valid snapshot using only valid deltas.
+
+**Scope**:
+- CLI tool: `calimero rebuild --group <id>`
+- Detection logic for tainted state
+- Replay logic using valid deltas + snapshot
+
+**Acceptance criteria**:
+- Given a deliberately-corrupted store, tool rebuilds to convergent state with another (clean) peer
+- Tool is idempotent (running twice produces same result)
+- Reports detected taint sources
+
+**References**: §7.2 of design doc
+
+---
 
 ### D. DoS & Byzantine defenses
 
-| # | Issue | Size | Depends on |
-|---|---|---|---|
-| **D1** | Network-layer deny-list keyed on **signer identity** (not libp2p peer-id) — drops gossip from removed members at the libp2p apply boundary. **Load-bearing defense.** | S | — |
-| **D2** | Time-window validity: `delta.hlc < governance_position.applied_at + W`. Belt-and-suspenders for D1. | S | B1 |
-| **D3** | Old-key (K0) deprecation policy after `MemberRemoved` + grace period | S | C1 |
-| **D4** | Per-peer rate limits at gossip apply layer — only if empirical evidence of slow-leak attacks emerges | M | — |
+---
+
+#### D1 — Network-layer deny-list keyed on signer identity
+
+**Phase**: 1 · **Size**: S · **Depends on**: — · **Blocks**: —
+
+**Summary**: **The load-bearing long-range defense.** On `MemberRemoved` apply, every peer adds the removed member's signer identity to a deny-list. Drops gossip messages whose inner Calimero signer matches — at the libp2p apply boundary, after decryption, before any further processing. Critical: keyed on **signer identity** (Calimero-layer key), not libp2p peer-id, otherwise the attacker rotates peer-id and bypasses.
+
+**Scope**:
+- Maintain deny-list per group (or per namespace, see U6) of removed signer identities
+- Hook in the receive path where messages are decrypted and inner-signer is known, drop matched messages
+- Persist deny-list across restarts
+- Reset on `MemberRestored` (C3 dependency, but D1 ships first — needs a hook for later reset)
+
+**Acceptance criteria**:
+- Removed member's gossipsub messages dropped on every peer that has applied `MemberRemoved`
+- e2e test: simulate delayed `MemberRemoved` apply on one peer; once applied, X's subsequent messages are dropped at that peer
+- Deny-list survives node restart
+- Bypass test: X rotates libp2p peer-id, messages still dropped (signer-id keying)
+
+**Open questions**: U6 (scope: per-group / namespace / global)
+
+**References**: §6.2 of design doc
+
+---
+
+#### D2 — Time-window validity on `governance_position`
+
+**Phase**: 3 · **Size**: S · **Depends on**: B1 · **Blocks**: —
+
+**Summary**: `delta.hlc < governance_position.applied_at + W`. Reject deltas claiming a position older than W. Belt-and-suspenders for D1; bounds the long-tail attack window if D1 has gaps.
+
+**Scope**:
+- HLC semantic for `applied_at` (U3)
+- Reject path in B3
+- Per-namespace configurable W (U8)
+
+**Acceptance criteria**:
+- Delta with HLC outside window is rejected
+- Delta with HLC inside window is accepted
+- W is configurable per-namespace
+
+**Open questions**: U3 (HLC semantics), U8 (default W)
+
+**References**: §6.3 of design doc
+
+---
+
+#### D3 — K0 deprecation after `MemberRemoved` + grace
+
+**Phase**: 3 · **Size**: S · **Depends on**: C1 · **Blocks**: —
+
+**Summary**: After `MemberRemoved` + grace period, drop K0-encrypted gossip at receive. Defends against malicious *active* members using K0 maliciously after rotation triggered by other events.
+
+**Scope**:
+- Track K0 deprecation timer per group
+- After grace, drop K0-decrypted messages at receive
+- Per-namespace configurable grace (U9)
+
+**Acceptance criteria**:
+- Pre-grace: K0 messages still accepted
+- Post-grace: K0 messages dropped, K1+ accepted
+- Test: replay K0-encrypted message after grace fails
+
+**Open questions**: U9 (grace period default)
+
+**References**: §6.3 of design doc
+
+---
+
+#### D4 — Per-peer rate limits at gossip apply layer
+
+**Phase**: 4 · **Size**: M · **Depends on**: — · **Blocks**: —
+
+**Summary**: Bandwidth / msg-rate caps per signer at gossip apply boundary. Generic gossipsub hygiene; only worth implementing if empirical evidence of slow-leak attacks emerges. **Defer until justified.**
+
+**Scope**:
+- Per-signer rate counter
+- Configurable cap
+- Drop above-cap messages with logging
+
+**Acceptance criteria**: Deferred — write the issue when there's evidence the surface needs closing.
+
+**References**: §6.3 of design doc
+
+---
 
 ### E. Bootstrap & eclipse resistance
 
-| # | Issue | Size | Depends on |
-|---|---|---|---|
-| **E1** | Owner / TEE peer-id-authenticated bootstrap endpoint — late joiner dials by peer-id, receives current member set + state hash + governance DAG heads | M | A1 |
-| **E2** | Promote `NamespaceStateHeartbeat` from informational logging to load-bearing alive-beacon — multi-member state-hash agreement during bootstrap window | S | A1 |
-| **E3** | Multi-source bootstrap fallback for when Owner/TEE is unreachable — connect to ≥2 peers, take longest valid governance DAG | M | E1 |
-| **E4** | Owner-transfer chain verification — late joiner discovers current Owner via signed transfer chain back to genesis | S | E1 |
+---
+
+#### E1 — Owner / TEE peer-id-authenticated bootstrap endpoint
+
+**Phase**: 4 · **Size**: M · **Depends on**: A1 · **Blocks**: E3, E4
+
+**Summary**: Late joiner dials Owner (or TEE peer) by peer-id. libp2p handshake authenticates that the responder holds the corresponding private key — eclipse-resistant because X cannot impersonate Owner. Owner returns: current member set, current state_hash, current governance DAG heads. From there the joiner fetches full state from any current member and verifies against the anchor's state_hash.
+
+**Scope**:
+- Define bootstrap request/response messages (member set, state hash, governance DAG heads)
+- Owner's peer-id is part of `compute_group_state_hash` (already true per #2284) — joiner extracts from group genesis
+- TEE branch (U4): how is a TEE peer designated? `ReadOnlyTee` role sufficient?
+- libp2p peer-id authentication is built in; multiaddr discovery via DHT or invite payload is fine because peer-id auth catches mismatch
+
+**Acceptance criteria**:
+- Late joiner can bootstrap from Owner peer-id alone
+- Eclipse-attack test: malicious peer cannot impersonate Owner via fake multiaddr (libp2p handshake fails)
+- Stale-Owner attack test: malicious peer serves a doctored governance DAG; joiner's state hash mismatch detected
+- Configurable strict vs fallback policy (U10)
+
+**Open questions**: U4 (TEE designation), U10 (default policy)
+
+**References**: §6.4 of design doc
 
 ---
 
-## 10. Recommended landing order
+#### E2 — Promote `NamespaceStateHeartbeat` to load-bearing alive-beacon
 
-### Phase 1 — Independent quick wins (parallel, ~1–2 weeks each)
+**Phase**: 1 · **Size**: M · **Depends on**: A1 · **Blocks**: —
 
-1. **A1** — exposes governance state hash, immediately useful for testing
-2. **A2** — workflow step type; follows A1 release cascade
-3. **D1** — network deny-list on removal; **the load-bearing long-range defense**
-4. **E2** — alive-beacon promotion of `NamespaceStateHeartbeat`
+**Summary**: Currently `NamespaceStateHeartbeat` carries `{namespace_id, dag_heads}` and is informational only (`crates/node/src/handlers/network_event.rs:189`). Extend with `state_hash` (and signature?) and use for bootstrap convergence detection — late joiner listens for a short window, sees what state hash multiple distinct members agree on, picks the most-advanced.
 
-### Phase 2 — Foundational cross-DAG primitives (sequential, ~1–2 months)
+**Scope**:
+- Extend message shape to `{namespace_id, group_id, state_hash, governance_dag_heads, hlc, signature}` (U5)
+- Sign per-member
+- Receiver: maintain short-window aggregation of beacons during bootstrap
+- "Most-advanced" tiebreak: HLC dominance, deepest governance DAG
 
-5. **B1** — `governance_position` wire format change; breaking, coordinate with release
-6. **B2 + B3** — buffering + apply-time validation
-7. **C4** — declare and enforce forward-only semantic now that the primitives exist
+**Acceptance criteria**:
+- Heartbeat carries state_hash and is signed
+- Bootstrap window collects beacons from multiple peers, picks most-advanced
+- Test: malicious beacon with forged signature is rejected
+- Test: late joiner with multiple honest beacons converges on correct state hash, ignores stale beacon from a slow peer
 
-### Phase 3 — Removal flow + recovery (~1–2 months)
+**Open questions**: U5 (message shape — extend or new variant?)
 
-8. **C1** — admin-signed deterministic cut on `MemberRemoved`
-9. **C2** — self-signed `MemberLeft` cut
-10. **C3** — Owner override / `MemberRestored`
-11. **D2 + D3** — time-window + K0 deprecation, layered defense
-12. **C5 + C6** — Owner-signed snapshots + rebuild tool
-
-### Phase 4 — Bootstrap & long-tail
-
-13. **E1 + E3 + E4** — Owner/TEE bootstrap, multi-source fallback, transfer-chain verification
-14. **A3** — hierarchical Merkle for whole-subtree convergence
-15. **D4** — rate limits, only if empirically motivated
+**References**: §6.4 of design doc, `crates/node/src/handlers/network_event.rs:189`
 
 ---
 
-## 11. Summary — what Calimero today does NOT do
+#### E3 — Multi-source bootstrap fallback
 
-1. **Governance state hash is not exposed on the admin API.** Tests use `type: wait, seconds: N` because there is no equivalent of `rootHash` for `get_group_info`.
-2. **State deltas do not reference the governance state they were authorized against.** The `governance_epoch` field exists in the wire format but is populated as `vec![]` and ignored on receive since #2237 Phase 11.2.
-3. **Receiver-side membership check on state deltas is partial.** Only `ReadOnly` / `ReadOnlyTee` are rejected; outright removal returns `None` from `get_group_member_role`, treated as "pass through."
-4. **For `User`-storage actions there is no membership check at all** — only Ed25519 signature + nonce replay protection.
-5. **The `Shared`-storage causal writer-set check is not automatically connected to `MemberRemoved`** — rotation log entries come from explicit rotation actions, not from governance ops.
-6. **No deterministic cut declaration.** The cut, where it exists conceptually, is each peer's local apply-time of the op — different on every peer.
-7. **No network-layer deny-list on removal.** A removed member's gossipsub messages continue to be processed.
-8. **No time-window validity** on signatures from removed members.
-9. **No Owner-signed snapshot mechanism** to bound rebuild scope or seal the governance history against long-range claims.
-10. **No authoritative bootstrap path.** A late-joining peer can be eclipsed by a single malicious bootstrap source.
-11. **`NamespaceStateHeartbeat` is informational only** — does not contribute to bootstrap or convergence detection.
+**Phase**: 4 · **Size**: M · **Depends on**: E1 · **Blocks**: —
 
-What *does* bound divergence today:
+**Summary**: When Owner / TEE is unreachable, fall back to dialing ≥2 distinct peers and taking the longest valid governance DAG. Eclipse becomes a network-layer assumption (X must control all bootstrap candidates).
 
-- **Key rotation on `MemberRemoved`** — closes interactive protocols. Does not stop one-way writes encrypted with K0 during the apply-lag / partition window.
-- **Eventually-detected `root_hash` divergence** — operators can grep `NamespaceStateHeartbeat` debug logs. No automatic remediation.
-- **`SignedGroupOp.current_state_hash` divergence check** — rejects governance ops signed against a stale group state. Internal to the governance DAG; does not touch state.
+**Scope**:
+- Configurable `bootstrap_min_sources` (default 2 or 3)
+- Compare governance DAGs from multiple sources
+- "Longest valid" = most ops, all signatures verified back to a common ancestor
+- Configurable strict-vs-fallback policy (U10) — block bootstrap if Owner unreachable, or allow fallback
 
----
+**Acceptance criteria**:
+- Bootstrap completes when Owner offline if ≥N honest peers reachable
+- Censoring source serving a strict prefix is detected when compared to a non-censoring source
+- Configurable policy works as documented
 
-## 12. Related work in the codebase
+**Open questions**: U10 (default policy)
 
-- **#2237 governance broadcast core** — `publish_and_await_ack` + `AckRouter` + readiness FSM. Infrastructure that admin-signed deterministic cuts (C1) build on.
-- **#2266 DAG-causal Shared verifier** — `writers_at(parents)` + rotation log. The receiver-side causal authorization model for Shared CRDTs. B3 generalizes this to `User`-storage and to all writers (not just rotation actions). [ADR-0001](../adr/0001-shared-storage-concurrent-rotation.md) is the formal spec.
-- **#2284 state hash includes owner_identity** — `compute_group_state_hash` covers members + roles + admin + owner + app. The hash A1 would expose is the same primitive.
-- **[Membership & Leave](../../architecture/membership-and-leave.html)** — formalizes the Owner role and self-leave operations. C1 / C2 / C3 build directly on this role model.
+**References**: §6.4 of design doc
 
 ---
 
-## 13. Open questions
+#### E4 — Owner-transfer chain verification
 
-1. **Wire-format breaking change strategy.** B1 changes the on-wire shape of `ContextDagDelta`. Versioned protocol message? Hard cut at a release boundary?
-2. **Owner mandatory in role model?** C3 (Owner override) and E1 (Owner-anchored bootstrap) both assume Owner is always present. If the role model permits Owner-less groups, both need a defined fallback. Easiest answer: make Owner mandatory in v1.
-3. **Owner-transfer semantics.** Does the role model permit Owner transfer? If yes, what's signed by whom? E4 needs the answer.
-4. **Snapshot frequency and trigger.** For C5: periodic (every N ops, every T seconds) or admin-triggered? Per-namespace configurable?
-5. **Time-window W.** D2 needs a concrete value. 24h working default; per-namespace configurable?
-6. **Network deny-list scope.** D1 — per-group, per-namespace, or global per-signer-identity? What if the same signer is a member of group X (where they were removed) and group Y (where they're still active)?
-7. **Bootstrap unreachability policy.** E1 — strict (block bootstrap if Owner/TEE unreachable) or fall back to E3 multi-source? Per-deployment configurable, but what's the default?
-8. **Epic vs separate issues.** The 22 issues here decompose into 4 phases. Tracked as one umbrella epic with sub-issues, four separate epics, or twenty-two standalone?
+**Phase**: 4 · **Size**: S · **Depends on**: E1 · **Blocks**: —
+
+**Summary**: If Owner has been transferred since group genesis, late joiner must resolve to the current Owner via signed transfer chain. Each `TransferOwnership` is signed by the previous Owner; chain back to genesis is locally verifiable.
+
+**Scope**:
+- Joiner fetches governance DAG, walks `TransferOwnership` ops
+- Verifies each transfer signed by the predecessor Owner
+- Trusts the latest Owner the chain resolves to
+
+**Acceptance criteria**:
+- With N `TransferOwnership` ops, late joiner resolves to current Owner
+- Tampered chain (bogus signature, missing predecessor) is rejected
+- Confirms `TransferOwnership` exists in the role model (it does — `crates/context/src/group_store/namespace_governance.rs:751`)
+
+**References**: §6.4 of design doc, `crates/context/src/group_store/namespace_governance.rs`
 
 ---
 
-## 14. Out of scope (intentionally not addressed here)
+## 6. Out of scope (decided, do not relitigate)
 
-- **Quorum / M-of-N voting / multisig-style approvals.** See §1 and §5.1. Off the table by design.
-- **Token-economic incentives** for voting / quorum participation — Calimero is not a public chain.
-- **BFT-style consensus on every governance op** — would defeat the point of CRDT-style permissionless writes within the member set.
-- **Full retroactive invalidation of removed-member contributions to CRDT state** — fundamentally hard in async CRDT-with-access-control settings; the "forward-only" semantic in §5.6 is the realistic stance.
-- **Hardware-backed identity** (TEE-anchored signatures beyond what `ReadOnlyTee` already provides).
+- **Quorum / M-of-N voting / multisig-style approvals.** Off the table by design — liveness regression, breaks CRDT model, doesn't fit small groups, doesn't actually solve correctness. Resolution mechanisms must be deterministic-causal or role-hierarchical, not vote-based. Includes K-of-K admin signatures and similar "lighter" multi-actor variants.
+- **Closing the long-range attack surface entirely.** Fundamentally undecidable in async consensus. The design bounds the surface (gossip-propagation time of `MemberRemoved` + partition duration), not eliminates it.
+- **Token-economic incentives or BFT consensus on every governance op.** Calimero is not a public chain.
+- **Full retroactive invalidation of removed-member CRDT contributions.** Forward-only is the realistic stance.
+- **Hardware-backed identity beyond `ReadOnlyTee`.** Out of scope for this work.
+
+---
+
+## 7. Issue tracking suggestion
+
+22 issues across 5 categories. Recommended GitHub structure:
+
+- **One umbrella tracking issue** linking the four phases.
+- **Per-category epic labels** (`area/observability`, `area/cross-dag-auth`, `area/removal-semantics`, `area/dos-defense`, `area/bootstrap`).
+- **Phase milestones** (`phase-1-quick-wins`, `phase-2-foundational`, `phase-3-removal`, `phase-4-bootstrap-longtail`).
+- **Each issue copy-pasted from §5** with title `[{category}{number}] {issue title}`.
+
+The blocking unknowns in §4.1 should be resolved in either (a) the umbrella tracking issue's discussion, or (b) standalone design-decision issues filed before the dependent work issue.
