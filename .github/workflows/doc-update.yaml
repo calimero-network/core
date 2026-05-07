@@ -1,0 +1,35 @@
+name: Doc Auto-Update
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: print changes without opening a PR"
+        type: boolean
+        default: false
+
+# Serialize doc-update runs so concurrent merges don't race when opening
+# the auto-PR (branch creation, label apply, etc.). `cancel-in-progress:
+# false` queues new runs instead of dropping them, but GitHub only keeps
+# one queued run per group — if 3+ merges land within one run's lifetime,
+# the middle ones can be superseded. The upstream tool always inspects
+# the latest merged PR, so the queue tail still produces a valid PR; the
+# trade-off is that intermediate PRs may not get individually-scoped doc
+# updates. Acceptable for normal merge cadence.
+concurrency:
+  group: doc-update-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  doc-update:
+    # Pinned to a specific SHA on calimero-network/ai-code-reviewer (which
+    # uses `master`, not `main`) to prevent an upstream change from running
+    # with this repo's GH_PAT. Bump deliberately when adopting new features.
+    uses: calimero-network/ai-code-reviewer/.github/workflows/doc-update.yaml@71b0895c1908504b18f07f2856adfc9c8c8d1e4e
+    with:
+      dry_run: ${{ github.event.inputs.dry_run == 'true' }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GH_PAT: ${{ secrets.GH_PAT }}
