@@ -531,6 +531,8 @@ steps:
             args:
               value: "frozen_{{uuid}}"
             outputs:
+              # add_frozen returns its hex hash wrapped as {"output": "<hash>"};
+              # other ops in this file return plain values, hence the deviation.
               frozen_hash: result.output
           - type: assert
             non_blocking: true
