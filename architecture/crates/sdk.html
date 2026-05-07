@@ -346,6 +346,18 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 <h3 style="margin-top:18px;">Authorization-Aware Primitives</h3>
 <p style="margin-bottom:14px;">Wrappers that bind writes to specific identities. After WASM execution, the context manager signs the executor's actions with the identity's private key (<span class="code">sign_authorized_actions</span>); peers verify the signature against the entry's stored owner — or, for <span class="code">SharedStorage</span>, against the current writer set — at merge time in <span class="code">Interface::apply_action</span>, using the runtime's <span class="code">ed25519_verify</span> host function. Lets you express access control in the state shape itself.</p>
 
+<div style="font-family:'JetBrains Mono', monospace; font-size:.82rem; line-height:1.7; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 18px; margin-bottom:16px; white-space:pre; overflow-x:auto;">need authorization?
+  ├── no  → <span style="color:#06b6d4;">UnorderedMap / Vector / Set / LwwRegister / Counter</span>
+  └── yes ↓
+        data shape?
+           ├── immutable, content-addressed       → <span style="color:#22c55e;font-weight:600;">FrozenStorage&lt;T&gt;</span>
+           ├── one slot per user, disjoint        → <span style="color:#22c55e;font-weight:600;">UserStorage&lt;T&gt;</span>
+           ├── one shared slot, group-owned       → <span style="color:#22c55e;font-weight:600;">SharedStorage&lt;T&gt;</span>
+           ├── shared keyspace, per-entry author  → <span style="color:#22c55e;font-weight:600;">AuthoredMap&lt;K,V&gt;</span>
+           └── shared sequence, per-entry author  → <span style="color:#22c55e;font-weight:600;">AuthoredVector&lt;V&gt;</span></div>
+
+<p style="margin-bottom:14px;font-size:.85rem;color:var(--text-dim);">See <a href="store.html#crdt-collections" style="color:var(--cyan);">crates/store</a> for the full comparison table including storage stamps, mutation rules, and when composition does (and does not) substitute for these primitives.</p>
+
 <div class="g2" style="margin-bottom:16px;">
   <div class="cb">
     <h4 style="color:#22c55e;">UserStorage&lt;T&gt;</h4>

@@ -382,9 +382,106 @@
 </div>
 </div>
 
+<style>
+.prim-table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: .82rem; }
+.prim-table th {
+  text-align: left; padding: 10px 12px; font-family: 'JetBrains Mono', monospace; font-size: .7rem;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px;
+  border-bottom: 2px solid var(--border); background: var(--surface2);
+}
+.prim-table th:first-child { border-radius: 8px 0 0 0; }
+.prim-table th:last-child { border-radius: 0 8px 0 0; }
+.prim-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.prim-table tr:hover td { background: var(--surface2); }
+.prim-table .pn { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: var(--green); white-space: nowrap; }
+.prim-table .pc { font-family: 'JetBrains Mono', monospace; font-size: .76rem; color: var(--cyan); }
+.prim-table .pd { color: var(--text-dim); font-size: .78rem; }
+.prim-tree {
+  font-family: 'JetBrains Mono', monospace; font-size: .82rem; line-height: 1.7;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 18px; margin: 6px 0 16px 0; white-space: pre; overflow-x: auto;
+}
+.prim-tree .arrow { color: var(--cyan); }
+.prim-tree .target { color: var(--green); font-weight: 600; }
+</style>
+
 <div class="card gc">
 <h3>Authorization-Aware Primitives</h3>
 <p style="margin-bottom:14px;">Storage wrappers that bind writes to specific identities. After WASM execution, the context manager fills in placeholder signatures with the executor's private key (<span class="code">sign_authorized_actions</span> in <span class="code">crates/context/src/handlers/execute/mod.rs</span>). Peers then enforce authorization at merge time in <span class="code">Interface::apply_action</span> (<span class="code">crates/storage/src/interface.rs</span>), verifying each entry's owner stamp against the action signer via the runtime's <span class="code">ed25519_verify</span> host function before accepting the delta. This lets applications express trust boundaries directly in their state shape rather than building access control on top of plain CRDTs.</p>
+
+<h4 style="margin-top:18px;margin-bottom:10px;">Comparison</h4>
+<table class="prim-table">
+<thead><tr>
+  <th>Primitive</th>
+  <th>Storage stamp</th>
+  <th>Keyspace</th>
+  <th>Writes new</th>
+  <th>Mutates existing</th>
+  <th>Reads</th>
+</tr></thead>
+<tbody>
+<tr>
+  <td><span class="pn">UnorderedMap&lt;K,V&gt;</span><div class="pd">(public baseline)</div></td>
+  <td><span class="pc">—</span></td>
+  <td><span class="pd">K → V</span></td>
+  <td><span class="pd">anyone</span></td>
+  <td><span class="pd">anyone</span></td>
+  <td><span class="pd">everyone</span></td>
+</tr>
+<tr>
+  <td><span class="pn">UserStorage&lt;T&gt;</span></td>
+  <td><span class="pc">User { owner = executor_id }</span></td>
+  <td><span class="pd">PublicKey → T, disjoint per-user slots</span></td>
+  <td><span class="pd">only into your own slot</span></td>
+  <td><span class="pd">only your own slot</span></td>
+  <td><span class="pd">everyone (<span class="code">get_for_user</span>)</span></td>
+</tr>
+<tr>
+  <td><span class="pn">FrozenStorage&lt;T&gt;</span></td>
+  <td><span class="pc">Frozen</span></td>
+  <td><span class="pd">Hash(value) → T, content-addressed</span></td>
+  <td><span class="pd">anyone</span></td>
+  <td><span class="pd">nobody — immutable</span></td>
+  <td><span class="pd">everyone</span></td>
+</tr>
+<tr>
+  <td><span class="pn">SharedStorage&lt;T&gt;</span></td>
+  <td><span class="pc">Shared { writers, frozen }</span></td>
+  <td><span class="pd">one slot with T (T often a nested map)</span></td>
+  <td><span class="pd">signer ∈ writers</span></td>
+  <td><span class="pd">signer ∈ writers; writers rotatable if !frozen</span></td>
+  <td><span class="pd">everyone</span></td>
+</tr>
+<tr>
+  <td><span class="pn">AuthoredMap&lt;K,V&gt;</span></td>
+  <td><span class="pc">User { owner }</span> per-entry</td>
+  <td><span class="pd">shared keyspace, K → V</span></td>
+  <td><span class="pd">anyone (becomes owner)</span></td>
+  <td><span class="pd">only owner</span></td>
+  <td><span class="pd">everyone</span></td>
+</tr>
+<tr>
+  <td><span class="pn">AuthoredVector&lt;V&gt;</span></td>
+  <td><span class="pc">User { owner }</span> per-entry</td>
+  <td><span class="pd">shared sequence, index → V</span></td>
+  <td><span class="pd">anyone (push, becomes owner)</span></td>
+  <td><span class="pd">only owner (update / tombstone)</span></td>
+  <td><span class="pd">everyone</span></td>
+</tr>
+</tbody>
+</table>
+
+<h4 style="margin-top:14px;margin-bottom:8px;">Picking one</h4>
+<div class="prim-tree">need authorization?
+  ├── no  <span class="arrow">→</span> <span class="target">UnorderedMap / Vector / Set / LwwRegister / Counter</span>
+  └── yes ↓
+        data shape?
+           ├── immutable, content-addressed       <span class="arrow">→</span> <span class="target">FrozenStorage&lt;T&gt;</span>
+           ├── one slot per user, disjoint        <span class="arrow">→</span> <span class="target">UserStorage&lt;T&gt;</span>
+           ├── one shared slot, group-owned       <span class="arrow">→</span> <span class="target">SharedStorage&lt;T&gt;</span>
+           ├── shared keyspace, per-entry author  <span class="arrow">→</span> <span class="target">AuthoredMap&lt;K,V&gt;</span>
+           └── shared sequence, per-entry author  <span class="arrow">→</span> <span class="target">AuthoredVector&lt;V&gt;</span></div>
+
 <div class="g2" style="margin-bottom:14px;">
   <div class="cb">
     <h4>UserStorage&lt;T&gt;</h4>
@@ -413,6 +510,38 @@
   <div class="cb">
     <h4>Merge-time enforcement</h4>
     <p style="margin-top:8px;">Local <span class="code">update</span>/<span class="code">remove</span> calls short-circuit non-owner attempts so bugs surface in-process, but the load-bearing check is at merge time: <span class="code">Interface::apply_action</span> calls <span class="code">ed25519_verify</span> against the entry's stored <span class="code">owner</span> (or, for <span class="code">SharedStorage</span>, the current writer set) and rejects the action with <span class="code">InvalidSignature</span> on mismatch. Replay protection is enforced via a per-owner monotonic nonce stored in <span class="code">SignatureData</span>.</p>
+  </div>
+</div>
+
+<h4 style="margin-top:14px;margin-bottom:8px;">Key distinctions</h4>
+<div class="g2">
+  <div class="cb">
+    <h4 style="font-size:.95rem;">UserStorage vs AuthoredMap</h4>
+    <p style="margin-top:6px;">Both stamp entries with <span class="code">StorageType::User { owner }</span>. The difference is keying:</p>
+    <ul style="margin-top:4px;padding-left:18px;">
+      <li><span class="code">UserStorage&lt;T&gt;</span>: key <em>is</em> the public key, slots are disjoint per user.</li>
+      <li><span class="code">AuthoredMap&lt;K,V&gt;</span>: key is application-defined, owner is recorded in the entry's metadata. Two users can compete to insert the same key; first writer wins, subsequent updates are owner-only.</li>
+    </ul>
+  </div>
+  <div class="cb">
+    <h4 style="font-size:.95rem;">SharedStorage vs AuthoredMap</h4>
+    <p style="margin-top:6px;">Both allow mutation after creation. The difference is the granularity of the writer set:</p>
+    <ul style="margin-top:4px;padding-left:18px;">
+      <li><span class="code">SharedStorage&lt;T&gt;</span>: one collection-level writer set governs one logical T. Several named members can co-author the same value.</li>
+      <li><span class="code">AuthoredMap&lt;K,V&gt;</span>: per-entry writer set (currently size-1 = single author). The writer varies per key.</li>
+    </ul>
+  </div>
+</div>
+
+<h4 style="margin-top:14px;margin-bottom:8px;">Why composition doesn't replace these primitives</h4>
+<div class="g2">
+  <div class="cb">
+    <h4 style="font-size:.95rem;">AuthoredMap is not <span class="code">UnorderedMap&lt;K, SharedStorage&lt;V&gt;&gt;</span></h4>
+    <p style="margin-top:6px;">You can nest <span class="code">SharedStorage</span> inside an <span class="code">UnorderedMap</span> for per-key multi-writer values, but the outer map is still public — outer keys can be inserted, overwritten, or removed by anyone. <span class="code">AuthoredMap</span> puts the ownership stamp on the entry itself within a shared keyspace, so K cannot be replaced by non-owners.</p>
+  </div>
+  <div class="cb">
+    <h4 style="font-size:.95rem;">SharedStorage is not <span class="code">UnorderedMap&lt;K, UserStorage&lt;V&gt;&gt;</span></h4>
+    <p style="margin-top:6px;">You can nest <span class="code">UserStorage</span> inside an <span class="code">UnorderedMap</span> for per-key single-author values, but again the outer map is public (key-level tampering remains possible). And there is no way to model "several named people co-own this value" without a writer set — exactly what <span class="code">SharedStorage</span> provides.</p>
   </div>
 </div>
 </div>
