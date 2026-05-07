@@ -85,9 +85,22 @@ jobs:
           fi
 
           # 2. Otherwise: which PR introduced this exact commit?
+          #    `// empty` in the jq filter prevents JSON `null` (the jq result
+          #    when the API returns []) from being printed as the literal
+          #    string "null". Without it, PR_NUM=null would pass the -z check
+          #    later and we'd hand "null" to ai-reviewer.
+          #    Errors are surfaced (no `2>/dev/null`); a real API failure
+          #    should be visible in logs rather than silently skipping.
           if [ -z "$PR_NUM" ]; then
-            PR_NUM=$(gh api "/repos/$REPO/commits/$SHA/pulls" \
-              --jq '.[0].number' 2>/dev/null || true)
+            if ! PR_NUM=$(gh api "/repos/$REPO/commits/$SHA/pulls" --jq '.[0].number // empty'); then
+              echo "::warning::gh api commits/{sha}/pulls failed; doc update will be skipped"
+              PR_NUM=""
+            fi
+          fi
+
+          # Final sanity check: only forward digit-only values.
+          if [[ ! "$PR_NUM" =~ ^[0-9]+$ ]]; then
+            PR_NUM=""
           fi
 
           echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
