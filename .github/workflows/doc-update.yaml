@@ -10,6 +10,18 @@ on:
         type: boolean
         default: false
 
+# Serialize doc-update runs so concurrent merges don't race when opening
+# the auto-PR (branch creation, label apply, etc.). `cancel-in-progress:
+# false` queues new runs instead of dropping them, but GitHub only keeps
+# one queued run per group — if 3+ merges land within one run's lifetime,
+# the middle ones can be superseded. The upstream tool always inspects
+# the latest merged PR, so the queue tail still produces a valid PR; the
+# trade-off is that intermediate PRs may not get individually-scoped doc
+# updates. Acceptable for normal merge cadence.
+concurrency:
+  group: doc-update-${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   doc-update:
     # Pinned to a specific SHA on calimero-network/ai-code-reviewer (which
