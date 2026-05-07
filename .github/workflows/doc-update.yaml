@@ -5,10 +5,6 @@ on:
     branches: [main, master]
   workflow_dispatch:
     inputs:
-      pr_number:
-        description: "PR number to generate docs for (leave blank to auto-detect)"
-        type: string
-        required: false
       dry_run:
         description: "Dry run: print changes without opening a PR"
         type: boolean
@@ -16,10 +12,12 @@ on:
 
 jobs:
   doc-update:
-    uses: calimero-network/ai-code-reviewer/.github/workflows/doc-update.yaml@main
+    # Pinned to a specific SHA on calimero-network/ai-code-reviewer (which
+    # uses `master`, not `main`) to prevent an upstream change from running
+    # with this repo's GH_PAT. Bump deliberately when adopting new features.
+    uses: calimero-network/ai-code-reviewer/.github/workflows/doc-update.yaml@71b0895c1908504b18f07f2856adfc9c8c8d1e4e
     with:
       dry_run: ${{ github.event.inputs.dry_run == 'true' }}
-      pr_number: ${{ github.event.inputs.pr_number }}
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GH_PAT: ${{ secrets.GH_PAT }}

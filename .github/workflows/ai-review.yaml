@@ -23,7 +23,14 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+    # Skip on draft PRs and on PRs from forks (forks don't get repo secrets,
+    # so the run would attempt to call Claude with no key and fail noisily).
+    # Maintainers can review fork PRs manually via workflow_dispatch after
+    # auditing the diff.
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
 
     permissions:
       contents: read
@@ -38,8 +45,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Pinned to a specific SHA on calimero-network/ai-code-reviewer to
+      # prevent an upstream change from running with this repo's secrets.
+      # Bump deliberately when adopting new reviewer features.
       - name: Install ai-code-reviewer
-        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@71b0895c1908504b18f07f2856adfc9c8c8d1e4e
 
       - name: Determine PR number and agent count
         id: pr
