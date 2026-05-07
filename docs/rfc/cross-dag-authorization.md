@@ -52,9 +52,9 @@ The roadmap's foundational issues (B1, B2, B3, C1, C2, C4) are concrete primitiv
 
 **Bootstrap & observability**
 
-12. **Bootstrap pins to Owner peer.** Late joiner dials Owner by peer-id; libp2p handshake authenticates the responder holds the corresponding private key. **Strict default** — block bootstrap if Owner is unreachable. Per-deployment override flag (`bootstrap_fallback: bool`) opts into multi-source fallback (E3). Per-namespace policy is a v2 follow-up. **TEE redundancy is deferred entirely as a follow-up RFC.**
+12. **Bootstrap pins to Owner peer (initial admission).** Late joiner dials Owner by peer-id; libp2p handshake authenticates the responder holds the corresponding private key. **Strict default** — block bootstrap if Owner is unreachable. Per-deployment override flag (`bootstrap_fallback: bool`) opts into multi-source fallback (E3). Per-namespace policy is a v2 follow-up. (TEE redundancy is in scope per decision #23; this decision is the Owner-only minimum.)
 13. **`NamespaceStateBeacon` is a new broadcast variant**, not an extension of the existing `NamespaceStateHeartbeat`. Decouples high-frequency unsigned liveness pings from lower-frequency signed bootstrap-relevant beacons. Heartbeat stays cheap and informational; beacon is signed and load-bearing for E2 / bootstrap convergence detection.
-14. **Snapshots are scoped to recovery, not long-range defense.** Owner-signed (single-sig). Bound rebuild scope; provide a bootstrap floor for stale-position rejection.
+14. **Snapshots scoped to recovery, not long-range defense (further demoted by #25).** Owner-signed (single-sig). After decision #25 (every removal carries `expected_state_hash_after_apply`), C5's role shrinks to "occasional refresh hashes between removals + bounded rebuild scope when local state is corrupted." Bootstrap-floor / fabrication-bound roles are subsumed by signed removal hashes.
 
 **Trust model & hashes**
 
@@ -76,7 +76,7 @@ The roadmap's foundational issues (B1, B2, B3, C1, C2, C4) are concrete primitiv
 
 22. **Sync requests target the trusted-anchor set.** Peers preferentially direct explicit sync requests (state-DAG catch-up, governance-DAG catch-up, full state replay) to peers in the trusted-anchor set: `{Owner} ∪ {Admins} ∪ {ReadOnlyTee members of the relevant group}`. The trust gate for `ReadOnlyTee` reuses the existing `TeeAdmissionPolicy` attestation chain (`crates/context/src/group_store/membership_policy.rs`) — no new role, no new flag. Plain `Member` and `ReadOnly` peers are NOT in the trusted set; they can serve sync requests if asked, but clients that target them accept that the resulting state may be inconsistent with canonical history and is not recoverable through protocol means. Gossipsub broadcast remains the real-time write path; B3 + D1 validate it independently.
 23. **TEE redundancy is load-bearing, not deferred.** With the trusted-anchor set including `ReadOnlyTee` members, Owner becomes an availability convenience rather than a liveness requirement. Multiple TEE replicas can be placed close to user regions and balance sync load. Owner key compromise alone is not catastrophic if TEE attestations independently vouch for the same state. **Reverses the prior U4 deferral** — TEE is in scope for v1; the existing `TeeAdmissionPolicy` is the implementation gate, no new mechanism needed.
-24. **Practical resolution of the §6.1 long-range surface.** The historical "Byzantine X with old keys forges deltas, sneaks them in via sync from a malicious relay" attack collapses under decision #22. Forged deltas can only enter the namespace through (a) Owner serving them (Owner is honest by definition), (b) a TEE-attested peer serving them (attestation gates this), or (c) plain gossip (D1 + B3 reject). Bound on the long-range surface becomes "Owner OR all TEE attestations OR all honest peers' D1/B3 simultaneously compromised" — a much higher bar than "any malicious peer can amplify forgeries via sync."
+24. **Practical resolution of the long-range attack surface.** The historical "Byzantine X with old keys forges deltas, sneaks them in via sync from a malicious relay" attack collapses under decision #22. Forged deltas can only enter the namespace through (a) Owner serving them (Owner is honest by definition), (b) a TEE-attested peer serving them (attestation gates this), or (c) plain gossip (D1 + B3 reject). Bound on the long-range surface becomes "Owner OR all TEE attestations OR all honest peers' D1/B3 simultaneously compromised" — a much higher bar than "any malicious peer can amplify forgeries via sync."
 
 **Anchor-attested canonical state on removal**
 
@@ -98,7 +98,7 @@ Reorganized around the **unification thesis** (§2 decisions 20-21): the load-be
 |---|---|---|---|
 | **1 — Observability** | ~~A1~~, ~~A2~~, E2 | Convergence detection across nodes; foundation for E1 bootstrap. | A1+A2 done ([#2289](https://github.com/calimero-network/core/pull/2289), [merobox#223](https://github.com/calimero-network/merobox/pull/223)+[#224](https://github.com/calimero-network/merobox/pull/224)); E2 left. |
 | **2 — The Unifier** (sequential) | B1 → B2 → B3 → C4, plus C1, C2 | The cross-DAG primitive. After this, B3 is the only authorization rule. C1/C2 deterministic cuts make removals well-defined causally. | not started |
-| **3 — Codebase cleanup** | S1–S8 | Collapse the patchwork B3 makes redundant; close key-lifecycle gaps. **Net code deletion.** | not started |
+| **3 — Codebase cleanup** | S1–S12 | Collapse the patchwork B3 makes redundant; close key-lifecycle gaps; consolidate authorization-check duplication; decouple cryptography from visibility model; centralize writer-set resolution. **Net code deletion.** | not started |
 | **4 — Removal flow & recovery** | C3, C5, C6 | Owner override, snapshots, rebuild tool. Built on the unifier. | not started |
 | **5 — Encrypted-by-default & anchored sync** | D5, E1, E3, E4 | Encrypt RootOps with namespace key; eclipse-resistant join via Owner/TEE anchors; ongoing sync targets the trusted-anchor set. | not started |
 | **6 — Defense-in-depth** | D1, D3, D4, A3 | Now-clearly-optional layers: network deny-list, K0 deprecation, rate limits, hierarchical Merkle. | not started |
@@ -290,7 +290,7 @@ The following questions were considered and decided; they are recorded in §2 an
 
 **Open questions**: U12 (buffer eviction)
 
-**References**: §5.3 of design doc
+**References**: §2 decisions 1-3 (architectural primitives)
 
 ---
 
@@ -403,7 +403,7 @@ pub struct MemberRemovedOp {
 
 **Open questions**: U11 (semantics of post-cut buffered deltas, role assignment)
 
-**References**: §5.7 of design doc
+**References**: §2 decision 6 (Owner override)
 
 ---
 
@@ -411,7 +411,7 @@ pub struct MemberRemovedOp {
 
 **Phase**: 2 · **Size**: M · **Depends on**: B3, C1, C2 · **Blocks**: —
 
-**Summary**: Forward-only is a **core invariant** baked into B3, not just a documented rule. Pre-cut `governance_position` writes from a removed/left member are valid forever, regardless of arrival order. Without this property, taint cascade returns (§4.3 of the design doc). This issue is a test-coverage and architectural-lock-in pass: every code path that reaches the validity check must apply forward-only consistently, and the property must be regression-protected.
+**Summary**: Forward-only is a **core invariant** baked into B3, not just a documented rule. Pre-cut `governance_position` writes from a removed/left member are valid forever, regardless of arrival order. Without this property, taint cascade returns (the taint-cascade scenario (§3.3 of the original RFC, preserved in commit history)). This issue is a test-coverage and architectural-lock-in pass: every code path that reaches the validity check must apply forward-only consistently, and the property must be regression-protected.
 
 **Scope**:
 - Audit every code path that reaches B3's apply-time check; ensure all use forward-only (no path retroactively invalidates pre-cut writes)
@@ -427,7 +427,7 @@ pub struct MemberRemovedOp {
 - Regression suite includes a "what if someone added retroactive invalidation" canary test
 - Architecture doc updated
 
-**References**: §2 (architectural approach + decisions 1–6), §4.3 (taint cascade — the failure mode forward-only prevents)
+**References**: §2 (architectural approach + decisions 1–6), taint-cascade scenario (the failure mode forward-only prevents)
 
 ---
 
@@ -435,7 +435,7 @@ pub struct MemberRemovedOp {
 
 **Phase**: 4 · **Size**: M · **Depends on**: C1 · **Blocks**: C6
 
-**Summary**: Originally scoped as "periodic Owner-signed snapshots that double as a bootstrap floor + fabrication-bound for the §6.1 long-range surface." After decision #25 (every removal op carries `expected_state_hash_after_apply`), most of that role is subsumed by C1/C2 — every removal IS a signed snapshot point. **C5 reframes as: occasional Owner-signed refresh hashes for the long stretches *between* removals**, so newly-bootstrapped peers and corrupted-state recoveries have a recent canonical hash to verify against. **No longer load-bearing for the §6.1 forgery surface** — that role moved to decisions #25-27.
+**Summary**: Originally scoped as "periodic Owner-signed snapshots that double as a bootstrap floor + fabrication-bound for the long-range attack surface." After decision #25 (every removal op carries `expected_state_hash_after_apply`), most of that role is subsumed by C1/C2 — every removal IS a signed snapshot point. **C5 reframes as: occasional Owner-signed refresh hashes for the long stretches *between* removals**, so newly-bootstrapped peers and corrupted-state recoveries have a recent canonical hash to verify against. **No longer load-bearing for the §6.1 forgery surface** — that role moved to decisions #25-27.
 
 **Scope**:
 - Owner can sign `{group_id, governance_position, expected_state_hash, timestamp}` and gossip as a `RefreshHash` op
@@ -451,7 +451,7 @@ pub struct MemberRemovedOp {
 
 **Open questions**: U7 (frequency / trigger)
 
-**References**: §7.1 of design doc
+**References**: §2 decision 14 (recovery snapshots)
 
 ---
 
@@ -471,7 +471,7 @@ pub struct MemberRemovedOp {
 - Tool is idempotent (running twice produces same result)
 - Reports detected taint sources
 
-**References**: §7.2 of design doc
+**References**: §2 decision 14 (recovery snapshots), C5
 
 ---
 
@@ -540,7 +540,7 @@ pub struct MemberRemovedOp {
 
 **Acceptance criteria**: Deferred — write the issue when there's evidence the surface needs closing.
 
-**References**: §6.3 of design doc
+**References**: §2 decisions 9, 11 (D1/D3 demoted to defense-in-depth)
 
 ---
 
@@ -699,7 +699,74 @@ These issues *delete code* that becomes redundant once B3 is the load-bearing au
 
 ---
 
-### E. Bootstrap & eclipse resistance
+#### S9 — Consolidate `apply_action` verification path (single pre-apply pipeline)
+
+**Phase**: 3 · **Size**: M · **Depends on**: B3, S2, S4 · **Blocks**: —
+
+**Summary**: `crates/storage/src/interface.rs` has long-standing TODOs at lines 265, 503, 1856 about refactoring action verification into a separate function. Today verification is split: `apply_action` does pre-apply checks inline (signature, nonce), and `verify_action_update` (lines 1797-1862) re-opens metadata and re-runs checks. The duplication is per-storage-type (`User` vs `Shared`) and per-call-site (apply path vs verify path). After B3 + S2 + S4, every action should flow through one pipeline: B3 (auth gate) → storage-type-specific composables (User: nonce; Shared: causal writers_at). Eliminate the verify/apply split.
+
+**Scope**:
+- Extract a single `verify_action_pre_apply` function from the duplicated logic in `apply_action` and `verify_action_update`
+- The function runs all pre-apply checks (signature, nonce, B3, storage-type-specific) in one pass
+- Both apply path and any standalone verification call sites use it
+- Resolves the line-265, line-503, line-1856 TODOs
+
+**Acceptance criteria**: single verification pipeline; no duplicated nonce or signature logic across paths; storage-type branches collapse to small leaf functions called from the unified pipeline.
+
+**References**: `crates/storage/src/interface.rs:265,503,1856,1797-1862`, §2 decision 20
+
+---
+
+#### S10 — Consolidate permission-check wrappers in `group_store`
+
+**Phase**: 3 · **Size**: S · **Depends on**: B3 · **Blocks**: —
+
+**Summary**: `crates/context/src/group_store/mod.rs` exposes three permission-check wrappers (`check_group_membership`, `require_group_admin`, `require_group_admin_or_capability` — lines 380, 397, 408), and `crates/context/src/group_store/namespace_membership.rs` (lines 38-64) has its own service-layer reimplementation of subset checks (inviter permission, role mapping). Two layers, partial overlap, no single gate. After B3 lands, the inviter / admin / membership checks all reduce to "look up role at governance_position." Collapse the wrappers into one function with role/capability parameters.
+
+**Scope**:
+- Define a single `check_authorization(store, group_id, signer, required_role_or_capability) -> Result<()>` function
+- Replace the three wrappers + the service-layer reimplementation with calls to this function
+- Remove the duplicated namespace_membership.rs subset
+
+**Acceptance criteria**: one authorization-check function; all callers route through it; no role-check logic duplicated across files.
+
+**References**: `crates/context/src/group_store/mod.rs:380,397,408`, `crates/context/src/group_store/namespace_membership.rs:38-64`, §2 decision 20
+
+---
+
+#### S11 — Decouple visibility (Open vs Restricted) from key-rotation publisher
+
+**Phase**: 3 · **Size**: M · **Depends on**: S6, S8 · **Blocks**: —
+
+**Summary**: `crates/context/src/group_store/group_governance_publisher.rs:200-229` has a special branch where the publisher inspects subgroup visibility (`encrypting_group_id == self.group_id`) and skips key rotation for Open subgroups (the §2256 "Option C" trade-off). This couples the cryptography layer to the visibility/admission model. After S6 + S8 (every subgroup has its own key, Open vs Restricted is admission-only), this branch becomes unnecessary — every removal rotates regardless of visibility. Remove the visibility-aware branch; the publisher's job becomes "always rotate on removal/leave," cleanly decoupled from admission semantics.
+
+**Scope**:
+- Remove the `if encrypting_group_id == self.group_id` branch at `group_governance_publisher.rs:217`
+- Always rotate on removal/leave; visibility is consulted only for admission policy elsewhere
+- Update `SubgroupVisibilitySet` op handling (lines 131-172) to be a pure metadata op, not coupled to encryption boundary
+
+**Acceptance criteria**: publisher.rs has no visibility-aware branches; key rotation is uniform; visibility decisions live exclusively in admission/membership code paths.
+
+**References**: `crates/context/src/group_store/group_governance_publisher.rs:131-172,200-229`, §2 decisions 7, 8
+
+---
+
+#### S12 — Centralize `effective_writers` resolution at sync-anchor layer
+
+**Phase**: 3 · **Size**: M · **Depends on**: B3, decision #22 · **Blocks**: —
+
+**Summary**: ADR-0001's `writers_at(parents)` causal writer-set computation is split across two layers today: `crates/node/src/sync/helpers.rs:91-120` pre-resolves writers via rotation-log lookup for DAG-based deltas, while `crates/storage/src/interface.rs:379-382` does a DAG-free fallback (stored_writers → action's claim). Two implementations of the same logical concept. After decision #22 (Owner/TEE-anchored sync), the anchor's signed `expected_state_hash_after_apply` (decision #25) attests that writer-set resolution was done correctly at sign time. Storage layer takes only the effective set, drops the fallback path.
+
+**Scope**:
+- Remove the DAG-free fallback at `crates/storage/src/interface.rs:379-382`
+- Storage trusts pre-resolved `effective_writers` from the receive path
+- Receive path centralizes the resolution; one implementation in `crates/node/src/sync/helpers.rs` (or moved to a shared crate)
+
+**Acceptance criteria**: one writer-set resolution implementation; storage layer has no DAG-walking code; ADR-0001 logic lives in one place.
+
+**References**: `crates/storage/src/interface.rs:379-382`, `crates/node/src/sync/helpers.rs:91-120`, ADR-0001, §2 decisions 22, 25
+
+---
 
 ---
 
@@ -773,7 +840,7 @@ These issues *delete code* that becomes redundant once B3 is the load-bearing au
 
 **Open questions**: U10 (default policy)
 
-**References**: §6.4 of design doc
+**References**: §2 decisions 12, 13, 22, 23 (bootstrap + anchored sync)
 
 ---
 
@@ -793,7 +860,7 @@ These issues *delete code* that becomes redundant once B3 is the load-bearing au
 - Tampered chain (bogus signature, missing predecessor) is rejected
 - Confirms `TransferOwnership` exists in the role model (it does — `crates/context/src/group_store/namespace_governance.rs:751`)
 
-**References**: §6.4 of design doc, `crates/context/src/group_store/namespace_governance.rs`
+**References**: §2 decisions 12, 13, 22, 23 (bootstrap + anchored sync), `crates/context/src/group_store/namespace_governance.rs`
 
 ---
 
@@ -815,7 +882,7 @@ These issues *delete code* that becomes redundant once B3 is the load-bearing au
 
 ## 7. Issue tracking suggestion
 
-30 issues across 6 categories (added S1-S8 cleanup track + D5; removed D2). Recommended GitHub structure:
+34 issues across 6 categories (S category expanded to S1-S12 after the codebase audit; D5 added; D2 dropped). Recommended GitHub structure:
 
 - **One umbrella tracking issue** linking the six phases.
 - **Per-category epic labels** (`area/observability`, `area/cross-dag-auth`, `area/removal-semantics`, `area/cleanup`, `area/dos-defense`, `area/bootstrap`).
@@ -861,7 +928,7 @@ A member whose membership row is gone (via `MemberRemoved` or `MemberLeft`) but 
 | Eclipse a late-joining peer | E1 bootstrap pins to trusted-anchor set; libp2p peer-id auth prevents impersonation | ✅ E1 |
 | Replay old governance ops | Governance DAG dedup by op hash; per-signer nonce monotonicity | ✅ Existing |
 | Withhold acks to stall governance | Ack router has timeout; publisher proceeds anyway (best-effort delivery) | ✅ Existing |
-| **§6.1 long-range:** retain K0, sign new deltas claiming pre-cut `governance_position`, smuggle in via apply-lag windows | Bounded by decision #22 + D1 + decision #8 + C5 snapshot sealing — **not eliminated, but reduced to small windows** | ⚠️ §6.1, **bounded** |
+| **Long-range attack:** retain K0, sign new deltas claiming pre-cut `governance_position`, smuggle in via apply-lag windows | Bounded by decisions #22, #8, #25, and D1 — **not eliminated, but reduced to small windows** | ⚠️ Bounded residual |
 | DoS via volume | D1 drops removed-member gossip; D4 rate limits any peer | ✅ D1 + D4 |
 
 ### 8.3 Concrete scenarios — partition + removal
@@ -1062,7 +1129,7 @@ Not authorization concerns. libp2p / gossipsub provides standard mitigations (pe
 | Threat class | Coverage |
 |---|---|
 | Malicious active member, protocol-level attacks | ✅ Fully covered (B3 + signature + role + forward-only + D4 + key rotation) |
-| Malicious removed member, protocol-level attacks | ✅ Fully covered except §6.1 long-range, which is **bounded** by decision #22 + #8 + C5 + D1 |
+| Malicious removed member, protocol-level attacks | ✅ Fully covered except the long-range attack residual, which is **bounded** by decisions #22 + #8 + #25 + D1 |
 | Application-layer "valid-but-harmful" data | ⚠️ Out of scope; mitigated by data structure design (§8.4.1) |
 | End-user key compromise | ⚠️ Out of scope; mitigated by key management hygiene (§8.4.2) |
 | Owner key compromise | ⚠️ Trust assumption; **bar raised** by TEE redundancy (decision #23); mitigated by hardware-backed keys (§8.4.3) |
