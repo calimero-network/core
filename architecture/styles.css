@@ -778,6 +778,12 @@ html.light .typedef { background: #f0f3f6; border-color: #d0d7de; color: #24292f
 .prim-tree .target { color: var(--green); font-weight: 600; }
 .prim-tree .public { color: var(--cyan); }
 
+/* On narrow viewports, allow the type-name cell to wrap so the table
+   doesn't push the whole page into horizontal scroll. */
+@media (max-width: 860px) {
+  .prim-table .pt-name { white-space: normal; }
+}
+
 /* ── MOBILE ── */
 @media (max-width: 860px) {
  .sidebar { transform: translateX(-100%); transition: transform .25s; }

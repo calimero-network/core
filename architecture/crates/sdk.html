@@ -346,6 +346,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 <h3 style="margin-top:18px;">Storage Primitives</h3>
 <p style="margin-bottom:14px;">Beyond the public CRDT collections above, the storage layer offers wrappers that constrain who can write what. Most are <strong>signature-based</strong>: after your method returns, the context manager signs the executor's actions with their identity key, and peers verify those signatures at merge time using the runtime's <span class="code">ed25519_verify</span> host function. WASM code itself does not produce signatures — it only stamps placeholders that get filled in post-execution. <span class="code">FrozenStorage</span> is the exception: it has no per-identity check, immutability is <strong>structural</strong> (enforced by content-addressing). You don't need to call any signing API; pick the primitive whose guarantee matches your data and the trust model follows from the type. See <a href="store.html#storage-primitives">crates/store</a> for the full enforcement details.</p>
 
+<!-- KEEP IN SYNC with store.html#storage-primitives decision tree -->
 <div class="prim-tree">what guarantee do you need?
   ├── none, public                              <span class="arrow">→</span> <span class="public">UnorderedMap / Vector / Set / LwwRegister / Counter</span>
   ├── immutable, content-addressed              <span class="arrow">→</span> <span class="target">FrozenStorage&lt;T&gt;</span>
