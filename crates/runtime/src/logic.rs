@@ -130,8 +130,8 @@ const DEFAULT_MAX_BLOB_HANDLES: u64 = 100;
 const DEFAULT_MAX_BLOB_CHUNK_SIZE_MIB: u64 = 10;
 /// Default maximum method name length in bytes.
 const DEFAULT_MAX_METHOD_NAME_LENGTH: u64 = 256;
-/// Default maximum WASM module size in MiB (10 MiB).
-const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 10;
+/// Default maximum WASM module size in MiB (20 MiB).
+const DEFAULT_MAX_MODULE_SIZE_MIB: u64 = 20;
 
 /// Defines the resource limits for a VM instance.
 ///
@@ -770,7 +770,7 @@ mod tests {
     #[test]
     fn test_default_limits() {
         let limits = VMLimits::default();
-        assert_eq!(limits.max_module_size, 10 << 20); // 10 MiB
+        assert_eq!(limits.max_module_size, 20 << 20); // 20 MiB
         assert_eq!(limits.max_memory_pages, 1 << 10);
         assert_eq!(limits.max_stack_size, 200 << 10);
         assert_eq!(limits.max_registers, 100);

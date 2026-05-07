@@ -46,6 +46,7 @@ pub async fn handler(
                         default_capabilities: info.default_capabilities,
                         subgroup_visibility: info.subgroup_visibility,
                         alias: info.alias,
+                        group_state_hash: hex::encode(info.state_hash),
                     },
                 },
             }

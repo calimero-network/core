@@ -109,6 +109,11 @@ pub struct Context {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub service_name: Option<String>,
     /// The root hash of the context's state Merkle tree.
+    // Explicit rename (overrides struct-level rename_all = "camelCase")
+    // pins the public JSON name to `contextStateHash` independent of the
+    // Rust field name. Part of the cross-DAG auth roadmap's three-level
+    // naming pattern: contextStateHash / groupStateHash / namespaceStateHash.
+    #[serde(rename = "contextStateHash")]
     pub root_hash: Hash,
     /// Current DAG heads (delta IDs with no children yet)
     /// Used to track causal dependencies when creating new deltas

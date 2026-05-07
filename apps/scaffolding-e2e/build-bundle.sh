@@ -13,7 +13,7 @@ TARGET="${CARGO_TARGET_DIR:-../../target}"
 mkdir -p res/bundle-temp
 
 # Copy WASM file
-cp res/e2e_kv_store.wasm res/bundle-temp/app.wasm
+cp res/scaffolding_e2e.wasm res/bundle-temp/app.wasm
 
 # Copy ABI file if it exists
 if [ -f res/abi.json ]; then
@@ -21,14 +21,14 @@ if [ -f res/abi.json ]; then
 fi
 
 # Get file sizes for manifest
-WASM_SIZE=$(stat -f%z res/e2e_kv_store.wasm 2>/dev/null || stat -c%s res/e2e_kv_store.wasm 2>/dev/null || echo 0)
+WASM_SIZE=$(stat -f%z res/scaffolding_e2e.wasm 2>/dev/null || stat -c%s res/scaffolding_e2e.wasm 2>/dev/null || echo 0)
 ABI_SIZE=$(stat -f%z res/abi.json 2>/dev/null || stat -c%s res/abi.json 2>/dev/null || echo 0)
 
 # Create manifest.json
 cat > res/bundle-temp/manifest.json <<EOF
 {
   "version": "1.0",
-  "package": "com.calimero.e2e-kv-store",
+  "package": "com.calimero.scaffolding-e2e",
   "appVersion": "1.0.0",
   "wasm": {
     "path": "app.wasm",
@@ -46,11 +46,11 @@ EOF
 
 # Create .mpk bundle (tar.gz archive)
 cd res/bundle-temp
-tar -czf ../e2e-kv-store-1.0.0.mpk manifest.json app.wasm abi.json 2>/dev/null || \
-tar -czf ../e2e-kv-store-1.0.0.mpk manifest.json app.wasm 2>/dev/null
+tar -czf ../scaffolding-e2e-1.0.0.mpk manifest.json app.wasm abi.json 2>/dev/null || \
+tar -czf ../scaffolding-e2e-1.0.0.mpk manifest.json app.wasm 2>/dev/null
 
 # Cleanup
 cd ..
 rm -rf bundle-temp
 
-echo "Bundle created: res/e2e-kv-store-1.0.0.mpk"
+echo "Bundle created: res/scaffolding-e2e-1.0.0.mpk"

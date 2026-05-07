@@ -12,6 +12,8 @@
 //! - **Context Admin**: Member management
 //! - **Nested CRDTs**: Complex nested CRDT compositions
 //! - **RGA Document**: ReplicatedGrowableArray for text editing
+//! - **Authored Map**: Shared keyspace with per-entry ownership; any member inserts, only owner mutates
+//! - **Shared Storage**: Group-writable single value with rotatable writer set
 //!
 //! Each feature area is organized into its own method group with clear prefixes.
 
@@ -23,8 +25,9 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, PublicKey};
 use calimero_storage::collections::{
-    Counter, FrozenStorage, GCounter, LwwRegister, Mergeable, PNCounter, ReplicatedGrowableArray,
-    UnorderedMap, UnorderedSet, UserStorage, Vector,
+    AuthoredMap, AuthoredVector, Counter, FrozenStorage, GCounter, LwwRegister, Mergeable,
+    PNCounter, ReplicatedGrowableArray, SharedStorage, UnorderedMap, UnorderedSet, UserStorage,
+    Vector,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -155,6 +158,18 @@ pub struct E2eKvStore {
     rga_edit_count: Counter,
     /// Document metadata (title, owner)
     rga_metadata: UnorderedMap<String, LwwRegister<String>>,
+
+    // --- Authored Map ---
+    /// Shared keyspace map with per-entry ownership
+    authored_items: AuthoredMap<String, LwwRegister<String>>,
+
+    // --- Authored Vector ---
+    /// Append-only vector with per-slot ownership; only the pusher can update/tombstone their slot
+    authored_vec: AuthoredVector<LwwRegister<String>>,
+
+    // --- Shared Storage ---
+    /// Group-writable single value; writers rotate at runtime
+    shared_data: SharedStorage<LwwRegister<String>>,
 }
 
 // EVENTS
@@ -261,6 +276,43 @@ pub enum Event<'a> {
         new_title: String,
         editor: String,
     },
+
+    // Authored Map Events
+    AuthoredInserted {
+        key: String,
+        value: String,
+        owner: String,
+    },
+    AuthoredUpdated {
+        key: String,
+        value: String,
+    },
+    AuthoredRemoved {
+        key: String,
+    },
+
+    // Authored Vector Events
+    AuthoredVecPushed {
+        index: usize,
+        value: String,
+        owner: String,
+    },
+    AuthoredVecUpdated {
+        index: usize,
+        value: String,
+    },
+    AuthoredVecRemoved {
+        index: usize,
+    },
+
+    // Shared Storage Events
+    SharedSet {
+        value: String,
+        by: String,
+    },
+    SharedWriterAdded {
+        writer: String,
+    },
 }
 
 // ERRORS
@@ -357,6 +409,15 @@ impl E2eKvStore {
             rga_document: ReplicatedGrowableArray::new(),
             rga_edit_count: GCounter::new(),
             rga_metadata: UnorderedMap::new(),
+            // Authored Map
+            authored_items: AuthoredMap::new(),
+            // Authored Vector
+            authored_vec: AuthoredVector::<LwwRegister<String>>::new(),
+            // Shared Storage — init caller becomes the sole initial writer
+            shared_data: SharedStorage::new(
+                std::iter::once(env::executor_id().into()).collect(),
+                false,
+            ),
         }
     }
 
@@ -569,7 +630,7 @@ impl E2eKvStore {
     pub fn add_frozen(&mut self, value: String) -> app::Result<String> {
         app::log!("Adding frozen value: {:?}", value);
 
-        let hash = self.frozen_items.insert(value.clone().into())?;
+        let hash = self.frozen_items.insert(value.clone())?;
 
         app::emit!(Event::FrozenAdded {
             hash,
@@ -589,8 +650,7 @@ impl E2eKvStore {
         Ok(self
             .frozen_items
             .get(&hash)?
-            .map(|v| v.clone())
-            .ok_or_else(|| Error::FrozenNotFound("Frozen value is not found"))?)
+            .ok_or(Error::FrozenNotFound("Frozen value is not found"))?)
     }
 
     // PRIVATE STORAGE
@@ -1137,5 +1197,195 @@ impl E2eKvStore {
             self.rga_delete_text(0, length)?;
         }
         Ok(())
+    }
+
+    // AUTHORED MAP
+
+    pub fn authored_insert(&mut self, key: String, value: String) -> Result<(), String> {
+        let owner = bs58::encode(env::executor_id()).into_string();
+        self.authored_items
+            .insert(key.clone(), value.clone().into())
+            .map_err(|e| format!("authored_insert failed: {:?}", e))?;
+        app::emit!(Event::AuthoredInserted {
+            key: key.clone(),
+            value: value.clone(),
+            owner: owner.clone(),
+        });
+        Ok(())
+    }
+
+    pub fn authored_update(&mut self, key: String, value: String) -> Result<(), String> {
+        self.authored_items
+            .update(&key, value.clone().into())
+            .map_err(|e| format!("authored_update failed: {:?}", e))?;
+        app::emit!(Event::AuthoredUpdated {
+            key: key.clone(),
+            value: value.clone(),
+        });
+        Ok(())
+    }
+
+    pub fn authored_remove(&mut self, key: String) -> Result<Option<String>, String> {
+        let result = self
+            .authored_items
+            .remove(&key)
+            .map_err(|e| format!("authored_remove failed: {:?}", e))?
+            .map(|v| v.get().clone());
+        if result.is_some() {
+            app::emit!(Event::AuthoredRemoved { key: key.clone() });
+        }
+        Ok(result)
+    }
+
+    pub fn authored_get(&self, key: String) -> Result<Option<String>, String> {
+        Ok(self
+            .authored_items
+            .get(&key)
+            .map_err(|e| format!("authored_get failed: {:?}", e))?
+            .map(|v| v.get().clone()))
+    }
+
+    pub fn authored_entries(&self) -> Result<BTreeMap<String, String>, String> {
+        Ok(self
+            .authored_items
+            .entries()
+            .map_err(|e| format!("authored_entries failed: {:?}", e))?
+            .map(|(k, v)| (k, v.get().clone()))
+            .collect())
+    }
+
+    pub fn authored_get_owner(&self, key: String) -> Result<Option<String>, String> {
+        Ok(self
+            .authored_items
+            .owner_of(&key)
+            .map_err(|e| format!("authored_get_owner failed: {:?}", e))?
+            .map(|pk| pk.to_string()))
+    }
+
+    pub fn authored_len(&self) -> Result<usize, String> {
+        self.authored_items
+            .len()
+            .map_err(|e| format!("authored_len failed: {:?}", e))
+    }
+
+    // SHARED STORAGE
+
+    pub fn shared_set(&mut self, value: String) -> Result<(), String> {
+        let by = bs58::encode(env::executor_id()).into_string();
+        self.shared_data
+            .insert(LwwRegister::new(value.clone()))
+            .map_err(|e| format!("shared_set failed: {:?}", e))?;
+        app::emit!(Event::SharedSet {
+            value: value.clone(),
+            by: by.clone(),
+        });
+        Ok(())
+    }
+
+    pub fn shared_get(&self) -> Result<String, String> {
+        Ok(self
+            .shared_data
+            .get()
+            .map_err(|e| format!("shared_get failed: {:?}", e))?
+            .get()
+            .clone())
+    }
+
+    pub fn shared_get_writers(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .shared_data
+            .writers()
+            .iter()
+            .map(|pk| pk.to_string())
+            .collect())
+    }
+
+    pub fn shared_add_writer(&mut self, writer_bs58: String) -> Result<(), String> {
+        let new_writer: PublicKey = writer_bs58
+            .parse()
+            .map_err(|e| format!("Invalid public key '{}': {:?}", writer_bs58, e))?;
+        let mut new_writers = self.shared_data.writers().clone();
+        new_writers.insert(new_writer);
+        self.shared_data
+            .rotate_writers(new_writers)
+            .map_err(|e| format!("shared_add_writer failed: {:?}", e))?;
+        app::emit!(Event::SharedWriterAdded {
+            writer: writer_bs58.clone(),
+        });
+        Ok(())
+    }
+
+    pub fn shared_is_writer(&self, key_bs58: String) -> Result<bool, String> {
+        let pk: PublicKey = key_bs58
+            .parse()
+            .map_err(|e| format!("Invalid public key '{}': {:?}", key_bs58, e))?;
+        Ok(self.shared_data.writers().contains(&pk))
+    }
+
+    pub fn shared_is_frozen(&self) -> Result<bool, String> {
+        Ok(self.shared_data.is_frozen())
+    }
+
+    // AUTHORED VECTOR
+
+    pub fn authored_vec_push(&mut self, value: String) -> Result<usize, String> {
+        let index = self
+            .authored_vec
+            .push(LwwRegister::new(value.clone()))
+            .map_err(|e| format!("authored_vec_push failed: {:?}", e))?;
+        let owner = bs58::encode(env::executor_id()).into_string();
+        app::emit!(Event::AuthoredVecPushed {
+            index,
+            value,
+            owner,
+        });
+        Ok(index)
+    }
+
+    pub fn authored_vec_get(&self, index: usize) -> Result<Option<String>, String> {
+        Ok(self
+            .authored_vec
+            .get(index)
+            .map_err(|e| format!("authored_vec_get failed: {:?}", e))?
+            .map(|r| r.get().clone()))
+    }
+
+    pub fn authored_vec_update(&mut self, index: usize, value: String) -> Result<(), String> {
+        self.authored_vec
+            .update(index, LwwRegister::new(value.clone()))
+            .map_err(|e| format!("authored_vec_update failed: {:?}", e))?;
+        app::emit!(Event::AuthoredVecUpdated { index, value });
+        Ok(())
+    }
+
+    pub fn authored_vec_remove(&mut self, index: usize) -> Result<(), String> {
+        self.authored_vec
+            .tombstone(index)
+            .map_err(|e| format!("authored_vec_remove failed: {:?}", e))?;
+        app::emit!(Event::AuthoredVecRemoved { index });
+        Ok(())
+    }
+
+    pub fn authored_vec_get_owner(&self, index: usize) -> Result<Option<String>, String> {
+        Ok(self
+            .authored_vec
+            .owner_of(index)
+            .map_err(|e| format!("authored_vec_get_owner failed: {:?}", e))?
+            .map(|pk| pk.to_string()))
+    }
+
+    pub fn authored_vec_entries(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .authored_vec
+            .iter()
+            .map_err(|e| format!("authored_vec_entries failed: {:?}", e))?
+            .map(|r| r.get().clone())
+            .collect())
+    }
+
+    pub fn authored_vec_len(&self) -> Result<usize, String> {
+        self.authored_vec
+            .len()
+            .map_err(|e| format!("authored_vec_len failed: {:?}", e))
     }
 }

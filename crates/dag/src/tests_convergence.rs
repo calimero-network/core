@@ -51,7 +51,7 @@ use super::*;
 
 /// A CRDT-like state that tracks key-value pairs and a counter.
 ///
-/// This simulates the e2e-kv-store application state:
+/// This simulates the scaffolding-e2e application state:
 /// - `entries`: A map of key -> (value, timestamp) using LWW semantics
 /// - `counter`: A G-Counter (grow-only) for handler invocations
 #[derive(Clone, Debug, Default)]
@@ -313,7 +313,7 @@ async fn test_basic_convergence_reverse_order() {
 /// BOTH nodes must broadcast their handler results as deltas. If only one node
 /// broadcasts, the other's handler state will be missing.
 ///
-/// In the real e2e-kv-store scenario:
+/// In the real scaffolding-e2e scenario:
 /// - Node-1 calls `set_with_handler` which emits an event
 /// - Node-2 receives the delta and executes `insert_handler`
 /// - Node-2's handler creates a delta and broadcasts it

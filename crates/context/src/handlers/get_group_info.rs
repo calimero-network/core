@@ -44,6 +44,8 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
 
             let alias = group_store::get_group_alias(&self.datastore, &group_id)?;
 
+            let state_hash = group_store::compute_group_state_hash(&self.datastore, &group_id)?;
+
             Ok(GroupInfoResponse {
                 group_id,
                 app_key: meta.app_key.into(),
@@ -55,6 +57,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 default_capabilities,
                 subgroup_visibility,
                 alias,
+                state_hash,
             })
         })();
 

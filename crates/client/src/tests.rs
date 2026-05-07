@@ -121,7 +121,8 @@ async fn get_group_info() {
                 "contextCount": 0,
                 "activeUpgrade": null,
                 "defaultCapabilities": 0,
-                "subgroupVisibility": "open"
+                "subgroupVisibility": "open",
+                "groupStateHash": "0000000000000000000000000000000000000000000000000000000000000000"
             }
         })))
         .expect(1)

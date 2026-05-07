@@ -41,7 +41,7 @@ steps:
   - name: Install application on node-1
     type: install_application
     node: e2e-node-1
-    path: res/e2e_kv_store.wasm
+    path: res/scaffolding_e2e.wasm
     dev: true
     outputs:
       app_id: applicationId
@@ -49,7 +49,7 @@ steps:
   - name: Install application on node-2
     type: install_application
     node: e2e-node-2
-    path: res/e2e_kv_store.wasm
+    path: res/scaffolding_e2e.wasm
     dev: true
 
   - name: Create namespace on node-1

@@ -1,0 +1,161 @@
+name: E2E KV Store - Leave Group (MemberLeft)
+description: >
+  Tests voluntary self-leave from a subgroup via `leave_group`.
+  Publishes `MemberLeft` so peers observe the leave. Exercises the
+  apply-side checks: direct-row required, last-admin protection.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node3}}'
+    outputs:
+      identity_node3: memberIdentity
+
+  - name: Get node-1 namespace identity
+    type: get_namespace_identity
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      identity_node1: publicKey
+
+  - name: Create subgroup with all three nodes
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: leave-group-subgroup
+    outputs:
+      subgroup_id: groupId
+
+  - name: Add node-2 and node-3 to subgroup
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+      - identity: '{{identity_node3}}'
+        role: Member
+
+  # Scenario 1: Member voluntarily leaves the subgroup.
+
+  - name: Node-2 leaves subgroup
+    type: leave_group
+    node: e2e-node-2
+    group_id: '{{subgroup_id}}'
+
+  # MemberLeft has to propagate via gossip before peers reflect it.
+  - name: Wait for MemberLeft to propagate to node-1
+    type: wait
+    seconds: 5
+
+  - name: List subgroup members on node-1 after node-2 left
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      members_after_leave: members
+
+  - name: Assert node-2 absent from subgroup membership
+    type: assert
+    statements:
+      - "not_contains({{members_after_leave}}, {{identity_node2}})"
+      - "contains({{members_after_leave}}, {{identity_node3}})"
+
+  # Cross-check on a third peer to catch fan-out bugs.
+
+  - name: List subgroup members on node-3 after node-2 left
+    type: list_group_members
+    node: e2e-node-3
+    group_id: '{{subgroup_id}}'
+    outputs:
+      members_after_leave_node3: members
+
+  - name: Assert node-3 also sees node-2 absent
+    type: assert
+    statements:
+      - "not_contains({{members_after_leave_node3}}, {{identity_node2}})"
+      - "contains({{members_after_leave_node3}}, {{identity_node3}})"
+
+  # Scenario 2: a second leave is rejected — the direct-row precondition
+  # is gone after the first leave.
+
+  - name: Node-2 cannot leave again (already left)
+    type: leave_group
+    node: e2e-node-2
+    group_id: '{{subgroup_id}}'
+    expected_failure: true
+
+  # Scenario 3: the only admin can't leave — last-admin protection.
+
+  - name: Node-1 (sole admin) tries to leave subgroup
+    type: leave_group
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    expected_failure: true
+
+  # Confirm the rejected leave didn't partially mutate state.
+
+  - name: List subgroup members after failed admin leave
+    type: list_group_members
+    node: e2e-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      members_after_admin_fail: members
+
+  - name: Assert subgroup still has node-1 admin and node-3 member
+    type: assert
+    statements:
+      - "contains({{members_after_admin_fail}}, {{identity_node1}})"
+      - "contains({{members_after_admin_fail}}, {{identity_node3}})"
+      - "not_contains({{members_after_admin_fail}}, {{identity_node2}})"
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
