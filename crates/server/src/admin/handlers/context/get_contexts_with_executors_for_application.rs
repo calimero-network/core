@@ -17,6 +17,7 @@ use crate::AdminState;
 pub struct ContextWithExecutors {
     pub id: String,
     pub application_id: String,
+    #[serde(rename = "contextStateHash")]
     pub root_hash: String,
     pub executors: Vec<String>,
 }
