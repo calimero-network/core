@@ -384,7 +384,7 @@
 
 <div class="card gc">
 <h3>Authorization-Aware Primitives</h3>
-<p style="margin-bottom:14px;">Storage wrappers that bind writes to specific identities. Authorization is enforced at merge time in <span class="code">Interface::apply_action</span> — peers verify each entry's owner stamp against the action signer before accepting the delta. This lets applications express trust boundaries directly in their state shape rather than building access control on top of plain CRDTs.</p>
+<p style="margin-bottom:14px;">Storage wrappers that bind writes to specific identities. After WASM execution, the context manager fills in placeholder signatures with the executor's private key (<span class="code">sign_authorized_actions</span> in <span class="code">crates/context/src/handlers/execute/mod.rs</span>). Peers then enforce authorization at merge time in <span class="code">Interface::apply_action</span> (<span class="code">crates/storage/src/interface.rs</span>), verifying each entry's owner stamp against the action signer via the runtime's <span class="code">ed25519_verify</span> host function before accepting the delta. This lets applications express trust boundaries directly in their state shape rather than building access control on top of plain CRDTs.</p>
 <div class="g2" style="margin-bottom:14px;">
   <div class="cb">
     <h4>UserStorage&lt;T&gt;</h4>
@@ -392,7 +392,7 @@
   </div>
   <div class="cb">
     <h4>SharedStorage&lt;T&gt;</h4>
-    <p style="margin-top:8px;">A single value writable by any signer in a mutable <span class="code">writers</span> set. Any current writer can rotate the set unless it is frozen. The runtime signs each write; peers verify the signature against the stored writer set at merge time. See ADR&nbsp;0001 for the rotation-during-concurrent-write contract.</p>
+    <p style="margin-top:8px;">A single value writable by any signer in a mutable <span class="code">writers</span> set. Any current writer can rotate the set unless it is frozen. The context manager signs each write after WASM returns its outcome; peers verify the signature against the stored writer set at merge time. See ADR&nbsp;0001 for the rotation-during-concurrent-write contract.</p>
   </div>
 </div>
 <div class="g2" style="margin-bottom:14px;">
@@ -412,7 +412,7 @@
   </div>
   <div class="cb">
     <h4>Merge-time enforcement</h4>
-    <p style="margin-top:8px;">Local <span class="code">update</span>/<span class="code">remove</span> calls short-circuit non-owner attempts so bugs surface in-process, but the load-bearing check is at merge time: an action arriving from a peer is rejected unless its signature matches the entry's stored <span class="code">owner</span> (or, for <span class="code">SharedStorage</span>, a member of the current writer set).</p>
+    <p style="margin-top:8px;">Local <span class="code">update</span>/<span class="code">remove</span> calls short-circuit non-owner attempts so bugs surface in-process, but the load-bearing check is at merge time: <span class="code">Interface::apply_action</span> calls <span class="code">ed25519_verify</span> against the entry's stored <span class="code">owner</span> (or, for <span class="code">SharedStorage</span>, the current writer set) and rejects the action with <span class="code">InvalidSignature</span> on mismatch. Replay protection is enforced via a per-owner monotonic nonce stored in <span class="code">SignatureData</span>.</p>
   </div>
 </div>
 </div>
