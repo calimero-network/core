@@ -64,12 +64,16 @@ The roadmap's foundational issues (B1, B2, B3, C1, C2, C4) are concrete primitiv
 
 ## 3. Phases & sequencing
 
-| Phase | Items | Goal |
-|---|---|---|
-| **1 — Quick wins** (parallel) | A1, A2, D1, E2 | Observability + immediate DoS surface reduction. No wire-format changes. |
-| **2 — Foundational** (sequential) | B1 → B2 → B3 → C4 | The cross-DAG primitive. After this, validity is well-defined. |
-| **3 — Removal flow + recovery** | C1, C2, C3, D3, C5, C6 (parallel where possible) | Deterministic cuts + Owner override + K0 deprecation + bounded rebuild. |
-| **4 — Bootstrap & long-tail** | E1, E3, E4, A3, D4 | Eclipse-resistant join + whole-subtree convergence + rate limits. |
+| Phase | Items | Goal | Status |
+|---|---|---|---|
+| **1 — Quick wins** (parallel) | ~~A1~~, ~~A2~~, D1, E2 | Observability + immediate DoS surface reduction. | A1+A2 done ([#2289](https://github.com/calimero-network/core/pull/2289), [merobox#223](https://github.com/calimero-network/merobox/pull/223)+[#224](https://github.com/calimero-network/merobox/pull/224)); D1+E2 left. |
+| **2 — Foundational** (sequential) | B1 → B2 → B3 → C4 | The cross-DAG primitive. After this, validity is well-defined. | not started |
+| **3 — Removal flow + recovery** | C1, C2, C3, D3, C5, C6 (parallel where possible) | Deterministic cuts + Owner override + K0 deprecation + bounded rebuild. | not started |
+| **4 — Bootstrap & long-tail** | E1, E3, E4, A3, D4 | Eclipse-resistant join + whole-subtree convergence + rate limits. | not started |
+
+### Side findings exposed by completed work
+
+- **Subgroup state-hash divergence on join via invitation** ([#2292](https://github.com/calimero-network/core/pull/2292)) — pre-existing bug surfaced by A1's `groupStateHash` field. `join_group.rs:97-98` pre-populated `target_application_id = ZERO`, while inviters had the real value. Inheritance via `create_group_in_namespace` propagated the divergence to subgroups. Fixed by extending `SignedGroupOpenInvitation` with an unsigned `application_id` field. Lands with the e2e migration PR.
 
 ---
 
@@ -106,7 +110,9 @@ The following questions were considered and decided; they are recorded in §2 an
 
 ---
 
-#### A1 — Expose `group_state_hash` on group info admin API + rename context's `root_hash`
+#### ✅ A1 — Expose `group_state_hash` on group info admin API + rename context's `root_hash`
+
+**Status**: **Done** — landed in [calimero-network/core#2289](https://github.com/calimero-network/core/pull/2289) (and paired client-py [#43](https://github.com/calimero-network/calimero-client-py/pull/43)/[#44](https://github.com/calimero-network/calimero-client-py/pull/44), merobox [#223](https://github.com/calimero-network/merobox/pull/223)/[#224](https://github.com/calimero-network/merobox/pull/224)/[#225](https://github.com/calimero-network/merobox/pull/225)). Calimero rc.35 ships the rename + new field.
 
 **Phase**: 1 · **Size**: S · **Depends on**: — · **Blocks**: A2, A3, E1, E2
 
@@ -147,7 +153,9 @@ The following questions were considered and decided; they are recorded in §2 an
 
 ---
 
-#### A2 — Extend `wait_for_sync` to support governance convergence
+#### ✅ A2 — Extend `wait_for_sync` to support governance convergence
+
+**Status**: **Done** — landed in [calimero-network/merobox#223](https://github.com/calimero-network/merobox/pull/223) + [#224](https://github.com/calimero-network/merobox/pull/224) (extension + cleanup) + [#225](https://github.com/calimero-network/merobox/pull/225) (client-py 0.6.7 pin). First migration of an existing e2e workflow (group-leave-member) opened in [#2292](https://github.com/calimero-network/core/pull/2292), which also fixed a pre-existing subgroup state-hash divergence bug uncovered by the migration.
 
 **Phase**: 1 · **Size**: M (release cascade) · **Depends on**: A1 · **Blocks**: e2e tests for any governance-related work
 
