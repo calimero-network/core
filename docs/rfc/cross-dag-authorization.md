@@ -78,6 +78,18 @@ The roadmap's foundational issues (B1, B2, B3, C1, C2, C4) are concrete primitiv
 23. **TEE redundancy is load-bearing, not deferred.** With the trusted-anchor set including `ReadOnlyTee` members, Owner becomes an availability convenience rather than a liveness requirement. Multiple TEE replicas can be placed close to user regions and balance sync load. Owner key compromise alone is not catastrophic if TEE attestations independently vouch for the same state. **Reverses the prior U4 deferral** — TEE is in scope for v1; the existing `TeeAdmissionPolicy` is the implementation gate, no new mechanism needed.
 24. **Practical resolution of the §6.1 long-range surface.** The historical "Byzantine X with old keys forges deltas, sneaks them in via sync from a malicious relay" attack collapses under decision #22. Forged deltas can only enter the namespace through (a) Owner serving them (Owner is honest by definition), (b) a TEE-attested peer serving them (attestation gates this), or (c) plain gossip (D1 + B3 reject). Bound on the long-range surface becomes "Owner OR all TEE attestations OR all honest peers' D1/B3 simultaneously compromised" — a much higher bar than "any malicious peer can amplify forgeries via sync."
 
+**Anchor-attested canonical state on removal**
+
+25. **`MemberRemovedOp` and `MemberLeftOp` carry `expected_state_hash_after_apply: [u8; 32]`** — admin (or leaver) signs the canonical state hash representing their local view *after* applying the removal. Receivers verify their own post-apply local state hashes to the same value. **Mismatch → reconcile.** This subsumes the C5 snapshot-sealing role: every removal op is an implicit signed snapshot. Replaces the earlier "state-DAG cut enumeration" idea with a single 32-byte hash — equivalent strength, dramatically simpler.
+26. **Reconciliation strategy on hash mismatch — local replay OR sync from anchor.** If the receiver's post-apply state hash matches the signed value, no reconciliation needed. If it doesn't (the receiver applied X-deltas in flight that admin's view didn't include, or the receiver missed deltas admin had), the receiver chooses based on a local cost heuristic:
+    - **Local replay** when the diff is small (recent snapshot exists, few intervening ops): walk the local state DAG, drop the X-authored deltas not in admin's view, replay forward, verify match.
+    - **Sync from anchor** (Owner/TEE per #22) when replay would be expensive: request the canonical state, verify against the signed hash, adopt directly.
+    - **Stay diverged** if no anchor reachable AND replay is infeasible: the mismatch is detectable; rebuild via C6 is the operator's recourse.
+
+    Both reconciliation paths converge to the same `expected_state_hash_after_apply`. The decision is local and deterministic; two peers may pick differently and still reach the same state.
+
+27. **Sync verification: defense-in-depth on cheap per-delta crypto, trust anchor for the expensive checks.** When a receiver adopts canonical state from an anchor (#26 heavy path), they re-verify the cheap, idempotent per-delta properties — Ed25519 signatures, nonce monotonicity per signer, HLC monotonicity per signer, User-storage entry signatures (Ed25519 against claimed owner), per-entry content hashes — then verify the final state hash matches the anchor's signed `expected_state_hash_after_apply`. The expensive checks (B3 membership-at-`governance_position`, ADR-0001 `writers_at(parents)` for Shared storage) are **trusted by virtue of the signed state hash** — anchor's signature attests they ran them correctly. Defense-in-depth: anchor compromise that propagates forged signatures or unsigned User entries is caught by the cheap checks and the final hash mismatch. Trust-root compromise (decision #13) is mitigated by multi-anchor agreement (decision #23 + E3), not by re-running B3 on every sync.
+
 ## 3. Phases & sequencing
 
 Reorganized around the **unification thesis** (§2 decisions 20-21): the load-bearing work is the cross-DAG primitive; everything else is layered defense or cleanup of patchwork the primitive subsumes.
@@ -311,45 +323,66 @@ The following questions were considered and decided; they are recorded in §2 an
 
 ---
 
-#### C1 — Admin-signed deterministic cut on `MemberRemoved`
+#### C1 — Admin-signed deterministic cut + canonical state hash on `MemberRemoved`
 
-**Phase**: 3 · **Size**: M · **Depends on**: B1, B3 · **Blocks**: C3, C4, C5, D3
+**Phase**: 3 · **Size**: M · **Depends on**: B1, B3 · **Blocks**: C3, C4, D3
 
-**Summary**: Embed the cut position explicitly inside the signed `MemberRemoved` op (rather than letting it be implicit at each peer's apply-time). All peers evaluate B3's validity rule against the same embedded cut value, even if their governance DAG views differ.
+**Summary**: Embed two signed claims inside `MemberRemovedOp`: (1) the **governance-DAG cut** so every peer evaluates B3's validity rule against the same value, and (2) the **expected post-apply state hash** so every peer can verify their local view converges with the admin's canonical view. Together these resolve the apply-lag race AND the late-arriving-delta divergence in one signed envelope. Replaces the earlier C1+C5 combo with a single, simpler primitive.
 
 **Scope**:
-- Add `cut: GovernancePosition` field to `MemberRemovedOp`
-- Admin computes cut at sign time
-- B3 uses `MemberRemovedOp.cut` for the descend-from check, not `position_of(op)`
-- Hard cut, no backwards compat for old-shape `MemberRemoved` (per §2.17)
+```rust
+pub struct MemberRemovedOp {
+    pub group_id: ContextGroupId,
+    pub removed_member: PublicKey,
+    pub cut: GovernancePosition,                       // governance-DAG cut (B3 descend-from check)
+    pub expected_state_hash_after_apply: [u8; 32],     // canonical state hash post-apply (decision #25)
+    pub admin_signature: Signature,
+}
+```
+
+- Admin computes both fields at sign time:
+  - `cut` = governance-DAG position of this op
+  - `expected_state_hash_after_apply` = `compute_state_root_hash(local_state)` after admin runs apply locally
+- Receivers verify:
+  - B3 uses `MemberRemovedOp.cut` for the descend-from check
+  - After apply, compute local state hash, compare to signed value
+  - On match: convergence achieved naturally
+  - On mismatch: reconcile per decision #26 — local replay (cheap path) or sync from anchor (heavy path); both verify the result against the signed hash before adopting
+- Hard cut, no backwards compat for old-shape `MemberRemoved` (per §2.19)
 
 **Acceptance criteria**:
-- New field present and signed
+- New fields present and signed
 - Concurrent-partition test: peers on different governance DAG positions evaluate the same answer for a given delta
+- [T₂, T₃] divergence test: a peer that applied X-deltas during partition catches up, computes mismatched state hash, reconciles via anchor sync, reaches canonical state
+- Sync verification test: cheap per-delta crypto checks (sigs, nonces, HLCs, User-storage entry sigs) run on synced data; final hash compared (decision #27)
+- Tampered-anchor test: synced data with a forged signature → caught by per-delta verification → sync rejected, no state adopted
 
 **Open questions**: none — U14 resolved (no backwards compat).
 
-**References**: §2 decision 5 (cut declarations)
+**References**: §2 decisions 5, 25, 26, 27
 
 ---
 
-#### C2 — Self-signed `MemberLeft` cut
+#### C2 — Self-signed `MemberLeft` cut + canonical state hash
 
 **Phase**: 3 · **Size**: S · **Depends on**: B1 · **Blocks**: —
 
-**Summary**: For voluntary departures, the leaver embeds their own `governance_position` at sign time. No admin gating. Forward-only applies the same way as for `MemberRemoved`.
+**Summary**: For voluntary departures, the leaver embeds their own `governance_position` AND `expected_state_hash_after_apply` at sign time, mirroring C1's structure. No admin gating; the leaver is honest by definition for self-leave (a Byzantine leaver claiming false canonical state hash is detected by other peers' hash verification — they'd reconcile against admin's canonical view via subsequent governance ops anyway).
 
 **Scope**:
-- Add `cut: GovernancePosition` field to `MemberLeftOp`
-- Leaver computes at sign time
+- Add both `cut: GovernancePosition` and `expected_state_hash_after_apply: [u8; 32]` to `MemberLeftOp`
+- Leaver computes both at sign time
+- Receivers verify their post-apply state hash; reconcile if mismatch (per decision #26)
 - B3 honors leaver-signed cut as authoritative for "X is no longer a writer"
+- S7 cleanup: route through symmetric rotation path so MemberLeft also rotates the key (same envelope mechanism as MemberRemoved)
 
 **Acceptance criteria**:
-- Self-leave test: leaver's pre-leave writes preserved on all peers
+- Self-leave test: leaver's pre-leave writes preserved on all peers (forward-only)
 - Self-leave test: post-leave writes from same identity rejected
+- State-hash convergence test: peers that received different sets of leaver's in-flight deltas converge to the signed canonical state via reconciliation
 - Composes with existing `leave_context` / `leave_group` infra from #2280
 
-**References**: §5.5 of design doc, [Membership & Leave architecture](../architecture/membership-and-leave.html)
+**References**: §2 decisions 5, 25, 26, 27, [Membership & Leave architecture](../architecture/membership-and-leave.html)
 
 ---
 
@@ -398,17 +431,17 @@ The following questions were considered and decided; they are recorded in §2 an
 
 ---
 
-#### C5 — Owner-signed snapshots for bounded rebuild
+#### C5 — Owner-signed periodic state-hash refreshes (significantly demoted)
 
-**Phase**: 3 · **Size**: L · **Depends on**: C1 · **Blocks**: C6
+**Phase**: 4 · **Size**: M · **Depends on**: C1 · **Blocks**: C6
 
-**Summary**: Periodic snapshots of group state, signed by Owner. Two uses: bounded rebuild from corruption, and bootstrap floor (deltas claiming pre-snapshot `governance_position` are rejected).
+**Summary**: Originally scoped as "periodic Owner-signed snapshots that double as a bootstrap floor + fabrication-bound for the §6.1 long-range surface." After decision #25 (every removal op carries `expected_state_hash_after_apply`), most of that role is subsumed by C1/C2 — every removal IS a signed snapshot point. **C5 reframes as: occasional Owner-signed refresh hashes for the long stretches *between* removals**, so newly-bootstrapped peers and corrupted-state recoveries have a recent canonical hash to verify against. **No longer load-bearing for the §6.1 forgery surface** — that role moved to decisions #25-27.
 
 **Scope**:
-- Snapshot data structure (state hash + governance DAG cut + Owner signature)
-- Periodic / triggered creation (U7)
-- Snapshot replay primitive
-- Bootstrap floor enforcement in B3
+- Owner can sign `{group_id, governance_position, expected_state_hash, timestamp}` and gossip as a `RefreshHash` op
+- Cadence is admin-triggered, not periodic by default (saves bandwidth on quiet groups; #U7 closed)
+- Receivers verify their local state hash matches; reconcile via #26 if mismatch
+- Used by C6 rebuild tool as a recovery anchor
 
 **Acceptance criteria**:
 - Owner can produce a valid signed snapshot
@@ -805,14 +838,14 @@ A member of the group whose role is currently authorized but who is acting in ba
 |---|---|---|
 | Forge ops they're not authorized for (Member acts as Admin) | Signature verification — only Admin signing key can sign Admin ops; signer's role checked at apply | ✅ Existing crypto + role check |
 | Submit deltas with bogus `governance_position` | B3 verifies `state_hash` claim against canonical history; mismatch → reject | ✅ B3 |
-| Submit valid-but-harmful state data (CRDT garbage, storage flood) | App-layer concern, not protocol authz — see §8.3 | ⚠️ App responsibility |
+| Submit valid-but-harmful state data (CRDT garbage, storage flood) | App-layer concern, not protocol authz — see §8.4 | ⚠️ App responsibility |
 | Spam writes (rate-based) | D4 per-peer rate limits | ✅ D4 (deferred but designed) |
 | Replay old ops to confuse state | State DAG dedup by `delta_id` (content hash); HLC + nonce monotonicity | ✅ Existing CRDT semantics |
 | Frame other peers (claim someone else's signature) | Signature verification — can't forge another peer's signature without their privkey | ✅ Existing crypto |
 | Cause divergence via partition timing | Forward-only validity rule — same answer on every peer regardless of arrival order | ✅ Forward-only / B3 |
 | Withhold gossip / refuse to relay | Gossipsub mesh redundancy + scoring per libp2p | ✅ Existing libp2p |
 | Spam invitations / membership ops | Role-gated apply path + D4 rate limits | ✅ Role check + D4 |
-| Steal another peer's identity (key compromise) | Not protocol-level — see §8.3 | ⚠️ Key custody |
+| Steal another peer's identity (key compromise) | Not protocol-level — see §8.4 | ⚠️ Key custody |
 
 ### 8.2 Removed member with malicious intent
 
@@ -831,11 +864,118 @@ A member whose membership row is gone (via `MemberRemoved` or `MemberLeft`) but 
 | **§6.1 long-range:** retain K0, sign new deltas claiming pre-cut `governance_position`, smuggle in via apply-lag windows | Bounded by decision #22 + D1 + decision #8 + C5 snapshot sealing — **not eliminated, but reduced to small windows** | ⚠️ §6.1, **bounded** |
 | DoS via volume | D1 drops removed-member gossip; D4 rate limits any peer | ✅ D1 + D4 |
 
-### 8.3 What's NOT covered (and why)
+### 8.3 Concrete scenarios — partition + removal
+
+The combination of decisions #25 (signed canonical state hash on removal), #26 (replay-or-sync reconciliation), and #27 (sync verification model) resolves several otherwise-tricky scenarios. Walking through them explicitly because they're the load-bearing cases.
+
+#### 8.3.1 The cryptographic split-brain when MemberRemoved partitions
+
+Three nodes; admin publishes `MemberRemoved {X}` at governance position H_remove. The op carries (a) the encrypted `MemberRemoved` itself, (b) the per-current-member rotation envelopes for new key K1, and (c) signed `expected_state_hash_after_apply`.
+
+Scenario: A and B receive the op and apply. C is partitioned and doesn't.
+
+| | Has K1 | Has K0 | Applied MemberRemoved | Knows expected hash |
+|---|---|---|---|---|
+| A, B (post-apply) | ✓ | ✓ (until D3 grace) | ✓ | ✓ |
+| X (removed) | ✗ (no envelope) | ✓ | ✗ | ✗ |
+| C (partitioned) | ✗ | ✓ | ✗ | ✗ |
+
+**Reads**: A↔B works (both have K1). A→C and B→C fail to decrypt at C (C lacks K1). C→A and C→B succeed during D3 grace (A/B still have K0 in keyring), fail after grace.
+
+**Self-isolation property**: once D3 grace expires on A/B, C is fully cryptographically isolated. C's K0-encrypted writes can't be decrypted. C's reads of new K1-encrypted writes fail. The partitioned peer KNOWS something is wrong via decryption failures — clear signal to operators.
+
+**Self-healing property**: when C eventually receives `MemberRemoved` (via gossipsub backfill, sync from anchor, or partition heal):
+1. C extracts the rotation envelope addressed to C (it was wrapped at sign time, when C was still a member)
+2. ECDH-unwraps to get K1
+3. Stores K1 in keyring; K0 stays during C's own D3 grace
+4. C can now decrypt all K1-encrypted traffic
+
+Cascading rotations (e.g., another member removed during C's partition) chain causally — C applies them in DAG order, each rotation produces the next key. C eventually arrives at K_current.
+
+#### 8.3.2 The [T₂, T₃] divergence: legitimate writes from X during partition
+
+This is the harder scenario. Even with self-healing crypto:
+
+- T₀: admin publishes MemberRemoved
+- T₁ = T₀ + ε: A and B apply, rotate K0→K1
+- T₂ = T₁ + D3_grace: A and B drop K0 from keyring
+- T₃: C catches up
+
+The window [T₂, T₃] is where forward-only validity and the encryption layer pull in opposite directions:
+
+- **X publishes a state delta D in [T₂, T₃]** (legitimate or Byzantine — same observable behavior)
+- **A and B**: K1 is current; K0 is dropped. D was K0-encrypted. Decryption fails. **Drop silently.**
+- **C** (still on K0, hasn't applied MemberRemoved): D decrypts fine. B3 says forward-only valid (D's `governance_position` predates the cut). **Apply.**
+
+Naively, C diverges from A and B: C applied D, A and B don't have it. After T₃ when C catches up, the divergence persists in C's local state.
+
+**Resolution via #25-27**: when C applies `MemberRemoved` at T₃, it computes its own state hash and compares to the signed `expected_state_hash_after_apply`:
+
+- C's state hash includes D's effects.
+- Admin's signed hash does NOT (admin's view didn't include D when signing).
+- **Mismatch detected.**
+
+C then reconciles per decision #26:
+
+- **Local replay** (cheap path) if C can identify the delta(s) admin's view didn't include — drop them, replay forward, verify hash matches.
+- **Sync from anchor** (heavy path) if replay would be expensive — request canonical state from Owner/TEE, verify against signed hash, adopt directly.
+
+Either way, C ends at the canonical post-apply state. **Convergence achieved.**
+
+The trade-off explicit in this design: legitimate late-arriving pre-cut writes from X that didn't reach admin in time **are dropped from the canonical state**. Admin's view at sign time defines what's canonical. C's interim apply of D was reasonable, but ultimately overridden by admin's signed claim.
+
+For deployments where this trade-off is unacceptable (e.g., partition-prone networks where many legitimate late-arrivals are expected), longer D3 grace + more anchor replicas reduces the [T₂, T₃] window. The design accepts that the trade-off can't be eliminated entirely — see §8.5 for the bounded residual.
+
+#### 8.3.3 Sync verification — defense-in-depth on cheap crypto, trust anchor for B3
+
+When C reconciles via "sync from anchor" (decision #26 heavy path), the anchor sends the canonical state tree. C must verify the sync is real before adopting.
+
+**What C verifies (cheap, always)**:
+
+| Check | Cost | Catches |
+|---|---|---|
+| Each delta's Ed25519 signature against claimed signer | ~µs per delta | Forged attribution; anchor-injected unsigned data |
+| Per-delta nonce monotonicity per signer | O(1) per delta | Replay; out-of-order injection |
+| Per-delta HLC monotonicity per signer | O(1) per delta | Non-causal ordering |
+| Each User-storage entry's signature (Ed25519 against claimed owner) | ~µs per entry | User-storage forgery — User storage's authentication model IS this signature |
+| Each entry's content hash matches claimed hash | O(content size) | In-transit tampering |
+| Final state root hash matches signed `expected_state_hash_after_apply` | O(1) | Anchor-data inconsistency or any of the above slipping through |
+
+**What C trusts the anchor for (expensive, signed)**:
+
+| Check | Why trusted |
+|---|---|
+| B3 membership-at-`governance_position` for each delta | Re-verifying requires walking governance DAG history at every delta's claimed position — that's the entire replay cost. Anchor's signature on `expected_state_hash_after_apply` IS the attestation that they ran B3 correctly. |
+| ADR-0001 `writers_at(parents)` causal writer-set checks for Shared storage | Same cost reasoning. |
+| Forward-only correctness | Implicit in B3; covered by the same signed attestation. |
+
+**Two attack classes to consider**:
+
+- **Class 1: Compromised anchor sends bad data** (forged signature, unsigned User entry, tampered content). Caught by the cheap verifications. Even if the anchor's signed hash matches their bad data, the per-delta sig check fails locally → sync rejected, no state adopted.
+- **Class 2: Compromised anchor pre-validates incorrectly** (anchor accepted a forgery during their own apply). Not caught by cheap verifications — the data is cryptographically valid, just shouldn't have been authorized. Mitigation: multi-anchor agreement (decision #23 + E3) — if multiple TEE-attested anchors independently agree on the same `expected_state_hash_after_apply`, the attack has to compromise all of them.
+
+For single-anchor deployments, Class 2 is the trust-root assumption (decision #13). For multi-anchor deployments, it requires concurrent compromise across diverse hardware. Decision #23 makes this the design's hardening recommendation for production.
+
+#### 8.3.4 Recovery from a state where reconciliation isn't possible
+
+If C is partitioned long enough that:
+- D3 grace expires on A/B (so X's K0-encrypted late writes can't even be decrypted on A/B)
+- C applied many local-only deltas (large divergence)
+- Anchor unreachable (E1/E3 fall back paths exhausted)
+
+C is in the "we don't care if they're fucked" state per decision #22. Recovery is not protocol-automatic — operator-driven via the C6 rebuild tool:
+
+1. Operator detects the divergence (state hash mismatch logged loudly)
+2. Operator runs the rebuild tool (C6) — wipes local state, re-bootstraps from anchor, re-applies from a fresh canonical state
+3. C is back in sync; local-only deltas are lost (acknowledged trade-off)
+
+The protocol's role is to make divergence **detectable and recoverable**, not to auto-reconcile under all conditions. Manual operator intervention via C6 is the documented escape hatch.
+
+### 8.4 What's NOT covered (and why — application-layer & trust-root concerns)
 
 The threat surface above is what the **protocol authorization layer** addresses. Several other concerns sit outside this layer by design:
 
-#### 8.3.1 Application-layer harmful data (valid-but-bad payloads)
+#### 8.4.1 Application-layer harmful data (valid-but-bad payloads)
 
 **Out of scope for cross-DAG authz.** The protocol layer answers *"who can write?"* — applications answer *"what they can write."*
 
@@ -861,7 +1001,7 @@ What the application has to do:
 
 This is the same trade-off any blockchain or distributed-system makes: protocol authz is "who can write," application logic is "what they can write." Conflating them creates either a protocol that's too rigid for arbitrary apps, or an application logic that has to re-implement signature verification.
 
-#### 8.3.2 End-user private key compromise
+#### 8.4.2 End-user private key compromise
 
 **Out of scope for protocol authz.** Calimero is signature-based; if an adversary obtains a member's private key, the adversary IS that member from the protocol's perspective.
 
@@ -873,7 +1013,7 @@ Mitigations live at the **key management layer** (also app/user responsibility):
 
 If you suspect compromise, the in-protocol response is `MemberRemoved` (admin removes the compromised identity), which then triggers all the layered defenses above.
 
-#### 8.3.3 Owner key compromise
+#### 8.4.3 Owner key compromise
 
 **The trust assumption itself.** Calimero builds on Owner-as-trust-root (decision #13). If Owner's key is compromised, the whole namespace is compromised — including any key rotations, snapshots, transfers, or grants signed during the compromise window.
 
@@ -891,7 +1031,7 @@ Practical hardening:
 
 This is the same trade-off as any PKI: ultimate trust roots are points of catastrophic failure if compromised; mitigations focus on making compromise hard and detectable, not impossible.
 
-#### 8.3.4 Simultaneous compromise of all TEE attestations
+#### 8.4.4 Simultaneous compromise of all TEE attestations
 
 **Extremely unlikely but possible.** If every TEE in the deployment is compromised AND Owner is compromised, decision #22's trust anchor falls. No protocol mechanism survives this.
 
@@ -903,31 +1043,31 @@ Practical hardening:
 
 These are deployment hardening recommendations, not protocol features.
 
-#### 8.3.5 Application-side replays of valid old data via legitimate writes
+#### 8.4.5 Application-side replays of valid old data via legitimate writes
 
 **Out of scope for cross-DAG authz.** If a member legitimately writes "alice voted yes" twice (with two different valid HLCs), the protocol applies both — but the application has to decide whether that's idempotent or a bug.
 
-Mitigations live at the **application data model** layer (same as §8.3.1):
+Mitigations live at the **application data model** layer (same as §8.4.1):
 
 - Use a `Set` instead of a counter for "has voted" semantics
 - Use idempotent ops (`upsert`-style)
 - Application-side dedup via a content-keyed log
 
-#### 8.3.6 Out-of-band attacks (denial of service against the network, censorship at the libp2p layer, social engineering)
+#### 8.4.6 Out-of-band attacks (denial of service against the network, censorship at the libp2p layer, social engineering)
 
 Not authorization concerns. libp2p / gossipsub provides standard mitigations (peer scoring, mesh diversity, IHAVE/IWANT message reconciliation). Social engineering and OOB attacks are user-education concerns.
 
-### 8.4 Summary
+### 8.5 Summary
 
 | Threat class | Coverage |
 |---|---|
 | Malicious active member, protocol-level attacks | ✅ Fully covered (B3 + signature + role + forward-only + D4 + key rotation) |
 | Malicious removed member, protocol-level attacks | ✅ Fully covered except §6.1 long-range, which is **bounded** by decision #22 + #8 + C5 + D1 |
-| Application-layer "valid-but-harmful" data | ⚠️ Out of scope; mitigated by data structure design (§8.3.1) |
-| End-user key compromise | ⚠️ Out of scope; mitigated by key management hygiene (§8.3.2) |
-| Owner key compromise | ⚠️ Trust assumption; **bar raised** by TEE redundancy (decision #23); mitigated by hardware-backed keys (§8.3.3) |
-| Simultaneous TEE attestation compromise | ⚠️ Trust assumption; mitigated by diverse hardware + re-attestation (§8.3.4) |
-| Application-side semantic replays | ⚠️ Out of scope; data structure design problem (§8.3.5) |
-| Out-of-band attacks (DoS, social) | ⚠️ Not authorization concerns; libp2p + user education (§8.3.6) |
+| Application-layer "valid-but-harmful" data | ⚠️ Out of scope; mitigated by data structure design (§8.4.1) |
+| End-user key compromise | ⚠️ Out of scope; mitigated by key management hygiene (§8.4.2) |
+| Owner key compromise | ⚠️ Trust assumption; **bar raised** by TEE redundancy (decision #23); mitigated by hardware-backed keys (§8.4.3) |
+| Simultaneous TEE attestation compromise | ⚠️ Trust assumption; mitigated by diverse hardware + re-attestation (§8.4.4) |
+| Application-side semantic replays | ⚠️ Out of scope; data structure design problem (§8.4.5) |
+| Out-of-band attacks (DoS, social) | ⚠️ Not authorization concerns; libp2p + user education (§8.4.6) |
 
 The honest framing: **all protocol-level attack surfaces are covered or bounded by design.** The remaining risks are application-layer concerns where Calimero deliberately delegates to the application's data model, or trust-assumption concerns where the design RAISES the bar (decision #23) but cannot eliminate the inherent risk of any cryptographic trust root.
