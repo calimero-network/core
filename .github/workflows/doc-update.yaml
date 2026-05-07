@@ -1,5 +1,17 @@
 name: Doc Auto-Update
 
+# Inlined from calimero-network/ai-code-reviewer reusable workflow at
+# SHA 71b0895c1908504b18f07f2856adfc9c8c8d1e4e, with one fix:
+# `cache: pip` removed from `actions/setup-python@v5`. The upstream sets
+# it unconditionally, but setup-python's pip cache requires a
+# requirements.txt or pyproject.toml in the calling repo — neither
+# exists here (core is Rust), so every run failed with:
+#   No file in /home/runner/work/core/core matched to
+#   [**/requirements.txt or **/pyproject.toml]
+# Tracked for an upstream fix; once that lands and we bump the pinned
+# install SHA, this can revert to a thin caller invoking the reusable
+# workflow.
+
 on:
   push:
     branches: [main, master]
@@ -23,13 +35,62 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  doc-update:
-    # Pinned to a specific SHA on calimero-network/ai-code-reviewer (which
-    # uses `master`, not `main`) to prevent an upstream change from running
-    # with this repo's GH_PAT. Bump deliberately when adopting new features.
-    uses: calimero-network/ai-code-reviewer/.github/workflows/doc-update.yaml@71b0895c1908504b18f07f2856adfc9c8c8d1e4e
-    with:
-      dry_run: ${{ github.event.inputs.dry_run == 'true' }}
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GH_PAT: ${{ secrets.GH_PAT }}
+  update-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # NOTE: `cache: pip` deliberately omitted — see file-level comment.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Pinned to the same SHA as ai-review.yaml so both workflows install
+      # the audited version of ai-code-reviewer. Bump deliberately.
+      - name: Install ai-code-reviewer
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@71b0895c1908504b18f07f2856adfc9c8c8d1e4e
+
+      - name: Get merged PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          # Prefer explicit input (workflow_dispatch), then commit message, then gh CLI
+          PR_NUM="${{ github.event.inputs.pr_number }}"
+
+          if [ -z "$PR_NUM" ]; then
+            MSG="${{ github.event.head_commit.message }}"
+            PR_NUM=$(echo "$MSG" | grep -oP '(?<=pull request #)\d+' | head -1 || true)
+          fi
+
+          if [ -z "$PR_NUM" ]; then
+            PR_NUM=$(gh pr list \
+              --repo "${{ github.repository }}" \
+              --state merged \
+              --base "${{ github.event.repository.default_branch }}" \
+              --limit 1 \
+              --json number \
+              -q '.[0].number' 2>/dev/null || true)
+          fi
+
+          echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
+
+      - name: Generate and open doc update PR
+        if: steps.pr.outputs.number != ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          ai-reviewer update-docs "${{ github.repository }}" "${{ steps.pr.outputs.number }}" $DRY_RUN_FLAG
+
+      - name: No PR detected
+        if: steps.pr.outputs.number == ''
+        run: echo "Could not detect a merged PR — skipping doc update."
