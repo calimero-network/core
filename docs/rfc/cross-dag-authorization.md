@@ -30,6 +30,8 @@ These are decided. Don't relitigate inside individual issues.
 8. **Bootstrap pins to Owner / TEE peer.** Late joiner dials Owner by peer-id; libp2p handshake authenticates that the responder holds the corresponding private key. TEE peer is a redundancy alternative. Multi-source bootstrap is the fallback when Owner/TEE is unreachable.
 9. **Snapshots are scoped to recovery, not long-range defense.** Owner-signed (single-sig). Bound rebuild scope; provide a bootstrap floor for stale-position rejection.
 10. **No quorum / M-of-N voting / multisig anywhere.** This is a hard constraint, not a preference. See `out of scope`.
+11. **Owner-anchored bootstrap is the durable trust model — light-client / proof-based verification is not a target use case.** Late joiners trust Owner's signed answer (verified via libp2p peer-id auth); we do not need inclusion/exclusion proofs against group state. This drives several downstream decisions, including keeping `compute_group_state_hash` as flat SHA-256 (no Merkle refactor).
+12. **Layered hashes, not unified — and reuse one Merkle primitive only where actually needed.** `compute_group_state_hash` (governance, flat SHA-256), `Snapshot::root_hash` (state, existing storage Merkle via `Index<S>`), and `governance_dag_root` (existing) stay independent and update at their own rates. `NamespaceMerkle` (A3) composes them hierarchically using a small reusable Merkle primitive that is **extracted on-demand when A3 lands, not speculatively**. Storage `Index<S>` is left untouched (hot path, well-tested, in-scope independently per #2238).
 
 ## 3. Phases & sequencing
 
@@ -51,7 +53,7 @@ These are decided. Don't relitigate inside individual issues.
 | **U1** | **Wire-format breaking change strategy.** Versioned protocol message vs. hard cut at a release boundary? How are in-flight deltas authored under the old shape handled during the rollout window? | B1 | Design call; coordinate with release manager. Probably hard cut at a release with explicit upgrade notes. |
 | **U2** | **Governance state history storage.** B3 needs to look up "was X a member at state hash H?" — requires retaining a ring buffer of recent group state hashes → membership snapshots. How big? Eviction policy? Replay-from-checkpoint strategy when the lookup target is older than the buffer? | B3 | Discovery as part of B3. Reasonable default: ring buffer of last 1000 governance ops, replay from genesis if older. Storage cost analysis needed. |
 | **U3** | **HLC semantics for `governance_position.applied_at`.** D2 time-window needs a concrete clock semantic. Is `applied_at` the peer-local wall-clock time of apply, or an HLC timestamp embedded in the governance op itself? Local time means each peer evaluates the window differently — leak surface. Op-included HLC means the admin's clock is authoritative — different leak surface. | D2 | Design call. Lean toward op-included HLC (consistent with the rest of the rule being a pure function of governance state). |
-| **U4** | **TEE peer designation for bootstrap (E1's TEE branch).** Is `ReadOnlyTee` role sufficient, or do we need an explicit "trusted bootstrap source" flag? How is the TEE peer's hardware attestation surfaced to a joining peer that wants to verify it? | E1 (TEE part — Owner part is independent) | Discovery as part of E1. May defer TEE branch to a follow-up if `ReadOnlyTee` is insufficient. |
+| **U4** | **TEE peer designation for bootstrap (E1's TEE branch).** Is `ReadOnlyTee` role sufficient, or do we need an explicit "trusted bootstrap source" flag? How is the TEE peer's hardware attestation surfaced to a joining peer that wants to verify it? | E1 (TEE part only — Owner part is independent and can ship first) | **Decision: defer the TEE branch entirely as a follow-up RFC.** E1 ships with Owner-only bootstrap in v1. TEE redundancy can be designed once attestation infra in the broader Calimero ecosystem stabilizes. |
 
 ### 4.2 Per-issue design questions — resolve during the issue's discovery phase
 
@@ -125,19 +127,23 @@ These are decided. Don't relitigate inside individual issues.
 
 **Phase**: 4 · **Size**: L · **Depends on**: A1, B1, C1 · **Blocks**: —
 
-**Summary**: Single hash that covers `meta + members + governance_dag_root + subgroups + contexts` for a namespace. Lets a peer detect whole-subtree convergence in one comparison instead of walking each context individually.
+**Summary**: Composite hash that covers `meta + members_root + governance_dag_root + snapshot_root + child_namespace_roots` for a namespace. Lets a peer detect whole-subtree convergence in one comparison instead of walking each context individually. Per design decision §2.12, this is the **only** place where we extract a reusable Merkle primitive — leaves are existing flat hashes (`compute_group_state_hash`, `Snapshot::root_hash`, governance_dag_root). No refactor of the leaf hashes; storage `Index<S>` stays untouched.
 
 **Scope**:
-- Define `NamespaceMerkle` struct + hash function
+- Extract a small `MerkleTree` primitive (algorithm only, no persistence): `from_leaves(&[[u8;32]]) → root`, optional `proof(idx)` / `verify(root, proof, leaf)` if needed by future consumers
+- Define `NamespaceMerkle` composer that builds the tree from `[group_state_hash, governance_dag_root, snapshot_root, child_namespace_roots…]` for a given namespace
 - Expose via admin API
-- Update `NamespaceStateHeartbeat` to optionally carry it (post-E2)
+- Update `NamespaceStateBeacon` (E2) to optionally carry it
 
 **Acceptance criteria**:
+- `MerkleTree` primitive is pure-function, no I/O, unit-tested
 - `NamespaceMerkle` is deterministic across peers with the same governance + state
-- Test: drift in a deeply nested context propagates to root hash difference
+- Test: drift in a deeply nested context propagates to namespace root
+- Test: drift in governance state propagates to namespace root
 - API consumers can poll one hash to detect any subtree change
+- **Non-goal:** refactoring `compute_group_state_hash` or `Snapshot::root_hash` to use the new primitive — they stay as-is.
 
-**References**: §3.1, A1, E2
+**References**: §2.11–2.12 (design decisions), §3.1 (state hash), A1, E2
 
 ---
 
@@ -444,27 +450,27 @@ These are decided. Don't relitigate inside individual issues.
 
 ---
 
-#### E1 — Owner / TEE peer-id-authenticated bootstrap endpoint
+#### E1 — Owner peer-id-authenticated bootstrap endpoint
 
 **Phase**: 4 · **Size**: M · **Depends on**: A1 · **Blocks**: E3, E4
 
-**Summary**: Late joiner dials Owner (or TEE peer) by peer-id. libp2p handshake authenticates that the responder holds the corresponding private key — eclipse-resistant because X cannot impersonate Owner. Owner returns: current member set, current state_hash, current governance DAG heads. From there the joiner fetches full state from any current member and verifies against the anchor's state_hash.
+**Summary**: Late joiner dials Owner by peer-id. libp2p handshake authenticates that the responder holds the corresponding private key — eclipse-resistant because a malicious peer cannot impersonate Owner. Owner returns: current member set, current state_hash, current governance DAG heads. From there the joiner fetches full state from any current member and verifies against the anchor's state_hash. **TEE-peer redundancy is deferred per U4 — Owner-only in v1.**
 
 **Scope**:
 - Define bootstrap request/response messages (member set, state hash, governance DAG heads)
-- Owner's peer-id is part of `compute_group_state_hash` (already true per #2284) — joiner extracts from group genesis
-- TEE branch (U4): how is a TEE peer designated? `ReadOnlyTee` role sufficient?
+- Owner's identity is part of `compute_group_state_hash` (already true per #2284) — joiner extracts from group genesis
 - libp2p peer-id authentication is built in; multiaddr discovery via DHT or invite payload is fine because peer-id auth catches mismatch
+- Configurable strict-vs-fallback policy with E3 (U10)
 
 **Acceptance criteria**:
 - Late joiner can bootstrap from Owner peer-id alone
 - Eclipse-attack test: malicious peer cannot impersonate Owner via fake multiaddr (libp2p handshake fails)
-- Stale-Owner attack test: malicious peer serves a doctored governance DAG; joiner's state hash mismatch detected
-- Configurable strict vs fallback policy (U10)
+- Stale-Owner attack test: malicious peer serves a doctored governance DAG; joiner's state hash mismatch against multi-source / beacon corroboration detected
+- Strict-vs-fallback policy is configurable per deployment
 
-**Open questions**: U4 (TEE designation), U10 (default policy)
+**Open questions**: U10 (default policy)
 
-**References**: §6.4 of design doc
+**References**: §6.4 of design doc, U4 decision (TEE deferred)
 
 ---
 
@@ -542,6 +548,9 @@ These are decided. Don't relitigate inside individual issues.
 - **Token-economic incentives or BFT consensus on every governance op.** Calimero is not a public chain.
 - **Full retroactive invalidation of removed-member CRDT contributions.** Forward-only is the realistic stance.
 - **Hardware-backed identity beyond `ReadOnlyTee`.** Out of scope for this work.
+- **Refactoring `compute_group_state_hash` to a Merkle-based hash.** Considered and rejected. Inclusion/exclusion proofs aren't load-bearing under Owner-anchored bootstrap (§2.11), and changing the hash function would invalidate every existing `SignedGroupOp.current_state_hash` reference (per #2284) — migration cost greatly exceeds the marginal value. Stays as flat SHA-256.
+- **Light-client / proof-based verification deployments.** Bootstrap is anchored to Owner / TEE peers (§2.11). If this stops being the durable model, a follow-up RFC can revisit Merkle-leaf hashes.
+- **Unifying storage `Index<S>` Merkle with the new `MerkleTree` primitive (A3).** Same algorithmic shape, different persistence layer; storage Merkle is hot-path and well-tested, refactor cost outweighs the gain. A future cleanup may unify them but is out of scope here.
 
 ---
 
