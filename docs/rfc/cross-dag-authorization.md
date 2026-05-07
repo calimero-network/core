@@ -20,18 +20,47 @@ Calimero runs two logically independent DAGs per group — a governance DAG (mem
 
 These are decided. Don't relitigate inside individual issues.
 
-1. **`governance_position` on every state delta.** A struct `{ group_id, group_state_hash, governance_dag_heads }` embedded in `ContextDagDelta` / `CausalDelta`, replacing the dead `governance_epoch`.
-2. **Validity rule is a pure function of `(delta.governance_position, canonical governance DAG)`.** Same answer on every peer, regardless of apply-time or local clock.
-3. **Buffer-on-unknown.** Receivers buffer state deltas whose `governance_position` references governance heads not yet observed locally. Decision is deferred until governance catches up.
-4. **Forward-only semantic.** Writes from a pre-cut `governance_position` are valid forever, regardless of arrival order or partition path. No retroactive invalidation.
-5. **Cut declarations are per-actor signed, not vote-based.** Forced removal: admin embeds an explicit `cut: GovernancePosition` in the signed `MemberRemoved` op. Voluntary leave: leaver embeds their own `governance_position` in `MemberLeft`.
-6. **Owner override is the recovery path.** Owner can sign `MemberRestored` to reverse an admin's `MemberRemoved`. Replaces what a quorum design would have offered.
-7. **D1 (network-layer deny-list keyed on signer identity) is load-bearing.** Collapses the long-range attack surface to gossip-propagation time of `MemberRemoved`. D2 (time-window), D3 (K0 deprecation), D4 (rate limits) are defense-in-depth.
-8. **Bootstrap pins to Owner / TEE peer.** Late joiner dials Owner by peer-id; libp2p handshake authenticates that the responder holds the corresponding private key. TEE peer is a redundancy alternative. Multi-source bootstrap is the fallback when Owner/TEE is unreachable.
-9. **Snapshots are scoped to recovery, not long-range defense.** Owner-signed (single-sig). Bound rebuild scope; provide a bootstrap floor for stale-position rejection.
-10. **No quorum / M-of-N voting / multisig anywhere.** This is a hard constraint, not a preference. See `out of scope`.
-11. **Owner-anchored bootstrap is the durable trust model — light-client / proof-based verification is not a target use case.** Late joiners trust Owner's signed answer (verified via libp2p peer-id auth); we do not need inclusion/exclusion proofs against group state. This drives several downstream decisions, including keeping `compute_group_state_hash` as flat SHA-256 (no Merkle refactor).
-12. **Layered hashes, not unified — and reuse one Merkle primitive only where actually needed.** `compute_group_state_hash` (governance, flat SHA-256), `Snapshot::root_hash` (state, existing storage Merkle via `Index<S>`), and `governance_dag_root` (existing) stay independent and update at their own rates. `NamespaceMerkle` (A3) composes them hierarchically using a small reusable Merkle primitive that is **extracted on-demand when A3 lands, not speculatively**. Storage `Index<S>` is left untouched (hot path, well-tested, in-scope independently per #2238).
+**Architectural approach — reference-based coupling**
+
+The state DAG (CRDT, high-frequency) depends on the governance DAG (signed log, low-frequency) for authorization. The two are integrated by **reference-based coupling**: each state delta carries a `governance_position` reference to the governance state it was authored against; receivers apply against the **referenced** state, not their current local state. This is the foundational architectural choice of the entire roadmap.
+
+Why reference-based, not synchronous coupling, optimistic-with-rollback, or governance-as-CRDT:
+
+- **Decoupled rates** — state writes don't wait on governance acks; CRDT throughput is unaffected.
+- **Validity is a pure function of `(delta, canonical governance DAG)`** — same answer on every peer regardless of receive order or local clock. This is the property that prevents forks.
+- **Buffer-on-unknown handles asynchrony cleanly** — when a state delta arrives ahead of its referenced governance state, buffer it. Don't apply optimistically (taint cascade) and don't reject (divergence). Wait until governance catches up, then decide.
+- **Forward-only falls out naturally** — pre-cut writes stay valid forever; post-cut writes are rejected forever. No retroactive invalidation, no taint cascade.
+
+The roadmap's foundational issues (B1, B2, B3, C1, C2, C4) are concrete primitives implementing this approach.
+
+**Concrete primitives**
+
+1. **`governance_position` on every state delta** (B1) — `{ group_id, group_state_hash, governance_dag_heads }` embedded in `ContextDagDelta` / `CausalDelta`, replacing the dead `governance_epoch`.
+2. **Buffer-on-unknown** (B2) — receivers buffer state deltas whose `governance_position` references governance heads not yet observed locally. Decision deferred until governance catches up.
+3. **Apply-time membership check via `governance_position`** (B3) — validity is a pure function of `(delta.signer, delta.governance_position, governance DAG)`. Subsumes today's partial `is_read_only_for_context` and extends to `User`-storage actions.
+4. **Forward-only semantic** (C4, baked into B3) — writes from a pre-cut `governance_position` are valid forever, regardless of arrival order or partition path. **Core invariant** — without it, taint cascade returns.
+5. **Cut declarations are per-actor signed, not vote-based.** Forced removal: admin embeds an explicit `cut: GovernancePosition` in the signed `MemberRemoved` op (C1). Voluntary leave: leaver embeds their own `governance_position` in `MemberLeft` (C2).
+6. **Owner override is the recovery path** (C3). Owner can sign `MemberRestored` to reverse an admin's `MemberRemoved`. Replaces what a quorum design would have offered.
+
+**Defenses & bootstrap**
+
+7. **D1 (network-layer deny-list keyed on signer identity) is load-bearing.** Collapses the long-range attack surface to gossip-propagation time of `MemberRemoved`. **Per-group scope** — same signer identity can legitimately be a member of multiple groups. Implemented with a per-signer reverse index for lookup efficiency.
+8. **D2 (time-window validity) is dropped, not deferred.** D1 covers the long-range surface; D2 was defense-in-depth against D1 implementation bugs. The right response to "what if D1 has bugs" is "test D1 properly," not "build a parallel defense system." Pre-1.0 break-freely lets us add D2 later if D1 has empirical gaps.
+9. **D3 (K0 deprecation after `MemberRemoved` + grace) is independent of D1** — closes the encryption channel after grace. Earns its keep against malicious *active* members using K0 maliciously after rotation.
+10. **Bootstrap pins to Owner peer.** Late joiner dials Owner by peer-id; libp2p handshake authenticates the responder holds the corresponding private key. **Strict default** — block bootstrap if Owner is unreachable. Per-deployment override flag (`bootstrap_fallback: bool`) opts into multi-source fallback (E3). Per-namespace policy is a v2 follow-up. **TEE redundancy is deferred entirely as a follow-up RFC.**
+11. **`NamespaceStateBeacon` is a new broadcast variant**, not an extension of the existing `NamespaceStateHeartbeat`. Decouples high-frequency unsigned liveness pings from lower-frequency signed bootstrap-relevant beacons. Heartbeat stays cheap and informational; beacon is signed and load-bearing for E2 / bootstrap convergence detection.
+12. **Snapshots are scoped to recovery, not long-range defense.** Owner-signed (single-sig). Bound rebuild scope; provide a bootstrap floor for stale-position rejection.
+
+**Trust model & hashes**
+
+13. **Owner is mandatory at group genesis.** Already enforced functionally — Owner immune to involuntary removal, cannot self-leave (must `TransferOwnership` first per `crates/context/src/group_store/mod.rs:1039`), included in `compute_group_state_hash`. C3, E1, E4 assume this without fallback.
+14. **Owner-anchored bootstrap is the durable trust model — light-client / proof-based verification is not a target use case.** Late joiners trust Owner's signed answer (verified via libp2p peer-id auth); we do not need inclusion/exclusion proofs against group state. Drives several downstream decisions including keeping `compute_group_state_hash` as flat SHA-256 (no Merkle refactor).
+15. **Layered hashes, not unified — reuse one Merkle primitive only where actually needed.** `compute_group_state_hash` (governance, flat SHA-256), `Snapshot::root_hash` (state, existing storage Merkle via `Index<S>`), and `governance_dag_root` (existing) stay independent and update at their own rates. `NamespaceMerkle` (A3) composes them hierarchically using a small reusable Merkle primitive that is **extracted on-demand when A3 lands, not speculatively**. Storage `Index<S>` is left untouched (hot path, well-tested, in-scope independently per #2238).
+
+**Hard constraints**
+
+16. **No quorum / M-of-N voting / multisig anywhere.** This is a hard constraint, not a preference. See §6 out of scope.
+17. **Pre-1.0 backwards compatibility is not a constraint.** Wire-format / on-disk / API breaking changes ship at release boundaries. No versioned protocol envelopes, no migration shims, no dual-shape receivers.
 
 ## 3. Phases & sequencing
 
@@ -39,41 +68,35 @@ These are decided. Don't relitigate inside individual issues.
 |---|---|---|
 | **1 — Quick wins** (parallel) | A1, A2, D1, E2 | Observability + immediate DoS surface reduction. No wire-format changes. |
 | **2 — Foundational** (sequential) | B1 → B2 → B3 → C4 | The cross-DAG primitive. After this, validity is well-defined. |
-| **3 — Removal flow + recovery** | C1, C2, C3, D2, D3, C5, C6 (parallel where possible) | Deterministic cuts + Owner override + defense-in-depth + bounded rebuild. |
+| **3 — Removal flow + recovery** | C1, C2, C3, D3, C5, C6 (parallel where possible) | Deterministic cuts + Owner override + K0 deprecation + bounded rebuild. |
 | **4 — Bootstrap & long-tail** | E1, E3, E4, A3, D4 | Eclipse-resistant join + whole-subtree convergence + rate limits. |
 
 ---
 
-## 4. Unknowns to resolve before / during implementation
+## 4. Remaining open questions
 
-### 4.1 Blocking unknowns — must answer before the listed issue can start
-
-| # | Question | Blocks | Suggested resolution path |
-|---|---|---|---|
-| **U1** | **Wire-format breaking change strategy.** Versioned protocol message vs. hard cut at a release boundary? How are in-flight deltas authored under the old shape handled during the rollout window? | B1 | Design call; coordinate with release manager. Probably hard cut at a release with explicit upgrade notes. |
-| **U2** | **Governance state history storage.** B3 needs to look up "was X a member at state hash H?" — requires retaining a ring buffer of recent group state hashes → membership snapshots. How big? Eviction policy? Replay-from-checkpoint strategy when the lookup target is older than the buffer? | B3 | Discovery as part of B3. Reasonable default: ring buffer of last 1000 governance ops, replay from genesis if older. Storage cost analysis needed. |
-| **U3** | **HLC semantics for `governance_position.applied_at`.** D2 time-window needs a concrete clock semantic. Is `applied_at` the peer-local wall-clock time of apply, or an HLC timestamp embedded in the governance op itself? Local time means each peer evaluates the window differently — leak surface. Op-included HLC means the admin's clock is authoritative — different leak surface. | D2 | Design call. Lean toward op-included HLC (consistent with the rest of the rule being a pure function of governance state). |
-| **U4** | **TEE peer designation for bootstrap (E1's TEE branch).** Is `ReadOnlyTee` role sufficient, or do we need an explicit "trusted bootstrap source" flag? How is the TEE peer's hardware attestation surfaced to a joining peer that wants to verify it? | E1 (TEE part only — Owner part is independent and can ship first) | **Decision: defer the TEE branch entirely as a follow-up RFC.** E1 ships with Owner-only bootstrap in v1. TEE redundancy can be designed once attestation infra in the broader Calimero ecosystem stabilizes. |
-
-### 4.2 Per-issue design questions — resolve during the issue's discovery phase
+All blocking unknowns are resolved. What's left are per-issue design questions — small, can be settled during each issue's discovery phase, none of them gate starting implementation.
 
 | # | Question | Issue |
 |---|---|---|
-| **U5** | `NamespaceStateHeartbeat` currently carries `{namespace_id, dag_heads}` (`crates/node/src/handlers/network_event.rs:189`). E2 needs to extend it with `state_hash`, `hlc`, signature. New broadcast variant or extend existing? | E2 |
-| **U6** | Network deny-list scope: per-group, per-namespace, or global per-signer-identity? Same signer can be a member of group X (where they were removed) and group Y (where they're still active). | D1 |
 | **U7** | Snapshot trigger and frequency. Periodic (every N ops, every T seconds) or Owner-triggered? Per-namespace configurable? | C5 |
-| **U8** | Time-window W concrete default value. 24h working assumption; per-namespace configurable? | D2 |
 | **U9** | K0 grace period length. Per-namespace configurable? | D3 |
-| **U10** | Bootstrap unreachability default policy. Strict (block) or fall back to multi-source (E3)? Per-deployment configurable, but what's the default? | E1 / E3 |
 | **U11** | `MemberRestored` semantics. Is the restored member assigned to a specific role (Member by default), or restored to whatever role they had before removal? Are post-cut writes that were buffered now applied, or do they remain rejected? | C3 |
 | **U12** | B2 buffer eviction policy. Bounded buffer for buffered-on-unknown deltas creates a DoS surface (attacker floods with deltas referencing future governance state). Max size, eviction strategy, rate limit? | B2 |
 
-### 4.3 Migration & rollout
+### Decisions reached during review (for reference)
 
-| # | Question | Affects |
-|---|---|---|
-| **U13** | How are existing groups migrated when B1 lands? Pre-B1 deltas have no `governance_position`; post-B1 receivers must accept them or fail to bootstrap from groups created before the upgrade. | B1 rollout |
-| **U14** | Backwards compat for `MemberRemoved` ops in the governance DAG that pre-date C1 (no embedded cut). C1 receivers need to handle "old-shape `MemberRemoved`" by deriving an implicit cut from the op's position. | C1 rollout |
+The following questions were considered and decided; they are recorded in §2 and need not be re-litigated:
+
+- **U1 (wire-format strategy)** → hard cut at release boundary (no backwards compat per §2.17).
+- **U2 (governance state history storage)** → full materialized history; revisit at C5 when snapshots provide a natural floor.
+- **U3 (HLC for `applied_at`)** → moot; D2 dropped (§2.8).
+- **U4 (TEE bootstrap branch)** → deferred entirely as a follow-up RFC.
+- **U5 (heartbeat shape)** → new `NamespaceStateBeacon` variant, not extension.
+- **U6 (deny-list scope)** → per-group with per-signer reverse index for lookup.
+- **U8 (time-window W)** → moot; D2 dropped.
+- **U10 (bootstrap default)** → strict, with `bootstrap_fallback: bool` per-deployment override; per-namespace policy is v2.
+- **U13, U14 (migration / backwards compat)** → moot; pre-1.0 break-freely, no migration shims (§2.17).
 
 ---
 
@@ -127,7 +150,7 @@ These are decided. Don't relitigate inside individual issues.
 
 **Phase**: 4 · **Size**: L · **Depends on**: A1, B1, C1 · **Blocks**: —
 
-**Summary**: Composite hash that covers `meta + members_root + governance_dag_root + snapshot_root + child_namespace_roots` for a namespace. Lets a peer detect whole-subtree convergence in one comparison instead of walking each context individually. Per design decision §2.12, this is the **only** place where we extract a reusable Merkle primitive — leaves are existing flat hashes (`compute_group_state_hash`, `Snapshot::root_hash`, governance_dag_root). No refactor of the leaf hashes; storage `Index<S>` stays untouched.
+**Summary**: Composite hash that covers `meta + members_root + governance_dag_root + snapshot_root + child_namespace_roots` for a namespace. Lets a peer detect whole-subtree convergence in one comparison instead of walking each context individually. Per §2 decision 15 (layered hashes), this is the **only** place where we extract a reusable Merkle primitive — leaves are existing flat hashes (`compute_group_state_hash`, `Snapshot::root_hash`, governance_dag_root). No refactor of the leaf hashes; storage `Index<S>` stays untouched.
 
 **Scope**:
 - Extract a small `MerkleTree` primitive (algorithm only, no persistence): `from_leaves(&[[u8;32]]) → root`, optional `proof(idx)` / `verify(root, proof, leaf)` if needed by future consumers
@@ -143,7 +166,7 @@ These are decided. Don't relitigate inside individual issues.
 - API consumers can poll one hash to detect any subtree change
 - **Non-goal:** refactoring `compute_group_state_hash` or `Snapshot::root_hash` to use the new primitive — they stay as-is.
 
-**References**: §2.11–2.12 (design decisions), §3.1 (state hash), A1, E2
+**References**: §2 decisions 14–15, §3 (state hash), A1, E2
 
 ---
 
@@ -153,16 +176,15 @@ These are decided. Don't relitigate inside individual issues.
 
 #### B1 — Add `governance_position` field to ContextDagDelta / CausalDelta
 
-**Phase**: 2 · **Size**: M · **Depends on**: U1 resolved (wire-format strategy) · **Blocks**: B2, B3, C1, C2, C4, D2, A3
+**Phase**: 2 · **Size**: M · **Depends on**: — · **Blocks**: B2, B3, C1, C2, C4, A3
 
 **Summary**: Replace the dead `governance_epoch: Vec<[u8; 32]>` field on state deltas with a `GovernancePosition` struct that carries the full cross-DAG reference (group_id, state_hash, governance DAG heads) at sign time. This is the foundational primitive that lets receivers enforce cross-DAG authorization.
 
 **Scope**:
 - Define `GovernancePosition { group_id: ContextGroupId, group_state_hash: [u8; 32], governance_dag_heads: Vec<[u8; 32]> }`
-- Replace `governance_epoch` field on `ContextDagDelta` / `CausalDelta`
+- Replace `governance_epoch` field on `ContextDagDelta` / `CausalDelta` (hard cut, no backwards compat per §2.17)
 - Sender side: compute and embed accurate values (`crates/context/src/handlers/execute/mod.rs:731` is where the empty vec is populated today)
 - Receiver side: deserialize and pass through to apply path (`crates/node/src/handlers/state_delta/mod.rs:33,88`)
-- Migration: handle pre-B1 deltas in flight per U13 / U1
 
 **Acceptance criteria**:
 - New field present in wire format
@@ -170,11 +192,10 @@ These are decided. Don't relitigate inside individual issues.
 - Receivers deserialize without errors
 - Existing e2e tests pass
 - Roundtrip serialization test
-- Migration plan documented and reviewed
 
-**Open questions**: U1 (wire-format strategy), U13 (migration)
+**Open questions**: none — U1 / U13 resolved (hard cut, no backwards compat).
 
-**References**: §5.2 of design doc, `crates/node/src/handlers/state_delta/mod.rs:33`, `crates/context/src/handlers/execute/mod.rs:731`
+**References**: §2 (architectural approach + decision 1), `crates/node/src/handlers/state_delta/mod.rs:33`, `crates/context/src/handlers/execute/mod.rs:731`
 
 ---
 
@@ -221,9 +242,9 @@ These are decided. Don't relitigate inside individual issues.
 - `Shared`-storage path still works per #2266
 - e2e test: member removed mid-test, attempts to publish, deltas rejected on all peers post-removal
 
-**Open questions**: U2 (history storage strategy)
+**Open questions**: none — U2 resolved (full materialized history; revisit at C5).
 
-**References**: §5.4 of design doc, `crates/context/src/group_store/namespace.rs:64` (current is_read_only_for_context), `crates/storage/src/interface.rs:260`
+**References**: §2 (architectural approach + decisions 1–6), `crates/context/src/group_store/namespace.rs:64` (current is_read_only_for_context), `crates/storage/src/interface.rs:260`
 
 ---
 
@@ -241,16 +262,15 @@ These are decided. Don't relitigate inside individual issues.
 - Add `cut: GovernancePosition` field to `MemberRemovedOp`
 - Admin computes cut at sign time
 - B3 uses `MemberRemovedOp.cut` for the descend-from check, not `position_of(op)`
-- Backwards compat for old-shape `MemberRemoved` in pre-existing governance DAGs (U14)
+- Hard cut, no backwards compat for old-shape `MemberRemoved` (per §2.17)
 
 **Acceptance criteria**:
 - New field present and signed
 - Concurrent-partition test: peers on different governance DAG positions evaluate the same answer for a given delta
-- Migration: old-shape `MemberRemoved` ops still honored (or upgrade-path documented)
 
-**Open questions**: U14 (backwards compat)
+**Open questions**: none — U14 resolved (no backwards compat).
 
-**References**: §5.5 of design doc
+**References**: §2 decision 5 (cut declarations)
 
 ---
 
@@ -295,21 +315,27 @@ These are decided. Don't relitigate inside individual issues.
 
 ---
 
-#### C4 — Forward-only semantic: declare and enforce
+#### C4 — Forward-only semantic: enforce as core invariant
 
-**Phase**: 2 · **Size**: S · **Depends on**: B3, C1, C2 · **Blocks**: —
+**Phase**: 2 · **Size**: M · **Depends on**: B3, C1, C2 · **Blocks**: —
 
-**Summary**: Document and enforce: pre-cut `governance_position` writes from a removed/left member are valid forever, regardless of arrival order. No retroactive invalidation.
+**Summary**: Forward-only is a **core invariant** baked into B3, not just a documented rule. Pre-cut `governance_position` writes from a removed/left member are valid forever, regardless of arrival order. Without this property, taint cascade returns (§4.3 of the design doc). This issue is a test-coverage and architectural-lock-in pass: every code path that reaches the validity check must apply forward-only consistently, and the property must be regression-protected.
 
 **Scope**:
-- Document in `docs/architecture/membership-and-leave.md`
-- Add e2e tests for the partition-heal cases that exercise the rule
+- Audit every code path that reaches B3's apply-time check; ensure all use forward-only (no path retroactively invalidates pre-cut writes)
+- Add property-style tests: for any sequence of (cut, delta) pairs where `delta.governance_position` predates the cut, all peers apply
+- Add partition-heal e2e tests: removed member's pre-removal writes propagated through different paths converge identically on all peers
+- Document in `docs/architecture/membership-and-leave.md` with the invariant called out as load-bearing
+- Add invariant assertions / debug logs at the validity check site to make violations loud during development
 
 **Acceptance criteria**:
-- e2e test: removed member's pre-removal writes that arrive via partition heal are applied identically on all peers
-- Documented rule with rationale
+- All code paths to the validity check use forward-only (audited and documented)
+- Property tests cover the partition-heal / out-of-order arrival cases
+- e2e test: removed member's pre-removal writes via partition heal are identical on all peers
+- Regression suite includes a "what if someone added retroactive invalidation" canary test
+- Architecture doc updated
 
-**References**: §5.6 of design doc
+**References**: §2 (architectural approach + decisions 1–6), §4.3 (taint cascade — the failure mode forward-only prevents)
 
 ---
 
@@ -379,31 +405,9 @@ These are decided. Don't relitigate inside individual issues.
 - Deny-list survives node restart
 - Bypass test: X rotates libp2p peer-id, messages still dropped (signer-id keying)
 
-**Open questions**: U6 (scope: per-group / namespace / global)
+**Open questions**: none — U6 resolved (per-group scope, per-signer reverse index for lookup).
 
-**References**: §6.2 of design doc
-
----
-
-#### D2 — Time-window validity on `governance_position`
-
-**Phase**: 3 · **Size**: S · **Depends on**: B1 · **Blocks**: —
-
-**Summary**: `delta.hlc < governance_position.applied_at + W`. Reject deltas claiming a position older than W. Belt-and-suspenders for D1; bounds the long-tail attack window if D1 has gaps.
-
-**Scope**:
-- HLC semantic for `applied_at` (U3)
-- Reject path in B3
-- Per-namespace configurable W (U8)
-
-**Acceptance criteria**:
-- Delta with HLC outside window is rejected
-- Delta with HLC inside window is accepted
-- W is configurable per-namespace
-
-**Open questions**: U3 (HLC semantics), U8 (default W)
-
-**References**: §6.3 of design doc
+**References**: §2.7 (load-bearing defense decision)
 
 ---
 
@@ -460,41 +464,44 @@ These are decided. Don't relitigate inside individual issues.
 - Define bootstrap request/response messages (member set, state hash, governance DAG heads)
 - Owner's identity is part of `compute_group_state_hash` (already true per #2284) — joiner extracts from group genesis
 - libp2p peer-id authentication is built in; multiaddr discovery via DHT or invite payload is fine because peer-id auth catches mismatch
-- Configurable strict-vs-fallback policy with E3 (U10)
+- **Strict default** (block bootstrap if Owner unreachable). Per-deployment `bootstrap_fallback: bool` config flag enables E3 multi-source fallback.
 
 **Acceptance criteria**:
 - Late joiner can bootstrap from Owner peer-id alone
 - Eclipse-attack test: malicious peer cannot impersonate Owner via fake multiaddr (libp2p handshake fails)
 - Stale-Owner attack test: malicious peer serves a doctored governance DAG; joiner's state hash mismatch against multi-source / beacon corroboration detected
-- Strict-vs-fallback policy is configurable per deployment
+- `bootstrap_fallback` flag default is `false` (strict)
 
-**Open questions**: U10 (default policy)
+**Open questions**: none — U10 resolved (strict default + override flag); U4 resolved (TEE deferred). Per-namespace policy is a v2 follow-up.
 
-**References**: §6.4 of design doc, U4 decision (TEE deferred)
+**References**: §2.10 (bootstrap decision), §2.13 (Owner mandatory)
 
 ---
 
-#### E2 — Promote `NamespaceStateHeartbeat` to load-bearing alive-beacon
+#### E2 — Add `NamespaceStateBeacon` (signed, load-bearing for bootstrap)
 
 **Phase**: 1 · **Size**: M · **Depends on**: A1 · **Blocks**: —
 
-**Summary**: Currently `NamespaceStateHeartbeat` carries `{namespace_id, dag_heads}` and is informational only (`crates/node/src/handlers/network_event.rs:189`). Extend with `state_hash` (and signature?) and use for bootstrap convergence detection — late joiner listens for a short window, sees what state hash multiple distinct members agree on, picks the most-advanced.
+**Summary**: Introduce a **new** broadcast variant `NamespaceStateBeacon { namespace_id, group_id, state_hash, governance_dag_heads, hlc, signature }`. Per §2.11, this is a new variant rather than an extension of `NamespaceStateHeartbeat` — decouples high-frequency unsigned liveness pings (existing heartbeat) from lower-frequency signed bootstrap-relevant beacons (new). Late joiner listens for a short window during bootstrap and picks the state hash multiple members agree on.
 
 **Scope**:
-- Extend message shape to `{namespace_id, group_id, state_hash, governance_dag_heads, hlc, signature}` (U5)
-- Sign per-member
+- Define `BroadcastMessage::NamespaceStateBeacon` variant alongside the existing `NamespaceStateHeartbeat`
+- Sign per-member with the member's identity key
+- Cadence: lower-frequency than heartbeat (e.g., once per minute or on significant state change) — TBD during implementation
 - Receiver: maintain short-window aggregation of beacons during bootstrap
 - "Most-advanced" tiebreak: HLC dominance, deepest governance DAG
+- Existing `NamespaceStateHeartbeat` stays as-is (informational, unsigned, high-frequency)
 
 **Acceptance criteria**:
-- Heartbeat carries state_hash and is signed
-- Bootstrap window collects beacons from multiple peers, picks most-advanced
+- New variant defined; senders emit at configured cadence; signature verified on receive
+- Bootstrap window collects beacons from multiple distinct members, picks most-advanced state hash
 - Test: malicious beacon with forged signature is rejected
 - Test: late joiner with multiple honest beacons converges on correct state hash, ignores stale beacon from a slow peer
+- Test: existing `NamespaceStateHeartbeat` continues to fire at its previous cadence and is not affected
 
-**Open questions**: U5 (message shape — extend or new variant?)
+**Open questions**: none — U5 resolved (new variant).
 
-**References**: §6.4 of design doc, `crates/node/src/handlers/network_event.rs:189`
+**References**: §2.11 (heartbeat decision), `crates/node/src/handlers/network_event.rs:189`
 
 ---
 
@@ -548,19 +555,22 @@ These are decided. Don't relitigate inside individual issues.
 - **Token-economic incentives or BFT consensus on every governance op.** Calimero is not a public chain.
 - **Full retroactive invalidation of removed-member CRDT contributions.** Forward-only is the realistic stance.
 - **Hardware-backed identity beyond `ReadOnlyTee`.** Out of scope for this work.
-- **Refactoring `compute_group_state_hash` to a Merkle-based hash.** Considered and rejected. Inclusion/exclusion proofs aren't load-bearing under Owner-anchored bootstrap (§2.11), and changing the hash function would invalidate every existing `SignedGroupOp.current_state_hash` reference (per #2284) — migration cost greatly exceeds the marginal value. Stays as flat SHA-256.
-- **Light-client / proof-based verification deployments.** Bootstrap is anchored to Owner / TEE peers (§2.11). If this stops being the durable model, a follow-up RFC can revisit Merkle-leaf hashes.
+- **Refactoring `compute_group_state_hash` to a Merkle-based hash.** Considered and rejected. Inclusion/exclusion proofs aren't load-bearing under Owner-anchored bootstrap (§2.14), and changing the hash function would invalidate every existing `SignedGroupOp.current_state_hash` reference (per #2284) — migration cost greatly exceeds the marginal value. Stays as flat SHA-256.
+- **Light-client / proof-based verification deployments.** Bootstrap is anchored to Owner peers (§2.14). If this stops being the durable model, a follow-up RFC can revisit Merkle-leaf hashes.
 - **Unifying storage `Index<S>` Merkle with the new `MerkleTree` primitive (A3).** Same algorithmic shape, different persistence layer; storage Merkle is hot-path and well-tested, refactor cost outweighs the gain. A future cleanup may unify them but is out of scope here.
+- **D2 (time-window validity on `governance_position`).** Considered and dropped (§2.8). D1 is the load-bearing long-range defense; D2 was insurance against D1 implementation bugs, which are better addressed by testing D1 properly than by building a parallel defense. Pre-1.0 break-freely lets us add D2 later if D1 turns out to have empirical gaps with motivation. The HLC-on-governance-ops field that D2 would have required is also dropped — governance ops continue to use `nonce` + `parent_op_hashes` for ordering, not HLC.
+- **TEE peer redundancy for bootstrap.** Deferred entirely. v1 ships with Owner-only bootstrap. TEE redundancy is a follow-up RFC once attestation infra in the broader Calimero ecosystem stabilizes.
+- **Versioned protocol envelopes / migration shims for B1 / C1.** Pre-1.0 backwards compatibility is not a constraint (§2.17). Wire-format breaks ship at release boundaries.
 
 ---
 
 ## 7. Issue tracking suggestion
 
-22 issues across 5 categories. Recommended GitHub structure:
+21 issues across 5 categories (was 22 — D2 dropped). Recommended GitHub structure:
 
 - **One umbrella tracking issue** linking the four phases.
 - **Per-category epic labels** (`area/observability`, `area/cross-dag-auth`, `area/removal-semantics`, `area/dos-defense`, `area/bootstrap`).
 - **Phase milestones** (`phase-1-quick-wins`, `phase-2-foundational`, `phase-3-removal`, `phase-4-bootstrap-longtail`).
 - **Each issue copy-pasted from §5** with title `[{category}{number}] {issue title}`.
 
-The blocking unknowns in §4.1 should be resolved in either (a) the umbrella tracking issue's discussion, or (b) standalone design-decision issues filed before the dependent work issue.
+All blocking design questions are resolved (see §4 "Decisions reached during review"). Per-issue questions in §4 can be settled during each issue's discovery phase.
