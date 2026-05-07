@@ -42,38 +42,52 @@ The roadmap's foundational issues (B1, B2, B3, C1, C2, C4) are concrete primitiv
 5. **Cut declarations are per-actor signed, not vote-based.** Forced removal: admin embeds an explicit `cut: GovernancePosition` in the signed `MemberRemoved` op (C1). Voluntary leave: leaver embeds their own `governance_position` in `MemberLeft` (C2).
 6. **Owner override is the recovery path** (C3). Owner can sign `MemberRestored` to reverse an admin's `MemberRemoved`. Replaces what a quorum design would have offered.
 
-**Defenses & bootstrap**
+**Encryption & key lifecycle**
 
-7. **D1 (network-layer deny-list keyed on signer identity) is load-bearing.** Collapses the long-range attack surface to gossip-propagation time of `MemberRemoved`. **Per-group scope** — same signer identity can legitimately be a member of multiple groups. Implemented with a per-signer reverse index for lookup efficiency.
-8. **D2 (time-window validity) is dropped, not deferred.** D1 covers the long-range surface; D2 was defense-in-depth against D1 implementation bugs. The right response to "what if D1 has bugs" is "test D1 properly," not "build a parallel defense system." Pre-1.0 break-freely lets us add D2 later if D1 has empirical gaps.
-9. **D3 (K0 deprecation after `MemberRemoved` + grace) is independent of D1** — closes the encryption channel after grace. Earns its keep against malicious *active* members using K0 maliciously after rotation.
-10. **Bootstrap pins to Owner peer.** Late joiner dials Owner by peer-id; libp2p handshake authenticates the responder holds the corresponding private key. **Strict default** — block bootstrap if Owner is unreachable. Per-deployment override flag (`bootstrap_fallback: bool`) opts into multi-source fallback (E3). Per-namespace policy is a v2 follow-up. **TEE redundancy is deferred entirely as a follow-up RFC.**
-11. **`NamespaceStateBeacon` is a new broadcast variant**, not an extension of the existing `NamespaceStateHeartbeat`. Decouples high-frequency unsigned liveness pings from lower-frequency signed bootstrap-relevant beacons. Heartbeat stays cheap and informational; beacon is signed and load-bearing for E2 / bootstrap convergence detection.
-12. **Snapshots are scoped to recovery, not long-range defense.** Owner-signed (single-sig). Bound rebuild scope; provide a bootstrap floor for stale-position rejection.
+7. **Encrypt by default; plaintext only for bootstrap.** Group-scoped ops (`NamespaceOp::Group`) are already encrypted with the relevant tree-level key. The unfinished symmetry is at namespace level: `RootOp` variants like `GroupCreated`, `GroupReparented`, `GroupDeleted`, `AdminChanged`, `PolicyUpdated` are currently plaintext on the namespace topic. **D5** moves them under a `NamespaceOp::EncryptedRoot` variant encrypted with the namespace key. Only `MemberJoined` and `KeyDelivery` stay plaintext (bootstrap: a joiner without the namespace key needs to read these). Result: anyone outside the namespace sees opaque ops on the topic.
+8. **Every member exit rotates the subgroup key — no exceptions.** `MemberRemoved` already rotates for Restricted subgroups + namespace root, but currently *skips* Open subgroups (the §2256 "Option C" trade-off) and **`MemberLeft` doesn't rotate at all**. Both gaps close: `MemberLeft` triggers symmetric rotation (**S7**), and Open subgroups get their own per-subgroup key like Restricted ones (**S8**). The Open vs Restricted distinction reduces to **admission policy** (auto-admit any namespace member vs admin-invitation), not key distribution.
+9. **D1 (network-layer deny-list keyed on signer identity) is DoS reduction, not correctness.** Once B3 lands as the apply-time authorization check, D1's role demotes from "load-bearing long-range defense" to "drop earlier in the pipeline so we don't burn CPU on verify_signature + decode for ops B3 will reject anyway." Still ships, but the urgency reduces and the scope tightens to governance ops only (state-delta side is covered by encryption + B3).
+10. **D2 (time-window validity) is dropped, not deferred.** Covered above; included for completeness.
+11. **D3 (K0 deprecation) demoted from "load-bearing" to "confidentiality hygiene."** Once B3 rejects post-removal writes regardless of decryption status, K0 deprecation grace is about ensuring removed members can't *read* old in-flight messages — not about authorization. Combined with decision #8 (every exit rotates), D3's role is small.
+
+**Bootstrap & observability**
+
+12. **Bootstrap pins to Owner peer.** Late joiner dials Owner by peer-id; libp2p handshake authenticates the responder holds the corresponding private key. **Strict default** — block bootstrap if Owner is unreachable. Per-deployment override flag (`bootstrap_fallback: bool`) opts into multi-source fallback (E3). Per-namespace policy is a v2 follow-up. **TEE redundancy is deferred entirely as a follow-up RFC.**
+13. **`NamespaceStateBeacon` is a new broadcast variant**, not an extension of the existing `NamespaceStateHeartbeat`. Decouples high-frequency unsigned liveness pings from lower-frequency signed bootstrap-relevant beacons. Heartbeat stays cheap and informational; beacon is signed and load-bearing for E2 / bootstrap convergence detection.
+14. **Snapshots are scoped to recovery, not long-range defense.** Owner-signed (single-sig). Bound rebuild scope; provide a bootstrap floor for stale-position rejection.
 
 **Trust model & hashes**
 
-13. **Owner is mandatory at group genesis.** Already enforced functionally — Owner immune to involuntary removal, cannot self-leave (must `TransferOwnership` first per `crates/context/src/group_store/mod.rs:1039`), included in `compute_group_state_hash`. C3, E1, E4 assume this without fallback.
-14. **Owner-anchored bootstrap is the durable trust model — light-client / proof-based verification is not a target use case.** Late joiners trust Owner's signed answer (verified via libp2p peer-id auth); we do not need inclusion/exclusion proofs against group state. Drives several downstream decisions including keeping `compute_group_state_hash` as flat SHA-256 (no Merkle refactor).
-15. **Layered hashes, not unified — reuse one Merkle primitive only where actually needed.** `compute_group_state_hash` (governance, flat SHA-256), `Snapshot::root_hash` (state, existing storage Merkle via `Index<S>`), and `governance_dag_root` (existing) stay independent and update at their own rates. `NamespaceMerkle` (A3) composes them hierarchically using a small reusable Merkle primitive that is **extracted on-demand when A3 lands, not speculatively**. Storage `Index<S>` is left untouched (hot path, well-tested, in-scope independently per #2238).
+15. **Owner is mandatory at group genesis.** Already enforced functionally — Owner immune to involuntary removal, cannot self-leave (must `TransferOwnership` first per `crates/context/src/group_store/mod.rs:1039`), included in `compute_group_state_hash`. C3, E1, E4 assume this without fallback.
+16. **Owner-anchored bootstrap is the durable trust model — light-client / proof-based verification is not a target use case.** Late joiners trust Owner's signed answer (verified via libp2p peer-id auth); we do not need inclusion/exclusion proofs against group state. Drives several downstream decisions including keeping `compute_group_state_hash` as flat SHA-256 (no Merkle refactor).
+17. **Layered hashes, not unified — reuse one Merkle primitive only where actually needed.** `compute_group_state_hash` (governance, flat SHA-256), `Snapshot::root_hash` (state, existing storage Merkle via `Index<S>`), and `governance_dag_root` (existing) stay independent and update at their own rates. `NamespaceMerkle` (A3) composes them hierarchically using a small reusable Merkle primitive that is **extracted on-demand when A3 lands, not speculatively**. Storage `Index<S>` is left untouched (hot path, well-tested, in-scope independently per #2238).
 
 **Hard constraints**
 
-16. **No quorum / M-of-N voting / multisig anywhere.** This is a hard constraint, not a preference. See §6 out of scope.
-17. **Pre-1.0 backwards compatibility is not a constraint.** Wire-format / on-disk / API breaking changes ship at release boundaries. No versioned protocol envelopes, no migration shims, no dual-shape receivers.
+18. **No quorum / M-of-N voting / multisig anywhere.** This is a hard constraint, not a preference. See §6 out of scope.
+19. **Pre-1.0 backwards compatibility is not a constraint.** Wire-format / on-disk / API breaking changes ship at release boundaries. No versioned protocol envelopes, no migration shims, no dual-shape receivers.
+
+**Unification thesis**
+
+20. **B3 is the only authorization rule.** Once B1+B2+B3+C4 ship, every "can this write apply?" question reduces to one function call: *"was `delta.signer` a member of `delta.group_id` at `delta.governance_position`?"* — same answer on every peer, deterministic, forward-only. Everything else (D1, D3, key rotation, key deprecation) is **defense-in-depth around this primitive**. The patchwork of partial checks (`is_read_only_for_context`, per-storage-type role checks, `SignedGroupOp.current_state_hash` divergence detection) collapses into B3 once the primitive is in place — see Phase 3 cleanup track (S1-S6).
+21. **The post-unification invariant.** *"After your membership row is gone, you can read nothing further (key rotated on every exit, RootOps encrypted with namespace key) and write nothing further (B3 rejects post-cut writes regardless of how they're encrypted or who relays them)."* No Open-subgroup loophole, no `MemberLeft` rotation skip, no governance-op visibility leak.
 
 ## 3. Phases & sequencing
 
+Reorganized around the **unification thesis** (§2 decisions 20-21): the load-bearing work is the cross-DAG primitive; everything else is layered defense or cleanup of patchwork the primitive subsumes.
+
 | Phase | Items | Goal | Status |
 |---|---|---|---|
-| **1 — Quick wins** (parallel) | ~~A1~~, ~~A2~~, D1, E2 | Observability + immediate DoS surface reduction. | A1+A2 done ([#2289](https://github.com/calimero-network/core/pull/2289), [merobox#223](https://github.com/calimero-network/merobox/pull/223)+[#224](https://github.com/calimero-network/merobox/pull/224)); D1+E2 left. |
-| **2 — Foundational** (sequential) | B1 → B2 → B3 → C4 | The cross-DAG primitive. After this, validity is well-defined. | not started |
-| **3 — Removal flow + recovery** | C1, C2, C3, D3, C5, C6 (parallel where possible) | Deterministic cuts + Owner override + K0 deprecation + bounded rebuild. | not started |
-| **4 — Bootstrap & long-tail** | E1, E3, E4, A3, D4 | Eclipse-resistant join + whole-subtree convergence + rate limits. | not started |
+| **1 — Observability** | ~~A1~~, ~~A2~~, E2 | Convergence detection across nodes; foundation for E1 bootstrap. | A1+A2 done ([#2289](https://github.com/calimero-network/core/pull/2289), [merobox#223](https://github.com/calimero-network/merobox/pull/223)+[#224](https://github.com/calimero-network/merobox/pull/224)); E2 left. |
+| **2 — The Unifier** (sequential) | B1 → B2 → B3 → C4, plus C1, C2 | The cross-DAG primitive. After this, B3 is the only authorization rule. C1/C2 deterministic cuts make removals well-defined causally. | not started |
+| **3 — Codebase cleanup** | S1–S8 | Collapse the patchwork B3 makes redundant; close key-lifecycle gaps. **Net code deletion.** | not started |
+| **4 — Removal flow & recovery** | C3, C5, C6 | Owner override, snapshots, rebuild tool. Built on the unifier. | not started |
+| **5 — Encrypted-by-default & bootstrap** | D5, E1, E3, E4 | Encrypt RootOps with namespace key; eclipse-resistant join via Owner anchor. | not started |
+| **6 — Defense-in-depth** | D1, D3, D4, A3 | Now-clearly-optional layers: network deny-list, K0 deprecation, rate limits, hierarchical Merkle. | not started |
 
 ### Side findings exposed by completed work
 
-- **Subgroup state-hash divergence on join via invitation** ([#2292](https://github.com/calimero-network/core/pull/2292)) — pre-existing bug surfaced by A1's `groupStateHash` field. `join_group.rs:97-98` pre-populated `target_application_id = ZERO`, while inviters had the real value. Inheritance via `create_group_in_namespace` propagated the divergence to subgroups. Fixed by extending `SignedGroupOpenInvitation` with an unsigned `application_id` field. Lands with the e2e migration PR.
+- **Subgroup state-hash divergence on join via invitation** ([#2292](https://github.com/calimero-network/core/pull/2292)) — pre-existing bug surfaced by A1's `groupStateHash` field. `join_group.rs:97-98` pre-populated `target_application_id = ZERO`, while inviters had the real value. Inheritance via `create_group_in_namespace` propagated the divergence to subgroups. Fixed by extending `SignedGroupOpenInvitation` with an unsigned `application_id` field. Lands with the e2e migration PR. *Underlying cleanup tracked as S1.*
 
 ---
 
@@ -426,49 +440,51 @@ The following questions were considered and decided; they are recorded in §2 an
 
 ---
 
-#### D1 — Network-layer deny-list keyed on signer identity
+#### D1 — Network-layer deny-list keyed on signer identity *(narrow scope, DoS reduction)*
 
-**Phase**: 1 · **Size**: S · **Depends on**: — · **Blocks**: —
+**Phase**: 6 · **Size**: S · **Depends on**: — (independent; can ship before B3) · **Blocks**: —
 
-**Summary**: **The load-bearing long-range defense.** On `MemberRemoved` apply, every peer adds the removed member's signer identity to a deny-list. Drops gossip messages whose inner Calimero signer matches — at the libp2p apply boundary, after decryption, before any further processing. Critical: keyed on **signer identity** (Calimero-layer key), not libp2p peer-id, otherwise the attacker rotates peer-id and bypasses.
+**Summary**: Drop gossip messages signed by removed members **at the receive boundary**, before `verify_signature` + decode + actor routing. **Narrow scope: governance ops only** (state-delta side is covered by encryption + B3 + every-exit rotation per decision #8). Once B3 is the load-bearing authorization rule, D1's role is DoS reduction — drop earlier in the pipeline so peers don't burn CPU on ops B3 will reject anyway. Also closes the pre-B3 window where forged governance ops could flow through to apply.
 
 **Scope**:
-- Maintain deny-list per group (or per namespace, see U6) of removed signer identities
-- Hook in the receive path where messages are decrypted and inner-signer is known, drop matched messages
+- Per-group deny-list of removed signer identities (per-signer reverse index for lookup efficiency)
+- Hook on `OpEvent::MemberRemoved` and `OpEvent::MemberLeft` to add the signer
+- Drop check in `crates/node/src/handlers/network_event/namespace.rs` — between `verify_signature()` and `apply_signed_namespace_op()`
+- State-delta path NOT touched (encryption + B3 cover that side)
 - Persist deny-list across restarts
-- Reset on `MemberRestored` (C3 dependency, but D1 ships first — needs a hook for later reset)
+- Reset hook for future C3 (`MemberRestored`)
 
 **Acceptance criteria**:
-- Removed member's gossipsub messages dropped on every peer that has applied `MemberRemoved`
-- e2e test: simulate delayed `MemberRemoved` apply on one peer; once applied, X's subsequent messages are dropped at that peer
+- Removed member's signed governance ops dropped on every peer that has applied `MemberRemoved` / `MemberLeft`
+- e2e test: removed member tries to publish a governance op post-removal — receivers drop, no apply
 - Deny-list survives node restart
-- Bypass test: X rotates libp2p peer-id, messages still dropped (signer-id keying)
+- Bypass test: removed member rotates libp2p peer-id, messages still dropped (signer-id keying)
 
-**Open questions**: none — U6 resolved (per-group scope, per-signer reverse index for lookup).
+**Open questions**: none.
 
-**References**: §2.7 (load-bearing defense decision)
+**References**: §2 decisions 8, 9, 20
 
 ---
 
-#### D3 — K0 deprecation after `MemberRemoved` + grace
+#### D3 — K0 deprecation after exit + grace *(confidentiality hygiene)*
 
-**Phase**: 3 · **Size**: S · **Depends on**: C1 · **Blocks**: —
+**Phase**: 6 · **Size**: S · **Depends on**: C1 · **Blocks**: —
 
-**Summary**: After `MemberRemoved` + grace period, drop K0-encrypted gossip at receive. Defends against malicious *active* members using K0 maliciously after rotation triggered by other events.
+**Summary**: After member exit (`MemberRemoved` / `MemberLeft`) + grace period, drop K0-encrypted messages at receive. Reframed post-unification: B3 already rejects post-exit *writes* regardless of decryption status, and decision #8 (every exit rotates the subgroup key) means a removed member's K0 is no longer the current key for new traffic anyway. D3's role is **confidentiality hygiene** — ensure removed members can't *read* old in-flight K0 messages once grace expires.
 
 **Scope**:
-- Track K0 deprecation timer per group
-- After grace, drop K0-decrypted messages at receive
+- Track K0 deprecation timer per group, started at `MemberRemoved`/`MemberLeft` apply
+- After grace, drop attempts to decrypt with K0 at receive (treat as if key not in keyring)
 - Per-namespace configurable grace (U9)
 
 **Acceptance criteria**:
-- Pre-grace: K0 messages still accepted
-- Post-grace: K0 messages dropped, K1+ accepted
-- Test: replay K0-encrypted message after grace fails
+- Pre-grace: K0 still in keyring (in-flight messages decrypt)
+- Post-grace: K0 attempts fail; K1+ accepted
+- Test: replay K0-encrypted message after grace fails to decrypt
 
 **Open questions**: U9 (grace period default)
 
-**References**: §6.3 of design doc
+**References**: §2 decisions 8, 11
 
 ---
 
@@ -486,6 +502,161 @@ The following questions were considered and decided; they are recorded in §2 an
 **Acceptance criteria**: Deferred — write the issue when there's evidence the surface needs closing.
 
 **References**: §6.3 of design doc
+
+---
+
+#### D5 — Encrypt RootOps with namespace key (except bootstrap)
+
+**Phase**: 5 · **Size**: M · **Depends on**: namespace key lifecycle settled · **Blocks**: —
+
+**Summary**: Today, `NamespaceOp::Group { ..., encrypted, ... }` encrypts group-scoped ops with the group key. But `NamespaceOp::Root(RootOp::*)` variants — `GroupCreated`, `GroupReparented`, `GroupDeleted`, `AdminChanged`, `PolicyUpdated` — are **plaintext** on the namespace gossipsub topic. D5 introduces `NamespaceOp::EncryptedRoot { encrypted, key_id }` and moves all these variants under it, encrypted with the namespace key. Only `RootOp::MemberJoined` and `RootOp::KeyDelivery` stay plaintext (a bootstrapping joiner has neither key yet). After D5, anyone outside the namespace sees opaque ops on the topic — privacy gain + structural symmetry with `Group` ops.
+
+**Scope**:
+- Add `NamespaceOp::EncryptedRoot { group_id: namespace_id, key_id, encrypted: EncryptedRootOp }` variant, mirroring the existing `Group` variant
+- Move encryptable RootOps (`GroupCreated`, `GroupReparented`, `GroupDeleted`, `AdminChanged`, `PolicyUpdated`) under it
+- Keep `RootOp::MemberJoined` + `RootOp::KeyDelivery` as plaintext (bootstrap)
+- Define namespace-key lifecycle: stable until explicit rotation (not coupled to per-subgroup rotations from member exits)
+- Receivers without the namespace key see opaque blobs and route only the bootstrap variants
+
+**Acceptance criteria**:
+- Plaintext variants: only `MemberJoined` + `KeyDelivery`
+- All other RootOps encrypted with namespace key on the wire
+- Bootstrap flow still works (joiner sees `MemberJoined` plaintext, receives `KeyDelivery`, then can decrypt `EncryptedRoot` going forward)
+- Network topic eavesdroppers can no longer learn membership / role / policy / subgroup-tree changes
+- Test: peer outside the namespace observing the topic gets only opaque RootOp blobs + plaintext bootstrap
+
+**Open questions**: when does the namespace key rotate? Decision: stable, only rotated on explicit admin action (separate from per-subgroup-exit rotation). Cascading rotation defeats the symmetry purpose.
+
+**References**: §2 decision 7, §2 decisions 20-21 (unification thesis)
+
+---
+
+### S. Codebase cleanup (enabled by B3)
+
+These issues *delete code* that becomes redundant once B3 is the load-bearing authorization rule. Net negative LOC. Most are gated on Phase 2 shipping; S1 can land independently.
+
+---
+
+#### S1 — Unify `create_group` ↔ `execute_group_created` meta-write paths
+
+**Phase**: 3 · **Size**: M · **Depends on**: — · **Blocks**: —
+
+**Summary**: Today, `create_group.rs` (originator) pre-populates `GroupMetaValue` *before* publishing the op, and `execute_group_created` (apply path) checks `meta_existed` and skips the meta write to avoid clobbering the pre-populate. Two write paths produce **different values** for the same fields (e.g., `app_key`, `created_at`, `auto_join`), and the two paths gradually drift over time — this is the root cause of the [#2292](https://github.com/calimero-network/core/pull/2292) divergence bug. Make originators go through the same apply path remote peers use; one source of truth.
+
+**Scope**:
+- Remove the meta pre-populate at `create_group.rs:108-119`
+- `execute_group_created` always writes meta (drop the `meta_existed` skip)
+- Originator publishes the op, then applies it locally via the same apply path everyone else uses
+- Drop the `meta_existed` divergence comment block at `namespace_governance.rs:731-745`
+
+**Acceptance criteria**:
+- Originator's `GroupMetaValue` for a freshly-created group is byte-identical to a remote peer's
+- `compute_group_state_hash` matches across all peers from the moment of group creation, not just after the first context registration
+- The `application_id`-in-invitation hack from #2292 becomes unnecessary (kept for backwards compat or also removed)
+
+**References**: §2 decision 21, [#2292](https://github.com/calimero-network/core/pull/2292)
+
+---
+
+#### S2 — Remove `is_read_only_for_context` (subsumed by B3)
+
+**Phase**: 3 · **Size**: S · **Depends on**: B3 · **Blocks**: —
+
+**Summary**: B3 is the apply-time membership check on every state delta. The partial check `is_read_only_for_context` (`crates/context/src/group_store/namespace.rs:64`) becomes redundant. Delete the function, its callers, and the call site at `crates/node/src/handlers/state_delta/mod.rs:96`.
+
+**Acceptance criteria**: function deleted; B3 covers all paths; no test regression.
+
+**References**: §2 decision 20
+
+---
+
+#### S3 — Drop the `governance_epoch` dead field
+
+**Phase**: 3 · **Size**: S · **Depends on**: B1 · **Blocks**: —
+
+**Summary**: B1 introduces `governance_position`; the existing `governance_epoch: Vec<[u8;32]>` field on `ContextDagDelta` / `CausalDelta` is dead since #2237 Phase 11.2 (sent as `vec![]`, ignored on receive) and B1 obsoletes it entirely. Remove the field and its sender/receiver references.
+
+**Acceptance criteria**: field gone from wire format and all serialization sites; no compile errors; no behavior change.
+
+**References**: §2 decision 1
+
+---
+
+#### S4 — Collapse per-storage-type role checks in `apply_action`
+
+**Phase**: 3 · **Size**: M · **Depends on**: B3 · **Blocks**: —
+
+**Summary**: `crates/storage/src/interface.rs::apply_action` has separate role-check paths for `User` (Ed25519 + nonce only — no membership check) and `Shared` (causal `writers_at(parents)` per ADR-0001). After B3, both go through the same apply-time membership check at the receive boundary. The per-storage-type duplication can collapse into "B3 first, then storage-type-specific causal/nonce check."
+
+**Acceptance criteria**: single membership-check primitive used by both storage types; ADR-0001 causal write-set logic preserved for `Shared`; nonce monotonicity preserved for `User`.
+
+**References**: §3.4 (per-action verification), §2 decision 20
+
+---
+
+#### S5 — Remove `SignedGroupOp.current_state_hash` divergence check
+
+**Phase**: 3 · **Size**: S · **Depends on**: B1, B3 · **Blocks**: —
+
+**Summary**: `SignedGroupOp.current_state_hash` (per #2284) embeds the group state hash at sign time and rejects governance ops signed against a stale state. With B1's `governance_position` carrying the same information causally, this field becomes redundant — the receiver's check against the canonical governance DAG subsumes the per-op check. Remove the field and the divergence-detection logic.
+
+**Acceptance criteria**: field gone from `SignableGroupOp` / `SignedGroupOp`; governance DAG causal validity (B3) is the only divergence-detection mechanism; no behavior change for honest peers.
+
+**References**: §3.5 (governance_epoch field — same neutering pattern), §2 decision 20
+
+---
+
+#### S6 — Unify Open / Restricted subgroup authorization paths
+
+**Phase**: 3 · **Size**: M · **Depends on**: B3, S8 · **Blocks**: —
+
+**Summary**: Today, Open and Restricted subgroups have different authorization flows: Open subgroups encrypt with the namespace key (any namespace member can read without explicit join); Restricted subgroups have their own key with explicit `KeyDelivery`. After S8 gives every subgroup its own key, the only remaining difference is **admission policy**: Open auto-admits any namespace member (auto-issues `KeyDelivery`), Restricted requires admin invitation. Collapse the auth code paths to one; admission policy becomes a per-group flag, not a separate code path.
+
+**Acceptance criteria**: single key-distribution code path covers both Open and Restricted; admission policy is a flag, not a branch in the auth check; existing Open semantics (any namespace member can join) preserved.
+
+**References**: §2 decision 8, S8
+
+---
+
+#### S7 — `MemberLeft` triggers symmetric key rotation
+
+**Phase**: 3 · **Size**: S · **Depends on**: — · **Blocks**: —
+
+**Summary**: Today, `MemberRemoved` rotates the group key (atomic with the op publication via `sign_apply_and_publish_removal`), but `MemberLeft` uses the generic `sign_apply_and_publish` path with `removed_member: None` — no rotation. The leaver keeps K0 forever, until D3 grace if D3 ships. Make `MemberLeft` symmetric: route through `sign_apply_and_publish_removal` (or add an equivalent variant) so it also triggers rotation.
+
+**Scope**:
+- Refactor `leave_group.rs` and `leave_namespace.rs` to use the removal-publishing path
+- Single function for both `MemberRemoved` and `MemberLeft` — both emit a key rotation
+- Update the `removed_member: Option<&PublicKey>` argument or rename it to `exiting_member`
+
+**Acceptance criteria**:
+- After self-leave, the leaver's K0 is rotated to K1 on remaining members
+- Leaver does not get a new envelope (excluded from `build_key_rotation` as expected)
+- Test: leaver's post-leave K0-encrypted writes don't land at remaining members once K0 is dropped via D3
+
+**References**: §2 decision 8
+
+---
+
+#### S8 — Per-subgroup key for Open subgroups (drop the namespace-key shortcut)
+
+**Phase**: 3 · **Size**: M · **Depends on**: — · **Blocks**: S6
+
+**Summary**: Today, Open subgroups skip key minting and encrypt with the namespace key. This is the §2256 "Option C trade-off" — it saves a `KeyDelivery` round-trip but means a subgroup-removed member retains read access via their namespace membership, and member-exit rotations are skipped entirely (decision #8 violation). S8 mints a per-subgroup key for every Open subgroup, making them symmetric with Restricted ones for crypto purposes. Open vs Restricted now differs only in admission policy (any namespace member can join Open vs admin-invite for Restricted).
+
+**Scope**:
+- On Open subgroup creation: mint a fresh per-subgroup key, store, distribute to admin (the creator) via in-place store write
+- On Open subgroup join (auto-admission for namespace members): publish a `KeyDelivery` to the joiner the same way Restricted subgroups do
+- Remove the "encrypt with namespace key for Open" branch in the publisher
+- Member exit rotates the subgroup key (was previously skipped — decision #8)
+
+**Acceptance criteria**:
+- Every subgroup, Open or Restricted, has its own key in the keyring
+- Removing a member from an Open subgroup rotates that subgroup's key (read access revoked, not just authorization)
+- Open admission semantics preserved (any namespace member can still join without admin invite)
+- Test: removed Open-subgroup member loses both write authorization (B3) and read access (key rotated)
+
+**References**: §2 decision 8, S6
 
 ---
 
