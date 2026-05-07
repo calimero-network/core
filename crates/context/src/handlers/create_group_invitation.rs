@@ -50,7 +50,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         let datastore = self.datastore.clone();
 
         let result = (|| -> eyre::Result<_> {
-            let _meta = group_store::load_group_meta(&datastore, &group_id)?
+            let meta = group_store::load_group_meta(&datastore, &group_id)?
                 .ok_or_else(|| eyre::eyre!("group not found"))?;
 
             group_store::require_group_admin_or_capability(
@@ -102,6 +102,12 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 SignedGroupOpenInvitation {
                     invitation,
                     inviter_signature,
+                    // Carry the real application_id so the joiner can
+                    // pre-populate GroupMetaValue correctly. Without this,
+                    // joiners would write target_application_id = ZERO
+                    // and compute_group_state_hash would diverge from
+                    // the inviter's view persistently.
+                    application_id: Some(*meta.target_application_id.as_ref()),
                 },
                 group_alias,
             ))
