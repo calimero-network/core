@@ -250,9 +250,17 @@ pub fn create_recursive_invitations(
             .sign(&hash)
             .map_err(|e| eyre::eyre!("signing: {e}"))?;
 
+        // Carry the real application_id so the joiner can pre-populate
+        // GroupMetaValue correctly. Without this, joiners would write
+        // target_application_id = ZERO and compute_group_state_hash
+        // would diverge from the inviter's view persistently.
+        let application_id =
+            super::load_group_meta(store, &gid)?.map(|m| *m.target_application_id.as_ref());
+
         let signed = SignedGroupOpenInvitation {
             invitation,
             inviter_signature: hex::encode(sig.to_bytes()),
+            application_id,
         };
 
         result.push((gid, signed));
