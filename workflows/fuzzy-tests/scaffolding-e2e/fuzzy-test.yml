@@ -531,7 +531,7 @@ steps:
             args:
               value: "frozen_{{uuid}}"
             outputs:
-              frozen_hash: result
+              frozen_hash: result.output
           - type: assert
             non_blocking: true
             statements:
