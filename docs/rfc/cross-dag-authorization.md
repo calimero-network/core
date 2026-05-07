@@ -782,11 +782,152 @@ These issues *delete code* that becomes redundant once B3 is the load-bearing au
 
 ## 7. Issue tracking suggestion
 
-21 issues across 5 categories (was 22 — D2 dropped). Recommended GitHub structure:
+30 issues across 6 categories (added S1-S8 cleanup track + D5; removed D2). Recommended GitHub structure:
 
-- **One umbrella tracking issue** linking the four phases.
-- **Per-category epic labels** (`area/observability`, `area/cross-dag-auth`, `area/removal-semantics`, `area/dos-defense`, `area/bootstrap`).
-- **Phase milestones** (`phase-1-quick-wins`, `phase-2-foundational`, `phase-3-removal`, `phase-4-bootstrap-longtail`).
+- **One umbrella tracking issue** linking the six phases.
+- **Per-category epic labels** (`area/observability`, `area/cross-dag-auth`, `area/removal-semantics`, `area/cleanup`, `area/dos-defense`, `area/bootstrap`).
+- **Phase milestones** mapped to §3 phases.
 - **Each issue copy-pasted from §5** with title `[{category}{number}] {issue title}`.
 
 All blocking design questions are resolved (see §4 "Decisions reached during review"). Per-issue questions in §4 can be settled during each issue's discovery phase.
+
+---
+
+## 8. Threat model coverage
+
+What the design protects against, organized by adversary type. The §2 unification thesis (decisions 20-21) and Owner/TEE-anchored sync (decisions 22-24) collapse most attacks to either *"blocked by B3"* or *"bounded by trust anchors."*
+
+### 8.1 Active member with malicious intent
+
+A member of the group whose role is currently authorized but who is acting in bad faith.
+
+| Attack vector | Defense | Status |
+|---|---|---|
+| Forge ops they're not authorized for (Member acts as Admin) | Signature verification — only Admin signing key can sign Admin ops; signer's role checked at apply | ✅ Existing crypto + role check |
+| Submit deltas with bogus `governance_position` | B3 verifies `state_hash` claim against canonical history; mismatch → reject | ✅ B3 |
+| Submit valid-but-harmful state data (CRDT garbage, storage flood) | App-layer concern, not protocol authz — see §8.3 | ⚠️ App responsibility |
+| Spam writes (rate-based) | D4 per-peer rate limits | ✅ D4 (deferred but designed) |
+| Replay old ops to confuse state | State DAG dedup by `delta_id` (content hash); HLC + nonce monotonicity | ✅ Existing CRDT semantics |
+| Frame other peers (claim someone else's signature) | Signature verification — can't forge another peer's signature without their privkey | ✅ Existing crypto |
+| Cause divergence via partition timing | Forward-only validity rule — same answer on every peer regardless of arrival order | ✅ Forward-only / B3 |
+| Withhold gossip / refuse to relay | Gossipsub mesh redundancy + scoring per libp2p | ✅ Existing libp2p |
+| Spam invitations / membership ops | Role-gated apply path + D4 rate limits | ✅ Role check + D4 |
+| Steal another peer's identity (key compromise) | Not protocol-level — see §8.3 | ⚠️ Key custody |
+
+### 8.2 Removed member with malicious intent
+
+A member whose membership row is gone (via `MemberRemoved` or `MemberLeft`) but who retains their old signing key K0 and acts in bad faith.
+
+| Attack vector | Defense | Status |
+|---|---|---|
+| Continue publishing state deltas with old key | B3 rejects post-cut writes; D1 drops at network layer; key rotation makes K0 stale; D3 closes K0 read after grace | ✅ Layered |
+| Continue publishing governance ops | Apply-time role check rejects (no longer admin); D1 drops at network layer; D5 makes RootOps unreadable to ex-members anyway | ✅ Layered |
+| Read post-removal state via retained K0 | Decision #8 (every exit rotates the key) — K1 minted, ex-member excluded from envelopes; D5 encrypts RootOps; D3 K0 grace closes the in-flight window | ✅ Decision #8 + D5 + D3 |
+| Forge "historical" pre-cut deltas via sync from a malicious relay | **Decision #22** (Owner/TEE-anchored sync) — peers don't sync from random members; trusted anchors don't have the forgeries to serve | ✅ Decision #22 |
+| Sneak forged deltas via gossipsub | D1 drops at libp2p apply boundary on peers post-MemberRemoved; apply-lag window peers are bounded by gossip-propagation time; forward-only convergence prevents fork | ✅ D1 + forward-only |
+| Eclipse a late-joining peer | E1 bootstrap pins to trusted-anchor set; libp2p peer-id auth prevents impersonation | ✅ E1 |
+| Replay old governance ops | Governance DAG dedup by op hash; per-signer nonce monotonicity | ✅ Existing |
+| Withhold acks to stall governance | Ack router has timeout; publisher proceeds anyway (best-effort delivery) | ✅ Existing |
+| **§6.1 long-range:** retain K0, sign new deltas claiming pre-cut `governance_position`, smuggle in via apply-lag windows | Bounded by decision #22 + D1 + decision #8 + C5 snapshot sealing — **not eliminated, but reduced to small windows** | ⚠️ §6.1, **bounded** |
+| DoS via volume | D1 drops removed-member gossip; D4 rate limits any peer | ✅ D1 + D4 |
+
+### 8.3 What's NOT covered (and why)
+
+The threat surface above is what the **protocol authorization layer** addresses. Several other concerns sit outside this layer by design:
+
+#### 8.3.1 Application-layer harmful data (valid-but-bad payloads)
+
+**Out of scope for cross-DAG authz.** The protocol layer answers *"who can write?"* — applications answer *"what they can write."*
+
+This is intentional and sound: protocol authz can't reason about whether a CRDT write is "good" or "bad" — that's domain knowledge living in the application. The right place to enforce data correctness is the **data structures themselves**, designed so invalid states are unrepresentable:
+
+- **`Shared` storage type** (`crates/storage/src/`) already provides causally-aware multi-writer CRDT semantics with `writers_at(parents)` per [ADR-0001](../adr/0001-shared-storage-concurrent-rotation.md). The data structures themselves bound what kind of corruption is possible.
+- **Counter-style ops** (`Counter`, `PNCounter`) — can't write arbitrary values; can only `inc(n)` / `dec(n)`. A malicious member can spam increments but can't fabricate "alice's balance is suddenly 10^18".
+- **Grow-only sets** (`GSet`) — adds only; can't remove existing members. A malicious member can add garbage entries but can't censor others' adds.
+- **LWW with HLC tiebreaking** — last-writer-wins on HLC ordering. Forces causal consistency; a malicious member can write but can't pretend their write came earlier than it did.
+- **Schema-validated writes** at the WASM contract boundary — applications can reject malformed writes before they hit storage. This is no different from any database's CHECK constraints.
+- **Append-only logs** (`OpLog`) — never overwrite; auditable history. Members can append but can't fabricate or censor history.
+
+The discipline this asks of application developers: **design for the trust boundary**. If you don't trust members not to write garbage, don't give them a `Map<String, String>`. Give them a CRDT type whose invariants make "garbage" structurally impossible (or at least bounded).
+
+What protocol authz **does** give the application:
+- B3 guarantees the writer was authorized AT THE GOVERNANCE STATE the write claims
+- Forward-only guarantees pre-cut writes from a former member are stable across peers
+- Signed-by-member guarantees the write attribution is honest (the signer really is who claims to have written it)
+
+What the application has to do:
+- Choose a data model where authorized but malicious writes are bounded in what damage they can do
+- Optionally enforce schema invariants in WASM at write-application time (the `apply_action` hook already supports rejecting malformed writes)
+
+This is the same trade-off any blockchain or distributed-system makes: protocol authz is "who can write," application logic is "what they can write." Conflating them creates either a protocol that's too rigid for arbitrary apps, or an application logic that has to re-implement signature verification.
+
+#### 8.3.2 End-user private key compromise
+
+**Out of scope for protocol authz.** Calimero is signature-based; if an adversary obtains a member's private key, the adversary IS that member from the protocol's perspective.
+
+Mitigations live at the **key management layer** (also app/user responsibility):
+
+- Hardware-backed key storage (TEE, secure enclave, hardware wallet)
+- Key rotation policies (out-of-scope for this RFC; orthogonal feature)
+- Per-device sub-keys with separate revocation (also orthogonal; adds delegation surface)
+
+If you suspect compromise, the in-protocol response is `MemberRemoved` (admin removes the compromised identity), which then triggers all the layered defenses above.
+
+#### 8.3.3 Owner key compromise
+
+**The trust assumption itself.** Calimero builds on Owner-as-trust-root (decision #13). If Owner's key is compromised, the whole namespace is compromised — including any key rotations, snapshots, transfers, or grants signed during the compromise window.
+
+Decision #23 (TEE redundancy load-bearing) **raises the bar** but doesn't eliminate this:
+
+- Multiple TEE-attested replicas can co-sign snapshots and serve as fallback sync sources
+- Owner key compromise alone is not catastrophic if TEE attestations independently vouch for the same state
+- Adversary now needs to compromise Owner *and* break the TEE attestation chain to mint canonical state
+
+Practical hardening:
+
+- **Hardware-backed Owner key** (HSM, TEE) is strongly recommended for production deployments
+- **Multi-TEE replica deployments** for any namespace where Owner availability or compromise resistance is non-trivial
+- **Owner key rotation** via `TransferOwnership` (existing, signed by current Owner) — limits damage if compromise is detected
+
+This is the same trade-off as any PKI: ultimate trust roots are points of catastrophic failure if compromised; mitigations focus on making compromise hard and detectable, not impossible.
+
+#### 8.3.4 Simultaneous compromise of all TEE attestations
+
+**Extremely unlikely but possible.** If every TEE in the deployment is compromised AND Owner is compromised, decision #22's trust anchor falls. No protocol mechanism survives this.
+
+Practical hardening:
+
+- **Diverse TEE vendors** (Intel SGX + AMD SEV + Apple Secure Enclave) — single-vendor compromise doesn't break the attestation chain
+- **Geographic / jurisdictional diversity** for TEE replicas
+- **Periodic re-attestation** so a TEE compromise has a finite freshness window
+
+These are deployment hardening recommendations, not protocol features.
+
+#### 8.3.5 Application-side replays of valid old data via legitimate writes
+
+**Out of scope for cross-DAG authz.** If a member legitimately writes "alice voted yes" twice (with two different valid HLCs), the protocol applies both — but the application has to decide whether that's idempotent or a bug.
+
+Mitigations live at the **application data model** layer (same as §8.3.1):
+
+- Use a `Set` instead of a counter for "has voted" semantics
+- Use idempotent ops (`upsert`-style)
+- Application-side dedup via a content-keyed log
+
+#### 8.3.6 Out-of-band attacks (denial of service against the network, censorship at the libp2p layer, social engineering)
+
+Not authorization concerns. libp2p / gossipsub provides standard mitigations (peer scoring, mesh diversity, IHAVE/IWANT message reconciliation). Social engineering and OOB attacks are user-education concerns.
+
+### 8.4 Summary
+
+| Threat class | Coverage |
+|---|---|
+| Malicious active member, protocol-level attacks | ✅ Fully covered (B3 + signature + role + forward-only + D4 + key rotation) |
+| Malicious removed member, protocol-level attacks | ✅ Fully covered except §6.1 long-range, which is **bounded** by decision #22 + #8 + C5 + D1 |
+| Application-layer "valid-but-harmful" data | ⚠️ Out of scope; mitigated by data structure design (§8.3.1) |
+| End-user key compromise | ⚠️ Out of scope; mitigated by key management hygiene (§8.3.2) |
+| Owner key compromise | ⚠️ Trust assumption; **bar raised** by TEE redundancy (decision #23); mitigated by hardware-backed keys (§8.3.3) |
+| Simultaneous TEE attestation compromise | ⚠️ Trust assumption; mitigated by diverse hardware + re-attestation (§8.3.4) |
+| Application-side semantic replays | ⚠️ Out of scope; data structure design problem (§8.3.5) |
+| Out-of-band attacks (DoS, social) | ⚠️ Not authorization concerns; libp2p + user education (§8.3.6) |
+
+The honest framing: **all protocol-level attack surfaces are covered or bounded by design.** The remaining risks are application-layer concerns where Calimero deliberately delegates to the application's data model, or trust-assumption concerns where the design RAISES the bar (decision #23) but cannot eliminate the inherent risk of any cryptographic trust root.
