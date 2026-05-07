@@ -112,27 +112,38 @@ The following questions were considered and decided; they are recorded in §2 an
 
 **Summary**: Wire `compute_group_state_hash` through the admin API so callers can read the current group's governance state hash. Mirrors the existing context-state-hash on context info responses. Immediate value: e2e tests can poll for governance convergence instead of fixed-sleep waits. Includes a small API-level rename for naming consistency.
 
-**Naming convention**: the existing `root_hash` field on context responses is the **context state hash** (Merkle root over storage entries). The new field is the **group state hash** (governance state). To make the distinction unambiguous at the API surface:
-- Existing: `ContextWithExecutors.root_hash` → renamed to `context_state_hash` (Rust + JSON, snake_case throughout)
-- New: `GroupInfoApiResponseData.group_state_hash` (Rust + JSON, snake_case)
-- **Internal storage primitive `Snapshot::root_hash`** stays as-is (it really is the Merkle root hash of the storage tree; that's the right name in storage terminology, and renaming would cascade across ~50+ call sites for cosmetic gain).
+**Naming convention** (consistent across the three levels of state hash exposed by the admin API):
+
+| Level | Rust field | JSON field | Status |
+|---|---|---|---|
+| Context (storage Merkle root) | `context_state_hash` | `contextStateHash` | A1 (rename `root_hash`) |
+| Group (governance flat hash) | `group_state_hash` | `groupStateHash` | A1 (new field) |
+| Namespace (hierarchical Merkle) | `namespace_state_hash` | `namespaceStateHash` | A3, Phase 4 |
+
+**JSON casing is camelCase**, not snake_case — that's the dominant convention in `crates/server/primitives/src/admin/mod.rs` (161 of 179 admin response structs use `#[serde(rename_all = "camelCase")]`). Rust struct fields stay snake_case as Rust idiom; serde renames at serialize time.
+
+**Internal storage primitive `Snapshot::root_hash`** stays as-is (it really is the Merkle root hash of the storage tree — the right name in storage terminology — and renaming would cascade across ~50+ call sites for cosmetic gain).
 
 **Scope**:
-- Add `group_state_hash: String` (hex-encoded) to `GroupInfoApiResponseData` (`crates/server/primitives/src/admin/mod.rs:84`)
-- Compute via `compute_group_state_hash` (`crates/context/src/group_store/meta.rs:75`) in the handler
-- Rename `root_hash` → `context_state_hash` on `ContextWithExecutors` and any other admin-API response struct that exposes the context state hash today
-- Update merobox `WaitForSyncStep` to poll the renamed `context_state_hash` field (release cascade — paired update to merobox repo)
-- Document in admin API reference
+- Add `group_state_hash: String` (hex-encoded) to `GroupInfoApiResponseData` (`crates/server/primitives/src/admin/mod.rs:1679`)
+- Compute via `compute_group_state_hash` (`crates/context/src/group_store/meta.rs:75`) in `crates/server/src/admin/handlers/groups/get_group_info.rs`
+- Rename `root_hash` → `context_state_hash` on the public `Context` type (`crates/primitives/src/context.rs:99`) and on `ContextWithExecutors` (`crates/server/src/admin/handlers/context/get_contexts_with_executors_for_application.rs:17`)
+- Add `#[serde(rename_all = "camelCase")]` to `ContextWithExecutors` to make it consistent with the rest of the admin API (it's currently the outlier serializing as snake_case)
+- Update merobox `WaitForSyncStep` (`merobox/commands/bootstrap/steps/wait_for_sync.py`) to read `contextStateHash`; drop the `rootHash`/`root_hash` dual-fallback
+- Update merobox `commands/context.py` "Root Hash" display path
+- No internal `Snapshot::root_hash` / `meta.root_hash` / `context.root_hash` references touched
 
 **Acceptance criteria**:
-- `GET /admin-api/groups/:group_id` returns `group_state_hash` as hex string
-- Two nodes that have converged on governance state return identical `group_state_hash`
-- Two nodes that diverge (e.g. one missing a `MemberRemoved`) return different `group_state_hash`
-- Existing context endpoints return `context_state_hash` instead of `root_hash`
-- merobox e2e tests still work after the field rename
-- No internal references to `Snapshot::root_hash` are touched (verify with a `git diff` audit)
+- `GET /admin-api/groups/:group_id` returns `groupStateHash` (camelCase JSON) as hex string
+- `GET /admin-api/contexts/:id` returns `contextStateHash` instead of `rootHash`
+- Two nodes that have converged on governance state return identical `groupStateHash`
+- Two nodes that diverge (e.g. one missing a `MemberRemoved`) return different `groupStateHash`
+- merobox e2e tests still pass after the field rename
+- No internal references to `Snapshot::root_hash` / `meta.root_hash` / `context.root_hash` are touched (verify with `git diff`)
 
-**References**: §1 (problem — "no governance state hash on admin API"), `crates/context/src/group_store/meta.rs:75`, `crates/storage/src/snapshot.rs:35`
+**Open questions**: none.
+
+**References**: §1 (problem — "no governance state hash on admin API"), `crates/context/src/group_store/meta.rs:75`, `crates/storage/src/snapshot.rs:35`. Namespace-level `namespace_state_hash` deferred to A3.
 
 ---
 
@@ -143,12 +154,12 @@ The following questions were considered and decided; they are recorded in §2 an
 **Summary**: New merobox workflow step that polls `state_hash` across nodes and waits for convergence. Replaces fixed `wait, seconds: N` sleeps used today for governance ops in e2e tests.
 
 **Scope**:
-- Mirror `WaitForSyncStep` (which polls the renamed `context_state_hash` after A1) for the governance equivalent — a new step polls `group_state_hash`
+- Mirror `WaitForSyncStep` (which polls the renamed `contextStateHash` after A1) for the governance equivalent — a new step polls `groupStateHash`
 - Configurable timeout, poll interval, target node set
 - Document in merobox workflow reference
 
 **Acceptance criteria**:
-- e2e test using `wait_for_governance_sync` waits exactly until all listed nodes converge on the same `group_state_hash`, not a fixed duration
+- e2e test using `wait_for_governance_sync` waits exactly until all listed nodes converge on the same `groupStateHash`, not a fixed duration
 - Test with intentional divergence: step times out cleanly without false success
 - At least one existing e2e test (e.g. leave-context) migrated from `wait, seconds: N` to `wait_for_governance_sync`
 
@@ -164,17 +175,17 @@ The following questions were considered and decided; they are recorded in §2 an
 
 **Scope**:
 - Extract a small `MerkleTree` primitive (algorithm only, no persistence): `from_leaves(&[[u8;32]]) → root`, optional `proof(idx)` / `verify(root, proof, leaf)` if needed by future consumers
-- Define `NamespaceMerkle` composer that builds the tree from `[group_state_hash, governance_dag_root, snapshot_root, child_namespace_roots…]` for a given namespace
-- Expose via admin API
+- Define `compute_namespace_state_hash` (composer) that builds the tree from `[group_state_hash, governance_dag_root, snapshot_root, child_namespace_roots…]` for a given namespace
+- Expose `namespace_state_hash: String` (Rust) / `namespaceStateHash` (camelCase JSON) on the namespace info admin API response (`NamespaceApiResponse` in `crates/server/primitives/src/admin/mod.rs`)
 - Update `NamespaceStateBeacon` (E2) to optionally carry it
 
 **Acceptance criteria**:
 - `MerkleTree` primitive is pure-function, no I/O, unit-tested
-- `NamespaceMerkle` is deterministic across peers with the same governance + state
+- `namespace_state_hash` is deterministic across peers with the same governance + state subtree
 - Test: drift in a deeply nested context propagates to namespace root
 - Test: drift in governance state propagates to namespace root
-- API consumers can poll one hash to detect any subtree change
-- **Non-goal:** refactoring `compute_group_state_hash` or `Snapshot::root_hash` to use the new primitive — they stay as-is.
+- API consumers can poll one hash (`namespaceStateHash`) to detect any subtree change
+- **Non-goal:** refactoring `compute_group_state_hash` or `Snapshot::root_hash` to use the new primitive — they stay as-is. The naming pattern `{level}_state_hash` is preserved across all three exposed hashes (context / group / namespace).
 
 **References**: §2 decisions 14–15, §3 (state hash), A1, E2
 
