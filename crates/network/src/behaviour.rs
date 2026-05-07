@@ -108,7 +108,16 @@ impl Behaviour {
                     },
                     gossipsub: gossipsub::Behaviour::new(
                         gossipsub::MessageAuthenticity::Signed(key.clone()),
-                        gossipsub::Config::default(),
+                        // Lower backoffs so a leave/rejoin cycle on a
+                        // gossipsub topic re-forms the mesh within a few
+                        // heartbeats. Topic admission is gated by namespace
+                        // membership at the governance layer, so the
+                        // permissionless defaults are not needed.
+                        gossipsub::ConfigBuilder::default()
+                            .unsubscribe_backoff(1)
+                            .prune_backoff(Duration::from_secs(1))
+                            .build()
+                            .map_err(|e| eyre::eyre!("invalid gossipsub config: {e}"))?,
                     )?,
                     ping: ping::Behaviour::default(),
                     rendezvous: rendezvous::client::Behaviour::new(key.clone()),
