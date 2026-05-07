@@ -1,10 +1,26 @@
 name: Doc Auto-Update
 
+# Inlined from calimero-network/ai-code-reviewer reusable workflow at
+# SHA 71b0895c1908504b18f07f2856adfc9c8c8d1e4e, with one fix:
+# `cache: pip` removed from `actions/setup-python@v5`. The upstream sets
+# it unconditionally, but setup-python's pip cache requires a
+# requirements.txt or pyproject.toml in the calling repo — neither
+# exists here (core is Rust), so every run failed with:
+#   No file in /home/runner/work/core/core matched to
+#   [**/requirements.txt or **/pyproject.toml]
+# Tracked for an upstream fix; once that lands and we bump the pinned
+# install SHA, this can revert to a thin caller invoking the reusable
+# workflow.
+
 on:
   push:
     branches: [main, master]
   workflow_dispatch:
     inputs:
+      pr_number:
+        description: "PR number to generate docs for (leave blank to auto-detect)"
+        type: string
+        required: false
       dry_run:
         description: "Dry run: print changes without opening a PR"
         type: boolean
@@ -23,13 +39,89 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  doc-update:
-    # Pinned to a specific SHA on calimero-network/ai-code-reviewer (which
-    # uses `master`, not `main`) to prevent an upstream change from running
-    # with this repo's GH_PAT. Bump deliberately when adopting new features.
-    uses: calimero-network/ai-code-reviewer/.github/workflows/doc-update.yaml@71b0895c1908504b18f07f2856adfc9c8c8d1e4e
-    with:
-      dry_run: ${{ github.event.inputs.dry_run == 'true' }}
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GH_PAT: ${{ secrets.GH_PAT }}
+  update-docs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # NOTE: `cache: pip` deliberately omitted — see file-level comment.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Pinned to the same SHA as ai-review.yaml so both workflows install
+      # the audited version of ai-code-reviewer. Bump deliberately.
+      - name: Install ai-code-reviewer
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@71b0895c1908504b18f07f2856adfc9c8c8d1e4e
+
+      - name: Get merged PR number
+        id: pr
+        # All event-derived values flow through `env` so the shell only sees
+        # `"$VAR"` references; nothing is `${{ ... }}`-interpolated directly
+        # into a `run` block.
+        #
+        # PR detection uses the `commits/{sha}/pulls` API rather than grepping
+        # the commit message + falling back to `gh pr list --limit 1`. The
+        # API returns the PR that *introduced* this commit to the default
+        # branch, which is correct for both merge commits and squash/rebase
+        # merges — and unlike the time-ordered list, it doesn't race with
+        # other PRs that merge in the same window.
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          # 1. Explicit dispatch input wins, but only if it parses as digits.
+          #    Anything else is dropped so we fall through to auto-detect
+          #    (and so non-numeric input can't poison GITHUB_OUTPUT).
+          PR_NUM=""
+          if [[ "$INPUT_PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            PR_NUM="$INPUT_PR_NUMBER"
+          fi
+
+          # 2. Otherwise: which PR introduced this exact commit?
+          #    `// empty` in the jq filter prevents JSON `null` (the jq result
+          #    when the API returns []) from being printed as the literal
+          #    string "null". Without it, PR_NUM=null would pass the -z check
+          #    later and we'd hand "null" to ai-reviewer.
+          #    Errors are surfaced (no `2>/dev/null`); a real API failure
+          #    should be visible in logs rather than silently skipping.
+          if [ -z "$PR_NUM" ]; then
+            if ! PR_NUM=$(gh api "/repos/$REPO/commits/$SHA/pulls" --jq '.[0].number // empty'); then
+              echo "::warning::gh api commits/{sha}/pulls failed; doc update will be skipped"
+              PR_NUM=""
+            fi
+          fi
+
+          # Final sanity check: only forward digit-only values.
+          if [[ ! "$PR_NUM" =~ ^[0-9]+$ ]]; then
+            PR_NUM=""
+          fi
+
+          echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
+
+      - name: Generate and open doc update PR
+        if: steps.pr.outputs.number != ''
+        # Same defense-in-depth pattern as above: untrusted-ish values go
+        # through `env` so the shell never string-interpolates them.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          DRY_RUN_FLAG=()
+          if [ "$DRY_RUN" = "true" ]; then
+            DRY_RUN_FLAG=(--dry-run)
+          fi
+          ai-reviewer update-docs "$REPO" "$PR_NUMBER" "${DRY_RUN_FLAG[@]}"
+
+      - name: No PR detected
+        if: steps.pr.outputs.number == ''
+        run: echo "Could not detect a merged PR — skipping doc update."
