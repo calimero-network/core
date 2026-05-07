@@ -382,6 +382,41 @@
 </div>
 </div>
 
+<div class="card gc">
+<h3>Authorization-Aware Primitives</h3>
+<p style="margin-bottom:14px;">Storage wrappers that bind writes to specific identities. Authorization is enforced at merge time in <span class="code">Interface::apply_action</span> — peers verify each entry's owner stamp against the action signer before accepting the delta. This lets applications express trust boundaries directly in their state shape rather than building access control on top of plain CRDTs.</p>
+<div class="g2" style="margin-bottom:14px;">
+  <div class="cb">
+    <h4>UserStorage&lt;T&gt;</h4>
+    <p style="margin-top:8px;">Per-user slot keyed by <span class="code">PublicKey</span>. The executor can only write into their own slot (<span class="code">env::executor_id()</span>); reads are unrestricted. Internally an <span class="code">UnorderedMap&lt;PublicKey, T&gt;</span>.</p>
+  </div>
+  <div class="cb">
+    <h4>SharedStorage&lt;T&gt;</h4>
+    <p style="margin-top:8px;">A single value writable by any signer in a mutable <span class="code">writers</span> set. Any current writer can rotate the set unless it is frozen. The runtime signs each write; peers verify the signature against the stored writer set at merge time. See ADR&nbsp;0001 for the rotation-during-concurrent-write contract.</p>
+  </div>
+</div>
+<div class="g2" style="margin-bottom:14px;">
+  <div class="cb">
+    <h4>FrozenStorage&lt;T&gt;</h4>
+    <p style="margin-top:8px;">Content-addressable immutable storage. <span class="code">insert</span> returns a SHA-256 hash; reads are by hash. Same value always yields the same hash, and entries cannot be updated once written. Internally an <span class="code">UnorderedMap&lt;Hash, FrozenValue&lt;T&gt;&gt;</span> with first-write-wins semantics.</p>
+  </div>
+  <div class="cb">
+    <h4>AuthoredMap&lt;K, V&gt;</h4>
+    <p style="margin-top:8px;">Shared keyspace map with per-entry ownership. Any member can insert a new key; only the inserter can <span class="code">update</span> or <span class="code">remove</span> their own entries. Each entry carries a <span class="code">StorageType::User { owner }</span> stamp set from the executor's public key at insert time.</p>
+  </div>
+</div>
+<div class="g2">
+  <div class="cb">
+    <h4>AuthoredVector&lt;V&gt;</h4>
+    <p style="margin-top:8px;">Ordered shared vector with per-entry ownership. Any member can <span class="code">push</span>; only the pusher can <span class="code">update</span> or <span class="code">tombstone</span> their entry. There is no physical <span class="code">remove</span> — shifting indices would complicate concurrent-push merge semantics. Use <span class="code">tombstone(idx)</span> to retract a slot.</p>
+  </div>
+  <div class="cb">
+    <h4>Merge-time enforcement</h4>
+    <p style="margin-top:8px;">Local <span class="code">update</span>/<span class="code">remove</span> calls short-circuit non-owner attempts so bugs surface in-process, but the load-bearing check is at merge time: an action arriving from a peer is rejected unless its signature matches the entry's stored <span class="code">owner</span> (or, for <span class="code">SharedStorage</span>, a member of the current writer set).</p>
+  </div>
+</div>
+</div>
+
 <div class="card gb">
 <h3>Merge Semantics</h3>
 <p>All collections implement the <span class="code">Mergeable</span> trait. When state deltas arrive from peers, the storage layer calls <span class="code">merge()</span> on each affected entry. The merge is:</p>

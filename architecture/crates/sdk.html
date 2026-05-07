@@ -343,6 +343,56 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
   </div>
 </div>
 
+<h3 style="margin-top:18px;">Authorization-Aware Primitives</h3>
+<p style="margin-bottom:14px;">Wrappers that bind writes to specific identities. The runtime signs each mutating action with the executor's key, and peers verify the signature against the entry's stored owner (or, for <span class="code">SharedStorage</span>, the current writer set) before accepting a delta. Lets you express access control in the state shape itself.</p>
+
+<div class="g2" style="margin-bottom:16px;">
+  <div class="cb">
+    <h4 style="color:#22c55e;">UserStorage&lt;T&gt;</h4>
+    <p style="margin-top:8px;">Per-user slot keyed by <span class="code">PublicKey</span>. The executor can only write into their own slot; reads are unrestricted. Use for per-member preferences, profiles, or private-but-replicated state.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">use</span> calimero_sdk::collections::<span class="ty">UserStorage</span>;<br><br>
+<span class="kw">struct</span> <span class="ty">State</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">profile</span>: UserStorage&lt;Profile&gt;,<br>
+}
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:#22c55e;">SharedStorage&lt;T&gt;</h4>
+    <p style="margin-top:8px;">A single value writable by any signer in a mutable writer set. Any current writer can rotate the set unless it is frozen. Use for group-managed config or shared documents with a controlled author list.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">use</span> calimero_sdk::collections::<span class="ty">SharedStorage</span>;<br><br>
+<span class="kw">struct</span> <span class="ty">State</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">policy</span>: SharedStorage&lt;Policy&gt;,<br>
+}
+    </div>
+  </div>
+</div>
+
+<div class="g2" style="margin-bottom:16px;">
+  <div class="cb">
+    <h4 style="color:#22c55e;">FrozenStorage&lt;T&gt;</h4>
+    <p style="margin-top:8px;">Content-addressable immutable storage. <span class="code">insert</span> returns a SHA-256 hash; reads are by hash. Same value always yields the same hash; entries cannot be updated. Use for attachments, snapshots, or any data that should be append-only and de-duplicated.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">use</span> calimero_sdk::collections::<span class="ty">FrozenStorage</span>;<br><br>
+<span class="kw">struct</span> <span class="ty">State</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">attachments</span>: FrozenStorage&lt;Vec&lt;u8&gt;&gt;,<br>
+}
+    </div>
+  </div>
+  <div class="cb">
+    <h4 style="color:#22c55e;">AuthoredMap / AuthoredVector</h4>
+    <p style="margin-top:8px;">Shared keyspace with per-entry ownership. Any member can insert/push, but only the original author can <span class="code">update</span>, <span class="code">remove</span> (Map), or <span class="code">tombstone</span> (Vector) their own entries. Use for posts, comments, or any append-friendly collection where authorship matters.</p>
+    <div class="typedef" style="margin-top:10px;">
+<span class="kw">use</span> calimero_sdk::collections::{<span class="ty">AuthoredMap</span>, <span class="ty">AuthoredVector</span>};<br><br>
+<span class="kw">struct</span> <span class="ty">State</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">posts</span>: AuthoredMap&lt;PostId, Post&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">feed</span>: AuthoredVector&lt;Event&gt;,<br>
+}
+    </div>
+  </div>
+</div>
+
 <div class="cb" style="margin-bottom:0;">
   <h4 style="color:#06b6d4;">Mergeable Trait</h4>
   <p style="margin-top:8px;">Universal merge interface implemented by all CRDT types. The runtime calls <span class="code">merge()</span> automatically when applying incoming deltas from peers. Custom types can implement this trait for domain-specific merge logic.</p>
@@ -359,6 +409,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
   <div class="legend-item"><div class="ld" style="background:#3b82f6"></div>Collection (Set)</div>
   <div class="legend-item"><div class="ld" style="background:#f59e0b"></div>Register (LWW)</div>
   <div class="legend-item"><div class="ld" style="background:#8b5cf6"></div>Sequence (RGA)</div>
+  <div class="legend-item"><div class="ld" style="background:#22c55e"></div>Authorization-aware</div>
   <div class="legend-item"><div class="ld" style="background:#06b6d4"></div>Trait (Mergeable)</div>
 </div>
 </div>
