@@ -60,34 +60,34 @@ jobs:
 
       - name: Get merged PR number
         id: pr
-        # Untrusted values (commit message, dispatch inputs) flow through `env`
-        # so the shell only sees `"$VAR"` references — never string-interpolated
-        # via `${{ ... }}` directly into a script. Without this, a merged PR
-        # whose commit message contained backticks or `$(...)` could execute
-        # arbitrary commands with this job's `contents: write` /
-        # `pull-requests: write` permissions.
+        # All event-derived values flow through `env` so the shell only sees
+        # `"$VAR"` references; nothing is `${{ ... }}`-interpolated directly
+        # into a `run` block.
+        #
+        # PR detection uses the `commits/{sha}/pulls` API rather than grepping
+        # the commit message + falling back to `gh pr list --limit 1`. The
+        # API returns the PR that *introduced* this commit to the default
+        # branch, which is correct for both merge commits and squash/rebase
+        # merges — and unlike the time-ordered list, it doesn't race with
+        # other PRs that merge in the same window.
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
-          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SHA: ${{ github.sha }}
         run: |
-          # Prefer explicit input (workflow_dispatch), then commit message, then gh CLI
-          PR_NUM="$INPUT_PR_NUMBER"
-
-          if [ -z "$PR_NUM" ]; then
-            PR_NUM=$(echo "$HEAD_COMMIT_MESSAGE" | grep -oP '(?<=pull request #)\d+' | head -1 || true)
+          # 1. Explicit dispatch input wins, but only if it parses as digits.
+          #    Anything else is dropped so we fall through to auto-detect
+          #    (and so non-numeric input can't poison GITHUB_OUTPUT).
+          PR_NUM=""
+          if [[ "$INPUT_PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            PR_NUM="$INPUT_PR_NUMBER"
           fi
 
+          # 2. Otherwise: which PR introduced this exact commit?
           if [ -z "$PR_NUM" ]; then
-            PR_NUM=$(gh pr list \
-              --repo "$REPO" \
-              --state merged \
-              --base "$DEFAULT_BRANCH" \
-              --limit 1 \
-              --json number \
-              -q '.[0].number' 2>/dev/null || true)
+            PR_NUM=$(gh api "/repos/$REPO/commits/$SHA/pulls" \
+              --jq '.[0].number' 2>/dev/null || true)
           fi
 
           echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
@@ -103,11 +103,11 @@ jobs:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
-          DRY_RUN_FLAG=""
+          DRY_RUN_FLAG=()
           if [ "$DRY_RUN" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
+            DRY_RUN_FLAG=(--dry-run)
           fi
-          ai-reviewer update-docs "$REPO" "$PR_NUMBER" $DRY_RUN_FLAG
+          ai-reviewer update-docs "$REPO" "$PR_NUMBER" "${DRY_RUN_FLAG[@]}"
 
       - name: No PR detected
         if: steps.pr.outputs.number == ''
