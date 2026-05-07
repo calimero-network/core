@@ -147,23 +147,33 @@ The following questions were considered and decided; they are recorded in §2 an
 
 ---
 
-#### A2 — `wait_for_governance_sync` workflow step in merobox
+#### A2 — Extend `wait_for_sync` to support governance convergence
 
 **Phase**: 1 · **Size**: M (release cascade) · **Depends on**: A1 · **Blocks**: e2e tests for any governance-related work
 
-**Summary**: New merobox workflow step that polls `state_hash` across nodes and waits for convergence. Replaces fixed `wait, seconds: N` sleeps used today for governance ops in e2e tests.
+**Summary**: Extend the existing merobox `wait_for_sync` workflow step (rather than introducing a separate `wait_for_governance_sync`) so it can wait for state convergence (`contextStateHash`), governance convergence (`groupStateHash`), or both — depending on which IDs the test specifies. Single concept ("wait for things to be in sync"), one step type, optional fields. Replaces fixed `wait, seconds: N` sleeps used today for both state-only and governance-only e2e scenarios.
+
+**Why unified instead of a separate step**: most governance-touching tests *also* care that state has converged (e.g. "removed X; verify their writes don't leak"). A unified step handles mixed scenarios in one poll loop with `max(state_time, governance_time)` instead of `state_time + governance_time` of two sequential steps. State-only and governance-only tests pay nothing extra — they just specify the relevant ID.
 
 **Scope**:
-- Mirror `WaitForSyncStep` (which polls the renamed `contextStateHash` after A1) for the governance equivalent — a new step polls `groupStateHash`
-- Configurable timeout, poll interval, target node set
-- Document in merobox workflow reference
+- Make `context_id` optional on `wait_for_sync` (currently required)
+- Add optional `group_id` parameter
+- At least one of `context_id` / `group_id` must be specified (validation error otherwise)
+- If `context_id` provided, poll `contextStateHash` per existing logic
+- If `group_id` provided, poll `groupStateHash` via the group info endpoint (`GET /admin-api/groups/:group_id`)
+- If both provided, poll both endpoints in parallel; success requires both to converge
+- Update merobox workflow reference docs to describe the three usage patterns (state-only / governance-only / mixed)
+- No new step type — same `wait_for_sync` keyword
 
 **Acceptance criteria**:
-- e2e test using `wait_for_governance_sync` waits exactly until all listed nodes converge on the same `groupStateHash`, not a fixed duration
-- Test with intentional divergence: step times out cleanly without false success
-- At least one existing e2e test (e.g. leave-context) migrated from `wait, seconds: N` to `wait_for_governance_sync`
+- Existing tests that use `wait_for_sync: { context_id }` continue to work unchanged
+- `wait_for_sync: { group_id }` waits exactly until all listed nodes converge on the same `groupStateHash`, not a fixed duration
+- `wait_for_sync: { context_id, group_id }` waits for both to converge (success only when both match across nodes)
+- Validation: `wait_for_sync` with neither id specified errors clearly
+- Test with intentional governance divergence: step times out cleanly without false success
+- At least one existing e2e test (e.g. leave-context) migrated from `wait, seconds: N` to `wait_for_sync` with `group_id`
 
-**References**: A1, `merobox` repository
+**References**: A1, `merobox` repository, [merobox PR #223](https://github.com/calimero-network/merobox/pull/223) (initial paired update for A1; A2 extension lands in same PR)
 
 ---
 
