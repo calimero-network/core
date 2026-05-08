@@ -203,6 +203,23 @@ impl Handler<JoinContextRequest> for ContextManager {
                             sender_key: None,
                         },
                     )?;
+
+                    // Clear any leave-tombstone written by a previous
+                    // `leave_context` for this `(member, context)` pair —
+                    // explicit rejoin means the user is opting back in, so
+                    // auto-follow should not see the marker on future events.
+                    let marker_key = calimero_store::key::ContextLeftMarker::new(
+                        context_id,
+                        joiner_identity,
+                    );
+                    if let Err(err) = handle.delete(&marker_key) {
+                        warn!(
+                            %context_id,
+                            ?err,
+                            "join_context: failed to clear leave marker — \
+                             auto-follow may continue to skip this context until cleared"
+                        );
+                    }
                 }
 
                 node_client.subscribe(&context_id).await?;

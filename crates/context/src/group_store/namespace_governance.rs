@@ -762,6 +762,7 @@ impl<'a> NamespaceGovernance<'a> {
             // as its parent).
             let meta = calimero_store::key::GroupMetaValue {
                 admin_identity: op.signer,
+                owner_identity: op.signer,
                 target_application_id: parent_meta.target_application_id,
                 app_key: [0u8; 32],
                 upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),

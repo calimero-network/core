@@ -124,6 +124,23 @@ impl PredefinedEntry for key::ContextIdentity {
     type DataType<'a> = ContextIdentity;
 }
 
+/// Tombstone value for `key::ContextLeftMarker`. Stores when the user explicitly
+/// left this context on this node (millis since epoch). Presence of the row is
+/// what matters for the auto-follow gate; the timestamp is for diagnostics.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "Tombstone value — additions would need a migration"
+)]
+pub struct ContextLeftMarker {
+    pub left_at_ms: u64,
+}
+
+impl PredefinedEntry for key::ContextLeftMarker {
+    type Codec = Borsh;
+    type DataType<'a> = ContextLeftMarker;
+}
+
 /// DAG delta data (persisted)
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug)]
 pub struct ContextDagDelta {

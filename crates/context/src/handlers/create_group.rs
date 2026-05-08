@@ -111,6 +111,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     upgrade_policy,
                     created_at: now,
                     admin_identity: admin_identity.into(),
+                    // Creator is the initial Owner. Transferable via
+                    // `GroupOp::TransferOwnership`.
+                    owner_identity: admin_identity.into(),
                     migration: None,
                     auto_join: true,
                 };

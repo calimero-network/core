@@ -1689,6 +1689,13 @@ pub struct GroupInfoApiResponseData {
     pub subgroup_visibility: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// Hex-encoded SHA-256 hash of the group's authorization-relevant
+    /// state. Mirrors `contextStateHash` on context responses; lets
+    /// clients poll for governance convergence across nodes.
+    // Explicit rename pins the JSON name even if the Rust field is
+    // refactored, matching the same pattern as `contextStateHash`.
+    #[serde(rename = "groupStateHash")]
+    pub group_state_hash: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2224,6 +2231,51 @@ pub struct JoinContextApiResponse {
 #[serde(rename_all = "camelCase")]
 pub struct JoinContextApiResponseData {
     pub context_id: ContextId,
+    pub member_public_key: PublicKey,
+}
+
+// ---- Leave Context (local-only opt-out) ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveContextApiResponse {
+    pub data: LeaveContextApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveContextApiResponseData {
+    pub context_id: ContextId,
+    pub member_public_key: PublicKey,
+}
+
+// ---- Leave Group (distributed self-leave op) ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveGroupApiResponse {
+    pub data: LeaveGroupApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveGroupApiResponseData {
+    pub group_id: String,
+    pub member_public_key: PublicKey,
+}
+
+// ---- Leave Namespace (cascading self-leave) ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveNamespaceApiResponse {
+    pub data: LeaveNamespaceApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveNamespaceApiResponseData {
+    pub namespace_id: String,
     pub member_public_key: PublicKey,
 }
 

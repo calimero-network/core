@@ -62,9 +62,16 @@ pub fn enumerate_all_groups(
 
 /// Compute a deterministic SHA-256 hash of the group's authorization-relevant state.
 ///
-/// Covers members (sorted by public key) + roles + admin identity + target application.
-/// This hash is embedded in each SignedGroupOp to ensure ops can only apply against
-/// the exact state they were signed against, preventing divergence from concurrent ops.
+/// Covers members (sorted by public key) + roles + admin identity + owner identity +
+/// target application. This hash is embedded in each SignedGroupOp to ensure ops can
+/// only apply against the exact state they were signed against, preventing divergence
+/// from concurrent ops.
+///
+/// `owner_identity` is part of the hash because it gates a real authorization decision:
+/// `TransferOwnership`, `GroupDelete`, and the `CannotRemoveOwner` check on
+/// `MemberRemoved` all branch on the current owner. Without including it, two ops
+/// signed before and after a `TransferOwnership` would compute the same state hash and
+/// the divergence-prevention check would fail to detect that ownership changed.
 pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> EyreResult<[u8; 32]> {
     let meta = load_group_meta(store, group_id)?
         .ok_or_else(|| eyre::eyre!("group not found for state hash computation"))?;
@@ -75,6 +82,7 @@ pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> Eyr
     let mut hasher = Sha256::new();
     hasher.update(group_id.to_bytes());
     hasher.update(AsRef::<[u8]>::as_ref(&meta.admin_identity));
+    hasher.update(AsRef::<[u8]>::as_ref(&meta.owner_identity));
     hasher.update(meta.target_application_id.as_ref());
     for (pk, role) in &members {
         hasher.update(AsRef::<[u8]>::as_ref(pk));

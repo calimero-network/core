@@ -9,7 +9,7 @@ description = "Core Calimero infrastructure and tools"
 # Update workspace metadata (see docs/RELEASE.md for versioning and release)
 [workspace.metadata.workspaces]
 # Shared version of all public crates; bump this when cutting a release.
-version = "0.10.1-rc.32"
+version = "0.10.1-rc.35"
 exclude = [
     "./apps/abi_conformance",
     "./apps/blobs",
@@ -30,7 +30,7 @@ exclude = [
     "./apps/private_data",
     "./apps/state-schema-conformance",
     "./apps/xcall-example",
-    "./apps/e2e-kv-store",
+    "./apps/scaffolding-e2e",
     "./crates/merod",
     "./crates/meroctl",
     "./crates/build-utils",
@@ -74,7 +74,7 @@ members = [
     "./crates/utils/actix",
     "./crates/wasm-abi",
 
-    "./apps/e2e-kv-store",
+    "./apps/scaffolding-e2e",
     "./apps/kv-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",

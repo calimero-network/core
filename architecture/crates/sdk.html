@@ -364,7 +364,66 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
-     5. SAMPLE APPS
+     5. MERGEABLE STATE LINT
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Mergeable State Lint</h2>
+<p style="margin-bottom:18px;">A compile-time check, applied by <span class="code">#[app::state]</span> and <span class="code">#[derive(Mergeable)]</span>, that rejects field types which cannot participate in CRDT merging. Without it, those fields silently fail to converge across replicas — the worst class of distributed-systems bug, because there is no error and no log line, just data that quietly disagrees.</p>
+
+<div class="cb" style="margin-bottom:18px;">
+  <h4 style="color:#ef4444;">The problem</h4>
+  <p style="margin-top:8px;">In Calimero, two nodes can independently update the same logical state and later sync. Convergence requires every persistent field to know how to merge with another copy of itself — that's the contract <span class="code">Mergeable</span> encodes. Std collections (<span class="code">HashMap</span>, <span class="code">BTreeMap</span>, <span class="code">Vec</span>, ...) and bare primitives (<span class="code">String</span>, <span class="code">u64</span>, ...) have no such contract; before this lint, they would compile fine, get persisted as opaque blobs, and silently diverge.</p>
+  <p style="margin-top:10px;">A particularly subtle variant: <span class="code">LwwRegister&lt;HashMap&lt;K, V&gt;&gt;</span>. The wrapper makes the whole field <span class="code">Mergeable</span>, so the type system accepts it — but merging happens at the <em>register</em> level (last-write-wins on the entire map), not at the <em>map entry</em> level. Two nodes inserting different keys concurrently will see one set of inserts win and the other vanish.</p>
+</div>
+
+<div class="cb" style="margin-bottom:18px;">
+  <h4 style="color:#10b981;">What the lint rejects</h4>
+  <p style="margin-top:8px;">Walking the AST of every field in a <span class="code">#[app::state]</span> struct (and every field of every <span class="code">#[derive(Mergeable)]</span> struct), recursing into generic arguments:</p>
+  <ul style="margin-top:10px; padding-left:20px;">
+    <li><strong>Forbidden anywhere in the type tree:</strong> <span class="code">HashMap</span>, <span class="code">BTreeMap</span>, <span class="code">HashSet</span>, <span class="code">BTreeSet</span>, <span class="code">LinkedList</span>, <span class="code">VecDeque</span>. These have no merge semantics at any depth — including inside <span class="code">LwwRegister&lt;_&gt;</span>.</li>
+    <li><strong>Forbidden at the field root only:</strong> bare <span class="code">Vec</span>, bare <span class="code">String</span>, bare primitives (<span class="code">u8..u128</span>, <span class="code">i8..i128</span>, <span class="code">f32</span>/<span class="code">f64</span>, <span class="code">bool</span>, <span class="code">char</span>). Inside CRDT collections their use is fine — e.g. <span class="code">UnorderedMap&lt;String, _&gt;</span> uses <span class="code">String</span> as a key, which is just bytes; only the value side has to be <span class="code">Mergeable</span>.</li>
+    <li><strong>Allowed transparently:</strong> <span class="code">Option&lt;T&gt;</span> and <span class="code">Box&lt;T&gt;</span> pass through to their inner type; the lint applies as if the wrapper weren't there.</li>
+  </ul>
+</div>
+
+<div class="cb" style="margin-bottom:18px;">
+  <h4 style="color:#f59e0b;">Example diagnostic</h4>
+  <div class="typedef" style="margin-top:10px; white-space:pre-wrap;">error: (calimero)&gt; `HashMap` is not allowed here — std collections are not CRDTs and would silently diverge across replicas. Use `UnorderedMap&lt;K, V&gt;` from `calimero_storage::collections` instead.
+
+       If you genuinely need a non-CRDT type, skip `#[app::state]` / `#[derive(Mergeable)]` and implement `Mergeable` by hand — but understand that any non-CRDT field will not converge across replicas.
+  --&gt; tests/compile_fail/state_hashmap_in_lww.rs:12:24
+   |
+12 |     items: LwwRegister&lt;HashMap&lt;String, String&gt;&gt;,
+   |                        ^^^^^^^</div>
+</div>
+
+<div class="cb" style="margin-bottom:18px;">
+  <h4 style="color:#6366f1;">#[derive(Mergeable)]</h4>
+  <p style="margin-top:8px;">Companion proc-macro for user-defined structs that need to live inside CRDT collections (<span class="code">UnorderedMap&lt;_, V&gt;</span>, <span class="code">Vector&lt;V&gt;</span>, ...). Runs the same field-level lint and generates a field-by-field <span class="code">Mergeable</span> impl that delegates to each field's own <span class="code">merge()</span>. Re-exported as <span class="code">calimero_sdk::app::Mergeable</span>.</p>
+  <div class="typedef" style="margin-top:10px;">
+<span class="kw">use</span> calimero_sdk::app::<span class="ty">Mergeable</span>;<br>
+<span class="kw">use</span> calimero_storage::collections::{<span class="ty">Counter</span>, <span class="ty">LwwRegister</span>};<br><br>
+<span class="kw">#[derive(Mergeable)]</span><br>
+<span class="kw">pub struct</span> <span class="ty">UserStats</span> {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">visits</span>: Counter,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">name</span>: LwwRegister&lt;String&gt;,<br>
+}
+  </div>
+  <p style="margin-top:10px;">Enums are rejected by the derive — there is no canonical merge rule for "left side is <span class="code">VariantA</span>, right side is <span class="code">VariantB</span>". Wrap in <span class="code">LwwRegister&lt;MyEnum&gt;</span> for last-write-wins, or implement <span class="code">Mergeable</span> by hand.</p>
+</div>
+
+<div class="cb" style="margin-bottom:0;">
+  <h4 style="color:#ec4899;">Escape hatch</h4>
+  <p style="margin-top:8px;">There is no attribute opt-out. The only way to put a non-CRDT field in persistent state is to <em>not</em> use <span class="code">#[app::state]</span> / <span class="code">#[derive(Mergeable)]</span> and implement <span class="code">Mergeable</span> by hand. This is intentional: any non-CRDT field will not converge, and we want that decision to require explicit code, not a flag. The hand-rolled impl on <span class="code">FileRecord</span> in <span class="code">apps/blobs</span> is a worked example — atomic LWW on an <span class="code">uploaded_at</span> timestamp, justified inline.</p>
+</div>
+
+<div style="margin-top:14px; font-size:0.85em; color:#6b6b80;">
+  Implementation: <span class="code">crates/sdk/macros/src/forbidden_types.rs</span>. Negative tests: <span class="code">crates/sdk/tests/compile_fail/</span>. Originally landed in <a href="https://github.com/calimero-network/core/pull/2276" target="_blank" rel="noopener">PR #2276</a>.
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     6. SAMPLE APPS
      ═══════════════════════════════════════════════════════════════════ -->
 <div class="card gd">
 <h2>Sample Apps</h2>

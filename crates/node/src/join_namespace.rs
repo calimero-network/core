@@ -178,6 +178,7 @@ pub async fn join_namespace(
         let admin_identity = PublicKey::from(invitation.invitation.inviter_identity.to_bytes());
         let meta = GroupMetaValue {
             admin_identity,
+            owner_identity: admin_identity,
             target_application_id: ApplicationId::from([0u8; 32]),
             app_key: [0u8; 32],
             upgrade_policy: UpgradePolicy::default(),

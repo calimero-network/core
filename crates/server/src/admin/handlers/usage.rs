@@ -232,6 +232,7 @@ mod tests {
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
             admin_identity: node_identity_pk,
+            owner_identity: node_identity_pk,
             migration: None,
             auto_join: true,
         };
@@ -288,6 +289,7 @@ mod tests {
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
             admin_identity: node_sk.public_key(),
+            owner_identity: node_sk.public_key(),
             migration: None,
             auto_join: true,
         };

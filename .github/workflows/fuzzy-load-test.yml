@@ -60,7 +60,7 @@ on:
         default: ""
         type: string
       test_app:
-        description: "Run specific app test (kv-store, kv-store-with-handlers, group-governance, or all)"
+        description: "Run specific app test (kv-store, kv-store-with-handlers, scaffolding-e2e, group-governance, or all)"
         required: false
         default: "all"
         type: choice
@@ -68,6 +68,7 @@ on:
           - all
           - kv-store
           - kv-store-with-handlers
+          - scaffolding-e2e
           - group-governance
       enable_profiling:
         description: "Use profiling image (merod:edge-profiling) with CPU and memory profiling enabled"
@@ -130,12 +131,21 @@ jobs:
         env:
           WASM_PROFILING: "true"
 
+      - name: Build scaffolding-e2e app
+        run: |
+          cd apps/scaffolding-e2e
+          ./build.sh
+        env:
+          WASM_PROFILING: "true"
+
       - name: Verify WASM files exist
         run: |
           ls -la apps/kv-store/res/
           ls -la apps/kv-store-with-handlers/res/
+          ls -la apps/scaffolding-e2e/res/
           test -f apps/kv-store/res/kv_store.wasm
           test -f apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+          test -f apps/scaffolding-e2e/res/scaffolding_e2e.wasm
 
       # Use artifacts for same-run handoff between jobs (faster than cache for this use case)
       - name: Upload build artifacts
@@ -145,6 +155,7 @@ jobs:
           path: |
             apps/kv-store/res/*.wasm
             apps/kv-store-with-handlers/res/*.wasm
+            apps/scaffolding-e2e/res/*.wasm
             contracts/near
           retention-days: 1
 
@@ -189,8 +200,7 @@ jobs:
             DURATION="15"
           fi
           echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
-          cd workflows/fuzzy-tests/kv-store
-          sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
+          sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" workflows/fuzzy-tests/kv-store/fuzzy-test.yml
 
       - name: Create directories
         run: |
@@ -250,7 +260,6 @@ jobs:
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
           mkdir -p fuzzy-test-logs/kv-store/docker-logs
-          cd workflows/fuzzy-tests/kv-store
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
@@ -309,10 +318,10 @@ jobs:
           set +e
           set -o pipefail
           merobox bootstrap run \
-              fuzzy-test.yml \
+              workflows/fuzzy-tests/kv-store/fuzzy-test.yml \
               --image "$IMAGE" \
               --e2e-mode \
-              --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store/merobox-output.log
+              --verbose 2>&1 | tee fuzzy-test-logs/kv-store/merobox-output.log
 
           exit_code=$?
           set +o pipefail
@@ -453,8 +462,7 @@ jobs:
             DURATION="15"
           fi
           echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
-          cd workflows/fuzzy-tests/kv-store-with-handlers
-          sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
+          sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" workflows/fuzzy-tests/kv-store-with-handlers/fuzzy-test.yml
 
       - name: Create directories
         run: |
@@ -514,7 +522,6 @@ jobs:
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
           mkdir -p fuzzy-test-logs/kv-store-with-handlers/docker-logs
-          cd workflows/fuzzy-tests/kv-store-with-handlers
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
@@ -567,10 +574,10 @@ jobs:
           set +e
           set -o pipefail
           merobox bootstrap run \
-              fuzzy-test.yml \
+              workflows/fuzzy-tests/kv-store-with-handlers/fuzzy-test.yml \
               --image "$IMAGE" \
               --e2e-mode \
-              --verbose 2>&1 | tee ../../../fuzzy-test-logs/kv-store-with-handlers/merobox-output.log
+              --verbose 2>&1 | tee fuzzy-test-logs/kv-store-with-handlers/merobox-output.log
 
           exit_code=$?
           set +o pipefail
@@ -669,23 +676,19 @@ jobs:
           retention-days: 30
           compression-level: 6
 
-  fuzzy-test-group-governance:
-    name: Run Group Governance Fuzzy Test with Profiling
+  fuzzy-test-scaffolding-e2e:
+    name: Run Scaffolding E2E Fuzzy Test with Profiling
     needs: build
     runs-on: big-machine
     timeout-minutes: 150
     outputs:
-      test_passed: ${{ steps.set-result-gov.outputs.passed }}
-      exit_code: ${{ steps.gov-test.outputs.exit_code }}
-    if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'group-governance' || github.event.inputs.test_app == ''
+      test_passed: ${{ steps.set-result-e2e.outputs.passed }}
+      exit_code: ${{ steps.e2e-test.outputs.exit_code }}
+    if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'scaffolding-e2e' || github.event.inputs.test_app == ''
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # Under workflow_run, github.sha is the default-branch HEAD —
-          # not the commit Release actually built from. Pin to the
-          # upstream commit so the fuzzy run's source tree matches the
-          # image. Falls back to github.sha for push / workflow_dispatch.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Download build artifacts
@@ -709,8 +712,254 @@ jobs:
             DURATION="15"
           fi
           echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
-          cd workflows/fuzzy-tests/group-governance
-          sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" fuzzy-test.yml
+          sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" workflows/fuzzy-tests/scaffolding-e2e/fuzzy-test.yml
+
+      - name: Create directories
+        run: |
+          mkdir -p fuzzy-test-logs/scaffolding-e2e
+          mkdir -p profiling-data/scaffolding-e2e
+          mkdir -p profiling-reports/scaffolding-e2e
+
+      - name: Determine image to use
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x scripts/determine-image-tag.sh
+          if [ "${{ github.event.inputs.enable_profiling }}" = "false" ]; then
+            ./scripts/determine-image-tag.sh \
+              "${{ github.event_name }}" \
+              "${{ github.event.pull_request.number || '0' }}" \
+              "${{ github.repository_owner }}" \
+              "${{ github.repository }}" \
+              "${{ github.head_ref || github.ref_name }}" \
+              "${{ github.token }}"
+            echo "profiling=false" >> $GITHUB_OUTPUT
+          else
+            ./scripts/determine-image-tag.sh \
+              "${{ github.event_name }}" \
+              "${{ github.event.pull_request.number || '0' }}" \
+              "${{ github.repository_owner }}" \
+              "${{ github.repository }}" \
+              "${{ github.head_ref || github.ref_name }}" \
+              "${{ github.token }}" \
+              --profiling
+            echo "profiling=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Pull Docker image
+        run: |
+          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          docker pull "$IMAGE" || true
+
+      - name: Setup vmagent for metrics collection
+        id: setup-vmagent-e2e
+        run: |
+          chmod +x scripts/setup-vmagent.sh
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          ./scripts/setup-vmagent.sh \
+            "scaffolding-e2e" \
+            "scaffolding-e2e-${SHORT_COMMIT}" \
+            "${{ github.run_id }}" \
+            "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
+            "8431" \
+            "$COMMIT_HASH" \
+            "${{ github.ref_name }}"
+
+      - name: Run Scaffolding E2E Fuzzy Test with Metrics Collection
+        id: e2e-test
+        run: |
+          chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
+          mkdir -p fuzzy-test-logs/scaffolding-e2e/docker-logs
+
+          echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+          TEST_CASE="scaffolding-e2e"
+          COMMIT_HASH="${{ github.sha }}"
+          SHORT_COMMIT="${COMMIT_HASH:0:7}"
+          INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
+          IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+
+          VMAGENT_STARTED="false"
+          if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
+            "$TEST_CASE" "$INSTANCE_NAME" "${{ github.run_id }}" "$COMMIT_HASH" "${{ github.ref_name }}" \
+            "${{ steps.setup-vmagent-e2e.outputs.vmagent_dir }}" \
+            "${{ steps.setup-vmagent-e2e.outputs.victoria_url }}" \
+            "${{ steps.setup-vmagent-e2e.outputs.auth_enabled }}" \
+            "${{ steps.setup-vmagent-e2e.outputs.bearer_token_file }}" \
+            "8431" "fuzzy-e2e-node" "4" "3001" "2"; then
+            VMAGENT_STARTED="true"
+          fi
+
+          UPDATE_PID=""
+          VMAGENT_PID=""
+          if [ "$VMAGENT_STARTED" = "true" ]; then
+            UPDATE_PID=$(grep "^update_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+            VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
+          fi
+
+          LOGDIR="$GITHUB_WORKSPACE/fuzzy-test-logs/scaffolding-e2e/docker-logs"
+          WATCHER_STATE_DIR="$(mktemp -d)"
+          (
+            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+              for c in $(docker ps --filter "label=calimero.node=true" \
+                                   --format "{{.Names}}" 2>/dev/null \
+                         | grep -v -- '-init$' || true); do
+                mark="$WATCHER_STATE_DIR/${c}"
+                if [ ! -f "$mark" ]; then
+                  touch "$mark"
+                  echo "[log-watcher] following $c"
+                  docker logs -f --timestamps "$c" \
+                    > "$LOGDIR/${c}.log" 2>&1 &
+                fi
+              done
+              sleep 1
+            done
+          ) &
+          WATCHER_PID=$!
+
+          set +e
+          set -o pipefail
+          merobox bootstrap run \
+              workflows/fuzzy-tests/scaffolding-e2e/fuzzy-test.yml \
+              --image "$IMAGE" \
+              --e2e-mode \
+              --verbose 2>&1 | tee fuzzy-test-logs/scaffolding-e2e/merobox-output.log
+
+          exit_code=$?
+          set +o pipefail
+
+          touch "$WATCHER_STATE_DIR/stop"
+          sleep 2
+          kill "$WATCHER_PID" 2>/dev/null || true
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
+
+          echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+
+          "$GITHUB_WORKSPACE/scripts/cleanup-vmagent.sh" \
+            "$TEST_CASE" \
+            "$UPDATE_PID" \
+            "$VMAGENT_PID" \
+            "/tmp/vmagent_scrape_${TEST_CASE}.yml" \
+            "/tmp/vmagent-${TEST_CASE}.log"
+
+          exit $exit_code
+
+      - name: Collect profiling data from containers
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          chmod +x scripts/profiling/collect-from-containers.sh
+          ./scripts/profiling/collect-from-containers.sh \
+            "scaffolding-e2e" \
+            "fuzzy-test-logs/scaffolding-e2e" \
+            "profiling-data/scaffolding-e2e" \
+            "profiling-reports/scaffolding-e2e"
+
+      - name: Collect profiling data from host-side bind mounts
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          chmod +x scripts/profiling/harvest-host-profiling.sh
+          ./scripts/profiling/harvest-host-profiling.sh \
+            "workflows/fuzzy-tests/scaffolding-e2e/data" \
+            "profiling-data/scaffolding-e2e"
+
+      - name: Set test result
+        id: set-result-e2e
+        if: always()
+        run: |
+          EXIT_CODE="${{ steps.e2e-test.outputs.exit_code }}"
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Collect Scaffolding E2E node logs
+        if: always()
+        run: |
+          find workflows/fuzzy-tests/scaffolding-e2e -type d -name "logs" 2>/dev/null | while read logdir; do
+            relpath=$(echo "$logdir" | sed 's|workflows/fuzzy-tests/scaffolding-e2e/||')
+            mkdir -p "fuzzy-test-logs/scaffolding-e2e/$relpath"
+            cp -r "$logdir"/* "fuzzy-test-logs/scaffolding-e2e/$relpath/" 2>/dev/null || true
+          done
+
+      - name: Collect and upload vmagent logs
+        if: always()
+        run: |
+          if [ -f /tmp/vmagent-scaffolding-e2e.log ]; then
+            mkdir -p fuzzy-test-logs/scaffolding-e2e
+            cp /tmp/vmagent-scaffolding-e2e.log fuzzy-test-logs/scaffolding-e2e/vmagent.log
+            [ -f /tmp/vmagent_scrape_scaffolding-e2e.yml ] && \
+              cp /tmp/vmagent_scrape_scaffolding-e2e.yml fuzzy-test-logs/scaffolding-e2e/vmagent_config.yml
+          fi
+
+      - name: Upload Scaffolding E2E test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzzy-test-scaffolding-e2e-${{ github.run_number }}-${{ github.run_id }}
+          path: fuzzy-test-logs/scaffolding-e2e/
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload Scaffolding E2E profiling data
+        if: always() && steps.image.outputs.profiling == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-data-scaffolding-e2e-${{ github.run_number }}-${{ github.run_id }}
+          path: profiling-data/scaffolding-e2e/
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload Scaffolding E2E profiling reports
+        if: always() && steps.image.outputs.profiling == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-reports-scaffolding-e2e-${{ github.run_number }}-${{ github.run_id }}
+          path: profiling-reports/scaffolding-e2e/
+          retention-days: 30
+          compression-level: 6
+
+  fuzzy-test-group-governance:
+    name: Run Group Governance Fuzzy Test with Profiling
+    needs: build
+    runs-on: big-machine
+    timeout-minutes: 150
+    outputs:
+      test_passed: ${{ steps.set-result-gov.outputs.passed }}
+      exit_code: ${{ steps.gov-test.outputs.exit_code }}
+    if: github.event.inputs.test_app == 'all' || github.event.inputs.test_app == 'group-governance' || github.event.inputs.test_app == ''
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: fuzzy-test-build-artifacts
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Override test duration
+        # Default is 15 minutes for routine triggers and 60 minutes for
+        # the nightly schedule. See the equivalent step in
+        # fuzzy-test-kv-store for details.
+        run: |
+          if [ -n "${{ github.event.inputs.duration_override }}" ]; then
+            DURATION="${{ github.event.inputs.duration_override }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            DURATION="60"
+          else
+            DURATION="15"
+          fi
+          echo "Using duration: ${DURATION} minutes (trigger: ${{ github.event_name }})"
+          sed -i "s/\(duration_minutes: \)[0-9]*/\1$DURATION/" workflows/fuzzy-tests/group-governance/fuzzy-test.yml
 
       - name: Create directories
         run: |
@@ -770,7 +1019,6 @@ jobs:
         run: |
           chmod +x scripts/run-vmagent.sh scripts/cleanup-vmagent.sh
           mkdir -p fuzzy-test-logs/group-governance/docker-logs
-          cd workflows/fuzzy-tests/group-governance
 
           echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
@@ -798,8 +1046,6 @@ jobs:
             VMAGENT_PID=$(grep "^vmagent_pid=" $GITHUB_OUTPUT | tail -1 | cut -d= -f2 || echo "")
           fi
 
-          # Live docker-logs watcher — see the kv-store job for the
-          # rationale (merobox tears containers down on exit).
           LOGDIR="$GITHUB_WORKSPACE/fuzzy-test-logs/group-governance/docker-logs"
           WATCHER_STATE_DIR="$(mktemp -d)"
           (
@@ -823,10 +1069,10 @@ jobs:
           set +e
           set -o pipefail
           merobox bootstrap run \
-              fuzzy-test.yml \
+              workflows/fuzzy-tests/group-governance/fuzzy-test.yml \
               --image "$IMAGE" \
               --e2e-mode \
-              --verbose 2>&1 | tee ../../../fuzzy-test-logs/group-governance/merobox-output.log
+              --verbose 2>&1 | tee fuzzy-test-logs/group-governance/merobox-output.log
 
           exit_code=$?
           set +o pipefail
@@ -840,7 +1086,6 @@ jobs:
           echo "end_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
 
-          # Cleanup vmagent
           "$GITHUB_WORKSPACE/scripts/cleanup-vmagent.sh" \
             "$TEST_CASE" \
             "$UPDATE_PID" \
@@ -927,7 +1172,7 @@ jobs:
 
   test-summary:
     name: Test Summary
-    needs: [fuzzy-test-kv-store, fuzzy-test-handlers, fuzzy-test-group-governance]
+    needs: [fuzzy-test-kv-store, fuzzy-test-handlers, fuzzy-test-scaffolding-e2e, fuzzy-test-group-governance]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -972,6 +1217,16 @@ jobs:
             echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
           else
             echo "**FAILED** (exit code: ${{ needs.fuzzy-test-handlers.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### E2E KV Store Test" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.fuzzy-test-scaffolding-e2e.result }}" = "skipped" ]; then
+            echo "**SKIPPED**" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.fuzzy-test-scaffolding-e2e.outputs.test_passed }}" = "true" ]; then
+            echo "**PASSED**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**FAILED** (exit code: ${{ needs.fuzzy-test-scaffolding-e2e.outputs.exit_code }})" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 

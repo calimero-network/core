@@ -15,7 +15,8 @@ use crate::group::{
     DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
     GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetNamespaceIdentityRequest, JoinContextRequest,
-    JoinGroupRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    JoinGroupRequest, LeaveContextRequest, LeaveGroupRequest, LeaveNamespaceRequest,
+    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
     RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest, SetGroupAliasRequest,
     SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetSubgroupVisibilityRequest,
@@ -331,6 +332,18 @@ pub enum ContextMessage {
     JoinContext {
         request: JoinContextRequest,
         outcome: oneshot::Sender<<JoinContextRequest as Message>::Result>,
+    },
+    LeaveContext {
+        request: LeaveContextRequest,
+        outcome: oneshot::Sender<<LeaveContextRequest as Message>::Result>,
+    },
+    LeaveGroup {
+        request: LeaveGroupRequest,
+        outcome: oneshot::Sender<<LeaveGroupRequest as Message>::Result>,
+    },
+    LeaveNamespace {
+        request: LeaveNamespaceRequest,
+        outcome: oneshot::Sender<<LeaveNamespaceRequest as Message>::Result>,
     },
     SetMemberCapabilities {
         request: SetMemberCapabilitiesRequest,

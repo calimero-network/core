@@ -25,8 +25,8 @@ use crate::admin::handlers::applications::{
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_group, get_context_identities,
     get_context_ids, get_context_storage, get_contexts_for_application,
-    get_contexts_with_executors_for_application, invite_specialized_node, join_context, sync,
-    update_context_application,
+    get_contexts_with_executors_for_application, invite_specialized_node, join_context,
+    leave_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
@@ -192,6 +192,10 @@ pub(crate) fn setup(
             post(groups::remove_group_members::handler),
         )
         .route(
+            "/groups/:group_id/leave",
+            post(groups::leave_group::handler),
+        )
+        .route(
             "/groups/:group_id/members/:identity/role",
             put(groups::update_member_role::handler),
         )
@@ -230,6 +234,10 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/join",
             post(join_context::handler),
+        )
+        .route(
+            "/contexts/:context_id/leave",
+            post(leave_context::handler),
         )
         .route(
             "/groups/:group_id/members/:identity/capabilities",
@@ -271,6 +279,10 @@ pub(crate) fn setup(
         .route(
             "/namespaces/:namespace_id/join",
             post(namespaces::join_namespace::handler),
+        )
+        .route(
+            "/namespaces/:namespace_id/leave",
+            post(namespaces::leave_namespace::handler),
         )
         .route(
             "/namespaces/:namespace_id/identity",
