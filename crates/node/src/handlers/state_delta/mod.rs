@@ -55,6 +55,11 @@ async fn lookup_group_key_with_wait(
 ) -> Result<Option<calimero_primitives::identity::PrivateKey>> {
     use tokio::time::{sleep, Instant};
 
+    // Explicit single-shot path: when max_wait is zero we want exactly
+    // one lookup with no polling, regardless of the relationship
+    // between max_wait and STATE_DELTA_KEY_LOOKUP_POLL. Without this,
+    // single-shot semantics depend on POLL > 0, which is fragile.
+    let single_shot = max_wait.is_zero();
     let deadline = Instant::now() + max_wait;
     let mut logged_wait = false;
     loop {
@@ -79,6 +84,10 @@ async fn lookup_group_key_with_wait(
 
         if let Some(k) = resolved {
             return Ok(Some(calimero_primitives::identity::PrivateKey::from(k)));
+        }
+
+        if single_shot {
+            return Ok(None);
         }
 
         // Stop before sleeping if the next poll wouldn't fit inside
