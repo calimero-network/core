@@ -23,8 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use actix::{
-    Actor, ActorFutureExt, Addr, ArbiterHandle, AsyncContext, Context, Handler, Message,
-    WrapFuture,
+    Actor, ActorFutureExt, Addr, ArbiterHandle, AsyncContext, Context, Handler, Message, WrapFuture,
 };
 use tracing::{debug, info, warn};
 
@@ -185,10 +184,7 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
 /// pool and pass it here rather than letting this function call
 /// `Arbiter::new()` itself — the latter only works when a `System`
 /// is registered on the calling thread.
-pub fn start_state_delta_actor(
-    arbiter: &ArbiterHandle,
-    capacity: usize,
-) -> StateDeltaSender {
+pub fn start_state_delta_actor(arbiter: &ArbiterHandle, capacity: usize) -> StateDeltaSender {
     let dropped_total = Arc::new(AtomicU64::new(0));
     let dropped_for_actor = Arc::clone(&dropped_total);
 

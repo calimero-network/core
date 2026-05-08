@@ -36,12 +36,12 @@ pub use network_event_channel::{
     channel as network_event_channel, NetworkEventChannelConfig, NetworkEventSender,
 };
 pub use network_event_processor::NetworkEventBridge;
-pub use state_delta_bridge::{
-    start_state_delta_actor, StateDeltaActor, StateDeltaJob, StateDeltaSendError,
-    StateDeltaSender, STATE_DELTA_CHANNEL_CAPACITY, STATE_DELTA_PARALLELISM,
-};
 pub use run::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 pub(crate) use state::{CachedBlob, NodeClients, NodeManagers, NodeState};
+pub use state_delta_bridge::{
+    start_state_delta_actor, StateDeltaActor, StateDeltaJob, StateDeltaSendError, StateDeltaSender,
+    STATE_DELTA_CHANNEL_CAPACITY, STATE_DELTA_PARALLELISM,
+};
 pub use sync::SyncManager;
 
 #[cfg(test)]
