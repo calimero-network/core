@@ -23,7 +23,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use actix::{
-    Actor, ActorFutureExt, Addr, Arbiter, AsyncContext, Context, Handler, Message, WrapFuture,
+    Actor, ActorFutureExt, Addr, ArbiterHandle, AsyncContext, Context, Handler, Message,
+    WrapFuture,
 };
 use tracing::{debug, info, warn};
 
@@ -175,27 +176,30 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
     }
 }
 
-/// Boot the [`StateDeltaActor`] on its own dedicated Arbiter and
-/// return a [`StateDeltaSender`] for the dispatch site to hold.
+/// Boot the [`StateDeltaActor`] on the supplied dedicated Arbiter
+/// and return a [`StateDeltaSender`] for the dispatch site to hold.
 ///
-/// The returned `Arbiter` handle should be stopped during graceful
-/// shutdown. Mirrors the existing `NetworkEventBridge` lifecycle pair
-/// (`NetworkEventBridge::shutdown_handle` + `Arbiter::stop`).
-pub fn start_state_delta_actor(capacity: usize) -> (StateDeltaSender, Arbiter) {
+/// The Actix `System` lives on a different thread from the tokio
+/// runtime in this codebase (`ArbiterPool` runs `System::new()` in
+/// `spawn_blocking`), so callers obtain an `ArbiterHandle` from the
+/// pool and pass it here rather than letting this function call
+/// `Arbiter::new()` itself — the latter only works when a `System`
+/// is registered on the calling thread.
+pub fn start_state_delta_actor(
+    arbiter: &ArbiterHandle,
+    capacity: usize,
+) -> StateDeltaSender {
     let dropped_total = Arc::new(AtomicU64::new(0));
     let dropped_for_actor = Arc::clone(&dropped_total);
 
-    let arbiter = Arbiter::new();
-    let addr = StateDeltaActor::start_in_arbiter(&arbiter.handle(), move |_ctx| {
+    let addr = StateDeltaActor::start_in_arbiter(arbiter, move |_ctx| {
         StateDeltaActor::new(capacity, dropped_for_actor)
     });
 
-    let sender = StateDeltaSender {
+    StateDeltaSender {
         addr,
         dropped_total,
-    };
-
-    (sender, arbiter)
+    }
 }
 
 #[cfg(test)]
@@ -203,14 +207,15 @@ mod tests {
     use super::*;
 
     /// Sender wrapper compiles, clones, and exposes a working
-    /// `dropped_total` handle.
+    /// `dropped_total` handle when started on a fresh Actix Arbiter
+    /// inside an Actix `System` (which `#[actix::test]` provides).
     #[actix::test]
     async fn sender_clones_and_starts_with_zero_drops() {
-        let (sender, arbiter) = start_state_delta_actor(8);
+        let arbiter = actix::Arbiter::new();
+        let sender = start_state_delta_actor(&arbiter.handle(), 8);
         assert_eq!(sender.dropped_total.load(Ordering::Relaxed), 0);
         let _clone = sender.clone();
-        // Stop the arbiter so the test exits cleanly.
-        arbiter.stop();
+        let _stopped = arbiter.stop();
     }
 
     // Functional tests of `handle_state_delta` itself live in the

@@ -35,6 +35,7 @@ use crate::arbiter_pool::ArbiterPool;
 use crate::gc::GarbageCollector;
 use crate::network_event_channel::{self, NetworkEventChannelConfig};
 use crate::network_event_processor::NetworkEventBridge;
+use crate::state_delta_bridge::{start_state_delta_actor, STATE_DELTA_CHANNEL_CAPACITY};
 use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
 
@@ -250,6 +251,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         ns_join_rx,
     );
 
+    // Spin up the dedicated StateDelta actor on its own Arbiter
+    // BEFORE constructing NodeManager so the sender can be threaded
+    // through. The arbiter is drawn from `arbiter_pool` (which owns
+    // the Actix `System`); see issue #2299.
+    let state_delta_arbiter = arbiter_pool.get().await?;
+    let state_delta_tx =
+        start_state_delta_actor(&state_delta_arbiter, STATE_DELTA_CHANNEL_CAPACITY);
+
     let node_manager = NodeManager::new(
         blob_store.clone(),
         sync_manager.clone(),
@@ -257,6 +266,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
         datastore.clone(),
         node_state.clone(),
+        state_delta_tx,
     );
 
     // Start NodeManager actor and get its address
@@ -303,8 +313,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 tracing::warn!("Network event bridge stopped: {:?}", res);
             }
             res = &mut arbiter_pool.system_handle => {
-                // Signal bridge shutdown before exiting
+                // Signal bridge shutdown before exiting. The
+                // StateDelta arbiter is owned by the system and
+                // shuts down with it.
                 bridge_shutdown.notify_one();
+                let _ = &state_delta_arbiter;
                 break res?;
             }
         }
