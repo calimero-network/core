@@ -1010,7 +1010,7 @@ jobs:
             "group-governance-${SHORT_COMMIT}" \
             "${{ github.run_id }}" \
             "${{ secrets.VICTORIA_LB_METRICS_BEARER_TOKEN }}" \
-            "8431" \
+            "8432" \
             "$COMMIT_HASH" \
             "${{ github.ref_name }}"
 
@@ -1035,7 +1035,7 @@ jobs:
             "${{ steps.setup-vmagent-gov.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent-gov.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent-gov.outputs.bearer_token_file }}" \
-            "8431" "fuzzy-gov-node" "4" "3001" "2"; then
+            "8432" "fuzzy-gov-node" "4" "3001" "2"; then
             VMAGENT_STARTED="true"
           fi
 

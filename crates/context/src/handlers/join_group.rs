@@ -368,11 +368,24 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                 // The static `op_events::NOTIFIER` cannot
                                 // be dropped at runtime today, so this
                                 // branch is functionally unreachable. If
-                                // a future refactor changes that, fall
-                                // through to the deadline check rather
-                                // than spinning on a permanently-closed
-                                // channel.
-                                break;
+                                // a future refactor changes that, surface
+                                // a typed Err for the same reason the
+                                // deadline branch above does — joining
+                                // without a usable group key would leave
+                                // the caller in the "joined but unusable"
+                                // condition this PR's typed-error contract
+                                // is meant to prevent. `break` here would
+                                // bypass the deadline check and fall
+                                // through to `Ok(JoinGroupResponse)`;
+                                // `continue` would tight-loop on a
+                                // permanently-closed channel until the
+                                // deadline fires. Returning Err is the
+                                // only outcome consistent with the
+                                // contract.
+                                return Err(eyre::eyre!(
+                                    "KeyDelivery channel closed before group key arrived for {group_id:?}: \
+                                     join cannot proceed without a usable group key"
+                                ));
                             }
                             Err(_) => continue, // timeout slice — outer deadline check handles exit
                         }

@@ -175,6 +175,11 @@ steps:
       - name: "set_and_verify"
         weight: 50
         steps:
+          # Auto-captures: key → {{fuzzy_key}}, value → {{fuzzy_value}}.
+          # merobox's fuzzy_test runner exposes the most recent `set`
+          # call's `key` and `value` args under these template names so
+          # the subsequent `get` and `assert` can read back what was
+          # just written without re-templating.
           - type: call
             node: "{{random_node}}"
             context_id: "{{group_ctx_id}}"
@@ -243,6 +248,9 @@ steps:
       - name: "cross_node_write_read"
         weight: 10
         steps:
+          # Auto-captures: key → {{fuzzy_key}}, value → {{fuzzy_value}}
+          # (see set_and_verify for details). The cross-node `get`
+          # below reads back the same key on a different node.
           - type: call
             node: fuzzy-gov-node-1
             context_id: "{{group_ctx_id}}"
