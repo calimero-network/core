@@ -58,16 +58,21 @@ async fn lookup_group_key_with_wait(
     let deadline = Instant::now() + max_wait;
     let mut logged_wait = false;
     loop {
-        let store = context_client.datastore();
-        let direct = calimero_context::group_store::load_group_key_by_id(store, group_id, key_id)?;
-        let resolved = match direct {
-            Some(k) => Some(k),
-            None => {
-                let ns_id = calimero_context::group_store::resolve_namespace(store, group_id)?;
-                if &ns_id != group_id {
-                    calimero_context::group_store::load_group_key_by_id(store, &ns_id, key_id)?
-                } else {
-                    None
+        // Scope the &Store borrow to a sub-block so it cannot be
+        // mistaken for being held across the sleep below.
+        let resolved = {
+            let store = context_client.datastore();
+            let direct =
+                calimero_context::group_store::load_group_key_by_id(store, group_id, key_id)?;
+            match direct {
+                Some(k) => Some(k),
+                None => {
+                    let ns_id = calimero_context::group_store::resolve_namespace(store, group_id)?;
+                    if &ns_id != group_id {
+                        calimero_context::group_store::load_group_key_by_id(store, &ns_id, key_id)?
+                    } else {
+                        None
+                    }
                 }
             }
         };
@@ -76,7 +81,10 @@ async fn lookup_group_key_with_wait(
             return Ok(Some(calimero_primitives::identity::PrivateKey::from(k)));
         }
 
-        if Instant::now() >= deadline {
+        // Stop before sleeping if the next poll wouldn't fit inside
+        // the deadline — bounds wall-time at exactly `max_wait`
+        // instead of `max_wait + STATE_DELTA_KEY_LOOKUP_POLL`.
+        if Instant::now() + STATE_DELTA_KEY_LOOKUP_POLL > deadline {
             return Ok(None);
         }
 
