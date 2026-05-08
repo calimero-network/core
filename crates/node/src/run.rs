@@ -314,10 +314,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             }
             res = &mut arbiter_pool.system_handle => {
                 // Signal bridge shutdown before exiting. The
-                // StateDelta arbiter is owned by the system and
+                // StateDelta arbiter handle (`state_delta_arbiter`)
+                // lives until this function returns; the underlying
+                // Actix arbiter thread is owned by the System and
                 // shuts down with it.
                 bridge_shutdown.notify_one();
-                let _ = &state_delta_arbiter;
                 break res?;
             }
         }
