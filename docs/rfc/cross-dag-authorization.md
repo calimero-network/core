@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Roadmap — issue-ready |
-| **Date** | 2026-05-07 |
+| **Date** | 2026-05-08 |
 | **Authors** | sandi@calimero.network |
 | **Scope** | Governance DAG ↔ State DAG coordination, member removal & leave semantics, convergence detection, eclipse / DoS surface |
 | **Related** | [#2233](https://github.com/calimero-network/core/issues/2233), [#2237](https://github.com/calimero-network/core/issues/2237), [#2280](https://github.com/calimero-network/core/pull/2280), [#2284](https://github.com/calimero-network/core/pull/2284), [`docs/adr/0001-shared-storage-concurrent-rotation.md`](../adr/0001-shared-storage-concurrent-rotation.md) |
@@ -97,8 +97,8 @@ Reorganized around the **unification thesis** (§2 decisions 20-21): the load-be
 | Phase | Items | Goal | Status |
 |---|---|---|---|
 | **1 — Observability** | ~~A1~~, ~~A2~~, E2 | Convergence detection across nodes; foundation for E1 bootstrap. | A1+A2 done ([#2289](https://github.com/calimero-network/core/pull/2289), [merobox#223](https://github.com/calimero-network/merobox/pull/223)+[#224](https://github.com/calimero-network/merobox/pull/224)); E2 left. |
-| **2 — The Unifier** (sequential) | B1 → B2 → B3 → C4, plus C1, C2 | The cross-DAG primitive. After this, B3 is the only authorization rule. C1/C2 deterministic cuts make removals well-defined causally. | not started |
-| **3 — Codebase cleanup** | S1–S16 | Collapse the patchwork B3 makes redundant; close key-lifecycle gaps; consolidate authorization-check duplication; decouple cryptography from visibility model; centralize writer-set resolution; type-shape refactors of surviving code (illegal-states-unrepresentable, newtype discipline, unified error contract). **Net code deletion + tighter types on what stays.** S13 + S15 are pre-requisites for B3 and slot into Phase 2. | not started |
+| **2 — The Unifier** (sequential) | ~~B1~~ → ~~B2~~ → ~~B3~~ → C4, plus C1, C2 | The cross-DAG primitive. After this, B3 is the only authorization rule. C1/C2 deterministic cuts make removals well-defined causally. | **B1+B2+B3 done** ([#2298](https://github.com/calimero-network/core/pull/2298)); C4 + C1 + C2 left. |
+| **3 — Codebase cleanup** | S1–S12, ~~S13~~, S14–S16 | Collapse the patchwork B3 makes redundant; close key-lifecycle gaps; consolidate authorization-check duplication; decouple cryptography from visibility model; centralize writer-set resolution; type-shape refactors of surviving code (illegal-states-unrepresentable, newtype discipline, unified error contract). **Net code deletion + tighter types on what stays.** S15 was anticipated as a pre-requisite for B3 but the implementation didn't end up needing the `SignerId` newtype split — kept on the cleanup track for general type discipline. | **S13 done** as part of [#2298](https://github.com/calimero-network/core/pull/2298); S1–S12 + S14–S16 not started. |
 | **4 — Removal flow & recovery** | C3, C5, C6 | Owner override, snapshots, rebuild tool. Built on the unifier. | not started |
 | **5 — Encrypted-by-default & anchored sync** | D5, E1, E3, E4 | Encrypt RootOps with namespace key; eclipse-resistant join via Owner/TEE anchors; ongoing sync targets the trusted-anchor set. | not started |
 | **6 — Defense-in-depth** | D1, D3, D4, A3 | Now-clearly-optional layers: network deny-list, K0 deprecation, rate limits, hierarchical Merkle. | not started |
@@ -106,6 +106,12 @@ Reorganized around the **unification thesis** (§2 decisions 20-21): the load-be
 ### Side findings exposed by completed work
 
 - **Subgroup state-hash divergence on join via invitation** ([#2292](https://github.com/calimero-network/core/pull/2292)) — pre-existing bug surfaced by A1's `groupStateHash` field. `join_group.rs:97-98` pre-populated `target_application_id = ZERO`, while inviters had the real value. Inheritance via `create_group_in_namespace` propagated the divergence to subgroups. Fixed by extending `SignedGroupOpenInvitation` with an unsigned `application_id` field. Lands with the e2e migration PR. *Underlying cleanup tracked as S1.*
+
+- **B2 lazy-drain deadlock** ([#2298](https://github.com/calimero-network/core/pull/2298)) — the originally-shipped B2 drained the governance-pending buffer only on incoming state-delta receives. The 3-node E2E exposed the deadlock case: node-1 broadcasts a single state delta, node-2 buffers it for missing governance heads, no further state delta arrives to trigger drain, never converges. **Fix**: added an active-drain hook in the namespace-governance apply path so a governance op landing fires drain across all pending contexts. Lazy drain stays as the steady-state path; active drain handles the quiescent case.
+
+- **Sender-side TOCTOU race in `compute_governance_position_for_context`** ([#2298](https://github.com/calimero-network/core/pull/2298)) — `compute_group_state_hash` and `read_head_record` are non-atomic relative to each other. A governance op landing between the two reads produces a position whose hash and heads describe different states. Worked around with a double-read pattern (read heads → compute hash → re-read heads → bail if heads changed). A true atomic fix requires refactoring those helpers to share a single store `Handle` for snapshot-consistent reads — *tracked as a focused follow-up*, not blocking #2298.
+
+- **Wire-format DoS bound enforcement at three layers** ([#2298](https://github.com/calimero-network/core/pull/2298)) — `MAX_GOVERNANCE_DAG_HEADS = 32` enforced at: borsh `BorshDeserialize` (rejects pre-allocation), serde `deserialize_with` (rejects post-allocation for JSON), `GovernancePosition::new()` constructor (rejects local construction), and a runtime guard inside `membership_status_at`. The constructor + serde checks were added after PR review showed the borsh-only check left bypass paths via direct construction and JSON.
 
 ---
 
@@ -118,7 +124,7 @@ All blocking unknowns are resolved. What's left are per-issue design questions �
 | **U7** | Snapshot trigger and frequency. Periodic (every N ops, every T seconds) or Owner-triggered? Per-namespace configurable? | C5 |
 | **U9** | K0 grace period length. Per-namespace configurable? | D3 |
 | **U11** | `MemberRestored` semantics. Is the restored member assigned to a specific role (Member by default), or restored to whatever role they had before removal? Are post-cut writes that were buffered now applied, or do they remain rejected? | C3 |
-| **U12** | B2 buffer eviction policy. Bounded buffer for buffered-on-unknown deltas creates a DoS surface (attacker floods with deltas referencing future governance state). Max size, eviction strategy, rate limit? | B2 |
+| ~~**U12**~~ | ~~B2 buffer eviction policy.~~ **Resolved in [#2298](https://github.com/calimero-network/core/pull/2298)**: per-context cap = `MAX_GOVERNANCE_PENDING_PER_CONTEXT = 256` with FIFO eviction; per-delta `governance_drain_attempts: u8` with `MAX_GOVERNANCE_DRAIN_ATTEMPTS = 16`; duplicate-delta-id detection on push. Two drain triggers (lazy on state-delta receive + active on governance-op apply). | ~~B2~~ done |
 
 ### Decisions reached during review (for reference)
 
@@ -245,9 +251,14 @@ The following questions were considered and decided; they are recorded in §2 an
 
 ---
 
-#### B1 — Add `governance_position` field to ContextDagDelta / CausalDelta
+#### B1 — Add `governance_position` field to ContextDagDelta / CausalDelta ✅ DONE
 
-**Phase**: 2 · **Size**: M · **Depends on**: — · **Blocks**: B2, B3, C1, C2, C4, A3
+**Phase**: 2 · **Size**: M · **Depends on**: — · **Blocks**: B2, B3, C1, C2, C4, A3 · **Status**: landed in [#2298](https://github.com/calimero-network/core/pull/2298)
+
+**As-shipped notes**:
+* `GovernancePosition` lives in `calimero-context-config::types`. Wire format on `BroadcastMessage::StateDelta` is `Option<GovernancePosition>` — `None` for legacy non-group contexts, with the receiver verifying via `get_group_for_context` to prevent malicious bypass.
+* Bounded by `MAX_GOVERNANCE_DAG_HEADS = 32` at three layers: manual `BorshDeserialize` (rejects pre-allocation), serde `deserialize_with` (rejects post-allocation for JSON), `GovernancePosition::new()` constructor (rejects local construction), and a runtime guard inside `membership_status_at` (defense-in-depth).
+* Sender uses a double-read pattern in `compute_governance_position_for_context` to mitigate the read-heads / compute-hash / read-heads TOCTOU race — drops the position rather than ship inconsistent values.
 
 **Summary**: Replace the dead `governance_epoch: Vec<[u8; 32]>` field on state deltas with a `GovernancePosition` struct that carries the full cross-DAG reference (group_id, state_hash, governance DAG heads) at sign time. This is the foundational primitive that lets receivers enforce cross-DAG authorization.
 
@@ -270,9 +281,16 @@ The following questions were considered and decided; they are recorded in §2 an
 
 ---
 
-#### B2 — Receiver-side buffering on unknown governance state
+#### B2 — Receiver-side buffering on unknown governance state ✅ DONE
 
-**Phase**: 2 · **Size**: M · **Depends on**: B1 · **Blocks**: B3
+**Phase**: 2 · **Size**: M · **Depends on**: B1 · **Blocks**: B3 · **Status**: landed in [#2298](https://github.com/calimero-network/core/pull/2298)
+
+**As-shipped notes**:
+* Per-context `governance_pending: VecDeque<BufferedDelta>` on `NodeState`, capped at `MAX_GOVERNANCE_PENDING_PER_CONTEXT = 256` with FIFO eviction.
+* Two drain triggers: **lazy** (on every state-delta receive for the same context — cheap and self-clearing during steady-state traffic) and **active** (hooked into the namespace-governance apply path — fires when a governance op lands and unblocks pending state deltas). Without the active path, the lazy drain alone deadlocks when the only state delta in flight is one waiting for that very governance op (caught by the e2e 3-node test).
+* Per-delta `governance_drain_attempts: u8` counter on `BufferedDelta`, dropped after `MAX_GOVERNANCE_DRAIN_ATTEMPTS = 16` to bound retry resource use.
+* Pop-then-process pattern (one delta at a time) so a panic mid-iteration only loses the in-flight delta, not the rest of the queue.
+* Duplicate-delta-id detection on push to handle gossipsub re-delivery cleanly.
 
 **Summary**: When a state delta arrives whose `governance_position` references governance DAG heads the receiver doesn't have yet, buffer the delta. Apply only after the local governance DAG has caught up and the referenced state hash matches. If the state hash mismatches after catch-up, reject (Byzantine sender or stale claim).
 
@@ -294,9 +312,15 @@ The following questions were considered and decided; they are recorded in §2 an
 
 ---
 
-#### B3 — Apply-time membership check via governance_position
+#### B3 — Apply-time membership check via governance_position ✅ DONE (state-delta path)
 
-**Phase**: 2 · **Size**: M · **Depends on**: B1, B2 · **Blocks**: C4, C6
+**Phase**: 2 · **Size**: M · **Depends on**: B1, B2 · **Blocks**: C4, C6 · **Status**: state-delta path landed in [#2298](https://github.com/calimero-network/core/pull/2298); `User`-storage `apply_action` extension still pending.
+
+**As-shipped notes**:
+* `handle_state_delta` calls `membership_status_at(author_id, governance_position)` and matches on the four-variant result: `Member` → continue to apply path; `Removed { last_role }` / `NeverMember` → reject + warn (D1 hint included for `Removed`); `Unknown { needed }` → buffer (B2); `Err` (hash mismatch / corruption) → reject + warn.
+* `is_read_only_for_context` check kept in two places: `handle_state_delta` (fast-path rejection before drain + B3) and `apply_authorized_state_delta` (defense-in-depth covering the governance-pending drain path that doesn't go through the entry handler).
+* Anti-bypass: when `governance_position == None`, the receiver verifies the context is genuinely non-group via `get_group_for_context` — a group context with missing position is rejected as a likely bypass attempt.
+* The `User`-storage extension at `crates/storage/src/interface.rs::apply_action` is **not yet** done and remains in scope for a follow-up. Today only the state-delta receive path enforces.
 
 **Summary**: Replace today's "is the signer currently a member?" with "was the signer a member at the governance state this delta references?" The check is a pure function of `(delta.signer, delta.governance_position, governance DAG)`. Subsumes `is_read_only_for_context` and extends membership check to `User`-storage actions (which today have no membership check at all).
 
@@ -768,9 +792,20 @@ These issues *delete code* that becomes redundant once B3 is the load-bearing au
 
 ---
 
-#### S13 — `MembershipStatus` enum (make illegal states unrepresentable)
+#### S13 — `MembershipStatus` enum (make illegal states unrepresentable) ✅ DONE
 
-**Phase**: 2 (pre-requisite for B3) · **Size**: S · **Depends on**: — · **Blocks**: B3, S10
+**Phase**: 2 (pre-requisite for B3) · **Size**: S · **Depends on**: — · **Blocks**: B3, S10 · **Status**: landed in [#2298](https://github.com/calimero-network/core/pull/2298) together with B1+B2+B3.
+
+**As-shipped notes**:
+* `MembershipStatus` enum has four variants: `Member(role)`, `Removed { last_role }`, `NeverMember`, `Unknown { needed: Vec<[u8; 32]> }`.
+* `Unknown` carries the *full set* of missing governance heads (not just the first), so B2 buffers once and waits for all of them in parallel rather than O(n) sequential buffer-and-retry round-trips.
+* `membership_status_at(store, signer, position)` has three branches:
+  * **Fast path** — when local heads match `position.governance_dag_heads`, consult the materialized member set directly. Verifies `position.group_state_hash` against the locally-computed hash; mismatch → `Err` (tampering or local divergence). On this path the materialized set drops removed entries, so it conflates `Removed` into `NeverMember` — documented at the function level with instruction to callers to treat both as "not currently a member."
+  * **Unknown** — any referenced head missing from local op log → `Unknown { needed }`.
+  * **Prefix walk** — heads known but local DAG advanced past them. BFS through `parent_op_hashes` from `target_heads`, decrypts `NamespaceOp::Group` entries via local keyring (key selected by op `key_id`), replays the membership state machine for the signer, returns the full distinction. Bounded by `MAX_PREFIX_WALK_NODES = 10_000` (combined `visited + to_visit` ceiling) to cap resource use on adversarial DAGs.
+* Tests: 14 unit tests on the resolver state machine (including 2000 random sequences via seeded xorshift64 + exhaustive 0–4-length sequences over the 4-element alphabet); 7 integration tests on `membership_status_at` against an in-memory `Store` covering all three branches + bypass paths.
+
+**Original spec preserved below for context.**
 
 **Summary**: `crates/context/src/group_store/mod.rs:748-780` and surrounding lookup paths express membership as `Option<GroupMemberRole>` — `None` silently means "not a member." Call sites that forget to add an explicit membership check pass through the `None` arm without flagging. B3's apply-time check needs richer information than this: *was this signer a member at governance_position X, and if not, are they removed (cut-position known) or never a member?* The bool/Option encoding cannot carry that distinction.
 
