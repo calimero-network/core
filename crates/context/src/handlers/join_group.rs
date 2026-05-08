@@ -89,11 +89,23 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     let admin_identity = calimero_primitives::identity::PublicKey::from(
                         invitation.invitation.inviter_identity.to_bytes(),
                     );
+                    // Use the application_id carried in the invitation when
+                    // present (added so joiners pre-populate `GroupMetaValue`
+                    // with the real value instead of zero — without it,
+                    // `compute_group_state_hash` diverges between the
+                    // originator and joining peers because
+                    // target_application_id is part of the hash). Falls
+                    // back to zero for backwards compatibility with
+                    // pre-field invitations; the zero case is
+                    // self-healing on the next context registration.
+                    let target_application_id =
+                        calimero_primitives::application::ApplicationId::from(
+                            invitation.application_id.unwrap_or([0u8; 32]),
+                        );
                     let meta = calimero_store::key::GroupMetaValue {
                         admin_identity,
                         owner_identity: admin_identity,
-                        target_application_id:
-                            calimero_primitives::application::ApplicationId::from([0u8; 32]),
+                        target_application_id,
                         app_key: [0u8; 32],
                         upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
                         migration: None,

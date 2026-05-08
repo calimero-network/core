@@ -91,9 +91,18 @@ steps:
     group_id: '{{subgroup_id}}'
 
   # MemberLeft has to propagate via gossip before peers reflect it.
-  - name: Wait for MemberLeft to propagate to node-1
-    type: wait
-    seconds: 5
+  # wait_for_sync polls groupStateHash across remaining members until
+  # they agree, replacing the old fixed-duration wait. Excludes node-2
+  # because it just left and `get_group_info` rejects callers who are
+  # no longer members of the group.
+  - name: Wait for MemberLeft to propagate to remaining members
+    type: wait_for_sync
+    group_id: '{{subgroup_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-3
+    timeout: 30
+    check_interval: 2
 
   - name: List subgroup members on node-1 after node-2 left
     type: list_group_members

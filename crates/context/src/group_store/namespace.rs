@@ -250,9 +250,35 @@ pub fn create_recursive_invitations(
             .sign(&hash)
             .map_err(|e| eyre::eyre!("signing: {e}"))?;
 
+        // Carry the real application_id so the joiner can pre-populate
+        // GroupMetaValue correctly. Without this, joiners would write
+        // target_application_id = ZERO and compute_group_state_hash
+        // would diverge from the inviter's view persistently.
+        //
+        // If meta is unexpectedly missing (e.g. partial-write state — child
+        // index says the group exists but no meta row yet), warn loudly and
+        // fall back to None so the joiner gets the same zero placeholder it
+        // would have had before this fix. We don't bail because that would
+        // poison the entire recursive-invitation set on a single bad
+        // descendant; the joiner's existing zero-app self-heal path
+        // (`context_registration::register_context_in_group`) covers the
+        // missing-meta case the same way it covered it pre-fix.
+        let application_id = match super::load_group_meta(store, &gid)? {
+            Some(meta) => Some(*meta.target_application_id.as_ref()),
+            None => {
+                tracing::warn!(
+                    group_id = %hex::encode(gid.to_bytes()),
+                    "create_recursive_invitations: missing GroupMeta for descendant; \
+                     issuing invitation with application_id = None (joiner will fall back to zero)"
+                );
+                None
+            }
+        };
+
         let signed = SignedGroupOpenInvitation {
             invitation,
             inviter_signature: hex::encode(sig.to_bytes()),
+            application_id,
         };
 
         result.push((gid, signed));

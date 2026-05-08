@@ -230,6 +230,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
     let signed_invitation = SignedGroupOpenInvitation {
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
+        application_id: None,
     };
 
     let ns_op = SignedNamespaceOp::sign(

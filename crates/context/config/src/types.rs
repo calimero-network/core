@@ -671,12 +671,25 @@ fn default_invited_role() -> u8 {
 }
 
 /// A container for a group invitation and the admin's signature over it.
+///
+/// The fields below `inviter_signature` are **not** covered by the signature.
+/// They are populated by the inviter from local state so the joiner can
+/// pre-populate `GroupMetaValue` with the correct values instead of
+/// zero placeholders. Without this, peers that join via invitation end
+/// up with `target_application_id = ZERO` for the group, while the
+/// originator has the real value — causing `compute_group_state_hash`
+/// to diverge persistently between peers.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
 pub struct SignedGroupOpenInvitation {
     /// The open invitation to the group.
     pub invitation: GroupInvitationFromAdmin,
     /// Admin's signature for the invitation payload (hex-encoded).
     pub inviter_signature: String,
+    /// Application ID for the group (unsigned bootstrap field).
+    /// `None` for backwards compatibility with invitations created before
+    /// this field was added; joiners fall back to zero when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<[u8; 32]>,
 }
 
 #[cfg(test)]
