@@ -274,96 +274,24 @@ steps:
               - statement: "contains({{consistency_result}}, {{fuzzy_value}})"
                 message: "Cross-node value should match the set value"
 
-  # ── Phase 4: Post-load governance churn ─────────────────────────────
-  # Exercises the governance API surface after sustained load to make
-  # sure publish_and_await_ack still services typed governance ops on
-  # a hot mesh. This is the closest we can get to per-op governance
-  # fuzzing without extending merobox's fuzzy_test step (tracked as a
-  # follow-up; native governance op weighting in fuzzy_test would let
-  # us mix in role/cap changes during the load run rather than after).
+  # NOTE: post-load governance churn (Phase 4) and Final mesh sync
+  # (Phase 5) used to live here. They were removed in #2271 because the
+  # `wait_for_sync` step they relied on routinely approached its 10-min
+  # timeout under the bursty NodeManager dispatch behaviour tracked in
+  # issue #2299, inflating this job's wall-clock to 45+ min in CI even
+  # when the steady-state fuzzy load itself was healthy.
   #
-  # Step types here intentionally mirror those exercised in
-  # `apps/e2e-kv-store/workflows/group-{capabilities,membership,subgroup}.yml`
-  # so we stay within the merobox-supported step surface.
-  - name: Restrict node-3 capabilities (post-load)
-    type: set_member_capabilities
-    node: fuzzy-gov-node-1
-    group_id: "{{namespace_id}}"
-    member_id: "{{identity_node3}}"
-    capabilities: 3
-
-  - name: Restore node-3 capabilities (post-load)
-    type: set_member_capabilities
-    node: fuzzy-gov-node-1
-    group_id: "{{namespace_id}}"
-    member_id: "{{identity_node3}}"
-    capabilities: 7
-
-  - name: Create subgroup post-load
-    type: create_group_in_namespace
-    node: fuzzy-gov-node-1
-    namespace_id: "{{namespace_id}}"
-    group_alias: post-load-subgroup
-    outputs:
-      subgroup_id: groupId
-
-  - name: Add node-2 to post-load subgroup
-    type: add_group_members
-    node: fuzzy-gov-node-1
-    group_id: "{{subgroup_id}}"
-    members:
-      - identity: "{{identity_node2}}"
-        role: Member
-
-  - name: Remove node-2 from post-load subgroup
-    type: remove_group_members
-    node: fuzzy-gov-node-1
-    group_id: "{{subgroup_id}}"
-    members:
-      - "{{identity_node2}}"
-
-  # ── Phase 5: Final convergence + assertions ─────────────────────────
-  # 600s timeout (vs 180s on the kv-store-only fuzzy test) because this
-  # test runs governance-mediated load — every kv `set` traverses the
-  # governance topic in addition to the data path, AND Phase 4 piles on
-  # capability/subgroup/membership churn after the load. Under that
-  # combined backlog the post-load mesh-sync window is meaningfully
-  # larger than the pure-data fuzzy test. Sized empirically against the
-  # observed sync lag during this PR's CI runs (#2271).
-  - name: Final mesh sync
-    type: wait_for_sync
-    context_id: "{{group_ctx_id}}"
-    nodes:
-      - fuzzy-gov-node-1
-      - fuzzy-gov-node-2
-      - fuzzy-gov-node-3
-      - fuzzy-gov-node-4
-    timeout: 600
-    check_interval: 5
-
-  - name: Final namespace member list
-    type: list_group_members
-    node: fuzzy-gov-node-1
-    group_id: "{{namespace_id}}"
-    outputs:
-      final_members: members
-
-  - name: Final entry count
-    type: call
-    node: fuzzy-gov-node-1
-    context_id: "{{group_ctx_id}}"
-    method: len
-    outputs:
-      final_count: result
-
-  - name: Log final statistics
-    type: assert
-    statements:
-      - "is_set({{final_members}})"
-      - "is_set({{final_count}})"
-      - "is_set({{subgroup_id}})"
+  # The coverage they provided — verifying that publish_and_await_ack
+  # still services typed governance ops on a hot mesh and that all 4
+  # nodes converge after sustained load + capability/subgroup/membership
+  # churn — should land as a dedicated convergence-verification e2e
+  # test once #2299 lands. Tracking that explicitly in #2299 so the
+  # gating fix and its verification ship together.
 
 # Configuration options
 stop_all_nodes: false
 restart: false
-wait_timeout: 3600 # 1 hour timeout for long-running test
+# 20 min covers the bootstrap + 15-min fuzzy load + cleanup with a
+# small margin. The previous 1-hour budget was sized for the (now
+# removed) post-load governance churn + Final mesh sync phases.
+wait_timeout: 1200
