@@ -72,11 +72,7 @@ steps:
     context_id: "{{handlers_context_id}}"
     summary_interval_seconds: 60
     operation_delay_ms: 50
-    # Threshold raised from 95.0 → 97.0 alongside the StateDelta actor
-    # isolation fix (issue #2299). The bursty-drain pattern that pushed
-    # the test to flaky-95% has been removed; this turns the test into
-    # a regression guard for that pattern.
-    success_threshold: 97.0
+    success_threshold: 99.0
 
     nodes:
       - name: fuzzy-handlers-node-1
