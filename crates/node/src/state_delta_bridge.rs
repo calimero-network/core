@@ -35,14 +35,29 @@ use crate::handlers::state_delta::{handle_state_delta, StateDeltaContext, StateD
 /// rebroadcast path.
 pub const STATE_DELTA_CHANNEL_CAPACITY: usize = 2048;
 
-/// Reserved for a future Layer 2 per-context concurrency cap. Layer 1
-/// relies on the actor's single-Arbiter cooperative scheduling — no
-/// explicit semaphore. Kept here so callers can read a public
-/// constant if they ever need to size a peer-side test.
-pub const STATE_DELTA_PARALLELISM: usize = 32;
-
 /// Periodic summary log interval.
 const SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
+
+/// RAII guard that decrements [`StateDeltaActor::in_flight`] on
+/// drop, including panic unwinds. Without this, a panic inside
+/// `handle_state_delta` would skip the post-`.map(...)` decrement
+/// path and leave a phantom in-flight count in the summary log.
+struct InFlightGuard {
+    counter: Arc<AtomicU64>,
+}
+
+impl InFlightGuard {
+    fn new(counter: Arc<AtomicU64>) -> Self {
+        let _prev = counter.fetch_add(1, Ordering::Relaxed);
+        Self { counter }
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        let _prev = self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 /// One unit of work routed to the [`StateDeltaActor`]. The dispatch
 /// site in `network_event.rs` builds this from the deserialized
@@ -94,7 +109,14 @@ impl StateDeltaSender {
 pub struct StateDeltaActor {
     capacity: usize,
     in_flight: Arc<AtomicU64>,
+    /// Successful `handle_state_delta` returns.
     processed_total: Arc<AtomicU64>,
+    /// Failed `handle_state_delta` returns. Tracked separately so
+    /// the summary log distinguishes successes from errors — a sudden
+    /// rise in this counter is the operator-visible signal that
+    /// something downstream (decryption, DAG apply, handler exec) is
+    /// failing despite the actor itself running.
+    error_total: Arc<AtomicU64>,
     dropped_total: Arc<AtomicU64>,
 }
 
@@ -104,16 +126,19 @@ impl StateDeltaActor {
             capacity,
             in_flight: Arc::new(AtomicU64::new(0)),
             processed_total: Arc::new(AtomicU64::new(0)),
+            error_total: Arc::new(AtomicU64::new(0)),
             dropped_total,
         }
     }
 
     fn log_summary(&self) {
         let processed = self.processed_total.load(Ordering::Relaxed);
+        let errors = self.error_total.load(Ordering::Relaxed);
         let dropped = self.dropped_total.load(Ordering::Relaxed);
         let in_flight = self.in_flight.load(Ordering::Relaxed);
         info!(
             processed_total = processed,
+            error_total = errors,
             dropped_total = dropped,
             in_flight,
             "StateDelta actor summary"
@@ -145,33 +170,41 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
     type Result = ();
 
     fn handle(&mut self, job: StateDeltaJob, ctx: &mut Self::Context) {
-        let in_flight = Arc::clone(&self.in_flight);
         let processed_total = Arc::clone(&self.processed_total);
+        let error_total = Arc::clone(&self.error_total);
 
-        let _prev = in_flight.fetch_add(1, Ordering::Relaxed);
+        // RAII guard so `in_flight` is decremented even if the
+        // future panics inside `handle_state_delta`.
+        let in_flight_guard = InFlightGuard::new(Arc::clone(&self.in_flight));
 
         let StateDeltaJob { context, message } = job;
         let context_id = message.context_id;
         let delta_id = message.delta_id;
 
         let work = async move {
+            let _guard = in_flight_guard;
             let started = Instant::now();
-            if let Err(err) = handle_state_delta(context, message).await {
-                warn!(?err, %context_id, ?delta_id, "Failed to handle state delta");
-            } else {
-                debug!(
-                    %context_id,
-                    ?delta_id,
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "StateDelta worker completed"
-                );
-            }
+            let outcome = handle_state_delta(context, message).await;
+            (outcome, started)
         };
 
-        let _spawn_handle = ctx.spawn(work.into_actor(self).map(move |(), _act, _ctx| {
-            let _prev = processed_total.fetch_add(1, Ordering::Relaxed);
-            let _prev = in_flight.fetch_sub(1, Ordering::Relaxed);
-        }));
+        let _spawn_handle = ctx.spawn(work.into_actor(self).map(
+            move |(outcome, started), _act, _ctx| match outcome {
+                Ok(()) => {
+                    debug!(
+                        %context_id,
+                        ?delta_id,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "StateDelta worker completed"
+                    );
+                    let _prev = processed_total.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(err) => {
+                    warn!(?err, %context_id, ?delta_id, "Failed to handle state delta");
+                    let _prev = error_total.fetch_add(1, Ordering::Relaxed);
+                }
+            },
+        ));
     }
 }
 

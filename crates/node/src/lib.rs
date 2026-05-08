@@ -40,7 +40,7 @@ pub use run::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 pub(crate) use state::{CachedBlob, NodeClients, NodeManagers, NodeState};
 pub use state_delta_bridge::{
     start_state_delta_actor, StateDeltaActor, StateDeltaJob, StateDeltaSendError, StateDeltaSender,
-    STATE_DELTA_CHANNEL_CAPACITY, STATE_DELTA_PARALLELISM,
+    STATE_DELTA_CHANNEL_CAPACITY,
 };
 pub use sync::SyncManager;
 

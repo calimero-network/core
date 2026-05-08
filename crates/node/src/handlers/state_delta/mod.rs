@@ -49,6 +49,7 @@ async fn lookup_group_key_with_wait(
     use tokio::time::{sleep, Instant};
 
     let deadline = Instant::now() + STATE_DELTA_KEY_LOOKUP_WAIT;
+    let mut logged_wait = false;
     loop {
         let store = context_client.datastore();
         let direct = calimero_context::group_store::load_group_key_by_id(store, group_id, key_id)?;
@@ -70,6 +71,18 @@ async fn lookup_group_key_with_wait(
 
         if Instant::now() >= deadline {
             return Ok(None);
+        }
+
+        // Log on the first miss only — keeps the happy path silent
+        // but makes a slow KeyDelivery race visible to operators.
+        if !logged_wait {
+            debug!(
+                ?group_id,
+                key_id = %hex::encode(key_id),
+                wait_ms = STATE_DELTA_KEY_LOOKUP_WAIT.as_millis(),
+                "Group key not yet available — polling for KeyDelivery"
+            );
+            logged_wait = true;
         }
 
         sleep(STATE_DELTA_KEY_LOOKUP_POLL).await;
