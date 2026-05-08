@@ -35,20 +35,27 @@ const STATE_DELTA_KEY_LOOKUP_WAIT: std::time::Duration = std::time::Duration::fr
 const STATE_DELTA_KEY_LOOKUP_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Resolve a state delta's encryption key for a given group, polling
-/// the group store up to [`STATE_DELTA_KEY_LOOKUP_WAIT`] if the key
-/// hasn't landed yet. Tries the direct group-id keyring first, then
-/// the namespace-id keyring on `Open` subgroups (issue #2256).
+/// the group store up to `max_wait` if the key hasn't landed yet.
+/// Tries the direct group-id keyring first, then the namespace-id
+/// keyring on `Open` subgroups (issue #2256).
 ///
-/// Returns `Ok(Some(_))` on success, `Ok(None)` when the bounded wait
-/// expires without the key arriving, `Err(_)` on store errors.
+/// Pass `Duration::ZERO` for a single-shot lookup (no polling). The
+/// `replay_buffered_delta` path uses this — by the time replay runs,
+/// snapshot sync has settled and any late `KeyDelivery` is already
+/// applied; a stall there would multiply per-delta into multi-second
+/// sync recovery delays.
+///
+/// Returns `Ok(Some(_))` on success, `Ok(None)` when the wait expires
+/// without the key arriving, `Err(_)` on store errors.
 async fn lookup_group_key_with_wait(
     context_client: &calimero_context_client::client::ContextClient,
     group_id: &calimero_context_config::types::ContextGroupId,
     key_id: &[u8; 32],
+    max_wait: std::time::Duration,
 ) -> Result<Option<calimero_primitives::identity::PrivateKey>> {
     use tokio::time::{sleep, Instant};
 
-    let deadline = Instant::now() + STATE_DELTA_KEY_LOOKUP_WAIT;
+    let deadline = Instant::now() + max_wait;
     let mut logged_wait = false;
     loop {
         let store = context_client.datastore();
@@ -79,7 +86,7 @@ async fn lookup_group_key_with_wait(
             debug!(
                 ?group_id,
                 key_id = %hex::encode(key_id),
-                wait_ms = STATE_DELTA_KEY_LOOKUP_WAIT.as_millis(),
+                wait_ms = max_wait.as_millis(),
                 "Group key not yet available — polling for KeyDelivery"
             );
             logged_wait = true;
@@ -304,11 +311,16 @@ pub async fn handle_state_delta(
                 // running StateDelta on a separate Arbiter. Store
                 // errors from `resolve_namespace` (cyclic parent
                 // edges, missing namespace meta) still propagate.
-                lookup_group_key_with_wait(&node_clients.context, &g, &key_id)
-                    .await?
-                    .ok_or_else(|| {
-                        eyre::eyre!("no group key found for key_id {}", hex::encode(key_id))
-                    })?
+                lookup_group_key_with_wait(
+                    &node_clients.context,
+                    &g,
+                    &key_id,
+                    STATE_DELTA_KEY_LOOKUP_WAIT,
+                )
+                .await?
+                .ok_or_else(|| {
+                    eyre::eyre!("no group key found for key_id {}", hex::encode(key_id))
+                })?
             }
             None => {
                 let identity = node_clients
@@ -1408,12 +1420,25 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         match gid {
             Some(g) => {
                 // Issue #2256 — Open-subgroup namespace-key fallback,
-                // mirroring the live-apply path above. Issue #2299 —
-                // bounded wait for late KeyDelivery, also mirroring
-                // the live-apply path.
-                lookup_group_key_with_wait(&context_client, &g, &buffered.key_id)
-                    .await?
-                    .ok_or_else(|| eyre::eyre!("no group key found for buffered delta"))?
+                // mirroring the live-apply path above.
+                //
+                // Issue #2299 — DO NOT wait here. The buffered-replay
+                // path is invoked by `SyncManager` in a sequential
+                // loop after snapshot sync settles; by then any
+                // legitimate `KeyDelivery` has already been applied.
+                // A 3s wait per delta would multiply into multi-second
+                // sync recovery stalls when replaying many deltas
+                // whose keys were genuinely lost. Single-shot lookup
+                // here, fall back to the existing rebroadcast/sync
+                // recovery path on miss.
+                lookup_group_key_with_wait(
+                    &context_client,
+                    &g,
+                    &buffered.key_id,
+                    std::time::Duration::ZERO,
+                )
+                .await?
+                .ok_or_else(|| eyre::eyre!("no group key found for buffered delta"))?
             }
             None => {
                 let identity = context_client
