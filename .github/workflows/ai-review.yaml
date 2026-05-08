@@ -2,7 +2,16 @@ name: AI Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # `synchronize` (re-run on every push) deliberately omitted to control
+    # cost — a review fires on PR open / reopen / draft→ready, not on each
+    # push. Re-trigger a review by toggling draft or via workflow_dispatch.
+    types: [opened, reopened, ready_for_review]
+    # Doc-only PRs are owned by the `Doc Auto-Update` workflow; skipping
+    # them here avoids paying twice for the same diff.
+    paths-ignore:
+      - 'docs/**'
+      - 'architecture/**'
+      - 'docs-static/**'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -59,7 +68,8 @@ jobs:
             echo "agents=${{ github.event.inputs.agents }}"    >> $GITHUB_OUTPUT
           else
             echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-            echo "agents=3"                                        >> $GITHUB_OUTPUT
+            # Default to 1 agent for cost; bump via workflow_dispatch when needed.
+            echo "agents=1"                                        >> $GITHUB_OUTPUT
           fi
 
       - name: Run AI Code Review
