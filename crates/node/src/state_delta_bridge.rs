@@ -112,26 +112,26 @@ impl StateDeltaSender {
 /// `ctx.spawn`'d work doesn't compete with `NodeManager`'s sync /
 /// heartbeat / blob / namespace handlers for the same thread.
 pub struct StateDeltaActor {
-    capacity: usize,
     in_flight: Arc<AtomicU64>,
     /// Successful `handle_state_delta` returns.
     processed_total: Arc<AtomicU64>,
-    /// Failed `handle_state_delta` returns. Tracked separately so
-    /// the summary log distinguishes successes from errors — a sudden
-    /// rise in this counter is the operator-visible signal that
-    /// something downstream (decryption, DAG apply, handler exec) is
-    /// failing despite the actor itself running.
+    /// Failed `handle_state_delta` returns (decryption, DAG apply,
+    /// handler exec). Distinct from `timeout_total`.
     error_total: Arc<AtomicU64>,
+    /// Per-delta processing budget exceeded — separate from
+    /// `error_total` so a timeout storm is distinguishable from a
+    /// pure application-error storm in the summary log.
+    timeout_total: Arc<AtomicU64>,
     dropped_total: Arc<AtomicU64>,
 }
 
 impl StateDeltaActor {
-    fn new(capacity: usize, dropped_total: Arc<AtomicU64>) -> Self {
+    fn new(dropped_total: Arc<AtomicU64>) -> Self {
         Self {
-            capacity,
             in_flight: Arc::new(AtomicU64::new(0)),
             processed_total: Arc::new(AtomicU64::new(0)),
             error_total: Arc::new(AtomicU64::new(0)),
+            timeout_total: Arc::new(AtomicU64::new(0)),
             dropped_total,
         }
     }
@@ -139,11 +139,13 @@ impl StateDeltaActor {
     fn log_summary(&self) {
         let processed = self.processed_total.load(Ordering::Relaxed);
         let errors = self.error_total.load(Ordering::Relaxed);
+        let timeouts = self.timeout_total.load(Ordering::Relaxed);
         let dropped = self.dropped_total.load(Ordering::Relaxed);
         let in_flight = self.in_flight.load(Ordering::Relaxed);
         info!(
             processed_total = processed,
             error_total = errors,
+            timeout_total = timeouts,
             dropped_total = dropped,
             in_flight,
             "StateDelta actor summary"
@@ -155,11 +157,7 @@ impl Actor for StateDeltaActor {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        ctx.set_mailbox_capacity(self.capacity);
-        info!(
-            capacity = self.capacity,
-            "StateDelta actor started on dedicated Arbiter"
-        );
+        info!("StateDelta actor started on dedicated Arbiter");
         let _handle = ctx.run_interval(SUMMARY_INTERVAL, |actor, _ctx| {
             actor.log_summary();
         });
@@ -177,15 +175,18 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
     fn handle(&mut self, job: StateDeltaJob, ctx: &mut Self::Context) {
         let processed_total = Arc::clone(&self.processed_total);
         let error_total = Arc::clone(&self.error_total);
+        let timeout_total = Arc::clone(&self.timeout_total);
 
-        // RAII guard so `in_flight` is decremented even if the
-        // future panics inside `handle_state_delta`.
+        // RAII guard so `in_flight` is decremented even on panic.
         let in_flight_guard = InFlightGuard::new(Arc::clone(&self.in_flight));
 
         let StateDeltaJob { context, message } = job;
         let context_id = message.context_id;
         let delta_id = message.delta_id;
 
+        // Counters are incremented INSIDE `work`, before `_guard`
+        // drops, so a summary log between guard-drop and the .map()
+        // closure can never observe `in_flight=0` with stale totals.
         let work = async move {
             let _guard = in_flight_guard;
             let started = Instant::now();
@@ -194,6 +195,17 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
                 handle_state_delta(context, message),
             )
             .await;
+            match &outcome {
+                Ok(Ok(())) => {
+                    let _prev = processed_total.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(Err(_)) => {
+                    let _prev = error_total.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(_elapsed) => {
+                    let _prev = timeout_total.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             (outcome, started)
         };
 
@@ -206,11 +218,9 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
                         elapsed_ms = started.elapsed().as_millis(),
                         "StateDelta worker completed"
                     );
-                    let _prev = processed_total.fetch_add(1, Ordering::Relaxed);
                 }
                 Ok(Err(err)) => {
                     warn!(?err, %context_id, ?delta_id, "Failed to handle state delta");
-                    let _prev = error_total.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(_elapsed) => {
                     warn!(
@@ -220,7 +230,6 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
                         elapsed_ms = started.elapsed().as_millis(),
                         "StateDelta worker exceeded processing budget — dropping delta, sync recovery will retry (#2199)"
                     );
-                    let _prev = error_total.fetch_add(1, Ordering::Relaxed);
                 }
             },
         ));
@@ -240,8 +249,13 @@ pub fn start_state_delta_actor(arbiter: &ArbiterHandle, capacity: usize) -> Stat
     let dropped_total = Arc::new(AtomicU64::new(0));
     let dropped_for_actor = Arc::clone(&dropped_total);
 
-    let addr = StateDeltaActor::start_in_arbiter(arbiter, move |_ctx| {
-        StateDeltaActor::new(capacity, dropped_for_actor)
+    // Set the mailbox capacity in the constructor closure (before any
+    // message arrives) rather than in `started()`, so the bound is in
+    // effect for every queued message — not just those received after
+    // the actor's first lifecycle hook.
+    let addr = StateDeltaActor::start_in_arbiter(arbiter, move |ctx| {
+        ctx.set_mailbox_capacity(capacity);
+        StateDeltaActor::new(dropped_for_actor)
     });
 
     StateDeltaSender {
