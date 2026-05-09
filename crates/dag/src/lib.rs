@@ -459,8 +459,13 @@ impl<T: Clone> DagStore<T> {
         T: Send + Sync,
     {
         Box::pin(async move {
-            // Apply via the applier
-            applier.apply(&delta).await?;
+            // On apply failure (WASM timeout, decode error, panic) remove
+            // the delta from `self.deltas` so future arrivals aren't
+            // silently rejected as Duplicate; sync recovery can retry.
+            if let Err(e) = applier.apply(&delta).await {
+                let _ = self.deltas.remove(&delta.id);
+                return Err(e.into());
+            }
 
             // Mark as applied
             self.applied.insert(delta.id);
@@ -989,5 +994,49 @@ mod basic_tests {
         let evicted = dag.cleanup_stale(Duration::from_millis(50));
         assert_eq!(evicted, 1, "Should evict the stale delta");
         assert_eq!(dag.pending_stats().count, 0);
+    }
+
+    /// Failing applier — returns Err on every call.
+    struct FailingApplier;
+
+    #[async_trait::async_trait]
+    impl DeltaApplier<TestPayload> for FailingApplier {
+        async fn apply(&self, _delta: &CausalDelta<TestPayload>) -> Result<(), ApplyError> {
+            Err(ApplyError::Application("forced failure".into()))
+        }
+    }
+
+    /// Regression: an apply error must not leave the delta in
+    /// `self.deltas` — otherwise the duplicate check rejects every
+    /// retry and the delta is stuck until restart.
+    #[tokio::test]
+    async fn apply_error_rolls_delta_out_of_deltas_map() {
+        let mut dag = DagStore::<TestPayload>::new([0; 32]);
+
+        let delta = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
+        let delta_id = delta.id;
+
+        let failing = FailingApplier;
+        let err = dag.add_delta(delta.clone(), &failing).await;
+        assert!(err.is_err(), "expected apply error to propagate");
+
+        // The delta must NOT be retained in `deltas`, otherwise the
+        // duplicate-check at the top of `add_delta_with_outcome` will
+        // reject re-arrival and block sync recovery.
+        assert!(
+            !dag.deltas.contains_key(&delta_id),
+            "apply error left a zombie delta in self.deltas"
+        );
+
+        // Retry on a working applier should now apply successfully.
+        let working = TestApplier {
+            applied: Arc::new(Mutex::new(Vec::new())),
+        };
+        let outcome = dag
+            .add_delta_with_outcome(delta, &working)
+            .await
+            .expect("retry should succeed after rollback");
+        assert!(matches!(outcome, AddDeltaOutcome::Applied));
+        assert!(dag.applied.contains(&delta_id));
     }
 }
