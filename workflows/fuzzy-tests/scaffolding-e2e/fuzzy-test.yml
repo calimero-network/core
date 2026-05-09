@@ -210,7 +210,7 @@ steps:
     context_id: "{{e2e_context_id}}"
     summary_interval_seconds: 60
     operation_delay_ms: 50
-    success_threshold: 95.0
+    success_threshold: 98.0
 
     nodes:
       - name: fuzzy-e2e-node-1
