@@ -29,6 +29,7 @@ mod specialized_node_invite_state;
 mod state;
 pub(crate) mod state_delta_bridge;
 pub mod sync;
+pub(crate) mod sync_session_bridge;
 mod utils;
 
 pub use manager::NodeManager;

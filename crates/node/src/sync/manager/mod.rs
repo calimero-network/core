@@ -18,16 +18,19 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use eyre::WrapErr;
-use futures_util::stream::{self, FuturesUnordered};
-use futures_util::{FutureExt, StreamExt};
+use futures_util::stream::{self};
+use futures_util::StreamExt;
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{self, timeout_at, Instant, MissedTickBehavior};
+use tokio::time::{self, Instant, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
+use crate::sync_session_bridge::{
+    SyncSessionJob, SyncSessionResult, SyncSessionSendError, SyncSessionSender,
+};
 use crate::utils::choose_stream;
 
 use super::config::SyncConfig;
@@ -63,6 +66,16 @@ pub struct SyncManager {
             oneshot::Sender<eyre::Result<JoinBundle>>,
         )>,
     >,
+
+    /// Dispatch handle for the dedicated `SyncSessionActor` (#2316).
+    /// Set via [`SyncManager::set_session_handles`] after the actor is
+    /// started; `None` on freshly-cloned instances (which never run
+    /// the `start` loop) and on the original until wiring completes.
+    pub(super) session_tx: Option<SyncSessionSender>,
+    /// Channel the `SyncSessionActor` writes initiator results into so
+    /// `start` can update per-context tracking state. Consumed once by
+    /// `start`; `None` on clones.
+    pub(super) session_result_rx: Option<mpsc::Receiver<SyncSessionResult>>,
 }
 
 impl Clone for SyncManager {
@@ -76,6 +89,12 @@ impl Clone for SyncManager {
             ctx_sync_rx: None,
             ns_sync_rx: None,
             ns_join_rx: None,
+            // Cloned `SyncManager`s never drive the `start` loop, so
+            // they don't need a session-dispatch handle or a results
+            // receiver. The bridge holds its own clone of the
+            // SyncManager for issuing sessions.
+            session_tx: None,
+            session_result_rx: None,
         }
     }
 }
@@ -103,7 +122,22 @@ impl SyncManager {
             ctx_sync_rx: Some(ctx_sync_rx),
             ns_sync_rx: Some(ns_sync_rx),
             ns_join_rx: Some(ns_join_rx),
+            session_tx: None,
+            session_result_rx: None,
         }
+    }
+
+    /// Wire the `SyncSessionActor` handles onto the original
+    /// `SyncManager` instance after the actor is started in `run.rs`.
+    /// Must be called before [`SyncManager::start`]. No-op on cloned
+    /// instances (those never run the `start` loop).
+    pub(crate) fn set_session_handles(
+        &mut self,
+        session_tx: SyncSessionSender,
+        session_result_rx: mpsc::Receiver<SyncSessionResult>,
+    ) {
+        self.session_tx = Some(session_tx);
+        self.session_result_rx = Some(session_result_rx);
     }
 
     /// Build `SyncHandshake` from local context state for protocol negotiation.
@@ -197,56 +231,6 @@ impl SyncManager {
 
         let mut state = HashMap::<_, SyncState>::new();
 
-        let mut futs = FuturesUnordered::new();
-
-        let advance = async |futs: &mut FuturesUnordered<_>, state: &mut HashMap<_, SyncState>| {
-            let (context_id, peer_id, start, result): (
-                ContextId,
-                PeerId,
-                Instant,
-                Result<Result<SyncProtocol, eyre::Error>, time::error::Elapsed>,
-            ) = futs.next().await?;
-
-            let now = Instant::now();
-            let took = Instant::saturating_duration_since(&now, start);
-
-            let _ignored = state.entry(context_id).and_modify(|state| match result {
-                Ok(Ok(ref protocol)) => {
-                    state.on_success(peer_id, TrackingSyncProtocol::from(protocol));
-                    info!(
-                        %context_id,
-                        ?took,
-                        ?protocol,
-                        success_count = state.success_count,
-                        "Sync finished successfully"
-                    );
-                }
-                Ok(Err(ref err)) => {
-                    state.on_failure(err.to_string());
-                    warn!(
-                        %context_id,
-                        ?took,
-                        error = %err,
-                        failure_count = state.failure_count(),
-                        backoff_secs = state.backoff_delay().as_secs(),
-                        "Sync failed, applying exponential backoff"
-                    );
-                }
-                Err(ref timeout_err) => {
-                    state.on_failure(timeout_err.to_string());
-                    warn!(
-                        %context_id,
-                        ?took,
-                        failure_count = state.failure_count(),
-                        backoff_secs = state.backoff_delay().as_secs(),
-                        "Sync timed out, applying exponential backoff"
-                    );
-                }
-            });
-
-            Some(())
-        };
-
         let mut requested_ctx = None;
         let mut requested_peer = None;
 
@@ -262,15 +246,76 @@ impl SyncManager {
             let (_tx, rx) = mpsc::channel(1);
             rx
         });
+        let Some(session_tx) = self.session_tx.clone() else {
+            error!("SyncManager started without a SyncSessionActor handle (#2316)");
+            return;
+        };
+        let Some(mut session_result_rx) = self.session_result_rx.take() else {
+            error!("SyncManager started without a SyncSessionActor result channel (#2316)");
+            return;
+        };
+
+        // Apply a session result to per-context tracking state. Mirrors
+        // the body of the legacy `advance` helper, which read from a
+        // local `FuturesUnordered<futs>` before #2316 moved session
+        // execution onto a dedicated arbiter.
+        fn apply_session_result(
+            state: &mut HashMap<ContextId, SyncState>,
+            result: SyncSessionResult,
+        ) {
+            let SyncSessionResult {
+                context_id,
+                peer_id,
+                took,
+                result,
+            } = result;
+
+            let _ignored = state
+                .entry(context_id)
+                .and_modify(|state| match result {
+                    Ok(Ok(ref protocol)) => {
+                        state.on_success(peer_id, TrackingSyncProtocol::from(protocol));
+                        info!(
+                            %context_id,
+                            ?took,
+                            ?protocol,
+                            success_count = state.success_count,
+                            "Sync finished successfully"
+                        );
+                    }
+                    Ok(Err(ref err)) => {
+                        state.on_failure(err.to_string());
+                        warn!(
+                            %context_id,
+                            ?took,
+                            error = %err,
+                            failure_count = state.failure_count(),
+                            backoff_secs = state.backoff_delay().as_secs(),
+                            "Sync failed, applying exponential backoff"
+                        );
+                    }
+                    Err(ref timeout_err) => {
+                        state.on_failure(timeout_err.to_string());
+                        warn!(
+                            %context_id,
+                            ?took,
+                            failure_count = state.failure_count(),
+                            backoff_secs = state.backoff_delay().as_secs(),
+                            "Sync timed out, applying exponential backoff"
+                        );
+                    }
+                });
+        }
 
         loop {
             tokio::select! {
                 _ = next_sync.tick() => {
                     debug!("Performing interval sync");
                 }
-                Some(()) = async {
-                    loop { advance(&mut futs, &mut state).await? }
-                } => {},
+                Some(result) = session_result_rx.recv() => {
+                    apply_session_result(&mut state, result);
+                    continue;
+                }
                 Some(namespace_id) = ns_sync_rx.recv() => {
                     info!(
                         namespace_id = %hex::encode(namespace_id),
@@ -382,49 +427,35 @@ impl SyncManager {
 
                 info!(%context_id, "Scheduled sync");
 
-                let start = Instant::now();
-                let Some(deadline) = start.checked_add(self.sync_config.timeout) else {
-                    error!(
-                        ?start,
-                        timeout=?self.sync_config.timeout,
-                        "Unable to determine when to timeout sync procedure"
-                    );
-
-                    // if we can't determine the sync deadline, this is a hard error
-                    // we intentionally want to exit the sync loop
-                    return;
-                };
-
-                let fut = timeout_at(
-                    deadline,
-                    self.perform_interval_sync(context_id, requested_peer),
-                )
-                .map(move |res| {
-                    // Extract peer_id from result or use placeholder
-                    let peer_id = res
-                        .as_ref()
-                        .ok()
-                        .and_then(|r| r.as_ref().ok())
-                        .map(|(p, _)| *p)
-                        .unwrap_or(PeerId::random());
-                    (
-                        context_id,
-                        peer_id,
-                        start,
-                        res.map(|r| r.map(|(_, proto)| proto)),
-                    )
-                });
-
-                futs.push(fut);
-
-                if futs.len() >= self.sync_config.max_concurrent {
-                    let _ignored = advance(&mut futs, &mut state).await;
+                // Dispatch the initiator session to the dedicated
+                // `SyncSessionActor` (#2316). The actor wraps execution
+                // in `tokio::time::timeout(sync_config.timeout, ...)`
+                // and forwards the result back via `session_result_rx`.
+                // On a full mailbox we drop and rely on the next
+                // `next_sync.tick()` or heartbeat trigger to retry.
+                match session_tx.try_send(SyncSessionJob::Initiator {
+                    context_id,
+                    peer_id: requested_peer,
+                }) {
+                    Ok(()) => {}
+                    Err(SyncSessionSendError::Full) => {
+                        warn!(
+                            %context_id,
+                            "SyncSession actor mailbox full — skipping initiator dispatch (#2316); next interval tick will retry"
+                        );
+                    }
+                    Err(SyncSessionSendError::Closed) => {
+                        warn!(
+                            %context_id,
+                            "SyncSession actor closed — skipping initiator dispatch"
+                        );
+                    }
                 }
             }
         }
     }
 
-    async fn perform_interval_sync(
+    pub(crate) async fn perform_interval_sync(
         &self,
         context_id: ContextId,
         peer_id: Option<PeerId>,

@@ -56,6 +56,11 @@ pub struct NodeManager {
     /// `handlers::network_event` routes jobs here instead of
     /// `ctx.spawn`'ing them on this actor's Arbiter (issue #2299).
     pub(crate) state_delta_tx: crate::state_delta_bridge::StateDeltaSender,
+    /// Sender into the dedicated `SyncSessionActor`. The
+    /// `StreamOpened` arm in `handlers::stream_opened` routes
+    /// inbound sync streams here instead of `ctx.spawn`'ing them on
+    /// this actor's Arbiter (issue #2316).
+    pub(crate) sync_session_tx: crate::sync_session_bridge::SyncSessionSender,
 }
 
 impl NodeManager {
@@ -67,6 +72,7 @@ impl NodeManager {
         datastore: Store,
         state: NodeState,
         state_delta_tx: crate::state_delta_bridge::StateDeltaSender,
+        sync_session_tx: crate::sync_session_bridge::SyncSessionSender,
     ) -> Self {
         Self {
             clients: NodeClients {
@@ -83,6 +89,7 @@ impl NodeManager {
             readiness_notify: Arc::new(ReadinessCacheNotify::default()),
             readiness_addr: None,
             state_delta_tx,
+            sync_session_tx,
         }
     }
 }

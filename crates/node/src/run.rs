@@ -37,6 +37,7 @@ use crate::network_event_channel::{self, NetworkEventChannelConfig};
 use crate::network_event_processor::NetworkEventBridge;
 use crate::state_delta_bridge::{start_state_delta_actor, STATE_DELTA_CHANNEL_CAPACITY};
 use crate::sync::{SyncConfig, SyncManager};
+use crate::sync_session_bridge::{start_sync_session_actor, SYNC_SESSION_CHANNEL_CAPACITY};
 use crate::NodeManager;
 
 pub use calimero_node_primitives::NodeMode;
@@ -240,7 +241,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         });
     }
 
-    let sync_manager = SyncManager::new(
+    let mut sync_manager = SyncManager::new(
         config.sync,
         node_client.clone(),
         context_client.clone(),
@@ -259,6 +260,26 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let state_delta_tx =
         start_state_delta_actor(&state_delta_arbiter, STATE_DELTA_CHANNEL_CAPACITY);
 
+    // Spin up the dedicated SyncSession actor on its own Arbiter
+    // (#2316). The actor receives a `SyncManager` clone so it can
+    // call `handle_opened_stream` (responder) and
+    // `perform_interval_sync` (initiator) without contending with
+    // the `NodeManager` arbiter or the `SyncManager::start` select
+    // loop. Initiator results are forwarded back to the original
+    // `sync_manager` via `session_result_tx`/`session_result_rx`
+    // so per-context tracking state still updates.
+    let sync_session_arbiter = arbiter_pool.get().await?;
+    let (session_result_tx, session_result_rx) =
+        tokio::sync::mpsc::channel(SYNC_SESSION_CHANNEL_CAPACITY);
+    let sync_session_tx = start_sync_session_actor(
+        &sync_session_arbiter,
+        SYNC_SESSION_CHANNEL_CAPACITY,
+        sync_manager.clone(),
+        config.sync.timeout,
+        Some(session_result_tx),
+    );
+    sync_manager.set_session_handles(sync_session_tx.clone(), session_result_rx);
+
     let node_manager = NodeManager::new(
         blob_store.clone(),
         sync_manager.clone(),
@@ -267,6 +288,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         datastore.clone(),
         node_state.clone(),
         state_delta_tx,
+        sync_session_tx,
     );
 
     // Start NodeManager actor and get its address
