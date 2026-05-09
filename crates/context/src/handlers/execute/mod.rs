@@ -240,6 +240,14 @@ impl Handler<ExecuteRequest> for ContextManager {
                     {
                         Ok(Some((kid, gk))) => (PrivateKey::from(gk), kid),
                         Ok(None) => {
+                            // Surface the "key not yet delivered" condition as
+                            // a typed retry-able variant so admin/client
+                            // surfaces can distinguish it from permanent
+                            // failures (which still return `InternalError`).
+                            // The local DAG is healthy and the membership row
+                            // exists; only the group key is missing — the
+                            // gossip-fallback path or a fresh `join_group`
+                            // retry will resolve this.
                             error!(
                                 group_id = ?gid,
                                 key_group_id = ?key_group_id,
@@ -248,7 +256,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                                  (KeyDelivery pending or failed) — refusing sender_key fallback \
                                  to avoid mis-encrypting for inheritance-eligible receivers"
                             );
-                            return ActorResponse::reply(Err(ExecuteError::InternalError));
+                            return ActorResponse::reply(Err(ExecuteError::GroupKeyPending {
+                                context_id,
+                            }));
                         }
                         Err(err) => {
                             error!(

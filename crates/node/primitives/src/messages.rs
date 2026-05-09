@@ -39,4 +39,18 @@ pub enum NodeMessage {
     RemovePendingSpecializedNodeInvite {
         request: RemovePendingSpecializedNodeInvite,
     },
+    /// Forward a `NamespaceOpApplied` signal from the publisher path
+    /// (which lives in `crates/context`, with no direct line into the
+    /// node-side `ReadinessManager` actor) to the readiness FSM. The
+    /// gossipsub-receive path notifies the FSM directly via the actor
+    /// address held on `NodeManager`; the publisher path crosses the
+    /// crate boundary by routing through `NodeClient -> NodeManager`,
+    /// which then forwards to `readiness_addr` here.
+    ///
+    /// Without this, `state_per_namespace` for a node that *only*
+    /// publishes (single-publisher long-lived namespace, or simply the
+    /// publisher's own ops) is never observed by the FSM — the doc
+    /// claim "FSM observes every monotonic advance regardless of
+    /// origin" only held for the receive path until #2237 follow-up.
+    ForwardNamespaceOpApplied { namespace_id: [u8; 32] },
 }

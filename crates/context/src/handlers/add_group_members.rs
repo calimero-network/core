@@ -5,7 +5,7 @@ use calimero_context_client::group::AddGroupMembersRequest;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use tracing::{info, warn};
 
-use crate::governance_broadcast::observe_handler_delivery;
+use crate::governance_broadcast::ObserveDelivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -48,9 +48,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                         },
                     )
                     .await?;
-                    if let Some(report) = report.as_ref() {
-                        observe_handler_delivery("add_group_members", "MemberAdded", report);
-                    }
+                    report.observe("add_group_members", "MemberAdded");
 
                     if let Some((_key_id, group_key)) =
                         group_store::load_current_group_key(&datastore, &group_id)?

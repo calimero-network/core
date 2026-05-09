@@ -56,6 +56,29 @@ impl Handler<NodeMessage> for NodeManager {
                     "Removed pending specialized node invite"
                 );
             }
+            NodeMessage::ForwardNamespaceOpApplied { namespace_id } => {
+                // Forward the publisher-side signal to the readiness FSM.
+                // Mirrors `addr.do_send(NamespaceOpApplied { namespace_id })`
+                // in `handlers/network_event/namespace.rs` for the receive
+                // path, so both paths land on the same `Handler<NamespaceOpApplied>`.
+                //
+                // `readiness_addr` is `None` only during the brief window
+                // between `NodeManager::new` and `setup_readiness_manager`
+                // running in `Actor::started`. A signal that arrives in
+                // that window is dropped — the FSM will reconcile when
+                // the next op or peer beacon arrives. This matches the
+                // documented "drop the message" behavior on the receive
+                // path (`crates/node/src/manager.rs:53`).
+                if let Some(addr) = &self.readiness_addr {
+                    addr.do_send(crate::readiness::NamespaceOpApplied { namespace_id });
+                } else {
+                    debug!(
+                        namespace_id = %hex::encode(namespace_id),
+                        "ForwardNamespaceOpApplied received before ReadinessManager mounted; \
+                         dropping (FSM will reconcile via next op or peer beacon)"
+                    );
+                }
+            }
         }
     }
 }

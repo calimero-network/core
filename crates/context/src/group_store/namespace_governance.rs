@@ -339,6 +339,14 @@ impl<'a> NamespaceGovernance<'a> {
 
         self.apply_signed_op(&signed)?;
 
+        // Notify the readiness FSM that we just advanced the local DAG on
+        // the publisher path. Without this, `state_per_namespace` only
+        // populates from gossipsub-receive deliveries — a node that
+        // *publishes* an op never observes its own monotonic advance and
+        // the FSM stays at `Bootstrapping` forever. See
+        // `notify_namespace_op_applied` for the cross-crate plumbing.
+        node_client.notify_namespace_op_applied(self.namespace_id);
+
         if observe_mesh {
             record_governance_publish_mesh_peers(op_kind, mesh);
         }
@@ -471,6 +479,12 @@ impl<'a> NamespaceGovernance<'a> {
 
         self.store_operation(&signed)?;
         self.advance_dag_head(delta_id, &parent_ids, head.next_nonce)?;
+
+        // Same signal as in `sign_apply_and_publish` above — the local DAG
+        // just advanced on the publisher path, so the readiness FSM needs
+        // to be told. Both paths converge at `Handler<NamespaceOpApplied>`
+        // on `ReadinessManager`, mirroring the gossipsub-receive route.
+        node_client.notify_namespace_op_applied(self.namespace_id);
 
         if observe_mesh {
             record_governance_publish_mesh_peers(op_kind, mesh);

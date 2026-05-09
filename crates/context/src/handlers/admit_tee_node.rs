@@ -7,7 +7,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use tracing::info;
 
-use crate::governance_broadcast::observe_handler_delivery;
+use crate::governance_broadcast::ObserveDelivery;
 use crate::group_store;
 use crate::ContextManager;
 
@@ -147,13 +147,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     },
                 )
                 .await?;
-                if let Some(report) = report.as_ref() {
-                    observe_handler_delivery(
-                        "admit_tee_node",
-                        "MemberJoinedViaTeeAttestation",
-                        report,
-                    );
-                }
+                report.observe("admit_tee_node", "MemberJoinedViaTeeAttestation");
 
                 info!(%member, ?group_id, "TEE node admitted via attestation");
                 // Auto-follow flags for the admitted TEE member are

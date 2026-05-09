@@ -159,6 +159,7 @@ pub(super) fn handle_namespace_governance_delta(
                 );
                 fetch_and_apply_namespace_backfill(
                     &context_client,
+                    &node_client,
                     &network_client,
                     source,
                     namespace_id,
@@ -168,6 +169,7 @@ pub(super) fn handle_namespace_governance_delta(
                 .await;
                 resolve_namespace_pending(
                     &context_client,
+                    &node_client,
                     &network_client,
                     source,
                     namespace_id,
@@ -282,6 +284,7 @@ pub(super) fn handle_namespace_state_heartbeat(
 /// `MAX_BACKFILL_OPS` per response anyway.
 async fn resolve_namespace_pending(
     context_client: &calimero_context_client::client::ContextClient,
+    node_client: &calimero_node_primitives::client::NodeClient,
     network_client: &NetworkClient,
     initial_peer: libp2p::PeerId,
     namespace_id: [u8; 32],
@@ -349,6 +352,7 @@ async fn resolve_namespace_pending(
 
         fetch_and_apply_namespace_backfill(
             context_client,
+            node_client,
             network_client,
             next_peer,
             namespace_id,
@@ -361,6 +365,7 @@ async fn resolve_namespace_pending(
 
 async fn fetch_and_apply_namespace_backfill(
     context_client: &calimero_context_client::client::ContextClient,
+    node_client: &calimero_node_primitives::client::NodeClient,
     network_client: &NetworkClient,
     peer: libp2p::PeerId,
     namespace_id: [u8; 32],
@@ -399,18 +404,28 @@ async fn fetch_and_apply_namespace_backfill(
                 calimero_node_primitives::sync::MessagePayload::NamespaceBackfillResponse { deltas },
             ..
         })) => {
+            let mut any_applied = false;
             for (delta_id, op_bytes) in deltas {
                 if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(&op_bytes) {
-                    if let Err(err) = context_client.apply_signed_namespace_op(op).await {
-                        warn!(
-                            %peer,
-                            namespace_id = %hex::encode(namespace_id),
-                            delta_id = %hex::encode(delta_id),
-                            ?err,
-                            "failed to apply namespace backfill op"
-                        );
+                    match context_client.apply_signed_namespace_op(op).await {
+                        Ok(NamespaceApplyOutcome::Applied) => any_applied = true,
+                        Ok(_) => {}
+                        Err(err) => {
+                            warn!(
+                                %peer,
+                                namespace_id = %hex::encode(namespace_id),
+                                delta_id = %hex::encode(delta_id),
+                                ?err,
+                                "failed to apply namespace backfill op"
+                            );
+                        }
                     }
                 }
+            }
+            // FSM notify after the batch — same rationale as the
+            // gossip-receive path (line 120).
+            if any_applied {
+                node_client.notify_namespace_op_applied(namespace_id);
             }
         }
         _ => {

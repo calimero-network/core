@@ -284,6 +284,34 @@ impl NodeClient {
         }
     }
 
+    /// Notify the readiness FSM that a namespace governance op was just
+    /// applied locally on the publisher path. The gossipsub-receive path
+    /// notifies `ReadinessManager` directly (it has the actor address);
+    /// the publisher path lives in `crates/context`, which has no line
+    /// into the node-side actor system, so the signal hops via
+    /// `NodeMessage::ForwardNamespaceOpApplied` and lands at the same
+    /// `Handler<NamespaceOpApplied>` after the routing step.
+    ///
+    /// Best-effort: `try_send` queues into the `LazyRecipient` mailbox
+    /// when the receiver is not yet wired (early startup) and otherwise
+    /// returns `Err(SendError::Full)` only if the mailbox saturates,
+    /// which would indicate a stalled NodeManager rather than a missing
+    /// signal. Either way the local DAG is already advanced; the FSM
+    /// will catch up on its next tick or when the next op fires.
+    pub fn notify_namespace_op_applied(&self, namespace_id: [u8; 32]) {
+        if let Err(err) = self
+            .node_manager
+            .try_send(NodeMessage::ForwardNamespaceOpApplied { namespace_id })
+        {
+            warn!(
+                ?err,
+                namespace_id = %hex::encode(namespace_id),
+                "failed to enqueue NamespaceOpApplied signal — readiness FSM will \
+                 lag for this namespace until the next op fires or a peer beacon arrives"
+            );
+        }
+    }
+
     pub async fn subscribe(&self, context_id: &ContextId) -> eyre::Result<()> {
         let topic = String::from(context_id);
         self.topic_manager.ensure_subscribed(&topic).await?;

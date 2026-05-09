@@ -306,6 +306,39 @@ pub fn observe_handler_delivery(handler: &str, op_kind: &str, report: &DeliveryR
     }
 }
 
+/// Ergonomic shorthand around [`observe_handler_delivery`] so handler
+/// call sites can write `report.observe("handler", "op_kind")` regardless
+/// of whether they hold a `DeliveryReport` or an `Option<DeliveryReport>`.
+///
+/// Two impls are provided:
+///
+/// - `impl ObserveDelivery for DeliveryReport` — direct invocation,
+///   matches helpers that return `Result<DeliveryReport>` such as
+///   `sign_and_publish_namespace_op`.
+/// - `impl ObserveDelivery for Option<DeliveryReport>` — short-circuits
+///   when no report is available, matches helpers that return
+///   `Result<Option<DeliveryReport>>` such as `sign_apply_and_publish`.
+///
+/// Both delegate to [`observe_handler_delivery`] for the actual emit, so
+/// metrics + tracing shape stays identical across every handler.
+pub trait ObserveDelivery {
+    fn observe(&self, handler: &str, op_kind: &str);
+}
+
+impl ObserveDelivery for DeliveryReport {
+    fn observe(&self, handler: &str, op_kind: &str) {
+        observe_handler_delivery(handler, op_kind, self);
+    }
+}
+
+impl ObserveDelivery for Option<DeliveryReport> {
+    fn observe(&self, handler: &str, op_kind: &str) {
+        if let Some(report) = self.as_ref() {
+            observe_handler_delivery(handler, op_kind, report);
+        }
+    }
+}
+
 /// Abstraction over the gossipsub transport used by
 /// [`publish_and_await_ack_namespace`]. The blanket impl on
 /// `NetworkClient` covers production callers; unit tests substitute a

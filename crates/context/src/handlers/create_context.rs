@@ -24,7 +24,7 @@ use tracing::{debug, warn};
 
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
-use crate::governance_broadcast::observe_handler_delivery;
+use crate::governance_broadcast::ObserveDelivery;
 use crate::{group_store, ContextManager, ContextMeta};
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -466,9 +466,7 @@ async fn create_context(
             },
         )
         .await?;
-        if let Some(report) = report.as_ref() {
-            observe_handler_delivery("create_context", "ContextRegistered", report);
-        }
+        report.observe("create_context", "ContextRegistered");
     }
 
     // Write ContextIdentity so the sync key-share can find keys for this context.
@@ -500,9 +498,7 @@ async fn create_context(
             },
         )
         .await?;
-        if let Some(report) = report.as_ref() {
-            observe_handler_delivery("create_context", "ContextAliasSet", report);
-        }
+        report.observe("create_context", "ContextAliasSet");
     }
 
     Ok(context.root_hash)
