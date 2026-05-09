@@ -270,41 +270,39 @@ impl SyncManager {
                 result,
             } = result;
 
-            let _ignored = state
-                .entry(context_id)
-                .and_modify(|state| match result {
-                    Ok(Ok(ref protocol)) => {
-                        state.on_success(peer_id, TrackingSyncProtocol::from(protocol));
-                        info!(
-                            %context_id,
-                            ?took,
-                            ?protocol,
-                            success_count = state.success_count,
-                            "Sync finished successfully"
-                        );
-                    }
-                    Ok(Err(ref err)) => {
-                        state.on_failure(err.to_string());
-                        warn!(
-                            %context_id,
-                            ?took,
-                            error = %err,
-                            failure_count = state.failure_count(),
-                            backoff_secs = state.backoff_delay().as_secs(),
-                            "Sync failed, applying exponential backoff"
-                        );
-                    }
-                    Err(ref timeout_err) => {
-                        state.on_failure(timeout_err.to_string());
-                        warn!(
-                            %context_id,
-                            ?took,
-                            failure_count = state.failure_count(),
-                            backoff_secs = state.backoff_delay().as_secs(),
-                            "Sync timed out, applying exponential backoff"
-                        );
-                    }
-                });
+            let _ignored = state.entry(context_id).and_modify(|state| match result {
+                Ok(Ok(ref protocol)) => {
+                    state.on_success(peer_id, TrackingSyncProtocol::from(protocol));
+                    info!(
+                        %context_id,
+                        ?took,
+                        ?protocol,
+                        success_count = state.success_count,
+                        "Sync finished successfully"
+                    );
+                }
+                Ok(Err(ref err)) => {
+                    state.on_failure(err.to_string());
+                    warn!(
+                        %context_id,
+                        ?took,
+                        error = %err,
+                        failure_count = state.failure_count(),
+                        backoff_secs = state.backoff_delay().as_secs(),
+                        "Sync failed, applying exponential backoff"
+                    );
+                }
+                Err(ref timeout_err) => {
+                    state.on_failure(timeout_err.to_string());
+                    warn!(
+                        %context_id,
+                        ?took,
+                        failure_count = state.failure_count(),
+                        backoff_secs = state.backoff_delay().as_secs(),
+                        "Sync timed out, applying exponential backoff"
+                    );
+                }
+            });
         }
 
         loop {
