@@ -269,8 +269,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // `sync_manager` via `session_result_tx`/`session_result_rx`
     // so per-context tracking state still updates.
     let sync_session_arbiter = arbiter_pool.get().await?;
-    let (session_result_tx, session_result_rx) =
-        tokio::sync::mpsc::channel(SYNC_SESSION_CHANNEL_CAPACITY);
+    // Unbounded result channel: a dropped result would leave the
+    // per-context `last_sync = None` forever and stall that context
+    // (same failure shape as the C1 dispatch stall). Result messages
+    // are small (~32 bytes); bounding adds risk without payoff.
+    let (session_result_tx, session_result_rx) = tokio::sync::mpsc::unbounded_channel();
     let sync_session_tx = start_sync_session_actor(
         &sync_session_arbiter,
         SYNC_SESSION_CHANNEL_CAPACITY,

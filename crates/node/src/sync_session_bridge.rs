@@ -158,13 +158,18 @@ pub struct SyncSessionActor {
     /// (default 30). The mailbox bounds *queued* jobs; this bounds
     /// *in-flight* jobs, restoring the limit the legacy
     /// `if futs.len() >= max_concurrent { advance().await }` check
-    /// enforced before #2316. A timed-out `acquire_owned` drops the
-    /// job and counts it via `dropped_total`.
+    /// enforced before #2316. The acquire is unbounded — `acquire_owned`
+    /// has no timeout — so the per-session `tokio::time::timeout` only
+    /// applies to the work *after* the permit is held.
     concurrency: Arc<Semaphore>,
     /// Initiator results are forwarded here so `SyncManager::start`
     /// can update its per-context tracking state. `None` means
-    /// results are dropped (e.g. in unit tests).
-    result_tx: Option<mpsc::Sender<SyncSessionResult>>,
+    /// results are dropped (e.g. in unit tests). Unbounded because a
+    /// dropped result would leave the per-context `last_sync = None`
+    /// forever (no `on_success`/`on_failure` would run), permanently
+    /// stalling that context — same failure shape as the C1 dispatch
+    /// stall fixed earlier in #2317.
+    result_tx: Option<mpsc::UnboundedSender<SyncSessionResult>>,
     in_flight: Arc<AtomicU64>,
     processed_total: Arc<AtomicU64>,
     error_total: Arc<AtomicU64>,
@@ -177,7 +182,7 @@ impl SyncSessionActor {
         sync_manager: SyncManager,
         session_timeout: Duration,
         max_concurrent: usize,
-        result_tx: Option<mpsc::Sender<SyncSessionResult>>,
+        result_tx: Option<mpsc::UnboundedSender<SyncSessionResult>>,
         dropped_total: Arc<AtomicU64>,
     ) -> Self {
         Self {
@@ -362,10 +367,10 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                                 took,
                                 result,
                             };
-                            // Best-effort: if the receiver is gone the
-                            // SyncManager loop is shutting down and we
-                            // don't need to retry.
-                            let _ignored = tx.try_send(session_result);
+                            // Unbounded: the only error is "receiver
+                            // gone" (SyncManager loop shut down), and
+                            // we don't need to retry in that case.
+                            let _ignored = tx.send(session_result);
                         }
                     },
                 ));
@@ -391,7 +396,7 @@ pub fn start_sync_session_actor(
     max_concurrent: usize,
     sync_manager: SyncManager,
     session_timeout: Duration,
-    result_tx: Option<mpsc::Sender<SyncSessionResult>>,
+    result_tx: Option<mpsc::UnboundedSender<SyncSessionResult>>,
 ) -> SyncSessionSender {
     let dropped_total = Arc::new(AtomicU64::new(0));
     let dropped_for_actor = Arc::clone(&dropped_total);

@@ -119,8 +119,7 @@ async fn apply_signed_group_op_via_context_client() {
     );
 
     let sync_session_arbiter = pool.get().await.expect("sync-session arbiter");
-    let (session_result_tx, session_result_rx) =
-        tokio::sync::mpsc::channel(crate::sync_session_bridge::SYNC_SESSION_CHANNEL_CAPACITY);
+    let (session_result_tx, session_result_rx) = tokio::sync::mpsc::unbounded_channel();
     let sync_session_tx = crate::sync_session_bridge::start_sync_session_actor(
         &sync_session_arbiter,
         crate::sync_session_bridge::SYNC_SESSION_CHANNEL_CAPACITY,

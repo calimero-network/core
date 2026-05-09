@@ -75,7 +75,7 @@ pub struct SyncManager {
     /// Channel the `SyncSessionActor` writes initiator results into so
     /// `start` can update per-context tracking state. Consumed once by
     /// `start`; `None` on clones.
-    pub(super) session_result_rx: Option<mpsc::Receiver<SyncSessionResult>>,
+    pub(super) session_result_rx: Option<mpsc::UnboundedReceiver<SyncSessionResult>>,
 }
 
 impl Clone for SyncManager {
@@ -134,7 +134,7 @@ impl SyncManager {
     pub(crate) fn set_session_handles(
         &mut self,
         session_tx: SyncSessionSender,
-        session_result_rx: mpsc::Receiver<SyncSessionResult>,
+        session_result_rx: mpsc::UnboundedReceiver<SyncSessionResult>,
     ) {
         self.session_tx = Some(session_tx);
         self.session_result_rx = Some(session_result_rx);
