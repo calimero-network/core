@@ -48,6 +48,7 @@
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/network_event/specialized.rs" target="_blank" rel="noopener">handlers/network_event/specialized.rs</a></div><div class="fd">Specialized node: discovery, TEE attestation, join confirmation</div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/state_delta/mod.rs" target="_blank" rel="noopener">handlers/state_delta/mod.rs</a></div><div class="fd"><span class="code">handle_state_delta</span> — DeltaStore buffering, context routing, sync session awareness, bounded KeyDelivery wait</div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/state_delta_bridge.rs" target="_blank" rel="noopener">src/state_delta_bridge.rs</a></div><div class="fd"><span class="code">StateDeltaActor</span> on dedicated Arbiter, bounded mailbox, drop-on-overflow with rebroadcast recovery</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/sync_session_bridge.rs" target="_blank" rel="noopener">src/sync_session_bridge.rs</a></div><div class="fd"><span class="code">SyncSessionActor</span> on dedicated Arbiter — both initiator and responder sync sessions; bounded mailbox + semaphore (max_concurrent), per-session timeout</div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/key_delivery.rs" target="_blank" rel="noopener">src/key_delivery.rs</a></div><div class="fd">Automatic key delivery: on <span class="code">MemberJoined</span>, wraps group key via ECDH, publishes <span class="code">RootOp::KeyDelivery</span></div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/blob_protocol.rs" target="_blank" rel="noopener">handlers/blob_protocol.rs</a></div><div class="fd">Blob transfer handler — serves blob data to requesting peers</div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/delta_store.rs" target="_blank" rel="noopener">src/delta_store.rs</a></div><div class="fd">Per-context delta buffering for out-of-order delta arrival</div></div>
@@ -395,7 +396,7 @@
      ════════════════════════════════════════════════════════ -->
 <div class="card gc">
 <h2>Event Handling</h2>
-<p style="margin-bottom:18px;">NodeManager implements <span class="code">Handler&lt;NetworkEvent&gt;</span> (via the bridge) and <span class="code">Handler&lt;NodeMessage&gt;</span>. Network events arrive through a dedicated mpsc channel to avoid cross-arbiter message loss. <span class="code">BroadcastMessage::StateDelta</span> dispatch is forwarded to a dedicated <span class="code">StateDeltaActor</span> running on its own Arbiter so delta processing does not compete with sync, heartbeat, blob, or namespace handlers on the NodeManager mailbox.</p>
+<p style="margin-bottom:18px;">NodeManager implements <span class="code">Handler&lt;NetworkEvent&gt;</span> (via the bridge) and <span class="code">Handler&lt;NodeMessage&gt;</span>. Network events arrive through a dedicated mpsc channel to avoid cross-arbiter message loss. <span class="code">BroadcastMessage::StateDelta</span> dispatch is forwarded to a dedicated <span class="code">StateDeltaActor</span> running on its own Arbiter so delta processing does not compete with sync, heartbeat, blob, or namespace handlers on the NodeManager mailbox. Inbound and outbound HashComparison/LevelWise sync sessions are likewise routed through a dedicated <span class="code">SyncSessionActor</span> on its own Arbiter (responder via <span class="code">StreamOpened</span>, initiator via <span class="code">SyncManager::start</span>), so a slow session can&rsquo;t starve the swarm-poll task and trigger gossipsub mesh starvation.</p>
 
 <details>
   <summary>BroadcastMessage Dispatch</summary>
@@ -441,7 +442,7 @@
     <div class="g2">
       <div class="cb">
         <h4 style="color:#3b82f6;">/calimero/stream/…</h4>
-        <p style="margin-top:6px;">Sync protocol streams — handed off to SyncManager for hash comparison, level-wise sync, snapshot transfer, or key sharing.</p>
+        <p style="margin-top:6px;">Sync protocol streams — routed via <span class="code">SyncSessionSender::try_send</span> to the dedicated <span class="code">SyncSessionActor</span> Arbiter (issue #2316). The actor calls <span class="code">SyncManager::handle_opened_stream</span> for hash comparison, level-wise sync, snapshot transfer, or key sharing. Bounded mailbox + a semaphore sized to <span class="code">sync_config.max_concurrent</span> caps concurrent in-flight sessions; on overflow the inbound stream is dropped and peers retry.</p>
       </div>
       <div class="cb">
         <h4 style="color:#3b82f6;">/calimero/blob/…</h4>
