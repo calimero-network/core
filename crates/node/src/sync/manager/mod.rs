@@ -3,7 +3,7 @@
 //! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
 //! **Strategy**: Try delta sync first, fallback to state sync on failure.
 
-use std::collections::{hash_map, HashMap};
+use std::collections::HashMap;
 use std::pin::pin;
 
 use calimero_context_client::client::ContextClient;
@@ -18,16 +18,19 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use eyre::WrapErr;
-use futures_util::stream::{self, FuturesUnordered};
-use futures_util::{FutureExt, StreamExt};
+use futures_util::stream::{self};
+use futures_util::StreamExt;
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{self, timeout_at, Instant, MissedTickBehavior};
+use tokio::time::{self, Instant, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
+use crate::sync_session_bridge::{
+    SyncSessionJob, SyncSessionResult, SyncSessionSendError, SyncSessionSender,
+};
 use crate::utils::choose_stream;
 
 use super::config::SyncConfig;
@@ -63,6 +66,16 @@ pub struct SyncManager {
             oneshot::Sender<eyre::Result<JoinBundle>>,
         )>,
     >,
+
+    /// Dispatch handle for the dedicated `SyncSessionActor` (#2316).
+    /// Set via [`SyncManager::set_session_handles`] after the actor is
+    /// started; `None` on freshly-cloned instances (which never run
+    /// the `start` loop) and on the original until wiring completes.
+    pub(super) session_tx: Option<SyncSessionSender>,
+    /// Channel the `SyncSessionActor` writes initiator results into so
+    /// `start` can update per-context tracking state. Consumed once by
+    /// `start`; `None` on clones.
+    pub(super) session_result_rx: Option<mpsc::UnboundedReceiver<SyncSessionResult>>,
 }
 
 impl Clone for SyncManager {
@@ -76,6 +89,12 @@ impl Clone for SyncManager {
             ctx_sync_rx: None,
             ns_sync_rx: None,
             ns_join_rx: None,
+            // Cloned `SyncManager`s never drive the `start` loop, so
+            // they don't need a session-dispatch handle or a results
+            // receiver. The bridge holds its own clone of the
+            // SyncManager for issuing sessions.
+            session_tx: None,
+            session_result_rx: None,
         }
     }
 }
@@ -103,7 +122,22 @@ impl SyncManager {
             ctx_sync_rx: Some(ctx_sync_rx),
             ns_sync_rx: Some(ns_sync_rx),
             ns_join_rx: Some(ns_join_rx),
+            session_tx: None,
+            session_result_rx: None,
         }
+    }
+
+    /// Wire the `SyncSessionActor` handles onto the original
+    /// `SyncManager` instance after the actor is started in `run.rs`.
+    /// Must be called before [`SyncManager::start`]. No-op on cloned
+    /// instances (those never run the `start` loop).
+    pub(crate) fn set_session_handles(
+        &mut self,
+        session_tx: SyncSessionSender,
+        session_result_rx: mpsc::UnboundedReceiver<SyncSessionResult>,
+    ) {
+        self.session_tx = Some(session_tx);
+        self.session_result_rx = Some(session_result_rx);
     }
 
     /// Build `SyncHandshake` from local context state for protocol negotiation.
@@ -197,18 +231,44 @@ impl SyncManager {
 
         let mut state = HashMap::<_, SyncState>::new();
 
-        let mut futs = FuturesUnordered::new();
+        let mut requested_ctx = None;
+        let mut requested_peer = None;
 
-        let advance = async |futs: &mut FuturesUnordered<_>, state: &mut HashMap<_, SyncState>| {
-            let (context_id, peer_id, start, result): (
-                ContextId,
-                PeerId,
-                Instant,
-                Result<Result<SyncProtocol, eyre::Error>, time::error::Elapsed>,
-            ) = futs.next().await?;
+        let Some(mut ctx_sync_rx) = self.ctx_sync_rx.take() else {
+            error!("SyncManager can only be run once");
+            return;
+        };
+        let mut ns_sync_rx = self.ns_sync_rx.take().unwrap_or_else(|| {
+            let (_tx, rx) = mpsc::channel(1);
+            rx
+        });
+        let mut ns_join_rx = self.ns_join_rx.take().unwrap_or_else(|| {
+            let (_tx, rx) = mpsc::channel(1);
+            rx
+        });
+        let Some(session_tx) = self.session_tx.clone() else {
+            error!("SyncManager started without a SyncSessionActor handle (#2316)");
+            return;
+        };
+        let Some(mut session_result_rx) = self.session_result_rx.take() else {
+            error!("SyncManager started without a SyncSessionActor result channel (#2316)");
+            return;
+        };
 
-            let now = Instant::now();
-            let took = Instant::saturating_duration_since(&now, start);
+        // Apply a session result to per-context tracking state. Mirrors
+        // the body of the legacy `advance` helper, which read from a
+        // local `FuturesUnordered<futs>` before #2316 moved session
+        // execution onto a dedicated arbiter.
+        fn apply_session_result(
+            state: &mut HashMap<ContextId, SyncState>,
+            result: SyncSessionResult,
+        ) {
+            let SyncSessionResult {
+                context_id,
+                peer_id,
+                took,
+                result,
+            } = result;
 
             let _ignored = state.entry(context_id).and_modify(|state| match result {
                 Ok(Ok(ref protocol)) => {
@@ -243,34 +303,17 @@ impl SyncManager {
                     );
                 }
             });
-
-            Some(())
-        };
-
-        let mut requested_ctx = None;
-        let mut requested_peer = None;
-
-        let Some(mut ctx_sync_rx) = self.ctx_sync_rx.take() else {
-            error!("SyncManager can only be run once");
-            return;
-        };
-        let mut ns_sync_rx = self.ns_sync_rx.take().unwrap_or_else(|| {
-            let (_tx, rx) = mpsc::channel(1);
-            rx
-        });
-        let mut ns_join_rx = self.ns_join_rx.take().unwrap_or_else(|| {
-            let (_tx, rx) = mpsc::channel(1);
-            rx
-        });
+        }
 
         loop {
             tokio::select! {
                 _ = next_sync.tick() => {
                     debug!("Performing interval sync");
                 }
-                Some(()) = async {
-                    loop { advance(&mut futs, &mut state).await? }
-                } => {},
+                Some(result) = session_result_rx.recv() => {
+                    apply_session_result(&mut state, result);
+                    continue;
+                }
                 Some(namespace_id) = ns_sync_rx.recv() => {
                     info!(
                         namespace_id = %hex::encode(namespace_id),
@@ -340,16 +383,15 @@ impl SyncManager {
                     }
                 };
 
-                match state.entry(context_id) {
-                    hash_map::Entry::Occupied(state) => {
-                        let state = state.into_mut();
-
-                        let Some(last_sync) = state.last_sync() else {
-                            debug!(
-                                %context_id,
-                                "Sync already in progress"
-                            );
-
+                // Phase 1: read-only eligibility check. We must not
+                // mutate `state` here because a failed `try_send`
+                // below would leave `last_sync = None` with no future
+                // result to clear it — permanently stalling the
+                // context (Cursor bugbot #2317).
+                let is_first_sync = match state.get(&context_id) {
+                    Some(existing) => {
+                        let Some(last_sync) = existing.last_sync() else {
+                            debug!(%context_id, "Sync already in progress");
                             continue;
                         };
 
@@ -359,72 +401,64 @@ impl SyncManager {
                         if time_since < minimum {
                             if requested_ctx.is_none() {
                                 debug!(%context_id, ?time_since, ?minimum, "Skipping sync, last one was too recent");
-
                                 continue;
                             }
 
                             debug!(%context_id, ?time_since, ?minimum, "Force syncing despite recency, due to explicit request");
                         }
-
-                        let _ignored = state.take_last_sync();
+                        false
                     }
-                    hash_map::Entry::Vacant(state) => {
-                        info!(
-                            %context_id,
-                            "Syncing for the first time"
-                        );
-
-                        let mut new_state = SyncState::new();
-                        new_state.start();
-                        let _ignored = state.insert(new_state);
-                    }
+                    None => true,
                 };
 
                 info!(%context_id, "Scheduled sync");
 
-                let start = Instant::now();
-                let Some(deadline) = start.checked_add(self.sync_config.timeout) else {
-                    error!(
-                        ?start,
-                        timeout=?self.sync_config.timeout,
-                        "Unable to determine when to timeout sync procedure"
-                    );
-
-                    // if we can't determine the sync deadline, this is a hard error
-                    // we intentionally want to exit the sync loop
-                    return;
+                // Phase 2: dispatch BEFORE mutating state — so a
+                // `Full`/`Closed` outcome leaves the per-context
+                // tracking state untouched and the next interval
+                // tick (or heartbeat trigger) just retries.
+                let dispatched = match session_tx.try_send(SyncSessionJob::Initiator {
+                    context_id,
+                    peer_id: requested_peer,
+                }) {
+                    Ok(()) => true,
+                    Err(SyncSessionSendError::Full) => {
+                        warn!(
+                            %context_id,
+                            "SyncSession actor mailbox full — skipping initiator dispatch (#2316); next interval tick will retry"
+                        );
+                        false
+                    }
+                    Err(SyncSessionSendError::Closed) => {
+                        warn!(
+                            %context_id,
+                            "SyncSession actor closed — skipping initiator dispatch"
+                        );
+                        false
+                    }
                 };
 
-                let fut = timeout_at(
-                    deadline,
-                    self.perform_interval_sync(context_id, requested_peer),
-                )
-                .map(move |res| {
-                    // Extract peer_id from result or use placeholder
-                    let peer_id = res
-                        .as_ref()
-                        .ok()
-                        .and_then(|r| r.as_ref().ok())
-                        .map(|(p, _)| *p)
-                        .unwrap_or(PeerId::random());
-                    (
-                        context_id,
-                        peer_id,
-                        start,
-                        res.map(|r| r.map(|(_, proto)| proto)),
-                    )
-                });
+                if !dispatched {
+                    continue;
+                }
 
-                futs.push(fut);
-
-                if futs.len() >= self.sync_config.max_concurrent {
-                    let _ignored = advance(&mut futs, &mut state).await;
+                // Phase 3: dispatch succeeded — mark the context as
+                // in-flight. A `SyncSessionResult` will arrive on
+                // `session_result_rx` and call `on_success` /
+                // `on_failure` to clear the flag.
+                if is_first_sync {
+                    info!(%context_id, "Syncing for the first time");
+                    let mut new_state = SyncState::new();
+                    new_state.start();
+                    let _ignored = state.insert(context_id, new_state);
+                } else if let Some(existing) = state.get_mut(&context_id) {
+                    let _ignored = existing.take_last_sync();
                 }
             }
         }
     }
 
-    async fn perform_interval_sync(
+    pub(crate) async fn perform_interval_sync(
         &self,
         context_id: ContextId,
         peer_id: Option<PeerId>,

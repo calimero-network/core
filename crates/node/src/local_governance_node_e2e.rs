@@ -101,7 +101,7 @@ async fn apply_signed_group_op_via_context_client() {
 
     let node_state = NodeState::new(false, NodeMode::Standard);
 
-    let sync_manager = SyncManager::new(
+    let mut sync_manager = SyncManager::new(
         SyncConfig::default(),
         node_client.clone(),
         context_client.clone(),
@@ -118,6 +118,18 @@ async fn apply_signed_group_op_via_context_client() {
         crate::state_delta_bridge::STATE_DELTA_CHANNEL_CAPACITY,
     );
 
+    let sync_session_arbiter = pool.get().await.expect("sync-session arbiter");
+    let (session_result_tx, session_result_rx) = tokio::sync::mpsc::unbounded_channel();
+    let sync_session_tx = crate::sync_session_bridge::start_sync_session_actor(
+        &sync_session_arbiter,
+        crate::sync_session_bridge::SYNC_SESSION_CHANNEL_CAPACITY,
+        SyncConfig::default().max_concurrent,
+        sync_manager.clone(),
+        SyncConfig::default().timeout,
+        Some(session_result_tx),
+    );
+    sync_manager.set_session_handles(sync_session_tx.clone(), session_result_rx);
+
     let node_manager = NodeManager::new(
         blob_store,
         sync_manager,
@@ -126,6 +138,7 @@ async fn apply_signed_group_op_via_context_client() {
         store.clone(),
         node_state,
         state_delta_tx,
+        sync_session_tx,
     );
 
     let arb = pool.get().await.expect("arbiter");
