@@ -1,8 +1,6 @@
 name: "KV Store with Handlers Fuzzy Load Test"
 description: "Long-running fuzzy load test for kv-store-with-handlers application"
 
-# TEMP (#2317): touch to trigger fuzzy CI on this PR; remove before merge.
-
 # Test configuration
 no_docker: false
 nuke_on_start: true
