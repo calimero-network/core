@@ -95,7 +95,7 @@ steps:
     context_id: "{{kv_context_id}}"
     summary_interval_seconds: 60
     operation_delay_ms: 50
-    success_threshold: 95.0
+    success_threshold: 99.0
 
     nodes:
       - name: fuzzy-kv-node-1
