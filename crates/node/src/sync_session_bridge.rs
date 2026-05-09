@@ -42,7 +42,7 @@ use actix::{
 use calimero_network_primitives::stream::Stream;
 use calimero_primitives::context::ContextId;
 use libp2p::PeerId;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, info, warn};
 
 use calimero_node_primitives::sync::SyncProtocol;
@@ -129,7 +129,10 @@ pub enum SyncSessionSendError {
 }
 
 impl SyncSessionSender {
-    /// Non-blocking enqueue. Increments the drop counter on `Full`.
+    /// Non-blocking enqueue. Increments the drop counter on both
+    /// `Full` and `Closed` so the periodic summary log doesn't
+    /// undercount drops if the actor crashes or shuts down while the
+    /// system is still running.
     pub fn try_send(&self, job: SyncSessionJob) -> Result<(), SyncSessionSendError> {
         match self.addr.try_send(job) {
             Ok(()) => Ok(()),
@@ -137,7 +140,10 @@ impl SyncSessionSender {
                 let _prev = self.dropped_total.fetch_add(1, Ordering::Relaxed);
                 Err(SyncSessionSendError::Full)
             }
-            Err(actix::dev::SendError::Closed(_)) => Err(SyncSessionSendError::Closed),
+            Err(actix::dev::SendError::Closed(_)) => {
+                let _prev = self.dropped_total.fetch_add(1, Ordering::Relaxed);
+                Err(SyncSessionSendError::Closed)
+            }
         }
     }
 }
@@ -148,6 +154,13 @@ impl SyncSessionSender {
 pub struct SyncSessionActor {
     sync_manager: SyncManager,
     session_timeout: Duration,
+    /// Caps concurrently-running sessions at `sync_config.max_concurrent`
+    /// (default 30). The mailbox bounds *queued* jobs; this bounds
+    /// *in-flight* jobs, restoring the limit the legacy
+    /// `if futs.len() >= max_concurrent { advance().await }` check
+    /// enforced before #2316. A timed-out `acquire_owned` drops the
+    /// job and counts it via `dropped_total`.
+    concurrency: Arc<Semaphore>,
     /// Initiator results are forwarded here so `SyncManager::start`
     /// can update its per-context tracking state. `None` means
     /// results are dropped (e.g. in unit tests).
@@ -163,12 +176,14 @@ impl SyncSessionActor {
     fn new(
         sync_manager: SyncManager,
         session_timeout: Duration,
+        max_concurrent: usize,
         result_tx: Option<mpsc::Sender<SyncSessionResult>>,
         dropped_total: Arc<AtomicU64>,
     ) -> Self {
         Self {
             sync_manager,
             session_timeout,
+            concurrency: Arc::new(Semaphore::new(max_concurrent)),
             result_tx,
             in_flight: Arc::new(AtomicU64::new(0)),
             processed_total: Arc::new(AtomicU64::new(0)),
@@ -215,19 +230,28 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
     type Result = ();
 
     fn handle(&mut self, job: SyncSessionJob, ctx: &mut Self::Context) {
-        let processed_total = Arc::clone(&self.processed_total);
-        let error_total = Arc::clone(&self.error_total);
-        let timeout_total = Arc::clone(&self.timeout_total);
         let in_flight_guard = InFlightGuard::new(Arc::clone(&self.in_flight));
 
         let session_timeout = self.session_timeout;
         let sync_manager = self.sync_manager.clone();
         let result_tx = self.result_tx.clone();
+        let concurrency = Arc::clone(&self.concurrency);
 
         match job {
             SyncSessionJob::Responder { peer_id, stream } => {
+                // Responder: `handle_opened_stream` returns `()` so
+                // there is no `error_total` distinction here — only
+                // `processed_total` and `timeout_total`.
+                let processed_total = Arc::clone(&self.processed_total);
+                let timeout_total = Arc::clone(&self.timeout_total);
                 let work = async move {
                     let _guard = in_flight_guard;
+                    // Bound concurrent in-flight sessions to
+                    // `sync_config.max_concurrent` (default 30); when
+                    // saturated, queued jobs wait here rather than
+                    // running unbounded. The session timeout below
+                    // still applies once the permit is held.
+                    let _permit = concurrency.acquire_owned().await.ok();
                     let started = Instant::now();
                     let outcome = tokio::time::timeout(
                         session_timeout,
@@ -269,8 +293,12 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                 context_id,
                 peer_id,
             } => {
+                let processed_total = Arc::clone(&self.processed_total);
+                let error_total = Arc::clone(&self.error_total);
+                let timeout_total = Arc::clone(&self.timeout_total);
                 let work = async move {
                     let _guard = in_flight_guard;
+                    let _permit = concurrency.acquire_owned().await.ok();
                     let started = Instant::now();
                     let outcome = tokio::time::timeout(
                         session_timeout,
@@ -349,12 +377,18 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
 /// Boot the [`SyncSessionActor`] on the supplied dedicated Arbiter
 /// and return a [`SyncSessionSender`] for dispatch sites to hold.
 ///
+/// `capacity` bounds the mailbox (queued jobs); `max_concurrent`
+/// bounds the in-flight semaphore (running sessions) — together they
+/// recreate the legacy `FuturesUnordered` queue + `max_concurrent`
+/// cap that `SyncManager::start` enforced before #2316.
+///
 /// `result_tx` is the channel `SyncManager::start` reads from to
 /// update its per-context tracking state. Pass `None` to discard
 /// results (used in unit tests).
 pub fn start_sync_session_actor(
     arbiter: &ArbiterHandle,
     capacity: usize,
+    max_concurrent: usize,
     sync_manager: SyncManager,
     session_timeout: Duration,
     result_tx: Option<mpsc::Sender<SyncSessionResult>>,
@@ -364,7 +398,13 @@ pub fn start_sync_session_actor(
 
     let addr = SyncSessionActor::start_in_arbiter(arbiter, move |ctx| {
         ctx.set_mailbox_capacity(capacity);
-        SyncSessionActor::new(sync_manager, session_timeout, result_tx, dropped_for_actor)
+        SyncSessionActor::new(
+            sync_manager,
+            session_timeout,
+            max_concurrent,
+            result_tx,
+            dropped_for_actor,
+        )
     });
 
     SyncSessionSender {

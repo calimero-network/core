@@ -274,6 +274,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let sync_session_tx = start_sync_session_actor(
         &sync_session_arbiter,
         SYNC_SESSION_CHANNEL_CAPACITY,
+        config.sync.max_concurrent,
         sync_manager.clone(),
         config.sync.timeout,
         Some(session_result_tx),
