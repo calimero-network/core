@@ -3,7 +3,7 @@
 //! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
 //! **Strategy**: Try delta sync first, fallback to state sync on failure.
 
-use std::collections::{hash_map, HashMap};
+use std::collections::HashMap;
 use std::pin::pin;
 
 use calimero_context_client::client::ContextClient;
@@ -385,16 +385,15 @@ impl SyncManager {
                     }
                 };
 
-                match state.entry(context_id) {
-                    hash_map::Entry::Occupied(state) => {
-                        let state = state.into_mut();
-
-                        let Some(last_sync) = state.last_sync() else {
-                            debug!(
-                                %context_id,
-                                "Sync already in progress"
-                            );
-
+                // Phase 1: read-only eligibility check. We must not
+                // mutate `state` here because a failed `try_send`
+                // below would leave `last_sync = None` with no future
+                // result to clear it — permanently stalling the
+                // context (Cursor bugbot #2317).
+                let is_first_sync = match state.get(&context_id) {
+                    Some(existing) => {
+                        let Some(last_sync) = existing.last_sync() else {
+                            debug!(%context_id, "Sync already in progress");
                             continue;
                         };
 
@@ -404,52 +403,58 @@ impl SyncManager {
                         if time_since < minimum {
                             if requested_ctx.is_none() {
                                 debug!(%context_id, ?time_since, ?minimum, "Skipping sync, last one was too recent");
-
                                 continue;
                             }
 
                             debug!(%context_id, ?time_since, ?minimum, "Force syncing despite recency, due to explicit request");
                         }
-
-                        let _ignored = state.take_last_sync();
+                        false
                     }
-                    hash_map::Entry::Vacant(state) => {
-                        info!(
-                            %context_id,
-                            "Syncing for the first time"
-                        );
-
-                        let mut new_state = SyncState::new();
-                        new_state.start();
-                        let _ignored = state.insert(new_state);
-                    }
+                    None => true,
                 };
 
                 info!(%context_id, "Scheduled sync");
 
-                // Dispatch the initiator session to the dedicated
-                // `SyncSessionActor` (#2316). The actor wraps execution
-                // in `tokio::time::timeout(sync_config.timeout, ...)`
-                // and forwards the result back via `session_result_rx`.
-                // On a full mailbox we drop and rely on the next
-                // `next_sync.tick()` or heartbeat trigger to retry.
-                match session_tx.try_send(SyncSessionJob::Initiator {
+                // Phase 2: dispatch BEFORE mutating state — so a
+                // `Full`/`Closed` outcome leaves the per-context
+                // tracking state untouched and the next interval
+                // tick (or heartbeat trigger) just retries.
+                let dispatched = match session_tx.try_send(SyncSessionJob::Initiator {
                     context_id,
                     peer_id: requested_peer,
                 }) {
-                    Ok(()) => {}
+                    Ok(()) => true,
                     Err(SyncSessionSendError::Full) => {
                         warn!(
                             %context_id,
                             "SyncSession actor mailbox full — skipping initiator dispatch (#2316); next interval tick will retry"
                         );
+                        false
                     }
                     Err(SyncSessionSendError::Closed) => {
                         warn!(
                             %context_id,
                             "SyncSession actor closed — skipping initiator dispatch"
                         );
+                        false
                     }
+                };
+
+                if !dispatched {
+                    continue;
+                }
+
+                // Phase 3: dispatch succeeded — mark the context as
+                // in-flight. A `SyncSessionResult` will arrive on
+                // `session_result_rx` and call `on_success` /
+                // `on_failure` to clear the flag.
+                if is_first_sync {
+                    info!(%context_id, "Syncing for the first time");
+                    let mut new_state = SyncState::new();
+                    new_state.start();
+                    let _ignored = state.insert(context_id, new_state);
+                } else if let Some(existing) = state.get_mut(&context_id) {
+                    let _ignored = existing.take_last_sync();
                 }
             }
         }
