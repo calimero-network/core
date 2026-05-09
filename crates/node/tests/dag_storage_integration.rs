@@ -314,8 +314,11 @@ async fn test_dag_storage_error_handling() {
     let result = dag.add_delta(delta1.clone(), &applier).await;
     assert!(result.is_err(), "Should fail when applier fails");
 
-    // Delta stored but not applied
-    assert!(dag.has_delta(&[1; 32]));
+    // On apply failure the delta is rolled out of `deltas` so a retry
+    // (e.g. via sync rebroadcast) isn't blocked by the duplicate-check.
+    // See `apply_error_rolls_delta_out_of_deltas_map` in
+    // `crates/dag/src/lib.rs::tests`.
+    assert!(!dag.has_delta(&[1; 32]));
     assert_eq!(dag.stats().applied_deltas, 1); // Only root
     assert_eq!(applier.get_applied().await.len(), 0);
 }

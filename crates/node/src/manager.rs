@@ -51,6 +51,11 @@ pub struct NodeManager {
     /// then (and during early-startup races where receivers may fire
     /// before the manager is mounted — drop the message in that case).
     pub(crate) readiness_addr: Option<Addr<ReadinessManager>>,
+    /// Sender into the dedicated `StateDeltaActor`. The
+    /// `BroadcastMessage::StateDelta` arm in
+    /// `handlers::network_event` routes jobs here instead of
+    /// `ctx.spawn`'ing them on this actor's Arbiter (issue #2299).
+    pub(crate) state_delta_tx: crate::state_delta_bridge::StateDeltaSender,
 }
 
 impl NodeManager {
@@ -61,6 +66,7 @@ impl NodeManager {
         node_client: NodeClient,
         datastore: Store,
         state: NodeState,
+        state_delta_tx: crate::state_delta_bridge::StateDeltaSender,
     ) -> Self {
         Self {
             clients: NodeClients {
@@ -76,6 +82,7 @@ impl NodeManager {
             readiness_cache: Arc::new(ReadinessCache::default()),
             readiness_notify: Arc::new(ReadinessCacheNotify::default()),
             readiness_addr: None,
+            state_delta_tx,
         }
     }
 }

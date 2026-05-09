@@ -8,12 +8,13 @@
 //! - `blobs` - blob request/provider/download event handling
 //! - this file - dispatch wiring only
 
-use actix::{AsyncContext, Handler, WrapFuture};
+use actix::Handler;
 use calimero_network_primitives::messages::NetworkEvent;
 use calimero_node_primitives::sync::BroadcastMessage;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::handlers::{state_delta, stream_opened};
+use crate::state_delta_bridge::{StateDeltaJob, StateDeltaSendError};
 use crate::NodeManager;
 
 mod blobs;
@@ -80,41 +81,53 @@ impl Handler<NetworkEvent> for NodeManager {
                             "Matched StateDelta message"
                         );
 
-                        let node_clients = self.clients.clone();
-                        let node_state = self.state.clone();
-                        let network_client = self.managers.sync.network_client.clone();
-                        let sync_config_timeout = self.managers.sync.sync_config.timeout;
+                        let job = StateDeltaJob {
+                            context: state_delta::StateDeltaContext {
+                                node_clients: self.clients.clone(),
+                                node_state: self.state.clone(),
+                                network_client: self.managers.sync.network_client.clone(),
+                                sync_timeout: self.managers.sync.sync_config.timeout,
+                            },
+                            message: state_delta::StateDeltaMessage {
+                                source,
+                                context_id,
+                                author_id,
+                                delta_id,
+                                parent_ids,
+                                hlc,
+                                root_hash,
+                                artifact: artifact.into_owned(),
+                                nonce,
+                                events: events.map(|e| e.into_owned()),
+                                governance_epoch,
+                                key_id,
+                            },
+                        };
 
-                        let _ignored = ctx.spawn(
-                            async move {
-                                let input = state_delta::StateDeltaContext {
-                                    node_clients,
-                                    node_state,
-                                    network_client,
-                                    sync_timeout: sync_config_timeout,
-                                };
-                                let message = state_delta::StateDeltaMessage {
-                                    source,
-                                    context_id,
-                                    author_id,
-                                    delta_id,
-                                    parent_ids,
-                                    hlc,
-                                    root_hash,
-                                    artifact: artifact.into_owned(),
-                                    nonce,
-                                    events: events.map(|e| e.into_owned()),
-                                    governance_epoch,
-                                    key_id,
-                                };
-                                if let Err(err) =
-                                    state_delta::handle_state_delta(input, message).await
-                                {
-                                    warn!(?err, "Failed to handle state delta");
+                        // Issue #2299: route StateDelta to its dedicated
+                        // actor on a separate Arbiter. Drops on overflow
+                        // are recovered by the existing heartbeat-driven
+                        // rebroadcast path.
+                        if let Err(err) = self.state_delta_tx.try_send(job) {
+                            match err {
+                                StateDeltaSendError::Full => {
+                                    warn!(
+                                        %context_id,
+                                        %author_id,
+                                        delta_id = ?delta_id,
+                                        "StateDelta mailbox full — dropping; peer rebroadcast via heartbeat will retry"
+                                    );
+                                }
+                                StateDeltaSendError::Closed => {
+                                    error!(
+                                        %context_id,
+                                        %author_id,
+                                        delta_id = ?delta_id,
+                                        "StateDelta actor stopped — dispatch closed"
+                                    );
                                 }
                             }
-                            .into_actor(self),
-                        );
+                        }
                     }
                     BroadcastMessage::HashHeartbeat {
                         context_id,

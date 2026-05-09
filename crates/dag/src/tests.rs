@@ -421,10 +421,13 @@ async fn test_dag_apply_failure() {
     let result = dag.add_delta(delta, &applier).await;
     assert!(result.is_err());
 
-    // Delta should not be in applied set
+    // Delta must not remain in `deltas` after apply failure — otherwise
+    // the duplicate-check at the top of `add_delta_with_outcome` would
+    // permanently reject re-arrival of the same delta. See
+    // `apply_error_rolls_delta_out_of_deltas_map` in `lib.rs::tests`.
     let stats = dag.stats();
-    assert_eq!(stats.applied_deltas, 1); // Only root
-    assert_eq!(stats.total_deltas, 1); // Delta was stored
+    assert_eq!(stats.applied_deltas, 1); // Only root (seeded by DagStore::new)
+    assert_eq!(stats.total_deltas, 0); // Failed delta was rolled out
 }
 
 #[tokio::test]
@@ -436,15 +439,23 @@ async fn test_dag_apply_failure_recovery() {
 
     let delta = CausalDelta::new_test([1; 32], vec![[0; 32]], TestPayload { value: 1 });
 
-    // First attempt fails
+    // First attempt fails — delta is rolled out of `deltas` so a retry
+    // (e.g. via sync rebroadcast on the same session) isn't blocked by
+    // the duplicate-check.
     let result = dag.add_delta(delta.clone(), &applier).await;
     assert!(result.is_err());
-
-    // Delta is stored but not applied
-    assert!(dag.has_delta(&[1; 32]));
+    assert!(!dag.has_delta(&[1; 32]));
     assert_eq!(dag.stats().applied_deltas, 1); // Only root
 
-    // Note: Recovery would require manual retry - the DAG doesn't auto-retry
+    // Recovery: flip the applier and retry — the delta should now apply.
+    applier.set_should_fail(false).await;
+    let outcome = dag
+        .add_delta(delta, &applier)
+        .await
+        .expect("retry should succeed after rollback");
+    assert!(outcome, "delta should be applied on retry");
+    assert!(dag.has_delta(&[1; 32]));
+    assert_eq!(dag.stats().applied_deltas, 2);
 }
 
 // ============================================================
