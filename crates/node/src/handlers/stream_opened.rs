@@ -5,9 +5,10 @@
 use actix::{AsyncContext, WrapFuture};
 use calimero_network_primitives::stream::Stream;
 use libp2p::{PeerId, StreamProtocol};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::handlers::blob_protocol::handle_blob_protocol_stream;
+use crate::sync_session_bridge::{SyncSessionJob, SyncSessionSendError};
 use crate::NodeManager;
 
 /// Handles StreamOpened event by routing to blob or sync protocol
@@ -39,12 +40,27 @@ pub fn handle_stream_opened(
         );
     } else {
         debug!(%peer_id, "Routing to sync protocol handler");
-        let sync_manager = node_manager.managers.sync.clone();
-        let _ignored = ctx.spawn(
-            async move {
-                sync_manager.handle_opened_stream(peer_id, stream).await;
+        // Route inbound sync streams onto the dedicated SyncSessionActor
+        // arbiter (issue #2316). On Full/Closed we drop the stream and
+        // rely on peer retry; the bounded mailbox is the whole point of
+        // moving sync sessions off this actor's arbiter.
+        match node_manager
+            .sync_session_tx
+            .try_send(SyncSessionJob::Responder { peer_id, stream })
+        {
+            Ok(()) => {}
+            Err(SyncSessionSendError::Full) => {
+                warn!(
+                    %peer_id,
+                    "SyncSession actor mailbox full — dropping inbound sync stream (#2316); peer will retry"
+                );
             }
-            .into_actor(node_manager),
-        );
+            Err(SyncSessionSendError::Closed) => {
+                warn!(
+                    %peer_id,
+                    "SyncSession actor closed — dropping inbound sync stream"
+                );
+            }
+        }
     }
 }
