@@ -112,6 +112,12 @@ async fn apply_signed_group_op_via_context_client() {
         ns_join_rx,
     );
 
+    let state_delta_arbiter = pool.get().await.expect("state-delta arbiter");
+    let state_delta_tx = crate::state_delta_bridge::start_state_delta_actor(
+        &state_delta_arbiter,
+        crate::state_delta_bridge::STATE_DELTA_CHANNEL_CAPACITY,
+    );
+
     let node_manager = NodeManager::new(
         blob_store,
         sync_manager,
@@ -119,6 +125,7 @@ async fn apply_signed_group_op_via_context_client() {
         node_client,
         store.clone(),
         node_state,
+        state_delta_tx,
     );
 
     let arb = pool.get().await.expect("arbiter");

@@ -72,7 +72,7 @@ steps:
     context_id: "{{handlers_context_id}}"
     summary_interval_seconds: 60
     operation_delay_ms: 50
-    success_threshold: 95.0
+    success_threshold: 99.0
 
     nodes:
       - name: fuzzy-handlers-node-1

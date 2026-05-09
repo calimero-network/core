@@ -46,7 +46,8 @@
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/network_event.rs" target="_blank" rel="noopener">handlers/network_event/mod.rs</a></div><div class="fd"><span class="code">Handler&lt;NetworkEvent&gt;</span> — gossip, stream, subscription, broadcast message routing</div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/network_event/namespace.rs" target="_blank" rel="noopener">handlers/network_event/namespace.rs</a></div><div class="fd">Namespace event handlers: <span class="code">handle_namespace_governance_delta()</span>, <span class="code">handle_namespace_state_heartbeat()</span>, backfill protocol</div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/network_event/specialized.rs" target="_blank" rel="noopener">handlers/network_event/specialized.rs</a></div><div class="fd">Specialized node: discovery, TEE attestation, join confirmation</div></div>
-<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/state_delta/mod.rs" target="_blank" rel="noopener">handlers/state_delta/mod.rs</a></div><div class="fd"><span class="code">handle_state_delta</span> — DeltaStore buffering, context routing, sync session awareness</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/state_delta/mod.rs" target="_blank" rel="noopener">handlers/state_delta/mod.rs</a></div><div class="fd"><span class="code">handle_state_delta</span> — DeltaStore buffering, context routing, sync session awareness, bounded KeyDelivery wait</div></div>
+<div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/state_delta_bridge.rs" target="_blank" rel="noopener">src/state_delta_bridge.rs</a></div><div class="fd"><span class="code">StateDeltaActor</span> on dedicated Arbiter, bounded mailbox, drop-on-overflow with rebroadcast recovery</div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/key_delivery.rs" target="_blank" rel="noopener">src/key_delivery.rs</a></div><div class="fd">Automatic key delivery: on <span class="code">MemberJoined</span>, wraps group key via ECDH, publishes <span class="code">RootOp::KeyDelivery</span></div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/handlers/blob_protocol.rs" target="_blank" rel="noopener">handlers/blob_protocol.rs</a></div><div class="fd">Blob transfer handler — serves blob data to requesting peers</div></div>
 <div class="fr"><div class="fp"><a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/node/src/delta_store.rs" target="_blank" rel="noopener">src/delta_store.rs</a></div><div class="fd">Per-context delta buffering for out-of-order delta arrival</div></div>
@@ -394,7 +395,7 @@
      ════════════════════════════════════════════════════════ -->
 <div class="card gc">
 <h2>Event Handling</h2>
-<p style="margin-bottom:18px;">NodeManager implements <span class="code">Handler&lt;NetworkEvent&gt;</span> (via the bridge) and <span class="code">Handler&lt;NodeMessage&gt;</span>. Network events arrive through a dedicated mpsc channel to avoid cross-arbiter message loss.</p>
+<p style="margin-bottom:18px;">NodeManager implements <span class="code">Handler&lt;NetworkEvent&gt;</span> (via the bridge) and <span class="code">Handler&lt;NodeMessage&gt;</span>. Network events arrive through a dedicated mpsc channel to avoid cross-arbiter message loss. <span class="code">BroadcastMessage::StateDelta</span> dispatch is forwarded to a dedicated <span class="code">StateDeltaActor</span> running on its own Arbiter so delta processing does not compete with sync, heartbeat, blob, or namespace handlers on the NodeManager mailbox.</p>
 
 <details>
   <summary>BroadcastMessage Dispatch</summary>
@@ -404,7 +405,7 @@
       <div>
         <div class="step"><div class="n" style="background:#3b82f6;">1</div>
           <h4><span class="code">StateDelta</span></h4>
-          <p>Routed to <span class="code">handle_state_delta</span> which checks sync session state. If a snapshot sync is active, the delta is buffered; otherwise forwarded to ContextManager for application.</p>
+          <p>Routed via <span class="code">StateDeltaSender::try_send</span> to <span class="code">StateDeltaActor</span> on a dedicated Arbiter. The actor's <span class="code">Handler&lt;StateDeltaJob&gt;</span> calls <span class="code">handle_state_delta</span> which checks sync session state — if a snapshot sync is active the delta is buffered, otherwise it's decrypted and applied. Mailbox bounded at <span class="code">STATE_DELTA_CHANNEL_CAPACITY</span> (2048); on overflow the dispatch site logs a <span class="code">warn!</span> and drops, relying on heartbeat-driven rebroadcast.</p>
         </div>
         <div class="step"><div class="n" style="background:#3b82f6;">2</div>
           <h4><span class="code">HashHeartbeat</span></h4>

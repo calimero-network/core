@@ -42,6 +42,12 @@ use crate::sync::rotation_log_reader;
 /// across restarts. Per #2272 review.
 const MAX_TOPOLOGY_ENTRIES: usize = 10_000;
 
+/// Bound on `context_client.execute(...)` inside `apply()`. The caller
+/// holds the DAG write lock during this await; without a bound, a slow
+/// WASM merge-apply (#2199) propagates as a 30s+ lock hold. Returning
+/// `ApplyError` here releases the lock and lets sync recovery retry.
+const WASM_APPLY_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Result of adding a delta with cascaded event information
 #[derive(Debug)]
 pub struct AddDeltaResult {
@@ -216,19 +222,27 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
 
         let wasm_start = std::time::Instant::now();
 
-        // Execute __calimero_sync_next via WASM to apply actions to storage
-        let outcome = self
-            .context_client
-            .execute(
+        // Bounded so the caller's DAG write lock can't be pinned by a
+        // slow WASM merge-apply (#2199).
+        let outcome = tokio::time::timeout(
+            WASM_APPLY_TIMEOUT,
+            self.context_client.execute(
                 &self.context_id,
                 &self.our_identity,
                 "__calimero_sync_next".to_owned(),
                 artifact,
                 vec![],
                 None,
-            )
-            .await
-            .map_err(|e| ApplyError::Application(format!("WASM execution failed: {e}")))?;
+            ),
+        )
+        .await
+        .map_err(|_elapsed| {
+            ApplyError::Application(format!(
+                "WASM execution exceeded {}s budget (#2186)",
+                WASM_APPLY_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(|e| ApplyError::Application(format!("WASM execution failed: {e}")))?;
 
         let wasm_elapsed_ms = wasm_start.elapsed().as_secs_f64() * 1000.0;
 

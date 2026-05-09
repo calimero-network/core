@@ -19,6 +19,100 @@ use tracing::{debug, info, warn};
 use crate::delta_store::DeltaStore;
 use crate::utils::choose_stream;
 
+/// Bounded wait for a `KeyDelivery` (carried by `NamespaceGovernanceDelta`)
+/// to land before we give up on decrypting an inbound state delta.
+/// Mirrors `KEY_DELIVERY_FALLBACK_WAIT` in
+/// `crates/context/src/handlers/join_group.rs`.
+///
+/// Why: once StateDelta processing runs on its own Arbiter (issue
+/// #2299), the race window where a delta wakes before its associated
+/// `KeyDelivery` has been applied to the group store widens. Without
+/// this short wait, the failure mode is "rely on the next 30s
+/// heartbeat to trigger sync rebroadcast" — exactly the lull pattern
+/// the actor isolation was meant to remove. Bounded at 3s so it can't
+/// itself starve the actor's mailbox.
+const STATE_DELTA_KEY_LOOKUP_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+const STATE_DELTA_KEY_LOOKUP_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Resolve a state delta's encryption key for a given group, polling
+/// the group store up to `max_wait` if the key hasn't landed yet.
+/// Tries the direct group-id keyring first, then the namespace-id
+/// keyring on `Open` subgroups (issue #2256).
+///
+/// Pass `Duration::ZERO` for a single-shot lookup (no polling). The
+/// `replay_buffered_delta` path uses this — by the time replay runs,
+/// snapshot sync has settled and any late `KeyDelivery` is already
+/// applied; a stall there would multiply per-delta into multi-second
+/// sync recovery delays.
+///
+/// Returns `Ok(Some(_))` on success, `Ok(None)` when the wait expires
+/// without the key arriving, `Err(_)` on store errors.
+async fn lookup_group_key_with_wait(
+    context_client: &calimero_context_client::client::ContextClient,
+    group_id: &calimero_context_config::types::ContextGroupId,
+    key_id: &[u8; 32],
+    max_wait: std::time::Duration,
+) -> Result<Option<calimero_primitives::identity::PrivateKey>> {
+    use tokio::time::{sleep, Instant};
+
+    // Explicit single-shot path: when max_wait is zero we want exactly
+    // one lookup with no polling, regardless of the relationship
+    // between max_wait and STATE_DELTA_KEY_LOOKUP_POLL. Without this,
+    // single-shot semantics depend on POLL > 0, which is fragile.
+    let single_shot = max_wait.is_zero();
+    let deadline = Instant::now() + max_wait;
+    let mut logged_wait = false;
+    loop {
+        // Scope the &Store borrow to a sub-block so it cannot be
+        // mistaken for being held across the sleep below.
+        let resolved = {
+            let store = context_client.datastore();
+            let direct =
+                calimero_context::group_store::load_group_key_by_id(store, group_id, key_id)?;
+            match direct {
+                Some(k) => Some(k),
+                None => {
+                    let ns_id = calimero_context::group_store::resolve_namespace(store, group_id)?;
+                    if &ns_id != group_id {
+                        calimero_context::group_store::load_group_key_by_id(store, &ns_id, key_id)?
+                    } else {
+                        None
+                    }
+                }
+            }
+        };
+
+        if let Some(k) = resolved {
+            return Ok(Some(calimero_primitives::identity::PrivateKey::from(k)));
+        }
+
+        if single_shot {
+            return Ok(None);
+        }
+
+        // Stop before sleeping if the next poll wouldn't fit inside
+        // the deadline — bounds wall-time at exactly `max_wait`
+        // instead of `max_wait + STATE_DELTA_KEY_LOOKUP_POLL`.
+        if Instant::now() + STATE_DELTA_KEY_LOOKUP_POLL > deadline {
+            return Ok(None);
+        }
+
+        // Log on the first miss only — keeps the happy path silent
+        // but makes a slow KeyDelivery race visible to operators.
+        if !logged_wait {
+            debug!(
+                ?group_id,
+                key_id = %hex::encode(key_id),
+                wait_ms = max_wait.as_millis(),
+                "Group key not yet available — polling for KeyDelivery"
+            );
+            logged_wait = true;
+        }
+
+        sleep(STATE_DELTA_KEY_LOOKUP_POLL).await;
+    }
+}
+
 pub(crate) struct StateDeltaMessage {
     pub(crate) source: PeerId,
     pub(crate) context_id: ContextId,
@@ -228,30 +322,20 @@ pub async fn handle_state_delta(
                 // namespace keyring (Open case). Same shape as the
                 // governance-op decrypt fallback in
                 // `namespace_governance::apply_namespace_op`.
-                let direct =
-                    calimero_context::group_store::load_group_key_by_id(store, &g, &key_id)?;
-                // Symmetric with the encrypt path in `execute/mod.rs`:
-                // store-corruption signals from `resolve_namespace`
-                // (e.g. cyclic parent edges, missing namespace meta)
-                // must propagate, not be silently squashed to "no key
-                // found." A silent fallback here would hide the same
-                // corruption the encrypt path now bails on, and trick
-                // the caller into reporting "no key" when the real
-                // failure is that the chain itself is unwalkable.
-                let resolved = match direct {
-                    Some(k) => Some(k),
-                    None => {
-                        let ns_id = calimero_context::group_store::resolve_namespace(store, &g)?;
-                        if ns_id != g {
-                            calimero_context::group_store::load_group_key_by_id(
-                                store, &ns_id, &key_id,
-                            )?
-                        } else {
-                            None
-                        }
-                    }
-                };
-                resolved.map(PrivateKey::from).ok_or_else(|| {
+                //
+                // Issue #2299: poll the group store for up to 3s if
+                // the key isn't found — closes the race widened by
+                // running StateDelta on a separate Arbiter. Store
+                // errors from `resolve_namespace` (cyclic parent
+                // edges, missing namespace meta) still propagate.
+                lookup_group_key_with_wait(
+                    &node_clients.context,
+                    &g,
+                    &key_id,
+                    STATE_DELTA_KEY_LOOKUP_WAIT,
+                )
+                .await?
+                .ok_or_else(|| {
                     eyre::eyre!("no group key found for key_id {}", hex::encode(key_id))
                 })?
             }
@@ -1354,32 +1438,24 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
             Some(g) => {
                 // Issue #2256 — Open-subgroup namespace-key fallback,
                 // mirroring the live-apply path above.
-                let direct = calimero_context::group_store::load_group_key_by_id(
-                    store,
+                //
+                // Issue #2299 — DO NOT wait here. The buffered-replay
+                // path is invoked by `SyncManager` in a sequential
+                // loop after snapshot sync settles; by then any
+                // legitimate `KeyDelivery` has already been applied.
+                // A 3s wait per delta would multiply into multi-second
+                // sync recovery stalls when replaying many deltas
+                // whose keys were genuinely lost. Single-shot lookup
+                // here, fall back to the existing rebroadcast/sync
+                // recovery path on miss.
+                lookup_group_key_with_wait(
+                    &context_client,
                     &g,
                     &buffered.key_id,
-                )?;
-                // See live-apply path above: propagate
-                // `resolve_namespace` errors instead of swallowing
-                // them; symmetric with the encrypt path's handling.
-                let resolved = match direct {
-                    Some(k) => Some(k),
-                    None => {
-                        let ns_id = calimero_context::group_store::resolve_namespace(store, &g)?;
-                        if ns_id != g {
-                            calimero_context::group_store::load_group_key_by_id(
-                                store,
-                                &ns_id,
-                                &buffered.key_id,
-                            )?
-                        } else {
-                            None
-                        }
-                    }
-                };
-                resolved
-                    .map(PrivateKey::from)
-                    .ok_or_else(|| eyre::eyre!("no group key found for buffered delta"))?
+                    std::time::Duration::ZERO,
+                )
+                .await?
+                .ok_or_else(|| eyre::eyre!("no group key found for buffered delta"))?
             }
             None => {
                 let identity = context_client

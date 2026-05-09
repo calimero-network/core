@@ -27,6 +27,7 @@ pub mod readiness;
 mod run;
 mod specialized_node_invite_state;
 mod state;
+pub(crate) mod state_delta_bridge;
 pub mod sync;
 mod utils;
 
