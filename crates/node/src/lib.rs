@@ -27,7 +27,7 @@ pub mod readiness;
 mod run;
 mod specialized_node_invite_state;
 mod state;
-pub mod state_delta_bridge;
+pub(crate) mod state_delta_bridge;
 pub mod sync;
 mod utils;
 
@@ -38,10 +38,6 @@ pub use network_event_channel::{
 pub use network_event_processor::NetworkEventBridge;
 pub use run::{start, NodeConfig, NodeMode, SpecializedNodeConfig};
 pub(crate) use state::{CachedBlob, NodeClients, NodeManagers, NodeState};
-pub use state_delta_bridge::{
-    start_state_delta_actor, StateDeltaActor, StateDeltaJob, StateDeltaSendError, StateDeltaSender,
-    STATE_DELTA_CHANNEL_CAPACITY,
-};
 pub use sync::SyncManager;
 
 #[cfg(test)]
