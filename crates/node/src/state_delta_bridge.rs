@@ -35,6 +35,11 @@ use crate::handlers::state_delta::{handle_state_delta, StateDeltaContext, StateD
 /// rebroadcast path.
 pub const STATE_DELTA_CHANNEL_CAPACITY: usize = 2048;
 
+/// Per-delta processing budget. Bounds the worst case where any
+/// downstream await wedges (e.g. slow WASM merge-apply, #2199); on
+/// timeout the delta is dropped and sync recovery retries.
+const STATE_DELTA_PROCESSING_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Periodic summary log interval.
 const SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -184,13 +189,17 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
         let work = async move {
             let _guard = in_flight_guard;
             let started = Instant::now();
-            let outcome = handle_state_delta(context, message).await;
+            let outcome = tokio::time::timeout(
+                STATE_DELTA_PROCESSING_TIMEOUT,
+                handle_state_delta(context, message),
+            )
+            .await;
             (outcome, started)
         };
 
         let _spawn_handle = ctx.spawn(work.into_actor(self).map(
             move |(outcome, started), _act, _ctx| match outcome {
-                Ok(()) => {
+                Ok(Ok(())) => {
                     debug!(
                         %context_id,
                         ?delta_id,
@@ -199,8 +208,18 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
                     );
                     let _prev = processed_total.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     warn!(?err, %context_id, ?delta_id, "Failed to handle state delta");
+                    let _prev = error_total.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(_elapsed) => {
+                    warn!(
+                        %context_id,
+                        ?delta_id,
+                        timeout_secs = STATE_DELTA_PROCESSING_TIMEOUT.as_secs(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "StateDelta worker exceeded processing budget — dropping delta, sync recovery will retry (#2199)"
+                    );
                     let _prev = error_total.fetch_add(1, Ordering::Relaxed);
                 }
             },
