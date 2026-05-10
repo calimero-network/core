@@ -40,7 +40,7 @@ generate_scrape_config() {
     local node_pattern="$7"
     local node_count="$8"
     local base_port="$9"
-    local port_increment="${10:-2}"
+    local port_increment="${10:-1}"
     
     cat > "$config_file" <<EOF
 global:
@@ -184,7 +184,7 @@ update_scrape_config_background() {
     local node_pattern="$8"
     local node_count="$9"
     local base_port="${10}"
-    local port_increment="${11:-2}"
+    local port_increment="${11:-1}"
     
     while kill -0 "$pid" 2>/dev/null; do
         sleep 60  # Update every 60 seconds to refresh process info
