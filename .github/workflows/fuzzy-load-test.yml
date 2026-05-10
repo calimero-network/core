@@ -276,7 +276,7 @@ jobs:
             "${{ steps.setup-vmagent.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent.outputs.bearer_token_file }}" \
-            "8429" "fuzzy-kv-node" "4" "3001" "2"; then
+            "8429" "fuzzy-kv-node" "4" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
 
@@ -538,7 +538,7 @@ jobs:
             "${{ steps.setup-vmagent-handlers.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent-handlers.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent-handlers.outputs.bearer_token_file }}" \
-            "8430" "fuzzy-handlers-node" "4" "3001" "2"; then
+            "8430" "fuzzy-handlers-node" "4" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
 
@@ -788,7 +788,7 @@ jobs:
             "${{ steps.setup-vmagent-e2e.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent-e2e.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent-e2e.outputs.bearer_token_file }}" \
-            "8431" "fuzzy-e2e-node" "4" "3001" "2"; then
+            "8431" "fuzzy-e2e-node" "4" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
 
@@ -1035,7 +1035,7 @@ jobs:
             "${{ steps.setup-vmagent-gov.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent-gov.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent-gov.outputs.bearer_token_file }}" \
-            "8432" "fuzzy-gov-node" "4" "3001" "2"; then
+            "8432" "fuzzy-gov-node" "4" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
 
