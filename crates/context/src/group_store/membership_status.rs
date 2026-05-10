@@ -270,7 +270,24 @@ fn prefix_walk_membership(
                 continue;
             }
         };
+        // Push parents one at a time and re-check the combined bound
+        // after each push. Without the per-parent check, a single
+        // high-fan-out node (e.g. an op naming thousands of parents)
+        // could grow `to_visit` by its entire parent count in one
+        // iteration — exceeding the bound transiently between
+        // top-of-loop checks. Checking per-parent caps queue growth at
+        // exactly `MAX_PREFIX_WALK_NODES`.
         for parent in &signed_op.parent_op_hashes {
+            if visited.len() + to_visit.len() >= MAX_PREFIX_WALK_NODES {
+                eyre::bail!(
+                    "prefix_walk_membership: visited+queued reached \
+                     MAX_PREFIX_WALK_NODES={} mid-fanout (visited={}, \
+                     queued={}); bailing to bound resource use",
+                    MAX_PREFIX_WALK_NODES,
+                    visited.len(),
+                    to_visit.len(),
+                );
+            }
             to_visit.push_back(*parent);
         }
         walked.push((hash, signed_op));
