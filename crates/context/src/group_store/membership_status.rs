@@ -1,0 +1,738 @@
+//! Position-aware membership lookup (cross-DAG authorization, decision #20).
+//!
+//! [`MembershipStatus`] is the type B3's apply-time authorization check
+//! consumes. It distinguishes the four answers a position-aware lookup can
+//! produce:
+//!
+//! - [`Member`](MembershipStatus::Member) — signer is a member at the named
+//!   cut, with role known.
+//! - [`Removed`](MembershipStatus::Removed) — signer was a member but removed
+//!   on or before the named cut.
+//! - [`NeverMember`](MembershipStatus::NeverMember) — signer is not in the
+//!   member set at the named cut, and no record of removal exists.
+//! - [`Unknown`](MembershipStatus::Unknown) — local governance state hasn't
+//!   advanced to the named cut yet, so the answer can't be determined. B2
+//!   buffers state ops on this signal.
+//!
+//! Collapsing these into `Option<GroupMemberRole>` (as the legacy
+//! `get_member_role` API does) makes "forgot to check" a silent runtime bug;
+//! [`MembershipStatus`] makes it a non-exhaustive-match warning. See the
+//! cross-DAG authorization roadmap (issue S13) for the broader design
+//! context.
+
+use std::collections::{HashSet, VecDeque};
+
+use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
+use calimero_context_config::types::{
+    ContextGroupId, GovernancePosition, MAX_GOVERNANCE_DAG_HEADS,
+};
+use calimero_primitives::context::GroupMemberRole;
+use calimero_primitives::identity::PublicKey;
+use calimero_store::Store;
+use eyre::Result as EyreResult;
+
+use super::group_keys::{decrypt_group_op, load_group_key_by_id};
+use super::namespace_op_log::NamespaceOpLogService;
+
+/// Maximum number of governance ops the prefix walk will visit before
+/// bailing. Bounds memory + CPU for the BFS even on very deep DAGs and
+/// guards against op-log corruption that could otherwise cause an
+/// unbounded traversal. Sized far above any realistic governance history
+/// (a busy group might accumulate hundreds of governance ops per year);
+/// if a real deployment ever sees the bound it indicates either DAG
+/// corruption or a use-case the prefix walk wasn't designed for, both
+/// of which are better surfaced as explicit errors than as silent
+/// resource exhaustion.
+pub const MAX_PREFIX_WALK_NODES: usize = 10_000;
+
+/// Position-aware membership state.
+///
+/// Always carries enough information for B3 to decide whether a state op
+/// signed at `position` can be applied. Receivers must match all four
+/// variants — `_` arms are a smell that suggests a missing case.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MembershipStatus {
+    /// Signer is a member at the named cut.
+    Member(GroupMemberRole),
+    /// Signer was a member at some earlier cut but removed on or before
+    /// `position`. `last_role` is the role they held at the time of removal,
+    /// useful for diagnostics and the deny-list (D1).
+    Removed { last_role: GroupMemberRole },
+    /// Signer never appears in any `MemberAdded` op in the prefix up to
+    /// `position`.
+    NeverMember,
+    /// Local governance state hasn't advanced to `position` yet — the answer
+    /// is undecidable at this moment in time. `needed` lists every governance
+    /// op hash from `position.governance_dag_heads` that is missing locally.
+    ///
+    /// Returning the full set (rather than just the first missing head) lets
+    /// B2 buffer once and request all missing ops in parallel instead of
+    /// O(n) sequential buffer-and-retry round-trips. Always non-empty when
+    /// this variant is returned.
+    Unknown { needed: Vec<[u8; 32]> },
+}
+
+/// Determine [`MembershipStatus`] for `signer` against the governance state
+/// named by `position`.
+///
+/// Three branches:
+///
+/// 1. **Fast path** — `position.governance_dag_heads` equals current local
+///    heads. Consults the materialized member set for an immediate
+///    `Member` / `NeverMember` answer. Verifies
+///    `position.group_state_hash` against the locally-computed state hash;
+///    mismatch surfaces as `Err` (tampering or local divergence). On this
+///    path `get_group_member_role` returning `None` does not distinguish
+///    "never added" from "was added then removed" — the fast path
+///    therefore conflates `Removed` into `NeverMember`. Callers using B3
+///    enforcement should treat both as "not currently a member" on this
+///    path; the distinction is recovered by the prefix walk below when
+///    receivers are slightly behind senders.
+///
+/// 2. **Unknown** — any head in `position.governance_dag_heads` is missing
+///    from the local namespace op log. Returns
+///    [`Unknown { needed }`](MembershipStatus::Unknown) listing every
+///    missing head so B2 can buffer once and request them all in parallel.
+///
+/// 3. **Prefix walk** — all heads are known but `position` differs from
+///    current local state (the receiver is ahead of the sender). Walks the
+///    namespace governance DAG from `position.governance_dag_heads`
+///    backwards, decrypts group ops affecting `signer`, replays the
+///    membership state machine, and returns
+///    `Member(role)` / `Removed { last_role }` / `NeverMember` based on
+///    the final state at the named cut. This branch produces the full
+///    distinction the fast path conflates.
+pub fn membership_status_at(
+    store: &Store,
+    signer: &PublicKey,
+    position: &GovernancePosition,
+) -> EyreResult<MembershipStatus> {
+    // Cheap guard against malformed / attacker-crafted positions before
+    // we do any store work. See [`MAX_GOVERNANCE_DAG_HEADS`].
+    if position.governance_dag_heads.len() > MAX_GOVERNANCE_DAG_HEADS {
+        eyre::bail!(
+            "membership_status_at: governance_dag_heads length {} exceeds \
+             MAX_GOVERNANCE_DAG_HEADS={} (likely malformed or attacker-crafted)",
+            position.governance_dag_heads.len(),
+            MAX_GOVERNANCE_DAG_HEADS,
+        );
+    }
+
+    let group_id = position.group_id;
+    let namespace_id = super::namespace::resolve_namespace(store, &group_id)?;
+    let dag = super::namespace_dag::NamespaceDagService::new(store, namespace_id.to_bytes());
+    let local_heads = dag.read_head_record()?.parent_hashes;
+
+    // Branch 1 — heads match local state exactly. Use the materialized
+    // member set; this is the steady-state hot path.
+    if heads_equal(&local_heads, &position.governance_dag_heads) {
+        // Verify the embedded group_state_hash against locally-computed
+        // state. When heads match, both should be deterministic functions
+        // of the same materialized state — divergence here signals
+        // tampering or local corruption that the rest of the pipeline
+        // can't detect on its own.
+        let local_state_hash = super::meta::compute_group_state_hash(store, &group_id)?;
+        if local_state_hash != position.group_state_hash {
+            eyre::bail!(
+                "membership_status_at: group_state_hash mismatch — \
+                 heads match but state hashes differ \
+                 (group={:?}, position_hash={}, local_hash={})",
+                group_id,
+                hex::encode(position.group_state_hash),
+                hex::encode(local_state_hash),
+            );
+        }
+        // See function-level doc for the `Removed` vs `NeverMember`
+        // conflation caveat — the prefix walk (B3) resolves it.
+        return Ok(
+            match super::membership::get_group_member_role(store, &group_id, signer)? {
+                Some(role) => MembershipStatus::Member(role),
+                None => MembershipStatus::NeverMember,
+            },
+        );
+    }
+
+    // Branch 2 — collect every referenced head that is not present in our
+    // local namespace op log. Direct key lookups (O(1) per head) against
+    // the namespace-wide op store, not a group-filtered scan: heads can
+    // point at any SignedNamespaceOp (Root ops or Group ops for any group
+    // in the namespace), so filtering by group_id would mis-classify
+    // legitimate heads as missing.
+    let op_log = NamespaceOpLogService::new(store, namespace_id.to_bytes());
+    let mut missing: Vec<[u8; 32]> = Vec::with_capacity(position.governance_dag_heads.len());
+    for head in &position.governance_dag_heads {
+        if !op_log.contains_op(*head)? {
+            missing.push(*head);
+        }
+    }
+    if !missing.is_empty() {
+        return Ok(MembershipStatus::Unknown { needed: missing });
+    }
+
+    // Branch 3 — heads known but differ from local state. Walk the
+    // namespace governance DAG from `position.governance_dag_heads`
+    // backwards, decrypting `Group` ops affecting this group + signer,
+    // and replay the membership state machine to derive the answer at
+    // the named cut.
+    prefix_walk_membership(
+        store,
+        namespace_id.to_bytes(),
+        group_id,
+        signer,
+        &position.governance_dag_heads,
+    )
+}
+
+/// Walk the namespace governance DAG from `target_heads` backwards through
+/// `parent_op_hashes`, replaying every membership-affecting op for `signer`
+/// in `group_id`, and return the resulting [`MembershipStatus`].
+///
+/// **Walk extent**: the BFS visits the entire ancestry of `target_heads`
+/// (transitive closure of `parent_op_hashes` until ops with no parents).
+/// Membership at the target cut is a function of the *full* prefix, not a
+/// recent window — a `MemberRemoved` op deep in history is still
+/// authoritative. [`MAX_PREFIX_WALK_NODES`] caps the walk for adversarial
+/// or corrupt DAGs; in normal use, governance histories are small (tens
+/// to low-hundreds of ops per namespace) and the walk completes in
+/// microseconds.
+///
+/// Handles:
+/// * `NamespaceOp::Group` with encrypted `GroupOp::MemberAdded` /
+///   `MemberRemoved` / `MemberLeft` / `MemberRoleSet` /
+///   `MemberJoinedViaTeeAttestation` (decrypted via local keyring; key
+///   selected by `key_id` on each op).
+/// * `NamespaceOp::Root(RootOp::MemberJoined)` — cleartext invitation-based
+///   join. The role comes from the admin-signed invitation payload.
+///
+/// Ordering: ops are sorted by `(nonce, content_hash)` — deterministic
+/// across nodes. Concurrent ops from different signers (siblings in the
+/// DAG) tie-break by content hash, which converges with the apply-path
+/// ordering for the materialized state.
+///
+/// Decryption failure for an individual op is logged at debug level and the
+/// op is skipped: a key we don't hold means the op didn't affect us anyway,
+/// or local state is corrupt — in either case skipping is safer than
+/// bailing the whole walk.
+///
+/// Missing parent ops (i.e. an op present in the local log whose
+/// `parent_op_hashes` reference an op that *isn't* in the log) are surfaced
+/// as `MembershipStatus::Unknown { needed: parent_hashes }`, not as a hard
+/// error: gossip can deliver a head before its ancestors during partial
+/// sync, and treating the gap as permanent rejection would lose the
+/// delta. B2 buffers + retries when the gap fills in.
+fn prefix_walk_membership(
+    store: &Store,
+    namespace_id: [u8; 32],
+    group_id: ContextGroupId,
+    signer: &PublicKey,
+    target_heads: &[[u8; 32]],
+) -> EyreResult<MembershipStatus> {
+    let op_log = NamespaceOpLogService::new(store, namespace_id);
+
+    // BFS through the DAG via parent_op_hashes. Bounded by
+    // MAX_PREFIX_WALK_NODES to cap memory + CPU on adversarial or
+    // corrupt op logs.
+    let mut to_visit: VecDeque<[u8; 32]> = target_heads.iter().copied().collect();
+    let mut visited: HashSet<[u8; 32]> = HashSet::new();
+    let mut walked: Vec<([u8; 32], SignedNamespaceOp)> = Vec::new();
+    let mut missing_parents: Vec<[u8; 32]> = Vec::new();
+
+    while let Some(hash) = to_visit.pop_front() {
+        // Bound check before insert so we don't pay the store fetch + parent
+        // expansion for the (n+1)-th node before bailing. We bound the
+        // *combined* size of `visited` and `to_visit` rather than just
+        // `visited` — a high-fan-out malicious DAG (each node naming many
+        // parents) could otherwise enqueue an unbounded `to_visit` before
+        // the visited bound triggers, allocating memory before the bail
+        // fires. Combined-bound caps queue + set growth in the same
+        // ceiling.
+        if visited.len() + to_visit.len() >= MAX_PREFIX_WALK_NODES {
+            eyre::bail!(
+                "prefix_walk_membership: visited+queued reached \
+                 MAX_PREFIX_WALK_NODES={} (visited={}, queued={}); \
+                 bailing to bound resource use",
+                MAX_PREFIX_WALK_NODES,
+                visited.len(),
+                to_visit.len(),
+            );
+        }
+        if !visited.insert(hash) {
+            continue;
+        }
+        // A parent that's not in the local op log means our DAG has a gap
+        // (partial sync, or the op was pruned). Surface this as `Unknown`
+        // rather than a hard error so B2 can buffer + retry — the apply
+        // path of the missing ancestor will eventually populate the gap.
+        let signed_op = match op_log.get_signed_op(hash)? {
+            Some(op) => op,
+            None => {
+                missing_parents.push(hash);
+                continue;
+            }
+        };
+        // Push parents one at a time and re-check the combined bound
+        // after each push. Without the per-parent check, a single
+        // high-fan-out node (e.g. an op naming thousands of parents)
+        // could grow `to_visit` by its entire parent count in one
+        // iteration — exceeding the bound transiently between
+        // top-of-loop checks. Checking per-parent caps queue growth at
+        // exactly `MAX_PREFIX_WALK_NODES`.
+        for parent in &signed_op.parent_op_hashes {
+            if visited.len() + to_visit.len() >= MAX_PREFIX_WALK_NODES {
+                eyre::bail!(
+                    "prefix_walk_membership: visited+queued reached \
+                     MAX_PREFIX_WALK_NODES={} mid-fanout (visited={}, \
+                     queued={}); bailing to bound resource use",
+                    MAX_PREFIX_WALK_NODES,
+                    visited.len(),
+                    to_visit.len(),
+                );
+            }
+            to_visit.push_back(*parent);
+        }
+        walked.push((hash, signed_op));
+    }
+
+    if !missing_parents.is_empty() {
+        return Ok(MembershipStatus::Unknown {
+            needed: missing_parents,
+        });
+    }
+
+    // Deterministic ordering: nonce primary, content hash tiebreak. Matches
+    // the convergence rule the apply path uses for the materialized state.
+    walked.sort_by_key(|(hash, op)| (op.nonce, *hash));
+
+    let mut current_role: Option<GroupMemberRole> = None;
+    let mut last_known_role: Option<GroupMemberRole> = None;
+
+    for (_, signed_op) in &walked {
+        match &signed_op.op {
+            NamespaceOp::Root(RootOp::MemberJoined {
+                member,
+                signed_invitation,
+            }) => {
+                if member != signer
+                    || signed_invitation.invitation.group_id.to_bytes() != group_id.to_bytes()
+                {
+                    continue;
+                }
+                let role = role_from_invited_role(signed_invitation.invitation.invited_role);
+                current_role = Some(role.clone());
+                last_known_role = Some(role);
+            }
+            NamespaceOp::Root(_) => continue,
+            NamespaceOp::Group {
+                group_id: op_gid,
+                key_id,
+                encrypted,
+                ..
+            } => {
+                if *op_gid != group_id.to_bytes() {
+                    continue;
+                }
+                let key_bytes = match load_group_key_by_id(store, &group_id, key_id)? {
+                    Some(k) => k,
+                    None => {
+                        tracing::debug!(
+                            group_id = ?group_id,
+                            key_id = %hex::encode(key_id),
+                            "prefix_walk_membership: missing group key, skipping op"
+                        );
+                        continue;
+                    }
+                };
+                let group_op = match decrypt_group_op(&key_bytes, encrypted) {
+                    Ok(op) => op,
+                    Err(err) => {
+                        tracing::debug!(
+                            group_id = ?group_id,
+                            key_id = %hex::encode(key_id),
+                            %err,
+                            "prefix_walk_membership: decrypt failed, skipping op"
+                        );
+                        continue;
+                    }
+                };
+                match group_op {
+                    GroupOp::MemberAdded { member, role } if member == *signer => {
+                        current_role = Some(role.clone());
+                        last_known_role = Some(role);
+                    }
+                    GroupOp::MemberJoinedViaTeeAttestation { member, role, .. }
+                        if member == *signer =>
+                    {
+                        current_role = Some(role.clone());
+                        last_known_role = Some(role);
+                    }
+                    GroupOp::MemberRoleSet { member, role } if member == *signer => {
+                        current_role = Some(role.clone());
+                        last_known_role = Some(role);
+                    }
+                    GroupOp::MemberRemoved { member } if member == *signer => {
+                        current_role = None;
+                    }
+                    GroupOp::MemberLeft { member } if member == *signer => {
+                        current_role = None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    Ok(match (current_role, last_known_role) {
+        (Some(role), _) => MembershipStatus::Member(role),
+        (None, Some(last_role)) => MembershipStatus::Removed { last_role },
+        (None, None) => MembershipStatus::NeverMember,
+    })
+}
+
+/// Map the `invited_role: u8` byte from
+/// `GroupInvitationFromAdmin` to the typed [`GroupMemberRole`]. The encoding
+/// is documented at the source struct (0 = Admin, 1 = Member, 2 = ReadOnly).
+///
+/// Used by both the prefix walk in this module and the `MemberJoined`
+/// apply path in `namespace_membership.rs`. Unknown values default to
+/// `Member` (least-privilege) rather than `Admin`, so an attacker injecting
+/// an out-of-range value cannot silently escalate.
+pub(crate) fn role_from_invited_role(value: u8) -> GroupMemberRole {
+    match value {
+        0 => GroupMemberRole::Admin,
+        2 => GroupMemberRole::ReadOnly,
+        _ => GroupMemberRole::Member,
+    }
+}
+
+/// Apply the membership state-machine transitions used by
+/// [`prefix_walk_membership`] without going through the store / decryption
+/// layers — useful for unit-testing the resolution logic in isolation.
+///
+/// Returns the [`MembershipStatus`] derived from applying `transitions` in
+/// the supplied order. Each transition names a `GroupOp`-like effect on
+/// the signer's status: an add (with role), a remove, or a role change.
+#[cfg(test)]
+fn resolve_membership_from_transitions(transitions: &[MembershipTransition]) -> MembershipStatus {
+    let mut current_role: Option<GroupMemberRole> = None;
+    let mut last_known_role: Option<GroupMemberRole> = None;
+    for t in transitions {
+        match t {
+            MembershipTransition::Added(role) | MembershipTransition::RoleSet(role) => {
+                current_role = Some(role.clone());
+                last_known_role = Some(role.clone());
+            }
+            MembershipTransition::Removed | MembershipTransition::Left => {
+                current_role = None;
+            }
+        }
+    }
+    match (current_role, last_known_role) {
+        (Some(role), _) => MembershipStatus::Member(role),
+        (None, Some(last_role)) => MembershipStatus::Removed { last_role },
+        (None, None) => MembershipStatus::NeverMember,
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+enum MembershipTransition {
+    Added(GroupMemberRole),
+    Removed,
+    Left,
+    RoleSet(GroupMemberRole),
+}
+
+/// Strict head-set equality: requires `a` and `b` to have the same length AND
+/// the same set of entries.
+///
+/// The length check rejects duplicates implicitly: a valid governance DAG head
+/// set never contains duplicates, and treating `[h1, h1]` as equal to `[h1]`
+/// would let an attacker who knows only one local head construct a multi-entry
+/// `governance_dag_heads` that still passes the fast-path equality check.
+/// Length-then-set is the strict comparison we want.
+fn heads_equal(a: &[[u8; 32]], b: &[[u8; 32]]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let a_set: HashSet<&[u8; 32]> = a.iter().collect();
+    let b_set: HashSet<&[u8; 32]> = b.iter().collect();
+    // Both sides have equal length; if either contains duplicates, its set's
+    // length will be smaller than the slice's length and the set comparison
+    // will reject it against a duplicate-free same-length counterpart.
+    a_set.len() == a.len() && a_set == b_set
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+
+    use super::*;
+
+    #[test]
+    fn role_from_invited_role_maps_invitation_codes_correctly() {
+        assert!(matches!(role_from_invited_role(0), GroupMemberRole::Admin));
+        assert!(matches!(role_from_invited_role(1), GroupMemberRole::Member));
+        assert!(matches!(
+            role_from_invited_role(2),
+            GroupMemberRole::ReadOnly
+        ));
+        // Unknown variants must NOT default to Admin — preserve a less
+        // privileged classification.
+        assert!(matches!(
+            role_from_invited_role(99),
+            GroupMemberRole::Member
+        ));
+    }
+
+    #[test]
+    fn prefix_walk_resolution_never_member_with_no_transitions() {
+        let result = resolve_membership_from_transitions(&[]);
+        assert!(matches!(result, MembershipStatus::NeverMember));
+    }
+
+    #[test]
+    fn prefix_walk_resolution_member_after_add() {
+        let result = resolve_membership_from_transitions(&[MembershipTransition::Added(
+            GroupMemberRole::Member,
+        )]);
+        assert!(matches!(
+            result,
+            MembershipStatus::Member(GroupMemberRole::Member)
+        ));
+    }
+
+    #[test]
+    fn prefix_walk_resolution_removed_after_add_then_remove() {
+        let result = resolve_membership_from_transitions(&[
+            MembershipTransition::Added(GroupMemberRole::Admin),
+            MembershipTransition::Removed,
+        ]);
+        match result {
+            MembershipStatus::Removed { last_role } => {
+                assert!(matches!(last_role, GroupMemberRole::Admin));
+            }
+            other => panic!("expected Removed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prefix_walk_resolution_member_after_re_add() {
+        // remove → re-add resolves back to Member with the new role
+        let result = resolve_membership_from_transitions(&[
+            MembershipTransition::Added(GroupMemberRole::Member),
+            MembershipTransition::Removed,
+            MembershipTransition::Added(GroupMemberRole::Admin),
+        ]);
+        assert!(matches!(
+            result,
+            MembershipStatus::Member(GroupMemberRole::Admin)
+        ));
+    }
+
+    #[test]
+    fn prefix_walk_resolution_role_change_picks_latest() {
+        let result = resolve_membership_from_transitions(&[
+            MembershipTransition::Added(GroupMemberRole::Member),
+            MembershipTransition::RoleSet(GroupMemberRole::Admin),
+            MembershipTransition::RoleSet(GroupMemberRole::ReadOnly),
+        ]);
+        assert!(matches!(
+            result,
+            MembershipStatus::Member(GroupMemberRole::ReadOnly)
+        ));
+    }
+
+    /// Reference implementation of the membership state machine — the
+    /// simplest possible interpretation of the transition rules. Used to
+    /// cross-check the production resolver under random transition
+    /// sequences. If both produce the same answer for every input, the
+    /// production resolver is correct on the operations the reference
+    /// covers.
+    fn reference_resolve(transitions: &[MembershipTransition]) -> MembershipStatus {
+        let mut last_role: Option<GroupMemberRole> = None;
+        let mut currently_member = false;
+        for t in transitions {
+            match t {
+                MembershipTransition::Added(role) | MembershipTransition::RoleSet(role) => {
+                    last_role = Some(role.clone());
+                    currently_member = true;
+                }
+                MembershipTransition::Removed | MembershipTransition::Left => {
+                    currently_member = false;
+                }
+            }
+        }
+        match (currently_member, last_role) {
+            (true, Some(role)) => MembershipStatus::Member(role),
+            (false, Some(role)) => MembershipStatus::Removed { last_role: role },
+            (false, None) => MembershipStatus::NeverMember,
+            (true, None) => unreachable!("currently_member implies last_role is set"),
+        }
+    }
+
+    #[test]
+    fn prefix_walk_resolution_matches_reference_under_random_inputs() {
+        // Property-style test using a small splittable PRNG (xorshift) so
+        // the test is fully deterministic and reproducible without pulling
+        // in a proptest dependency. For 2000 random sequences of length
+        // 0..=12, both resolvers must agree.
+        const SEED: u64 = 0xFEED_BEEF_DEAD_C0DE;
+        const NUM_SEQUENCES: usize = 2000;
+        const MAX_LEN: usize = 12;
+
+        let mut state = SEED;
+        let mut next = || {
+            // xorshift64
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let roles = [
+            GroupMemberRole::Admin,
+            GroupMemberRole::Member,
+            GroupMemberRole::ReadOnly,
+        ];
+
+        for _ in 0..NUM_SEQUENCES {
+            let len = (next() as usize) % (MAX_LEN + 1);
+            let mut transitions = Vec::with_capacity(len);
+            for _ in 0..len {
+                let kind = (next() as usize) % 4;
+                let role = roles[(next() as usize) % roles.len()].clone();
+                transitions.push(match kind {
+                    0 => MembershipTransition::Added(role),
+                    1 => MembershipTransition::RoleSet(role),
+                    2 => MembershipTransition::Removed,
+                    _ => MembershipTransition::Left,
+                });
+            }
+            let prod = resolve_membership_from_transitions(&transitions);
+            let refr = reference_resolve(&transitions);
+            assert_eq!(
+                prod, refr,
+                "resolver mismatch on transitions={transitions:?}\nproduction: {prod:?}\nreference: {refr:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_walk_resolution_exhaustive_short_sequences() {
+        // Exhaustive over all sequences of length 0..=4 from a small
+        // alphabet (Add(M), Remove, Left, RoleSet(A)). Catches any
+        // boundary case the random test might miss by chance.
+        let alphabet = [
+            MembershipTransition::Added(GroupMemberRole::Member),
+            MembershipTransition::RoleSet(GroupMemberRole::Admin),
+            MembershipTransition::Removed,
+            MembershipTransition::Left,
+        ];
+        let n = alphabet.len();
+        for len in 0..=4 {
+            let total = n.pow(len as u32);
+            for combo in 0..total {
+                let mut idx = combo;
+                let mut transitions = Vec::with_capacity(len);
+                for _ in 0..len {
+                    transitions.push(alphabet[idx % n].clone());
+                    idx /= n;
+                }
+                let prod = resolve_membership_from_transitions(&transitions);
+                let refr = reference_resolve(&transitions);
+                assert_eq!(
+                    prod, refr,
+                    "exhaustive mismatch on transitions={transitions:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prefix_walk_resolution_left_treated_as_removed() {
+        let result = resolve_membership_from_transitions(&[
+            MembershipTransition::Added(GroupMemberRole::Member),
+            MembershipTransition::Left,
+        ]);
+        match result {
+            MembershipStatus::Removed { last_role } => {
+                assert!(matches!(last_role, GroupMemberRole::Member));
+            }
+            other => panic!("expected Removed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn membership_status_at_rejects_oversized_heads_runtime_guard() {
+        // Defense-in-depth: the constructor and wire-decode bounds cover
+        // sender and receiver entry points. The runtime guard inside
+        // `membership_status_at` covers the residual case where a
+        // GovernancePosition is built via direct struct-init (skipping
+        // the `new()` validation). We construct one that way here.
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let signer = PublicKey::from([0u8; 32]);
+        let oversized_heads: Vec<[u8; 32]> = (0..MAX_GOVERNANCE_DAG_HEADS + 1)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = i as u8;
+                h
+            })
+            .collect();
+        let position = GovernancePosition {
+            group_id: ContextGroupId::from([0xAB; 32]),
+            group_state_hash: [0xCD; 32],
+            governance_dag_heads: oversized_heads,
+        };
+
+        let err = membership_status_at(&store, &signer, &position)
+            .expect_err("oversized governance_dag_heads must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("MAX_GOVERNANCE_DAG_HEADS"),
+            "error should mention MAX_GOVERNANCE_DAG_HEADS, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn heads_equal_handles_unordered_sets() {
+        let h1 = [1u8; 32];
+        let h2 = [2u8; 32];
+        assert!(heads_equal(&[h1, h2], &[h2, h1]));
+        assert!(!heads_equal(&[h1], &[h1, h2]));
+        assert!(!heads_equal(&[h1, h2], &[h1, [3u8; 32]]));
+        assert!(heads_equal(&[], &[]));
+    }
+
+    #[test]
+    fn heads_equal_rejects_duplicate_false_positive() {
+        // Regression: `[1,1]` and `[1,2]` both have length 2 but are not
+        // the same set. A naive "every element of b in a" check would
+        // return true here.
+        let h1 = [1u8; 32];
+        let h2 = [2u8; 32];
+        assert!(!heads_equal(&[h1, h1], &[h1, h2]));
+        assert!(!heads_equal(&[h1, h2], &[h1, h1]));
+    }
+
+    #[test]
+    fn heads_equal_rejects_duplicates_against_unique() {
+        // `[h1, h1]` must NOT equal `[h1]` — a malicious sender could
+        // otherwise pass the fast-path check by padding a single known
+        // head into a multi-entry vector.
+        let h1 = [1u8; 32];
+        assert!(!heads_equal(&[h1, h1], &[h1]));
+        assert!(!heads_equal(&[h1], &[h1, h1]));
+    }
+
+    #[test]
+    fn heads_equal_rejects_self_with_duplicates() {
+        // Even `[h1, h1]` against itself is not a valid head set — heads
+        // are by construction unique. The function rejects malformed
+        // input on either side.
+        let h1 = [1u8; 32];
+        assert!(!heads_equal(&[h1, h1], &[h1, h1]));
+    }
+}

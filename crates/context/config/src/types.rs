@@ -295,6 +295,192 @@ impl From<[u8; 32]> for ContextGroupId {
     }
 }
 
+/// Maximum number of governance DAG heads that may appear in a
+/// [`GovernancePosition`].
+///
+/// Steady-state head sets have 1–3 entries; concurrent admin activity in a
+/// partition might briefly hit ~10. The bound exists to stop a malicious
+/// sender from forcing a receiver to allocate or look up an unbounded
+/// number of head entries per state-delta receive (DoS surface). Tuned for
+/// ~3× headroom over the realistic worst case while staying well below
+/// DoS-relevant sizes.
+///
+/// Defined here (rather than at the receiver) so the manual
+/// [`BorshDeserialize`] impl on [`GovernancePosition`] can enforce it
+/// *before* allocating the heads vector. Receivers also re-check the bound
+/// at use time as defense-in-depth (covers direct struct construction).
+///
+/// Not a wire-format change — bumping the constant is one-line PR.
+pub const MAX_GOVERNANCE_DAG_HEADS: usize = 32;
+
+/// Cross-DAG reference embedded in state deltas at sign time.
+///
+/// Names the exact governance DAG cut the signer relied on when producing the
+/// state op. Receivers use it to perform the apply-time authorization check
+/// (B3): "was this signer a member at the named cut?" Buffered when the
+/// referenced `governance_dag_heads` are not yet known locally (B2).
+///
+/// `governance_dag_heads` entries are content-hashes of [`SignedNamespaceOp`]
+/// — the same identity scheme used by `parent_op_hashes` and the persisted
+/// `NamespaceGovHeadValue.dag_heads`. Bounded by
+/// [`MAX_GOVERNANCE_DAG_HEADS`] at deserialize time.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, BorshSerialize, Serialize, Deserialize)]
+pub struct GovernancePosition {
+    /// Group whose membership defines authorization at this cut.
+    pub group_id: ContextGroupId,
+    /// `compute_group_state_hash` of the group at sign time. Lets receivers
+    /// detect signature-vs-membership divergence even before walking the DAG.
+    pub group_state_hash: [u8; 32],
+    /// Namespace governance DAG heads at sign time. Each entry is the content
+    /// hash of a [`SignedNamespaceOp`] (`signed_namespace_op.content_hash()`).
+    /// Empty `Vec` means "before any governance op" (group genesis). Length
+    /// is bounded by [`MAX_GOVERNANCE_DAG_HEADS`] on both wire-decode paths
+    /// (borsh and serde — see the manual `BorshDeserialize` and the
+    /// `deserialize_with` attribute below).
+    #[serde(deserialize_with = "deserialize_bounded_dag_heads")]
+    pub governance_dag_heads: Vec<[u8; 32]>,
+}
+
+fn deserialize_bounded_dag_heads<'de, D>(deserializer: D) -> Result<Vec<[u8; 32]>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let heads: Vec<[u8; 32]> = <Vec<[u8; 32]> as Deserialize>::deserialize(deserializer)?;
+    if heads.len() > MAX_GOVERNANCE_DAG_HEADS {
+        return Err(serde::de::Error::custom(format!(
+            "GovernancePosition.governance_dag_heads length {} exceeds \
+             MAX_GOVERNANCE_DAG_HEADS={}",
+            heads.len(),
+            MAX_GOVERNANCE_DAG_HEADS,
+        )));
+    }
+    if has_duplicate_heads(&heads) {
+        return Err(serde::de::Error::custom(
+            "GovernancePosition.governance_dag_heads contains duplicate entries — \
+             a valid governance DAG head set is unique by construction",
+        ));
+    }
+    Ok(heads)
+}
+
+/// Reject duplicate entries in a head set. A valid governance DAG never has
+/// duplicates among its heads (heads are unique content-hashes by definition);
+/// duplicates surfacing on the wire indicate malformed input or a sender
+/// trying to slip a multi-entry vector through fast-path equality checks
+/// against a single-head receiver.
+fn has_duplicate_heads(heads: &[[u8; 32]]) -> bool {
+    use std::collections::HashSet;
+    let mut seen: HashSet<&[u8; 32]> = HashSet::with_capacity(heads.len());
+    for h in heads {
+        if !seen.insert(h) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returned by [`GovernancePosition::new`] when the supplied
+/// `governance_dag_heads` are malformed (oversized or contain duplicates).
+///
+/// Catching this at construction time prevents the asymmetric encode/decode
+/// problem: a sender that builds a malformed position via
+/// `borsh::to_vec(&GovernancePosition { ... })` produces bytes the receiver's
+/// bounded `BorshDeserialize` rejects, silently breaking state-delta
+/// propagation for that context.
+#[derive(Debug, ThisError)]
+pub enum GovernancePositionError {
+    #[error(
+        "GovernancePosition.governance_dag_heads length {len} exceeds \
+         MAX_GOVERNANCE_DAG_HEADS={max}"
+    )]
+    TooManyHeads { len: usize, max: usize },
+    #[error(
+        "GovernancePosition.governance_dag_heads contains duplicate entries — \
+         a valid governance DAG head set is unique by construction"
+    )]
+    DuplicateHeads,
+}
+
+impl GovernancePosition {
+    /// Construct a `GovernancePosition`, validating that
+    /// `governance_dag_heads.len() <= MAX_GOVERNANCE_DAG_HEADS` and that the
+    /// head set contains no duplicates.
+    ///
+    /// In legitimate use both bounds are unreachable — head sets are 1–3
+    /// entries in steady state and unique by construction — so the error path
+    /// is for defensive reporting (a node whose local governance DAG has
+    /// somehow accumulated a pathological number of heads or duplicates
+    /// should refuse to emit a position rather than ship one the network
+    /// rejects).
+    pub fn new(
+        group_id: ContextGroupId,
+        group_state_hash: [u8; 32],
+        governance_dag_heads: Vec<[u8; 32]>,
+    ) -> Result<Self, GovernancePositionError> {
+        if governance_dag_heads.len() > MAX_GOVERNANCE_DAG_HEADS {
+            return Err(GovernancePositionError::TooManyHeads {
+                len: governance_dag_heads.len(),
+                max: MAX_GOVERNANCE_DAG_HEADS,
+            });
+        }
+        if has_duplicate_heads(&governance_dag_heads) {
+            return Err(GovernancePositionError::DuplicateHeads);
+        }
+        Ok(Self {
+            group_id,
+            group_state_hash,
+            governance_dag_heads,
+        })
+    }
+}
+
+/// Manual [`BorshDeserialize`] enforcing [`MAX_GOVERNANCE_DAG_HEADS`] before
+/// allocating the heads vector.
+///
+/// The derived impl would call `Vec::deserialize_reader` which reads the u32
+/// length and immediately allocates with `Vec::with_capacity(len)` — a
+/// malicious sender claiming `len = 1_000_000` triggers a 32 MB allocation
+/// before any of our bounds checks run. This impl reads the length first,
+/// rejects if it exceeds the bound, and only then allocates and reads
+/// elements. Field order matches the derived `BorshSerialize` impl above.
+impl BorshDeserialize for GovernancePosition {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let group_id = ContextGroupId::deserialize_reader(reader)?;
+        let group_state_hash = <[u8; 32]>::deserialize_reader(reader)?;
+
+        let len = u32::deserialize_reader(reader)? as usize;
+        if len > MAX_GOVERNANCE_DAG_HEADS {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "GovernancePosition.governance_dag_heads length {} exceeds \
+                     MAX_GOVERNANCE_DAG_HEADS={}",
+                    len, MAX_GOVERNANCE_DAG_HEADS,
+                ),
+            ));
+        }
+
+        let mut governance_dag_heads = Vec::with_capacity(len);
+        for _ in 0..len {
+            governance_dag_heads.push(<[u8; 32]>::deserialize_reader(reader)?);
+        }
+
+        if has_duplicate_heads(&governance_dag_heads) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "GovernancePosition.governance_dag_heads contains duplicate entries \
+                 — a valid governance DAG head set is unique by construction",
+            ));
+        }
+
+        Ok(Self {
+            group_id,
+            group_state_hash,
+            governance_dag_heads,
+        })
+    }
+}
+
 #[derive(
     Eq,
     Ord,
@@ -773,6 +959,208 @@ mod tests {
         assert_eq!(decoded.application_id, None);
         assert_eq!(decoded.blob_id, None);
         assert_eq!(decoded.source, None);
+    }
+
+    #[test]
+    fn governance_position_borsh_roundtrip() {
+        let pos = GovernancePosition::new(
+            ContextGroupId::from([0xAB; 32]),
+            [0xCD; 32],
+            vec![[0x01; 32], [0x02; 32], [0x03; 32]],
+        )
+        .expect("within MAX_GOVERNANCE_DAG_HEADS");
+
+        let bytes = borsh::to_vec(&pos).expect("borsh serialize");
+        let decoded: GovernancePosition = borsh::from_slice(&bytes).expect("borsh deserialize");
+
+        assert_eq!(pos.group_id.to_bytes(), decoded.group_id.to_bytes());
+        assert_eq!(pos.group_state_hash, decoded.group_state_hash);
+        assert_eq!(pos.governance_dag_heads, decoded.governance_dag_heads);
+    }
+
+    #[test]
+    fn governance_position_empty_heads_means_genesis() {
+        let pos = GovernancePosition::new(ContextGroupId::from([0u8; 32]), [0u8; 32], Vec::new())
+            .expect("empty heads accepted");
+
+        let bytes = borsh::to_vec(&pos).expect("borsh serialize");
+        let decoded: GovernancePosition = borsh::from_slice(&bytes).expect("borsh deserialize");
+
+        assert!(decoded.governance_dag_heads.is_empty());
+    }
+
+    #[test]
+    fn governance_position_new_rejects_oversized_heads() {
+        // Symmetric to the borsh-decode bound: catching this at construction
+        // time prevents the asymmetric encode/decode bug where a sender
+        // builds an oversized position locally and ships it for the
+        // receiver to reject.
+        let oversized: Vec<[u8; 32]> = (0..MAX_GOVERNANCE_DAG_HEADS + 1)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = i as u8;
+                h
+            })
+            .collect();
+        let err = GovernancePosition::new(ContextGroupId::from([0u8; 32]), [0u8; 32], oversized)
+            .expect_err("oversized must be rejected");
+        match err {
+            GovernancePositionError::TooManyHeads { len, max } => {
+                assert_eq!(max, MAX_GOVERNANCE_DAG_HEADS);
+                assert_eq!(len, MAX_GOVERNANCE_DAG_HEADS + 1);
+            }
+            other => panic!("expected TooManyHeads, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn governance_position_new_rejects_duplicate_heads() {
+        // A valid head set has unique entries by construction. Catching
+        // duplicates at the constructor mirrors the borsh + serde decode
+        // checks: same invariant, enforced at every entry point.
+        let h = [0xAB; 32];
+        let err = GovernancePosition::new(ContextGroupId::from([0u8; 32]), [0u8; 32], vec![h, h])
+            .expect_err("duplicate heads must be rejected");
+        assert!(matches!(err, GovernancePositionError::DuplicateHeads));
+    }
+
+    #[test]
+    fn governance_position_borsh_rejects_duplicate_heads() {
+        // Hand-encode a wire payload with two identical heads to confirm
+        // BorshDeserialize rejects after reading. (Sender-side construction
+        // can't produce this via `new()`, but a malicious peer can hand-roll
+        // bytes.)
+        let h = [0xAB; 32];
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0u8; 32]); // group_id
+        payload.extend_from_slice(&[0u8; 32]); // group_state_hash
+        payload.extend_from_slice(&2u32.to_le_bytes()); // heads len = 2
+        payload.extend_from_slice(&h);
+        payload.extend_from_slice(&h);
+
+        let err = borsh::from_slice::<GovernancePosition>(&payload)
+            .expect_err("duplicate heads must be rejected");
+        assert!(
+            format!("{err}").contains("duplicate"),
+            "expected duplicate error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn governance_position_serde_rejects_duplicate_heads() {
+        // JSON path mirrors borsh — duplicates rejected at decode time.
+        let h = (0..32).map(|_| "171").collect::<Vec<_>>().join(",");
+        let json = format!(
+            r#"{{"group_id":[{}],"group_state_hash":[{}],"governance_dag_heads":[[{}],[{}]]}}"#,
+            (0..32).map(|_| "0").collect::<Vec<_>>().join(","),
+            (0..32).map(|_| "0").collect::<Vec<_>>().join(","),
+            h,
+            h,
+        );
+        let err = serde_json::from_str::<GovernancePosition>(&json)
+            .expect_err("duplicate heads must reject");
+        assert!(
+            format!("{err}").contains("duplicate"),
+            "expected duplicate error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn governance_position_borsh_rejects_oversized_heads() {
+        // Construct a wire-format payload that claims a heads-vector
+        // longer than MAX_GOVERNANCE_DAG_HEADS. The manual BorshDeserialize
+        // impl must reject it before allocating, so we encode by hand
+        // (a legitimately constructed and serialized value would be at
+        // most MAX entries — we want to simulate a hostile peer).
+        let mut payload = Vec::new();
+        // group_id: 32 bytes
+        payload.extend_from_slice(&[0xAA; 32]);
+        // group_state_hash: 32 bytes
+        payload.extend_from_slice(&[0xCD; 32]);
+        // heads length: u32 LE, just over the bound
+        let oversized_len = (MAX_GOVERNANCE_DAG_HEADS + 1) as u32;
+        payload.extend_from_slice(&oversized_len.to_le_bytes());
+        // We do NOT need to append the head bytes — the bound check
+        // fires before we try to read them. Confirms we reject early.
+
+        let err = borsh::from_slice::<GovernancePosition>(&payload)
+            .expect_err("oversized heads must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("MAX_GOVERNANCE_DAG_HEADS"),
+            "error should mention MAX_GOVERNANCE_DAG_HEADS, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn governance_position_borsh_accepts_at_bound() {
+        // Boundary case: exactly MAX_GOVERNANCE_DAG_HEADS entries must
+        // round-trip cleanly.
+        let heads: Vec<[u8; 32]> = (0..MAX_GOVERNANCE_DAG_HEADS)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = i as u8;
+                h
+            })
+            .collect();
+        let pos =
+            GovernancePosition::new(ContextGroupId::from([0x11; 32]), [0x22; 32], heads.clone())
+                .expect("at-bound accepted");
+
+        let bytes = borsh::to_vec(&pos).expect("serialize");
+        let decoded: GovernancePosition = borsh::from_slice(&bytes).expect("deserialize");
+        assert_eq!(decoded.governance_dag_heads.len(), MAX_GOVERNANCE_DAG_HEADS);
+        assert_eq!(decoded.governance_dag_heads, heads);
+    }
+
+    #[test]
+    fn governance_position_serde_rejects_oversized_heads() {
+        // Serde-derived Deserialize must enforce the same bound as
+        // BorshDeserialize — without this, a malicious JSON payload
+        // could bypass the wire-format size limit.
+        let json = format!(
+            r#"{{"group_id":[{}],"group_state_hash":[{}],"governance_dag_heads":[{}]}}"#,
+            (0..32).map(|_| "0").collect::<Vec<_>>().join(","),
+            (0..32).map(|_| "0").collect::<Vec<_>>().join(","),
+            (0..(MAX_GOVERNANCE_DAG_HEADS + 1))
+                .map(|i| format!(
+                    "[{}]",
+                    (0..32)
+                        .map(|j| if j == 0 {
+                            (i % 256).to_string()
+                        } else {
+                            "0".to_string()
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+
+        let err =
+            serde_json::from_str::<GovernancePosition>(&json).expect_err("oversized must reject");
+        assert!(
+            format!("{err}").contains("MAX_GOVERNANCE_DAG_HEADS"),
+            "expected MAX_GOVERNANCE_DAG_HEADS error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn governance_position_serde_roundtrip() {
+        let pos = GovernancePosition::new(
+            ContextGroupId::from([0x11; 32]),
+            [0x22; 32],
+            vec![[0xAA; 32]],
+        )
+        .expect("within bound");
+
+        let json = serde_json::to_string(&pos).expect("serialize");
+        let decoded: GovernancePosition = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(pos.group_id.to_bytes(), decoded.group_id.to_bytes());
+        assert_eq!(pos.group_state_hash, decoded.group_state_hash);
+        assert_eq!(pos.governance_dag_heads, decoded.governance_dag_heads);
     }
 
     #[test]

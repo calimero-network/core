@@ -26,6 +26,50 @@ impl<'a> NamespaceOpLogService<'a> {
         }
     }
 
+    /// Direct existence check for an op by its content hash within this
+    /// namespace. O(1) key lookup — does not load the op body. Used by
+    /// position-aware membership lookup ([`super::membership_status`]) to
+    /// detect whether a referenced governance head is present locally
+    /// without paying the cost of a full op-log scan.
+    pub fn contains_op(&self, delta_id: [u8; 32]) -> EyreResult<bool> {
+        let handle = self.store.handle();
+        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id, delta_id);
+        handle
+            .has(&key)
+            .map_err(|e| eyre::eyre!("contains_op: {e}"))
+    }
+
+    /// Direct fetch of a `SignedNamespaceOp` by its content hash within this
+    /// namespace. Returns `Ok(None)` if the op is **not present** in the
+    /// local store; returns `Err` if the op is present but its stored bytes
+    /// fail to decode. Used by the prefix-walk membership lookup to traverse
+    /// the governance DAG by following each op's `parent_op_hashes`.
+    ///
+    /// The decode-failure-vs-absent distinction matters: callers (e.g. the
+    /// prefix walk) treat `Ok(None)` as "missing parent → buffer + retry,"
+    /// which is correct for a genuinely-absent op (partial sync) but wrong
+    /// for a corrupt-store-entry case (retry will never resolve). Surfacing
+    /// decode failure as `Err` instead lets callers fail loud rather than
+    /// silently re-buffering the delta until the drain-attempt counter
+    /// drops it with a misleading "permanently missing" log.
+    pub fn get_signed_op(&self, delta_id: [u8; 32]) -> EyreResult<Option<SignedNamespaceOp>> {
+        let handle = self.store.handle();
+        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id, delta_id);
+        let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
+            Ok(Some(v)) => v,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(eyre::eyre!("get_signed_op: {e}")),
+        };
+        decode_signed_namespace_op(&value.skeleton_bytes)
+            .map(Some)
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "get_signed_op: op {} present but decode failed (corrupt store entry?)",
+                    hex::encode(delta_id)
+                )
+            })
+    }
+
     pub fn store_signed_operation(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
         if op.namespace_id != self.namespace_id {
             bail!(

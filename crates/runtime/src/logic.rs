@@ -29,6 +29,7 @@ use std::vec;
 
 use tracing::{debug, trace};
 
+use calimero_context_config::types::GovernancePosition;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::common::DIGEST_SIZE;
 use calimero_sys as sys;
@@ -66,9 +67,13 @@ pub struct VMContext<'a> {
     pub context_id: [u8; DIGEST_SIZE],
     /// The public key of the entity executing the function call/transaction.
     pub executor_public_key: [u8; DIGEST_SIZE],
-    /// Group governance DAG heads at execution time.
-    /// Embedded in the state delta for authorization provenance.
-    pub governance_epoch: Vec<[u8; 32]>,
+    /// Cross-DAG reference embedded in the resulting state delta.
+    ///
+    /// `Some(pos)` for group-context executions; `None` for legacy non-group
+    /// contexts that have no governance DAG. Receivers use this to perform
+    /// the apply-time authorization check (B3): "was the executor a member
+    /// at this cut?"
+    pub governance_position: Option<GovernancePosition>,
 }
 
 impl<'a> VMContext<'a> {
@@ -89,7 +94,7 @@ impl<'a> VMContext<'a> {
             input,
             context_id,
             executor_public_key,
-            governance_epoch: Vec::new(),
+            governance_position: None,
         }
     }
 }
