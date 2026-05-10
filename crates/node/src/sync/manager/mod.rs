@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::pin::pin;
+use std::sync::Arc;
 
 use calimero_context_client::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
@@ -49,7 +50,6 @@ use calimero_node_primitives::sync::{
 /// Network synchronization manager.
 ///
 /// Orchestrates sync protocols: full resync, delta sync, state sync.
-#[derive(Debug)]
 pub struct SyncManager {
     pub(crate) sync_config: SyncConfig,
 
@@ -76,6 +76,28 @@ pub struct SyncManager {
     /// `start` can update per-context tracking state. Consumed once by
     /// `start`; `None` on clones.
     pub(super) session_result_rx: Option<mpsc::UnboundedReceiver<SyncSessionResult>>,
+
+    /// Sync-protocol metrics collector. Installed by `run.rs::start` via
+    /// [`SyncManager::set_metrics`] after the [`crate::sync::PrometheusSyncMetrics`]
+    /// instance is registered against the global registry. `None` means
+    /// recording sites use [`crate::sync::no_op_metrics`] as a silent
+    /// fallback — never a panic and never a runtime cost beyond a vtable
+    /// no-op.
+    ///
+    /// `dyn SyncMetricsCollector` does not implement `Debug`, so we
+    /// hand-write a `Debug` impl on `SyncManager` (below) that prints
+    /// only the presence/absence of this field — the inner vtable is
+    /// opaque anyway.
+    pub(crate) metrics: Option<Arc<dyn super::metrics::SyncMetricsCollector>>,
+}
+
+impl std::fmt::Debug for SyncManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncManager")
+            .field("sync_config", &self.sync_config)
+            .field("metrics_installed", &self.metrics.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Clone for SyncManager {
@@ -95,6 +117,10 @@ impl Clone for SyncManager {
             // SyncManager for issuing sessions.
             session_tx: None,
             session_result_rx: None,
+            // Clones share the same metrics handle — Arc keeps the
+            // recording surface unified across the original (which runs
+            // `start`) and every responder/initiator clone.
+            metrics: self.metrics.clone(),
         }
     }
 }
@@ -124,6 +150,7 @@ impl SyncManager {
             ns_join_rx: Some(ns_join_rx),
             session_tx: None,
             session_result_rx: None,
+            metrics: None,
         }
     }
 
@@ -138,6 +165,32 @@ impl SyncManager {
     ) {
         self.session_tx = Some(session_tx);
         self.session_result_rx = Some(session_result_rx);
+    }
+
+    /// Install the sync-protocol metrics collector. Must be called before
+    /// any clones are taken; recording sites resolve `self.metrics` via
+    /// [`SyncManager::metrics`] (which falls back to a no-op collector if
+    /// this hasn't been called).
+    pub(crate) fn set_metrics(
+        &mut self,
+        metrics: Arc<dyn super::metrics::SyncMetricsCollector>,
+    ) {
+        self.metrics = Some(metrics);
+    }
+
+    /// Resolve the metrics collector. Returns a static no-op handle when
+    /// no collector was installed so call sites never have to branch on
+    /// `Option` — `self.metrics().record_*()` is always valid.
+    pub(crate) fn metrics(&self) -> &dyn super::metrics::SyncMetricsCollector {
+        // The no-op fallback lives in a static OnceLock so it isn't
+        // allocated per call. `NoOpMetrics` is a unit struct with
+        // `Default`, so the init closure is `default()`.
+        static NOOP: std::sync::OnceLock<super::metrics::NoOpMetrics> =
+            std::sync::OnceLock::new();
+        match self.metrics.as_deref() {
+            Some(m) => m,
+            None => NOOP.get_or_init(super::metrics::NoOpMetrics::default),
+        }
     }
 
     /// Build `SyncHandshake` from local context state for protocol negotiation.
@@ -776,6 +829,14 @@ impl SyncManager {
 
         info!(%context_id, %peer_id, "Attempting to sync with peer");
 
+        // Metrics: every sync attempt goes through this chokepoint, so
+        // `sync_start / sync_complete / sync_failure` here covers every
+        // protocol path. We don't yet know the protocol on entry — pass
+        // "unknown"; the success arm overwrites with the protocol the
+        // negotiated path actually chose.
+        self.metrics()
+            .record_sync_start(&context_id.to_string(), "unknown", "interval");
+
         let protocol = match self.initiate_sync_inner(context_id, peer_id).await {
             Ok(protocol) => protocol,
             Err(err) => {
@@ -785,6 +846,11 @@ impl SyncManager {
                     error = %err,
                     "Sync attempt failed for peer"
                 );
+                self.metrics().record_sync_failure(
+                    &context_id.to_string(),
+                    "unknown",
+                    err.to_string().as_str(),
+                );
                 return Err(err);
             }
         };
@@ -792,6 +858,17 @@ impl SyncManager {
         let took = start.elapsed();
 
         info!(%context_id, %peer_id, ?took, ?protocol, "Sync with peer completed successfully");
+
+        // `entities_transferred` is not threaded back to the sync manager
+        // today; pass 0. The collector still records the duration histogram
+        // and a sync_successes increment, which are the two most useful
+        // signals on a dashboard.
+        self.metrics().record_sync_complete(
+            &context_id.to_string(),
+            &format!("{protocol:?}"),
+            took,
+            0,
+        );
 
         Ok((peer_id, protocol))
     }

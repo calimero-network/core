@@ -506,15 +506,25 @@ impl NodeState {
         }
 
         let total_evicted = before_count.saturating_sub(self.blob_cache.len());
+        let time_evicted = before_count.saturating_sub(after_time_eviction);
+        let count_evicted = after_time_eviction.saturating_sub(after_count_eviction);
+        let memory_evicted = after_count_eviction.saturating_sub(self.blob_cache.len());
         if total_evicted > 0 {
             tracing::debug!(
                 total_evicted,
-                time_evicted = before_count.saturating_sub(after_time_eviction),
-                count_evicted = after_time_eviction.saturating_sub(after_count_eviction),
-                memory_evicted = after_count_eviction.saturating_sub(self.blob_cache.len()),
+                time_evicted,
+                count_evicted,
+                memory_evicted,
                 remaining_count = self.blob_cache.len(),
                 "Blob cache eviction completed"
             );
+            // Bump per-reason eviction counters. Recorded after all three
+            // eviction passes so each reason gets its share without double
+            // counting (each pass strictly removes entries the next pass
+            // would otherwise also see).
+            crate::node_metrics::record_blob_cache_eviction("age", time_evicted as u64);
+            crate::node_metrics::record_blob_cache_eviction("count", count_evicted as u64);
+            crate::node_metrics::record_blob_cache_eviction("memory", memory_evicted as u64);
         }
     }
 }
