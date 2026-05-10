@@ -16,8 +16,8 @@ BEARER_TOKEN_FILE="${9:-}"
 HTTP_PORT="${10:-8429}"
 NODE_PATTERN="${11:-}"  # e.g., "fuzzy-kv-node" or "fuzzy-handlers-node"
 NODE_COUNT="${12:-4}"   # Number of nodes (default: 4)
-BASE_PORT="${13:-3001}" # Starting port (default: 3001 for e2e_mode RPC ports)
-PORT_INCREMENT="${14:-2}" # Port increment between nodes (default: 2 for e2e_mode)
+BASE_PORT="${13:-2528}" # Starting host RPC port (merobox DEFAULT_RPC_PORT = 2528)
+PORT_INCREMENT="${14:-1}" # Host RPC port increment between nodes (merobox bootstrap uses base+i)
 
 if [ -z "$TEST_CASE" ] || [ -z "$VMAGENT_DIR" ] || [ -z "$VICTORIA_URL" ] || [ -z "$NODE_PATTERN" ]; then
     echo "Usage: $0 <test_case> <instance_name> <workflow_run_id> <commit_hash> <branch> <vmagent_dir> <victoria_url> <auth_enabled> <bearer_token_file> <http_port> <node_pattern> [node_count] [base_port] [port_increment]"
@@ -40,7 +40,7 @@ generate_scrape_config() {
     local node_pattern="$7"
     local node_count="$8"
     local base_port="$9"
-    local port_increment="${10:-2}"
+    local port_increment="${10:-1}"
     
     cat > "$config_file" <<EOF
 global:
@@ -61,9 +61,12 @@ global:
 scrape_configs:
 EOF
     
-    # Generate static targets for predictable ports
-    # Ports start from base_port and increment by port_increment for each node
-    # e.g., base_port=3001, port_increment=2: 3001, 3003, 3005, 3007
+    # Generate static targets for predictable ports.
+    # Ports start from base_port and increment by port_increment for each node.
+    # For merobox `bootstrap run` (no explicit base_rpc_port), allocation is
+    # base + i — i.e. base_port=2528, port_increment=1 produces 2528, 2529,
+    # 2530, 2531. Matches the host port-binding emitted by merobox's
+    # `_find_available_ports(DEFAULT_RPC_PORT)` path.
     local ports_found=0
     local port
     local node_idx
@@ -181,7 +184,7 @@ update_scrape_config_background() {
     local node_pattern="$8"
     local node_count="$9"
     local base_port="${10}"
-    local port_increment="${11:-2}"
+    local port_increment="${11:-1}"
     
     while kill -0 "$pid" 2>/dev/null; do
         sleep 60  # Update every 60 seconds to refresh process info

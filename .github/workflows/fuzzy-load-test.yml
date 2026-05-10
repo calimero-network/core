@@ -268,6 +268,9 @@ jobs:
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          FUZZY_CONFIG="workflows/fuzzy-tests/kv-store/fuzzy-test.yml"
+          NODE_COUNT=$(yq '.nodes.count' "$FUZZY_CONFIG")
+          NODE_PREFIX=$(yq '.nodes.prefix' "$FUZZY_CONFIG")
 
           VMAGENT_STARTED="false"
           if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
@@ -276,7 +279,7 @@ jobs:
             "${{ steps.setup-vmagent.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent.outputs.bearer_token_file }}" \
-            "8429" "fuzzy-kv-node" "4" "3001" "2"; then
+            "8429" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
 
@@ -318,7 +321,7 @@ jobs:
           set +e
           set -o pipefail
           merobox bootstrap run \
-              workflows/fuzzy-tests/kv-store/fuzzy-test.yml \
+              "$FUZZY_CONFIG" \
               --image "$IMAGE" \
               --e2e-mode \
               --verbose 2>&1 | tee fuzzy-test-logs/kv-store/merobox-output.log
@@ -530,6 +533,9 @@ jobs:
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          FUZZY_CONFIG="workflows/fuzzy-tests/kv-store-with-handlers/fuzzy-test.yml"
+          NODE_COUNT=$(yq '.nodes.count' "$FUZZY_CONFIG")
+          NODE_PREFIX=$(yq '.nodes.prefix' "$FUZZY_CONFIG")
 
           VMAGENT_STARTED="false"
           if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
@@ -538,7 +544,7 @@ jobs:
             "${{ steps.setup-vmagent-handlers.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent-handlers.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent-handlers.outputs.bearer_token_file }}" \
-            "8430" "fuzzy-handlers-node" "4" "3001" "2"; then
+            "8430" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
 
@@ -574,7 +580,7 @@ jobs:
           set +e
           set -o pipefail
           merobox bootstrap run \
-              workflows/fuzzy-tests/kv-store-with-handlers/fuzzy-test.yml \
+              "$FUZZY_CONFIG" \
               --image "$IMAGE" \
               --e2e-mode \
               --verbose 2>&1 | tee fuzzy-test-logs/kv-store-with-handlers/merobox-output.log
@@ -780,6 +786,9 @@ jobs:
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          FUZZY_CONFIG="workflows/fuzzy-tests/scaffolding-e2e/fuzzy-test.yml"
+          NODE_COUNT=$(yq '.nodes.count' "$FUZZY_CONFIG")
+          NODE_PREFIX=$(yq '.nodes.prefix' "$FUZZY_CONFIG")
 
           VMAGENT_STARTED="false"
           if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
@@ -788,7 +797,7 @@ jobs:
             "${{ steps.setup-vmagent-e2e.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent-e2e.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent-e2e.outputs.bearer_token_file }}" \
-            "8431" "fuzzy-e2e-node" "4" "3001" "2"; then
+            "8431" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
 
@@ -822,7 +831,7 @@ jobs:
           set +e
           set -o pipefail
           merobox bootstrap run \
-              workflows/fuzzy-tests/scaffolding-e2e/fuzzy-test.yml \
+              "$FUZZY_CONFIG" \
               --image "$IMAGE" \
               --e2e-mode \
               --verbose 2>&1 | tee fuzzy-test-logs/scaffolding-e2e/merobox-output.log
@@ -1027,6 +1036,9 @@ jobs:
           SHORT_COMMIT="${COMMIT_HASH:0:7}"
           INSTANCE_NAME="${TEST_CASE}-${SHORT_COMMIT}"
           IMAGE="ghcr.io/calimero-network/merod:${{ steps.image.outputs.tag }}"
+          FUZZY_CONFIG="workflows/fuzzy-tests/group-governance/fuzzy-test.yml"
+          NODE_COUNT=$(yq '.nodes.count' "$FUZZY_CONFIG")
+          NODE_PREFIX=$(yq '.nodes.prefix' "$FUZZY_CONFIG")
 
           VMAGENT_STARTED="false"
           if "$GITHUB_WORKSPACE/scripts/run-vmagent.sh" \
@@ -1035,7 +1047,7 @@ jobs:
             "${{ steps.setup-vmagent-gov.outputs.victoria_url }}" \
             "${{ steps.setup-vmagent-gov.outputs.auth_enabled }}" \
             "${{ steps.setup-vmagent-gov.outputs.bearer_token_file }}" \
-            "8432" "fuzzy-gov-node" "4" "3001" "2"; then
+            "8432" "$NODE_PREFIX" "$NODE_COUNT" "2528" "1"; then
             VMAGENT_STARTED="true"
           fi
 
@@ -1069,7 +1081,7 @@ jobs:
           set +e
           set -o pipefail
           merobox bootstrap run \
-              workflows/fuzzy-tests/group-governance/fuzzy-test.yml \
+              "$FUZZY_CONFIG" \
               --image "$IMAGE" \
               --e2e-mode \
               --verbose 2>&1 | tee fuzzy-test-logs/group-governance/merobox-output.log
