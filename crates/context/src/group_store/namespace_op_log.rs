@@ -26,6 +26,34 @@ impl<'a> NamespaceOpLogService<'a> {
         }
     }
 
+    /// Direct existence check for an op by its content hash within this
+    /// namespace. O(1) key lookup — does not load the op body. Used by
+    /// position-aware membership lookup ([`super::membership_status`]) to
+    /// detect whether a referenced governance head is present locally
+    /// without paying the cost of a full op-log scan.
+    pub fn contains_op(&self, delta_id: [u8; 32]) -> EyreResult<bool> {
+        let handle = self.store.handle();
+        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id, delta_id);
+        handle
+            .has(&key)
+            .map_err(|e| eyre::eyre!("contains_op: {e}"))
+    }
+
+    /// Direct fetch of a `SignedNamespaceOp` by its content hash within this
+    /// namespace. Returns `Ok(None)` if not present. Used by the prefix-walk
+    /// membership lookup to traverse the governance DAG by following each
+    /// op's `parent_op_hashes`.
+    pub fn get_signed_op(&self, delta_id: [u8; 32]) -> EyreResult<Option<SignedNamespaceOp>> {
+        let handle = self.store.handle();
+        let key = calimero_store::key::NamespaceGovOp::new(self.namespace_id, delta_id);
+        let value: calimero_store::key::NamespaceGovOpValue = match handle.get(&key) {
+            Ok(Some(v)) => v,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(eyre::eyre!("get_signed_op: {e}")),
+        };
+        Ok(decode_signed_namespace_op(&value.skeleton_bytes))
+    }
+
     pub fn store_signed_operation(&self, op: &SignedNamespaceOp) -> EyreResult<()> {
         if op.namespace_id != self.namespace_id {
             bail!(

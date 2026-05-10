@@ -25,6 +25,7 @@ mod local_state;
 mod membership;
 mod membership_policy;
 mod membership_policy_rules;
+mod membership_status;
 mod membership_view;
 mod meta;
 mod migrations;
@@ -80,6 +81,7 @@ pub use self::membership::{
     require_group_admin_or_capability, set_member_auto_follow, MembershipPath,
 };
 pub use self::membership_policy::MembershipPolicy;
+pub use self::membership_status::{membership_status_at, MembershipStatus};
 pub use self::membership_view::GroupMembershipView;
 pub use self::meta::{
     compute_group_state_hash, delete_group_meta, enumerate_all_groups, load_group_meta,

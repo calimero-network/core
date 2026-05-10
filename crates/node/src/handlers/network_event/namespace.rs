@@ -92,6 +92,7 @@ pub(super) fn handle_namespace_governance_delta(
 
     let context_client = this.clients.context.clone();
     let node_client = this.clients.node.clone();
+    let node_state = this.state.clone();
     let network_client = this.managers.sync.network_client.clone();
     let sync_timeout = this.managers.sync.sync_config.timeout;
     let pull_budget_max_peers = this.managers.sync.sync_config.parent_pull_additional_peers;
@@ -121,6 +122,23 @@ pub(super) fn handle_namespace_governance_delta(
                 if let Some(addr) = &readiness_addr {
                     addr.do_send(crate::readiness::NamespaceOpApplied { namespace_id });
                 }
+
+                // B2 active drain: a governance op that just applied may
+                // unblock state deltas previously buffered as `Unknown`.
+                // Without this hook the lazy on-state-delta drain
+                // deadlocks when the only state delta in flight is one
+                // waiting for that very governance op (e2e 3-node test
+                // reproduced this).
+                let drain_input = crate::handlers::state_delta::StateDeltaContext {
+                    node_clients: crate::state::NodeClients {
+                        context: context_client.clone(),
+                        node: node_client.clone(),
+                    },
+                    node_state: node_state.clone(),
+                    network_client: network_client.clone(),
+                    sync_timeout,
+                };
+                crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
             }
 
             // Phase 4: emit a `SignedAck` on the same topic when we've
@@ -165,6 +183,7 @@ pub(super) fn handle_namespace_governance_delta(
                     namespace_id,
                     Vec::new(),
                     sync_timeout,
+                    &node_state,
                 )
                 .await;
                 resolve_namespace_pending(
@@ -176,6 +195,7 @@ pub(super) fn handle_namespace_governance_delta(
                     sync_timeout,
                     pull_budget_max_peers,
                     pull_budget_duration,
+                    &node_state,
                 )
                 .await;
             }
@@ -291,6 +311,7 @@ async fn resolve_namespace_pending(
     sync_timeout: tokio::time::Duration,
     max_additional_peers: usize,
     budget: tokio::time::Duration,
+    node_state: &crate::NodeState,
 ) {
     let topic = libp2p::gossipsub::TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
     let mut mesh_peers = network_client.mesh_peers(topic.clone()).await;
@@ -358,6 +379,7 @@ async fn resolve_namespace_pending(
             namespace_id,
             Vec::new(),
             sync_timeout,
+            node_state,
         )
         .await;
     }
@@ -371,6 +393,7 @@ async fn fetch_and_apply_namespace_backfill(
     namespace_id: [u8; 32],
     delta_ids: Vec<[u8; 32]>,
     sync_timeout: tokio::time::Duration,
+    node_state: &crate::NodeState,
 ) {
     let Ok(mut stream) = network_client.open_stream(peer).await else {
         debug!(
@@ -422,10 +445,24 @@ async fn fetch_and_apply_namespace_backfill(
                     }
                 }
             }
-            // FSM notify after the batch — same rationale as the
-            // gossip-receive path (line 120).
             if any_applied {
+                // FSM notify after the batch — same rationale as the
+                // gossip-receive path (line 120).
                 node_client.notify_namespace_op_applied(namespace_id);
+
+                // B2 active drain: backfilled governance ops may unblock
+                // state deltas previously buffered as `Unknown`. Same
+                // hook as the gossip-apply path.
+                let drain_input = crate::handlers::state_delta::StateDeltaContext {
+                    node_clients: crate::state::NodeClients {
+                        context: context_client.clone(),
+                        node: node_client.clone(),
+                    },
+                    node_state: node_state.clone(),
+                    network_client: network_client.clone(),
+                    sync_timeout,
+                };
+                crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
             }
         }
         _ => {

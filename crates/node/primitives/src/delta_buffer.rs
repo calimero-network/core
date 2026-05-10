@@ -19,9 +19,11 @@
 
 use std::collections::HashSet;
 
+use calimero_context_config::types::GovernancePosition;
 use calimero_crypto::Nonce;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_storage::logical_clock::HybridTimestamp;
 
 /// Default buffer capacity (10,000 deltas per context).
 pub const DEFAULT_BUFFER_CAPACITY: usize = 10_000;
@@ -88,8 +90,12 @@ pub struct BufferedDelta {
     pub id: [u8; 32],
     /// Parent IDs.
     pub parents: Vec<[u8; 32]>,
-    /// HLC timestamp.
-    pub hlc: u64,
+    /// HLC timestamp — full (time, id) tuple. Storing only the time component
+    /// and reconstructing the id with a synthetic value (e.g. NodeId(1)) on
+    /// replay would shift the delta's HLC identity vs. the original sender,
+    /// affecting DAG ordering, dedup, and any downstream tie-breaks. Using
+    /// the wire `HybridTimestamp` directly preserves the original ordering.
+    pub hlc: HybridTimestamp,
     /// Serialized (encrypted) payload.
     pub payload: Vec<u8>,
     /// Nonce for decryption (12 bytes for XChaCha20-Poly1305).
@@ -104,7 +110,38 @@ pub struct BufferedDelta {
     pub source_peer: libp2p::PeerId,
     /// Group key identifier for decryption.
     pub key_id: [u8; 32],
+    /// Cross-DAG reference (B1) — must survive snapshot-sync buffering so
+    /// that B3's apply-time authorization check fires correctly on replay.
+    /// Dropping it here would silently bypass B3 for every delta that
+    /// happened to arrive during a sync. `None` for legacy non-group
+    /// contexts that have no governance DAG.
+    pub governance_position: Option<GovernancePosition>,
+    /// Number of times the governance-pending drain (B2) has re-buffered
+    /// this delta because its governance heads are still unknown locally.
+    /// Bounded by `MAX_GOVERNANCE_DRAIN_ATTEMPTS` — after that, the drain
+    /// drops the delta with a warn log rather than re-buffering forever.
+    /// Prevents indefinite resource consumption when governance heads are
+    /// permanently missing (e.g., a malformed position or a partition that
+    /// will never converge). 0 for snapshot-sync deltas, which are drained
+    /// on a different schedule (sync completion).
+    pub governance_drain_attempts: u8,
 }
+
+/// Maximum number of times the governance-pending drain may re-buffer the
+/// same delta before giving up. The counter increments on every drain
+/// pass that re-evaluates the delta as `Unknown` (governance still
+/// behind). Both drain-trigger paths increment it:
+/// * **Active drain** (governance-op apply hook) — fires whenever a
+///   governance op applies; in steady state, multiple times per second
+///   while a peer is catching up.
+/// * **Lazy drain** (incoming state-delta receive for the same context)
+///   — fires whenever new state-delta traffic arrives.
+///
+/// At any plausible mix of the two, 16 attempts is comfortably more than
+/// any legitimate partition-recovery delay. Beyond that, retry is unlikely
+/// to succeed and the delta is dropped (a future gossipsub rebroadcast or
+/// snapshot-sync would re-deliver it if it's legitimate).
+pub const MAX_GOVERNANCE_DRAIN_ATTEMPTS: u8 = 16;
 
 /// Buffer for storing deltas during snapshot sync.
 ///
@@ -271,7 +308,7 @@ mod tests {
         BufferedDelta {
             id: [id; 32],
             parents: vec![[0; 32]],
-            hlc: 12345,
+            hlc: HybridTimestamp::zero(),
             payload: vec![1, 2, 3],
             nonce: [0; 12],
             author_id: PublicKey::from([0; 32]),
@@ -279,7 +316,23 @@ mod tests {
             events: None,
             source_peer: libp2p::PeerId::random(),
             key_id: [0; 32],
+            governance_position: None,
+            governance_drain_attempts: 0,
         }
+    }
+
+    #[test]
+    fn governance_drain_attempts_field_defaults_zero() {
+        let d = make_test_delta(0);
+        assert_eq!(d.governance_drain_attempts, 0);
+    }
+
+    #[test]
+    fn governance_drain_attempts_constant_within_u8() {
+        // Constant must fit u8 (we store the counter as u8 to keep
+        // BufferedDelta compact). Sanity-check the bound.
+        assert!(MAX_GOVERNANCE_DRAIN_ATTEMPTS < u8::MAX);
+        assert!(MAX_GOVERNANCE_DRAIN_ATTEMPTS > 0);
     }
 
     #[test]

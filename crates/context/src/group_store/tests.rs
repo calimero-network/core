@@ -4674,3 +4674,185 @@ fn namespace_member_pubkeys_includes_member_rows() {
     assert!(pks.contains(&m1));
     assert!(pks.contains(&m2));
 }
+
+// ----------------------------------------------------------------------
+// membership_status_at — integration tests
+//
+// Cover the three branches of the cross-DAG authorization primitive
+// against a real in-memory `Store`. Catches regressions that pure-logic
+// unit tests on `resolve_membership_from_transitions` (in
+// `membership_status.rs`) can't catch — wiring bugs between
+// `membership_status_at`, the materialized member set, and the namespace
+// op log.
+// ----------------------------------------------------------------------
+
+#[test]
+fn membership_status_at_branch1_member_when_heads_match_and_member_exists() {
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x42; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Admin).unwrap();
+
+    // Top-level group → namespace_id == group_id, local heads == [].
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
+
+    let status = membership_status_at(&store, &signer, &position).unwrap();
+    assert!(matches!(
+        status,
+        MembershipStatus::Member(GroupMemberRole::Admin)
+    ));
+}
+
+#[test]
+fn membership_status_at_branch1_never_member_when_signer_absent() {
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let stranger = PublicKey::from([0xFE; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
+
+    let status = membership_status_at(&store, &stranger, &position).unwrap();
+    assert!(matches!(status, MembershipStatus::NeverMember));
+}
+
+#[test]
+fn membership_status_at_branch1_state_hash_mismatch_bails() {
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x42; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
+
+    // heads match (both empty), but state_hash is wrong — must reject.
+    let position = GovernancePosition::new(gid, [0xFF; 32], vec![]).unwrap();
+
+    let err = membership_status_at(&store, &signer, &position).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("group_state_hash mismatch"),
+        "expected hash-mismatch error, got: {msg}"
+    );
+}
+
+#[test]
+fn membership_status_at_branch2_unknown_when_heads_not_in_op_log() {
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x42; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
+
+    // Position references a head that's not in the local op log.
+    let unknown_head = [0xCC; 32];
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![unknown_head]).unwrap();
+
+    let status = membership_status_at(&store, &signer, &position).unwrap();
+    match status {
+        MembershipStatus::Unknown { needed } => {
+            assert_eq!(needed, vec![unknown_head]);
+        }
+        other => panic!("expected Unknown, got {other:?}"),
+    }
+}
+
+#[test]
+fn membership_status_at_branch2_unknown_collects_all_missing_heads() {
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x42; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
+
+    // Multiple unknown heads — all should be reported (round-2 fix).
+    let h1 = [0xC1; 32];
+    let h2 = [0xC2; 32];
+    let h3 = [0xC3; 32];
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![h1, h2, h3]).unwrap();
+
+    let status = membership_status_at(&store, &signer, &position).unwrap();
+    match status {
+        MembershipStatus::Unknown { needed } => {
+            assert_eq!(needed.len(), 3);
+            assert!(needed.contains(&h1));
+            assert!(needed.contains(&h2));
+            assert!(needed.contains(&h3));
+        }
+        other => panic!("expected Unknown with 3 heads, got {other:?}"),
+    }
+}
+
+#[test]
+fn membership_status_at_rejects_position_with_mismatched_group() {
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid_a = ContextGroupId::from([0xAA; 32]);
+    let gid_b = ContextGroupId::from([0xBB; 32]);
+    let signer = PublicKey::from([0x42; 32]);
+
+    save_group_meta(&store, &gid_a, &test_meta()).unwrap();
+    add_group_member(&store, &gid_a, &signer, GroupMemberRole::Member).unwrap();
+
+    // Position references group B, but B isn't set up. resolve_namespace
+    // will fail or return its own ID, and the lookup proceeds against the
+    // wrong group's empty member set → NeverMember.
+    let state_hash_b = compute_group_state_hash(&store, &gid_a).unwrap();
+    let position = GovernancePosition::new(gid_b, state_hash_b, vec![]).unwrap();
+
+    // The behaviour here depends on whether the group_b lookup errors or
+    // returns empty. Either is a correct rejection — assert it's NOT
+    // returning Member (which would be the security failure).
+    let result = membership_status_at(&store, &signer, &position);
+    if let Ok(MembershipStatus::Member(_)) = result {
+        panic!("must not return Member for a position pointing at a different group");
+    }
+}
+
+#[test]
+fn membership_status_at_oversized_governance_dag_heads_runtime_guard() {
+    use calimero_context_config::types::{GovernancePosition, MAX_GOVERNANCE_DAG_HEADS};
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x42; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+
+    // Bypass the constructor by direct field-init (mimics what would
+    // happen if a deserialized position somehow exceeded the bound —
+    // the runtime check is defense-in-depth).
+    let oversized_heads: Vec<[u8; 32]> = (0..MAX_GOVERNANCE_DAG_HEADS + 1)
+        .map(|i| {
+            let mut h = [0u8; 32];
+            h[0] = i as u8;
+            h
+        })
+        .collect();
+    let position = GovernancePosition {
+        group_id: gid,
+        group_state_hash: [0u8; 32],
+        governance_dag_heads: oversized_heads,
+    };
+
+    let err = membership_status_at(&store, &signer, &position).unwrap_err();
+    assert!(
+        format!("{err}").contains("MAX_GOVERNANCE_DAG_HEADS"),
+        "expected oversize error, got: {err}"
+    );
+}

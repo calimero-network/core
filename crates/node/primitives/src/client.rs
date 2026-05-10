@@ -6,6 +6,7 @@ use std::sync::{Arc, OnceLock};
 // Removed: NonZeroUsize (no longer using height)
 
 use async_stream::stream;
+use calimero_context_config::types::GovernancePosition;
 use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_primitives::context::{Context, ContextId};
@@ -400,7 +401,7 @@ impl NodeClient {
         parent_ids: Vec<[u8; 32]>,
         hlc: calimero_storage::logical_clock::HybridTimestamp,
         events: Option<Vec<u8>>,
-        governance_epoch: Vec<[u8; 32]>,
+        governance_position: Option<GovernancePosition>,
         key_id: [u8; 32],
     ) -> eyre::Result<()> {
         info!(
@@ -409,7 +410,10 @@ impl NodeClient {
             root_hash=%context.root_hash,
             delta_id=?delta_id,
             parent_count=parent_ids.len(),
-            governance_epoch_len=governance_epoch.len(),
+            governance_dag_heads_len = governance_position
+                .as_ref()
+                .map(|p| p.governance_dag_heads.len())
+                .unwrap_or(0),
             "Sending state delta"
         );
 
@@ -434,7 +438,7 @@ impl NodeClient {
             artifact: encrypted.into(),
             nonce,
             events: events.map(Cow::from),
-            governance_epoch,
+            governance_position,
             key_id,
         };
 

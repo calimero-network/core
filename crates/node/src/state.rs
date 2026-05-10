@@ -89,7 +89,34 @@ pub(crate) struct NodeState {
     pub(crate) node_mode: NodeMode,
     /// Active sync sessions (for delta buffering during snapshot sync).
     pub(crate) sync_sessions: Arc<DashMap<ContextId, SyncSession>>,
+    /// Per-context queue of state deltas whose `governance_position` references
+    /// governance heads that aren't yet known locally (B2 buffer-on-Unknown).
+    ///
+    /// Drained lazily on the next state-delta receive for the same context: each
+    /// pending delta is re-evaluated via `membership_status_at`; if governance has
+    /// caught up the delta is processed (applied or rejected by B3), otherwise it
+    /// is pushed back. Lazy drain trades a small worst-case latency (until the
+    /// next state delta arrives in the same context) for not having to plumb a
+    /// notification path from the governance-apply path into this buffer.
+    ///
+    /// Per-context capacity is bounded by [`MAX_GOVERNANCE_PENDING_PER_CONTEXT`]
+    /// with FIFO eviction of the oldest entry. Without the bound, a peer
+    /// flooding deltas with unknown governance heads could exhaust memory; the
+    /// hash-heartbeat divergence path will catch any legitimate eviction
+    /// victim by triggering snapshot sync.
+    pub(crate) governance_pending: Arc<
+        DashMap<
+            ContextId,
+            std::collections::VecDeque<calimero_node_primitives::delta_buffer::BufferedDelta>,
+        >,
+    >,
 }
+
+/// Maximum number of state deltas that may sit in the governance-pending
+/// buffer for a single context simultaneously. Exceeding this evicts the
+/// oldest entry FIFO. Sized for normal partition-recovery — a few seconds
+/// of held deltas at typical send rates — not for adversarial flooding.
+pub(crate) const MAX_GOVERNANCE_PENDING_PER_CONTEXT: usize = 256;
 
 impl NodeState {
     pub(crate) fn blob_cache_handle(&self) -> Arc<DashMap<BlobId, CachedBlob>> {
@@ -120,7 +147,103 @@ impl NodeState {
             accept_mock_tee,
             node_mode,
             sync_sessions: Arc::new(DashMap::new()),
+            governance_pending: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Push a state delta into the governance-pending buffer. Used by B2 when
+    /// `membership_status_at` returns `Unknown { needed }` — the referenced
+    /// governance heads aren't yet known locally, so the delta cannot be
+    /// authorized until governance catches up.
+    ///
+    /// Skips the push if a delta with the same `id` is already in the
+    /// queue (gossipsub re-delivers are common; double-buffering would
+    /// re-apply the same delta twice when the drain fires).
+    ///
+    /// FIFO-evicts the oldest entry if pushing would exceed
+    /// [`MAX_GOVERNANCE_PENDING_PER_CONTEXT`]. Eviction emits a warn log so
+    /// operators can spot DoS-shaped traffic.
+    pub(crate) fn buffer_governance_pending(
+        &self,
+        context_id: ContextId,
+        delta: calimero_node_primitives::delta_buffer::BufferedDelta,
+    ) {
+        let mut entry = self.governance_pending.entry(context_id).or_default();
+        // Deduplicate by delta_id — gossipsub re-delivery shouldn't
+        // amplify the buffer or cause repeated re-apply work on drain.
+        if entry.iter().any(|existing| existing.id == delta.id) {
+            debug!(
+                %context_id,
+                delta_id = ?delta.id,
+                "governance-pending buffer: skipping duplicate"
+            );
+            return;
+        }
+        if entry.len() >= MAX_GOVERNANCE_PENDING_PER_CONTEXT {
+            let evicted = entry.pop_front();
+            warn!(
+                %context_id,
+                evicted_id = ?evicted.as_ref().map(|d| d.id),
+                cap = MAX_GOVERNANCE_PENDING_PER_CONTEXT,
+                "governance-pending buffer at capacity; evicting oldest"
+            );
+        }
+        entry.push_back(delta);
+    }
+
+    /// Pop the front-most pending delta for `context_id`, leaving the rest
+    /// of the queue in place. Returns `None` if the buffer is empty.
+    ///
+    /// Used by the drain loop in
+    /// `state_delta::drain_governance_pending` instead of a bulk
+    /// drain-all-then-process: if `apply_authorized_state_delta` panics
+    /// or the actor task is killed mid-iteration, only the in-flight
+    /// delta is lost — the rest stay in the buffer and get re-tried by
+    /// the next drain pass. The bulk-drain version (commit history) was
+    /// flagged by review for losing every still-unprocessed delta on
+    /// panic.
+    pub(crate) fn pop_governance_pending(
+        &self,
+        context_id: &ContextId,
+    ) -> Option<calimero_node_primitives::delta_buffer::BufferedDelta> {
+        let mut entry = self.governance_pending.get_mut(context_id)?;
+        let popped = entry.pop_front();
+        // Don't remove the now-empty VecDeque here. A previous version of
+        // this code did `drop(entry); remove(context_id)`, which had a
+        // race: a concurrent `buffer_governance_pending` could insert a
+        // fresh delta between the lock-drop and the remove, and the
+        // remove would silently lose that newly-inserted delta. Leaving
+        // an empty VecDeque costs ~24 bytes per context that ever had
+        // pending entries, which is bounded and trivial. If empty-entry
+        // accumulation ever matters, a periodic GC pass that holds the
+        // entry-write-lock and `remove_if(|q| q.is_empty())` is the
+        // race-free way to clean up.
+        popped
+    }
+
+    /// Returns the current length of the governance-pending buffer for a
+    /// context. Used by the drain loop's iteration cap so we can't get
+    /// stuck draining indefinitely if a delta keeps re-buffering itself
+    /// (the per-delta `governance_drain_attempts` counter is the deeper
+    /// guard, but this is a cheap pre-check).
+    pub(crate) fn governance_pending_len(&self, context_id: &ContextId) -> usize {
+        self.governance_pending
+            .get(context_id)
+            .map(|q| q.len())
+            .unwrap_or(0)
+    }
+
+    /// List every `ContextId` that currently has at least one entry in the
+    /// governance-pending buffer. Used by the namespace-governance apply
+    /// path to trigger drains across all affected contexts when a
+    /// governance op lands — without this, the lazy on-state-delta drain
+    /// alone deadlocks if the only state delta in flight is one waiting
+    /// for that very governance op.
+    pub(crate) fn governance_pending_context_ids(&self) -> Vec<ContextId> {
+        self.governance_pending
+            .iter()
+            .map(|entry| *entry.key())
+            .collect()
     }
 
     /// Check if we should buffer a delta (during snapshot sync).

@@ -2,7 +2,9 @@
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
 
+use calimero_context::group_store::{membership_status_at, MembershipStatus};
 use calimero_context_client::client::ContextClient;
+use calimero_context_config::types::GovernancePosition;
 use calimero_crypto::Nonce;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
@@ -124,15 +126,201 @@ pub(crate) struct StateDeltaMessage {
     pub(crate) artifact: Vec<u8>,
     pub(crate) nonce: Nonce,
     pub(crate) events: Option<Vec<u8>>,
-    pub(crate) governance_epoch: Vec<[u8; 32]>,
+    pub(crate) governance_position: Option<GovernancePosition>,
     pub(crate) key_id: [u8; 32],
 }
 
+#[derive(Clone)]
 pub(crate) struct StateDeltaContext {
     pub(crate) node_clients: crate::NodeClients,
     pub(crate) node_state: crate::NodeState,
     pub(crate) network_client: calimero_network_primitives::client::NetworkClient,
     pub(crate) sync_timeout: std::time::Duration,
+}
+
+/// Drain the governance-pending buffer for `context_id`, re-evaluating each
+/// delta's authorization status against current local governance state and
+/// dispatching by outcome.
+///
+/// Outcomes per drained delta:
+/// * `Member` — the referenced governance heads are now known and the author
+///   is authorized. The buffered delta is reconstructed into a
+///   [`StateDeltaMessage`] and applied directly via
+///   [`apply_authorized_state_delta`]. Gossipsub does *not* auto-rebroadcast
+///   already-delivered messages, so dropping here would lose the delta
+///   permanently — recovery would only happen via hash-heartbeat divergence
+///   detection triggering snapshot sync.
+/// * `Removed` / `NeverMember` / `Err` — author is permanently not
+///   authorized at this position; drop with a warn log.
+/// * `Unknown { needed }` — governance still hasn't caught up; push the
+///   delta back into the pending buffer.
+///
+/// Calls `apply_authorized_state_delta` directly (not `handle_state_delta`)
+/// so the call graph stays linear — no async recursion, no per-recurse
+/// future allocation. The B3 check we just performed via
+/// `membership_status_at` is the same check `handle_state_delta` would have
+/// performed; skipping back through the entry handler would also re-drain
+/// the (now-empty) pending buffer, wasted work.
+async fn drain_governance_pending(input: &StateDeltaContext, context_id: &ContextId) {
+    // Pop-then-process pattern: drain one delta at a time so that if
+    // `apply_authorized_state_delta` panics or the actor task is killed
+    // mid-iteration, the rest of the queue stays in the buffer and the
+    // next drain pass picks them up. Bulk-drain-then-process would lose
+    // every still-unprocessed delta on panic.
+    //
+    // Iteration is capped at the snapshot length we observe at entry —
+    // a delta re-buffered as still-Unknown during this drain pass must
+    // not be re-evaluated until the *next* drain pass (a fresh trigger
+    // signal), otherwise drain could loop forever on a permanently
+    // unresolvable delta. The per-delta `governance_drain_attempts`
+    // counter is the deeper guard; this snapshot cap is the cheap
+    // pre-check.
+    let snapshot_len = input.node_state.governance_pending_len(context_id);
+    if snapshot_len == 0 {
+        return;
+    }
+    debug!(
+        %context_id,
+        count = snapshot_len,
+        "B2: draining governance-pending buffer"
+    );
+    for _ in 0..snapshot_len {
+        let Some(buffered) = input.node_state.pop_governance_pending(context_id) else {
+            break;
+        };
+        let Some(pos) = buffered.governance_position.as_ref() else {
+            warn!(
+                %context_id,
+                delta_id = ?buffered.id,
+                "B2: pending delta has no governance_position; dropping"
+            );
+            continue;
+        };
+        let datastore = input.node_clients.context.datastore();
+        let status = membership_status_at(datastore, &buffered.author_id, pos);
+        match status {
+            Ok(MembershipStatus::Member(_)) => {
+                debug!(
+                    %context_id,
+                    delta_id = ?buffered.id,
+                    author = %buffered.author_id,
+                    "B2: pending delta now authorized; re-applying"
+                );
+                let reconstructed = state_delta_message_from_buffered(buffered, *context_id);
+                if let Err(err) = apply_authorized_state_delta(input.clone(), reconstructed).await {
+                    warn!(
+                        %context_id,
+                        %err,
+                        "B2: re-apply of authorized buffered delta failed"
+                    );
+                }
+            }
+            Ok(MembershipStatus::Removed { last_role }) => {
+                warn!(
+                    %context_id,
+                    delta_id = ?buffered.id,
+                    author = %buffered.author_id,
+                    last_role = ?last_role,
+                    "B2: pending delta from removed author; dropping"
+                );
+            }
+            Ok(MembershipStatus::NeverMember) => {
+                warn!(
+                    %context_id,
+                    delta_id = ?buffered.id,
+                    author = %buffered.author_id,
+                    "B2: pending delta from non-member; dropping"
+                );
+            }
+            Ok(MembershipStatus::Unknown { needed }) => {
+                let mut buffered = buffered;
+                buffered.governance_drain_attempts =
+                    buffered.governance_drain_attempts.saturating_add(1);
+                if buffered.governance_drain_attempts
+                    >= calimero_node_primitives::delta_buffer::MAX_GOVERNANCE_DRAIN_ATTEMPTS
+                {
+                    warn!(
+                        %context_id,
+                        delta_id = ?buffered.id,
+                        attempts = buffered.governance_drain_attempts,
+                        "B2: dropping pending delta after exhausting drain attempts \
+                         (governance heads still unknown — likely permanently missing)"
+                    );
+                } else {
+                    debug!(
+                        %context_id,
+                        delta_id = ?buffered.id,
+                        needed_count = needed.len(),
+                        attempts = buffered.governance_drain_attempts,
+                        "B2: still pending governance catchup; re-buffering"
+                    );
+                    input
+                        .node_state
+                        .buffer_governance_pending(*context_id, buffered);
+                }
+            }
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    delta_id = ?buffered.id,
+                    %err,
+                    "B2: membership lookup failed for pending delta; dropping"
+                );
+            }
+        }
+    }
+}
+
+/// Drain governance-pending buffers for **every** context that currently
+/// holds at least one entry. Called from the namespace-governance apply
+/// path on `Applied` outcome — a governance op that just applied may
+/// unblock state deltas previously buffered as `Unknown`. Without this
+/// hook, the lazy on-state-delta drain alone deadlocks when the only
+/// state delta in flight is the one waiting for that very governance op
+/// (the e2e 3-node test reproduced this: node-1 broadcasts a single state
+/// delta, node-2 buffers it for missing governance heads, no further
+/// state delta arrives to trigger drain, never converges).
+///
+/// Per-context drain still happens lazily on incoming state-deltas; this
+/// hook is the *active* path that converges in the absence of fresh
+/// state-delta traffic.
+pub(crate) async fn drain_all_governance_pending(input: &StateDeltaContext) {
+    let context_ids = input.node_state.governance_pending_context_ids();
+    if context_ids.is_empty() {
+        return;
+    }
+    debug!(
+        count = context_ids.len(),
+        "B2: governance-apply hook draining pending buffers across contexts"
+    );
+    for context_id in context_ids {
+        drain_governance_pending(input, &context_id).await;
+    }
+}
+
+/// Reconstruct a [`StateDeltaMessage`] from a [`BufferedDelta`] for re-apply
+/// from the governance-pending drain path. Mirrors the borsh decode in
+/// [`super::network_event::handle`] — every field that the network handler
+/// destructures must be reconstructable here, otherwise drained deltas
+/// would replay with missing data.
+fn state_delta_message_from_buffered(
+    buffered: calimero_node_primitives::delta_buffer::BufferedDelta,
+    context_id: ContextId,
+) -> StateDeltaMessage {
+    StateDeltaMessage {
+        source: buffered.source_peer,
+        context_id,
+        author_id: buffered.author_id,
+        delta_id: buffered.id,
+        parent_ids: buffered.parents,
+        hlc: buffered.hlc,
+        root_hash: buffered.root_hash,
+        artifact: buffered.payload,
+        nonce: buffered.nonce,
+        events: buffered.events,
+        governance_position: buffered.governance_position,
+        key_id: buffered.key_id,
+    }
 }
 
 pub(crate) struct ReplayBufferedDeltaInput {
@@ -158,7 +346,17 @@ pub(crate) struct ReplayBufferedDeltaInput {
 /// 4. Requests missing parents if needed
 /// 5. Executes event handlers
 /// 6. Re-emits events to WebSocket clients
-pub async fn handle_state_delta(
+/// Apply path for an authorized state delta — runs the snapshot-sync buffer
+/// check, decryption, DAG insert, handler execution, and heartbeat broadcast.
+///
+/// Both [`handle_state_delta`] (after the B3 check passes) and
+/// [`drain_governance_pending`] (when re-applying a buffered delta whose
+/// status is now `Member`) call into this function. Splitting the apply
+/// tail off from `handle_state_delta` lets the drain path re-apply directly
+/// instead of recursing via `Box::pin(handle_state_delta(...))` — eliminates
+/// async recursion, makes the call graph linear, and avoids the per-recurse
+/// future allocation.
+pub(crate) async fn apply_authorized_state_delta(
     input: StateDeltaContext,
     message: StateDeltaMessage,
 ) -> Result<()> {
@@ -179,7 +377,7 @@ pub async fn handle_state_delta(
         artifact,
         nonce,
         events,
-        governance_epoch,
+        governance_position,
         key_id,
     } = message;
 
@@ -187,6 +385,14 @@ pub async fn handle_state_delta(
         bail!("context '{}' not found", context_id);
     };
 
+    // ReadOnly check: rejects authors whose materialized current role is
+    // ReadOnly / ReadOnlyTee. Performed inside the apply path so the
+    // governance-pending drain path — which calls this function directly
+    // when re-applying a buffered delta whose status is now `Member` — gets
+    // the same enforcement. Without it, a member who became ReadOnly
+    // between the delta being authored and the drain could slip a write
+    // through, since the B3 check via `membership_status_at` returns
+    // `Member(role)` with a wildcard role that the drain matches against.
     if calimero_context::group_store::is_read_only_for_context(
         node_clients.context.datastore(),
         &context_id,
@@ -200,28 +406,6 @@ pub async fn handle_state_delta(
             "Rejecting state delta from ReadOnly member"
         );
         return Ok(());
-    }
-
-    info!(
-        %context_id,
-        %author_id,
-        delta_id = ?delta_id,
-        parent_count = parent_ids.len(),
-        expected_root_hash = %root_hash,
-        current_root_hash = %context.root_hash,
-        governance_epoch_heads = governance_epoch.len(),
-        "Received state delta"
-    );
-
-    // Governance catch-up is now handled by the namespace heartbeat
-    // (NamespaceStateHeartbeat in network_event.rs). The governance_epoch
-    // field on state deltas is retained for informational logging only.
-    if !governance_epoch.is_empty() {
-        tracing::debug!(
-            %context_id,
-            heads = governance_epoch.len(),
-            "state delta carries governance epoch (catch-up via namespace heartbeat)"
-        );
     }
 
     // Check if we should buffer this delta:
@@ -242,7 +426,7 @@ pub async fn handle_state_delta(
         let buffered = calimero_node_primitives::delta_buffer::BufferedDelta {
             id: delta_id,
             parents: parent_ids.clone(),
-            hlc: hlc.get_time().as_u64(),
+            hlc,
             payload: artifact.clone(),
             nonce,
             author_id,
@@ -250,6 +434,8 @@ pub async fn handle_state_delta(
             events: events.clone(),
             source_peer: source,
             key_id,
+            governance_position: governance_position.clone(),
+            governance_drain_attempts: 0,
         };
 
         if let Some(result) = node_state.buffer_delta(&context_id, buffered) {
@@ -275,7 +461,7 @@ pub async fn handle_state_delta(
             let buffered = calimero_node_primitives::delta_buffer::BufferedDelta {
                 id: delta_id,
                 parents: parent_ids.clone(),
-                hlc: hlc.get_time().as_u64(),
+                hlc,
                 payload: artifact.clone(),
                 nonce,
                 author_id,
@@ -283,6 +469,8 @@ pub async fn handle_state_delta(
                 events: events.clone(),
                 source_peer: source,
                 key_id,
+                governance_position: governance_position.clone(),
+                governance_drain_attempts: 0,
             };
 
             if let Some(result) = node_state.buffer_delta(&context_id, buffered) {
@@ -631,6 +819,223 @@ pub async fn handle_state_delta(
     }
 
     Ok(())
+}
+
+pub async fn handle_state_delta(
+    input: StateDeltaContext,
+    message: StateDeltaMessage,
+) -> Result<()> {
+    let StateDeltaContext {
+        node_clients,
+        node_state,
+        network_client,
+        sync_timeout,
+    } = input;
+    let StateDeltaMessage {
+        source,
+        context_id,
+        author_id,
+        delta_id,
+        parent_ids,
+        hlc,
+        root_hash,
+        artifact,
+        nonce,
+        events,
+        governance_position,
+        key_id,
+    } = message;
+
+    let Some(context) = node_clients.context.get_context(&context_id)? else {
+        bail!("context '{}' not found", context_id);
+    };
+
+    // Fast-path ReadOnly rejection — `apply_authorized_state_delta` also
+    // performs this check (so the governance-pending drain path is
+    // covered), but doing it here too avoids paying for drain + B3 +
+    // membership_status_at on a delta we'll reject anyway.
+    if calimero_context::group_store::is_read_only_for_context(
+        node_clients.context.datastore(),
+        &context_id,
+        &author_id,
+    )
+    .unwrap_or(false)
+    {
+        warn!(
+            %context_id,
+            %author_id,
+            "Rejecting state delta from ReadOnly member"
+        );
+        return Ok(());
+    }
+
+    info!(
+        %context_id,
+        %author_id,
+        delta_id = ?delta_id,
+        parent_count = parent_ids.len(),
+        expected_root_hash = %root_hash,
+        current_root_hash = %context.root_hash,
+        governance_dag_heads = governance_position
+            .as_ref()
+            .map(|p| p.governance_dag_heads.len())
+            .unwrap_or(0),
+        "Received state delta"
+    );
+
+    // B2 — drain governance-pending buffer for this context. Each pending
+    // delta is re-evaluated against current local governance state; if the
+    // signer's status is now decidable, the delta is re-applied (Member)
+    // or rejected (Removed/NeverMember/Err). If still Unknown, push it
+    // back. Doing this on every state-delta receive guarantees the buffer
+    // self-clears as governance traffic catches up, without requiring a
+    // notification path from the governance-apply code into this handler.
+    let drain_input = StateDeltaContext {
+        node_clients: node_clients.clone(),
+        node_state: node_state.clone(),
+        network_client: network_client.clone(),
+        sync_timeout,
+    };
+    drain_governance_pending(&drain_input, &context_id).await;
+
+    // B3 — apply-time authorization check. If the delta carries a
+    // `governance_position`, ask `membership_status_at` whether `author_id`
+    // was a member at the named cut. Reject ineligible ops; buffer when
+    // governance state hasn't caught up; otherwise fall through to the
+    // existing apply path.
+    //
+    // Anti-bypass: a delta with `governance_position == None` skips B3
+    // entirely. That's the legacy behaviour for non-group contexts (which
+    // have no governance DAG to reference), but it's also what a malicious
+    // sender would set to bypass enforcement. So we verify here that the
+    // missing position genuinely matches a non-group context locally —
+    // any mismatch (group context with no position) is rejected.
+    if governance_position.is_none() {
+        let store = node_clients.context.datastore();
+        match calimero_context::group_store::get_group_for_context(store, &context_id) {
+            Ok(None) => {
+                // Genuine non-group context — fall through to apply path.
+            }
+            Ok(Some(gid)) => {
+                warn!(
+                    %context_id,
+                    %author_id,
+                    group_id = ?gid,
+                    delta_id = ?delta_id,
+                    "B3: rejecting state delta — group context but no governance_position \
+                     (likely a malicious bypass attempt)"
+                );
+                return Ok(());
+            }
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    %author_id,
+                    %err,
+                    "B3: get_group_for_context failed; rejecting delta to avoid silent bypass"
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    if let Some(pos) = governance_position.as_ref() {
+        let datastore = node_clients.context.datastore();
+        match membership_status_at(datastore, &author_id, pos) {
+            Ok(MembershipStatus::Member(role)) => {
+                tracing::debug!(
+                    %context_id,
+                    %author_id,
+                    role = ?role,
+                    group_id = ?pos.group_id,
+                    "B3: author authorized at governance cut"
+                );
+            }
+            Ok(MembershipStatus::Removed { last_role }) => {
+                warn!(
+                    %context_id,
+                    %author_id,
+                    last_role = ?last_role,
+                    group_id = ?pos.group_id,
+                    "B3: rejecting state delta — author was removed from group at governance cut"
+                );
+                return Ok(());
+            }
+            Ok(MembershipStatus::NeverMember) => {
+                warn!(
+                    %context_id,
+                    %author_id,
+                    group_id = ?pos.group_id,
+                    "B3: rejecting state delta — author is not a member of the group at governance cut"
+                );
+                return Ok(());
+            }
+            Ok(MembershipStatus::Unknown { needed }) => {
+                info!(
+                    %context_id,
+                    %author_id,
+                    group_id = ?pos.group_id,
+                    needed_count = needed.len(),
+                    "B3: governance state behind position; buffering delta until catchup"
+                );
+                let buffered = calimero_node_primitives::delta_buffer::BufferedDelta {
+                    id: delta_id,
+                    parents: parent_ids.clone(),
+                    hlc,
+                    payload: artifact.clone(),
+                    nonce,
+                    author_id,
+                    root_hash,
+                    events: events.clone(),
+                    source_peer: source,
+                    key_id,
+                    governance_position: governance_position.clone(),
+                    governance_drain_attempts: 0,
+                };
+                node_state.buffer_governance_pending(context_id, buffered);
+                return Ok(());
+            }
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    %author_id,
+                    group_id = ?pos.group_id,
+                    %err,
+                    "B3: rejecting state delta — membership lookup failed (hash mismatch / corruption)"
+                );
+                return Ok(());
+            }
+        }
+    }
+
+    // Cross-DAG check passed (or no governance_position to check). Hand off
+    // to the apply path. Reassembling the input/message here lets the apply
+    // path stay a flat top-level function callable directly from the
+    // governance-pending drain on re-apply, instead of recursing into this
+    // handler.
+    apply_authorized_state_delta(
+        StateDeltaContext {
+            node_clients,
+            node_state,
+            network_client,
+            sync_timeout,
+        },
+        StateDeltaMessage {
+            source,
+            context_id,
+            author_id,
+            delta_id,
+            parent_ids,
+            hlc,
+            root_hash,
+            artifact,
+            nonce,
+            events,
+            governance_position,
+            key_id,
+        },
+    )
+    .await
 }
 
 #[derive(Default)]
@@ -1431,6 +1836,126 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         .get_context(&context_id)?
         .ok_or_else(|| eyre::eyre!("context not found after snapshot sync"))?;
 
+    // ReadOnly check, parallel to `handle_state_delta` and
+    // `apply_authorized_state_delta`. Snapshot-sync replay must enforce the
+    // same per-context role gate; otherwise a peer that became ReadOnly
+    // between authoring and replay slips a write through.
+    if calimero_context::group_store::is_read_only_for_context(
+        context_client.datastore(),
+        &context_id,
+        &buffered.author_id,
+    )
+    .unwrap_or(false)
+    {
+        warn!(
+            %context_id,
+            author = %buffered.author_id,
+            "Rejecting buffered state delta from ReadOnly member"
+        );
+        return Ok(false);
+    }
+
+    // B3 — apply-time authorization check, parallel to `handle_state_delta`.
+    // Snapshot sync establishes a context-state baseline but says nothing
+    // about governance state, so a delta buffered during sync must still
+    // pass B3 before its actions are applied. Without this, every delta
+    // arriving inside the sync window bypasses cross-DAG authorization.
+    //
+    // Anti-bypass: a missing position is only legitimate for non-group
+    // contexts. Mirror the check in `handle_state_delta`: if the local
+    // record says this is a group context, refuse to apply a delta with
+    // no position.
+    if buffered.governance_position.is_none() {
+        let store = context_client.datastore();
+        match calimero_context::group_store::get_group_for_context(store, &context_id) {
+            Ok(None) => {
+                // Genuine non-group context — fall through.
+            }
+            Ok(Some(gid)) => {
+                warn!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    group_id = ?gid,
+                    delta_id = ?delta_id,
+                    "B3 (replay): rejecting buffered delta — group context but no \
+                     governance_position (likely a malicious bypass attempt)"
+                );
+                return Ok(false);
+            }
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    %err,
+                    "B3 (replay): get_group_for_context failed; rejecting buffered \
+                     delta to avoid silent bypass"
+                );
+                return Ok(false);
+            }
+        }
+    }
+
+    if let Some(pos) = buffered.governance_position.as_ref() {
+        let datastore = context_client.datastore();
+        match membership_status_at(datastore, &buffered.author_id, pos) {
+            Ok(MembershipStatus::Member(role)) => {
+                debug!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    role = ?role,
+                    group_id = ?pos.group_id,
+                    "B3 (replay): author authorized at governance cut"
+                );
+            }
+            Ok(MembershipStatus::Removed { last_role }) => {
+                warn!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    last_role = ?last_role,
+                    group_id = ?pos.group_id,
+                    "B3 (replay): rejecting buffered delta — author was removed at governance cut"
+                );
+                return Ok(false);
+            }
+            Ok(MembershipStatus::NeverMember) => {
+                warn!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    group_id = ?pos.group_id,
+                    "B3 (replay): rejecting buffered delta — author is not a member at governance cut"
+                );
+                return Ok(false);
+            }
+            Ok(MembershipStatus::Unknown { needed }) => {
+                // After snapshot sync the receiver is at-or-ahead of any
+                // legitimate authoring cut; persistent Unknown here means
+                // the position references heads we provably do not have.
+                // Re-buffering into governance_pending would amount to a
+                // permanent leak — drop with a warn. A future delta
+                // referencing the same now-known position can still
+                // re-deliver via gossip if it was legitimate.
+                warn!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    group_id = ?pos.group_id,
+                    needed_count = needed.len(),
+                    "B3 (replay): governance heads still unknown after sync — dropping"
+                );
+                return Ok(false);
+            }
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    group_id = ?pos.group_id,
+                    %err,
+                    "B3 (replay): rejecting buffered delta — membership lookup failed"
+                );
+                return Ok(false);
+            }
+        }
+    }
+
     let group_key = {
         let store = context_client.datastore();
         let gid = calimero_context::group_store::get_group_for_context(store, &context_id)?;
@@ -1470,17 +1995,11 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
 
     let actions = decrypt_delta_actions(buffered.payload, buffered.nonce, group_key)?;
 
-    // Build the delta - reconstruct HLC from stored time
-    use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
-    use std::num::NonZeroU128;
-    let default_id = ID::from(NonZeroU128::new(1).expect("1 is non-zero"));
-    let hlc = HybridTimestamp::new(Timestamp::new(NTP64(buffered.hlc), default_id));
-
     let delta = calimero_dag::CausalDelta {
         id: buffered.id,
         parents: buffered.parents,
         payload: actions,
-        hlc,
+        hlc: buffered.hlc,
         expected_root_hash: *buffered.root_hash,
         kind: calimero_dag::DeltaKind::Regular,
     };

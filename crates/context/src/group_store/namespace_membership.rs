@@ -49,7 +49,7 @@ impl<'a> NamespaceMembershipService<'a> {
             return Ok(());
         }
 
-        let role = Self::map_invited_role(inv.invited_role);
+        let role = super::membership_status::role_from_invited_role(inv.invited_role);
         if role == GroupMemberRole::Admin && !is_group_admin(self.store, &group_id, &inviter_pk)? {
             bail!("only admins can invite new admins");
         }
@@ -110,13 +110,5 @@ impl<'a> NamespaceMembershipService<'a> {
             );
         }
         Ok(())
-    }
-
-    fn map_invited_role(invited_role: u8) -> GroupMemberRole {
-        match invited_role {
-            0 => GroupMemberRole::Admin,
-            2 => GroupMemberRole::ReadOnly,
-            _ => GroupMemberRole::Member,
-        }
     }
 }

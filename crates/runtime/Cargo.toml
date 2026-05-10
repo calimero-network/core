@@ -28,6 +28,7 @@ wasmer.workspace = true
 wasmer-types.workspace = true
 wasmer-compiler-cranelift = { workspace = true, optional = true }
 
+calimero-context-config.workspace = true
 calimero-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-sys.workspace = true
