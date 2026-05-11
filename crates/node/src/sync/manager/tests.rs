@@ -267,13 +267,21 @@ mod session_watchdog_tests {
         let _ = dispatched.insert(ctx(1), time::Instant::now());
         let mut state = HashMap::new();
         let _ = state.insert(ctx(1), in_progress_state());
-        assert!(!session_dispatch_wedged(&dispatched, &state, &ctx(1), GRACE));
+        assert!(!session_dispatch_wedged(
+            &dispatched,
+            &state,
+            &ctx(1),
+            GRACE
+        ));
     }
 
     #[test]
     fn stale_dispatch_still_in_progress_is_wedged() {
         let mut dispatched = HashMap::new();
-        let _ = dispatched.insert(ctx(2), time::Instant::now() - time::Duration::from_secs(120));
+        let _ = dispatched.insert(
+            ctx(2),
+            time::Instant::now() - time::Duration::from_secs(120),
+        );
         let mut state = HashMap::new();
         let _ = state.insert(ctx(2), in_progress_state());
         assert!(session_dispatch_wedged(&dispatched, &state, &ctx(2), GRACE));
@@ -282,10 +290,18 @@ mod session_watchdog_tests {
     #[test]
     fn stale_dispatch_but_settled_is_not_wedged() {
         let mut dispatched = HashMap::new();
-        let _ = dispatched.insert(ctx(3), time::Instant::now() - time::Duration::from_secs(120));
+        let _ = dispatched.insert(
+            ctx(3),
+            time::Instant::now() - time::Duration::from_secs(120),
+        );
         let mut state = HashMap::new();
         let _ = state.insert(ctx(3), settled_state());
-        assert!(!session_dispatch_wedged(&dispatched, &state, &ctx(3), GRACE));
+        assert!(!session_dispatch_wedged(
+            &dispatched,
+            &state,
+            &ctx(3),
+            GRACE
+        ));
     }
 
     #[test]
@@ -293,15 +309,28 @@ mod session_watchdog_tests {
         let dispatched: HashMap<ContextId, time::Instant> = HashMap::new();
         let mut state = HashMap::new();
         let _ = state.insert(ctx(4), in_progress_state());
-        assert!(!session_dispatch_wedged(&dispatched, &state, &ctx(4), GRACE));
+        assert!(!session_dispatch_wedged(
+            &dispatched,
+            &state,
+            &ctx(4),
+            GRACE
+        ));
     }
 
     #[test]
     fn other_contexts_are_unaffected() {
         let mut dispatched = HashMap::new();
-        let _ = dispatched.insert(ctx(5), time::Instant::now() - time::Duration::from_secs(120));
+        let _ = dispatched.insert(
+            ctx(5),
+            time::Instant::now() - time::Duration::from_secs(120),
+        );
         let mut state = HashMap::new();
         let _ = state.insert(ctx(5), in_progress_state());
-        assert!(!session_dispatch_wedged(&dispatched, &state, &ctx(6), GRACE));
+        assert!(!session_dispatch_wedged(
+            &dispatched,
+            &state,
+            &ctx(6),
+            GRACE
+        ));
     }
 }
