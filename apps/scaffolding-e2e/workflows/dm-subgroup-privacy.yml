@@ -16,10 +16,10 @@ description: >
       Restricted subgroup (the membership walk in
       `check_group_membership` terminates at the Restricted wall, and
       the subgroup's `admin_identity` is node-2, not node-1).
-    * Contrast: node-2 also creates an *Open* subgroup. There node-1
-      DOES inherit membership (admin authority cascades down an Open
-      chain) and can join + read its context — proving that visibility,
-      not "who happened to be added", is the privacy boundary.
+
+  The complementary direction — a namespace member inheriting into an
+  *Open* subgroup (so visibility, not "who was added", is the boundary) —
+  is covered by `group-subgroup-visibility-inheritance.yml`.
 
   Recursive-invitation leakage (a namespace admin recursively inviting a
   third party must not mint invitations into / enumerate private
@@ -235,77 +235,5 @@ steps:
       key: "owner_was_here"
       value: "should_not_work"
     expected_failure: true
-
-  # --- CONTRAST: an Open subgroup created by the same member DOES let
-  #     the namespace owner in (admin authority cascades down Open
-  #     chains). This isolates "visibility", not "membership accident",
-  #     as the privacy boundary. ---
-
-  - name: Node-2 creates an Open subgroup
-    type: create_group_in_namespace
-    node: e2e-node-2
-    namespace_id: '{{namespace_id}}'
-    group_alias: open-channel
-    outputs:
-      subgroup_open: groupId
-
-  - name: Node-2 marks the subgroup Open
-    type: set_subgroup_visibility
-    node: e2e-node-2
-    group_id: '{{subgroup_open}}'
-    visibility: open
-
-  - name: Node-2 creates a context in the Open subgroup
-    type: create_context
-    node: e2e-node-2
-    application_id: '{{app_id}}'
-    group_id: '{{subgroup_open}}'
-    outputs:
-      ctx_open: contextId
-
-  - name: Node-2 writes into the Open-subgroup context
-    type: call
-    node: e2e-node-2
-    context_id: '{{ctx_open}}'
-    method: set
-    args:
-      key: "open_key"
-      value: "from_node2_open"
-
-  - name: Node-1 (namespace owner) joins the Open-subgroup context via inheritance
-    type: join_context
-    node: e2e-node-1
-    context_id: '{{ctx_open}}'
-    outputs:
-      ctx_key_node1_open: memberPublicKey
-
-  - name: Assert node-1 holds a context identity in the Open subgroup
-    type: assert
-    statements:
-      - "is_set({{ctx_key_node1_open}})"
-
-  - name: Wait for Open-context sync between node-2 and node-1
-    type: wait_for_sync
-    context_id: '{{ctx_open}}'
-    nodes:
-      - e2e-node-1
-      - e2e-node-2
-    timeout: 60
-    trigger_sync: true
-
-  - name: Node-1 reads the value from the Open-subgroup context
-    type: call
-    node: e2e-node-1
-    context_id: '{{ctx_open}}'
-    method: get
-    args:
-      key: "open_key"
-    outputs:
-      open_read_node1: result
-
-  - name: Assert node-1 inherits real access to the Open subgroup
-    type: json_assert
-    statements:
-      - 'json_equal({{open_read_node1}}, {"output": "from_node2_open"})'
 
 stop_all_nodes: false
