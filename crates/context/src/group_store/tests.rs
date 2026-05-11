@@ -5120,18 +5120,41 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         .unwrap()
     };
 
-    // A total stranger (not even a namespace member) is rejected.
-    assert!(gov.apply_signed_op(&del(&stranger_sk, s1, 1)).is_err());
+    // A total stranger (not even a namespace member) is rejected — and we pin
+    // that it's the *authorization* check rejecting it (not some other error
+    // path): signature verification passes for any valid key, so the op
+    // reaches `execute_group_deleted` and fails the owner/admin/cap gate.
+    let err = gov.apply_signed_op(&del(&stranger_sk, s1, 1)).unwrap_err();
+    assert!(
+        format!("{err}").contains("GroupDeleted rejected"),
+        "stranger should be rejected by the authorization check, got: {err}"
+    );
     assert!(load_group_meta(&store, &s1_gid).unwrap().is_some());
 
     // A plain namespace member (no CAN_DELETE_SUBGROUP, not the owner, not an
-    // admin) is also rejected — the distinct "member but unauthorized" case.
-    assert!(gov.apply_signed_op(&del(&plain_member_sk, s1, 2)).is_err());
+    // admin) is also rejected — the distinct "member but unauthorized" case,
+    // again by the authorization check.
+    let err = gov
+        .apply_signed_op(&del(&plain_member_sk, s1, 2))
+        .unwrap_err();
+    assert!(
+        format!("{err}").contains("GroupDeleted rejected"),
+        "plain member should be rejected by the authorization check, got: {err}"
+    );
     assert!(load_group_meta(&store, &s1_gid).unwrap().is_some());
 
     // The subgroup's owner can cascade-delete it.
     gov.apply_signed_op(&del(&owner_sk, s1, 3))
         .expect("subgroup owner can delete it");
+    assert!(load_group_meta(&store, &s1_gid).unwrap().is_none());
+
+    // Re-applying the same GroupDeleted after the root meta is gone (the
+    // crash-recovery shape: cascade finished, DAG head not yet advanced) must
+    // be an idempotent no-op, even though the signer here (`owner_pk`) is not
+    // a namespace admin and holds no CAN_DELETE_SUBGROUP — the auth check is
+    // skipped when the root meta is absent.
+    gov.apply_signed_op(&del(&owner_sk, s1, 6))
+        .expect("re-apply of GroupDeleted after the root meta is gone is an idempotent no-op");
     assert!(load_group_meta(&store, &s1_gid).unwrap().is_none());
 
     // A namespace admin can delete a subgroup they don't own (moderation).

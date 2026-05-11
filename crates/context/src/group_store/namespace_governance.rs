@@ -875,9 +875,9 @@ impl<'a> NamespaceGovernance<'a> {
         // or a namespace member holding `CAN_DELETE_SUBGROUP` (an explicit
         // delegation). All three are deterministically verifiable on every
         // peer applying this op — `GroupDeleted` is cleartext, and the
-        // deleting peer already enumerates the full subtree (so it holds the
-        // root group's meta) below. The non-owner case routes through
-        // `PermissionChecker` to match the local `delete_group` handler.
+        // deleting peer holds the root group's meta on the *first* apply. The
+        // non-owner case routes through `PermissionChecker` to match the local
+        // `delete_group` handler.
         //
         // The owner branch checks only `owner_identity == op.signer`, not
         // current namespace membership — `owner_identity` is a persistent
@@ -886,18 +886,30 @@ impl<'a> NamespaceGovernance<'a> {
         // always a current namespace member anyway: `leave_namespace` /
         // `leave_group` reject an owner with `MustTransferOwnership`, so you
         // can't leave while owning a subgroup in the subtree.
+        //
+        // Crash-recovery: the cascade below tears the root group's meta down
+        // *last* (after every descendant), and only then does `apply_signed_op`
+        // advance the DAG head. If the process dies in between, the re-apply
+        // finds the root meta already gone — the op was authorized on the
+        // first pass, so we skip the auth check here and let the (idempotent)
+        // cascade finish any remaining cleanup. Without this, an owner who is
+        // not also a namespace admin / `CAN_DELETE_SUBGROUP` holder would
+        // permanently stall the DAG. (The pre-existing `require_namespace_admin`
+        // check was immune because the namespace root is never part of a
+        // cascade.) A `GroupDeleted` for a group that never existed locally
+        // likewise reads `None` here and is a harmless no-op below.
         let ns_gid = ContextGroupId::from(self.namespace_id);
-        let is_subgroup_owner =
-            load_group_meta(self.store, &root_gid)?.is_some_and(|m| m.owner_identity == op.signer);
-        if !is_subgroup_owner {
-            PermissionChecker::new(self.store, ns_gid)
-                .require_can_delete_subgroup(&op.signer)
-                .map_err(|e| {
-                    eyre::eyre!(
-                        "GroupDeleted rejected: {e} (or be the owner of subgroup {})",
-                        hex::encode(root_group_id)
-                    )
-                })?;
+        if let Some(root_meta) = load_group_meta(self.store, &root_gid)? {
+            if root_meta.owner_identity != op.signer {
+                PermissionChecker::new(self.store, ns_gid)
+                    .require_can_delete_subgroup(&op.signer)
+                    .map_err(|e| {
+                        eyre::eyre!(
+                            "GroupDeleted rejected: {e} (or be the owner of subgroup {})",
+                            hex::encode(root_group_id)
+                        )
+                    })?;
+            }
         }
 
         // Determinism check: every surviving element of the local subtree MUST

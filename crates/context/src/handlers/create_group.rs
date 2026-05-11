@@ -73,9 +73,15 @@ impl Handler<CreateGroupRequest> for ContextManager {
             // under the namespace root* if they hold `CAN_CREATE_SUBGROUP`
             // (honored only at root level — see the capability's doc and
             // `execute_group_created`, which re-checks this on every peer).
-            if !group_store::is_group_admin(&self.datastore, &namespace_id, &admin_identity)
-                .unwrap_or(false)
-            {
+            let is_namespace_admin = match group_store::is_group_admin(
+                &self.datastore,
+                &namespace_id,
+                &admin_identity,
+            ) {
+                Ok(v) => v,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
+            if !is_namespace_admin {
                 if *parent_id != namespace_id {
                     return ActorResponse::reply(Err(eyre::eyre!(
                         "creating a subgroup under non-root parent '{parent_id:?}' requires \
