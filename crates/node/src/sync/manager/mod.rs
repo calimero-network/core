@@ -2182,11 +2182,23 @@ impl SyncManager {
         &self,
         context_id: ContextId,
         our_identity: PublicKey,
-        deltas: Vec<calimero_node_primitives::delta_buffer::BufferedDelta>,
+        mut deltas: Vec<calimero_node_primitives::delta_buffer::BufferedDelta>,
         _fallback_peer: PeerId,
     ) {
         use crate::handlers::state_delta::{replay_buffered_delta, ReplayBufferedDeltaInput};
         use std::collections::{HashMap, HashSet};
+
+        // #2319 determinism: deltas land in the buffer in gossipsub
+        // arrival order, which differs node-to-node — replaying them in
+        // that order makes two nodes apply *concurrent* deltas to storage
+        // in different sequences, which (for any merge that isn't
+        // perfectly order-independent) yields a different Merkle root for
+        // the same delta set. Replay in a canonical, causally-consistent
+        // order — HLC, then delta id as a tiebreaker — so every node
+        // applies the same sequence. (The DAG cascade still re-orders for
+        // genuine causal dependencies; this only pins the order of
+        // concurrent ones.)
+        deltas.sort_by(|a, b| a.hlc.cmp(&b.hlc).then_with(|| a.id.cmp(&b.id)));
 
         // Build a set of IDs that are "covered" by the snapshot
         // This includes:

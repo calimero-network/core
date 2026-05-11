@@ -357,7 +357,8 @@ impl SyncManager {
                     index.metadata.updated_at(),
                     // Collection ID - use parent if available
                     [0u8; 32],
-                );
+                )
+                .with_created_at(index.metadata.created_at());
 
                 let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
 

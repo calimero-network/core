@@ -795,7 +795,8 @@ fn get_nodes_at_level(
                         crdt_type,
                         child_index.metadata.updated_at(),
                         [0u8; 32],
-                    );
+                    )
+                    .with_created_at(child_index.metadata.created_at());
                     let leaf_data =
                         TreeLeafData::new(*child_storage_id.as_bytes(), entry_data, metadata);
 
