@@ -878,6 +878,14 @@ impl<'a> NamespaceGovernance<'a> {
         // deleting peer already enumerates the full subtree (so it holds the
         // root group's meta) below. The non-owner case routes through
         // `PermissionChecker` to match the local `delete_group` handler.
+        //
+        // The owner branch checks only `owner_identity == op.signer`, not
+        // current namespace membership — `owner_identity` is a persistent
+        // record from group creation, and matching it *is* being the owner
+        // (32-byte keys don't "happen to collide"). In practice the owner is
+        // always a current namespace member anyway: `leave_namespace` /
+        // `leave_group` reject an owner with `MustTransferOwnership`, so you
+        // can't leave while owning a subgroup in the subtree.
         let ns_gid = ContextGroupId::from(self.namespace_id);
         let is_subgroup_owner =
             load_group_meta(self.store, &root_gid)?.is_some_and(|m| m.owner_identity == op.signer);

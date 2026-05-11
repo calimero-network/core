@@ -5077,6 +5077,12 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     let ns_gid = ContextGroupId::from(ns_id);
     save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
     add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    // `owner_pk` is enrolled as an ordinary namespace member — that mirrors the
+    // real model (a subgroup owner got there by being a namespace member and
+    // creating it; `leave_namespace` refuses an owner via `MustTransferOwnership`,
+    // so an owner is always a current member). It holds no caps and no admin
+    // role at the namespace level, so it can only delete via the owner path.
+    add_group_member(&store, &ns_gid, &owner_pk, GroupMemberRole::Member).unwrap();
     add_group_member(&store, &ns_gid, &plain_member_pk, GroupMemberRole::Member).unwrap();
     add_group_member(&store, &ns_gid, &janitor_pk, GroupMemberRole::Member).unwrap();
     store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
@@ -5094,6 +5100,10 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     let (s3, s3_gid) = mk_subgroup(0xC3);
 
     let gov = NamespaceGovernance::new(&store, ns_id);
+    // `nonce` here is informational only — `apply_signed_op` advances the DAG
+    // head from `read_head_record().next_nonce`, not from `op.nonce`; distinct
+    // `root_group_id`s already give each op a distinct content hash. We still
+    // pass monotonically increasing values for readability.
     let del = |sk: &PrivateKey, root_group_id: [u8; 32], nonce: u64| {
         SignedNamespaceOp::sign(
             sk,
@@ -5115,7 +5125,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     assert!(load_group_meta(&store, &s1_gid).unwrap().is_some());
 
     // A plain namespace member (no CAN_DELETE_SUBGROUP, not the owner, not an
-    // admin) is also rejected.
+    // admin) is also rejected — the distinct "member but unauthorized" case.
     assert!(gov.apply_signed_op(&del(&plain_member_sk, s1, 2)).is_err());
     assert!(load_group_meta(&store, &s1_gid).unwrap().is_some());
 
@@ -5125,7 +5135,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     assert!(load_group_meta(&store, &s1_gid).unwrap().is_none());
 
     // A namespace admin can delete a subgroup they don't own (moderation).
-    gov.apply_signed_op(&del(&admin_sk, s2, 3))
+    gov.apply_signed_op(&del(&admin_sk, s2, 4))
         .expect("namespace admin can delete any subgroup");
     assert!(load_group_meta(&store, &s2_gid).unwrap().is_none());
 
@@ -5137,7 +5147,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         MemberCapabilities::CAN_DELETE_SUBGROUP,
     )
     .unwrap();
-    gov.apply_signed_op(&del(&janitor_sk, s3, 4))
+    gov.apply_signed_op(&del(&janitor_sk, s3, 5))
         .expect("CAN_DELETE_SUBGROUP holder can delete a subgroup");
     assert!(load_group_meta(&store, &s3_gid).unwrap().is_none());
 }
