@@ -18,8 +18,8 @@ use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::{
     add_group_member, apply_group_op_mutations, decrypt_group_op, get_local_gov_nonce,
-    get_namespace_identity_record, is_group_admin, load_current_group_key_record,
-    load_group_key_by_id, load_group_meta,
+    get_namespace_identity_record, is_group_admin, is_group_admin_or_has_capability,
+    load_current_group_key_record, load_group_key_by_id, load_group_meta,
     namespace_dag::{NamespaceDagService, NamespaceHead},
     namespace_membership::NamespaceMembershipService,
     namespace_retry::NamespaceRetryService,
@@ -721,7 +721,6 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
         parent_id: [u8; 32],
     ) -> EyreResult<()> {
-        self.require_namespace_admin(&op.signer)?;
         let gid = ContextGroupId::from(group_id);
         let parent_gid = ContextGroupId::from(parent_id);
 
@@ -734,6 +733,31 @@ impl<'a> NamespaceGovernance<'a> {
                 "GroupCreated rejected: self-parent edge (group_id == parent_id). \
                  Namespace roots must not emit GroupCreated — their existence is \
                  recorded by the namespace-identity setup path."
+            );
+        }
+
+        // Authorization. Namespace-root admins may create a subgroup at any
+        // depth (matches `require_namespace_admin`). A non-admin namespace
+        // member may create one *directly under the namespace root* if they
+        // hold `CAN_CREATE_SUBGROUP` — that bit is honored only at root level
+        // because every peer applying this op must be able to verify the
+        // creator's authority, and only the root group's capability rows are
+        // readable by all namespace members (see the capability's doc).
+        let ns_gid = ContextGroupId::from(self.namespace_id);
+        let authorized = is_group_admin(self.store, &ns_gid, &op.signer)?
+            || (parent_id == self.namespace_id
+                && is_group_admin_or_has_capability(
+                    self.store,
+                    &ns_gid,
+                    &op.signer,
+                    calimero_context_config::MemberCapabilities::CAN_CREATE_SUBGROUP,
+                )?);
+        if !authorized {
+            bail!(
+                "GroupCreated rejected: signer {} is neither an admin of namespace {} \
+                 nor a member holding CAN_CREATE_SUBGROUP at the namespace root",
+                op.signer,
+                hex::encode(self.namespace_id)
             );
         }
 
@@ -839,12 +863,36 @@ impl<'a> NamespaceGovernance<'a> {
         cascade_group_ids: &[[u8; 32]],
         cascade_context_ids: &[[u8; 32]],
     ) -> EyreResult<()> {
-        self.require_namespace_admin(&op.signer)?;
-
         let root_gid = ContextGroupId::from(root_group_id);
         if root_group_id == self.namespace_id {
             eyre::bail!(
                 "cannot delete the namespace root '{root_gid:?}' (use delete_namespace instead)"
+            );
+        }
+
+        // Authorization. Cascade-delete is allowed for: the owner of the
+        // subgroup being deleted; an admin of the namespace root (moderation);
+        // or a namespace member holding `CAN_DELETE_SUBGROUP` (an explicit
+        // delegation). All three are deterministically verifiable on every
+        // peer applying this op — `GroupDeleted` is cleartext, and the
+        // deleting peer already enumerates the full subtree (so it holds the
+        // root group's meta) below.
+        let ns_gid = ContextGroupId::from(self.namespace_id);
+        let is_subgroup_owner =
+            load_group_meta(self.store, &root_gid)?.is_some_and(|m| m.owner_identity == op.signer);
+        if !is_subgroup_owner
+            && !is_group_admin_or_has_capability(
+                self.store,
+                &ns_gid,
+                &op.signer,
+                calimero_context_config::MemberCapabilities::CAN_DELETE_SUBGROUP,
+            )?
+        {
+            bail!(
+                "GroupDeleted rejected: signer {} is not the subgroup owner, not an admin of \
+                 namespace {}, and does not hold CAN_DELETE_SUBGROUP",
+                op.signer,
+                hex::encode(self.namespace_id)
             );
         }
 

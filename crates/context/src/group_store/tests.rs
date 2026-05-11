@@ -4856,3 +4856,275 @@ fn membership_status_at_oversized_governance_dag_heads_runtime_guard() {
         "expected oversize error, got: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Subgroup-management capabilities: CAN_CREATE_SUBGROUP / CAN_DELETE_SUBGROUP /
+// CAN_MANAGE_VISIBILITY.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn permission_checker_subgroup_management_capabilities() {
+    use calimero_context_config::MemberCapabilities;
+
+    let store = test_store();
+    let gid = ContextGroupId::from([0x9A; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0x02; 32]);
+
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+
+    let checker = PermissionChecker::new(&store, gid);
+
+    // Admins pass all three unconditionally.
+    assert!(checker.require_can_create_subgroup(&admin).is_ok());
+    assert!(checker.require_can_delete_subgroup(&admin).is_ok());
+    assert!(checker.require_can_manage_visibility(&admin).is_ok());
+
+    // A bare member is denied all three.
+    assert!(checker.require_can_create_subgroup(&member).is_err());
+    assert!(checker.require_can_delete_subgroup(&member).is_err());
+    assert!(checker.require_can_manage_visibility(&member).is_err());
+
+    // CAN_CREATE_SUBGROUP only.
+    set_member_capability(
+        &store,
+        &gid,
+        &member,
+        MemberCapabilities::CAN_CREATE_SUBGROUP,
+    )
+    .unwrap();
+    assert!(checker.require_can_create_subgroup(&member).is_ok());
+    assert!(checker.require_can_delete_subgroup(&member).is_err());
+    assert!(checker.require_can_manage_visibility(&member).is_err());
+
+    // All three at once.
+    set_member_capability(
+        &store,
+        &gid,
+        &member,
+        MemberCapabilities::CAN_CREATE_SUBGROUP
+            | MemberCapabilities::CAN_DELETE_SUBGROUP
+            | MemberCapabilities::CAN_MANAGE_VISIBILITY,
+    )
+    .unwrap();
+    assert!(checker.require_can_create_subgroup(&member).is_ok());
+    assert!(checker.require_can_delete_subgroup(&member).is_ok());
+    assert!(checker.require_can_manage_visibility(&member).is_ok());
+}
+
+#[test]
+fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    use super::group_settings::GroupSettingsService;
+
+    let store = test_store();
+    let gid = ContextGroupId::from([0x9B; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0x02; 32]);
+
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+
+    let svc = GroupSettingsService::new(&store, gid);
+
+    // Admin can flip it.
+    svc.set_subgroup_visibility(&admin, VisibilityMode::Open)
+        .unwrap();
+    assert_eq!(
+        get_subgroup_visibility(&store, &gid).unwrap(),
+        VisibilityMode::Open
+    );
+
+    // Member without the cap cannot.
+    assert!(svc
+        .set_subgroup_visibility(&member, VisibilityMode::Restricted)
+        .is_err());
+
+    // Granting CAN_MANAGE_VISIBILITY lets the member flip it.
+    set_member_capability(
+        &store,
+        &gid,
+        &member,
+        MemberCapabilities::CAN_MANAGE_VISIBILITY,
+    )
+    .unwrap();
+    svc.set_subgroup_visibility(&member, VisibilityMode::Restricted)
+        .unwrap();
+    assert_eq!(
+        get_subgroup_visibility(&store, &gid).unwrap(),
+        VisibilityMode::Restricted
+    );
+}
+
+#[test]
+fn governance_group_created_honors_can_create_subgroup_at_root_only() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::MemberCapabilities;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &ns_gid, &member_pk, GroupMemberRole::Member).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let create = |sk: &PrivateKey, group_id: [u8; 32], parent_id: [u8; 32], nonce: u64| {
+        SignedNamespaceOp::sign(
+            sk,
+            ns_id,
+            vec![],
+            [0u8; 32],
+            nonce,
+            NamespaceOp::Root(RootOp::GroupCreated {
+                group_id,
+                parent_id,
+            }),
+        )
+        .unwrap()
+    };
+
+    let chan = [0xB1u8; 32];
+
+    // Member without the cap cannot create a subgroup, even under the root.
+    assert!(gov
+        .apply_signed_op(&create(&member_sk, chan, ns_id, 1))
+        .is_err());
+    assert!(load_group_meta(&store, &ContextGroupId::from(chan))
+        .unwrap()
+        .is_none());
+
+    // Granting CAN_CREATE_SUBGROUP at the namespace root lets them create one
+    // directly under the root, and they become its owner.
+    set_member_capability(
+        &store,
+        &ns_gid,
+        &member_pk,
+        MemberCapabilities::CAN_CREATE_SUBGROUP,
+    )
+    .unwrap();
+    gov.apply_signed_op(&create(&member_sk, chan, ns_id, 2))
+        .expect("member with CAN_CREATE_SUBGROUP creates a subgroup under the root");
+    assert_eq!(
+        load_group_meta(&store, &ContextGroupId::from(chan))
+            .unwrap()
+            .unwrap()
+            .owner_identity,
+        member_pk,
+        "creator owns the new subgroup"
+    );
+
+    // But the capability is scoped to root-level subgroups: the member cannot
+    // create a nested subgroup under another subgroup.
+    let nested_parent = [0xB2u8; 32];
+    gov.apply_signed_op(&create(&admin_sk, nested_parent, ns_id, 3))
+        .expect("admin creates an intermediate subgroup");
+    let grandchild = [0xB3u8; 32];
+    assert!(
+        gov.apply_signed_op(&create(&member_sk, grandchild, nested_parent, 4))
+            .is_err(),
+        "CAN_CREATE_SUBGROUP is honored only directly under the namespace root"
+    );
+
+    // A namespace admin is still allowed at any depth.
+    gov.apply_signed_op(&create(&admin_sk, grandchild, nested_parent, 5))
+        .expect("namespace admin may create nested subgroups");
+}
+
+#[test]
+fn governance_group_deleted_owner_admin_or_cap_only() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::MemberCapabilities;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+    let owner_sk = PrivateKey::random(&mut rng);
+    let owner_pk = owner_sk.public_key();
+    let stranger_sk = PrivateKey::random(&mut rng);
+    let janitor_sk = PrivateKey::random(&mut rng);
+    let janitor_pk = janitor_sk.public_key();
+
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &ns_gid, &janitor_pk, GroupMemberRole::Member).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Three leaf subgroups under the root, all owned by `owner_pk`.
+    let mk_subgroup = |tag: u8| {
+        let id = [tag; 32];
+        let gid = ContextGroupId::from(id);
+        save_group_meta(&store, &gid, &sample_meta_with_admin(owner_pk)).unwrap();
+        nest_group(&store, &ns_gid, &gid).unwrap();
+        (id, gid)
+    };
+    let (s1, s1_gid) = mk_subgroup(0xC1);
+    let (s2, s2_gid) = mk_subgroup(0xC2);
+    let (s3, s3_gid) = mk_subgroup(0xC3);
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    let del = |sk: &PrivateKey, root_group_id: [u8; 32], nonce: u64| {
+        SignedNamespaceOp::sign(
+            sk,
+            ns_id,
+            vec![],
+            [0u8; 32],
+            nonce,
+            NamespaceOp::Root(RootOp::GroupDeleted {
+                root_group_id,
+                cascade_group_ids: vec![],
+                cascade_context_ids: vec![],
+            }),
+        )
+        .unwrap()
+    };
+
+    // A stranger who is neither the subgroup owner, a namespace admin, nor a
+    // CAN_DELETE_SUBGROUP holder is rejected.
+    assert!(gov.apply_signed_op(&del(&stranger_sk, s1, 1)).is_err());
+    assert!(load_group_meta(&store, &s1_gid).unwrap().is_some());
+
+    // The subgroup's owner can cascade-delete it.
+    gov.apply_signed_op(&del(&owner_sk, s1, 2))
+        .expect("subgroup owner can delete it");
+    assert!(load_group_meta(&store, &s1_gid).unwrap().is_none());
+
+    // A namespace admin can delete a subgroup they don't own (moderation).
+    gov.apply_signed_op(&del(&admin_sk, s2, 3))
+        .expect("namespace admin can delete any subgroup");
+    assert!(load_group_meta(&store, &s2_gid).unwrap().is_none());
+
+    // A namespace member holding CAN_DELETE_SUBGROUP can delete a subgroup.
+    set_member_capability(
+        &store,
+        &ns_gid,
+        &janitor_pk,
+        MemberCapabilities::CAN_DELETE_SUBGROUP,
+    )
+    .unwrap();
+    gov.apply_signed_op(&del(&janitor_sk, s3, 4))
+        .expect("CAN_DELETE_SUBGROUP holder can delete a subgroup");
+    assert!(load_group_meta(&store, &s3_gid).unwrap().is_none());
+}

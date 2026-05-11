@@ -68,10 +68,25 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     )));
                 }
             };
-            if let Err(err) =
-                group_store::require_group_admin(&self.datastore, parent_id, &admin_identity)
+            // Authorization. Namespace-root admins may create a subgroup at
+            // any depth. A non-admin namespace member may create one *directly
+            // under the namespace root* if they hold `CAN_CREATE_SUBGROUP`
+            // (honored only at root level — see the capability's doc and
+            // `execute_group_created`, which re-checks this on every peer).
+            if !group_store::is_group_admin(&self.datastore, &namespace_id, &admin_identity)
+                .unwrap_or(false)
             {
-                return ActorResponse::reply(Err(err));
+                if *parent_id != namespace_id {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "creating a subgroup under non-root parent '{parent_id:?}' requires \
+                         namespace admin (delegated nested-subgroup creation is not yet supported)"
+                    )));
+                }
+                if let Err(err) = group_store::PermissionChecker::new(&self.datastore, *parent_id)
+                    .require_can_create_subgroup(&admin_identity)
+                {
+                    return ActorResponse::reply(Err(err));
+                }
             }
             parent_meta.target_application_id
         } else {
