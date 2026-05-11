@@ -322,13 +322,9 @@
 
 <h3>Core Traits</h3>
 <div class="typedef" style="margin-bottom:14px;">
-<span class="kw">pub struct</span> <span class="ty">HybridTimestamp</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">wall_clock</span>: u64,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">logical</span>: u32,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">node_id</span>: <span class="ty">NodeId</span>, <span class="comment">// tiebreaker</span><br>
-}<br><br>
+<span class="kw">pub struct</span> <span class="ty">HybridTimestamp</span>(<span class="ty">Timestamp</span>); <span class="comment">// from uhlc: NTP64 wall-clock + 128-bit node ID tiebreaker</span><br><br>
 <span class="kw">pub trait</span> <span class="ty">Mergeable</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">merge</span>(&amp;mut self, other: &amp;Self);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">merge</span>(&amp;mut self, other: &amp;Self) -&gt; <span class="ty">Result</span>&lt;(), <span class="ty">MergeError</span>&gt;;<br>
 }
 </div>
 
