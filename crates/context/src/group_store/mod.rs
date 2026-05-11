@@ -60,7 +60,9 @@ pub use self::contexts::{
     cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identity,
     get_group_for_context, register_context_in_group, unregister_context_from_group,
 };
-pub use self::deny_list::{clear_all_denied, clear_denied, is_denied, mark_denied};
+pub use self::deny_list::{
+    clear_all_denied, clear_denied, is_author_denied_for_context, is_denied, mark_denied,
+};
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
 pub use self::group_keys::{

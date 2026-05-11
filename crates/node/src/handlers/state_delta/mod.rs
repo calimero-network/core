@@ -884,41 +884,35 @@ pub async fn handle_state_delta(
     // O(1) and saves the drain + prefix-walk cost for traffic from
     // peers we've already explicitly removed.
     //
-    // Skipped for non-group contexts (no group_id → nothing to deny on).
-    // Lookup failures fall through to the cross-DAG check rather than
-    // erroring; a transient store error here shouldn't drop a legitimate
-    // delta when the authoritative check would still apply. The failure
-    // is logged at warn level so storage corruption affecting the deny
-    // prefix surfaces in monitoring instead of silently degrading the
-    // defense-in-depth layer.
-    if let Ok(Some(group_id)) = calimero_context::group_store::get_group_for_context(
+    // Skipped for non-group contexts (`is_author_denied_for_context`
+    // returns `Ok(false)` when there's no owning group). Lookup
+    // failures fall through to the cross-DAG check rather than
+    // erroring; a transient store error here shouldn't drop a
+    // legitimate delta when the authoritative check would still apply.
+    // The failure is logged at warn level so storage corruption
+    // affecting the deny prefix surfaces in monitoring instead of
+    // silently degrading the defense-in-depth layer.
+    let denied = calimero_context::group_store::is_author_denied_for_context(
         node_clients.context.datastore(),
         &context_id,
-    ) {
-        let denied = calimero_context::group_store::is_denied(
-            node_clients.context.datastore(),
-            &group_id,
-            &author_id,
-        )
-        .unwrap_or_else(|err| {
-            warn!(
-                %context_id,
-                %author_id,
-                group_id = ?group_id,
-                ?err,
-                "Deny-list lookup failed, falling through to cross-DAG check"
-            );
-            false
-        });
-        if denied {
-            warn!(
-                %context_id,
-                %author_id,
-                group_id = ?group_id,
-                "Rejecting state delta from deny-listed member"
-            );
-            return Ok(());
-        }
+        &author_id,
+    )
+    .unwrap_or_else(|err| {
+        warn!(
+            %context_id,
+            %author_id,
+            ?err,
+            "Deny-list lookup failed, falling through to cross-DAG check"
+        );
+        false
+    });
+    if denied {
+        warn!(
+            %context_id,
+            %author_id,
+            "Rejecting state delta from deny-listed member"
+        );
+        return Ok(());
     }
 
     info!(

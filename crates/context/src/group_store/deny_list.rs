@@ -83,6 +83,23 @@ pub fn is_denied(store: &Store, group_id: &ContextGroupId, member: &PublicKey) -
     handle.has(&key).map_err(|e| eyre::eyre!("is_denied: {e}"))
 }
 
+/// Check whether `author` is denied for the group that owns `context_id`.
+/// Returns `Ok(false)` when the context isn't registered to any group
+/// (nothing to deny on) — group-less contexts skip the deny-list layer
+/// entirely. Encapsulates the two-step `get_group_for_context` →
+/// `is_denied` lookup so callers (e.g. the state-delta handler) don't
+/// have to reach into the group-id resolution.
+pub fn is_author_denied_for_context(
+    store: &Store,
+    context_id: &calimero_primitives::context::ContextId,
+    author: &PublicKey,
+) -> EyreResult<bool> {
+    let Some(group_id) = super::contexts::get_group_for_context(store, context_id)? else {
+        return Ok(false);
+    };
+    is_denied(store, &group_id, author)
+}
+
 /// Remove every deny-list entry under `group_id`. Used during group
 /// teardown (`delete_group_local_rows`) so the deny set doesn't outlive
 /// the group it describes.

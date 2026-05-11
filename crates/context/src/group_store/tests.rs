@@ -5588,9 +5588,10 @@ fn deny_list_member_added_op_clears_existing_entry() {
     // Apply-path integration: a `MemberAdded` apply must clear any
     // existing deny-list entry for that member, even if they were
     // previously removed.
+    use rand::rngs::OsRng;
     let store = test_store();
     let gid = test_group_id();
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
+    let admin_sk = PrivateKey::random(&mut OsRng);
     let admin_pk = admin_sk.public_key();
     let target_pk = PublicKey::from([0xC1; 32]);
 
@@ -5634,9 +5635,10 @@ fn deny_list_member_added_op_clears_existing_entry() {
 
 #[test]
 fn deny_list_member_removed_op_marks_entry() {
+    use rand::rngs::OsRng;
     let store = test_store();
     let gid = test_group_id();
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
+    let admin_sk = PrivateKey::random(&mut OsRng);
     let admin_pk = admin_sk.public_key();
     let target_pk = PublicKey::from([0xC2; 32]);
 
@@ -5667,9 +5669,10 @@ fn deny_list_member_removed_op_marks_entry() {
 
 #[test]
 fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
+    use rand::rngs::OsRng;
     let store = test_store();
     let gid = test_group_id();
-    let admin_sk = PrivateKey::random(&mut rand::thread_rng());
+    let admin_sk = PrivateKey::random(&mut OsRng);
     let admin_pk = admin_sk.public_key();
     let target_pk = PublicKey::from([0xC3; 32]);
 
