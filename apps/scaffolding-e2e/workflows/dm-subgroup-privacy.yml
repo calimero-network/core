@@ -1,0 +1,335 @@
+name: E2E KV Store - Private Subgroup / DM Privacy
+description: >
+  End-to-end privacy coverage for member-created private subgroups (the
+  "DM" / "private channel" shape of the Slack-app stack).
+
+  A non-admin namespace member (node-2), granted CAN_CREATE_SUBGROUP
+  (32) and CAN_JOIN_OPEN_SUBGROUPS (4), creates a Restricted subgroup
+  directly under the namespace root, becomes its owner/admin, adds ONLY
+  node-3 to it, and runs a context inside it. The headline claims:
+
+    * node-3 — directly added by node-2 — can join the subgroup's
+      context and read what node-2 wrote (real, functional access).
+    * node-1 — the *namespace owner/admin* — is walled out of that
+      Restricted subgroup: it can neither `join_context` it nor `call`
+      it. Namespace-root ownership does NOT pierce a member-created
+      Restricted subgroup (the membership walk in
+      `check_group_membership` terminates at the Restricted wall, and
+      the subgroup's `admin_identity` is node-2, not node-1).
+    * Contrast: node-2 also creates an *Open* subgroup with a context.
+      node-1 — without being added to that subgroup — inherits into it
+      (admin authority cascades down an Open chain) and can join + read
+      its context. This proves the privacy boundary is *visibility*, not
+      "who happened to be added": flip the same subgroup to `Open` and
+      the namespace owner is back in.
+
+  Recursive-invitation leakage (a namespace admin recursively inviting a
+  third party must not mint invitations into / enumerate private
+  subgroups it isn't in) is exercised by the `calimero-context` unit
+  tests `create_recursive_invitations_omits_private_subgroups_inviter_not_in`
+  and `collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_in`.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup: app + namespace on node-1 (the namespace owner) ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  # --- node-2 and node-3 join the namespace as ordinary members ---
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node3}}'
+    outputs:
+      identity_node3: memberIdentity
+
+  # --- node-1 grants node-2 the subgroup-creation capability ---
+  # `set_member_capabilities` REPLACES the whole bitmask (not additive),
+  # so include the default CAN_JOIN_OPEN_SUBGROUPS (4) to avoid clearing it:
+  #   4  = CAN_JOIN_OPEN_SUBGROUPS
+  #   32 = CAN_CREATE_SUBGROUP
+  #   ------------------------------- = 36
+
+  - name: Grant node-2 CAN_CREATE_SUBGROUP (+ keep CAN_JOIN_OPEN_SUBGROUPS) = 36
+    type: set_member_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{identity_node2}}'
+    capabilities: 36
+
+  - name: Read node-2 capabilities back
+    type: get_member_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{identity_node2}}'
+    outputs:
+      node2_caps: capabilities
+
+  - name: Assert node-2 has capabilities 36
+    type: json_assert
+    statements:
+      - "json_equal({{node2_caps}}, 36)"
+
+  # --- node-2 creates a Restricted subgroup (a private DM/channel) and
+  #     adds ONLY node-3 to it. node-2 is the subgroup's owner/admin. ---
+
+  - name: Node-2 creates a Restricted subgroup (private DM)
+    type: create_group_in_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    group_alias: private-dm
+    outputs:
+      subgroup_priv: groupId
+
+  - name: Assert private subgroup created
+    type: assert
+    statements:
+      - "is_set({{subgroup_priv}})"
+
+  # Freshly created subgroups default to Restricted; set it explicitly so
+  # the intent is unambiguous (node-2 is the subgroup admin, so no
+  # CAN_MANAGE_VISIBILITY grant is needed).
+  - name: Node-2 marks the subgroup Restricted
+    type: set_subgroup_visibility
+    node: e2e-node-2
+    group_id: '{{subgroup_priv}}'
+    visibility: restricted
+
+  - name: Node-2 adds node-3 to the private subgroup
+    type: add_group_members
+    node: e2e-node-2
+    group_id: '{{subgroup_priv}}'
+    members:
+      - identity: '{{identity_node3}}'
+        role: Member
+
+  - name: Node-2 creates a context in the private subgroup
+    type: create_context
+    node: e2e-node-2
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_priv}}'
+    outputs:
+      ctx_priv: contextId
+
+  - name: Assert private context created
+    type: assert
+    statements:
+      - "is_set({{ctx_priv}})"
+
+  - name: Node-2 writes a secret into the private context
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_priv}}'
+    method: set
+    args:
+      key: "secret_key"
+      value: "from_node2"
+
+  # --- POSITIVE: node-3 (directly added) has real access ---
+
+  - name: Node-3 joins the private context
+    type: join_context
+    node: e2e-node-3
+    context_id: '{{ctx_priv}}'
+    outputs:
+      ctx_key_node3: memberPublicKey
+
+  - name: Assert node-3 holds a context identity
+    type: assert
+    statements:
+      - "is_set({{ctx_key_node3}})"
+
+  - name: Wait for private-context sync between node-2 and node-3
+    type: wait_for_sync
+    context_id: '{{ctx_priv}}'
+    nodes:
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-3 reads the secret from the private context
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx_priv}}'
+    method: get
+    args:
+      key: "secret_key"
+    outputs:
+      secret_read_node3: result
+
+  - name: Assert node-3 sees the secret
+    type: json_assert
+    statements:
+      - 'json_equal({{secret_read_node3}}, {"output": "from_node2"})'
+
+  # --- NEGATIVE: node-1, the namespace OWNER, is walled out ---
+  # `expected_failure` turns the merod rejection into a pass, so these
+  # steps only succeed if the Restricted wall is actually enforced
+  # against the namespace owner.
+
+  - name: Node-1 (namespace owner) cannot join the private context
+    type: join_context
+    node: e2e-node-1
+    context_id: '{{ctx_priv}}'
+    expected_failure: true
+
+  - name: Node-1 (namespace owner) cannot write to the private context
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_priv}}'
+    method: set
+    args:
+      key: "owner_was_here"
+      value: "should_not_work"
+    expected_failure: true
+
+  # --- CONTRAST: an Open subgroup created by the same member DOES let
+  #     the namespace owner in (admin authority cascades down Open
+  #     chains). This isolates "visibility", not "membership accident",
+  #     as the privacy boundary. ---
+
+  - name: Node-2 creates an Open subgroup
+    type: create_group_in_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    group_alias: open-channel
+    outputs:
+      subgroup_open: groupId
+
+  - name: Node-2 marks the subgroup Open
+    type: set_subgroup_visibility
+    node: e2e-node-2
+    group_id: '{{subgroup_open}}'
+    visibility: open
+
+  - name: Node-2 creates a context in the Open subgroup
+    type: create_context
+    node: e2e-node-2
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_open}}'
+    outputs:
+      ctx_open: contextId
+
+  - name: Node-2 writes into the Open-subgroup context
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx_open}}'
+    method: set
+    args:
+      key: "open_key"
+      value: "from_node2_open"
+
+  # node-1 must learn the Open subgroup's GroupCreated/visibility/context
+  # registration ops off the namespace governance DAG before it can
+  # inherit-join the context. node-2 published all of those a moment ago;
+  # let node-1's namespace sync converge. These waits are sized for a
+  # realistic propagation delay between two locally-connected nodes — not
+  # padded to mask a slow path. `join_context` itself also does a bounded
+  # internal sync-and-retry; if a namespace owner still can't reach a
+  # just-created Open subgroup's context after this, that's a core sync
+  # gap to fix, not a knob to widen.
+  - name: Wait for node-1 to converge on the Open subgroup's governance state
+    type: wait_for_sync
+    group_id: '{{subgroup_open}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 30
+    trigger_sync: true
+
+  - name: Brief settle for namespace-DAG propagation to node-1
+    type: wait
+    seconds: 5
+
+  - name: Node-1 (namespace owner) joins the Open-subgroup context via inheritance
+    type: join_context
+    node: e2e-node-1
+    context_id: '{{ctx_open}}'
+    outputs:
+      ctx_key_node1_open: memberPublicKey
+
+  - name: Assert node-1 holds a context identity in the Open subgroup
+    type: assert
+    statements:
+      - "is_set({{ctx_key_node1_open}})"
+
+  - name: Wait for Open-context sync between node-2 and node-1
+    type: wait_for_sync
+    context_id: '{{ctx_open}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-1 reads the value from the Open-subgroup context
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_open}}'
+    method: get
+    args:
+      key: "open_key"
+    outputs:
+      open_read_node1: result
+
+  - name: Assert node-1 inherits real access to the Open subgroup
+    type: json_assert
+    statements:
+      - 'json_equal({{open_read_node1}}, {"output": "from_node2_open"})'
+
+stop_all_nodes: false
