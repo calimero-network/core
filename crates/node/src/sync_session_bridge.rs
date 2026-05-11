@@ -29,8 +29,9 @@
 //!
 //! In addition (#2319) a per-`ContextId` in-flight gate refuses a
 //! second initiator for a context that already has one running, and
-//! each session runs under `sync_config.session_deadline` (15 s, vs the
-//! 30 s `sync_config.timeout` reused for sub-steps) so a stuck session
+//! each session runs under `sync_config.session_deadline` — an outer
+//! `tokio::time::timeout` (defaults to the 30 s `sync_config.timeout`,
+//! the per-step budget; lowerable per deployment) so a stuck session
 //! frees its slot — and stops burning the actor's single arbiter
 //! thread — predictably.
 //!
@@ -284,10 +285,11 @@ impl SyncSessionSender {
 /// the network/gossipsub task or the NodeManager mailbox.
 pub struct SyncSessionActor {
     sync_manager: SyncManager,
-    /// Per-session `tokio::time::timeout` budget — `sync_config.session_deadline`
-    /// (15 s, #2319), *not* the 30 s `sync_config.timeout` which is
-    /// reused for individual sub-steps. Bounds how long one stuck
-    /// session can hold a concurrency slot and burn the arbiter thread.
+    /// Outer per-session `tokio::time::timeout` — `sync_config.session_deadline`
+    /// (#2319; defaults to the 30 s `sync_config.timeout`, the
+    /// per-step budget, but is separately tunable). Bounds how long one
+    /// stuck session can hold a concurrency slot and burn the arbiter
+    /// thread.
     session_timeout: Duration,
     /// Caps concurrently-running sessions at `sync_config.max_concurrent`
     /// (default 30). The mailbox bounds *queued* jobs; this bounds
@@ -572,10 +574,10 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
 /// recreate the legacy `FuturesUnordered` queue + `max_concurrent`
 /// cap that `SyncManager::start` enforced before #2316.
 ///
-/// `session_deadline` is the per-session `tokio::time::timeout` budget
-/// (#2319 — pass `config.sync.session_deadline`, 15 s, *not* the 30 s
-/// `config.sync.timeout`). Drop counters are registered under
-/// `sync_session` in `registry`.
+/// `session_deadline` is the outer per-session `tokio::time::timeout`
+/// (#2319 — pass `config.sync.session_deadline`; defaults to the 30 s
+/// `config.sync.timeout` so cold-start snapshot syncs aren't cut off).
+/// Drop counters are registered under `sync_session` in `registry`.
 ///
 /// `result_tx` is the channel `SyncManager::start` reads from to
 /// update its per-context tracking state. Pass `None` to discard

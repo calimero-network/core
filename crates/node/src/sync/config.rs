@@ -28,23 +28,29 @@ pub use calimero_node_primitives::sync::DEFAULT_DELTA_SYNC_THRESHOLD;
 pub const DEFAULT_SYNC_TIMEOUT_SECS: u64 = 30;
 
 /// Default per-session deadline for one sync session run on the
-/// `SyncSessionActor` (15 seconds).
+/// `SyncSessionActor`.
 ///
-/// Distinct from [`DEFAULT_SYNC_TIMEOUT_SECS`]: that 30 s value is an
-/// internal budget reused for sub-steps of a session (handshake recv,
-/// parent-pull, replay). This bounds the *whole* session as seen by the
-/// actor, so a single stuck `HashComparison` session frees its slot —
-/// and stops burning the actor's arbiter thread — within 15 s instead of
-/// 30 s. Healthy sessions are ~1.5–40 ms; a `HashComparison` repair that
-/// has to walk many divergent subtrees can take longer (worst case it
-/// makes up to `MAX_PENDING_NODES` peer round-trips), and a session that
-/// genuinely needs more than 15 s is cut off and retried on the next
-/// interval rather than holding a slot and pinning the arbiter — the
-/// tradeoff #2319 chose deliberately. Raise `session_deadline_ms` if a
-/// high-RTT or very-large-divergence deployment sees legitimate repairs
-/// getting cut off (the periodic-sync/heartbeat path still converges
-/// them, just more slowly). See calimero-network/core #2319.
-pub const DEFAULT_SYNC_SESSION_DEADLINE_SECS: u64 = 15;
+/// This is the outer `tokio::time::timeout` the actor wraps every
+/// session in (initiator *and* responder), so it must be large enough
+/// for the slowest *legitimate* session — and the slowest legitimate
+/// session is a cold-start snapshot sync, which can spend up to
+/// `DEFAULT_MESH_RETRIES_UNINITIALIZED * DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED`
+/// (~10 s) just forming the gossipsub mesh / finding a peer with state
+/// before the transfer even begins, and is budgeted internally against
+/// `DEFAULT_SYNC_TIMEOUT_SECS` (30 s). Defaulting this below 30 s cuts
+/// those off mid-flight and wedges cold-start convergence (observed in
+/// the scaffolding-e2e fuzzy test at 15 s — #2319 / #2322), so the
+/// default matches `DEFAULT_SYNC_TIMEOUT_SECS`.
+///
+/// It is exposed as a separate, tunable knob (`session_deadline_ms`) so
+/// a deployment that wants stuck sessions to fail-fast (e.g. one that
+/// never does cold-start snapshot syncs, or one specifically chasing the
+/// `HashComparison`-repair backpressure of #2319, where healthy
+/// sessions are ~1.5–40 ms) can lower it independently of the 30 s
+/// per-step budget. A per-session-type deadline (short for responder /
+/// interval-delta, full 30 s for cold-start snapshot) is the cleaner
+/// long-term fix — left as a follow-up. See calimero-network/core #2319.
+pub const DEFAULT_SYNC_SESSION_DEADLINE_SECS: u64 = DEFAULT_SYNC_TIMEOUT_SECS;
 
 /// Default minimum interval between syncs for same context (5 seconds)
 /// This allows rapid re-sync if broadcasts fail, ensuring fast CRDT convergence
@@ -175,16 +181,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_deadline_default_is_15s() {
-        assert_eq!(
-            SyncConfig::default().session_deadline,
-            time::Duration::from_secs(15)
-        );
-    }
-
-    #[test]
-    fn session_deadline_is_shorter_than_timeout() {
+    fn session_deadline_default_matches_timeout() {
+        // Defaults to the 30 s per-step budget so cold-start snapshot
+        // syncs aren't cut off mid-flight (#2319 / #2322). It stays a
+        // separately-tunable knob, but the default must be >= timeout.
         let c = SyncConfig::default();
-        assert!(c.session_deadline < c.timeout);
+        assert_eq!(c.session_deadline, c.timeout);
+        assert_eq!(
+            c.session_deadline,
+            time::Duration::from_secs(DEFAULT_SYNC_TIMEOUT_SECS)
+        );
     }
 }
