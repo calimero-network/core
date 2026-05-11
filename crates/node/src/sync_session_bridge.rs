@@ -502,7 +502,40 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                 let work = async move {
                     let _context_guard = context_guard;
                     let _guard = in_flight_guard;
-                    let _permit = concurrency.acquire_owned().await.ok();
+                    // #2319: bound the permit wait. If every concurrency
+                    // slot is held by sessions that are themselves stuck
+                    // (e.g. a synchronous merkle/CRDT-merge loop the
+                    // session-deadline `timeout` below can't preempt),
+                    // an unbounded `acquire_owned().await` would park
+                    // this initiator forever — and since it accepted the
+                    // job off the mailbox, `SyncManager::start` already
+                    // cleared this context's `last_sync` to `None`, so
+                    // with no result ever coming back the context stays
+                    // "in progress" permanently ("Sync already in
+                    // progress" forever). Time the acquire out and emit a
+                    // failure result instead so `apply_session_result`
+                    // clears the flag and the periodic loop retries.
+                    let permit = match tokio::time::timeout(
+                        session_timeout,
+                        concurrency.acquire_owned(),
+                    )
+                    .await
+                    {
+                        Ok(p) => p.ok(),
+                        Err(_elapsed) => {
+                            let _prev = error_total.fetch_add(1, Ordering::Relaxed);
+                            let chosen_peer = peer_id.unwrap_or_else(PeerId::random);
+                            return (
+                                Ok(Err(eyre::eyre!(
+                                    "initiator could not acquire a concurrency permit within {:?} — actor saturated by stuck sessions (#2319)",
+                                    session_timeout
+                                ))),
+                                session_timeout,
+                                chosen_peer,
+                            );
+                        }
+                    };
+                    let _permit = permit;
                     let started = Instant::now();
                     let outcome = tokio::time::timeout(
                         session_timeout,

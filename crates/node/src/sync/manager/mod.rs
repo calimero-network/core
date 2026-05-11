@@ -118,6 +118,31 @@ pub(crate) fn dispatch_recently_attempted(
         .is_some_and(|attempted| attempted.elapsed() < interval)
 }
 
+/// True if an initiator dispatched for `context_id` looks wedged: its
+/// dispatch was recorded in `dispatched_at` more than `grace` ago and
+/// the context's [`SyncState`] still shows it "in progress"
+/// (`last_sync == None`), i.e. no `SyncSessionResult` ever cleared it.
+///
+/// The #2319 watchdog in [`SyncManager::start`] uses this to detect a
+/// `SyncSessionActor` whose single arbiter thread is stuck in a
+/// synchronous merkle/CRDT-merge loop the per-session
+/// `tokio::time::timeout` can't preempt — when it returns true the
+/// manager synthesises an `on_failure` so the context is eligible for a
+/// fresh dispatch rather than logging "Sync already in progress" forever.
+pub(crate) fn session_dispatch_wedged(
+    dispatched_at: &HashMap<ContextId, time::Instant>,
+    state: &HashMap<ContextId, SyncState>,
+    context_id: &ContextId,
+    grace: time::Duration,
+) -> bool {
+    dispatched_at
+        .get(context_id)
+        .is_some_and(|dispatched| dispatched.elapsed() >= grace)
+        && state
+            .get(context_id)
+            .is_some_and(|s| s.last_sync().is_none())
+}
+
 impl SyncManager {
     pub(crate) fn new(
         sync_config: SyncConfig,
@@ -261,6 +286,25 @@ impl SyncManager {
         // dropped dispatch.
         let mut last_dispatch_attempt = HashMap::<ContextId, time::Instant>::new();
 
+        // #2319: watchdog. Once an initiator is dispatched (Phase 3
+        // below clears the context's `last_sync` to `None`), a
+        // `SyncSessionResult` is supposed to arrive and call
+        // `on_success`/`on_failure` to clear it. If the `SyncSessionActor`
+        // wedges — its single arbiter thread stuck in a synchronous
+        // merkle/CRDT-merge loop that the per-session `tokio::time::timeout`
+        // can't preempt, or its mailbox saturated by such sessions — that
+        // result never comes and the context stays "in progress" forever
+        // ("Sync already in progress" on every tick, never converging
+        // again). Record when we dispatched; if no result has cleared
+        // the entry within `SESSION_WEDGE_GRACE` we synthesise an
+        // `on_failure` so the context becomes eligible again and the
+        // periodic loop retries with a fresh dispatch. The entry is
+        // cleared by the real result on `session_result_rx`.
+        const SESSION_WEDGE_GRACE_MULTIPLIER: u32 = 2;
+        let session_wedge_grace =
+            self.sync_config.session_deadline * SESSION_WEDGE_GRACE_MULTIPLIER;
+        let mut initiator_dispatched_at = HashMap::<ContextId, time::Instant>::new();
+
         // #2319: rate-limit the "mailbox full" warn to ≤1 per context
         // per `MAILBOX_FULL_SUMMARY_WINDOW`; the rest roll up into one
         // info line per window so the wedge is still visible without
@@ -362,12 +406,52 @@ impl SyncManager {
                         full_window_started = time::Instant::now();
                         last_full_warn.retain(|_, t| t.elapsed() < MAILBOX_FULL_SUMMARY_WINDOW);
                     }
+                    // #2319 watchdog: any context whose initiator was
+                    // dispatched longer than `session_wedge_grace` ago
+                    // and is still flagged "in progress" — its session
+                    // (or the whole `SyncSessionActor`) is wedged and no
+                    // `SyncSessionResult` is coming. Synthesise a
+                    // failure so the context is eligible again; the
+                    // dispatch loop below will retry it this tick.
+                    let wedged: Vec<ContextId> = initiator_dispatched_at
+                        .keys()
+                        .copied()
+                        .filter(|context_id| {
+                            session_dispatch_wedged(
+                                &initiator_dispatched_at,
+                                &state,
+                                context_id,
+                                session_wedge_grace,
+                            )
+                        })
+                        .collect();
+                    // Drop the dispatch record either way once past grace
+                    // (a still-in-progress entry that's been there >grace
+                    // is what we just failed; a no-longer-in-progress one
+                    // already got a result that removed it, but be tidy).
+                    initiator_dispatched_at
+                        .retain(|_, dispatched_at| dispatched_at.elapsed() < session_wedge_grace);
+                    for context_id in wedged {
+                        warn!(
+                            %context_id,
+                            grace = ?session_wedge_grace,
+                            "SyncSession initiator produced no result within watchdog grace — assuming a wedged session/actor; failing it so periodic-sync retries (#2319)"
+                        );
+                        if let Some(s) = state.get_mut(&context_id) {
+                            s.on_failure(
+                                "sync session wedged — no SyncSessionResult within watchdog grace (#2319)"
+                                    .to_owned(),
+                            );
+                        }
+                    }
                 }
                 Some(result) = session_result_rx.recv() => {
                     // #2319: a real result means this context is no
                     // longer wedged behind a full mailbox — drop the
-                    // dispatch-attempt backoff so it isn't throttled.
+                    // dispatch-attempt backoff so it isn't throttled —
+                    // and the watchdog timer for it is satisfied.
                     let _removed = last_dispatch_attempt.remove(&result.context_id);
+                    let _removed = initiator_dispatched_at.remove(&result.context_id);
                     apply_session_result(&mut state, result);
                     continue;
                 }
@@ -531,7 +615,9 @@ impl SyncManager {
                 // Phase 3: dispatch succeeded — mark the context as
                 // in-flight. A `SyncSessionResult` will arrive on
                 // `session_result_rx` and call `on_success` /
-                // `on_failure` to clear the flag.
+                // `on_failure` to clear the flag — or, if it never does,
+                // the #2319 watchdog above fails it after the grace.
+                let _prev = initiator_dispatched_at.insert(context_id, time::Instant::now());
                 if is_first_sync {
                     info!(%context_id, "Syncing for the first time");
                     let mut new_state = SyncState::new();
