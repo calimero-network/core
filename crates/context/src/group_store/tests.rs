@@ -3484,15 +3484,9 @@ fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_i
     set_subgroup_visibility(&store, &open_sub, VisibilityMode::Open).unwrap();
 
     // owner_priv is a different member's private DM: Restricted, inviter never added.
-    let owner_sk = PrivateKey::random(&mut OsRng);
+    let owner_pk = PrivateKey::random(&mut OsRng).public_key();
     set_subgroup_visibility(&store, &owner_priv, VisibilityMode::Restricted).unwrap();
-    add_group_member(
-        &store,
-        &owner_priv,
-        &owner_sk.public_key(),
-        GroupMemberRole::Admin,
-    )
-    .unwrap();
+    add_group_member(&store, &owner_priv, &owner_pk, GroupMemberRole::Admin).unwrap();
     // ...even though there is an Open subgroup *under* it: the wall hides the whole subtree.
     set_subgroup_visibility(&store, &behind_wall, VisibilityMode::Open).unwrap();
 
@@ -3515,6 +3509,11 @@ fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_i
     assert!(
         !visible.contains(&behind_wall),
         "the subtree behind a wall is unreachable too (got {visible:?})"
+    );
+    assert_eq!(
+        visible.len(),
+        2,
+        "exactly open_sub + inviter_priv should be visible, got {visible:?}"
     );
 
     // The unfiltered walk still sees everything — cascade-delete / recursive-remove
@@ -3550,15 +3549,9 @@ fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
     add_group_member(&store, &ns, &inviter_pk, GroupMemberRole::Admin).unwrap();
     set_subgroup_visibility(&store, &open_sub, VisibilityMode::Open).unwrap();
 
-    let owner_sk = PrivateKey::random(&mut OsRng);
+    let owner_pk = PrivateKey::random(&mut OsRng).public_key();
     set_subgroup_visibility(&store, &owner_priv, VisibilityMode::Restricted).unwrap();
-    add_group_member(
-        &store,
-        &owner_priv,
-        &owner_sk.public_key(),
-        GroupMemberRole::Admin,
-    )
-    .unwrap();
+    add_group_member(&store, &owner_priv, &owner_pk, GroupMemberRole::Admin).unwrap();
 
     let invitations = create_recursive_invitations(&store, &ns, &inviter_sk, 3600, 1).unwrap();
     let invited: Vec<ContextGroupId> = invitations.iter().map(|(gid, _)| *gid).collect();
@@ -3574,6 +3567,11 @@ fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
     assert!(
         !invited.contains(&owner_priv),
         "a Restricted subgroup the inviter was never added to must not be invited into (got {invited:?})"
+    );
+    assert_eq!(
+        invitations.len(),
+        2,
+        "exactly the namespace + open_sub should be invited, got {invited:?}"
     );
 
     // Each emitted invitation targets exactly the group it is keyed under.

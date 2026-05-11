@@ -230,6 +230,12 @@ pub fn collect_descendant_groups(
 /// admin-or-`CAN_INVITE_MEMBERS` at the namespace root, and the namespace
 /// creator may legitimately lack a self `GroupMember` row, so a blanket
 /// `check_group_membership(group_id, viewer)` here would be wrong).
+///
+/// Cost: one `check_group_membership` per visited group, each of which is
+/// an O(namespace-depth ≤ [`MAX_NAMESPACE_DEPTH`]) parent-chain walk — so
+/// O(visible-subgroups · depth) store reads. That's fine for the caller
+/// (recursive invitations are a rare admin action over a bounded tree);
+/// don't reach for this on a hot path without memoizing the walk.
 pub fn collect_visible_descendant_groups(
     store: &Store,
     group_id: &ContextGroupId,
