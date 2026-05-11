@@ -261,6 +261,15 @@ impl SyncManager {
         // dropped dispatch.
         let mut last_dispatch_attempt = HashMap::<ContextId, time::Instant>::new();
 
+        // #2319: rate-limit the "mailbox full" warn to ≤1 per context
+        // per `MAILBOX_FULL_SUMMARY_WINDOW`; the rest roll up into one
+        // info line per window so the wedge is still visible without
+        // drowning the log.
+        const MAILBOX_FULL_SUMMARY_WINDOW: time::Duration = time::Duration::from_secs(60);
+        let mut last_full_warn = HashMap::<ContextId, time::Instant>::new();
+        let mut full_drops_in_window: u64 = 0;
+        let mut full_window_started = time::Instant::now();
+
         let mut requested_ctx = None;
         let mut requested_peer = None;
 
@@ -339,6 +348,20 @@ impl SyncManager {
             tokio::select! {
                 _ = next_sync.tick() => {
                     debug!("Performing interval sync");
+                    // #2319: roll up rate-limited mailbox-full drops.
+                    if full_window_started.elapsed() >= MAILBOX_FULL_SUMMARY_WINDOW {
+                        if full_drops_in_window > 0 {
+                            info!(
+                                full_drops_in_window,
+                                contexts_affected = last_full_warn.len(),
+                                "SyncSession mailbox-full drop rollup (last {:?}) (#2319)",
+                                MAILBOX_FULL_SUMMARY_WINDOW
+                            );
+                        }
+                        full_drops_in_window = 0;
+                        full_window_started = time::Instant::now();
+                        last_full_warn.retain(|_, t| t.elapsed() < MAILBOX_FULL_SUMMARY_WINDOW);
+                    }
                 }
                 Some(result) = session_result_rx.recv() => {
                     // #2319: a real result means this context is no
@@ -473,10 +496,20 @@ impl SyncManager {
                 }) {
                     Ok(()) => true,
                     Err(SyncSessionSendError::Full) => {
-                        warn!(
-                            %context_id,
-                            "SyncSession actor mailbox full — skipping initiator dispatch (#2316); next interval tick will retry"
-                        );
+                        full_drops_in_window += 1;
+                        let warn_now = last_full_warn
+                            .get(&context_id)
+                            .is_none_or(|t| t.elapsed() >= MAILBOX_FULL_SUMMARY_WINDOW);
+                        if warn_now {
+                            warn!(
+                                %context_id,
+                                "SyncSession actor mailbox full — skipping initiator dispatch; backing off this context for {:?} (#2316/#2319)",
+                                self.sync_config.interval
+                            );
+                            let _prev = last_full_warn.insert(context_id, time::Instant::now());
+                        } else {
+                            debug!(%context_id, "SyncSession actor mailbox full — skipping (rate-limited; see periodic rollup) (#2319)");
+                        }
                         false
                     }
                     Err(SyncSessionSendError::Closed) => {
