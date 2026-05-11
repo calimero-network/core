@@ -76,6 +76,19 @@ steps:
     outputs:
       member_identity_node2: memberIdentity
 
+  # --- NEGATIVE: an ordinary member (only the default CAN_JOIN_OPEN_SUBGROUPS,
+  # not a namespace admin) is rejected when it tries to create a subgroup,
+  # because it lacks CAN_CREATE_SUBGROUP. `expected_failure` turns the merod
+  # rejection into a pass, so the workflow only succeeds if the bit is
+  # actually enforced.
+
+  - name: Node-2 without CAN_CREATE_SUBGROUP is rejected creating a subgroup
+    type: create_group_in_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    group_alias: should-not-exist
+    expected_failure: true
+
   # --- node-1 grants node-2 the subgroup-management capabilities ---
   # 4   = CAN_JOIN_OPEN_SUBGROUPS
   # 32  = CAN_CREATE_SUBGROUP
