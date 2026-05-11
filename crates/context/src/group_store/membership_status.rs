@@ -724,8 +724,7 @@ mod tests {
             migration: None,
             auto_join: false,
         };
-        super::super::meta::save_group_meta(&store, &group_id, &meta)
-            .expect("save_group_meta");
+        super::super::meta::save_group_meta(&store, &group_id, &meta).expect("save_group_meta");
 
         // Any well-formed position will do — the admin carve-out short-
         // circuits before we ever look at heads or `namespace_dag`.
