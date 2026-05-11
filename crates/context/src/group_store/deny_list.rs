@@ -30,13 +30,24 @@
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::GroupDeniedMember;
+use calimero_store::key::{GroupDeniedMember, GROUP_DENIED_MEMBER_PREFIX};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
+
+use super::collect_keys_with_prefix;
 
 /// Mark `member` as denied for `group_id`. Idempotent — calling this on an
 /// already-denied member is a no-op (RocksDB put on an existing key just
 /// overwrites the same `()` marker).
+///
+/// **Caller contract:** invoke only after the corresponding membership-
+/// removal apply (`MemberRemoved` / `MemberLeft`) has run, so the
+/// deny-list view stays consistent with the materialized member set. The
+/// primitive itself does not verify removal — calling it on a current
+/// member produces an inconsistent state (denied at the receive filter
+/// but still resolves as a member in governance queries). Current call
+/// sites are inside `apply_group_op_mutations` immediately after the
+/// `remove_group_member` write, which is the only safe placement.
 pub fn mark_denied(store: &Store, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<()> {
     let key = GroupDeniedMember::new(group_id.to_bytes(), *member);
     let mut handle = store.handle();
@@ -70,4 +81,24 @@ pub fn is_denied(store: &Store, group_id: &ContextGroupId, member: &PublicKey) -
     let key = GroupDeniedMember::new(group_id.to_bytes(), *member);
     let handle = store.handle();
     handle.has(&key).map_err(|e| eyre::eyre!("is_denied: {e}"))
+}
+
+/// Remove every deny-list entry under `group_id`. Used during group
+/// teardown (`delete_group_local_rows`) so the deny set doesn't outlive
+/// the group it describes.
+pub fn clear_all_denied(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
+    let gid = group_id.to_bytes();
+    let keys = collect_keys_with_prefix(
+        store,
+        GroupDeniedMember::new(gid, PublicKey::from([0u8; 32])),
+        GROUP_DENIED_MEMBER_PREFIX,
+        |k| k.group_id() == gid,
+    )?;
+    let mut handle = store.handle();
+    for key in keys {
+        handle
+            .delete(&key)
+            .map_err(|e| eyre::eyre!("clear_all_denied: {e}"))?;
+    }
+    Ok(())
 }

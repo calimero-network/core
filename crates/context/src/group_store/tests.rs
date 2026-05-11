@@ -2759,6 +2759,15 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     set_op_head(&store, &gid, 1, vec![[0x11; 32]]).unwrap();
     track_member_context_join(&store, &gid, &member2, &context, [0xAA; 32]).unwrap();
 
+    // Two deny-list rows under this group — to assert teardown sweeps
+    // the whole prefix, not just one entry.
+    let denied_a = PublicKey::from([0xD1; 32]);
+    let denied_b = PublicKey::from([0xD2; 32]);
+    mark_denied(&store, &gid, &denied_a).unwrap();
+    mark_denied(&store, &gid, &denied_b).unwrap();
+    assert!(is_denied(&store, &gid, &denied_a).unwrap());
+    assert!(is_denied(&store, &gid, &denied_b).unwrap());
+
     assert_eq!(get_local_gov_nonce(&store, &gid, &member).unwrap(), Some(7));
     assert_eq!(read_op_log_after(&store, &gid, 0, 10).unwrap().len(), 1);
     assert_eq!(
@@ -2791,6 +2800,14 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
         .is_none());
     assert!(get_op_head(&store, &gid).unwrap().is_none());
     assert!(read_op_log_after(&store, &gid, 0, 10).unwrap().is_empty());
+    assert!(
+        !is_denied(&store, &gid, &denied_a).unwrap(),
+        "deny-list entries must be swept during group teardown"
+    );
+    assert!(
+        !is_denied(&store, &gid, &denied_b).unwrap(),
+        "deny-list entries must be swept during group teardown"
+    );
 }
 
 #[test]
