@@ -887,18 +887,30 @@ pub async fn handle_state_delta(
     // Skipped for non-group contexts (no group_id → nothing to deny on).
     // Lookup failures fall through to the cross-DAG check rather than
     // erroring; a transient store error here shouldn't drop a legitimate
-    // delta when the authoritative check would still apply.
+    // delta when the authoritative check would still apply. The failure
+    // is logged at warn level so storage corruption affecting the deny
+    // prefix surfaces in monitoring instead of silently degrading the
+    // defense-in-depth layer.
     if let Ok(Some(group_id)) = calimero_context::group_store::get_group_for_context(
         node_clients.context.datastore(),
         &context_id,
     ) {
-        if calimero_context::group_store::is_denied(
+        let denied = calimero_context::group_store::is_denied(
             node_clients.context.datastore(),
             &group_id,
             &author_id,
         )
-        .unwrap_or(false)
-        {
+        .unwrap_or_else(|err| {
+            warn!(
+                %context_id,
+                %author_id,
+                group_id = ?group_id,
+                ?err,
+                "Deny-list lookup failed, falling through to cross-DAG check"
+            );
+            false
+        });
+        if denied {
             warn!(
                 %context_id,
                 %author_id,

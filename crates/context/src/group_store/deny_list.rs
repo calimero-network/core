@@ -88,6 +88,14 @@ pub fn is_denied(store: &Store, group_id: &ContextGroupId, member: &PublicKey) -
 /// the group it describes.
 pub fn clear_all_denied(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     let gid = group_id.to_bytes();
+    // The seek start key uses `[0u8; 32]` as the identity component —
+    // the lexicographic minimum of the 32-byte identity space, so no
+    // valid `PublicKey` can sort before it. RocksDB uses byte-wise
+    // comparison, so a forward iterator seeded here visits every
+    // `GroupDeniedMember` row whose `group_id` matches `gid`. This is
+    // the same scan-from-minimum convention used by
+    // `delete_all_member_capabilities` and the other per-group sweep
+    // helpers in this module.
     let keys = collect_keys_with_prefix(
         store,
         GroupDeniedMember::new(gid, PublicKey::from([0u8; 32])),
