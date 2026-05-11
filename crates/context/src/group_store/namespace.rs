@@ -201,11 +201,55 @@ pub fn collect_descendant_groups(
     Ok(descendants)
 }
 
-/// Create invitations for a group AND all its descendant groups.
+/// Collect descendant group IDs **visible to `viewer`** (recursive BFS),
+/// breadth-first, excluding the starting group itself.
+///
+/// Unlike [`collect_descendant_groups`], the walk does not descend into —
+/// and does not include — a child the `viewer` is not a member of (per
+/// [`super::check_group_membership`]). A `Restricted` subgroup the viewer
+/// has neither a direct row in nor inherited membership of is a wall: it
+/// is skipped along with its entire subtree, because the viewer cannot
+/// observe what lies beyond it. `Open` subgroups beneath a namespace the
+/// viewer belongs to are included (the membership walk inherits them).
+///
+/// This is the correct enumeration for any caller that fans an action out
+/// "down the namespace tree on behalf of `viewer`" — e.g. recursive
+/// invitations: a namespace admin recursively inviting a new member must
+/// not mint invitations into (or even enumerate the existence/aliases of)
+/// member-created private subgroups the admin was never added to.
+pub fn collect_visible_descendant_groups(
+    store: &Store,
+    group_id: &ContextGroupId,
+    viewer: &PublicKey,
+) -> EyreResult<Vec<ContextGroupId>> {
+    let mut descendants = Vec::new();
+    let mut queue = vec![*group_id];
+
+    while let Some(current) = queue.pop() {
+        for child in list_child_groups(store, &current)? {
+            if !super::check_group_membership(store, &child, viewer)? {
+                continue;
+            }
+            descendants.push(child);
+            queue.push(child);
+        }
+    }
+
+    Ok(descendants)
+}
+
+/// Create invitations for a group AND all of its descendant groups that
+/// are **visible to the inviter** (see [`collect_visible_descendant_groups`]).
 ///
 /// Returns a list of `(group_id, SignedGroupOpenInvitation)` pairs — one
 /// per group the member is being invited to. The caller publishes a
 /// `RootOp::MemberJoined` for each.
+///
+/// Privacy note: the descendant set is filtered through the inviter's own
+/// membership view, so `Restricted` subgroups the inviter is not in
+/// (member-created DMs/private channels) are neither invited into nor
+/// disclosed in the returned list. Encrypting the *existence* of such
+/// subgroups from non-members is tracked separately.
 pub fn create_recursive_invitations(
     store: &Store,
     root_group_id: &ContextGroupId,
@@ -223,7 +267,11 @@ pub fn create_recursive_invitations(
     };
 
     let mut groups = vec![*root_group_id];
-    groups.extend(collect_descendant_groups(store, root_group_id)?);
+    groups.extend(collect_visible_descendant_groups(
+        store,
+        root_group_id,
+        &inviter_sk.public_key(),
+    )?);
 
     let inviter_signer_id = SignerId::from(*inviter_sk.public_key());
     let now_secs = std::time::SystemTime::now()

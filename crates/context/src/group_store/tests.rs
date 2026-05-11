@@ -3449,6 +3449,140 @@ fn recursive_remove_nonexistent_member_returns_empty() {
 }
 
 // -----------------------------------------------------------------------
+// create_recursive_invitations / collect_visible_descendant_groups —
+// recursive namespace invitations must not leak into (or even enumerate)
+// private subgroups the inviter cannot see.
+// -----------------------------------------------------------------------
+
+#[test]
+fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_in() {
+    use calimero_context_config::VisibilityMode;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0x10; 32]); // namespace root
+    let open_sub = ContextGroupId::from([0x11; 32]); // Open child of ns
+    let owner_priv = ContextGroupId::from([0x12; 32]); // a member's Restricted DM, inviter NOT in
+    let behind_wall = ContextGroupId::from([0x13; 32]); // Open, but under owner_priv -> unreachable
+    let inviter_priv = ContextGroupId::from([0x14; 32]); // Restricted, inviter IS a direct member
+
+    nest_group(&store, &ns, &open_sub).unwrap();
+    nest_group(&store, &ns, &owner_priv).unwrap();
+    nest_group(&store, &owner_priv, &behind_wall).unwrap();
+    nest_group(&store, &ns, &inviter_priv).unwrap();
+    for gid in [&ns, &open_sub, &owner_priv, &behind_wall, &inviter_priv] {
+        save_group_meta(&store, gid, &test_meta()).unwrap();
+    }
+
+    // The recursive inviter is an admin of the namespace root.
+    let inviter_sk = PrivateKey::random(&mut OsRng);
+    let inviter_pk = inviter_sk.public_key();
+    add_group_member(&store, &ns, &inviter_pk, GroupMemberRole::Admin).unwrap();
+
+    // open_sub is Open -> the namespace admin inherits in.
+    set_subgroup_visibility(&store, &open_sub, VisibilityMode::Open).unwrap();
+
+    // owner_priv is a different member's private DM: Restricted, inviter never added.
+    let owner_sk = PrivateKey::random(&mut OsRng);
+    set_subgroup_visibility(&store, &owner_priv, VisibilityMode::Restricted).unwrap();
+    add_group_member(
+        &store,
+        &owner_priv,
+        &owner_sk.public_key(),
+        GroupMemberRole::Admin,
+    )
+    .unwrap();
+    // ...even though there is an Open subgroup *under* it: the wall hides the whole subtree.
+    set_subgroup_visibility(&store, &behind_wall, VisibilityMode::Open).unwrap();
+
+    // inviter_priv is Restricted, but the inviter has a direct member row -> visible.
+    set_subgroup_visibility(&store, &inviter_priv, VisibilityMode::Restricted).unwrap();
+    add_group_member(&store, &inviter_priv, &inviter_pk, GroupMemberRole::Member).unwrap();
+
+    // Sanity on the membership facts the walk depends on.
+    assert!(check_group_membership(&store, &open_sub, &inviter_pk).unwrap());
+    assert!(!check_group_membership(&store, &owner_priv, &inviter_pk).unwrap());
+    assert!(check_group_membership(&store, &inviter_priv, &inviter_pk).unwrap());
+
+    let visible = collect_visible_descendant_groups(&store, &ns, &inviter_pk).unwrap();
+    assert!(visible.contains(&open_sub));
+    assert!(visible.contains(&inviter_priv));
+    assert!(
+        !visible.contains(&owner_priv),
+        "a Restricted subgroup the inviter isn't in must be walled (got {visible:?})"
+    );
+    assert!(
+        !visible.contains(&behind_wall),
+        "the subtree behind a wall is unreachable too (got {visible:?})"
+    );
+
+    // The unfiltered walk still sees everything — cascade-delete / recursive-remove
+    // rely on `collect_descendant_groups` keeping that whole-subtree behavior.
+    let all = collect_descendant_groups(&store, &ns).unwrap();
+    for gid in [&open_sub, &owner_priv, &behind_wall, &inviter_priv] {
+        assert!(
+            all.contains(gid),
+            "{gid:?} missing from unfiltered descendants"
+        );
+    }
+}
+
+#[test]
+fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
+    use calimero_context_config::VisibilityMode;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0x20; 32]);
+    let open_sub = ContextGroupId::from([0x21; 32]);
+    let owner_priv = ContextGroupId::from([0x22; 32]);
+
+    nest_group(&store, &ns, &open_sub).unwrap();
+    nest_group(&store, &ns, &owner_priv).unwrap();
+    for gid in [&ns, &open_sub, &owner_priv] {
+        save_group_meta(&store, gid, &test_meta()).unwrap();
+    }
+
+    let inviter_sk = PrivateKey::random(&mut OsRng);
+    let inviter_pk = inviter_sk.public_key();
+    add_group_member(&store, &ns, &inviter_pk, GroupMemberRole::Admin).unwrap();
+    set_subgroup_visibility(&store, &open_sub, VisibilityMode::Open).unwrap();
+
+    let owner_sk = PrivateKey::random(&mut OsRng);
+    set_subgroup_visibility(&store, &owner_priv, VisibilityMode::Restricted).unwrap();
+    add_group_member(
+        &store,
+        &owner_priv,
+        &owner_sk.public_key(),
+        GroupMemberRole::Admin,
+    )
+    .unwrap();
+
+    let invitations = create_recursive_invitations(&store, &ns, &inviter_sk, 3600, 1).unwrap();
+    let invited: Vec<ContextGroupId> = invitations.iter().map(|(gid, _)| *gid).collect();
+
+    assert!(
+        invited.contains(&ns),
+        "the namespace itself is always invited"
+    );
+    assert!(
+        invited.contains(&open_sub),
+        "Open subgroups stay in the recursive set"
+    );
+    assert!(
+        !invited.contains(&owner_priv),
+        "a Restricted subgroup the inviter was never added to must not be invited into (got {invited:?})"
+    );
+
+    // Each emitted invitation targets exactly the group it is keyed under.
+    for (gid, signed) in &invitations {
+        assert_eq!(signed.invitation.group_id, *gid);
+    }
+}
+
+// -----------------------------------------------------------------------
 // NamespaceGovernance::apply_signed_op — governance state machine tests
 // -----------------------------------------------------------------------
 
