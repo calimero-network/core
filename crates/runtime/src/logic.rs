@@ -71,8 +71,8 @@ pub struct VMContext<'a> {
     ///
     /// `Some(pos)` for group-context executions; `None` for legacy non-group
     /// contexts that have no governance DAG. Receivers use this to perform
-    /// the apply-time authorization check (B3): "was the executor a member
-    /// at this cut?"
+    /// the apply-time membership check: "was the executor a member at this
+    /// cut?"
     pub governance_position: Option<GovernancePosition>,
 }
 
