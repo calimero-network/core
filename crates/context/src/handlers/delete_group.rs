@@ -74,19 +74,15 @@ impl Handler<DeleteGroupRequest> for ContextManager {
 
             // Authorization (re-checked on every peer in `execute_group_deleted`):
             // the subgroup's owner, an admin of the namespace root, or a
-            // namespace member holding CAN_DELETE_SUBGROUP.
-            if meta.owner_identity != requester
-                && !group_store::is_group_admin_or_has_capability(
-                    &self.datastore,
-                    &namespace_id,
-                    &requester,
-                    calimero_context_config::MemberCapabilities::CAN_DELETE_SUBGROUP,
-                )?
-            {
-                bail!(
-                    "deleting subgroup '{group_id:?}' requires being its owner, a namespace \
-                     admin, or holding CAN_DELETE_SUBGROUP"
-                );
+            // namespace member holding CAN_DELETE_SUBGROUP. The non-owner case
+            // routes through `PermissionChecker` to stay in step with the
+            // create / set-visibility handlers.
+            if meta.owner_identity != requester {
+                group_store::PermissionChecker::new(&self.datastore, namespace_id)
+                    .require_can_delete_subgroup(&requester)
+                    .map_err(|e| {
+                        eyre::eyre!("deleting subgroup '{group_id:?}': {e} (or be its owner)")
+                    })?;
             }
 
             let payload = group_store::collect_subtree_for_cascade(&self.datastore, &group_id)?;

@@ -23,7 +23,7 @@ use super::{
     namespace_dag::{NamespaceDagService, NamespaceHead},
     namespace_membership::NamespaceMembershipService,
     namespace_retry::NamespaceRetryService,
-    save_group_meta, set_local_gov_nonce, store_group_key, unwrap_group_key,
+    save_group_meta, set_local_gov_nonce, store_group_key, unwrap_group_key, PermissionChecker,
 };
 
 /// Side effect returned by namespace-op application when an existing
@@ -876,24 +876,20 @@ impl<'a> NamespaceGovernance<'a> {
         // delegation). All three are deterministically verifiable on every
         // peer applying this op — `GroupDeleted` is cleartext, and the
         // deleting peer already enumerates the full subtree (so it holds the
-        // root group's meta) below.
+        // root group's meta) below. The non-owner case routes through
+        // `PermissionChecker` to match the local `delete_group` handler.
         let ns_gid = ContextGroupId::from(self.namespace_id);
         let is_subgroup_owner =
             load_group_meta(self.store, &root_gid)?.is_some_and(|m| m.owner_identity == op.signer);
-        if !is_subgroup_owner
-            && !is_group_admin_or_has_capability(
-                self.store,
-                &ns_gid,
-                &op.signer,
-                calimero_context_config::MemberCapabilities::CAN_DELETE_SUBGROUP,
-            )?
-        {
-            bail!(
-                "GroupDeleted rejected: signer {} is not the subgroup owner, not an admin of \
-                 namespace {}, and does not hold CAN_DELETE_SUBGROUP",
-                op.signer,
-                hex::encode(self.namespace_id)
-            );
+        if !is_subgroup_owner {
+            PermissionChecker::new(self.store, ns_gid)
+                .require_can_delete_subgroup(&op.signer)
+                .map_err(|e| {
+                    eyre::eyre!(
+                        "GroupDeleted rejected: {e} (or be the owner of subgroup {})",
+                        hex::encode(root_group_id)
+                    )
+                })?;
         }
 
         // Determinism check: every surviving element of the local subtree MUST

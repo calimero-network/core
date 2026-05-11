@@ -5027,6 +5027,10 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         member_pk,
         "creator owns the new subgroup"
     );
+    assert!(
+        is_group_admin(&store, &ContextGroupId::from(chan), &member_pk).unwrap(),
+        "creator is added as an admin of the new subgroup"
+    );
 
     // But the capability is scoped to root-level subgroups: the member cannot
     // create a nested subgroup under another subgroup.
@@ -5062,6 +5066,10 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     let owner_sk = PrivateKey::random(&mut rng);
     let owner_pk = owner_sk.public_key();
     let stranger_sk = PrivateKey::random(&mut rng);
+    // A namespace member who is neither the subgroup owner, a namespace admin,
+    // nor a CAN_DELETE_SUBGROUP holder — a distinct case from a total stranger.
+    let plain_member_sk = PrivateKey::random(&mut rng);
+    let plain_member_pk = plain_member_sk.public_key();
     let janitor_sk = PrivateKey::random(&mut rng);
     let janitor_pk = janitor_sk.public_key();
 
@@ -5069,6 +5077,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     let ns_gid = ContextGroupId::from(ns_id);
     save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
     add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &ns_gid, &plain_member_pk, GroupMemberRole::Member).unwrap();
     add_group_member(&store, &ns_gid, &janitor_pk, GroupMemberRole::Member).unwrap();
     store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
 
@@ -5101,13 +5110,17 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         .unwrap()
     };
 
-    // A stranger who is neither the subgroup owner, a namespace admin, nor a
-    // CAN_DELETE_SUBGROUP holder is rejected.
+    // A total stranger (not even a namespace member) is rejected.
     assert!(gov.apply_signed_op(&del(&stranger_sk, s1, 1)).is_err());
     assert!(load_group_meta(&store, &s1_gid).unwrap().is_some());
 
+    // A plain namespace member (no CAN_DELETE_SUBGROUP, not the owner, not an
+    // admin) is also rejected.
+    assert!(gov.apply_signed_op(&del(&plain_member_sk, s1, 2)).is_err());
+    assert!(load_group_meta(&store, &s1_gid).unwrap().is_some());
+
     // The subgroup's owner can cascade-delete it.
-    gov.apply_signed_op(&del(&owner_sk, s1, 2))
+    gov.apply_signed_op(&del(&owner_sk, s1, 3))
         .expect("subgroup owner can delete it");
     assert!(load_group_meta(&store, &s1_gid).unwrap().is_none());
 
