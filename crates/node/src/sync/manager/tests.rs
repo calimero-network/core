@@ -176,3 +176,59 @@ fn test_max_depth_calculation() {
         );
     }
 }
+
+// =========================================================================
+// Tests for the #2319 dispatch-attempt backoff helper
+// =========================================================================
+
+#[cfg(test)]
+mod dispatch_backoff_tests {
+    use super::*;
+
+    fn ctx(byte: u8) -> ContextId {
+        ContextId::from([byte; 32])
+    }
+
+    #[test]
+    fn no_entry_means_not_recently_attempted() {
+        let map: HashMap<ContextId, time::Instant> = HashMap::new();
+        assert!(!dispatch_recently_attempted(
+            &map,
+            &ctx(1),
+            time::Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
+    fn fresh_attempt_within_interval_is_recent() {
+        let mut map = HashMap::new();
+        let _ = map.insert(ctx(2), time::Instant::now());
+        assert!(dispatch_recently_attempted(
+            &map,
+            &ctx(2),
+            time::Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
+    fn old_attempt_beyond_interval_is_not_recent() {
+        let mut map = HashMap::new();
+        let _ = map.insert(ctx(3), time::Instant::now() - time::Duration::from_secs(10));
+        assert!(!dispatch_recently_attempted(
+            &map,
+            &ctx(3),
+            time::Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
+    fn other_contexts_are_unaffected() {
+        let mut map = HashMap::new();
+        let _ = map.insert(ctx(4), time::Instant::now());
+        assert!(!dispatch_recently_attempted(
+            &map,
+            &ctx(5),
+            time::Duration::from_secs(5)
+        ));
+    }
+}

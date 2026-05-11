@@ -99,6 +99,25 @@ impl Clone for SyncManager {
     }
 }
 
+/// True if `context_id` had a dispatch attempt recorded in `map` less
+/// than `interval` ago.
+///
+/// Used in [`SyncManager::start`] to stop the every-tick re-attempt
+/// storm after the `SyncSessionActor` mailbox returns `Full` (#2319): a
+/// dropped dispatch records `Instant::now()` here, and we skip the
+/// context until `interval` has elapsed. Distinct from `SyncState`'s
+/// `last_sync` — touching that on a dropped dispatch is what #2317
+/// forbids, since it would leave the context "in progress" forever with
+/// no result to clear it.
+pub(crate) fn dispatch_recently_attempted(
+    map: &HashMap<ContextId, time::Instant>,
+    context_id: &ContextId,
+    interval: time::Duration,
+) -> bool {
+    map.get(context_id)
+        .is_some_and(|attempted| attempted.elapsed() < interval)
+}
+
 impl SyncManager {
     pub(crate) fn new(
         sync_config: SyncConfig,
@@ -231,6 +250,17 @@ impl SyncManager {
 
         let mut state = HashMap::<_, SyncState>::new();
 
+        // #2319: per-context "last dispatch attempt" instants. When a
+        // `try_send` to the `SyncSessionActor` returns `Full`/`Closed`
+        // we record the context here and skip re-dispatching it until
+        // `sync_config.interval` has elapsed — otherwise every interval
+        // tick (and every heartbeat-driven re-trigger) re-attempts and
+        // re-drops, which is the wedge in #2319. A real
+        // `SyncSessionResult` clears the entry. Distinct from
+        // `SyncState.last_sync`, which #2317 forbids touching on a
+        // dropped dispatch.
+        let mut last_dispatch_attempt = HashMap::<ContextId, time::Instant>::new();
+
         let mut requested_ctx = None;
         let mut requested_peer = None;
 
@@ -311,6 +341,10 @@ impl SyncManager {
                     debug!("Performing interval sync");
                 }
                 Some(result) = session_result_rx.recv() => {
+                    // #2319: a real result means this context is no
+                    // longer wedged behind a full mailbox — drop the
+                    // dispatch-attempt backoff so it isn't throttled.
+                    let _removed = last_dispatch_attempt.remove(&result.context_id);
                     apply_session_result(&mut state, result);
                     continue;
                 }
@@ -383,6 +417,22 @@ impl SyncManager {
                     }
                 };
 
+                // #2319: respect the dispatch-attempt backoff. After a
+                // `Full` mailbox we wait one `interval` before retrying
+                // this context rather than re-attempting (and re-dropping)
+                // on every tick. Explicit requests bypass it, same as the
+                // recency override below.
+                if requested_ctx.is_none()
+                    && dispatch_recently_attempted(
+                        &last_dispatch_attempt,
+                        &context_id,
+                        self.sync_config.interval,
+                    )
+                {
+                    debug!(%context_id, "Skipping sync — dispatch recently attempted, mailbox was full (#2319)");
+                    continue;
+                }
+
                 // Phase 1: read-only eligibility check. We must not
                 // mutate `state` here because a failed `try_send`
                 // below would leave `last_sync = None` with no future
@@ -439,6 +489,9 @@ impl SyncManager {
                 };
 
                 if !dispatched {
+                    // #2319: record the failed attempt so the next
+                    // interval tick backs off instead of re-dropping.
+                    let _prev = last_dispatch_attempt.insert(context_id, time::Instant::now());
                     continue;
                 }
 
