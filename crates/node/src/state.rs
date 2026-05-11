@@ -90,12 +90,16 @@ pub(crate) struct NodeState {
     /// Active sync sessions (for delta buffering during snapshot sync).
     pub(crate) sync_sessions: Arc<DashMap<ContextId, SyncSession>>,
     /// Per-context queue of state deltas whose `governance_position` references
-    /// governance heads that aren't yet known locally (B2 buffer-on-Unknown).
+    /// governance heads that aren't yet known locally — i.e., the cross-DAG
+    /// membership lookup returned `Unknown { needed }`, indicating the
+    /// receiver's governance state hasn't caught up to what the sender
+    /// signed against.
     ///
     /// Drained lazily on the next state-delta receive for the same context: each
     /// pending delta is re-evaluated via `membership_status_at`; if governance has
-    /// caught up the delta is processed (applied or rejected by B3), otherwise it
-    /// is pushed back. Lazy drain trades a small worst-case latency (until the
+    /// caught up the delta is processed (applied or rejected by the cross-DAG
+    /// check), otherwise it is pushed back. Lazy drain trades a small
+    /// worst-case latency (until the
     /// next state delta arrives in the same context) for not having to plumb a
     /// notification path from the governance-apply path into this buffer.
     ///
@@ -151,7 +155,7 @@ impl NodeState {
         }
     }
 
-    /// Push a state delta into the governance-pending buffer. Used by B2 when
+    /// Push a state delta into the governance-pending buffer. Called when
     /// `membership_status_at` returns `Unknown { needed }` — the referenced
     /// governance heads aren't yet known locally, so the delta cannot be
     /// authorized until governance catches up.

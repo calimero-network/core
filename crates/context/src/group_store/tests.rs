@@ -5202,3 +5202,131 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         .expect("CAN_DELETE_SUBGROUP holder can delete a subgroup");
     assert!(load_group_meta(&store, &s3_gid).unwrap().is_none());
 }
+
+// ---------------------------------------------------------------------
+// Forward-only invariant integration tests
+//
+// These exercise the property end-to-end through `membership_status_at`
+// against a real in-memory `Store`. The fast path (Branch 1, heads
+// equal) is enough to demonstrate the materialized-state-snapshot
+// semantics that the apply-time membership check consumes: at any point
+// in time, the check sees the set as it is *now*, and the forward-only
+// property of the
+// prefix walk (which is unit-tested in `membership_status.rs`) means
+// that pre-removal positions resolve to Member even when the local
+// receiver has already applied a `MemberRemoved` for that signer.
+//
+// Full DAG-level integration tests for the prefix walk (encrypted op
+// construction, keyring setup, ancestor chain) are tracked separately
+// — the per-transition resolver tests in `membership_status.rs` cover
+// the BFS state-machine logic.
+// ---------------------------------------------------------------------
+
+#[test]
+fn forward_only_current_member_resolves_to_member() {
+    // Baseline: a member who exists in the materialized set resolves
+    // to `Member(role)` when the position points at the current cut.
+    // Required precondition for any forward-only test — if this
+    // baseline fails, the others say nothing.
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x77; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
+
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
+
+    let status = membership_status_at(&store, &signer, &position).unwrap();
+    assert!(
+        matches!(status, MembershipStatus::Member(GroupMemberRole::Member)),
+        "current member must resolve to Member, got {status:?}"
+    );
+}
+
+#[test]
+fn forward_only_removed_member_in_current_set_resolves_to_nevermember() {
+    // After a removal, the materialized member set no longer contains
+    // the removed signer. On the fast path (heads equal), the
+    // resolver returns NeverMember — the documented conflation. The check
+    // treats this as "not authorized" and rejects the delta, which
+    // is the correct outcome for a delta whose position equals the
+    // post-removal cut.
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x78; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
+    // Removal flips the materialized set; the signer is no longer
+    // findable by `get_group_member_role`.
+    remove_group_member(&store, &gid, &signer).unwrap();
+
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
+
+    let status = membership_status_at(&store, &signer, &position).unwrap();
+    // Fast path conflates Removed into NeverMember — documented
+    // limitation. The prefix walk (when heads differ) recovers the
+    // distinction. The apply-time check treats both as rejection, so
+    // the practical security outcome is identical.
+    assert!(
+        matches!(status, MembershipStatus::NeverMember),
+        "removed signer on heads-equal fast path is NeverMember, got {status:?}"
+    );
+}
+
+#[test]
+fn forward_only_re_added_member_resolves_to_member() {
+    // Add → Remove → Add: the materialized set contains the signer
+    // again, so the fast path returns Member with the latest role.
+    // This is the "rehabilitation" case — the resolver doesn't
+    // remember that they were ever removed.
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x79; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
+    remove_group_member(&store, &gid, &signer).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Admin).unwrap();
+
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
+
+    let status = membership_status_at(&store, &signer, &position).unwrap();
+    assert!(
+        matches!(status, MembershipStatus::Member(GroupMemberRole::Admin)),
+        "re-added signer resolves with new role on fast path, got {status:?}"
+    );
+}
+
+#[test]
+fn forward_only_role_promotion_picks_current_role() {
+    // Role changes between Add and present don't cause spurious
+    // rejection. The materialized set reflects the latest role.
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x7A; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
+    // Re-add with Admin role (simulates a role change in the
+    // materialized layer — at the namespace governance layer this
+    // would be a `MemberRoleSet`).
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Admin).unwrap();
+
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
+
+    let status = membership_status_at(&store, &signer, &position).unwrap();
+    assert!(
+        matches!(status, MembershipStatus::Member(GroupMemberRole::Admin)),
+        "current role wins on fast path, got {status:?}"
+    );
+}

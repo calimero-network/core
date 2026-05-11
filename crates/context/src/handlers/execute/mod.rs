@@ -736,12 +736,11 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 Some(serialized)
                             };
 
-                            // Cross-DAG reference (B1): names the governance
-                            // cut this delta was signed against. `None` for
-                            // legacy non-group contexts. Read failures are
-                            // logged but not fatal — the receiver-side B3
-                            // check will reject if the position is missing
-                            // or stale.
+                            // Cross-DAG reference: names the governance cut
+                            // this delta was signed against. `None` for legacy
+                            // non-group contexts. Read failures are logged but
+                            // not fatal — the receiver-side membership check
+                            // will reject if the position is missing or stale.
                             let governance_position = compute_governance_position_for_context(
                                 &datastore_for_broadcast,
                                 &context.id,
@@ -1076,7 +1075,8 @@ enum CachedOrBlob {
 ///
 /// Returns `None` for non-group contexts (which have no governance DAG to
 /// reference) and on any read failure — receivers will surface the missing
-/// position via the B3 apply-time check rather than silently relying on it.
+/// position via the apply-time membership check rather than silently
+/// relying on it.
 fn compute_governance_position_for_context(
     datastore: &Store,
     context_id: &ContextId,
@@ -1112,9 +1112,9 @@ fn compute_governance_position_for_context(
     // Double-read pattern: governance ops can apply between reading heads
     // and computing the state hash, producing an internally-inconsistent
     // position whose hash and heads disagree. Re-read heads after the hash
-    // and bail if they changed — the receiver's B3 fast path treats hash
-    // mismatch as a hard rejection, so shipping a stale value would
-    // spuriously reject legitimate deltas. A true atomic read would
+    // and bail if they changed — the receiver's heads-equal fast path
+    // treats hash mismatch as a hard rejection, so shipping a stale value
+    // would spuriously reject legitimate deltas. A true atomic read would
     // require refactoring `compute_group_state_hash` and `read_head_record`
     // to share a `Handle` (snapshot view); the double-read covers the
     // race window with a single extra cheap read.
@@ -1161,8 +1161,9 @@ fn compute_governance_position_for_context(
     // Set-equality, not Vec equality. Storage iteration order isn't guaranteed
     // to be stable across two reads, so a Vec equality check would treat
     // [h1, h2] vs [h2, h1] as a stale read and emit None for every state delta
-    // — receivers then reject the delta on the B3 None-position branch and the
-    // wire wedges even when the underlying head set didn't actually change.
+    // — receivers then reject the delta on the no-position-on-group-context
+    // anti-bypass branch and the wire wedges even when the underlying head
+    // set didn't actually change.
     let heads_changed = {
         use std::collections::HashSet;
         heads_before.len() != heads_after.len()

@@ -317,8 +317,8 @@ pub const MAX_GOVERNANCE_DAG_HEADS: usize = 32;
 ///
 /// Names the exact governance DAG cut the signer relied on when producing the
 /// state op. Receivers use it to perform the apply-time authorization check
-/// (B3): "was this signer a member at the named cut?" Buffered when the
-/// referenced `governance_dag_heads` are not yet known locally (B2).
+/// — "was this signer a member at the named cut?" — and buffer the delta when
+/// the referenced `governance_dag_heads` are not yet known locally.
 ///
 /// `governance_dag_heads` entries are content-hashes of [`SignedNamespaceOp`]
 /// — the same identity scheme used by `parent_op_hashes` and the persisted

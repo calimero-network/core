@@ -110,14 +110,14 @@ pub struct BufferedDelta {
     pub source_peer: libp2p::PeerId,
     /// Group key identifier for decryption.
     pub key_id: [u8; 32],
-    /// Cross-DAG reference (B1) — must survive snapshot-sync buffering so
-    /// that B3's apply-time authorization check fires correctly on replay.
-    /// Dropping it here would silently bypass B3 for every delta that
-    /// happened to arrive during a sync. `None` for legacy non-group
-    /// contexts that have no governance DAG.
+    /// Cross-DAG reference — must survive snapshot-sync buffering so that
+    /// the apply-time authorization check fires correctly on replay.
+    /// Dropping it here would silently bypass the membership check for
+    /// every delta that happened to arrive during a sync. `None` for
+    /// legacy non-group contexts that have no governance DAG.
     pub governance_position: Option<GovernancePosition>,
-    /// Number of times the governance-pending drain (B2) has re-buffered
-    /// this delta because its governance heads are still unknown locally.
+    /// Number of times the governance-pending drain has re-buffered this
+    /// delta because its governance heads are still unknown locally.
     /// Bounded by `MAX_GOVERNANCE_DRAIN_ATTEMPTS` — after that, the drain
     /// drops the delta with a warn log rather than re-buffering forever.
     /// Prevents indefinite resource consumption when governance heads are

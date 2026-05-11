@@ -123,7 +123,7 @@ pub(super) fn handle_namespace_governance_delta(
                     addr.do_send(crate::readiness::NamespaceOpApplied { namespace_id });
                 }
 
-                // B2 active drain: a governance op that just applied may
+                // Governance-pending active drain:a governance op that just applied may
                 // unblock state deltas previously buffered as `Unknown`.
                 // Without this hook the lazy on-state-delta drain
                 // deadlocks when the only state delta in flight is one
@@ -450,7 +450,7 @@ async fn fetch_and_apply_namespace_backfill(
                 // gossip-receive path (line 120).
                 node_client.notify_namespace_op_applied(namespace_id);
 
-                // B2 active drain: backfilled governance ops may unblock
+                // Governance-pending active drain:backfilled governance ops may unblock
                 // state deltas previously buffered as `Unknown`. Same
                 // hook as the gossip-apply path.
                 let drain_input = crate::handlers::state_delta::StateDeltaContext {
