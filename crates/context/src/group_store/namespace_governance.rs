@@ -18,12 +18,12 @@ use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::{
     add_group_member, apply_group_op_mutations, decrypt_group_op, get_local_gov_nonce,
-    get_namespace_identity_record, is_group_admin, load_current_group_key_record,
-    load_group_key_by_id, load_group_meta,
+    get_namespace_identity_record, is_group_admin, is_group_admin_or_has_capability,
+    load_current_group_key_record, load_group_key_by_id, load_group_meta,
     namespace_dag::{NamespaceDagService, NamespaceHead},
     namespace_membership::NamespaceMembershipService,
     namespace_retry::NamespaceRetryService,
-    save_group_meta, set_local_gov_nonce, store_group_key, unwrap_group_key,
+    save_group_meta, set_local_gov_nonce, store_group_key, unwrap_group_key, PermissionChecker,
 };
 
 /// Side effect returned by namespace-op application when an existing
@@ -721,7 +721,6 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
         parent_id: [u8; 32],
     ) -> EyreResult<()> {
-        self.require_namespace_admin(&op.signer)?;
         let gid = ContextGroupId::from(group_id);
         let parent_gid = ContextGroupId::from(parent_id);
 
@@ -734,6 +733,31 @@ impl<'a> NamespaceGovernance<'a> {
                 "GroupCreated rejected: self-parent edge (group_id == parent_id). \
                  Namespace roots must not emit GroupCreated — their existence is \
                  recorded by the namespace-identity setup path."
+            );
+        }
+
+        // Authorization. Namespace-root admins may create a subgroup at any
+        // depth (matches `require_namespace_admin`). A non-admin namespace
+        // member may create one *directly under the namespace root* if they
+        // hold `CAN_CREATE_SUBGROUP` — that bit is honored only at root level
+        // because every peer applying this op must be able to verify the
+        // creator's authority, and only the root group's capability rows are
+        // readable by all namespace members (see the capability's doc).
+        let ns_gid = ContextGroupId::from(self.namespace_id);
+        let authorized = is_group_admin(self.store, &ns_gid, &op.signer)?
+            || (parent_id == self.namespace_id
+                && is_group_admin_or_has_capability(
+                    self.store,
+                    &ns_gid,
+                    &op.signer,
+                    calimero_context_config::MemberCapabilities::CAN_CREATE_SUBGROUP,
+                )?);
+        if !authorized {
+            bail!(
+                "GroupCreated rejected: signer {} is neither an admin of namespace {} \
+                 nor a member holding CAN_CREATE_SUBGROUP at the namespace root",
+                op.signer,
+                hex::encode(self.namespace_id)
             );
         }
 
@@ -839,13 +863,53 @@ impl<'a> NamespaceGovernance<'a> {
         cascade_group_ids: &[[u8; 32]],
         cascade_context_ids: &[[u8; 32]],
     ) -> EyreResult<()> {
-        self.require_namespace_admin(&op.signer)?;
-
         let root_gid = ContextGroupId::from(root_group_id);
         if root_group_id == self.namespace_id {
             eyre::bail!(
                 "cannot delete the namespace root '{root_gid:?}' (use delete_namespace instead)"
             );
+        }
+
+        // Authorization. Cascade-delete is allowed for: the owner of the
+        // subgroup being deleted; an admin of the namespace root (moderation);
+        // or a namespace member holding `CAN_DELETE_SUBGROUP` (an explicit
+        // delegation). All three are deterministically verifiable on every
+        // peer applying this op — `GroupDeleted` is cleartext, and the
+        // deleting peer holds the root group's meta on the *first* apply. The
+        // non-owner case routes through `PermissionChecker` to match the local
+        // `delete_group` handler.
+        //
+        // The owner branch checks only `owner_identity == op.signer`, not
+        // current namespace membership — `owner_identity` is a persistent
+        // record from group creation, and matching it *is* being the owner
+        // (32-byte keys don't "happen to collide"). In practice the owner is
+        // always a current namespace member anyway: `leave_namespace` /
+        // `leave_group` reject an owner with `MustTransferOwnership`, so you
+        // can't leave while owning a subgroup in the subtree.
+        //
+        // Crash-recovery: the cascade below tears the root group's meta down
+        // *last* (after every descendant), and only then does `apply_signed_op`
+        // advance the DAG head. If the process dies in between, the re-apply
+        // finds the root meta already gone — the op was authorized on the
+        // first pass, so we skip the auth check here and let the (idempotent)
+        // cascade finish any remaining cleanup. Without this, an owner who is
+        // not also a namespace admin / `CAN_DELETE_SUBGROUP` holder would
+        // permanently stall the DAG. (The pre-existing `require_namespace_admin`
+        // check was immune because the namespace root is never part of a
+        // cascade.) A `GroupDeleted` for a group that never existed locally
+        // likewise reads `None` here and is a harmless no-op below.
+        let ns_gid = ContextGroupId::from(self.namespace_id);
+        if let Some(root_meta) = load_group_meta(self.store, &root_gid)? {
+            if root_meta.owner_identity != op.signer {
+                PermissionChecker::new(self.store, ns_gid)
+                    .require_can_delete_subgroup(&op.signer)
+                    .map_err(|e| {
+                        eyre::eyre!(
+                            "GroupDeleted rejected: {e} (or be the owner of subgroup {})",
+                            hex::encode(root_group_id)
+                        )
+                    })?;
+            }
         }
 
         // Determinism check: every surviving element of the local subtree MUST
@@ -882,6 +946,32 @@ impl<'a> NamespaceGovernance<'a> {
             let extra: Vec<_> = local_contexts.difference(&payload_contexts).collect();
             eyre::bail!(
                 "GroupDeleted cascade divergence: local subtree has contexts not in payload: {extra:?}"
+            );
+        }
+        // Inverse direction is *not* an error — it's the expected shape on a
+        // crash-recovery re-apply (the local subtree shrank since the op was
+        // built) — but log it so a genuinely anomalous payload (a publisher
+        // listing IDs this peer has never seen) is visible for debugging.
+        let payload_only_groups: Vec<[u8; 32]> =
+            payload_groups.difference(&local_groups).copied().collect();
+        if !payload_only_groups.is_empty() {
+            tracing::warn!(
+                root_group_id = %hex::encode(root_group_id),
+                groups = ?payload_only_groups.iter().map(hex::encode).collect::<Vec<_>>(),
+                "GroupDeleted payload lists groups not present locally (expected on a \
+                 crash-recovery re-apply; otherwise investigate for divergence)"
+            );
+        }
+        let payload_only_contexts: Vec<[u8; 32]> = payload_contexts
+            .difference(&local_contexts)
+            .copied()
+            .collect();
+        if !payload_only_contexts.is_empty() {
+            tracing::warn!(
+                root_group_id = %hex::encode(root_group_id),
+                contexts = ?payload_only_contexts.iter().map(hex::encode).collect::<Vec<_>>(),
+                "GroupDeleted payload lists contexts not present locally (expected on a \
+                 crash-recovery re-apply; otherwise investigate for divergence)"
             );
         }
 
