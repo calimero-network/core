@@ -181,28 +181,31 @@ pub fn list_child_groups(
         .collect())
 }
 
-/// Collect ALL descendant group IDs (recursive BFS). Returns them in
-/// breadth-first order, excluding the starting group itself.
+/// Collect ALL descendant group IDs by walking the child index
+/// (iterative, depth-first via an explicit stack), excluding the
+/// starting group itself. Iteration order is unspecified — the callers
+/// (cascade-delete, [`recursive_remove_member`]) don't depend on it.
 pub fn collect_descendant_groups(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<Vec<ContextGroupId>> {
     let mut descendants = Vec::new();
-    let mut queue = vec![*group_id];
+    let mut stack = vec![*group_id];
 
-    while let Some(current) = queue.pop() {
+    while let Some(current) = stack.pop() {
         let children = list_child_groups(store, &current)?;
         for child in children {
             descendants.push(child);
-            queue.push(child);
+            stack.push(child);
         }
     }
 
     Ok(descendants)
 }
 
-/// Collect descendant group IDs **visible to `viewer`** (recursive BFS),
-/// breadth-first, excluding the starting group itself.
+/// Collect descendant group IDs **visible to `viewer`**, walking the
+/// child index iteratively (depth-first via an explicit stack), excluding
+/// the starting group itself. Iteration order is unspecified.
 ///
 /// Unlike [`collect_descendant_groups`], the walk does not descend into —
 /// and does not include — a child the `viewer` is not a member of (per
@@ -211,27 +214,37 @@ pub fn collect_descendant_groups(
 /// is skipped along with its entire subtree, because the viewer cannot
 /// observe what lies beyond it. `Open` subgroups beneath a namespace the
 /// viewer belongs to are included (the membership walk inherits them).
+/// Each child is judged independently via `check_group_membership`, which
+/// itself walks the parent chain and terminates at the first `Restricted`
+/// ancestor — that single primitive (shared with governance auth,
+/// crypto-key selection and sync stream-auth; see the module note on
+/// [`super::membership::check_group_membership_path`]) is the one source
+/// of truth for the wall, so this function deliberately does not
+/// re-derive a parallel visibility rule.
 ///
-/// This is the correct enumeration for any caller that fans an action out
-/// "down the namespace tree on behalf of `viewer`" — e.g. recursive
-/// invitations: a namespace admin recursively inviting a new member must
-/// not mint invitations into (or even enumerate the existence/aliases of)
-/// member-created private subgroups the admin was never added to.
+/// **Precondition:** the `viewer` must be a member of `group_id` itself.
+/// This function checks the *children's* membership but takes the start
+/// group's on trust — it is meant to be called on a group the caller has
+/// already authorized the viewer against (e.g.
+/// [`create_recursive_invitations`] is gated on the inviter holding
+/// admin-or-`CAN_INVITE_MEMBERS` at the namespace root, and the namespace
+/// creator may legitimately lack a self `GroupMember` row, so a blanket
+/// `check_group_membership(group_id, viewer)` here would be wrong).
 pub fn collect_visible_descendant_groups(
     store: &Store,
     group_id: &ContextGroupId,
     viewer: &PublicKey,
 ) -> EyreResult<Vec<ContextGroupId>> {
     let mut descendants = Vec::new();
-    let mut queue = vec![*group_id];
+    let mut stack = vec![*group_id];
 
-    while let Some(current) = queue.pop() {
+    while let Some(current) = stack.pop() {
         for child in list_child_groups(store, &current)? {
             if !super::check_group_membership(store, &child, viewer)? {
                 continue;
             }
             descendants.push(child);
-            queue.push(child);
+            stack.push(child);
         }
     }
 
