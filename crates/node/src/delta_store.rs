@@ -1427,6 +1427,23 @@ impl DeltaStore {
                 Vec::new()
             };
 
+        // Metrics — one increment per add_delta call so dashboards can
+        // chart raw apply rate, plus a separate `cascaded` increment per
+        // delta unblocked by this call's cascade. Cascade size is also
+        // recorded as a histogram so tail values are visible.
+        if result {
+            crate::node_metrics::record_delta_outcome("applied");
+        } else {
+            crate::node_metrics::record_delta_outcome("pending");
+        }
+        let cascade_size = cascaded_deltas.len();
+        if cascade_size > 0 {
+            crate::node_metrics::observe_delta_cascade(cascade_size);
+            for _ in 0..cascade_size {
+                crate::node_metrics::record_delta_outcome("cascaded");
+            }
+        }
+
         Ok(AddDeltaResult {
             applied: result,
             cascaded_events: cascaded_with_events,

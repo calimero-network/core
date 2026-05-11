@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tower as _;
 
 use axum::http::Method;
-use axum::Router;
+use axum::{Extension, Router};
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
@@ -53,9 +53,15 @@ pub async fn start(
     ctx_client: ContextClient,
     node_client: NodeClient,
     datastore: Store,
-    prom_registry: Registry,
+    mut prom_registry: Registry,
 ) -> EyreResult<()> {
     let mut config = config;
+
+    // Register HTTP request metrics on the same registry before the
+    // metrics service consumes ownership of it via `mount_runtime_services`
+    // → `metrics::service`. The middleware below will resolve the handle
+    // out of the request `Extension`s.
+    let http_metrics = crate::metrics::HttpMetrics::new(&mut prom_registry);
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
     let mut want_listeners = config.listen.into_iter().peekable();
@@ -131,6 +137,14 @@ pub async fn start(
 
         return Ok(());
     }
+
+    // HTTP request observability middleware. Wraps every mounted route
+    // (jsonrpc, ws, sse, admin, auth) — applied *before* CORS so the
+    // recorded latency excludes pre-flight handling but still observes
+    // failed CORS rejections.
+    app = app
+        .layer(axum::middleware::from_fn(crate::metrics::track_request))
+        .layer(Extension(http_metrics));
 
     app = app.layer(
         CorsLayer::new()
