@@ -892,6 +892,19 @@ pub async fn handle_state_delta(
     // The failure is logged at warn level so storage corruption
     // affecting the deny prefix surfaces in monitoring instead of
     // silently degrading the defense-in-depth layer.
+    //
+    // Drain path note: `drain_governance_pending` calls
+    // `apply_authorized_state_delta` directly and so bypasses this
+    // entry-point filter. That's intentional. A buffered delta
+    // carries the sender's pre-buffering `governance_position`; the
+    // cross-DAG check inside the apply path consults that position,
+    // and the forward-only invariant means pre-removal positions
+    // correctly resolve to `Member`. The deny-list at the entry point
+    // exists to short-circuit the buffer/drain/check pipeline for
+    // post-removal traffic; the drain path operates on already-buffered
+    // deltas whose authorization is decided by the cross-DAG check
+    // against the original position, which is the authoritative
+    // outcome.
     let denied = calimero_context::group_store::is_author_denied_for_context(
         node_clients.context.datastore(),
         &context_id,

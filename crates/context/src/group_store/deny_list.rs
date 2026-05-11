@@ -48,7 +48,19 @@ use super::collect_keys_with_prefix;
 /// but still resolves as a member in governance queries). Current call
 /// sites are inside `apply_group_op_mutations` immediately after the
 /// `remove_group_member` write, which is the only safe placement.
+///
+/// A `debug_assert!` enforces the contract in dev / test builds. It is
+/// compiled out in release so the production cost is zero — the
+/// assertion exists to catch misuse during development. If a future
+/// caller needs to deny-list a member outside of the apply path, the
+/// callee can pass through an already-known-removed signer; otherwise
+/// the assertion will fire in tests.
 pub fn mark_denied(store: &Store, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<()> {
+    debug_assert!(
+        !super::membership::has_direct_group_member(store, group_id, member).unwrap_or(true),
+        "mark_denied: member {member:?} is still in the materialized set for group {group_id:?} \
+         — callers must invoke remove_group_member first (see caller contract)"
+    );
     let key = GroupDeniedMember::new(group_id.to_bytes(), *member);
     let mut handle = store.handle();
     handle
