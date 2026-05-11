@@ -309,8 +309,7 @@ impl NodeStateSnapshot {
             governance_pending_contexts += 1;
             governance_pending_queue_depth += entry.value().len();
         }
-        let specialized_node_pending_invites =
-            state.pending_specialized_node_invites.len();
+        let specialized_node_pending_invites = state.pending_specialized_node_invites.len();
         Self {
             blob_cache_entries,
             blob_cache_size_bytes,
@@ -396,15 +395,31 @@ fn update_process_metrics(metrics: &NodeMetrics) {
             for line in status.lines() {
                 // VmRSS / VmSize fields are reported in kB.
                 if let Some(rest) = line.strip_prefix("VmRSS:") {
-                    if let Some(kb) = rest.split_whitespace().next().and_then(|v| v.parse::<i64>().ok()) {
-                        metrics.process_resident_memory_bytes.set(kb.saturating_mul(1024));
+                    if let Some(kb) = rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse::<i64>().ok())
+                    {
+                        metrics
+                            .process_resident_memory_bytes
+                            .set(kb.saturating_mul(1024));
                     }
                 } else if let Some(rest) = line.strip_prefix("VmSize:") {
-                    if let Some(kb) = rest.split_whitespace().next().and_then(|v| v.parse::<i64>().ok()) {
-                        metrics.process_virtual_memory_bytes.set(kb.saturating_mul(1024));
+                    if let Some(kb) = rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse::<i64>().ok())
+                    {
+                        metrics
+                            .process_virtual_memory_bytes
+                            .set(kb.saturating_mul(1024));
                     }
                 } else if let Some(rest) = line.strip_prefix("Threads:") {
-                    if let Some(n) = rest.split_whitespace().next().and_then(|v| v.parse::<i64>().ok()) {
+                    if let Some(n) = rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse::<i64>().ok())
+                    {
                         metrics.process_threads.set(n);
                     }
                 }

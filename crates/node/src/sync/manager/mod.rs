@@ -171,10 +171,7 @@ impl SyncManager {
     /// any clones are taken; recording sites resolve `self.metrics` via
     /// [`SyncManager::metrics`] (which falls back to a no-op collector if
     /// this hasn't been called).
-    pub(crate) fn set_metrics(
-        &mut self,
-        metrics: Arc<dyn super::metrics::SyncMetricsCollector>,
-    ) {
+    pub(crate) fn set_metrics(&mut self, metrics: Arc<dyn super::metrics::SyncMetricsCollector>) {
         self.metrics = Some(metrics);
     }
 
@@ -185,8 +182,7 @@ impl SyncManager {
         // The no-op fallback lives in a static OnceLock so it isn't
         // allocated per call. `NoOpMetrics` is a unit struct with
         // `Default`, so the init closure is `default()`.
-        static NOOP: std::sync::OnceLock<super::metrics::NoOpMetrics> =
-            std::sync::OnceLock::new();
+        static NOOP: std::sync::OnceLock<super::metrics::NoOpMetrics> = std::sync::OnceLock::new();
         match self.metrics.as_deref() {
             Some(m) => m,
             None => NOOP.get_or_init(super::metrics::NoOpMetrics::default),
