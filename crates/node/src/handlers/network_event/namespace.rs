@@ -200,12 +200,22 @@ pub(super) fn handle_namespace_governance_delta(
                 .await;
             }
 
-            crate::key_delivery::maybe_publish_key_delivery(
-                &context_client,
-                &node_client,
-                &op_for_delivery,
-            )
-            .await;
+            // KeyDelivery is a reaction to a *new* member joining, so
+            // only fire it when we actually applied a new op. On
+            // `Duplicate` (extremely common — every mesh peer
+            // rebroadcasts each gossip, and a backfill round re-sends
+            // the whole DAG) re-publishing a fresh `KeyDelivery` each
+            // time grows the namespace governance DAG without bound
+            // until it hits the backfill cap and never converges again
+            // (#2319). `Pending` likewise has nothing to deliver yet.
+            if matches!(outcome, NamespaceApplyOutcome::Applied) {
+                crate::key_delivery::maybe_publish_key_delivery(
+                    &context_client,
+                    &node_client,
+                    &op_for_delivery,
+                )
+                .await;
+            }
         }
         .into_actor(this),
     );

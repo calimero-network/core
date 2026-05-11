@@ -3518,13 +3518,23 @@ impl SyncManager {
                                 Ok(outcome) => {
                                     if matches!(outcome, NamespaceApplyOutcome::Applied) {
                                         newly_applied = true;
+                                        // Only react to a *newly-applied*
+                                        // `MemberJoined`. On `Duplicate`
+                                        // (the common case — a backfill
+                                        // re-sends the whole DAG every
+                                        // round) re-publishing a fresh
+                                        // `KeyDelivery` each time would
+                                        // grow the namespace governance
+                                        // DAG without bound until it hits
+                                        // the backfill cap and never
+                                        // converges again (#2319).
+                                        crate::key_delivery::maybe_publish_key_delivery(
+                                            &self.context_client,
+                                            &self.node_client,
+                                            &op,
+                                        )
+                                        .await;
                                     }
-                                    crate::key_delivery::maybe_publish_key_delivery(
-                                        &self.context_client,
-                                        &self.node_client,
-                                        &op,
-                                    )
-                                    .await;
                                 }
                             }
                         }
