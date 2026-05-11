@@ -948,6 +948,32 @@ impl<'a> NamespaceGovernance<'a> {
                 "GroupDeleted cascade divergence: local subtree has contexts not in payload: {extra:?}"
             );
         }
+        // Inverse direction is *not* an error — it's the expected shape on a
+        // crash-recovery re-apply (the local subtree shrank since the op was
+        // built) — but log it so a genuinely anomalous payload (a publisher
+        // listing IDs this peer has never seen) is visible for debugging.
+        let payload_only_groups: Vec<[u8; 32]> =
+            payload_groups.difference(&local_groups).copied().collect();
+        if !payload_only_groups.is_empty() {
+            tracing::warn!(
+                root_group_id = %hex::encode(root_group_id),
+                groups = ?payload_only_groups.iter().map(hex::encode).collect::<Vec<_>>(),
+                "GroupDeleted payload lists groups not present locally (expected on a \
+                 crash-recovery re-apply; otherwise investigate for divergence)"
+            );
+        }
+        let payload_only_contexts: Vec<[u8; 32]> = payload_contexts
+            .difference(&local_contexts)
+            .copied()
+            .collect();
+        if !payload_only_contexts.is_empty() {
+            tracing::warn!(
+                root_group_id = %hex::encode(root_group_id),
+                contexts = ?payload_only_contexts.iter().map(hex::encode).collect::<Vec<_>>(),
+                "GroupDeleted payload lists contexts not present locally (expected on a \
+                 crash-recovery re-apply; otherwise investigate for divergence)"
+            );
+        }
 
         // Children-first deletion: descendants then root. For each group:
         // 1. Delete contexts registered on this group (cascade-specific).

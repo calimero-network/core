@@ -4985,6 +4985,11 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id);
+    // `nonce` is informational only — `apply_signed_op` advances the DAG head
+    // from `read_head_record().next_nonce`, not from `op.nonce`, and a rejected
+    // op never advances the head or gets stored. Distinct `group_id`s already
+    // give each op a distinct content hash; we pass increasing values for
+    // readability. (Same as the `governance_group_deleted_*` test.)
     let create = |sk: &PrivateKey, group_id: [u8; 32], parent_id: [u8; 32], nonce: u64| {
         SignedNamespaceOp::sign(
             sk,
