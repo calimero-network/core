@@ -181,15 +181,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_deadline_default_matches_timeout() {
+    fn session_deadline_default_is_at_least_timeout() {
         // Defaults to the 30 s per-step budget so cold-start snapshot
         // syncs aren't cut off mid-flight (#2319 / #2322). It stays a
-        // separately-tunable knob, but the default must be >= timeout.
+        // separately-tunable knob, but the *default* must be >= timeout —
+        // the actor wraps a session that's internally budgeted against
+        // `timeout`, so a default below it would cut healthy syncs short.
         let c = SyncConfig::default();
-        assert_eq!(c.session_deadline, c.timeout);
+        assert!(
+            c.session_deadline >= c.timeout,
+            "default session_deadline ({:?}) must be >= timeout ({:?})",
+            c.session_deadline,
+            c.timeout
+        );
         assert_eq!(
             c.session_deadline,
-            time::Duration::from_secs(DEFAULT_SYNC_TIMEOUT_SECS)
+            time::Duration::from_secs(DEFAULT_SYNC_SESSION_DEADLINE_SECS)
         );
     }
 }

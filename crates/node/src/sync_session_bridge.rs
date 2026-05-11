@@ -76,39 +76,28 @@ pub const SYNC_SESSION_CHANNEL_CAPACITY: usize = 256;
 const SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Why a [`SyncSessionJob`] was dropped instead of run.
-///
-/// Discriminants are explicit and contiguous from 0 so `reason as usize`
-/// indexes [`SyncSessionMetrics::counters`] directly (the `ALL` array
-/// below is kept in the same order).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DropReason {
     /// Actor mailbox at capacity (`try_send` -> `Full`).
-    MailboxFull = 0,
+    MailboxFull,
     /// Actor stopped / shutting down (`try_send` -> `Closed`).
-    ActorClosed = 1,
+    ActorClosed,
     /// An `Initiator` job arrived for a `ContextId` that already has a
     /// session in flight on the actor (#2319 per-context gate).
-    ContextBusy = 2,
+    ContextBusy,
 }
 
 impl DropReason {
-    fn as_str(self) -> &'static str {
+    /// Prometheus `reason` label value. Adding a variant forces an
+    /// update here (and in [`SyncSessionMetrics`]) — the matches are
+    /// exhaustive, so it's compiler-enforced, not a documented invariant.
+    fn label(self) -> &'static str {
         match self {
             DropReason::MailboxFull => "mailbox_full",
             DropReason::ActorClosed => "actor_closed",
             DropReason::ContextBusy => "context_busy",
         }
     }
-
-    /// All variants, in discriminant order. Used to pre-create the
-    /// labeled counters once at construction so
-    /// [`SyncSessionMetrics::record_drop`] never allocates on the hot
-    /// path.
-    const ALL: [DropReason; 3] = [
-        DropReason::MailboxFull,
-        DropReason::ActorClosed,
-        DropReason::ContextBusy,
-    ];
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
@@ -119,20 +108,24 @@ struct DropReasonLabel {
 /// Prometheus + summary-log accounting for the sync-session actor
 /// (#2319 Step 4).
 ///
-/// Holds one owned [`Counter`] handle per [`DropReason`] (in
-/// `DropReason::ALL` order). These are clones of the entries in the
-/// `sync_session_jobs_dropped_total{reason=...}` Prometheus family — the
-/// family itself stays in the registry; `prometheus_client::Counter` is
-/// `Arc`-backed, so incrementing a handle here updates the registered
-/// metric. `record_drop` is then a single atomic increment with no
-/// allocation, and `dropped_total` (the once-a-minute `log_summary`
-/// line) is just the sum of the three counters — no second source of
-/// truth. Cloned (cheaply) into the [`SyncSessionSender`] (mailbox
+/// Holds one owned [`Counter`] handle per [`DropReason`] — clones of the
+/// entries in the `sync_session_jobs_dropped_total{reason=...}`
+/// Prometheus family. The family itself stays in the registry;
+/// `prometheus_client::Counter` is `Arc`-backed, so incrementing a
+/// handle here updates the registered metric. `record_drop` dispatches
+/// with an exhaustive `match` (no array indexing, no implicit
+/// discriminant invariant — adding a [`DropReason`] won't compile until
+/// the new field + match arms are added), is a single atomic increment
+/// with no allocation, and `dropped_total` (the once-a-minute
+/// `log_summary` line) is just the sum of the three — no second source
+/// of truth. Cloned (cheaply) into the [`SyncSessionSender`] (mailbox
 /// `Full`/`Closed` drops) and the [`SyncSessionActor`]
 /// (per-context-busy drops).
 #[derive(Clone, Debug)]
 pub struct SyncSessionMetrics {
-    counters: [Counter; 3],
+    mailbox_full: Counter,
+    actor_closed: Counter,
+    context_busy: Counter,
 }
 
 impl SyncSessionMetrics {
@@ -155,26 +148,45 @@ impl SyncSessionMetrics {
     }
 
     fn from_family(dropped: &Family<DropReasonLabel, Counter>) -> Self {
-        let counters = DropReason::ALL.map(|reason| {
+        let counter = |reason: DropReason| {
             dropped
                 .get_or_create(&DropReasonLabel {
-                    reason: reason.as_str().to_owned(),
+                    reason: reason.label().to_owned(),
                 })
                 .clone()
-        });
-        Self { counters }
+        };
+        Self {
+            mailbox_full: counter(DropReason::MailboxFull),
+            actor_closed: counter(DropReason::ActorClosed),
+            context_busy: counter(DropReason::ContextBusy),
+        }
+    }
+
+    fn counter(&self, reason: DropReason) -> &Counter {
+        match reason {
+            DropReason::MailboxFull => &self.mailbox_full,
+            DropReason::ActorClosed => &self.actor_closed,
+            DropReason::ContextBusy => &self.context_busy,
+        }
     }
 
     /// Record one dropped job. Single atomic increment on the
     /// pre-created per-reason counter — no allocation.
     pub fn record_drop(&self, reason: DropReason) {
-        let _prev = self.counters[reason as usize].inc();
+        let _prev = self.counter(reason).inc();
     }
 
     /// Total dropped jobs across all reasons (for `log_summary`).
     /// Derived from the per-reason counters — no duplicate atomic.
     pub fn dropped_total(&self) -> u64 {
-        self.counters.iter().map(Counter::get).sum()
+        self.mailbox_full.get() + self.actor_closed.get() + self.context_busy.get()
+    }
+
+    /// Test-only: read the per-reason counter (verifies `record_drop`
+    /// routes each reason to the right metric).
+    #[cfg(test)]
+    fn count(&self, reason: DropReason) -> u64 {
+        self.counter(reason).get()
     }
 }
 
@@ -613,18 +625,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metrics_count_drops_by_reason() {
+    fn metrics_start_at_zero() {
+        let m = SyncSessionMetrics::new_unregistered();
+        assert_eq!(m.dropped_total(), 0);
+        assert_eq!(m.count(DropReason::MailboxFull), 0);
+        assert_eq!(m.count(DropReason::ActorClosed), 0);
+        assert_eq!(m.count(DropReason::ContextBusy), 0);
+    }
+
+    #[test]
+    fn record_drop_routes_each_reason_to_its_own_counter() {
         let m = SyncSessionMetrics::new_unregistered();
         m.record_drop(DropReason::MailboxFull);
         m.record_drop(DropReason::MailboxFull);
         m.record_drop(DropReason::ActorClosed);
         m.record_drop(DropReason::ContextBusy);
+        assert_eq!(m.count(DropReason::MailboxFull), 2);
+        assert_eq!(m.count(DropReason::ActorClosed), 1);
+        assert_eq!(m.count(DropReason::ContextBusy), 1);
         assert_eq!(m.dropped_total(), 4);
     }
 
     #[test]
-    fn metrics_start_at_zero() {
+    fn dropped_total_is_the_sum_of_per_reason_counters() {
         let m = SyncSessionMetrics::new_unregistered();
-        assert_eq!(m.dropped_total(), 0);
+        for _ in 0..3 {
+            m.record_drop(DropReason::ContextBusy);
+        }
+        m.record_drop(DropReason::MailboxFull);
+        assert_eq!(
+            m.dropped_total(),
+            m.count(DropReason::MailboxFull)
+                + m.count(DropReason::ActorClosed)
+                + m.count(DropReason::ContextBusy)
+        );
+        assert_eq!(m.dropped_total(), 4);
     }
 }
