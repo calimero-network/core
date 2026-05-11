@@ -27,6 +27,19 @@ pub use calimero_node_primitives::sync::DEFAULT_DELTA_SYNC_THRESHOLD;
 /// Default timeout for entire sync operation (30 seconds)
 pub const DEFAULT_SYNC_TIMEOUT_SECS: u64 = 30;
 
+/// Default per-session deadline for one sync session run on the
+/// `SyncSessionActor` (15 seconds).
+///
+/// Distinct from [`DEFAULT_SYNC_TIMEOUT_SECS`]: that 30 s value is an
+/// internal budget reused for sub-steps of a session (handshake recv,
+/// parent-pull, replay). This bounds the *whole* session as seen by the
+/// actor, so a single stuck `HashComparison` session frees its slot —
+/// and stops burning the actor's arbiter thread — within 15 s instead of
+/// 30 s. Healthy sessions are ~1.5–40 ms (and divergence repairs that
+/// legitimately walk ~10k nodes still finish well under 15 s), so this is
+/// comfortably permissive. See calimero-network/core #2319.
+pub const DEFAULT_SYNC_SESSION_DEADLINE_SECS: u64 = 15;
+
 /// Default minimum interval between syncs for same context (5 seconds)
 /// This allows rapid re-sync if broadcasts fail, ensuring fast CRDT convergence
 pub const DEFAULT_SYNC_INTERVAL_SECS: u64 = 5;
@@ -102,6 +115,10 @@ pub struct SyncConfig {
     /// Timeout for entire sync operation
     pub timeout: time::Duration,
 
+    /// Deadline for one sync session run on the `SyncSessionActor`.
+    /// See [`DEFAULT_SYNC_SESSION_DEADLINE_SECS`].
+    pub session_deadline: time::Duration,
+
     /// Minimum interval between syncs for same context
     pub interval: time::Duration,
 
@@ -134,6 +151,7 @@ impl Default for SyncConfig {
     fn default() -> Self {
         Self {
             timeout: time::Duration::from_secs(DEFAULT_SYNC_TIMEOUT_SECS),
+            session_deadline: time::Duration::from_secs(DEFAULT_SYNC_SESSION_DEADLINE_SECS),
             interval: time::Duration::from_secs(DEFAULT_SYNC_INTERVAL_SECS),
             frequency: time::Duration::from_secs(DEFAULT_SYNC_FREQUENCY_SECS),
             max_concurrent: DEFAULT_MAX_CONCURRENT_SYNCS,
@@ -143,5 +161,24 @@ impl Default for SyncConfig {
             parent_pull_additional_peers: DEFAULT_PARENT_PULL_ADDITIONAL_PEERS,
             parent_pull_budget: time::Duration::from_millis(DEFAULT_PARENT_PULL_BUDGET_MS),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_deadline_default_is_15s() {
+        assert_eq!(
+            SyncConfig::default().session_deadline,
+            time::Duration::from_secs(15)
+        );
+    }
+
+    #[test]
+    fn session_deadline_is_shorter_than_timeout() {
+        let c = SyncConfig::default();
+        assert!(c.session_deadline < c.timeout);
     }
 }

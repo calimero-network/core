@@ -264,10 +264,24 @@ fn default_kms_attestation_tcb_statuses() -> Vec<String> {
 pub struct SyncConfig {
     #[serde(rename = "timeout_ms", with = "serde_duration")]
     pub timeout: Duration,
+    /// Per-session deadline for one sync session run on the node's
+    /// `SyncSessionActor` (calimero-network/core #2319). Optional in the
+    /// config file; defaults to 15 s (shorter than `timeout_ms`, which
+    /// stays an internal per-step budget).
+    #[serde(
+        rename = "session_deadline_ms",
+        with = "serde_duration",
+        default = "default_sync_session_deadline"
+    )]
+    pub session_deadline: Duration,
     #[serde(rename = "interval_ms", with = "serde_duration")]
     pub interval: Duration,
     #[serde(rename = "frequency_ms", with = "serde_duration")]
     pub frequency: Duration,
+}
+
+fn default_sync_session_deadline() -> Duration {
+    Duration::from_secs(15)
 }
 
 /// Configuration for specialized node functionality (e.g., read-only nodes).
