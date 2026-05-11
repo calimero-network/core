@@ -35,8 +35,9 @@ use crate::arbiter_pool::ArbiterPool;
 use crate::gc::GarbageCollector;
 use crate::network_event_channel::{self, NetworkEventChannelConfig};
 use crate::network_event_processor::NetworkEventBridge;
+use crate::node_metrics::{self, NodeMetrics};
 use crate::state_delta_bridge::{start_state_delta_actor, STATE_DELTA_CHANNEL_CAPACITY};
-use crate::sync::{SyncConfig, SyncManager};
+use crate::sync::{PrometheusSyncMetrics, SyncConfig, SyncManager};
 use crate::sync_session_bridge::{start_sync_session_actor, SYNC_SESSION_CHANNEL_CAPACITY};
 use crate::NodeManager;
 
@@ -72,6 +73,27 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let peer_id = config.identity.public().to_peer_id();
 
     info!("Peer ID: {}", peer_id);
+
+    // Centralised node-level observability families (build-info beacon,
+    // NodeState DashMap gauges, blob-cache eviction counters, HTTP request
+    // histograms, process resource gauges). Registered into the same
+    // `Registry` that all other subsystems write to, then installed as a
+    // process-global handle so synchronous recording sites (blob-cache
+    // eviction, delta-store apply, HTTP middleware) can record without
+    // plumbing.
+    let node_metrics = NodeMetrics::new(&mut registry);
+    node_metrics.set_build_info(env!("CARGO_PKG_VERSION"), &peer_id.to_string());
+    node_metrics::install_global(node_metrics.clone());
+
+    // Sync protocol metric families (`sync_*` — messages_sent, bytes_sent,
+    // round_trips, phase_duration_seconds, snapshot_blocked, verification_
+    // failures, buffer_drops, …). The recording sites live behind the
+    // `SyncMetricsCollector` trait inside the sync module; the registry
+    // entries surface them on /metrics so operators can chart whichever
+    // recording sites are wired (and so empty families self-document the
+    // schema for future wiring).
+    let sync_metrics: Arc<dyn crate::sync::SyncMetricsCollector> =
+        Arc::new(PrometheusSyncMetrics::new(&mut registry));
 
     // Open datastore with optional encryption
     let datastore = if let Some(ref key) = config.datastore.encryption_key {
@@ -176,6 +198,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let node_state = crate::NodeState::new(config.specialized_node.accept_mock_tee, config.mode);
 
+    // Periodic gauge-snapshot tick — once per `METRICS_TICK_INTERVAL`,
+    // reads NodeState DashMap sizes and process resource counters and
+    // updates the registered gauges. Gives operators a dashboard view
+    // of buffer / cache / session counts without instrumenting every
+    // mutation site.
+    let _metrics_tick =
+        crate::node_metrics::spawn_metrics_tick(node_metrics.clone(), node_state.clone());
+
     // Drain locally-applied delta notifications from the execute path
     // and register them into the in-memory DeltaStore. Replaces the
     // per-interval-sync `load_persisted_deltas` rescan that existed
@@ -251,6 +281,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         ns_sync_rx,
         ns_join_rx,
     );
+
+    // Attach the sync-protocol metrics collector. Must happen before any
+    // clones are taken — every responder/initiator clone shares the
+    // recording handle via `Arc`.
+    sync_manager.set_metrics(sync_metrics);
 
     // Spin up the dedicated StateDelta actor on its own Arbiter
     // BEFORE constructing NodeManager so the sender can be threaded
