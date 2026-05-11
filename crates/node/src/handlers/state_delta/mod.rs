@@ -182,7 +182,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
     debug!(
         %context_id,
         count = snapshot_len,
-        "governance-pending drain:draining governance-pending buffer"
+        "governance-pending drain: draining governance-pending buffer"
     );
     for _ in 0..snapshot_len {
         let Some(buffered) = input.node_state.pop_governance_pending(context_id) else {
@@ -192,7 +192,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
             warn!(
                 %context_id,
                 delta_id = ?buffered.id,
-                "governance-pending drain:pending delta has no governance_position; dropping"
+                "governance-pending drain: pending delta has no governance_position; dropping"
             );
             continue;
         };
@@ -204,7 +204,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     %context_id,
                     delta_id = ?buffered.id,
                     author = %buffered.author_id,
-                    "governance-pending drain:pending delta now authorized; re-applying"
+                    "governance-pending drain: pending delta now authorized; re-applying"
                 );
                 crate::node_metrics::record_governance_drain_outcome("applied");
                 let reconstructed = state_delta_message_from_buffered(buffered, *context_id);
@@ -212,7 +212,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     warn!(
                         %context_id,
                         %err,
-                        "governance-pending drain:re-apply of authorized buffered delta failed"
+                        "governance-pending drain: re-apply of authorized buffered delta failed"
                     );
                 }
             }
@@ -222,7 +222,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     delta_id = ?buffered.id,
                     author = %buffered.author_id,
                     last_role = ?last_role,
-                    "governance-pending drain:pending delta from removed author; dropping"
+                    "governance-pending drain: pending delta from removed author; dropping"
                 );
                 crate::node_metrics::record_governance_drain_outcome("removed");
             }
@@ -231,7 +231,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     %context_id,
                     delta_id = ?buffered.id,
                     author = %buffered.author_id,
-                    "governance-pending drain:pending delta from non-member; dropping"
+                    "governance-pending drain: pending delta from non-member; dropping"
                 );
                 crate::node_metrics::record_governance_drain_outcome("never_member");
             }
@@ -246,7 +246,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                         %context_id,
                         delta_id = ?buffered.id,
                         attempts = buffered.governance_drain_attempts,
-                        "governance-pending drain:dropping pending delta after exhausting drain attempts \
+                        "governance-pending drain: dropping pending delta after exhausting drain attempts \
                          (governance heads still unknown — likely permanently missing)"
                     );
                     crate::node_metrics::record_governance_drain_outcome("dropped_max_attempts");
@@ -256,7 +256,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                         delta_id = ?buffered.id,
                         needed_count = needed.len(),
                         attempts = buffered.governance_drain_attempts,
-                        "governance-pending drain:still pending governance catchup; re-buffering"
+                        "governance-pending drain: still pending governance catchup; re-buffering"
                     );
                     crate::node_metrics::record_governance_drain_outcome("rebuffered");
                     input
@@ -269,7 +269,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     %context_id,
                     delta_id = ?buffered.id,
                     %err,
-                    "governance-pending drain:membership lookup failed for pending delta; dropping"
+                    "governance-pending drain: membership lookup failed for pending delta; dropping"
                 );
                 crate::node_metrics::record_governance_drain_outcome("lookup_error");
             }
@@ -297,7 +297,7 @@ pub(crate) async fn drain_all_governance_pending(input: &StateDeltaContext) {
     }
     debug!(
         count = context_ids.len(),
-        "governance-pending drain:governance-apply hook draining pending buffers across contexts"
+        "governance-pending drain: governance-apply hook draining pending buffers across contexts"
     );
     for context_id in context_ids {
         drain_governance_pending(input, &context_id).await;
@@ -928,7 +928,7 @@ pub async fn handle_state_delta(
                     %author_id,
                     group_id = ?gid,
                     delta_id = ?delta_id,
-                    "cross-DAG check:rejecting state delta — group context but no governance_position \
+                    "cross-DAG check: rejecting state delta — group context but no governance_position \
                      (likely a malicious bypass attempt)"
                 );
                 return Ok(());
@@ -938,7 +938,7 @@ pub async fn handle_state_delta(
                     %context_id,
                     %author_id,
                     %err,
-                    "cross-DAG check:get_group_for_context failed; rejecting delta to avoid silent bypass"
+                    "cross-DAG check: get_group_for_context failed; rejecting delta to avoid silent bypass"
                 );
                 return Ok(());
             }
@@ -954,7 +954,7 @@ pub async fn handle_state_delta(
                     %author_id,
                     role = ?role,
                     group_id = ?pos.group_id,
-                    "cross-DAG check:author authorized at governance cut"
+                    "cross-DAG check: author authorized at governance cut"
                 );
             }
             Ok(MembershipStatus::Removed { last_role }) => {
@@ -963,7 +963,7 @@ pub async fn handle_state_delta(
                     %author_id,
                     last_role = ?last_role,
                     group_id = ?pos.group_id,
-                    "cross-DAG check:rejecting state delta — author was removed from group at governance cut"
+                    "cross-DAG check: rejecting state delta — author was removed from group at governance cut"
                 );
                 return Ok(());
             }
@@ -972,7 +972,7 @@ pub async fn handle_state_delta(
                     %context_id,
                     %author_id,
                     group_id = ?pos.group_id,
-                    "cross-DAG check:rejecting state delta — author is not a member of the group at governance cut"
+                    "cross-DAG check: rejecting state delta — author is not a member of the group at governance cut"
                 );
                 return Ok(());
             }
@@ -982,7 +982,7 @@ pub async fn handle_state_delta(
                     %author_id,
                     group_id = ?pos.group_id,
                     needed_count = needed.len(),
-                    "cross-DAG check:governance state behind position; buffering delta until catchup"
+                    "cross-DAG check: governance state behind position; buffering delta until catchup"
                 );
                 let buffered = calimero_node_primitives::delta_buffer::BufferedDelta {
                     id: delta_id,
@@ -1007,7 +1007,7 @@ pub async fn handle_state_delta(
                     %author_id,
                     group_id = ?pos.group_id,
                     %err,
-                    "cross-DAG check:rejecting state delta — membership lookup failed (hash mismatch / corruption)"
+                    "cross-DAG check: rejecting state delta — membership lookup failed (hash mismatch / corruption)"
                 );
                 return Ok(());
             }
@@ -1889,7 +1889,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     author = %buffered.author_id,
                     group_id = ?gid,
                     delta_id = ?delta_id,
-                    "cross-DAG check (replay):rejecting buffered delta — group context but no \
+                    "cross-DAG check (replay): rejecting buffered delta — group context but no \
                      governance_position (likely a malicious bypass attempt)"
                 );
                 return Ok(false);
@@ -1899,7 +1899,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     %context_id,
                     author = %buffered.author_id,
                     %err,
-                    "cross-DAG check (replay):get_group_for_context failed; rejecting buffered \
+                    "cross-DAG check (replay): get_group_for_context failed; rejecting buffered \
                      delta to avoid silent bypass"
                 );
                 return Ok(false);
@@ -1916,7 +1916,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     author = %buffered.author_id,
                     role = ?role,
                     group_id = ?pos.group_id,
-                    "cross-DAG check (replay):author authorized at governance cut"
+                    "cross-DAG check (replay): author authorized at governance cut"
                 );
             }
             Ok(MembershipStatus::Removed { last_role }) => {
@@ -1925,7 +1925,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     author = %buffered.author_id,
                     last_role = ?last_role,
                     group_id = ?pos.group_id,
-                    "cross-DAG check (replay):rejecting buffered delta — author was removed at governance cut"
+                    "cross-DAG check (replay): rejecting buffered delta — author was removed at governance cut"
                 );
                 return Ok(false);
             }
@@ -1934,7 +1934,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     %context_id,
                     author = %buffered.author_id,
                     group_id = ?pos.group_id,
-                    "cross-DAG check (replay):rejecting buffered delta — author is not a member at governance cut"
+                    "cross-DAG check (replay): rejecting buffered delta — author is not a member at governance cut"
                 );
                 return Ok(false);
             }
@@ -1951,7 +1951,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     author = %buffered.author_id,
                     group_id = ?pos.group_id,
                     needed_count = needed.len(),
-                    "cross-DAG check (replay):governance heads still unknown after sync — dropping"
+                    "cross-DAG check (replay): governance heads still unknown after sync — dropping"
                 );
                 return Ok(false);
             }
@@ -1961,7 +1961,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     author = %buffered.author_id,
                     group_id = ?pos.group_id,
                     %err,
-                    "cross-DAG check (replay):rejecting buffered delta — membership lookup failed"
+                    "cross-DAG check (replay): rejecting buffered delta — membership lookup failed"
                 );
                 return Ok(false);
             }

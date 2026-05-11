@@ -764,15 +764,53 @@ mod tests {
 
     #[test]
     fn prefix_walk_forward_only_pre_remove_then_readd_still_member() {
-        // The Add → Remove → Add sequence: a position pointing at the
-        // *first* Add (before the Remove) must resolve to Member with
-        // the original role, regardless of any later Remove + re-add
-        // activity in the DAG. The walker only sees the prefix.
-        let early_prefix = &[MembershipTransition::Added(GroupMemberRole::Member)];
-        let result = resolve_membership_from_transitions(early_prefix);
+        // The Add → Remove → Add scenario, exercised end-to-end. The
+        // full transition sequence represents the local DAG state on a
+        // receiver that has observed all three ops; the prefixes are
+        // the governance positions a sender might have signed against.
+        //
+        // Each prefix's resolution must depend only on what's in the
+        // prefix — not on the trailing ops the receiver has since
+        // applied. That's the forward-only property.
+        let full_sequence = [
+            MembershipTransition::Added(GroupMemberRole::Member),
+            MembershipTransition::Removed,
+            MembershipTransition::Added(GroupMemberRole::Admin),
+        ];
+
+        // Position points at the first Add. The receiver has since
+        // applied the Remove and the re-add, but neither is in this
+        // prefix — must resolve to Member(Member).
+        let at_first_add = &full_sequence[..=0];
         assert!(
-            matches!(result, MembershipStatus::Member(GroupMemberRole::Member)),
-            "forward-only: position at first Add must be Member regardless of later DAG, got {result:?}"
+            matches!(
+                resolve_membership_from_transitions(at_first_add),
+                MembershipStatus::Member(GroupMemberRole::Member)
+            ),
+            "forward-only: position at first Add stays Member(Member) even though \
+             receiver has since seen Remove+re-add"
+        );
+
+        // Position points after the Remove. Must resolve to Removed
+        // with last_role = Member. The receiver's later re-add is
+        // outside the prefix.
+        let at_remove = &full_sequence[..=1];
+        match resolve_membership_from_transitions(at_remove) {
+            MembershipStatus::Removed { last_role } => {
+                assert!(matches!(last_role, GroupMemberRole::Member));
+            }
+            other => panic!("position at Remove must be Removed, got {other:?}"),
+        }
+
+        // Position points at the re-add. Must resolve to Member(Admin)
+        // — the new role from the re-add, not the original Member role.
+        let at_readd = &full_sequence[..=2];
+        assert!(
+            matches!(
+                resolve_membership_from_transitions(at_readd),
+                MembershipStatus::Member(GroupMemberRole::Admin)
+            ),
+            "position at re-add must reflect the new role"
         );
     }
 
@@ -794,11 +832,14 @@ mod tests {
 
     #[test]
     fn prefix_walk_forward_only_property_random() {
-        // Property test: for any prefix of a transition sequence ending
-        // in Add (no Remove yet at the prefix boundary), the resolver
-        // must return Member. Generate 1000 sequences, take a random
-        // prefix that ends right after an Add, verify Member is
-        // returned.
+        // Property test: for any prefix of a transition sequence whose
+        // final transition is an Add (the signer's status at the prefix
+        // boundary is Member, regardless of any earlier Remove/re-add
+        // cycles in the prefix), the resolver must return Member.
+        // Generate random sequences, take a prefix that ends right
+        // after an Add, verify Member is returned. The prefix CAN
+        // contain earlier Removes — what matters is the last
+        // transition.
         const SEED: u64 = 0xC4FA_DEFE_EDBE_EF42;
         let mut state = SEED;
         let mut next = || {
