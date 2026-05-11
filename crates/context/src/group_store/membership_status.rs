@@ -831,15 +831,22 @@ mod tests {
     }
 
     #[test]
-    fn prefix_walk_forward_only_property_random() {
-        // Property test: for any prefix of a transition sequence whose
-        // final transition is an Add (the signer's status at the prefix
-        // boundary is Member, regardless of any earlier Remove/re-add
-        // cycles in the prefix), the resolver must return Member.
-        // Generate random sequences, take a prefix that ends right
-        // after an Add, verify Member is returned. The prefix CAN
-        // contain earlier Removes — what matters is the last
-        // transition.
+    fn resolver_state_machine_add_ending_prefix_is_member() {
+        // Resolver state-machine property (not the BFS boundary
+        // property — that's exercised by the explicit per-transition
+        // tests above and the canary test below): for any random
+        // transition sequence and any prefix of that sequence whose
+        // *last* transition is an Add, the resolver returns Member.
+        // The prefix CAN contain earlier Removes; what matters is the
+        // last transition.
+        //
+        // This is one half of forward-only: given that the BFS has
+        // produced the right truncated transition list for a prefix
+        // boundary, the resolver maps it correctly. The other half
+        // (the BFS truncates at the boundary in the first place) is
+        // not testable here without a real DAG — `prefix_walk_membership`
+        // is unit-testable only via its inputs/outputs, and we
+        // exercise the canary case explicitly below.
         const SEED: u64 = 0xC4FA_DEFE_EDBE_EF42;
         let mut state = SEED;
         let mut next = || {

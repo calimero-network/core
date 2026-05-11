@@ -5204,29 +5204,38 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
 }
 
 // ---------------------------------------------------------------------
-// Forward-only invariant integration tests
+// Fast-path integration tests for `membership_status_at`
 //
-// These exercise the property end-to-end through `membership_status_at`
-// against a real in-memory `Store`. The fast path (Branch 1, heads
-// equal) is enough to demonstrate the materialized-state-snapshot
-// semantics that the apply-time membership check consumes: at any point
-// in time, the check sees the set as it is *now*, and the forward-only
-// property of the
-// prefix walk (which is unit-tested in `membership_status.rs`) means
-// that pre-removal positions resolve to Member even when the local
-// receiver has already applied a `MemberRemoved` for that signer.
+// These exercise Branch 1 of `membership_status_at` against a real
+// in-memory `Store`: a `GovernancePosition` whose heads equal the local
+// DAG heads (both empty here), so the resolver short-circuits to a
+// materialized-set lookup and never invokes `prefix_walk_membership`.
 //
-// Full DAG-level integration tests for the prefix walk (encrypted op
-// construction, keyring setup, ancestor chain) are tracked separately
-// — the per-transition resolver tests in `membership_status.rs` cover
-// the BFS state-machine logic.
+// What's covered:
+//   * The fast path's read of the materialized member set is consistent
+//     with what the apply-time check expects when the sender and the
+//     receiver are at the same governance cut.
+//   * The documented Branch 1 conflation of `Removed` into `NeverMember`
+//     (the materialized set has no row for a removed signer, so the
+//     fast path cannot distinguish "removed" from "was never a member"
+//     without consulting the DAG).
+//
+// What's NOT covered here:
+//   * The forward-only invariant — that lives in `prefix_walk_membership`
+//     (Branch 3), where the BFS visits only the ancestry of the
+//     position's heads. Exercising it end-to-end requires a non-empty
+//     DAG with diverging heads, which means signed namespace ops,
+//     keyring setup, and ancestor chains. That harness is tracked
+//     separately. The per-transition resolver tests in
+//     `membership_status.rs` (`prefix_walk_forward_only_*`) cover the
+//     state-machine logic that the BFS feeds into.
 // ---------------------------------------------------------------------
 
 #[test]
-fn forward_only_current_member_resolves_to_member() {
+fn fast_path_current_member_resolves_to_member() {
     // Baseline: a member who exists in the materialized set resolves
-    // to `Member(role)` when the position points at the current cut.
-    // Required precondition for any forward-only test — if this
+    // to `Member(role)` when the position's heads equal local heads.
+    // Required precondition for the other Branch 1 tests — if this
     // baseline fails, the others say nothing.
     use calimero_context_config::types::GovernancePosition;
     let store = test_store();
@@ -5247,13 +5256,15 @@ fn forward_only_current_member_resolves_to_member() {
 }
 
 #[test]
-fn forward_only_removed_member_in_current_set_resolves_to_nevermember() {
-    // After a removal, the materialized member set no longer contains
-    // the removed signer. On the fast path (heads equal), the
-    // resolver returns NeverMember — the documented conflation. The check
-    // treats this as "not authorized" and rejects the delta, which
-    // is the correct outcome for a delta whose position equals the
-    // post-removal cut.
+fn fast_path_removed_member_conflates_to_nevermember() {
+    // Documented Branch 1 conflation: with heads equal, the resolver
+    // only consults the materialized member set, which has no row for
+    // a removed signer. It returns `NeverMember` — it cannot
+    // distinguish "removed" from "was never a member" without the DAG.
+    // The distinction is recovered by Branch 3 (prefix walk) when the
+    // sender's position predates the removal. The apply-time check
+    // treats both `Removed` and `NeverMember` as rejection, so the
+    // practical security outcome is identical on this path.
     use calimero_context_config::types::GovernancePosition;
     let store = test_store();
     let gid = test_group_id();
@@ -5261,18 +5272,12 @@ fn forward_only_removed_member_in_current_set_resolves_to_nevermember() {
 
     save_group_meta(&store, &gid, &test_meta()).unwrap();
     add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
-    // Removal flips the materialized set; the signer is no longer
-    // findable by `get_group_member_role`.
     remove_group_member(&store, &gid, &signer).unwrap();
 
     let state_hash = compute_group_state_hash(&store, &gid).unwrap();
     let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
 
     let status = membership_status_at(&store, &signer, &position).unwrap();
-    // Fast path conflates Removed into NeverMember — documented
-    // limitation. The prefix walk (when heads differ) recovers the
-    // distinction. The apply-time check treats both as rejection, so
-    // the practical security outcome is identical.
     assert!(
         matches!(status, MembershipStatus::NeverMember),
         "removed signer on heads-equal fast path is NeverMember, got {status:?}"
@@ -5280,11 +5285,11 @@ fn forward_only_removed_member_in_current_set_resolves_to_nevermember() {
 }
 
 #[test]
-fn forward_only_re_added_member_resolves_to_member() {
+fn fast_path_re_added_member_resolves_to_member() {
     // Add → Remove → Add: the materialized set contains the signer
     // again, so the fast path returns Member with the latest role.
-    // This is the "rehabilitation" case — the resolver doesn't
-    // remember that they were ever removed.
+    // The resolver doesn't remember that they were ever removed —
+    // the deny-list elsewhere handles "currently removed" semantics.
     use calimero_context_config::types::GovernancePosition;
     let store = test_store();
     let gid = test_group_id();
@@ -5306,9 +5311,10 @@ fn forward_only_re_added_member_resolves_to_member() {
 }
 
 #[test]
-fn forward_only_role_promotion_picks_current_role() {
+fn fast_path_role_promotion_picks_current_role() {
     // Role changes between Add and present don't cause spurious
-    // rejection. The materialized set reflects the latest role.
+    // rejection on the fast path — the materialized set reflects the
+    // latest role.
     use calimero_context_config::types::GovernancePosition;
     let store = test_store();
     let gid = test_group_id();
