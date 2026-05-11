@@ -182,9 +182,8 @@ impl SyncSessionMetrics {
         self.mailbox_full.get() + self.actor_closed.get() + self.context_busy.get()
     }
 
-    /// Test-only: read the per-reason counter (verifies `record_drop`
-    /// routes each reason to the right metric).
-    #[cfg(test)]
+    /// Read the per-reason counter — used by `log_summary` (and tests
+    /// verifying `record_drop` routes each reason to the right metric).
     fn count(&self, reason: DropReason) -> u64 {
         self.counter(reason).get()
     }
@@ -334,7 +333,6 @@ pub struct SyncSessionActor {
     processed_total: Arc<AtomicU64>,
     error_total: Arc<AtomicU64>,
     timeout_total: Arc<AtomicU64>,
-    per_context_busy_total: Arc<AtomicU64>,
 }
 
 impl SyncSessionActor {
@@ -356,7 +354,6 @@ impl SyncSessionActor {
             processed_total: Arc::new(AtomicU64::new(0)),
             error_total: Arc::new(AtomicU64::new(0)),
             timeout_total: Arc::new(AtomicU64::new(0)),
-            per_context_busy_total: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -365,7 +362,10 @@ impl SyncSessionActor {
         let errors = self.error_total.load(Ordering::Relaxed);
         let timeouts = self.timeout_total.load(Ordering::Relaxed);
         let dropped = self.metrics.dropped_total();
-        let per_context_busy = self.per_context_busy_total.load(Ordering::Relaxed);
+        // #2319: `record_drop(ContextBusy)` already counts this; reuse
+        // that Prometheus counter rather than a parallel atomic that
+        // could drift.
+        let per_context_busy = self.metrics.count(DropReason::ContextBusy);
         let in_flight = self.in_flight.load(Ordering::Relaxed);
         let in_flight_contexts = self.in_flight_initiators.len();
         info!(
@@ -465,7 +465,6 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
             } => {
                 // #2319: refuse a duplicate initiator for this context.
                 if self.in_flight_initiators.insert(context_id, ()).is_some() {
-                    let _prev = self.per_context_busy_total.fetch_add(1, Ordering::Relaxed);
                     self.metrics.record_drop(DropReason::ContextBusy);
                     debug!(
                         %context_id,
