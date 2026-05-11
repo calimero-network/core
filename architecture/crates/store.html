@@ -307,12 +307,12 @@
 
 <div class="g3" style="margin-top:18px;margin-bottom:18px;">
   <div class="cb">
-    <h4 style="color:#06b6d4;">Map</h4>
+    <h4 style="color:#06b6d4;">UnorderedMap</h4>
     <p style="margin-top:8px;">Observed-remove map. Concurrent puts to the same key are resolved by LWW using <span class="code">HybridTimestamp</span>. Deletions are tracked as tombstones until causally stable.</p>
   </div>
   <div class="cb">
-    <h4 style="color:#06b6d4;">Set</h4>
-    <p style="margin-top:8px;">Observed-remove set. Add/remove conflicts resolved in favor of add (add-wins semantics). Internally backed by a Map with unit values.</p>
+    <h4 style="color:#06b6d4;">UnorderedSet</h4>
+    <p style="margin-top:8px;">Observed-remove set. Add/remove conflicts resolved in favor of add (add-wins semantics). Internally backed by an <span class="code">UnorderedMap</span> with unit values.</p>
   </div>
   <div class="cb">
     <h4 style="color:#06b6d4;">LwwRegister</h4>
@@ -377,14 +377,14 @@
 </div>
 <div class="cb">
 <h4>Counter</h4>
-<p>G-Counter (grow-only). Each node increments its own slot; <span class="code">value()</span> returns the sum across all nodes. Naturally commutative and idempotent.</p>
+<p>Generic over <span class="code">ALLOW_DECREMENT: bool</span>. Default <span class="code">Counter&lt;false&gt;</span> (alias <span class="code">GCounter</span>) is grow-only: each node increments its own slot and <span class="code">value()</span> returns the sum across all nodes. <span class="code">Counter&lt;true&gt;</span> (alias <span class="code">PNCounter</span>) layers a second per-node map to also support decrement. Both variants are commutative and idempotent.</p>
 </div>
 </div>
 </div>
 
 <div class="card gc">
 <h3 id="storage-primitives">Storage Primitives</h3>
-<p style="margin-bottom:10px;">Beyond the public CRDT collections above (<span class="code">UnorderedMap</span>, <span class="code">Vector</span>, <span class="code">Set</span>, <span class="code">LwwRegister</span>, <span class="code">Counter</span>) the storage layer provides wrappers that constrain who can write what. Three flavours of constraint:</p>
+<p style="margin-bottom:10px;">Beyond the public CRDT collections above (<span class="code">UnorderedMap</span>, <span class="code">Vector</span>, <span class="code">UnorderedSet</span>, <span class="code">LwwRegister</span>, <span class="code">Counter</span>) the storage layer provides wrappers that constrain who can write what. Three flavours of constraint:</p>
 <ul style="margin-bottom:14px;padding-left:20px;">
   <li><strong>Signature-based</strong> (<span class="code">UserStorage</span>, <span class="code">SharedStorage</span>, <span class="code">AuthoredMap</span>, <span class="code">AuthoredVector</span>) — the context manager signs each mutating action with the executor's private key (<a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/context/src/handlers/execute/mod.rs" target="_blank" rel="noopener"><code>sign_authorized_actions</code> in crates/context/src/handlers/execute/mod.rs</a>) after WASM returns its outcome. Peers verify the signature at merge time in <a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/storage/src/interface.rs" target="_blank" rel="noopener"><code>Interface::apply_action</code> in crates/storage/src/interface.rs</a> using the runtime's <span class="code">ed25519_verify</span> host function and reject the action with <span class="code">InvalidSignature</span> on mismatch.</li>
   <li><strong>Structural</strong> (<span class="code">FrozenStorage</span>) — no per-identity signature; immutability after first write is enforced by content-addressing. Once the SHA-256 hash → value mapping is published, attempts to overwrite the same hash are rejected.</li>
@@ -456,7 +456,7 @@
 <h4 style="margin-top:14px;margin-bottom:8px;">Picking one</h4>
 <!-- KEEP IN SYNC with sdk.html#storage-primitives decision tree -->
 <div class="prim-tree">what guarantee do you need?
-  ├── none, public                              <span class="arrow">→</span> <span class="public">UnorderedMap / Vector / Set / LwwRegister / Counter</span>
+  ├── none, public                              <span class="arrow">→</span> <span class="public">UnorderedMap / Vector / UnorderedSet / LwwRegister / Counter</span>
   ├── immutable, content-addressed              <span class="arrow">→</span> <span class="target">FrozenStorage&lt;T&gt;</span>
   └── identity-bound writes ↓
         ├── one slot per user, disjoint          <span class="arrow">→</span> <span class="target">UserStorage&lt;T&gt;</span>

@@ -219,7 +219,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 
 <div class="step"><div class="n">1</div>
   <h4>Write App with SDK</h4>
-  <p>Define your state struct with <span class="code">#[app::state]</span>, implement methods with <span class="code">#[app::logic]</span>, declare events with <span class="code">#[app::event]</span>. Use CRDT collections (<span class="code">Map</span>, <span class="code">Set</span>, <span class="code">LwwRegister</span>) for conflict-free replicated state.</p>
+  <p>Define your state struct with <span class="code">#[app::state]</span>, implement methods with <span class="code">#[app::logic]</span>, declare events with <span class="code">#[app::event]</span>. Use CRDT collections (<span class="code">UnorderedMap</span>, <span class="code">UnorderedSet</span>, <span class="code">LwwRegister</span>) for conflict-free replicated state.</p>
 </div>
 <div class="step"><div class="n">2</div>
   <h4>Build with cargo-mero</h4>
@@ -282,24 +282,24 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 
 <div class="g2" style="margin-bottom:16px;">
   <div class="cb">
-    <h4 style="color:#10b981;">Map&lt;K, V&gt;</h4>
+    <h4 style="color:#10b981;">UnorderedMap&lt;K, V&gt;</h4>
     <p style="margin-top:8px;">Key-value store with per-key merge semantics. Supports nested maps — inner maps merge recursively. Values must implement <span class="code">Mergeable</span>. Used for most application state.</p>
     <div class="typedef" style="margin-top:10px;">
-<span class="kw">use</span> calimero_sdk::collections::<span class="ty">Map</span>;<br><br>
+<span class="kw">use</span> calimero_storage::collections::<span class="ty">UnorderedMap</span>;<br><br>
 <span class="kw">struct</span> <span class="ty">State</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">users</span>: Map&lt;AccountId, UserProfile&gt;,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">nested</span>: Map&lt;String, Map&lt;String, Value&gt;&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">users</span>: UnorderedMap&lt;AccountId, UserProfile&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">nested</span>: UnorderedMap&lt;String, UnorderedMap&lt;String, Value&gt;&gt;,<br>
 }
     </div>
   </div>
   <div class="cb">
-    <h4 style="color:#3b82f6;">Set&lt;T&gt;</h4>
+    <h4 style="color:#3b82f6;">UnorderedSet&lt;T&gt;</h4>
     <p style="margin-top:8px;">Add-wins set. Concurrent additions and removals resolve in favor of additions. Elements must be <span class="code">Eq + Hash + Borsh</span>. Ideal for membership lists, tags, and unique collections.</p>
     <div class="typedef" style="margin-top:10px;">
-<span class="kw">use</span> calimero_sdk::collections::<span class="ty">Set</span>;<br><br>
+<span class="kw">use</span> calimero_storage::collections::<span class="ty">UnorderedSet</span>;<br><br>
 <span class="kw">struct</span> <span class="ty">State</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">members</span>: Set&lt;AccountId&gt;,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">tags</span>: Set&lt;String&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">members</span>: UnorderedSet&lt;AccountId&gt;,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">tags</span>: UnorderedSet&lt;String&gt;,<br>
 }
     </div>
   </div>
@@ -310,7 +310,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
     <h4 style="color:#f59e0b;">LwwRegister&lt;T&gt;</h4>
     <p style="margin-top:8px;">Last-write-wins register with logical timestamp. Concurrent writes resolve by highest timestamp. Simple but effective for single-value fields where latest value is always preferred.</p>
     <div class="typedef" style="margin-top:10px;">
-<span class="kw">use</span> calimero_sdk::collections::<span class="ty">LwwRegister</span>;<br><br>
+<span class="kw">use</span> calimero_storage::collections::<span class="ty">LwwRegister</span>;<br><br>
 <span class="kw">struct</span> <span class="ty">State</span> {<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">title</span>: LwwRegister&lt;String&gt;,<br>
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="field">config</span>: LwwRegister&lt;AppConfig&gt;,<br>
@@ -331,7 +331,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 <div class="g3" style="margin-bottom:16px;">
   <div class="cb">
     <h4 style="color:#ec4899;">Counter</h4>
-    <p style="margin-top:8px;">Distributed G-Counter. Each node increments its own slot; <span class="code">value()</span> returns the sum. Naturally commutative and idempotent.</p>
+    <p style="margin-top:8px;">Distributed counter generic over <span class="code">ALLOW_DECREMENT: bool</span>. The default (<span class="code">Counter&lt;false&gt;</span>, aliased <span class="code">GCounter</span>) is grow-only — each node increments its own slot and <span class="code">value()</span> returns the sum. Set the flag to <code>true</code> (alias <span class="code">PNCounter</span>) to also support decrement, at the cost of a second per-node map. Naturally commutative and idempotent.</p>
   </div>
   <div class="cb">
     <h4 style="color:#14b8a6;">Vector</h4>
@@ -348,7 +348,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 
 <!-- KEEP IN SYNC with store.html#storage-primitives decision tree -->
 <div class="prim-tree">what guarantee do you need?
-  ├── none, public                              <span class="arrow">→</span> <span class="public">UnorderedMap / Vector / Set / LwwRegister / Counter</span>
+  ├── none, public                              <span class="arrow">→</span> <span class="public">UnorderedMap / Vector / UnorderedSet / LwwRegister / Counter</span>
   ├── immutable, content-addressed              <span class="arrow">→</span> <span class="target">FrozenStorage&lt;T&gt;</span>
   └── identity-bound writes ↓
         ├── one slot per user, disjoint          <span class="arrow">→</span> <span class="target">UserStorage&lt;T&gt;</span>
@@ -495,7 +495,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
 <div class="g4">
   <div class="cb">
     <h4 style="color:#f97316;">kv-store</h4>
-    <p style="margin-top:6px;">Basic key-value store using <span class="code">Map&lt;String, String&gt;</span>. Demonstrates <span class="code">#[app::state]</span>, <span class="code">#[app::logic]</span>, and simple CRUD operations. The canonical "hello world" for Calimero apps.</p>
+    <p style="margin-top:6px;">Basic key-value store using <span class="code">UnorderedMap&lt;String, LwwRegister&lt;String&gt;&gt;</span>. Demonstrates <span class="code">#[app::state]</span>, <span class="code">#[app::logic]</span>, and simple CRUD operations. The canonical "hello world" for Calimero apps.</p>
     <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/kv-store" target="_blank" rel="noopener">apps/kv-store</a>
   </div>
   <div class="cb">
@@ -505,7 +505,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
   </div>
   <div class="cb">
     <h4 style="color:#10b981;">access-control</h4>
-    <p style="margin-top:6px;">Role-based access control. Uses <span class="code">Map&lt;AccountId, Set&lt;Role&gt;&gt;</span> for per-user role sets. Demonstrates <span class="code">#[app::private]</span> for internal admin checks.</p>
+    <p style="margin-top:6px;">Role-based access control. Uses <span class="code">UnorderedMap&lt;AccountId, UnorderedSet&lt;Role&gt;&gt;</span> for per-user role sets. Demonstrates <span class="code">#[app::private]</span> for internal admin checks.</p>
     <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/access-control" target="_blank" rel="noopener">apps/access-control</a>
   </div>
   <div class="cb">
@@ -515,7 +515,7 @@ app::emit!((Event::ItemSet { key: <span class="comment">"foo"</span>, value: <sp
   </div>
   <div class="cb">
     <h4 style="color:#8b5cf6;">nested-crdt-test</h4>
-    <p style="margin-top:6px;">Nested CRDT stress test. Uses <span class="code">Map&lt;K, Map&lt;K, Set&lt;V&gt;&gt;&gt;</span> to verify recursive merge behavior under concurrent modifications.</p>
+    <p style="margin-top:6px;">Nested CRDT stress test. Uses <span class="code">UnorderedMap&lt;K, UnorderedMap&lt;K, UnorderedSet&lt;V&gt;&gt;&gt;</span> to verify recursive merge behavior under concurrent modifications.</p>
     <a class="gh-link" href="https://github.com/calimero-network/core/tree/master/apps/nested-crdt-test" target="_blank" rel="noopener">apps/nested-crdt-test</a>
   </div>
   <div class="cb">
