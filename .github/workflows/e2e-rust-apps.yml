@@ -182,6 +182,9 @@ jobs:
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
             app: scaffolding-e2e
+          - workflow: dm-subgroup-privacy
+            file: workflows/dm-subgroup-privacy.yml
+            app: scaffolding-e2e
           - workflow: group-default-capabilities-propagation
             file: workflows/group-default-capabilities-propagation.yml
             app: scaffolding-e2e
