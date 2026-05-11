@@ -97,10 +97,10 @@ Reorganized around the **unification thesis** (§2 decisions 20-21): the load-be
 | Phase | Items | Goal | Status |
 |---|---|---|---|
 | **1 — Observability** | ~~A1~~, ~~A2~~, E2 + ~~node-level metrics~~ + ~~Grafana per-test-run dashboard~~ | Convergence detection across nodes; foundation for E1 bootstrap; end-to-end visibility into sync / buffer / cache health. | **A1, A2, node-level metrics, dashboard done** ([#2289](https://github.com/calimero-network/core/pull/2289), [merobox#223](https://github.com/calimero-network/merobox/pull/223)+[#224](https://github.com/calimero-network/merobox/pull/224), [#2320](https://github.com/calimero-network/core/pull/2320), [#2321](https://github.com/calimero-network/core/pull/2321), [infra#81](https://github.com/calimero-network/infrastructure/pull/81)+[#82](https://github.com/calimero-network/infrastructure/pull/82)); E2 left. |
-| **2 — The Unifier** (sequential) | ~~B1~~ → ~~B2~~ → ~~B3~~ → ~~C4~~, plus C1, C2 | The cross-DAG primitive. After this, B3 is the only authorization rule. C1/C2 deterministic cuts make removals well-defined causally. | **B1+B2+B3+C4 done** ([#2298](https://github.com/calimero-network/core/pull/2298) + admin carve-out [#2324](https://github.com/calimero-network/core/pull/2324) + C4 forward-only lock-in [#2328](https://github.com/calimero-network/core/pull/2328)); C1 + C2 left. B3 `User`-storage `apply_action` extension also still pending. |
+| **2 — The Unifier** (sequential) | ~~B1~~ → ~~B2~~ → ~~B3~~ → ~~C4~~, plus C1.a, C2.a, **C7**, **E5** | The cross-DAG primitive. After this, B3 is the only authorization rule. C1/C2 deterministic cuts make removals well-defined causally; C7 closes the convergence loop on hash-mismatch via anchor sync; E5 makes anchor-preference real in peer selection. | **B1+B2+B3+C4 done** ([#2298](https://github.com/calimero-network/core/pull/2298) + admin carve-out [#2324](https://github.com/calimero-network/core/pull/2324) + C4 forward-only lock-in [#2328](https://github.com/calimero-network/core/pull/2328)); C1.a + C2.a + C7 + E5 left. B3 `User`-storage `apply_action` extension also still pending. |
 | **3 — Codebase cleanup** | S1–S12, ~~S13~~, S14–S16 | Collapse the patchwork B3 makes redundant; close key-lifecycle gaps; consolidate authorization-check duplication; decouple cryptography from visibility model; centralize writer-set resolution; type-shape refactors of surviving code (illegal-states-unrepresentable, newtype discipline, unified error contract). **Net code deletion + tighter types on what stays.** S15 was anticipated as a pre-requisite for B3 but the implementation didn't end up needing the `SignerId` newtype split — kept on the cleanup track for general type discipline. | **S13 done** as part of [#2298](https://github.com/calimero-network/core/pull/2298); S1–S12 + S14–S16 not started. |
 | **4 — Removal flow & recovery** | C3, C5, C6 | Owner override, snapshots, rebuild tool. Built on the unifier. | not started |
-| **5 — Encrypted-by-default & anchored sync** | D5, E1, E3, E4 | Encrypt RootOps with namespace key; eclipse-resistant join via Owner/TEE anchors; ongoing sync targets the trusted-anchor set. | not started |
+| **5 — Encrypted-by-default & anchored sync** | D5, E1, E3, E4 (E5 promoted to Phase 2 as a C7 dependency) | Encrypt RootOps with namespace key; eclipse-resistant join via Owner/TEE anchors; ongoing sync targets the trusted-anchor set. | not started |
 | **6 — Defense-in-depth** | ~~D1~~, D3, D4, A3 | Now-clearly-optional layers: network deny-list, K0 deprecation, rate limits, hierarchical Merkle. | **D1 done** ([#2329](https://github.com/calimero-network/core/pull/2329)); D3, D4, A3 not started. |
 
 ### Side findings exposed by completed work
@@ -372,11 +372,11 @@ The following questions were considered and decided; they are recorded in §2 an
 
 ---
 
-#### C1 — Admin-signed deterministic cut + canonical state hash on `MemberRemoved`
+#### C1 — Admin-signed deterministic cut + canonical state hashes on `MemberRemoved`
 
-**Phase**: 3 · **Size**: M · **Depends on**: B1, B3 · **Blocks**: C3, C4, D3
+**Phase**: 3 · **Size**: M · **Depends on**: B1, B3 · **Blocks**: C3, C4, D3, **C7**
 
-**Summary**: Embed two signed claims inside `MemberRemovedOp`: (1) the **governance-DAG cut** so every peer evaluates B3's validity rule against the same value, and (2) the **expected post-apply state hash** so every peer can verify their local view converges with the admin's canonical view. Together these resolve the apply-lag race AND the late-arriving-delta divergence in one signed envelope. Replaces the earlier C1+C5 combo with a single, simpler primitive.
+**Summary**: Embed signed claims inside `MemberRemovedOp`: (1) the **governance-DAG cut** so every peer evaluates B3's validity rule against the same value, and (2) **expected post-apply state hashes** so every peer can verify its local view converges with the admin's canonical view. Together these resolve the apply-lag race AND the late-arriving-delta divergence in one signed envelope. Replaces the earlier C1+C5 combo with a single, simpler primitive.
 
 **Scope**:
 ```rust
@@ -384,54 +384,82 @@ pub struct MemberRemovedOp {
     pub group_id: ContextGroupId,
     pub removed_member: PublicKey,
     pub cut: GovernancePosition,                       // governance-DAG cut (B3 descend-from check)
-    pub expected_state_hash_after_apply: [u8; 32],     // canonical state hash post-apply (decision #25)
+    /// Per-context CRDT state root hash after the admin's local apply.
+    /// One entry per context registered to `group_id` at sign time.
+    /// Sorted by `context_id` for deterministic hashing of the outer op.
+    pub expected_context_state_hashes: Vec<(ContextId, [u8; 32])>,
+    /// Governance state hash after the admin's local apply
+    /// (`compute_group_state_hash(group_id)`).
+    pub expected_group_state_hash: [u8; 32],
     pub admin_signature: Signature,
 }
 ```
 
-- Admin computes both fields at sign time:
+**Why both hashes** (resolves the RFC ambiguity earlier drafts left in decision #25): governance state (`compute_group_state_hash`) catches membership-row divergence; per-context CRDT state hash catches the §8.3.2 partition case (peer C applied a legitimate pre-cut state-DAG delta from X that admin's view didn't include). A single hash over only one of them misses half the divergence surface. Layered per decision #17 — the op carries both because they answer different questions.
+
+**Why per-context, not a single combined hash**: a group can host multiple contexts and a mismatch needs to be localizable to the specific divergent context for the C7 reconcile path. Per-context wire cost is small for realistic groups (1–3 contexts typical); the deterministic sort + signature covers integrity.
+
+- Admin computes all fields at sign time:
   - `cut` = governance-DAG position of this op
-  - `expected_state_hash_after_apply` = `compute_state_root_hash(local_state)` after admin runs apply locally
+  - `expected_group_state_hash` = `compute_group_state_hash(local_state)` after admin runs apply locally
+  - `expected_context_state_hashes` = `Vec<(context_id, Snapshot::root_hash)>` after admin runs apply locally, one per registered context, sorted by `context_id`
 - Receivers verify:
   - B3 uses `MemberRemovedOp.cut` for the descend-from check
-  - After apply, compute local state hash, compare to signed value
+  - After apply, compute local group state hash + per-context root hashes, compare to signed values
   - On match: convergence achieved naturally
-  - On mismatch: reconcile per decision #26 — local replay (cheap path) or sync from anchor (heavy path); both verify the result against the signed hash before adopting
+  - On mismatch: trigger **C7** (reconcile via anchor sync); fall back to "stay diverged, log loudly for operator" if no anchor reachable
 - Hard cut, no backwards compat for old-shape `MemberRemoved` (per §2.19)
 
-**Acceptance criteria**:
+**Staging** (this item ships in two PRs):
+- **C1.a (minimal)** — add the fields, sign-time compute, apply-time verify, log loudly on mismatch. No reconcile yet. **Ships independently**; loud-logged mismatches are a strict improvement over silent divergence.
+- **C1.b (reconcile)** — tracked as **C7** below. Wires the mismatch path to anchor-sync.
+
+**Acceptance criteria** (C1.a only — C7 acceptance lives in its own item):
 - New fields present and signed
-- Concurrent-partition test: peers on different governance DAG positions evaluate the same answer for a given delta
-- [T₂, T₃] divergence test: a peer that applied X-deltas during partition catches up, computes mismatched state hash, reconciles via anchor sync, reaches canonical state
-- Sync verification test: cheap per-delta crypto checks (sigs, nonces, HLCs, User-storage entry sigs) run on synced data; final hash compared (decision #27)
-- Tampered-anchor test: synced data with a forged signature → caught by per-delta verification → sync rejected, no state adopted
+- Sign-time computes all three (cut, group state hash, per-context state hashes) deterministically
+- Receivers verify on apply; mismatch produces a structured error + warn log carrying `(group_id, expected_*, actual_*, divergent_context_ids)`
+- Concurrent-partition test: peers on different governance DAG positions evaluate the same B3 answer for a given delta (the `cut` half)
+- Hash-mismatch test: a peer that applied an extra state-DAG delta computes a mismatched context-state hash and surfaces the structured error
+- Tampered-op test: a forged hash field in `MemberRemovedOp` doesn't verify against the admin signature — caught at envelope level
 
-**Open questions**: none — U14 resolved (no backwards compat).
+**Open questions**: none — U14 resolved (no backwards compat); state-hash shape resolved (per-context + governance, layered).
 
-**References**: §2 decisions 5, 25, 26, 27
+**References**: §2 decisions 5, 17, 25, 26, 27, [#2266](https://github.com/calimero-network/core/pull/2266) (Snapshot::root_hash semantics)
 
 ---
 
-#### C2 — Self-signed `MemberLeft` cut + canonical state hash
+#### C2 — Self-signed `MemberLeft` cut + canonical state hashes
 
-**Phase**: 3 · **Size**: S · **Depends on**: B1 · **Blocks**: —
+**Phase**: 3 · **Size**: S · **Depends on**: B1 · **Blocks**: **C7**
 
-**Summary**: For voluntary departures, the leaver embeds their own `governance_position` AND `expected_state_hash_after_apply` at sign time, mirroring C1's structure. No admin gating; the leaver is honest by definition for self-leave (a Byzantine leaver claiming false canonical state hash is detected by other peers' hash verification — they'd reconcile against admin's canonical view via subsequent governance ops anyway).
+**Summary**: For voluntary departures, the leaver embeds their own `governance_position` AND post-apply state hashes at sign time, mirroring C1's structure. No admin gating; the leaver is honest by definition for self-leave (a Byzantine leaver claiming false canonical state hashes is detected by other peers' hash verification — they'd reconcile against admin's canonical view via subsequent governance ops anyway).
 
-**Scope**:
-- Add both `cut: GovernancePosition` and `expected_state_hash_after_apply: [u8; 32]` to `MemberLeftOp`
-- Leaver computes both at sign time
-- Receivers verify their post-apply state hash; reconcile if mismatch (per decision #26)
+**Scope** — same field shape as C1 (resolved by C1's decision, not re-litigated here):
+```rust
+pub struct MemberLeftOp {
+    pub group_id: ContextGroupId,
+    pub member: PublicKey,                             // == signer
+    pub cut: GovernancePosition,
+    pub expected_context_state_hashes: Vec<(ContextId, [u8; 32])>,
+    pub expected_group_state_hash: [u8; 32],
+    pub leaver_signature: Signature,
+}
+```
+
+- Leaver computes all three (`cut`, group state hash, per-context state hashes) at sign time
+- Receivers verify their post-apply hashes; mismatch triggers **C7** reconcile-via-anchor (per decision #26)
 - B3 honors leaver-signed cut as authoritative for "X is no longer a writer"
 - S7 cleanup: route through symmetric rotation path so MemberLeft also rotates the key (same envelope mechanism as MemberRemoved)
 
-**Acceptance criteria**:
+**Staging**: mirrors C1's staging — `C2.a` ships with `C1.a` (same minimal verify-and-log path), reconcile arrives with **C7**.
+
+**Acceptance criteria** (C2.a):
 - Self-leave test: leaver's pre-leave writes preserved on all peers (forward-only)
 - Self-leave test: post-leave writes from same identity rejected
-- State-hash convergence test: peers that received different sets of leaver's in-flight deltas converge to the signed canonical state via reconciliation
+- Hash-mismatch test: peer with a different in-flight delta set surfaces structured error with `divergent_context_ids`
 - Composes with existing `leave_context` / `leave_group` infra from #2280
 
-**References**: §2 decisions 5, 25, 26, 27, [Membership & Leave architecture](../architecture/membership-and-leave.html)
+**References**: §2 decisions 5, 17, 25, 26, 27, [Membership & Leave architecture](../architecture/membership-and-leave.html)
 
 ---
 
@@ -522,6 +550,41 @@ pub struct MemberRemovedOp {
 - Reports detected taint sources
 
 **References**: §2 decision 14 (recovery snapshots), C5
+
+---
+
+#### C7 — Reconcile-on-mismatch via trusted-anchor sync
+
+**Phase**: 3 · **Size**: M-L · **Depends on**: C1 (the signed hashes), C2 (mirror path), **E5** (anchor-preferred peer selection) · **Blocks**: —
+
+**Summary**: When `MemberRemovedOp` / `MemberLeftOp` apply detects a post-apply hash mismatch (per C1.a / C2.a), schedule a snapshot sync targeted at a trusted anchor (Owner / Admin / ReadOnlyTee per decision #22). The receiver verifies the canonical state from the anchor against the signed hash, adopts atomically, and drops any local state-DAG deltas not in the canonical tree. Closes the convergence loop.
+
+**Why a dedicated item, not folded into C1**: C1's PR scope is small and self-contained (envelope shape + verify + log). The reconcile path needs E5 (anchor preference) underneath it, has its own protocol surface (snapshot-with-signed-hash verification), and is the natural place for the "delete divergent local deltas" semantics. Bundling everything into C1 makes both PRs harder to review than they need to be.
+
+**Scope**:
+- On C1.a mismatch error, enqueue a reconcile job: `(context_id, expected_root_hash, signed_op_hash)` where `signed_op_hash` is the hash field from the triggering `MemberRemoved` / `MemberLeft` op
+- Anchor selection: use **E5**'s `select_anchor_peer(context_id) -> Option<PeerId>`. If `None`, log loudly and bail to "operator path" (C6 territory)
+- Sync request: existing `SyncProtocol::Snapshot` against the selected anchor, gated on context_id
+- Verification per decision #27:
+  - Cheap checks on each delta: Ed25519 sig, nonce monotonicity, HLC monotonicity, User-storage entry sigs, content-hash matches
+  - Final check: computed `Snapshot::root_hash` matches the **`expected_context_state_hashes[context_id]`** from the triggering signed op (NOT the anchor's claim — the canonical claim from the original op, transitively trusted)
+  - On any verification failure: reject the sync response, do not adopt, log + retry against a different anchor (bounded retries, then bail)
+- Atomic adoption: replace local context state with the verified canonical state. Drop any local deltas not in the canonical DAG ancestry. The "delete divergent deltas" semantics fall out of the atomic replace — there's no separate delete path.
+- Mirror path: same for `MemberLeftOp` mismatches; same protocol, same gates
+
+**Out of scope** (deferred to C5, C6, or follow-ups):
+- Periodic anchor-signed refreshes between removals (C5 territory, demoted)
+- Operator-driven full rebuild when no anchor is reachable (C6 territory)
+- Local-replay cheap path from decision #26 — the anchor-sync path covers all scenarios local-replay covers, plus the ones it doesn't (large divergence, irreversible state mutations). Skipping local-replay until it's proven needed.
+
+**Acceptance criteria**:
+- [T₂, T₃] divergence e2e: peer C applies a state-DAG delta D from X during a partition, partition heals, C receives the signed `MemberRemovedOp`, hash mismatch detected, sync from anchor adopted, D's effects gone, post-state hash matches the signed value
+- Tampered-anchor test: anchor sends a forged signature in a delta — caught by per-delta sig check, sync rejected, no state adopted
+- Tampered-final-hash test: anchor sends canonical-looking data whose final hash doesn't match the signed expected — caught by final-hash gate, sync rejected
+- No-anchor-reachable test: with all anchors offline, reconcile bails gracefully, structured error surfaced, no state adopted, operator can run C6
+- Multi-context group test: divergence in one context out of three triggers a sync for that one context only — other two untouched
+
+**References**: §2 decisions 22, 25, 26, 27; C1, C2; E5
 
 ---
 
@@ -995,6 +1058,30 @@ These issues *delete code* that becomes redundant once B3 is the load-bearing au
 - Confirms `TransferOwnership` exists in the role model (it does — `crates/context/src/group_store/namespace_governance.rs:751`)
 
 **References**: §2 decisions 12, 13, 22, 23 (bootstrap + anchored sync), `crates/context/src/group_store/namespace_governance.rs`
+
+---
+
+#### E5 — Anchor-preferred peer selection in the sync manager
+
+**Phase**: 5 · **Size**: S · **Depends on**: — (independent; reuses existing role/TEE primitives) · **Blocks**: **C7**
+
+**Summary**: Today the sync manager picks peers for snapshot / hash-comparison sync **randomly** (`crates/node/src/sync/manager/mod.rs:679` — `"Using random peer selection for sync"`). Decision #22 designated the trusted-anchor set — `{Owner} ∪ {Admins} ∪ {ReadOnlyTee members of the relevant group}` — as the preferred sync target. This item wires the decision into peer selection so every sync (not just C7 reconcile) preferentially targets an anchor.
+
+**Why a separate item**: useful on its own — improves the sync trust model across every protocol that selects a peer, not just the C7 reconcile path. Lands and ships independent of C7. Then C7 reuses the same primitive.
+
+**Scope**:
+- Helper in `calimero-context::group_store`: `pub fn trusted_anchors_for_group(store, group_id) -> EyreResult<BTreeSet<PublicKey>>` returning the union of Owner, admins (recursively up the namespace tree per existing inheritance), and ReadOnlyTee members of `group_id`. Reuses `is_group_admin`, `list_group_members`, and the existing `TeeAdmissionPolicy` gate from `membership_policy.rs` — no new flag, no new role.
+- Peer-selection helper in `crates/node/src/sync/manager/mod.rs`: `select_sync_peer(context_id, mode) -> Option<PeerId>` where `mode = Preferred | AnyConnected`. `Preferred` filters connected peers by anchor membership and picks one; `AnyConnected` is today's random pick. On no anchor connected, `Preferred` falls back to random + a debug log (so the operator knows the trust-target wasn't met).
+- Wire `Preferred` selection into the existing sync trigger paths in `manager/mod.rs` (lines ~447-679 area).
+- Plain `Member` and `ReadOnly` peers still serve sync requests if asked (per decision #22 — they can serve, but clients shouldn't preferentially target them).
+
+**Acceptance criteria**:
+- Helper returns expected set for: namespace owner (single-anchor), namespace + Admins (multi-anchor), namespace + ReadOnlyTee with valid attestation (TEE anchor), inherited admin in a nested Open subgroup, member-created Restricted subgroup with non-owner admin
+- Peer selection picks an anchor when one is connected; falls back to random with a logged warn when none connected
+- E2E test: with 4 nodes (1 Owner, 1 Admin, 2 plain Members), a fresh sync request from a 5th node observes that the request lands on the Owner or Admin, not the plain Members
+- Negative: a malicious peer claiming `ReadOnlyTee` role without valid TEE attestation is NOT included in the anchor set (gate is on `TeeAdmissionPolicy`, not self-declaration)
+
+**References**: §2 decisions 22, 23; `crates/node/src/sync/manager/mod.rs:679` (current random selection); `crates/context/src/group_store/membership_policy.rs` (TEE admission gate)
 
 ---
 
