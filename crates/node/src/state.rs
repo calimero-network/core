@@ -1,11 +1,14 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calimero_blobstore::BlobManager as BlobStore;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::identity::PublicKey;
 use calimero_primitives::{blobs::BlobId, context::ContextId};
 use dashmap::DashMap;
+use libp2p::PeerId;
 use tracing::{debug, warn};
 
 use crate::constants;
@@ -114,6 +117,31 @@ pub(crate) struct NodeState {
             std::collections::VecDeque<calimero_node_primitives::delta_buffer::BufferedDelta>,
         >,
     >,
+    /// Cache of `peer_id → identities observed signing applied messages`,
+    /// populated by `observe_peer_identity` after a state-delta or
+    /// namespace-governance op from `peer_id` successfully applies
+    /// (signature verified, nonce monotonic, cross-DAG membership check
+    /// passed). Consumed by sync-peer selection to preferentially target
+    /// peers in the trusted-anchor set (`{Owner} ∪ {Admins} ∪
+    /// {ReadOnlyTee}` — see
+    /// `calimero_context::group_store::trusted_anchors_for_group`).
+    ///
+    /// **Trust model**: entries reflect identities a peer has *proven*
+    /// to control via signed-and-applied messages — spoofing is bounded
+    /// by signature verification at apply time. The cache itself is not
+    /// a trust gate: downstream reconcile paths verify received state
+    /// against a signed expected hash, so cache poisoning that
+    /// mis-routes a sync request gets caught at adoption time, never
+    /// used to authorize anything. A `peer_id` legitimately maps to
+    /// multiple identities — a node hosts one libp2p key but joins
+    /// many contexts, each with its own signing identity.
+    ///
+    /// **Lifetime**: entries persist for the process lifetime. Peer
+    /// disconnect does not evict — the same peer may reconnect and the
+    /// mapping is still valid. Bounded by the unique
+    /// `(peer_id, identity)` pairs observed, which is itself bounded by
+    /// group member count.
+    pub(crate) peer_identities: Arc<DashMap<PeerId, BTreeSet<PublicKey>>>,
 }
 
 /// Maximum number of state deltas that may sit in the governance-pending
@@ -152,7 +180,16 @@ impl NodeState {
             node_mode,
             sync_sessions: Arc::new(DashMap::new()),
             governance_pending: Arc::new(DashMap::new()),
+            peer_identities: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Record that `peer_id` has successfully delivered a message
+    /// authored by `identity`. Called from receive paths after the
+    /// message verifies and applies — see field-level docs on
+    /// `peer_identities` for the trust model. Idempotent.
+    pub(crate) fn observe_peer_identity(&self, peer_id: PeerId, identity: PublicKey) {
+        let _inserted = self.peer_identities.entry(peer_id).or_default().insert(identity);
     }
 
     /// Push a state delta into the governance-pending buffer. Called when

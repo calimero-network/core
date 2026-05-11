@@ -848,14 +848,64 @@ impl SyncManager {
         // `should_buffer_delta` to return true permanently. Tail-latency
         // benefit is still obtained from the parallel probe above, which
         // narrows this loop to "try a known-good peer first".
-        debug!(%context_id, "Using random peer selection for sync");
-        for peer_id in peers.choose_multiple(&mut rand::thread_rng(), peers.len()) {
+        //
+        // Peer order: random shuffle, then stable-partition so peers we
+        // have observed signing applied messages with an
+        // Owner/Admin/ReadOnlyTee identity come first. Anchors are the
+        // peers whose canonical view is authoritative — targeting them
+        // first reduces the chance of pulling from a peer that's
+        // behind or divergent. Plain members still get tried if all
+        // anchors fail. Empty cache or context with no observed anchor
+        // peers degrades to plain random selection.
+        let mut shuffled: Vec<libp2p::PeerId> = peers
+            .choose_multiple(&mut rand::thread_rng(), peers.len())
+            .copied()
+            .collect();
+        let anchor_count = partition_peers_anchor_first(
+            &mut shuffled,
+            &self.node_state.peer_identities,
+            &self.anchor_identities_for_context(&context_id),
+        );
+        if anchor_count > 0 {
+            debug!(
+                %context_id,
+                anchor_peer_count = anchor_count,
+                non_anchor_peer_count = shuffled.len() - anchor_count,
+                "Preferring anchor peers for sync"
+            );
+        } else {
+            debug!(
+                %context_id,
+                peer_count = shuffled.len(),
+                "No anchor peers connected — falling back to random selection"
+            );
+        }
+        for peer_id in &shuffled {
             if let Ok(result) = self.initiate_sync(context_id, *peer_id).await {
                 return Ok(result);
             }
         }
 
         bail!("Failed to sync with any peer for context {}", context_id)
+    }
+
+    /// Look up the trusted-anchor identity set for the group that owns
+    /// `context_id` (Owner, Admins, ReadOnlyTee members). Returns an
+    /// empty set on any failure — context not registered to a group,
+    /// store read error, or no meta written yet. Callers fall back to
+    /// plain random peer selection on an empty set.
+    fn anchor_identities_for_context(
+        &self,
+        context_id: &ContextId,
+    ) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
+        let store = self.context_client.datastore_handle().into_inner();
+        let Ok(Some(group_id)) =
+            calimero_context::group_store::get_group_for_context(&store, context_id)
+        else {
+            return std::collections::BTreeSet::new();
+        };
+        calimero_context::group_store::trusted_anchors_for_group(&store, &group_id)
+            .unwrap_or_default()
     }
 
     /// Find a peer that has state (non-zero root_hash and non-empty DAG heads)
@@ -2886,6 +2936,41 @@ impl SyncManager {
 
         Ok(Some(()))
     }
+}
+
+/// Stable-partition `peers` so peers with an observed trusted-anchor
+/// identity come first while preserving the relative order within each
+/// partition. Returns the index at which non-anchor peers start (i.e.
+/// the count of anchor peers).
+///
+/// A peer is an anchor if at least one identity recorded in
+/// `peer_identities` for that peer appears in `anchors`. An empty
+/// `anchors` set returns 0 immediately — no point sorting if every
+/// peer is going to be non-anchor.
+///
+/// Free function (not a method) so it can be unit-tested against
+/// synthetic inputs without spinning up a sync manager.
+fn partition_peers_anchor_first(
+    peers: &mut [libp2p::PeerId],
+    peer_identities: &dashmap::DashMap<
+        libp2p::PeerId,
+        std::collections::BTreeSet<calimero_primitives::identity::PublicKey>,
+    >,
+    anchors: &std::collections::BTreeSet<calimero_primitives::identity::PublicKey>,
+) -> usize {
+    if anchors.is_empty() {
+        return 0;
+    }
+    let is_anchor = |peer: &libp2p::PeerId| -> bool {
+        peer_identities
+            .get(peer)
+            .map(|ids| ids.iter().any(|id| anchors.contains(id)))
+            .unwrap_or(false)
+    };
+    // sort_by_key is stable, so the caller's random shuffle order is
+    // preserved within each partition.
+    peers.sort_by_key(|p| !is_anchor(p));
+    peers.iter().filter(|p| is_anchor(p)).count()
 }
 
 impl SyncManager {
