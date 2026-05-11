@@ -366,11 +366,17 @@ pub(crate) fn spawn_metrics_tick(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(METRICS_TICK_INTERVAL);
-        // Skip the immediate-fire on first poll — give the node a moment
-        // to settle before the first gauge snapshot lands. Without this
-        // the first scrape returns zeros for everything.
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let _ = interval.tick().await; // consume the immediate-fire tick
+        // `tokio::time::interval` returns immediately on the first
+        // `.tick()` call ("immediate-fire") and then ticks every
+        // `METRICS_TICK_INTERVAL` thereafter. We *consume* that
+        // first immediate-fire so the very first gauge snapshot
+        // lands at startup_time + INTERVAL, not at startup_time:
+        // recording zero-valued gauges before the node has stood up
+        // its DashMaps would pin a misleading "all zero" point on
+        // every dashboard. After this, the loop awaits the regular
+        // 30s cadence and snapshots once per fire.
+        let _ = interval.tick().await;
         loop {
             interval.tick().await;
             let snapshot = NodeStateSnapshot::capture(&state);
@@ -426,10 +432,12 @@ fn update_process_metrics(metrics: &NodeMetrics) {
             }
         }
         // /proc/self/fd is a directory whose entry count is the open-fd
-        // count. Skip on read errors (sandboxes occasionally restrict
-        // this).
+        // count. `read_dir` itself opens a transient FD on the directory
+        // that appears in the listing — we subtract 1 so the reported
+        // value matches what `lsof -p $PID | wc -l` would show.
+        // Skip on read errors (sandboxes occasionally restrict this).
         if let Ok(fd_dir) = std::fs::read_dir("/proc/self/fd") {
-            let count = fd_dir.filter_map(Result::ok).count() as i64;
+            let count = (fd_dir.filter_map(Result::ok).count() as i64).saturating_sub(1);
             metrics.process_open_fds.set(count);
         }
     }
