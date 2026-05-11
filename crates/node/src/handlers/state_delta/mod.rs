@@ -875,6 +875,40 @@ pub async fn handle_state_delta(
         return Ok(());
     }
 
+    // Per-group deny-list filter. Populated when `MemberRemoved` /
+    // `MemberLeft` apply locally; cleared when `MemberAdded` /
+    // `MemberJoinedViaTeeAttestation` apply for the same member. This
+    // is a cheap early-rejection layer in front of the cross-DAG
+    // membership check — that check is still authoritative (a removed
+    // member would be rejected there too), but the deny-list lookup is
+    // O(1) and saves the drain + prefix-walk cost for traffic from
+    // peers we've already explicitly removed.
+    //
+    // Skipped for non-group contexts (no group_id → nothing to deny on).
+    // Lookup failures fall through to the cross-DAG check rather than
+    // erroring; a transient store error here shouldn't drop a legitimate
+    // delta when the authoritative check would still apply.
+    if let Ok(Some(group_id)) = calimero_context::group_store::get_group_for_context(
+        node_clients.context.datastore(),
+        &context_id,
+    ) {
+        if calimero_context::group_store::is_denied(
+            node_clients.context.datastore(),
+            &group_id,
+            &author_id,
+        )
+        .unwrap_or(false)
+        {
+            warn!(
+                %context_id,
+                %author_id,
+                group_id = ?group_id,
+                "Rejecting state delta from deny-listed member"
+            );
+            return Ok(());
+        }
+    }
+
     info!(
         %context_id,
         %author_id,
