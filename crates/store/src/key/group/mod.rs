@@ -1995,6 +1995,8 @@ mod tests {
             NAMESPACE_IDENTITY_PREFIX,
             NAMESPACE_GOV_OP_PREFIX,
             NAMESPACE_GOV_HEAD_PREFIX,
+            GROUP_KEY_PREFIX,
+            GROUP_DENIED_MEMBER_PREFIX,
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {
