@@ -157,7 +157,7 @@ pub(crate) struct StateDeltaContext {
 ///
 /// Calls `apply_authorized_state_delta` directly (not `handle_state_delta`)
 /// so the call graph stays linear — no async recursion, no per-recurse
-/// future allocation. The B3 check we just performed via
+/// future allocation. The cross-DAG check we just performed via
 /// `membership_status_at` is the same check `handle_state_delta` would have
 /// performed; skipping back through the entry handler would also re-drain
 /// the (now-empty) pending buffer, wasted work.
@@ -182,7 +182,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
     debug!(
         %context_id,
         count = snapshot_len,
-        "B2: draining governance-pending buffer"
+        "governance-pending drain: draining governance-pending buffer"
     );
     for _ in 0..snapshot_len {
         let Some(buffered) = input.node_state.pop_governance_pending(context_id) else {
@@ -192,7 +192,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
             warn!(
                 %context_id,
                 delta_id = ?buffered.id,
-                "B2: pending delta has no governance_position; dropping"
+                "governance-pending drain: pending delta has no governance_position; dropping"
             );
             continue;
         };
@@ -204,7 +204,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     %context_id,
                     delta_id = ?buffered.id,
                     author = %buffered.author_id,
-                    "B2: pending delta now authorized; re-applying"
+                    "governance-pending drain: pending delta now authorized; re-applying"
                 );
                 crate::node_metrics::record_governance_drain_outcome("applied");
                 let reconstructed = state_delta_message_from_buffered(buffered, *context_id);
@@ -212,7 +212,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     warn!(
                         %context_id,
                         %err,
-                        "B2: re-apply of authorized buffered delta failed"
+                        "governance-pending drain: re-apply of authorized buffered delta failed"
                     );
                 }
             }
@@ -222,7 +222,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     delta_id = ?buffered.id,
                     author = %buffered.author_id,
                     last_role = ?last_role,
-                    "B2: pending delta from removed author; dropping"
+                    "governance-pending drain: pending delta from removed author; dropping"
                 );
                 crate::node_metrics::record_governance_drain_outcome("removed");
             }
@@ -231,7 +231,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     %context_id,
                     delta_id = ?buffered.id,
                     author = %buffered.author_id,
-                    "B2: pending delta from non-member; dropping"
+                    "governance-pending drain: pending delta from non-member; dropping"
                 );
                 crate::node_metrics::record_governance_drain_outcome("never_member");
             }
@@ -246,7 +246,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                         %context_id,
                         delta_id = ?buffered.id,
                         attempts = buffered.governance_drain_attempts,
-                        "B2: dropping pending delta after exhausting drain attempts \
+                        "governance-pending drain: dropping pending delta after exhausting drain attempts \
                          (governance heads still unknown — likely permanently missing)"
                     );
                     crate::node_metrics::record_governance_drain_outcome("dropped_max_attempts");
@@ -256,7 +256,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                         delta_id = ?buffered.id,
                         needed_count = needed.len(),
                         attempts = buffered.governance_drain_attempts,
-                        "B2: still pending governance catchup; re-buffering"
+                        "governance-pending drain: still pending governance catchup; re-buffering"
                     );
                     crate::node_metrics::record_governance_drain_outcome("rebuffered");
                     input
@@ -269,7 +269,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     %context_id,
                     delta_id = ?buffered.id,
                     %err,
-                    "B2: membership lookup failed for pending delta; dropping"
+                    "governance-pending drain: membership lookup failed for pending delta; dropping"
                 );
                 crate::node_metrics::record_governance_drain_outcome("lookup_error");
             }
@@ -297,7 +297,7 @@ pub(crate) async fn drain_all_governance_pending(input: &StateDeltaContext) {
     }
     debug!(
         count = context_ids.len(),
-        "B2: governance-apply hook draining pending buffers across contexts"
+        "governance-pending drain: governance-apply hook draining pending buffers across contexts"
     );
     for context_id in context_ids {
         drain_governance_pending(input, &context_id).await;
@@ -355,7 +355,7 @@ pub(crate) struct ReplayBufferedDeltaInput {
 /// Apply path for an authorized state delta — runs the snapshot-sync buffer
 /// check, decryption, DAG insert, handler execution, and heartbeat broadcast.
 ///
-/// Both [`handle_state_delta`] (after the B3 check passes) and
+/// Both [`handle_state_delta`] (after the cross-DAG check passes) and
 /// [`drain_governance_pending`] (when re-applying a buffered delta whose
 /// status is now `Member`) call into this function. Splitting the apply
 /// tail off from `handle_state_delta` lets the drain path re-apply directly
@@ -397,7 +397,7 @@ pub(crate) async fn apply_authorized_state_delta(
     // when re-applying a buffered delta whose status is now `Member` — gets
     // the same enforcement. Without it, a member who became ReadOnly
     // between the delta being authored and the drain could slip a write
-    // through, since the B3 check via `membership_status_at` returns
+    // through, since the cross-DAG check via `membership_status_at` returns
     // `Member(role)` with a wildcard role that the drain matches against.
     if calimero_context::group_store::is_read_only_for_context(
         node_clients.context.datastore(),
@@ -858,8 +858,8 @@ pub async fn handle_state_delta(
 
     // Fast-path ReadOnly rejection — `apply_authorized_state_delta` also
     // performs this check (so the governance-pending drain path is
-    // covered), but doing it here too avoids paying for drain + B3 +
-    // membership_status_at on a delta we'll reject anyway.
+    // covered), but doing it here too avoids paying for drain plus the
+    // cross-DAG membership lookup on a delta we'll reject anyway.
     if calimero_context::group_store::is_read_only_for_context(
         node_clients.context.datastore(),
         &context_id,
@@ -889,7 +889,7 @@ pub async fn handle_state_delta(
         "Received state delta"
     );
 
-    // B2 — drain governance-pending buffer for this context. Each pending
+    // Drain governance-pending buffer for this context. Each pending
     // delta is re-evaluated against current local governance state; if the
     // signer's status is now decidable, the delta is re-applied (Member)
     // or rejected (Removed/NeverMember/Err). If still Unknown, push it
@@ -904,18 +904,18 @@ pub async fn handle_state_delta(
     };
     drain_governance_pending(&drain_input, &context_id).await;
 
-    // B3 — apply-time authorization check. If the delta carries a
+    // Apply-time cross-DAG membership check. If the delta carries a
     // `governance_position`, ask `membership_status_at` whether `author_id`
     // was a member at the named cut. Reject ineligible ops; buffer when
     // governance state hasn't caught up; otherwise fall through to the
     // existing apply path.
     //
-    // Anti-bypass: a delta with `governance_position == None` skips B3
-    // entirely. That's the legacy behaviour for non-group contexts (which
-    // have no governance DAG to reference), but it's also what a malicious
-    // sender would set to bypass enforcement. So we verify here that the
-    // missing position genuinely matches a non-group context locally —
-    // any mismatch (group context with no position) is rejected.
+    // Anti-bypass: a delta with `governance_position == None` skips the
+    // membership check entirely. That's the legacy behaviour for non-group
+    // contexts (which have no governance DAG to reference), but it's also
+    // what a malicious sender would set to bypass enforcement. So we verify
+    // here that the missing position genuinely matches a non-group context
+    // locally — any mismatch (group context with no position) is rejected.
     if governance_position.is_none() {
         let store = node_clients.context.datastore();
         match calimero_context::group_store::get_group_for_context(store, &context_id) {
@@ -928,7 +928,7 @@ pub async fn handle_state_delta(
                     %author_id,
                     group_id = ?gid,
                     delta_id = ?delta_id,
-                    "B3: rejecting state delta — group context but no governance_position \
+                    "cross-DAG check: rejecting state delta — group context but no governance_position \
                      (likely a malicious bypass attempt)"
                 );
                 return Ok(());
@@ -938,7 +938,7 @@ pub async fn handle_state_delta(
                     %context_id,
                     %author_id,
                     %err,
-                    "B3: get_group_for_context failed; rejecting delta to avoid silent bypass"
+                    "cross-DAG check: get_group_for_context failed; rejecting delta to avoid silent bypass"
                 );
                 return Ok(());
             }
@@ -954,7 +954,7 @@ pub async fn handle_state_delta(
                     %author_id,
                     role = ?role,
                     group_id = ?pos.group_id,
-                    "B3: author authorized at governance cut"
+                    "cross-DAG check: author authorized at governance cut"
                 );
             }
             Ok(MembershipStatus::Removed { last_role }) => {
@@ -963,7 +963,7 @@ pub async fn handle_state_delta(
                     %author_id,
                     last_role = ?last_role,
                     group_id = ?pos.group_id,
-                    "B3: rejecting state delta — author was removed from group at governance cut"
+                    "cross-DAG check: rejecting state delta — author was removed from group at governance cut"
                 );
                 return Ok(());
             }
@@ -972,7 +972,7 @@ pub async fn handle_state_delta(
                     %context_id,
                     %author_id,
                     group_id = ?pos.group_id,
-                    "B3: rejecting state delta — author is not a member of the group at governance cut"
+                    "cross-DAG check: rejecting state delta — author is not a member of the group at governance cut"
                 );
                 return Ok(());
             }
@@ -982,7 +982,7 @@ pub async fn handle_state_delta(
                     %author_id,
                     group_id = ?pos.group_id,
                     needed_count = needed.len(),
-                    "B3: governance state behind position; buffering delta until catchup"
+                    "cross-DAG check: governance state behind position; buffering delta until catchup"
                 );
                 let buffered = calimero_node_primitives::delta_buffer::BufferedDelta {
                     id: delta_id,
@@ -1007,7 +1007,7 @@ pub async fn handle_state_delta(
                     %author_id,
                     group_id = ?pos.group_id,
                     %err,
-                    "B3: rejecting state delta — membership lookup failed (hash mismatch / corruption)"
+                    "cross-DAG check: rejecting state delta — membership lookup failed (hash mismatch / corruption)"
                 );
                 return Ok(());
             }
@@ -1866,11 +1866,12 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         return Ok(false);
     }
 
-    // B3 — apply-time authorization check, parallel to `handle_state_delta`.
+    // Apply-time cross-DAG membership check, parallel to `handle_state_delta`.
     // Snapshot sync establishes a context-state baseline but says nothing
     // about governance state, so a delta buffered during sync must still
-    // pass B3 before its actions are applied. Without this, every delta
-    // arriving inside the sync window bypasses cross-DAG authorization.
+    // pass the membership check before its actions are applied. Without
+    // this, every delta arriving inside the sync window bypasses cross-DAG
+    // authorization.
     //
     // Anti-bypass: a missing position is only legitimate for non-group
     // contexts. Mirror the check in `handle_state_delta`: if the local
@@ -1888,7 +1889,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     author = %buffered.author_id,
                     group_id = ?gid,
                     delta_id = ?delta_id,
-                    "B3 (replay): rejecting buffered delta — group context but no \
+                    "cross-DAG check (replay): rejecting buffered delta — group context but no \
                      governance_position (likely a malicious bypass attempt)"
                 );
                 return Ok(false);
@@ -1898,7 +1899,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     %context_id,
                     author = %buffered.author_id,
                     %err,
-                    "B3 (replay): get_group_for_context failed; rejecting buffered \
+                    "cross-DAG check (replay): get_group_for_context failed; rejecting buffered \
                      delta to avoid silent bypass"
                 );
                 return Ok(false);
@@ -1915,7 +1916,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     author = %buffered.author_id,
                     role = ?role,
                     group_id = ?pos.group_id,
-                    "B3 (replay): author authorized at governance cut"
+                    "cross-DAG check (replay): author authorized at governance cut"
                 );
             }
             Ok(MembershipStatus::Removed { last_role }) => {
@@ -1924,7 +1925,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     author = %buffered.author_id,
                     last_role = ?last_role,
                     group_id = ?pos.group_id,
-                    "B3 (replay): rejecting buffered delta — author was removed at governance cut"
+                    "cross-DAG check (replay): rejecting buffered delta — author was removed at governance cut"
                 );
                 return Ok(false);
             }
@@ -1933,7 +1934,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     %context_id,
                     author = %buffered.author_id,
                     group_id = ?pos.group_id,
-                    "B3 (replay): rejecting buffered delta — author is not a member at governance cut"
+                    "cross-DAG check (replay): rejecting buffered delta — author is not a member at governance cut"
                 );
                 return Ok(false);
             }
@@ -1950,7 +1951,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     author = %buffered.author_id,
                     group_id = ?pos.group_id,
                     needed_count = needed.len(),
-                    "B3 (replay): governance heads still unknown after sync — dropping"
+                    "cross-DAG check (replay): governance heads still unknown after sync — dropping"
                 );
                 return Ok(false);
             }
@@ -1960,7 +1961,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                     author = %buffered.author_id,
                     group_id = ?pos.group_id,
                     %err,
-                    "B3 (replay): rejecting buffered delta — membership lookup failed"
+                    "cross-DAG check (replay): rejecting buffered delta — membership lookup failed"
                 );
                 return Ok(false);
             }

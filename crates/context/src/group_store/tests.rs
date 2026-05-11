@@ -5334,3 +5334,137 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         .expect("CAN_DELETE_SUBGROUP holder can delete a subgroup");
     assert!(load_group_meta(&store, &s3_gid).unwrap().is_none());
 }
+
+// ---------------------------------------------------------------------
+// Fast-path integration tests for `membership_status_at`
+//
+// These exercise Branch 1 of `membership_status_at` against a real
+// in-memory `Store`: a `GovernancePosition` whose heads equal the local
+// DAG heads (both empty here), so the resolver short-circuits to a
+// materialized-set lookup and never invokes `prefix_walk_membership`.
+//
+// What's covered:
+//   * The fast path's read of the materialized member set is consistent
+//     with what the apply-time check expects when the sender and the
+//     receiver are at the same governance cut.
+//   * The documented Branch 1 conflation of `Removed` into `NeverMember`
+//     (the materialized set has no row for a removed signer, so the
+//     fast path cannot distinguish "removed" from "was never a member"
+//     without consulting the DAG).
+//
+// What's NOT covered here:
+//   * The forward-only invariant — that lives in `prefix_walk_membership`
+//     (Branch 3), where the BFS visits only the ancestry of the
+//     position's heads. Exercising it end-to-end requires a non-empty
+//     DAG with diverging heads, which means signed namespace ops,
+//     keyring setup, and ancestor chains. That harness is tracked
+//     separately. The per-transition resolver tests in
+//     `membership_status.rs` (`prefix_walk_forward_only_*`) cover the
+//     state-machine logic that the BFS feeds into.
+// ---------------------------------------------------------------------
+
+#[test]
+fn fast_path_current_member_resolves_to_member() {
+    // Baseline: a member who exists in the materialized set resolves
+    // to `Member(role)` when the position's heads equal local heads.
+    // Required precondition for the other Branch 1 tests — if this
+    // baseline fails, the others say nothing.
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x77; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
+
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
+
+    let status = membership_status_at(&store, &signer, &position).unwrap();
+    assert!(
+        matches!(status, MembershipStatus::Member(GroupMemberRole::Member)),
+        "current member must resolve to Member, got {status:?}"
+    );
+}
+
+#[test]
+fn fast_path_removed_member_conflates_to_nevermember() {
+    // Documented Branch 1 conflation: with heads equal, the resolver
+    // only consults the materialized member set, which has no row for
+    // a removed signer. It returns `NeverMember` — it cannot
+    // distinguish "removed" from "was never a member" without the DAG.
+    // The distinction is recovered by Branch 3 (prefix walk) when the
+    // sender's position predates the removal. The apply-time check
+    // treats both `Removed` and `NeverMember` as rejection, so the
+    // practical security outcome is identical on this path.
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x78; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
+    remove_group_member(&store, &gid, &signer).unwrap();
+
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
+
+    let status = membership_status_at(&store, &signer, &position).unwrap();
+    assert!(
+        matches!(status, MembershipStatus::NeverMember),
+        "removed signer on heads-equal fast path is NeverMember, got {status:?}"
+    );
+}
+
+#[test]
+fn fast_path_re_added_member_resolves_to_member() {
+    // Add → Remove → Add: the materialized set contains the signer
+    // again, so the fast path returns Member with the latest role.
+    // The resolver doesn't remember that they were ever removed —
+    // the deny-list elsewhere handles "currently removed" semantics.
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x79; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
+    remove_group_member(&store, &gid, &signer).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Admin).unwrap();
+
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
+
+    let status = membership_status_at(&store, &signer, &position).unwrap();
+    assert!(
+        matches!(status, MembershipStatus::Member(GroupMemberRole::Admin)),
+        "re-added signer resolves with new role on fast path, got {status:?}"
+    );
+}
+
+#[test]
+fn fast_path_role_promotion_picks_current_role() {
+    // Role changes between Add and present don't cause spurious
+    // rejection on the fast path — the materialized set reflects the
+    // latest role.
+    use calimero_context_config::types::GovernancePosition;
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x7A; 32]);
+
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Member).unwrap();
+    // Re-add with Admin role (simulates a role change in the
+    // materialized layer — at the namespace governance layer this
+    // would be a `MemberRoleSet`).
+    add_group_member(&store, &gid, &signer, GroupMemberRole::Admin).unwrap();
+
+    let state_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let position = GovernancePosition::new(gid, state_hash, vec![]).unwrap();
+
+    let status = membership_status_at(&store, &signer, &position).unwrap();
+    assert!(
+        matches!(status, MembershipStatus::Member(GroupMemberRole::Admin)),
+        "current role wins on fast path, got {status:?}"
+    );
+}
