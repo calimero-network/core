@@ -125,8 +125,9 @@ async fn apply_signed_group_op_via_context_client() {
         crate::sync_session_bridge::SYNC_SESSION_CHANNEL_CAPACITY,
         SyncConfig::default().max_concurrent,
         sync_manager.clone(),
-        SyncConfig::default().timeout,
+        SyncConfig::default().session_deadline,
         Some(session_result_tx),
+        &mut registry,
     );
     sync_manager.set_session_handles(sync_session_tx.clone(), session_result_rx);
 

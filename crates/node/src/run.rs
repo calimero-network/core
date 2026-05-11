@@ -279,8 +279,9 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         SYNC_SESSION_CHANNEL_CAPACITY,
         config.sync.max_concurrent,
         sync_manager.clone(),
-        config.sync.timeout,
+        config.sync.session_deadline,
         Some(session_result_tx),
+        &mut registry,
     );
     sync_manager.set_session_handles(sync_session_tx.clone(), session_result_rx);
 
