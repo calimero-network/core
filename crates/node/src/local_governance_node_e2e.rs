@@ -140,6 +140,7 @@ async fn apply_signed_group_op_via_context_client() {
         node_state,
         state_delta_tx,
         sync_session_tx,
+        prometheus_client::metrics::counter::Counter::default(),
     );
 
     let arb = pool.get().await.expect("arbiter");

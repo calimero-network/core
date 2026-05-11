@@ -285,6 +285,16 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     );
     sync_manager.set_session_handles(sync_session_tx.clone(), session_result_rx);
 
+    // #2319: divergence counter — the hash-heartbeat handler bumps this
+    // whenever it sees a peer with the same DAG heads but a different
+    // storage root hash. Exposed as `sync_root_hash_divergence_detected_total`.
+    let divergence_detected = prometheus_client::metrics::counter::Counter::default();
+    registry.sub_registry_with_prefix("sync").register(
+        "root_hash_divergence_detected_total",
+        "Times the hash-heartbeat observed a peer with the same DAG heads but a different storage root hash (#2319)",
+        divergence_detected.clone(),
+    );
+
     let node_manager = NodeManager::new(
         blob_store.clone(),
         sync_manager.clone(),
@@ -294,6 +304,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_state.clone(),
         state_delta_tx,
         sync_session_tx,
+        divergence_detected,
     );
 
     // Start NodeManager actor and get its address

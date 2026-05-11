@@ -21,6 +21,10 @@ pub(super) fn handle_hash_heartbeat(
         let their_heads_set: HashSet<_> = their_dag_heads.iter().collect();
 
         if our_heads_set == their_heads_set && our_context.root_hash != their_root_hash {
+            // #2319: surface divergence as a metric (`sync_root_hash_divergence_detected_total`)
+            // so vmagent can alert on the rate without grepping logs —
+            // with the determinism fixes this should stay near zero.
+            let _new = manager.divergence_detected.inc();
             error!(
                 %context_id,
                 ?source,
