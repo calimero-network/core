@@ -269,6 +269,7 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     delete_all_context_last_migrations(store, group_id)?;
     delete_group_upgrade(store, group_id)?;
     delete_all_group_signing_keys(store, group_id)?;
+    super::clear_all_denied(store, group_id)?;
     delete_op_log_and_head(store, group_id)?;
     delete_group_meta(store, group_id)?;
     Ok(())

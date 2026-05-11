@@ -2759,6 +2759,15 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     set_op_head(&store, &gid, 1, vec![[0x11; 32]]).unwrap();
     track_member_context_join(&store, &gid, &member2, &context, [0xAA; 32]).unwrap();
 
+    // Two deny-list rows under this group — to assert teardown sweeps
+    // the whole prefix, not just one entry.
+    let denied_a = PublicKey::from([0xD1; 32]);
+    let denied_b = PublicKey::from([0xD2; 32]);
+    mark_denied(&store, &gid, &denied_a).unwrap();
+    mark_denied(&store, &gid, &denied_b).unwrap();
+    assert!(is_denied(&store, &gid, &denied_a).unwrap());
+    assert!(is_denied(&store, &gid, &denied_b).unwrap());
+
     assert_eq!(get_local_gov_nonce(&store, &gid, &member).unwrap(), Some(7));
     assert_eq!(read_op_log_after(&store, &gid, 0, 10).unwrap().len(), 1);
     assert_eq!(
@@ -2791,6 +2800,14 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
         .is_none());
     assert!(get_op_head(&store, &gid).unwrap().is_none());
     assert!(read_op_log_after(&store, &gid, 0, 10).unwrap().is_empty());
+    assert!(
+        !is_denied(&store, &gid, &denied_a).unwrap(),
+        "deny-list entries must be swept during group teardown"
+    );
+    assert!(
+        !is_denied(&store, &gid, &denied_b).unwrap(),
+        "deny-list entries must be swept during group teardown"
+    );
 }
 
 #[test]
@@ -5466,5 +5483,235 @@ fn fast_path_role_promotion_picks_current_role() {
     assert!(
         matches!(status, MembershipStatus::Member(GroupMemberRole::Admin)),
         "current role wins on fast path, got {status:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Per-group deny-list (D1) tests
+//
+// Exercise the marking / clearing primitives directly. Apply-path
+// integration (MemberAdded clearing on re-add, MemberRemoved /
+// MemberLeft marking) is covered by the `apply_local_signed_group_op_*`
+// tests which can construct the full SignedGroupOp envelope; here we
+// pin the store-level semantics so future refactors of the helper
+// can't silently change behavior.
+// ---------------------------------------------------------------------
+
+#[test]
+fn deny_list_starts_empty_for_new_member() {
+    let store = test_store();
+    let gid = test_group_id();
+    let pk = PublicKey::from([0xA0; 32]);
+    assert!(!is_denied(&store, &gid, &pk).unwrap());
+}
+
+#[test]
+fn deny_list_mark_then_query_returns_true() {
+    let store = test_store();
+    let gid = test_group_id();
+    let pk = PublicKey::from([0xA1; 32]);
+
+    mark_denied(&store, &gid, &pk).unwrap();
+    assert!(is_denied(&store, &gid, &pk).unwrap());
+}
+
+#[test]
+fn deny_list_clear_then_query_returns_false() {
+    let store = test_store();
+    let gid = test_group_id();
+    let pk = PublicKey::from([0xA2; 32]);
+
+    mark_denied(&store, &gid, &pk).unwrap();
+    assert!(is_denied(&store, &gid, &pk).unwrap());
+    clear_denied(&store, &gid, &pk).unwrap();
+    assert!(!is_denied(&store, &gid, &pk).unwrap());
+}
+
+#[test]
+fn deny_list_mark_is_idempotent() {
+    let store = test_store();
+    let gid = test_group_id();
+    let pk = PublicKey::from([0xA3; 32]);
+
+    mark_denied(&store, &gid, &pk).unwrap();
+    mark_denied(&store, &gid, &pk).unwrap();
+    mark_denied(&store, &gid, &pk).unwrap();
+    assert!(is_denied(&store, &gid, &pk).unwrap());
+}
+
+#[test]
+fn deny_list_clear_on_unmarked_is_noop() {
+    let store = test_store();
+    let gid = test_group_id();
+    let pk = PublicKey::from([0xA4; 32]);
+
+    // Should not error or panic — clearing an absent entry is fine.
+    clear_denied(&store, &gid, &pk).unwrap();
+    assert!(!is_denied(&store, &gid, &pk).unwrap());
+}
+
+#[test]
+fn deny_list_is_per_group_not_per_pubkey() {
+    let store = test_store();
+    let gid_a = ContextGroupId::from([0xB1; 32]);
+    let gid_b = ContextGroupId::from([0xB2; 32]);
+    let pk = PublicKey::from([0xA5; 32]);
+
+    mark_denied(&store, &gid_a, &pk).unwrap();
+    assert!(is_denied(&store, &gid_a, &pk).unwrap());
+    assert!(
+        !is_denied(&store, &gid_b, &pk).unwrap(),
+        "deny-list must be scoped to the group, not the pubkey — \
+         a member denied in group A must still be allowed in group B"
+    );
+}
+
+#[test]
+fn deny_list_add_remove_add_cycle_ends_cleared() {
+    // The semantics described in the design discussion: re-adding a
+    // previously-removed member must restore network access. This test
+    // pins that the deny-list reflects the *current* state, not a
+    // historical audit log.
+    let store = test_store();
+    let gid = test_group_id();
+    let pk = PublicKey::from([0xA6; 32]);
+
+    mark_denied(&store, &gid, &pk).unwrap();
+    clear_denied(&store, &gid, &pk).unwrap();
+    mark_denied(&store, &gid, &pk).unwrap();
+    clear_denied(&store, &gid, &pk).unwrap();
+    assert!(!is_denied(&store, &gid, &pk).unwrap());
+}
+
+#[test]
+fn deny_list_member_added_op_clears_existing_entry() {
+    // Apply-path integration: a `MemberAdded` apply must clear any
+    // existing deny-list entry for that member, even if they were
+    // previously removed.
+    use rand::rngs::OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_pk = admin_sk.public_key();
+    let target_pk = PublicKey::from([0xC1; 32]);
+
+    // Bootstrap: a group meta + an admin member (so the signer has
+    // permission to add members).
+    let mut meta = test_meta();
+    meta.admin_identity = admin_pk;
+    meta.owner_identity = admin_pk;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // Seed the deny-list as if `target_pk` had previously been removed.
+    mark_denied(&store, &gid, &target_pk).unwrap();
+    assert!(is_denied(&store, &gid, &target_pk).unwrap());
+
+    // Apply MemberAdded for target_pk.
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid.to_bytes(),
+        vec![],
+        compute_group_state_hash(&store, &gid).unwrap(),
+        1,
+        GroupOp::MemberAdded {
+            member: target_pk,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .expect("sign MemberAdded");
+    apply_local_signed_group_op(&store, &op).expect("apply MemberAdded");
+
+    assert!(
+        !is_denied(&store, &gid, &target_pk).unwrap(),
+        "MemberAdded must clear the deny-list entry to allow re-add"
+    );
+    assert_eq!(
+        get_group_member_role(&store, &gid, &target_pk).unwrap(),
+        Some(GroupMemberRole::Member),
+        "member must actually be in the group after add"
+    );
+}
+
+#[test]
+fn deny_list_member_removed_op_marks_entry() {
+    use rand::rngs::OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_pk = admin_sk.public_key();
+    let target_pk = PublicKey::from([0xC2; 32]);
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin_pk;
+    meta.owner_identity = admin_pk;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target_pk, GroupMemberRole::Member).unwrap();
+    assert!(!is_denied(&store, &gid, &target_pk).unwrap());
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid.to_bytes(),
+        vec![],
+        compute_group_state_hash(&store, &gid).unwrap(),
+        1,
+        GroupOp::MemberRemoved { member: target_pk },
+    )
+    .expect("sign MemberRemoved");
+    apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
+
+    assert!(
+        is_denied(&store, &gid, &target_pk).unwrap(),
+        "MemberRemoved must mark the member as denied"
+    );
+}
+
+#[test]
+fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
+    use rand::rngs::OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let admin_sk = PrivateKey::random(&mut OsRng);
+    let admin_pk = admin_sk.public_key();
+    let target_pk = PublicKey::from([0xC3; 32]);
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin_pk;
+    meta.owner_identity = admin_pk;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target_pk, GroupMemberRole::Member).unwrap();
+
+    // Remove.
+    let rm = SignedGroupOp::sign(
+        &admin_sk,
+        gid.to_bytes(),
+        vec![],
+        compute_group_state_hash(&store, &gid).unwrap(),
+        1,
+        GroupOp::MemberRemoved { member: target_pk },
+    )
+    .expect("sign MemberRemoved");
+    apply_local_signed_group_op(&store, &rm).expect("apply MemberRemoved");
+    assert!(is_denied(&store, &gid, &target_pk).unwrap());
+
+    // Re-add.
+    let add = SignedGroupOp::sign(
+        &admin_sk,
+        gid.to_bytes(),
+        vec![rm.content_hash().unwrap()],
+        compute_group_state_hash(&store, &gid).unwrap(),
+        2,
+        GroupOp::MemberAdded {
+            member: target_pk,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .expect("sign MemberAdded");
+    apply_local_signed_group_op(&store, &add).expect("apply MemberAdded");
+    assert!(
+        !is_denied(&store, &gid, &target_pk).unwrap(),
+        "re-add must clear the deny-list entry — semantics from design discussion"
     );
 }

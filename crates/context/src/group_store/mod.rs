@@ -17,6 +17,7 @@ mod capabilities;
 mod context_registration;
 mod context_tree;
 mod contexts;
+mod deny_list;
 mod governance_signer;
 mod group_governance_publisher;
 mod group_keys;
@@ -58,6 +59,9 @@ pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{
     cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identity,
     get_group_for_context, register_context_in_group, unregister_context_from_group,
+};
+pub use self::deny_list::{
+    clear_all_denied, clear_denied, is_author_denied_for_context, is_denied, mark_denied,
 };
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
@@ -801,6 +805,10 @@ fn apply_group_op_mutations(
             permissions.require_manage_members(signer, "add member")?;
             permissions.require_admin_to_add_admin(signer, role)?;
             add_group_member(store, group_id, member, role.clone())?;
+            // Clear any stale deny-list entry — re-adding a previously
+            // removed member transparently restores their network-level
+            // access. Idempotent on a member who was never denied.
+            clear_denied(store, group_id, member)?;
             crate::op_events::notify(crate::op_events::OpEvent::MemberAdded {
                 group_id: group_id.to_bytes(),
                 member: *member,
@@ -825,6 +833,10 @@ fn apply_group_op_mutations(
             membership_policy.ensure_not_last_admin_removal(member)?;
             cascade_remove_member_from_group_tree(store, group_id, member)?;
             remove_group_member(store, group_id, member)?;
+            // Add to deny-list: state deltas from this member will be
+            // dropped at the receive entry point before the cross-DAG
+            // check runs. Cleared if/when the member is re-added.
+            mark_denied(store, group_id, member)?;
             crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
                 group_id: group_id.to_bytes(),
                 member: *member,
@@ -987,6 +999,9 @@ fn apply_group_op_mutations(
                 &policy, mrtd, rtmr0, rtmr1, rtmr2, rtmr3, tcb_status,
             )?;
             membership_policy.admit_member_if_absent(member, role)?;
+            // Same rationale as `MemberAdded`: a TEE rejoining after a
+            // prior removal should have their deny-list entry cleared.
+            clear_denied(store, group_id, member)?;
             crate::op_events::notify(crate::op_events::OpEvent::TeeMemberAdmitted {
                 group_id: group_id.to_bytes(),
                 member: *member,
@@ -1090,6 +1105,11 @@ fn apply_group_op_mutations(
                 for sub in &direct_descendants {
                     cascade_remove_member_from_group_tree(store, sub, member)?;
                     remove_group_member(store, sub, member)?;
+                    // Self-leave cascade: deny-list every descendant
+                    // group where the leaver had a row, so their
+                    // state-delta traffic on those topics is dropped
+                    // until they re-join.
+                    mark_denied(store, sub, member)?;
                     crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
                         group_id: sub.to_bytes(),
                         member: *member,
@@ -1099,6 +1119,9 @@ fn apply_group_op_mutations(
 
             cascade_remove_member_from_group_tree(store, group_id, member)?;
             remove_group_member(store, group_id, member)?;
+            // Deny-list the leaver on this group too. See
+            // `MemberRemoved` for the same rationale.
+            mark_denied(store, group_id, member)?;
 
             // NOTE on forward secrecy: this op deliberately does NOT trigger
             // the key-rotation pipeline that `MemberRemoved` does, because
