@@ -90,6 +90,9 @@ steps:
     expected_failure: true
 
   # --- node-1 grants node-2 the subgroup-management capabilities ---
+  # `set_member_capabilities` *replaces* the member's whole bitmask (it is not
+  # additive), so we include the default CAN_JOIN_OPEN_SUBGROUPS (4) alongside
+  # the three new bits to avoid clearing it:
   # 4   = CAN_JOIN_OPEN_SUBGROUPS
   # 32  = CAN_CREATE_SUBGROUP
   # 64  = CAN_DELETE_SUBGROUP

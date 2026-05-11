@@ -5124,6 +5124,10 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     // that it's the *authorization* check rejecting it (not some other error
     // path): signature verification passes for any valid key, so the op
     // reaches `execute_group_deleted` and fails the owner/admin/cap gate.
+    assert!(
+        !check_group_membership(&store, &ns_gid, &stranger_sk.public_key()).unwrap(),
+        "precondition: the stranger must not be enrolled in the namespace"
+    );
     let err = gov.apply_signed_op(&del(&stranger_sk, s1, 1)).unwrap_err();
     assert!(
         format!("{err}").contains("GroupDeleted rejected"),
