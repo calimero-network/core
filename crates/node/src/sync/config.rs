@@ -35,9 +35,15 @@ pub const DEFAULT_SYNC_TIMEOUT_SECS: u64 = 30;
 /// parent-pull, replay). This bounds the *whole* session as seen by the
 /// actor, so a single stuck `HashComparison` session frees its slot —
 /// and stops burning the actor's arbiter thread — within 15 s instead of
-/// 30 s. Healthy sessions are ~1.5–40 ms (and divergence repairs that
-/// legitimately walk ~10k nodes still finish well under 15 s), so this is
-/// comfortably permissive. See calimero-network/core #2319.
+/// 30 s. Healthy sessions are ~1.5–40 ms; a `HashComparison` repair that
+/// has to walk many divergent subtrees can take longer (worst case it
+/// makes up to `MAX_PENDING_NODES` peer round-trips), and a session that
+/// genuinely needs more than 15 s is cut off and retried on the next
+/// interval rather than holding a slot and pinning the arbiter — the
+/// tradeoff #2319 chose deliberately. Raise `session_deadline_ms` if a
+/// high-RTT or very-large-divergence deployment sees legitimate repairs
+/// getting cut off (the periodic-sync/heartbeat path still converges
+/// them, just more slowly). See calimero-network/core #2319.
 pub const DEFAULT_SYNC_SESSION_DEADLINE_SECS: u64 = 15;
 
 /// Default minimum interval between syncs for same context (5 seconds)

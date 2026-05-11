@@ -75,15 +75,19 @@ pub const SYNC_SESSION_CHANNEL_CAPACITY: usize = 256;
 const SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Why a [`SyncSessionJob`] was dropped instead of run.
+///
+/// Discriminants are explicit and contiguous from 0 so `reason as usize`
+/// indexes [`SyncSessionMetrics::counters`] directly (the `ALL` array
+/// below is kept in the same order).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DropReason {
     /// Actor mailbox at capacity (`try_send` -> `Full`).
-    MailboxFull,
+    MailboxFull = 0,
     /// Actor stopped / shutting down (`try_send` -> `Closed`).
-    ActorClosed,
+    ActorClosed = 1,
     /// An `Initiator` job arrived for a `ContextId` that already has a
     /// session in flight on the actor (#2319 per-context gate).
-    ContextBusy,
+    ContextBusy = 2,
 }
 
 impl DropReason {
@@ -94,6 +98,16 @@ impl DropReason {
             DropReason::ContextBusy => "context_busy",
         }
     }
+
+    /// All variants, in discriminant order. Used to pre-create the
+    /// labeled counters once at construction so
+    /// [`SyncSessionMetrics::record_drop`] never allocates on the hot
+    /// path.
+    const ALL: [DropReason; 3] = [
+        DropReason::MailboxFull,
+        DropReason::ActorClosed,
+        DropReason::ContextBusy,
+    ];
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
@@ -104,16 +118,20 @@ struct DropReasonLabel {
 /// Prometheus + summary-log accounting for the sync-session actor
 /// (#2319 Step 4).
 ///
-/// Registered like `NetworkEventChannelMetrics`: the labeled counter is
-/// cloned into the registry, into the [`SyncSessionSender`] (mailbox
-/// `Full`/`Closed` drops), and into the [`SyncSessionActor`]
-/// (per-context-busy drops). `dropped_total` is a plain atomic that
-/// feeds the once-a-minute `log_summary` line (vmagent already scrapes
-/// the structured log); `dropped` is the per-reason Prometheus family.
+/// Holds one owned [`Counter`] handle per [`DropReason`] (in
+/// `DropReason::ALL` order). These are clones of the entries in the
+/// `sync_session_jobs_dropped_total{reason=...}` Prometheus family — the
+/// family itself stays in the registry; `prometheus_client::Counter` is
+/// `Arc`-backed, so incrementing a handle here updates the registered
+/// metric. `record_drop` is then a single atomic increment with no
+/// allocation, and `dropped_total` (the once-a-minute `log_summary`
+/// line) is just the sum of the three counters — no second source of
+/// truth. Cloned (cheaply) into the [`SyncSessionSender`] (mailbox
+/// `Full`/`Closed` drops) and the [`SyncSessionActor`]
+/// (per-context-busy drops).
 #[derive(Clone, Debug)]
 pub struct SyncSessionMetrics {
-    dropped: Family<DropReasonLabel, Counter>,
-    dropped_total: Arc<AtomicU64>,
+    counters: [Counter; 3],
 }
 
 impl SyncSessionMetrics {
@@ -126,36 +144,36 @@ impl SyncSessionMetrics {
             "SyncSessionJobs dropped without running, by reason",
             dropped.clone(),
         );
-        Self {
-            dropped,
-            dropped_total: Arc::new(AtomicU64::new(0)),
-        }
+        Self::from_family(&dropped)
     }
 
     /// Unregistered variant for unit tests.
     #[cfg(test)]
     pub fn new_unregistered() -> Self {
-        Self {
-            dropped: Family::<DropReasonLabel, Counter>::default(),
-            dropped_total: Arc::new(AtomicU64::new(0)),
-        }
+        Self::from_family(&Family::<DropReasonLabel, Counter>::default())
     }
 
-    /// Record one dropped job. Increments the per-reason Prometheus
-    /// counter and the flat total.
+    fn from_family(dropped: &Family<DropReasonLabel, Counter>) -> Self {
+        let counters = DropReason::ALL.map(|reason| {
+            dropped
+                .get_or_create(&DropReasonLabel {
+                    reason: reason.as_str().to_owned(),
+                })
+                .clone()
+        });
+        Self { counters }
+    }
+
+    /// Record one dropped job. Single atomic increment on the
+    /// pre-created per-reason counter — no allocation.
     pub fn record_drop(&self, reason: DropReason) {
-        let _new = self
-            .dropped
-            .get_or_create(&DropReasonLabel {
-                reason: reason.as_str().to_owned(),
-            })
-            .inc();
-        let _prev = self.dropped_total.fetch_add(1, Ordering::Relaxed);
+        let _prev = self.counters[reason as usize].inc();
     }
 
     /// Total dropped jobs across all reasons (for `log_summary`).
+    /// Derived from the per-reason counters — no duplicate atomic.
     pub fn dropped_total(&self) -> u64 {
-        self.dropped_total.load(Ordering::Relaxed)
+        self.counters.iter().map(Counter::get).sum()
     }
 }
 
@@ -439,6 +457,24 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                         %context_id,
                         "SyncSession actor already running an initiator for this context — dropping duplicate (#2319)"
                     );
+                    // We accepted this job off the mailbox (`try_send`
+                    // returned `Ok`), so `SyncManager::start` has already
+                    // run Phase 3 and cleared the context's `last_sync`
+                    // to `None` ("in progress"). If we returned without
+                    // a result the context would stay `None` forever —
+                    // the exact #2317 permanent-stall. Send a synthetic
+                    // failure so `apply_session_result` clears it and the
+                    // periodic loop retries on the next eligible tick.
+                    if let Some(tx) = &result_tx {
+                        let _ignored = tx.send(SyncSessionResult {
+                            context_id,
+                            peer_id: peer_id.unwrap_or_else(PeerId::random),
+                            took: Duration::ZERO,
+                            result: Ok(Err(eyre::eyre!(
+                                "initiator skipped — a sync session for this context is already in flight on the actor (#2319)"
+                            ))),
+                        });
+                    }
                     return;
                 }
                 let context_guard = ContextGuard {
