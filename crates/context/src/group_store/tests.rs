@@ -4974,6 +4974,8 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     let admin_pk = admin_sk.public_key();
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
+    // Never added to the namespace — not a member, no capability row.
+    let stranger_sk = PrivateKey::random(&mut rng);
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
@@ -5000,9 +5002,26 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
 
     let chan = [0xB1u8; 32];
 
+    // A total stranger (not a namespace member, no capability row) cannot
+    // create a subgroup — rejected by the apply-side authorization check.
+    assert!(
+        !check_group_membership(&store, &ns_gid, &stranger_sk.public_key()).unwrap(),
+        "precondition: the stranger must not be enrolled in the namespace"
+    );
+    let err = gov
+        .apply_signed_op(&create(&stranger_sk, chan, ns_id, 1))
+        .unwrap_err();
+    assert!(
+        format!("{err}").contains("GroupCreated rejected"),
+        "stranger should be rejected by the authorization check, got: {err}"
+    );
+    assert!(load_group_meta(&store, &ContextGroupId::from(chan))
+        .unwrap()
+        .is_none());
+
     // Member without the cap cannot create a subgroup, even under the root.
     assert!(gov
-        .apply_signed_op(&create(&member_sk, chan, ns_id, 1))
+        .apply_signed_op(&create(&member_sk, chan, ns_id, 2))
         .is_err());
     assert!(load_group_meta(&store, &ContextGroupId::from(chan))
         .unwrap()
@@ -5017,7 +5036,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         MemberCapabilities::CAN_CREATE_SUBGROUP,
     )
     .unwrap();
-    gov.apply_signed_op(&create(&member_sk, chan, ns_id, 2))
+    gov.apply_signed_op(&create(&member_sk, chan, ns_id, 3))
         .expect("member with CAN_CREATE_SUBGROUP creates a subgroup under the root");
     assert_eq!(
         load_group_meta(&store, &ContextGroupId::from(chan))
@@ -5035,17 +5054,17 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     // But the capability is scoped to root-level subgroups: the member cannot
     // create a nested subgroup under another subgroup.
     let nested_parent = [0xB2u8; 32];
-    gov.apply_signed_op(&create(&admin_sk, nested_parent, ns_id, 3))
+    gov.apply_signed_op(&create(&admin_sk, nested_parent, ns_id, 4))
         .expect("admin creates an intermediate subgroup");
     let grandchild = [0xB3u8; 32];
     assert!(
-        gov.apply_signed_op(&create(&member_sk, grandchild, nested_parent, 4))
+        gov.apply_signed_op(&create(&member_sk, grandchild, nested_parent, 5))
             .is_err(),
         "CAN_CREATE_SUBGROUP is honored only directly under the namespace root"
     );
 
     // A namespace admin is still allowed at any depth.
-    gov.apply_signed_op(&create(&admin_sk, grandchild, nested_parent, 5))
+    gov.apply_signed_op(&create(&admin_sk, grandchild, nested_parent, 6))
         .expect("namespace admin may create nested subgroups");
 }
 

@@ -306,14 +306,31 @@ jobs:
 
           # Install the specific version of cargo-workspaces that we know works
           cargo install --git https://github.com/calimero-network/cargo-workspaces --tag v0.3.0 cargo-workspaces
-          # Publish all publishable crates from the workspace, skipping excluded packages
-          # Using --no-verify avoids crates.io index propagation races for freshly published
-          # prerelease dependencies (cargo package verification may resolve the next crate
-          # before the previous crate appears in the index).
-          # Using --no-git flags to avoid git operations during publishing.
-          cargo ws publish --yes --allow-dirty --force '*' \
+
+          # Publish all publishable crates from the workspace, skipping excluded packages.
+          # --no-verify skips the build-verification step; --no-git-* avoids git ops.
+          #
+          # Retry the publish: crates.io index propagation can lag, so cargo's
+          # built-in "wait for the crate to appear in the index" loop after one
+          # crate may time out, and packaging the *next* crate then fails to
+          # resolve the just-published prerelease dependency
+          # ("failed to select a version for ... = ^X.Y.Z-rc.N"). cargo-workspaces
+          # skips crates that are already on crates.io, so re-running resumes from
+          # the failed crate once the index has caught up.
+          publish() {
+            cargo ws publish --yes --allow-dirty --force '*' \
               --no-verify \
               --no-git-tag --no-git-commit --no-git-push
+          }
+          for attempt in 1 2 3 4 5; do
+            if publish; then
+              exit 0
+            fi
+            echo "::warning::cargo ws publish attempt ${attempt} failed (likely crates.io index lag); retrying in 60s"
+            sleep 60
+          done
+          echo "::error::cargo ws publish failed after 5 attempts"
+          exit 1
 
   release-merod-container:
     name: Release Merod container
