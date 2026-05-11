@@ -58,10 +58,9 @@ impl Handler<DeleteGroupRequest> for ContextManager {
 
         // Sync validation + cascade payload pre-computation.
         let validated = (|| -> eyre::Result<(group_store::CascadePayload, [u8; 32])> {
-            let Some(_meta) = group_store::load_group_meta(&self.datastore, &group_id)? else {
+            let Some(meta) = group_store::load_group_meta(&self.datastore, &group_id)? else {
                 bail!("group '{group_id:?}' not found");
             };
-            group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
 
             // Reject the namespace root explicitly; it has no parent edge to
             // identify it as a subtree, and the namespace-deletion path is
@@ -71,6 +70,19 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                 bail!(
                     "cannot delete the namespace root '{group_id:?}': use delete_namespace instead"
                 );
+            }
+
+            // Authorization (re-checked on every peer in `execute_group_deleted`):
+            // the subgroup's owner, an admin of the namespace root, or a
+            // namespace member holding CAN_DELETE_SUBGROUP. The non-owner case
+            // routes through `PermissionChecker` to stay in step with the
+            // create / set-visibility handlers.
+            if meta.owner_identity != requester {
+                group_store::PermissionChecker::new(&self.datastore, namespace_id)
+                    .require_can_delete_subgroup(&requester)
+                    .map_err(|e| {
+                        eyre::eyre!("deleting subgroup '{group_id:?}': {e} (or be its owner)")
+                    })?;
             }
 
             let payload = group_store::collect_subtree_for_cascade(&self.datastore, &group_id)?;

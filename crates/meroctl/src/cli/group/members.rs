@@ -227,6 +227,24 @@ pub struct SetCapabilitiesCommand {
 
     #[clap(
         long,
+        help = "Allow member to create a subgroup directly under the namespace root"
+    )]
+    pub can_create_subgroup: bool,
+
+    #[clap(
+        long,
+        help = "Allow member to cascade-delete a subgroup and its subtree"
+    )]
+    pub can_delete_subgroup: bool,
+
+    #[clap(
+        long,
+        help = "Allow member to change a subgroup's visibility (open/restricted)"
+    )]
+    pub can_manage_visibility: bool,
+
+    #[clap(
+        long,
         help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
     )]
     pub requester: Option<PublicKey>,
@@ -243,6 +261,15 @@ impl SetCapabilitiesCommand {
         }
         if self.can_join_open_subgroups {
             capabilities |= 1 << 2;
+        }
+        if self.can_create_subgroup {
+            capabilities |= 1 << 5;
+        }
+        if self.can_delete_subgroup {
+            capabilities |= 1 << 6;
+        }
+        if self.can_manage_visibility {
+            capabilities |= 1 << 7;
         }
 
         let identity_hex = hex::encode(self.identity.digest());
@@ -337,6 +364,30 @@ impl CheckAccessCommand {
         println!(
             "CAN_JOIN_OPEN_SUBGROUPS: {}",
             if caps & (1 << 2) != 0 {
+                "true"
+            } else {
+                "false"
+            }
+        );
+        println!(
+            "CAN_CREATE_SUBGROUP:     {}",
+            if caps & (1 << 5) != 0 {
+                "true"
+            } else {
+                "false"
+            }
+        );
+        println!(
+            "CAN_DELETE_SUBGROUP:     {}",
+            if caps & (1 << 6) != 0 {
+                "true"
+            } else {
+                "false"
+            }
+        );
+        println!(
+            "CAN_MANAGE_VISIBILITY:   {}",
+            if caps & (1 << 7) != 0 {
                 "true"
             } else {
                 "false"

@@ -1,0 +1,223 @@
+name: E2E KV Store - Member Channel Lifecycle
+description: >
+  End-to-end coverage for the subgroup-management capabilities
+  (CAN_CREATE_SUBGROUP = 32, CAN_DELETE_SUBGROUP = 64,
+  CAN_MANAGE_VISIBILITY = 128).
+
+  A non-admin namespace member, granted those bits, runs the full
+  "create a channel" lifecycle entirely on their own:
+    1. node-1 installs the app and creates a namespace.
+    2. node-2 joins the namespace as an ordinary member.
+    3. node-1 grants node-2 capabilities 228
+       (CAN_JOIN_OPEN_SUBGROUPS | CAN_CREATE_SUBGROUP |
+        CAN_DELETE_SUBGROUP | CAN_MANAGE_VISIBILITY) and we read them back.
+    4. node-2 — *not* a namespace admin — creates a subgroup directly
+       under the namespace root. It becomes the subgroup's owner/admin.
+    5. node-2 flips the new subgroup's visibility (CAN_MANAGE_VISIBILITY).
+    6. node-2 creates a context inside the subgroup and exercises it
+       (proves the creator is an admin of the new subgroup, so context
+       creation there is allowed without an extra grant).
+    7. node-2 cascade-deletes the subgroup (CAN_DELETE_SUBGROUP); the
+       namespace's subgroup listing is empty again.
+
+  The negative paths (a member *without* each bit being rejected) are
+  covered by the `calimero-context` unit tests.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  # --- node-2 joins the namespace as an ordinary member ---
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+    outputs:
+      member_identity_node2: memberIdentity
+
+  # --- NEGATIVE: an ordinary member (only the default CAN_JOIN_OPEN_SUBGROUPS,
+  # not a namespace admin) is rejected when it tries to create a subgroup,
+  # because it lacks CAN_CREATE_SUBGROUP. `expected_failure` turns the merod
+  # rejection into a pass, so the workflow only succeeds if the bit is
+  # actually enforced.
+
+  - name: Node-2 without CAN_CREATE_SUBGROUP is rejected creating a subgroup
+    type: create_group_in_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    group_alias: should-not-exist
+    expected_failure: true
+
+  # --- node-1 grants node-2 the subgroup-management capabilities ---
+  # `set_member_capabilities` *replaces* the member's whole bitmask (it is not
+  # additive), so we include the default CAN_JOIN_OPEN_SUBGROUPS (4) alongside
+  # the three new bits to avoid clearing it:
+  # 4   = CAN_JOIN_OPEN_SUBGROUPS
+  # 32  = CAN_CREATE_SUBGROUP
+  # 64  = CAN_DELETE_SUBGROUP
+  # 128 = CAN_MANAGE_VISIBILITY
+  # ----------------------------- = 228
+
+  - name: Grant node-2 subgroup-management capabilities (228)
+    type: set_member_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{member_identity_node2}}'
+    capabilities: 228
+
+  - name: Get node-2 capabilities
+    type: get_member_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{member_identity_node2}}'
+    outputs:
+      node2_caps: capabilities
+
+  - name: Assert node-2 has capabilities 228
+    type: json_assert
+    statements:
+      - "json_equal({{node2_caps}}, 228)"
+
+  # --- node-2 (non-admin) creates a subgroup under the namespace root ---
+
+  - name: Node-2 creates a subgroup under the namespace
+    type: create_group_in_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    group_alias: member-channel
+    outputs:
+      subgroup_id: groupId
+
+  - name: Assert subgroup created
+    type: assert
+    statements:
+      - "is_set({{subgroup_id}})"
+
+  - name: List subgroups of namespace (should contain the new subgroup)
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      subgroups_after_create: subgroups
+
+  - name: Assert namespace lists the new subgroup
+    type: assert
+    statements:
+      - "is_set({{subgroups_after_create}})"
+
+  # --- node-2 manages the subgroup's visibility ---
+
+  - name: Node-2 sets subgroup visibility to open
+    type: set_subgroup_visibility
+    node: e2e-node-2
+    group_id: '{{subgroup_id}}'
+    visibility: open
+
+  - name: Node-2 sets subgroup visibility back to restricted
+    type: set_subgroup_visibility
+    node: e2e-node-2
+    group_id: '{{subgroup_id}}'
+    visibility: restricted
+
+  # --- node-2 creates and exercises a context inside the subgroup ---
+  # node-2 is the subgroup's admin (it created it), so no extra
+  # CAN_CREATE_CONTEXT grant is needed here.
+
+  - name: Node-2 creates a context in the subgroup
+    type: create_context
+    node: e2e-node-2
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_id}}'
+    outputs:
+      sub_ctx_id: contextId
+
+  - name: Assert subgroup context created
+    type: assert
+    statements:
+      - "is_set({{sub_ctx_id}})"
+
+  - name: Node-2 writes to the subgroup context
+    type: call
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+    method: set
+    args:
+      key: "channel_key"
+      value: "from_node2"
+
+  - name: Node-2 reads the subgroup context value
+    type: call
+    node: e2e-node-2
+    context_id: '{{sub_ctx_id}}'
+    method: get
+    args:
+      key: "channel_key"
+    outputs:
+      channel_read: result
+
+  - name: Assert the subgroup context is functional
+    type: json_assert
+    statements:
+      - 'json_equal({{channel_read}}, {"output": "from_node2"})'
+
+  # --- node-2 cascade-deletes the subgroup ---
+
+  - name: Node-2 cascade-deletes its subgroup
+    type: delete_group
+    node: e2e-node-2
+    group_id: '{{subgroup_id}}'
+
+  - name: List subgroups of namespace after delete
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      subgroups_after_delete: subgroups
+
+  - name: Assert namespace has no subgroups left
+    type: json_assert
+    statements:
+      - 'json_equal({{subgroups_after_delete}}, [])'
+
+stop_all_nodes: false

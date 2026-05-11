@@ -154,6 +154,34 @@ impl MemberCapabilities {
     pub const CAN_JOIN_OPEN_SUBGROUPS: u32 = 1 << 2;
     pub const MANAGE_MEMBERS: u32 = 1 << 3;
     pub const MANAGE_APPLICATION: u32 = 1 << 4;
+    /// Permits a non-admin namespace member to create a subgroup **directly
+    /// under the namespace root** (`parent_group_id == namespace_id`). This
+    /// is the "any member can start a channel" primitive.
+    ///
+    /// Scoped to root-level subgroups on purpose: the apply-side
+    /// authorization check in `execute_group_created` runs on every peer,
+    /// and a peer can only verify the creator holds this bit if it can read
+    /// the parent group's member-capability rows — which every namespace
+    /// member can do for the root group (they all hold its key), but not
+    /// necessarily for a deeper subgroup. Delegated creation of nested
+    /// subgroups by non-admins is therefore left to a follow-up; namespace
+    /// admins can still create subgroups at any depth.
+    pub const CAN_CREATE_SUBGROUP: u32 = 1 << 5;
+    /// Permits a non-admin namespace member to delete a subgroup (and its
+    /// whole subtree) via the cascade-delete path. Checked on the namespace
+    /// root, for the same determinism reason as [`Self::CAN_CREATE_SUBGROUP`].
+    ///
+    /// This is a delegation knob, not the default: an ordinary group admin
+    /// does *not* get it implicitly here (and a later change tightens the
+    /// baseline so even admins can't destroy a subtree they don't own — see
+    /// the owner-gated-destruction work).
+    pub const CAN_DELETE_SUBGROUP: u32 = 1 << 6;
+    /// Permits a member to flip a subgroup's [`VisibilityMode`]
+    /// (`Open` ↔ `Restricted`) without holding full admin on it. The
+    /// `SubgroupVisibilitySet` op is group-scoped (encrypted to the target
+    /// subgroup's members), so this check is deterministic among exactly the
+    /// peers that apply it — no root-level restriction needed.
+    pub const CAN_MANAGE_VISIBILITY: u32 = 1 << 7;
 }
 
 #[derive(Debug, Serialize, Deserialize)]

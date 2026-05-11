@@ -119,6 +119,32 @@ pub fn membership_status_at(
     }
 
     let group_id = position.group_id;
+
+    // Namespace creator / root admin carve-out — required because the
+    // creator does **not** emit a self-`MemberJoined` op at namespace
+    // genesis: their membership lives in `GroupMeta::admin_identity`,
+    // not in a `GroupMember` row. Without this short-circuit, both the
+    // fast-path (Branch 1, `get_group_member_role` returns `None`) and
+    // the prefix walk (Branch 3, no `RootOp::MemberJoined` or
+    // `GroupOp::MemberAdded` for the creator) return `NeverMember`,
+    // and B3 hard-rejects every state delta authored by the namespace
+    // creator. This was the root cause of the flaky `group-3node`
+    // e2e: when receivers' governance heads hadn't yet caught up to
+    // node-1's at write time, the prefix-walk branch fired and
+    // rejected the legitimate write.
+    //
+    // `is_group_admin` already does the same admin-identity carve-out
+    // for the `MemberJoined`-less creator (see its doc and the
+    // companion `namespace_member_pubkeys` helper at
+    // `membership.rs::namespace_member_pubkeys`). Using the same path
+    // here keeps the semantics aligned: any signer that
+    // `is_group_admin` accepts must also pass B3.
+    if super::membership::is_group_admin(store, &group_id, signer)? {
+        return Ok(MembershipStatus::Member(
+            calimero_primitives::context::GroupMemberRole::Admin,
+        ));
+    }
+
     let namespace_id = super::namespace::resolve_namespace(store, &group_id)?;
     let dag = super::namespace_dag::NamespaceDagService::new(store, namespace_id.to_bytes());
     let local_heads = dag.read_head_record()?.parent_hashes;
@@ -663,6 +689,72 @@ mod tests {
             }
             other => panic!("expected Removed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn membership_status_at_recognises_namespace_creator_as_admin() {
+        // Regression test for the `group-3node` flake — see
+        // `cross-DAG authorization` notes in this module's docs.
+        //
+        // The namespace creator does not emit a self-`MemberJoined` op at
+        // genesis; their membership lives in `GroupMeta::admin_identity`.
+        // Without the carve-out at the top of `membership_status_at`,
+        // both the fast-path (no `GroupMember` row → `NeverMember`) and
+        // the prefix walk (no `MemberJoined` op for the creator →
+        // `NeverMember`) reject every state delta authored by the
+        // creator with `B3: not a member`.
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::context::UpgradePolicy;
+        use calimero_store::key::GroupMetaValue;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let admin = PublicKey::from([0xAA; 32]);
+        let group_id = ContextGroupId::from([0xAB; 32]);
+
+        // Persist a GroupMeta with admin_identity == admin so
+        // is_group_admin returns true without needing any GroupMember
+        // rows or a populated namespace DAG.
+        let meta = GroupMetaValue {
+            app_key: [0u8; 32],
+            target_application_id: ApplicationId::from([0u8; 32]),
+            upgrade_policy: UpgradePolicy::LazyOnAccess,
+            created_at: 0,
+            admin_identity: admin.into(),
+            owner_identity: admin.into(),
+            migration: None,
+            auto_join: false,
+        };
+        super::super::meta::save_group_meta(&store, &group_id, &meta).expect("save_group_meta");
+
+        // Any well-formed position will do — the admin carve-out short-
+        // circuits before we ever look at heads or `namespace_dag`.
+        let position = GovernancePosition {
+            group_id,
+            group_state_hash: [0xCD; 32],
+            governance_dag_heads: vec![[0u8; 32]],
+        };
+
+        let status = membership_status_at(&store, &admin, &position)
+            .expect("admin carve-out must short-circuit cleanly");
+        assert!(
+            matches!(status, MembershipStatus::Member(GroupMemberRole::Admin)),
+            "creator must be recognised as Member(Admin), got {status:?}"
+        );
+
+        // Non-admin signer falls through past the carve-out. Without a
+        // namespace_dag set up, the call returns Err — that's fine for
+        // this regression test (we only need to prove the carve-out
+        // doesn't claim every signer is an admin).
+        let other = PublicKey::from([0x99; 32]);
+        let other_result = membership_status_at(&store, &other, &position);
+        assert!(
+            other_result.is_err()
+                || !matches!(
+                    other_result.unwrap(),
+                    MembershipStatus::Member(GroupMemberRole::Admin)
+                ),
+            "non-admin signer must NOT be classified as Member(Admin)"
+        );
     }
 
     #[test]

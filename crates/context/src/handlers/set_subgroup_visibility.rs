@@ -1,8 +1,11 @@
-use actix::{ActorResponse, Handler, Message};
+use std::sync::Arc;
+
+use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::SetSubgroupVisibilityRequest;
 use calimero_context_client::local_governance::GroupOp;
 use tracing::warn;
 
+use crate::governance_broadcast::ObserveDelivery;
 use crate::{group_store, ContextManager};
 
 impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
@@ -36,16 +39,45 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
             }
         }
 
+        // Preflight without the admin gate (resolves the requester + signing
+        // key, checks the group exists), then require admin **or**
+        // `CAN_MANAGE_VISIBILITY` — re-checked on every peer in
+        // `GroupSettingsService::set_subgroup_visibility`.
+        let preflight = match self.governance_preflight(&group_id, requester, false) {
+            Ok(p) => p,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+        if let Err(err) = group_store::PermissionChecker::new(&self.datastore, group_id)
+            .require_can_manage_visibility(&preflight.requester)
+        {
+            return ActorResponse::reply(Err(err));
+        }
+
         let mode_u8 = match subgroup_visibility {
             calimero_context_config::VisibilityMode::Open => 0u8,
             calimero_context_config::VisibilityMode::Restricted => 1u8,
         };
 
-        self.sign_and_publish_group_op(
-            &group_id,
-            requester,
-            true,
-            GroupOp::SubgroupVisibilitySet { mode: mode_u8 },
+        let datastore = preflight.datastore.clone();
+        let node_client = preflight.node_client.clone();
+        let ack_router = Arc::clone(&self.ack_router);
+        let sk = preflight.signer_sk();
+
+        ActorResponse::r#async(
+            async move {
+                let report = group_store::sign_apply_and_publish(
+                    &datastore,
+                    &node_client,
+                    &ack_router,
+                    &group_id,
+                    &sk,
+                    GroupOp::SubgroupVisibilitySet { mode: mode_u8 },
+                )
+                .await?;
+                report.observe("set_subgroup_visibility", "SubgroupVisibilitySet");
+                Ok(())
+            }
+            .into_actor(self),
         )
     }
 }

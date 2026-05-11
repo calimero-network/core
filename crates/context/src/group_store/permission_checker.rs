@@ -89,6 +89,39 @@ impl<'a> PermissionChecker<'a> {
         bail!("only group admin or members with CAN_CREATE_CONTEXT can register a context")
     }
 
+    /// `self.group_id` is the *parent* group here: a creator may make a
+    /// subgroup under it if they are an admin (direct or inherited via the
+    /// Open chain) or hold `CAN_CREATE_SUBGROUP`. Callers that enforce the
+    /// root-level scoping of that capability (`execute_group_created`,
+    /// `create_group`) layer the `parent == namespace_root` check on top.
+    pub fn require_can_create_subgroup(&self, identity: &PublicKey) -> EyreResult<()> {
+        if self.is_authorized_with_capability(identity, MemberCapabilities::CAN_CREATE_SUBGROUP)? {
+            return Ok(());
+        }
+        bail!("only group admin or members with CAN_CREATE_SUBGROUP can create a subgroup")
+    }
+
+    /// `self.group_id` is the namespace root: a member may cascade-delete a
+    /// subgroup if they are a root admin or hold `CAN_DELETE_SUBGROUP`.
+    pub fn require_can_delete_subgroup(&self, identity: &PublicKey) -> EyreResult<()> {
+        if self.is_authorized_with_capability(identity, MemberCapabilities::CAN_DELETE_SUBGROUP)? {
+            return Ok(());
+        }
+        bail!("only namespace admin or members with CAN_DELETE_SUBGROUP can delete a subgroup")
+    }
+
+    /// `self.group_id` is the subgroup whose visibility is being changed.
+    pub fn require_can_manage_visibility(&self, identity: &PublicKey) -> EyreResult<()> {
+        if self
+            .is_authorized_with_capability(identity, MemberCapabilities::CAN_MANAGE_VISIBILITY)?
+        {
+            return Ok(());
+        }
+        bail!(
+            "only group admin or members with CAN_MANAGE_VISIBILITY can change subgroup visibility"
+        )
+    }
+
     /// Resolves "admin or holds `capability_bit`" with Open-subgroup
     /// inheritance applied (issue #2256).
     ///

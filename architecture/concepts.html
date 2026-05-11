@@ -90,16 +90,24 @@
 </ul>
 <h3>Flags</h3>
 <p>Each capability corresponds to a bit in the member&rsquo;s capability set (shown conceptually below).</p>
-<div class="typedef" aria-label="Capability bits (conceptual)"><span class="comment">// conceptual bit layout</span><br>
+<div class="typedef" aria-label="Capability bits (conceptual)"><span class="comment">// conceptual bit layout (crates/context/config/src/lib.rs)</span><br>
 <span class="kw">bit</span> <span class="field">0</span> &mdash; <span class="ty">CAN_CREATE_CONTEXT</span><br>
 <span class="kw">bit</span> <span class="field">1</span> &mdash; <span class="ty">CAN_INVITE_MEMBERS</span><br>
-<span class="kw">bit</span> <span class="field">2</span> &mdash; <span class="ty">MANAGE_MEMBERS</span><br>
-<span class="kw">bit</span> <span class="field">3</span> &mdash; <span class="ty">MANAGE_APPLICATION</span></div>
+<span class="kw">bit</span> <span class="field">2</span> &mdash; <span class="ty">CAN_JOIN_OPEN_SUBGROUPS</span><br>
+<span class="kw">bit</span> <span class="field">3</span> &mdash; <span class="ty">MANAGE_MEMBERS</span><br>
+<span class="kw">bit</span> <span class="field">4</span> &mdash; <span class="ty">MANAGE_APPLICATION</span><br>
+<span class="kw">bit</span> <span class="field">5</span> &mdash; <span class="ty">CAN_CREATE_SUBGROUP</span><br>
+<span class="kw">bit</span> <span class="field">6</span> &mdash; <span class="ty">CAN_DELETE_SUBGROUP</span><br>
+<span class="kw">bit</span> <span class="field">7</span> &mdash; <span class="ty">CAN_MANAGE_VISIBILITY</span></div>
 <div class="g3" style="font-size:.82rem;">
-<div class="cb"><h4><span class="code">CAN_CREATE_CONTEXT</span></h4><p>Bit 0. Create new contexts in this group.</p></div>
+<div class="cb"><h4><span class="code">CAN_CREATE_CONTEXT</span></h4><p>Bit 0. Register new contexts in this group.</p></div>
 <div class="cb"><h4><span class="code">CAN_INVITE_MEMBERS</span></h4><p>Bit 1. Issue invitations for new members.</p></div>
-<div class="cb"><h4><span class="code">MANAGE_MEMBERS</span></h4><p>Bit 2. Add or remove non-admin members.</p></div>
-<div class="cb"><h4><span class="code">MANAGE_APPLICATION</span></h4><p>Bit 3. Set the target application and handle migration.</p></div>
+<div class="cb"><h4><span class="code">CAN_JOIN_OPEN_SUBGROUPS</span></h4><p>Bit 2. Be inherited as a member of <code>Open</code> subgroups beneath this group (granted to non-admins by default; admins revoke it per-member as a deny-list).</p></div>
+<div class="cb"><h4><span class="code">MANAGE_MEMBERS</span></h4><p>Bit 3. Add or remove non-admin members and set their roles.</p></div>
+<div class="cb"><h4><span class="code">MANAGE_APPLICATION</span></h4><p>Bit 4. Set the target application and handle migration.</p></div>
+<div class="cb"><h4><span class="code">CAN_CREATE_SUBGROUP</span></h4><p>Bit 5. Create a subgroup directly under the namespace root (the creator becomes its owner/admin). Honored only at root level &mdash; the apply-time check must be verifiable by every namespace member.</p></div>
+<div class="cb"><h4><span class="code">CAN_DELETE_SUBGROUP</span></h4><p>Bit 6. Cascade-delete a subgroup and its subtree. (A subgroup&rsquo;s owner and namespace admins can also delete it.)</p></div>
+<div class="cb"><h4><span class="code">CAN_MANAGE_VISIBILITY</span></h4><p>Bit 7. Flip a subgroup&rsquo;s visibility (<code>Open</code> &harr; <code>Restricted</code>) without full admin on it.</p></div>
 </div>
 </div>
 

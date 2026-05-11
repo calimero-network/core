@@ -206,6 +206,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     author = %buffered.author_id,
                     "B2: pending delta now authorized; re-applying"
                 );
+                crate::node_metrics::record_governance_drain_outcome("applied");
                 let reconstructed = state_delta_message_from_buffered(buffered, *context_id);
                 if let Err(err) = apply_authorized_state_delta(input.clone(), reconstructed).await {
                     warn!(
@@ -223,6 +224,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     last_role = ?last_role,
                     "B2: pending delta from removed author; dropping"
                 );
+                crate::node_metrics::record_governance_drain_outcome("removed");
             }
             Ok(MembershipStatus::NeverMember) => {
                 warn!(
@@ -231,6 +233,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     author = %buffered.author_id,
                     "B2: pending delta from non-member; dropping"
                 );
+                crate::node_metrics::record_governance_drain_outcome("never_member");
             }
             Ok(MembershipStatus::Unknown { needed }) => {
                 let mut buffered = buffered;
@@ -246,6 +249,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                         "B2: dropping pending delta after exhausting drain attempts \
                          (governance heads still unknown — likely permanently missing)"
                     );
+                    crate::node_metrics::record_governance_drain_outcome("dropped_max_attempts");
                 } else {
                     debug!(
                         %context_id,
@@ -254,6 +258,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                         attempts = buffered.governance_drain_attempts,
                         "B2: still pending governance catchup; re-buffering"
                     );
+                    crate::node_metrics::record_governance_drain_outcome("rebuffered");
                     input
                         .node_state
                         .buffer_governance_pending(*context_id, buffered);
@@ -266,6 +271,7 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     %err,
                     "B2: membership lookup failed for pending delta; dropping"
                 );
+                crate::node_metrics::record_governance_drain_outcome("lookup_error");
             }
         }
     }
@@ -1549,6 +1555,11 @@ async fn request_missing_deltas(
     delta_store: DeltaStore,
 ) -> Result<Vec<([u8; 32], Vec<u8>)>> {
     use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
+
+    // Metric: number of missing-parent IDs the caller is about to fetch.
+    // Recorded *before* the stream open so a peer-stream failure doesn't
+    // hide the demand signal in dashboards.
+    crate::node_metrics::record_missing_parents_request(missing_ids.len());
 
     // Open stream to peer
     let mut stream = network_client.open_stream(source).await?;

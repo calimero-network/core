@@ -66,7 +66,7 @@ impl<'a> GroupSettingsService<'a> {
         mode: VisibilityMode,
     ) -> EyreResult<()> {
         let permissions = self.permissions();
-        permissions.require_admin(signer)?;
+        permissions.require_can_manage_visibility(signer)?;
         set_subgroup_visibility(self.store, &self.group_id, mode)
     }
 
