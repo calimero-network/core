@@ -855,13 +855,22 @@ impl SyncManager {
 
         info!(%context_id, %peer_id, ?took, ?protocol, "Sync with peer completed successfully");
 
+        // Use the variant-only `SyncProtocolKind` for the protocol label
+        // so it matches the fixed `KNOWN_PROTOCOLS` set in
+        // `PrometheusSyncMetrics::sanitize_protocol`. Formatting the
+        // data-carrying `SyncProtocol` with `{:?}` would yield strings
+        // like `HashComparison { root_hash: [...], divergent_subtrees: [...] }`
+        // which never match the sanitiser and would label every sync
+        // `protocol="unknown"`, breaking the per-protocol slicing on
+        // `sync_successes_total` and `sync_duration_seconds`.
+        //
         // `entities_transferred` is not threaded back to the sync manager
         // today; pass 0. The collector still records the duration histogram
         // and a sync_successes increment, which are the two most useful
         // signals on a dashboard.
         self.metrics().record_sync_complete(
             &context_id.to_string(),
-            &format!("{protocol:?}"),
+            &format!("{:?}", protocol.kind()),
             took,
             0,
         );

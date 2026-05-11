@@ -527,12 +527,3 @@ pub(crate) fn record_blob_cache_eviction(reason: &str, n: u64) {
         counter.inc_by(n);
     }
 }
-
-/// Internal helper for unit tests — return a fresh, unregistered
-/// `NodeMetrics` against a throwaway registry.
-#[cfg(test)]
-pub(crate) fn test_metrics() -> (Registry, NodeMetrics) {
-    let mut r = Registry::default();
-    let m = NodeMetrics::new(&mut r);
-    (r, m)
-}
