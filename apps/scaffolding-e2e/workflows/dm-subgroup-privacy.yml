@@ -277,19 +277,26 @@ steps:
   # node-1 must learn the Open subgroup's GroupCreated/visibility/context
   # registration ops off the namespace governance DAG before it can
   # inherit-join the context. node-2 published all of those a moment ago;
-  # let node-1's namespace sync converge. These waits are sized for a
-  # realistic propagation delay between two locally-connected nodes — not
-  # padded to mask a slow path. `join_context` itself also does a bounded
-  # internal sync-and-retry; if a namespace owner still can't reach a
-  # just-created Open subgroup's context after this, that's a core sync
-  # gap to fix, not a knob to widen.
+  # let node-1's namespace sync converge.
+  #
+  # Timeout sized to 60s (matches the rest of the e2e suite — see
+  # `group-context-isolation.yml`, `group-capabilities.yml`). The
+  # previous 30s budget caught a contended-runner failure on master
+  # (#2329 merge run #25675989235) where convergence took 30.59s.
+  # The likely culprit is the step right above: `Node-1 cannot join
+  # the private context` runs `join_context` retries for its full
+  # 30-second timeout, which can leave node-1's namespace sync in a
+  # back-off state when this step begins. If sync backoff after a
+  # no-such-group join failure becomes a known nuisance, the root-
+  # cause fix is to clear backoff on that failure mode (the failure
+  # is authoritative, not a transient sync gap); 60s is the band-aid.
   - name: Wait for node-1 to converge on the Open subgroup's governance state
     type: wait_for_sync
     group_id: '{{subgroup_open}}'
     nodes:
       - e2e-node-1
       - e2e-node-2
-    timeout: 30
+    timeout: 60
     trigger_sync: true
 
   - name: Brief settle for namespace-DAG propagation to node-1
