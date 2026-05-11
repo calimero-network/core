@@ -103,12 +103,17 @@ jobs:
           echo "crate_release=$crate_release" >> $GITHUB_OUTPUT
           echo "docker_release=$docker_release" >> $GITHUB_OUTPUT
 
-      # Match the file set that defines the profiling image's content:
-      # the entrypoint + helper scripts baked into the image, the
-      # Dockerfile itself, and the fuzzy workflow that exercises it.
-      # Use `gh api` (same pattern as scripts/determine-image-tag.sh)
-      # rather than `tj-actions/changed-files` so we don't need to
-      # change the prepare job's checkout depth.
+      # Match the file set that should trigger a `pr-<N>-profiling`
+      # rebuild + a fuzzy-load-test PR run: the entrypoint + helper
+      # scripts baked into the image, the Dockerfile, the fuzzy workflow
+      # itself, and — added in #2319 — the sync stack
+      # (`crates/node/src/sync/**`, `sync_session_bridge.rs`), since the
+      # fuzzy load test is the regression check for sync backpressure /
+      # convergence. Kept in sync with `fuzzy-load-test.yml`'s
+      # `pull_request.paths`. Use `gh api` (same pattern as
+      # scripts/determine-image-tag.sh) rather than
+      # `tj-actions/changed-files` so we don't need to change the
+      # prepare job's checkout depth.
       - name: Detect profiling-relevant changes
         id: profiling_paths
         if: github.event_name == 'pull_request'
@@ -120,7 +125,7 @@ jobs:
           files=$(gh api \
             "repos/${GH_REPO}/pulls/${PR_NUMBER}/files" \
             --paginate --jq '.[].filename')
-          if echo "$files" | grep -qE '^(scripts/profiling/|\.github/workflows/deps/prebuilt\.profiling\.Dockerfile$|\.github/workflows/fuzzy-load-test\.yml$|workflows/fuzzy-tests/)'; then
+          if echo "$files" | grep -qE '^(scripts/profiling/|\.github/workflows/deps/prebuilt\.profiling\.Dockerfile$|\.github/workflows/fuzzy-load-test\.yml$|workflows/fuzzy-tests/|crates/node/src/sync/|crates/node/src/sync_session_bridge\.rs$)'; then
             echo "Profiling paths changed — profiling image will be built and fuzzy-load-test will run on this PR"
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else

@@ -29,19 +29,29 @@ on:
       - "apps/**"
       - "workflows/fuzzy-tests/**"
       - ".github/workflows/fuzzy-load-test.yml"
-  # PR trigger — fires only on PRs that touch profiling-image paths.
-  # release.yml's `prepare.outputs.profiling_paths_changed` gate the
-  # `release-merod-profiling-container` job on the SAME path set, so
-  # `pr-<N>-profiling` is published before fuzzy-load-test consumes it
-  # via `scripts/determine-image-tag.sh`. Other PR paths skip both —
-  # they keep their cheap default behaviour. Same-repo PRs only;
-  # `prepare.outputs.docker_push` keeps fork PRs from pushing.
+  # PR trigger — fires on PRs that touch profiling-image paths OR the
+  # sync stack. release.yml's `prepare.outputs.profiling_paths_changed`
+  # gates the `release-merod-profiling-container` job on the SAME path
+  # set, so `pr-<N>-profiling` is published before fuzzy-load-test
+  # consumes it via `scripts/determine-image-tag.sh`. Other PR paths
+  # skip both — they keep their cheap default behaviour. Same-repo PRs
+  # only; `prepare.outputs.docker_push` keeps fork PRs from pushing.
+  #
+  # `crates/node/src/sync/**` and `sync_session_bridge.rs` are included
+  # (#2319): the fuzzy load test is precisely the regression check for
+  # the sync layer (backpressure, convergence, divergence repair), so a
+  # change there is validated before merge rather than only on master
+  # via `workflow_run`. The rest of `crates/**` stays out — that would
+  # rebuild the profiling image and run a 15-min ×4-app fuzzy on every
+  # backend PR, which is the cost #2297 deliberately trimmed.
   pull_request:
     paths:
       - "scripts/profiling/**"
       - ".github/workflows/deps/prebuilt.profiling.Dockerfile"
       - ".github/workflows/fuzzy-load-test.yml"
       - "workflows/fuzzy-tests/**"
+      - "crates/node/src/sync/**"
+      - "crates/node/src/sync_session_bridge.rs"
   #
   # Nightly soak: a longer run (default 60 minutes per app vs the 15
   # minutes used for routine triggers) fires at 00:00 UTC daily. The
