@@ -115,12 +115,13 @@ Roles defined in <code>crates/primitives/src/context.rs:253-265</code>:
   <li>This proposal adds <code>Owner</code> as a fifth role — exactly one per group, transferable.</li>
 </ul>
 <p>
-Per-member capability bits (<code>crates/context/config/src/lib.rs:144-156</code>):
+Per-member capability bits (<code>crates/context/config/src/lib.rs</code>, <code>MemberCapabilities</code>):
 </p>
 <ul>
   <li><code>CAN_CREATE_CONTEXT</code>, <code>CAN_INVITE_MEMBERS</code>,
   <code>CAN_JOIN_OPEN_SUBGROUPS</code>, <code>MANAGE_MEMBERS</code>,
-  <code>MANAGE_APPLICATION</code>.</li>
+  <code>MANAGE_APPLICATION</code>, <code>CAN_CREATE_SUBGROUP</code>,
+  <code>CAN_DELETE_SUBGROUP</code>, <code>CAN_MANAGE_VISIBILITY</code>.</li>
 </ul>
 
 <h3>Existing protections</h3>
