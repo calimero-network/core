@@ -324,16 +324,18 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        // Ordering: advance the head first, then write the op to the log. The
-        // store gives us no transaction across the two, so on a crash in
-        // between, retry sees `contains_op == false` and re-applies — which
-        // re-runs the (replay-safe) side effects above and calls
-        // `advance_dag_head` again, where the dedup makes the second add a
-        // no-op. The reverse order (log then advance) would instead leave the
-        // op logged but the head un-advanced, and the idempotency guard would
-        // then *skip* the retry, permanently dropping `delta_id` from the head
-        // set — strictly worse. A truly atomic update would need a
-        // single-batch write spanning both keys.
+        // Ordering: advance the head first, then write the op to the log —
+        // `publish_post_gate` uses the same order. The store gives us no
+        // transaction across the two keys, so this ordering is the one that
+        // keeps the idempotency guard's invariant ("op in the log ⟹ its head
+        // advance already ran"): a crash between the two writes leaves the op
+        // *not* in the log, so a retry sees `contains_op == false` and
+        // re-applies — re-running the (replay-safe) side effects above and
+        // calling `advance_dag_head` again, where the dedup makes the second
+        // add a no-op. The reverse order would leave the op logged but the
+        // head un-advanced, and a later re-receive would hit the guard, skip
+        // the apply, and never advance the head for it. A truly atomic update
+        // would need a single-batch write spanning both keys.
         let head = self.read_head_record()?;
         self.advance_dag_head(delta_id, &op.parent_op_hashes, head.next_nonce)?;
         self.store_operation(op)?;
@@ -517,8 +519,15 @@ impl<'a> NamespaceGovernance<'a> {
             .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
         let parent_ids = signed.parent_op_hashes.clone();
 
-        self.store_operation(&signed)?;
+        // Advance the head first, then write the op to the log — same order as
+        // `apply_signed_op`. This keeps the invariant the idempotency guard in
+        // `apply_signed_op` relies on: "op in the local op-log ⟹ its head
+        // advance already ran". If these were reversed, a crash in between
+        // would leave the op logged but the head un-advanced, and a later
+        // re-receive of that op would hit the guard, skip the apply, and never
+        // advance the head for it — orphaning it from the DAG head lineage.
         self.advance_dag_head(delta_id, &parent_ids, head.next_nonce)?;
+        self.store_operation(&signed)?;
 
         // Same signal as in `sign_apply_and_publish` above — the local DAG
         // just advanced on the publisher path, so the readiness FSM needs

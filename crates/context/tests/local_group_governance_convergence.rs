@@ -1370,27 +1370,37 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     .expect("sign MemberJoined");
     let op_hash = ns_op.content_hash().expect("content_hash");
 
+    // The bug is in one store's head-set bookkeeping, so a single store that
+    // re-applies its own op is the full repro (a two-node variant — A publishes,
+    // B receives via gossip, A receives back via sync — adds nothing here).
+    // Check after *every* apply so a defect that only surfaces on the Nth
+    // replay (e.g. a counter-based dedup that tolerates one duplicate) is
+    // still caught, not just the final state.
+    let read_state = |label: &str| {
+        let (heads, _next_nonce) = NamespaceDagService::new(&store, ns_id)
+            .read_head()
+            .expect("read namespace dag head");
+        assert_eq!(
+            heads,
+            vec![op_hash],
+            "namespace DAG head set must stay duplicate-free ({label})"
+        );
+        // A node at this cut can embed a non-empty GovernancePosition — i.e.
+        // `governance_dag_heads_len == 1`, so peers accept its state deltas.
+        let state_hash = compute_group_state_hash(&store, &gid).expect("compute_group_state_hash");
+        let position = GovernancePosition::new(gid, state_hash, heads)
+            .unwrap_or_else(|e| panic!("GovernancePosition must be embeddable ({label}): {e}"));
+        assert_eq!(position.governance_dag_heads, vec![op_hash]);
+    };
+
     // 1) "Publish locally": apply the op once.
     group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
-    // 2) "Re-receive via sync backfill": the same op arrives again.
+    read_state("after publish");
+    // 2) "Re-receive via sync backfill": the same op arrives again, twice.
     group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    read_state("after 1st re-receive");
     group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    read_state("after 2nd re-receive");
 
-    // The namespace DAG head set must contain the op exactly once.
-    let (heads, _next_nonce) = NamespaceDagService::new(&store, ns_id)
-        .read_head()
-        .expect("read namespace dag head");
-    assert_eq!(
-        heads,
-        vec![op_hash],
-        "namespace DAG head set must stay duplicate-free across re-applies"
-    );
-
-    // And a node at this cut can embed a non-empty GovernancePosition — i.e.
-    // `governance_dag_heads_len == 1`, so peers will accept its state deltas.
-    let state_hash = compute_group_state_hash(&store, &gid).expect("compute_group_state_hash");
-    let position = GovernancePosition::new(gid, state_hash, heads.clone())
-        .expect("GovernancePosition must be embeddable (non-duplicate heads)");
-    assert_eq!(position.governance_dag_heads, vec![op_hash]);
     assert!(group_store::check_group_membership(&store, &gid, &joiner_pk).unwrap());
 }
