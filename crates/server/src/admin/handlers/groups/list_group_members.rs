@@ -47,7 +47,7 @@ pub async fn handler(
                 .map(|m| GroupMemberApiEntry {
                     identity: m.identity,
                     role: m.role,
-                    alias: m.alias,
+                    name: m.name,
                 })
                 .collect();
             ApiResponse {

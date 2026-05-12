@@ -77,6 +77,13 @@ pub fn enumerate_all_groups(
 /// `MemberRemoved` all branch on the current owner. Without including it, two ops
 /// signed before and after a `TransferOwnership` would compute the same state hash and
 /// the divergence-prevention check would fail to detect that ownership changed.
+///
+/// Note: metadata records (`name` / `data` / `updated_at` / `updated_by`) are
+/// intentionally **excluded** from this hash — exactly as the former alias rows
+/// were — so the hash stays a function of consensus-relevant state only. A
+/// `*MetadataSet` op never changes the group state hash, and `updated_at` is
+/// applier-stamped (so it can differ per peer) precisely because it is not part
+/// of consensus state.
 pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> EyreResult<[u8; 32]> {
     let meta = load_group_meta(store, group_id)?
         .ok_or_else(|| eyre::eyre!("group not found for state hash computation"))?;

@@ -10,20 +10,21 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupAliasesRequest,
-    BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupRequest,
-    DeleteGroupRequest, DeleteNamespaceRequest, DetachContextFromGroupRequest,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
-    GetMemberCapabilitiesRequest, GetNamespaceIdentityRequest, JoinContextRequest,
-    JoinGroupRequest, LeaveContextRequest, LeaveGroupRequest, LeaveNamespaceRequest,
-    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupLocalStateRequest,
+    CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest,
+    DetachContextFromGroupRequest, GetContextMetadataRequest, GetGroupForContextRequest,
+    GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetNamespaceIdentityRequest,
+    JoinContextRequest, JoinGroupRequest, LeaveContextRequest, LeaveGroupRequest,
+    LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
-    RetryGroupUpgradeRequest, SetDefaultCapabilitiesRequest, SetGroupAliasRequest,
-    SetMemberAliasRequest, SetMemberCapabilitiesRequest, SetSubgroupVisibilityRequest,
-    SetTeeAdmissionPolicyRequest, StoreContextAliasRequest, StoreDefaultCapabilitiesRequest,
-    StoreGroupAliasRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreMemberAliasRequest, StoreMemberCapabilityRequest, StoreSubgroupVisibilityRequest,
-    SyncGroupRequest, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
+    RetryGroupUpgradeRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
+    SetGroupMetadataRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
+    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
+    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
+    StoreSubgroupVisibilityRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
+    UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -37,7 +38,7 @@ pub struct CreateContextRequest {
     pub identity_secret: Option<PrivateKey>,
     pub init_params: Vec<u8>,
     pub group_id: ContextGroupId,
-    pub alias: Option<String>,
+    pub name: Option<String>,
 }
 
 impl Message for CreateContextRequest {
@@ -402,13 +403,9 @@ pub enum ContextMessage {
         request: SetSubgroupVisibilityRequest,
         outcome: oneshot::Sender<<SetSubgroupVisibilityRequest as Message>::Result>,
     },
-    StoreContextAlias {
-        request: StoreContextAliasRequest,
-        outcome: oneshot::Sender<<StoreContextAliasRequest as Message>::Result>,
-    },
-    BroadcastGroupAliases {
-        request: BroadcastGroupAliasesRequest,
-        outcome: oneshot::Sender<<BroadcastGroupAliasesRequest as Message>::Result>,
+    StoreContextMetadata {
+        request: StoreContextMetadataRequest,
+        outcome: oneshot::Sender<<StoreContextMetadataRequest as Message>::Result>,
     },
     BroadcastGroupLocalState {
         request: BroadcastGroupLocalStateRequest,
@@ -426,21 +423,37 @@ pub enum ContextMessage {
         request: StoreSubgroupVisibilityRequest,
         outcome: oneshot::Sender<<StoreSubgroupVisibilityRequest as Message>::Result>,
     },
-    SetMemberAlias {
-        request: SetMemberAliasRequest,
-        outcome: oneshot::Sender<<SetMemberAliasRequest as Message>::Result>,
+    SetMemberMetadata {
+        request: SetMemberMetadataRequest,
+        outcome: oneshot::Sender<<SetMemberMetadataRequest as Message>::Result>,
     },
-    StoreMemberAlias {
-        request: StoreMemberAliasRequest,
-        outcome: oneshot::Sender<<StoreMemberAliasRequest as Message>::Result>,
+    StoreMemberMetadata {
+        request: StoreMemberMetadataRequest,
+        outcome: oneshot::Sender<<StoreMemberMetadataRequest as Message>::Result>,
     },
-    SetGroupAlias {
-        request: SetGroupAliasRequest,
-        outcome: oneshot::Sender<<SetGroupAliasRequest as Message>::Result>,
+    SetGroupMetadata {
+        request: SetGroupMetadataRequest,
+        outcome: oneshot::Sender<<SetGroupMetadataRequest as Message>::Result>,
     },
-    StoreGroupAlias {
-        request: StoreGroupAliasRequest,
-        outcome: oneshot::Sender<<StoreGroupAliasRequest as Message>::Result>,
+    StoreGroupMetadata {
+        request: StoreGroupMetadataRequest,
+        outcome: oneshot::Sender<<StoreGroupMetadataRequest as Message>::Result>,
+    },
+    SetContextMetadata {
+        request: SetContextMetadataRequest,
+        outcome: oneshot::Sender<<SetContextMetadataRequest as Message>::Result>,
+    },
+    GetGroupMetadata {
+        request: GetGroupMetadataRequest,
+        outcome: oneshot::Sender<<GetGroupMetadataRequest as Message>::Result>,
+    },
+    GetMemberMetadata {
+        request: GetMemberMetadataRequest,
+        outcome: oneshot::Sender<<GetMemberMetadataRequest as Message>::Result>,
+    },
+    GetContextMetadata {
+        request: GetContextMetadataRequest,
+        outcome: oneshot::Sender<<GetContextMetadataRequest as Message>::Result>,
     },
     StoreGroupContext {
         request: StoreGroupContextRequest,

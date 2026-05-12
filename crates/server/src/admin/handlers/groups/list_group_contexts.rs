@@ -45,7 +45,7 @@ pub async fn handler(
                 .into_iter()
                 .map(|e| GroupContextEntryResponse {
                     context_id: e.context_id.to_string(),
-                    alias: e.alias,
+                    name: e.name,
                 })
                 .collect();
             ApiResponse {

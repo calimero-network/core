@@ -8,7 +8,6 @@ pub mod add_group_members;
 pub mod admit_tee_node;
 pub mod apply_signed_group_op;
 pub mod apply_signed_namespace_op;
-pub mod broadcast_group_aliases;
 pub mod broadcast_group_local_state;
 pub mod create_context;
 pub mod create_group;
@@ -18,10 +17,13 @@ pub mod delete_group;
 pub mod delete_namespace;
 pub mod detach_context_from_group;
 pub mod execute;
+pub mod get_context_metadata;
 pub mod get_group_for_context;
 pub mod get_group_info;
+pub mod get_group_metadata;
 pub mod get_group_upgrade_status;
 pub mod get_member_capabilities;
+pub mod get_member_metadata;
 pub mod get_namespace_identity;
 pub mod join_context;
 pub mod join_group;
@@ -36,19 +38,20 @@ pub mod list_namespaces_for_application;
 pub mod namespace_pending_op_count;
 pub mod remove_group_members;
 pub mod retry_group_upgrade;
+pub mod set_context_metadata;
 pub mod set_default_capabilities;
-pub mod set_group_alias;
-pub mod set_member_alias;
+pub mod set_group_metadata;
 pub mod set_member_capabilities;
+pub mod set_member_metadata;
 pub mod set_subgroup_visibility;
 pub mod set_tee_admission_policy;
-pub mod store_context_alias;
+pub mod store_context_metadata;
 pub mod store_default_capabilities;
-pub mod store_group_alias;
 pub mod store_group_context;
 pub mod store_group_meta;
-pub mod store_member_alias;
+pub mod store_group_metadata;
 pub mod store_member_capability;
+pub mod store_member_metadata;
 pub mod store_subgroup_visibility;
 pub mod sync;
 pub mod sync_group;
@@ -173,10 +176,7 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::SetSubgroupVisibility { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::StoreContextAlias { request, outcome } => {
-                self.forward_handler(ctx, request, outcome)
-            }
-            ContextMessage::BroadcastGroupAliases { request, outcome } => {
+            ContextMessage::StoreContextMetadata { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::BroadcastGroupLocalState { request, outcome } => {
@@ -191,16 +191,28 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::StoreSubgroupVisibility { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::SetMemberAlias { request, outcome } => {
+            ContextMessage::SetMemberMetadata { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::StoreMemberAlias { request, outcome } => {
+            ContextMessage::StoreMemberMetadata { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::SetGroupAlias { request, outcome } => {
+            ContextMessage::SetGroupMetadata { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
-            ContextMessage::StoreGroupAlias { request, outcome } => {
+            ContextMessage::StoreGroupMetadata { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::SetContextMetadata { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetGroupMetadata { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetMemberMetadata { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetContextMetadata { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::StoreGroupContext { request, outcome } => {

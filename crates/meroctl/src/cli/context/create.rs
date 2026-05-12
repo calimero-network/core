@@ -81,8 +81,11 @@ pub struct CreateCommand {
     #[clap(long, help = "Identity secret (hex) for signing group membership")]
     pub identity_secret: Option<String>,
 
-    #[clap(long, help = "Human-readable alias for the context within the group")]
-    pub alias: Option<String>,
+    #[clap(
+        long = "group-name",
+        help = "Human-readable name for the context within the group"
+    )]
+    pub group_name: Option<String>,
 }
 
 impl CreateCommand {
@@ -102,7 +105,7 @@ impl CreateCommand {
                 service,
                 group_id,
                 identity_secret,
-                alias,
+                group_name,
             } => {
                 let _ = create_context(
                     environment,
@@ -115,7 +118,7 @@ impl CreateCommand {
                     context,
                     group_id,
                     identity_secret,
-                    alias,
+                    group_name,
                 )
                 .await?;
             }
@@ -130,7 +133,7 @@ impl CreateCommand {
                 service,
                 group_id,
                 identity_secret,
-                alias,
+                group_name,
             } => {
                 // Validate file exists before watching
                 validate_file_exists(path.as_std_path())?;
@@ -160,7 +163,7 @@ impl CreateCommand {
                     context,
                     group_id,
                     identity_secret,
-                    alias,
+                    group_name,
                 )
                 .await?;
 
@@ -192,7 +195,7 @@ pub async fn create_context(
     context: Option<Alias<ContextId>>,
     group_id: String,
     identity_secret: Option<String>,
-    alias: Option<String>,
+    group_name: Option<String>,
 ) -> Result<(ContextId, PublicKey)> {
     let response: GetApplicationResponse = client.get_application(&application_id).await?;
 
@@ -207,7 +210,7 @@ pub async fn create_context(
         group_id,
         identity_secret,
     );
-    request.alias = alias;
+    request.name = group_name;
     request.service_name = service;
 
     let response: CreateContextResponse = client.create_context(request).await?;

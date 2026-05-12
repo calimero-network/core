@@ -12,6 +12,7 @@ use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiResponse;
 use calimero_server_primitives::admin::GetGroupUpgradeStatusApiResponse;
 use calimero_server_primitives::admin::GetMemberCapabilitiesApiResponse;
+use calimero_server_primitives::admin::GetMetadataApiResponse;
 use calimero_server_primitives::admin::GetTeeAdmissionPolicyApiResponse;
 use calimero_server_primitives::admin::GroupInfoApiResponse;
 use calimero_server_primitives::admin::JoinContextApiResponse;
@@ -32,6 +33,8 @@ use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiResponse;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiResponse;
+use calimero_server_primitives::admin::SetMetadataApiRequest;
+use calimero_server_primitives::admin::SetMetadataApiResponse;
 use calimero_server_primitives::admin::SetSubgroupVisibilityApiRequest;
 use calimero_server_primitives::admin::SetSubgroupVisibilityApiResponse;
 use calimero_server_primitives::admin::SetTeeAdmissionPolicyApiRequest;
@@ -389,6 +392,88 @@ where
             .connection
             .put_json(
                 &format!("admin-api/groups/{group_id}/settings/tee-admission-policy"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    // ---- Metadata records ----
+
+    pub async fn get_group_metadata(&self, group_id: &str) -> Result<GetMetadataApiResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/groups/{group_id}/metadata"))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn set_group_metadata(
+        &self,
+        group_id: &str,
+        request: SetMetadataApiRequest,
+    ) -> Result<SetMetadataApiResponse> {
+        let response = self
+            .connection
+            .put_json(&format!("admin-api/groups/{group_id}/metadata"), request)
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_member_metadata(
+        &self,
+        group_id: &str,
+        identity_hex: &str,
+    ) -> Result<GetMetadataApiResponse> {
+        let response = self
+            .connection
+            .get(&format!(
+                "admin-api/groups/{group_id}/members/{identity_hex}/metadata"
+            ))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn set_member_metadata(
+        &self,
+        group_id: &str,
+        identity_hex: &str,
+        request: SetMetadataApiRequest,
+    ) -> Result<SetMetadataApiResponse> {
+        let response = self
+            .connection
+            .put_json(
+                &format!("admin-api/groups/{group_id}/members/{identity_hex}/metadata"),
+                request,
+            )
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn get_context_metadata(
+        &self,
+        group_id: &str,
+        context_id: &str,
+    ) -> Result<GetMetadataApiResponse> {
+        let response = self
+            .connection
+            .get(&format!(
+                "admin-api/groups/{group_id}/contexts/{context_id}/metadata"
+            ))
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn set_context_metadata(
+        &self,
+        group_id: &str,
+        context_id: &str,
+        request: SetMetadataApiRequest,
+    ) -> Result<SetMetadataApiResponse> {
+        let response = self
+            .connection
+            .put_json(
+                &format!("admin-api/groups/{group_id}/contexts/{context_id}/metadata"),
                 request,
             )
             .await?;

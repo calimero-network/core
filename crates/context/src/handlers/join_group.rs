@@ -30,7 +30,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
         &mut self,
         JoinGroupRequest {
             invitation,
-            group_alias,
+            group_name,
         }: JoinGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -396,8 +396,30 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // Phase 3: Auto-join contexts from the response.
                 // -------------------------------------------------------
 
-                if let Some(ref alias_str) = group_alias {
-                    group_store::set_group_alias(&datastore, &group_id, alias_str)?;
+                // Seed a local display-name hint from the invitation *only* if
+                // nothing has synced yet — a replicated `GroupOp::GroupMetadataSet`
+                // is authoritative and must not be clobbered by a possibly-stale
+                // invitation value. Stamp with this node's identity / wall-clock
+                // rather than the zero-value `Default` so the provenance fields
+                // aren't misleading.
+                if group_name.is_some()
+                    && calimero_primitives::metadata::validate_metadata_payload(
+                        group_name.as_deref(),
+                        &std::collections::BTreeMap::new(),
+                    )
+                    .is_ok()
+                    && group_store::get_group_metadata(&datastore, &group_id)?.is_none()
+                {
+                    group_store::set_group_metadata(
+                        &datastore,
+                        &group_id,
+                        &calimero_primitives::metadata::MetadataRecord {
+                            name: group_name.clone(),
+                            updated_at: group_store::now_millis(),
+                            updated_by: joiner_identity,
+                            ..Default::default()
+                        },
+                    )?;
                 }
 
                 let contexts = &join_result.context_ids;

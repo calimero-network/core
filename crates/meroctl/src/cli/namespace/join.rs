@@ -25,7 +25,7 @@ impl JoinCommand {
 
         let request = JoinGroupApiRequest {
             invitation,
-            group_alias: None,
+            group_name: None,
         };
 
         let client = environment.client()?;

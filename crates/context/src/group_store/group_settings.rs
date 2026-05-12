@@ -10,7 +10,7 @@ use eyre::{eyre, Result as EyreResult};
 use super::permission_checker::PermissionChecker;
 use super::{
     cascade_target_application, load_group_meta, save_group_meta, set_default_capabilities,
-    set_group_alias, set_subgroup_visibility,
+    set_subgroup_visibility,
 };
 
 /// Group-level settings mutation service.
@@ -68,12 +68,6 @@ impl<'a> GroupSettingsService<'a> {
         let permissions = self.permissions();
         permissions.require_can_manage_visibility(signer)?;
         set_subgroup_visibility(self.store, &self.group_id, mode)
-    }
-
-    pub fn set_group_alias(&self, signer: &PublicKey, alias: &str) -> EyreResult<()> {
-        let permissions = self.permissions();
-        permissions.require_admin(signer)?;
-        set_group_alias(self.store, &self.group_id, alias)
     }
 
     pub fn set_group_migration(

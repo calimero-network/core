@@ -45,7 +45,7 @@ pub async fn handler(
                         active_upgrade,
                         default_capabilities: info.default_capabilities,
                         subgroup_visibility: info.subgroup_visibility,
-                        alias: info.alias,
+                        metadata: info.metadata,
                         group_state_hash: hex::encode(info.state_hash),
                     },
                 },

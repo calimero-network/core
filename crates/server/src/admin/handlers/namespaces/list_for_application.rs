@@ -54,7 +54,7 @@ pub async fn handler(
                     target_application_id: ns.target_application_id.to_string(),
                     upgrade_policy: format!("{:?}", ns.upgrade_policy),
                     created_at: ns.created_at,
-                    alias: ns.alias,
+                    name: ns.name,
                     member_count: ns.member_count,
                     context_count: ns.context_count,
                     subgroup_count: ns.subgroup_count,

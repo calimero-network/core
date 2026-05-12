@@ -33,14 +33,15 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
             let entries = members
                 .into_iter()
                 .map(|(identity, role)| {
-                    let alias =
-                        group_store::get_member_alias(&self.datastore, &group_id, &identity)
+                    let name =
+                        group_store::get_member_metadata(&self.datastore, &group_id, &identity)
                             .ok()
-                            .flatten();
+                            .flatten()
+                            .and_then(|r| r.name);
                     GroupMemberEntry {
                         identity,
                         role,
-                        alias,
+                        name,
                     }
                 })
                 .collect();

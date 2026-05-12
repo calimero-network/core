@@ -28,13 +28,13 @@ pub async fn handler(
 
     let mut subgroups = Vec::with_capacity(children.len());
     for child in children {
-        let alias = match calimero_context::group_store::get_group_alias(&state.store, &child) {
-            Ok(alias) => alias,
+        let name = match calimero_context::group_store::get_group_metadata(&state.store, &child) {
+            Ok(rec) => rec.and_then(|r| r.name),
             Err(err) => return parse_api_error(err).into_response(),
         };
         subgroups.push(SubgroupEntryApiResponse {
             group_id: hex::encode(child.to_bytes()),
-            alias,
+            name,
         });
     }
 

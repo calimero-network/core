@@ -12,6 +12,7 @@ use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::metadata::MetadataRecord;
 use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
 use eyre::{ContextCompat, WrapErr};
@@ -21,23 +22,24 @@ use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 use crate::group::{
-    AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupAliasesRequest,
-    BroadcastGroupLocalStateRequest, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
-    CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
-    DeleteNamespaceRequest, DeleteNamespaceResponse, DetachContextFromGroupRequest,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupUpgradeStatusRequest,
-    GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GetNamespaceIdentityRequest,
-    GroupContextEntry, GroupInfoResponse, GroupSummary, GroupUpgradeInfo, JoinContextRequest,
-    JoinContextResponse, JoinGroupRequest, JoinGroupResponse, LeaveContextRequest,
-    LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest,
-    LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
-    ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
-    ListNamespacesRequest, NamespaceSummary, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
-    SetDefaultCapabilitiesRequest, SetGroupAliasRequest, SetMemberAliasRequest,
-    SetMemberCapabilitiesRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
-    StoreContextAliasRequest, StoreDefaultCapabilitiesRequest, StoreGroupAliasRequest,
-    StoreGroupContextRequest, StoreGroupMetaRequest, StoreMemberAliasRequest,
-    StoreMemberCapabilityRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupLocalStateRequest,
+    CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
+    CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DeleteNamespaceRequest,
+    DeleteNamespaceResponse, DetachContextFromGroupRequest, GetContextMetadataRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
+    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
+    GetMemberMetadataRequest, GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse,
+    GroupSummary, GroupUpgradeInfo, JoinContextRequest, JoinContextResponse, JoinGroupRequest,
+    JoinGroupResponse, LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest,
+    LeaveGroupResponse, LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest,
+    ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
+    ListNamespacesForApplicationRequest, ListNamespacesRequest, NamespaceSummary,
+    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextMetadataRequest,
+    SetDefaultCapabilitiesRequest, SetGroupMetadataRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
     SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
     UpgradeGroupResponse,
 };
@@ -734,7 +736,7 @@ impl ContextClient {
         init_params: Vec<u8>,
         seed: Option<[u8; DIGEST_SIZE]>,
         group_id: ContextGroupId,
-        alias: Option<String>,
+        name: Option<String>,
     ) -> eyre::Result<CreateContextResponse> {
         let (sender, receiver) = oneshot::channel();
 
@@ -748,7 +750,7 @@ impl ContextClient {
                     identity_secret,
                     init_params,
                     group_id,
-                    alias,
+                    name,
                 },
                 outcome: sender,
             })
@@ -1110,15 +1112,9 @@ impl ContextClient {
         eyre::Result<Vec<GroupContextEntry>>
     );
     forward_to_actor!(
-        store_context_alias,
-        StoreContextAlias,
-        StoreContextAliasRequest,
-        eyre::Result<()>
-    );
-    forward_to_actor!(
-        broadcast_group_aliases,
-        BroadcastGroupAliases,
-        BroadcastGroupAliasesRequest,
+        store_context_metadata,
+        StoreContextMetadata,
+        StoreContextMetadataRequest,
         eyre::Result<()>
     );
     forward_to_actor!(
@@ -1146,28 +1142,52 @@ impl ContextClient {
         eyre::Result<()>
     );
     forward_to_actor!(
-        set_member_alias,
-        SetMemberAlias,
-        SetMemberAliasRequest,
+        set_member_metadata,
+        SetMemberMetadata,
+        SetMemberMetadataRequest,
         eyre::Result<()>
     );
     forward_to_actor!(
-        store_member_alias,
-        StoreMemberAlias,
-        StoreMemberAliasRequest,
+        store_member_metadata,
+        StoreMemberMetadata,
+        StoreMemberMetadataRequest,
         eyre::Result<()>
     );
     forward_to_actor!(
-        set_group_alias,
-        SetGroupAlias,
-        SetGroupAliasRequest,
+        set_group_metadata,
+        SetGroupMetadata,
+        SetGroupMetadataRequest,
         eyre::Result<()>
     );
     forward_to_actor!(
-        store_group_alias,
-        StoreGroupAlias,
-        StoreGroupAliasRequest,
+        store_group_metadata,
+        StoreGroupMetadata,
+        StoreGroupMetadataRequest,
         eyre::Result<()>
+    );
+    forward_to_actor!(
+        set_context_metadata,
+        SetContextMetadata,
+        SetContextMetadataRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        get_group_metadata,
+        GetGroupMetadata,
+        GetGroupMetadataRequest,
+        eyre::Result<Option<MetadataRecord>>
+    );
+    forward_to_actor!(
+        get_member_metadata,
+        GetMemberMetadata,
+        GetMemberMetadataRequest,
+        eyre::Result<Option<MetadataRecord>>
+    );
+    forward_to_actor!(
+        get_context_metadata,
+        GetContextMetadata,
+        GetContextMetadataRequest,
+        eyre::Result<Option<MetadataRecord>>
     );
     forward_to_actor!(
         store_group_context,
