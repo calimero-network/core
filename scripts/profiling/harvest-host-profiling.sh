@@ -15,7 +15,8 @@
 # job did `cd workflows/fuzzy-tests/<test>` first — see #2278). This script
 # harvests those dumps regardless of whether the runtime container still exists,
 # and — because the exact location has drifted before and been hard to notice —
-# falls back to a bounded search and shouts loudly if it finds nothing.
+# also does a bounded search of the workspace (deduplicating against the primary
+# pass) and shouts loudly if it finds nothing.
 #
 # Usage: harvest-host-profiling.sh <src-root> <dest-root>
 #   <src-root>  primary location to look under, e.g. data
@@ -28,31 +29,41 @@ set -u
 SRC_ROOT="${1:?Error: src-root is required}"
 DEST_ROOT="${2:?Error: dest-root is required}"
 
+# Bound the fallback search to the checkout. On GHA $GITHUB_WORKSPACE is the
+# repo root; outside CI fall back to $PWD. Searching only here keeps us from
+# scooping up a stray `profiling-dump` dir from elsewhere on a reused runner.
+WORKSPACE="${GITHUB_WORKSPACE:-$PWD}"
+
 ERR_LOG=$(mktemp -t harvest-host-profiling.XXXXXX.err)
 trap 'rm -f "$ERR_LOG"' EXIT
 
 found=0
+HARVESTED=""   # newline-delimited realpaths of dumps already taken — dedup key
 
-# Copy one `<node-dir>/profiling-dump` tree into $DEST_ROOT/<node-name>/.
+# Print $1 with the $WORKSPACE prefix stripped, so logs stay tidy.
+rel() { local p="$1"; printf '%s' "${p#"$WORKSPACE"/}"; }
+
+# Copy one `<dump>` (a `.../profiling-dump` dir) into $DEST_ROOT/<node-name>/.
 harvest_dump() {
     local dump="$1" node_name="$2"
     local dest="$DEST_ROOT/$node_name"
+    local key err size perf_count heap_count
+    key=$(cd "$dump" 2>/dev/null && pwd -P) || key="$dump"
+    case $'\n'"$HARVESTED"$'\n' in *$'\n'"$key"$'\n'*) return ;; esac   # already taken
+    HARVESTED="$HARVESTED$key"$'\n'
     if ! mkdir -p "$dest" 2>"$ERR_LOG"; then
-        local err
         err=$(head -3 "$ERR_LOG" 2>/dev/null | tr '\n' ' ')
         echo "  $node_name: ERROR — could not create $dest: ${err:-(no stderr captured)}"
         return
     fi
     if ! cp -r "$dump/." "$dest/" 2>"$ERR_LOG"; then
-        local err
         err=$(head -3 "$ERR_LOG" 2>/dev/null | tr '\n' ' ')
         echo "  $node_name: WARNING — cp may be incomplete: ${err:-(no stderr captured)}"
     fi
-    local size perf_count heap_count
     size=$(du -sh "$dest" 2>/dev/null | awk '{print $1}')
     perf_count=$(find "$dest" -maxdepth 2 -name 'perf-*.data' 2>/dev/null | wc -l | tr -d ' ')
     heap_count=$(find "$dest" -maxdepth 2 -name 'jemalloc.*.heap' 2>/dev/null | wc -l | tr -d ' ')
-    echo "  $node_name: ${size:-?} (perf.data=$perf_count, heap=$heap_count)  <- $dump"
+    echo "  $node_name: ${size:-?} (perf.data=$perf_count, heap=$heap_count)  <- $(rel "$dump")"
     found=$((found + 1))
 }
 
@@ -65,27 +76,30 @@ if [ -d "$SRC_ROOT" ]; then
         harvest_dump "$dump" "$(basename "${node_dir%/}")"
     done
 else
-    echo "Primary src-root '$SRC_ROOT' does not exist — will fall back to a search."
+    echo "Primary src-root '$SRC_ROOT' does not exist — relying on the workspace search."
 fi
 
-# 2) Fallback: bounded search for any */profiling-dump we haven't taken yet.
-#    Covers merobox's data dir landing somewhere other than <src-root>
-#    (it's relative to merobox's CWD, which has changed before).
-if [ "$found" -eq 0 ]; then
-    echo "Nothing under '$SRC_ROOT' — searching for profiling-dump dirs under '$PWD' (maxdepth 5)..."
-    while IFS= read -r dump; do
-        [ -d "$dump" ] || continue
-        parent=$(dirname "$dump")
-        harvest_dump "$dump" "$(basename "$parent")"
-    done < <(find "$PWD" -maxdepth 5 -type d -name profiling-dump 2>/dev/null)
-fi
+# 2) Always sweep the workspace for any other `*/profiling-dump` dirs (the data
+#    dir is relative to merobox's CWD and has drifted before). `harvest_dump`
+#    dedups against the primary pass by realpath, so re-finding the same dirs is
+#    harmless; this also catches the case where the primary pass found *some*
+#    nodes but others landed elsewhere.
+while IFS= read -r dump; do
+    [ -d "$dump" ] || continue
+    harvest_dump "$dump" "$(basename "$(dirname "$dump")")"
+done < <(find "$WORKSPACE" -maxdepth 6 -type d -name profiling-dump 2>/dev/null)
 
 if [ "$found" -eq 0 ]; then
-    echo "::warning::harvest-host-profiling: harvested 0 profiling-dump dirs (src-root='$SRC_ROOT', cwd='$PWD')."
-    echo "  Candidates that exist on the runner:"
-    # Surface what *is* there so a future path drift is obvious from the log.
-    find "$PWD" -maxdepth 5 \( -name 'perf-*.data' -o -name 'profiling-dump' -o -name 'jemalloc.*.heap' \) 2>/dev/null | head -40 | sed 's/^/    /'
-    [ -d "$PWD/data" ] && { echo "  Contents of ./data:"; ls -laR "$PWD/data" 2>/dev/null | head -40 | sed 's/^/    /'; }
+    echo "::warning::harvest-host-profiling: harvested 0 profiling-dump dirs (src-root='$SRC_ROOT', workspace='$WORKSPACE')."
+    echo "  Profiling-related files present under the workspace:"
+    # Surface what *is* there (paths relative to the workspace) so a future
+    # path drift is obvious from the run log.
+    find "$WORKSPACE" -maxdepth 6 \( -name 'perf-*.data' -o -name 'profiling-dump' -o -name 'jemalloc.*.heap' \) 2>/dev/null \
+        | head -40 | while IFS= read -r p; do echo "    $(rel "$p")"; done
+    if [ -d "$WORKSPACE/data" ]; then
+        echo "  ./data tree (maxdepth 3):"
+        find "$WORKSPACE/data" -maxdepth 3 2>/dev/null | head -40 | while IFS= read -r p; do echo "    $(rel "$p")"; done
+    fi
 fi
 
 echo "Harvested profiling dumps from $found node(s)."
