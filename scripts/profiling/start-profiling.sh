@@ -96,9 +96,12 @@ echo "Starting profiling for $NODE_NAME (PID: $PID) at $TIMESTAMP"
 # Start perf profiling
 if [ "$ENABLE_PERF" = true ]; then
     PERF_OUTPUT="$OUTPUT_DIR/perf-${NODE_NAME}-${TIMESTAMP}.data"
-    echo "Starting perf record (output: $PERF_OUTPUT, freq: $SAMPLE_FREQ Hz)..."
-    
-    PERF_CMD="perf record -F $SAMPLE_FREQ -g -p $PID -o $PERF_OUTPUT"
+    echo "Starting perf record (output: $PERF_OUTPUT, freq: $SAMPLE_FREQ Hz, call-graph: dwarf)..."
+
+    # DWARF unwinding, not frame pointers (`-g`): merod is a Rust release build
+    # that omits frame pointers, so `-g` gives shallow/garbage stacks. See
+    # entrypoint-profiling.sh for the same rationale.
+    PERF_CMD="perf record -F $SAMPLE_FREQ --call-graph dwarf -p $PID -o $PERF_OUTPUT"
     
     if [ "$DURATION" -gt 0 ]; then
         # Run for specified duration
