@@ -3,7 +3,36 @@
 //! Tests all collection types (UnorderedMap, Vector, UnorderedSet)
 //! Moved from inline tests in collections modules for better organization
 
-use crate::collections::{Root, UnorderedMap, UnorderedSet, Vector};
+use crate::address::Id;
+use crate::collections::{CrdtType, Root, UnorderedMap, UnorderedSet, Vector};
+use crate::index::Index;
+use crate::store::MainStorage;
+
+// ============================================================
+// Root Tests
+// ============================================================
+
+/// `Root<T>`'s single entry (`Id::new([118; 32])` == `Root::<T>::entry_id()`)
+/// must be created with an LWW `crdt_type` so HashComparison sync treats it as
+/// a normal CRDT leaf rather than an "opaque" (`crdt_type: None`) leaf.
+#[test]
+fn test_root_entry_gets_lww_register_crdt_type() {
+    // `Id::new([118; 32])` == `Root::<T>::entry_id()`.
+    const ROOT_ENTRY_ID: [u8; 32] = [118u8; 32];
+
+    let _root = Root::new(|| UnorderedMap::<String, String>::new());
+
+    let index = <Index<MainStorage>>::get_index(Id::new(ROOT_ENTRY_ID))
+        .expect("get_index should not error")
+        .expect("Root entry index should exist");
+
+    assert_eq!(
+        index.metadata.crdt_type,
+        Some(CrdtType::lww_register("RootValue")),
+        "Root<T> entry must carry an LwwRegister crdt_type on creation, got {:?}",
+        index.metadata.crdt_type
+    );
+}
 
 // ============================================================
 // UnorderedMap Tests (from collections/unordered_map.rs)

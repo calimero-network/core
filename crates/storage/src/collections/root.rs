@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 
-use super::{Collection, ROOT_ID};
+use super::{Collection, CrdtType, ROOT_ID};
 use crate::address::Id;
 use crate::delta::{push_comparison, StorageDelta};
 use crate::index::DeferredAncestorScope;
@@ -58,7 +58,15 @@ where
 
         let id = Self::entry_id();
 
-        let value = inner.insert(Some(id), f()).unwrap();
+        // Give the `Root<T>` entry an LWW `crdt_type` on creation so it goes
+        // through the normal CRDT leaf path during HashComparison sync instead
+        // of being an "opaque" (`crdt_type: None`) leaf. LWW-on-`updated_at` is
+        // the right semantics for the WASM app-root value (more-recently-written
+        // side wins). Entries already on disk keep `crdt_type: None` and are
+        // reconciled by the opaque-leaf sync fix (PR A).
+        let value = inner
+            .insert_with_crdt_type(Some(id), f(), "root", CrdtType::lww_register("RootValue"))
+            .unwrap();
 
         Self {
             inner,
