@@ -2326,36 +2326,20 @@ pub struct SetMetadataApiRequest {
 
 impl Validate for SetMetadataApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        // Same hard limits the op-apply path enforces (see
-        // `calimero_primitives::metadata::validate_metadata_payload`) — kept
-        // in sync via the shared `MAX_METADATA_*` constants.
-        use calimero_primitives::metadata::{
-            MAX_METADATA_DATA_ENTRIES, MAX_METADATA_DATA_KEY_LEN, MAX_METADATA_DATA_VALUE_LEN,
-            MAX_METADATA_NAME_LEN,
-        };
-
-        let mut errors = Vec::new();
-        if let Some(ref name) = self.name {
-            if let Some(e) = validate_string_length(name, "name", MAX_METADATA_NAME_LEN) {
-                errors.push(e);
-            }
+        // Delegate to the single source of truth — the exact same checks the
+        // `*MetadataSet` op-apply path enforces (size limits, non-empty name,
+        // non-empty data keys) — so an HTTP request that would later fail at
+        // apply time is rejected here with a clean 400 instead.
+        match calimero_primitives::metadata::validate_metadata_payload(
+            self.name.as_deref(),
+            &self.data,
+        ) {
+            Ok(()) => Vec::new(),
+            Err(reason) => vec![ValidationError::InvalidFormat {
+                field: "metadata",
+                reason,
+            }],
         }
-        if self.data.len() > MAX_METADATA_DATA_ENTRIES {
-            errors.push(ValidationError::TooManyItems {
-                field: "data",
-                max: MAX_METADATA_DATA_ENTRIES,
-                actual: self.data.len(),
-            });
-        }
-        for (k, v) in &self.data {
-            if let Some(e) = validate_string_length(k, "data key", MAX_METADATA_DATA_KEY_LEN) {
-                errors.push(e);
-            }
-            if let Some(e) = validate_string_length(v, "data value", MAX_METADATA_DATA_VALUE_LEN) {
-                errors.push(e);
-            }
-        }
-        errors
     }
 }
 
