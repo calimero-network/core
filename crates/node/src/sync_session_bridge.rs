@@ -416,17 +416,19 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                 let timeout_total = Arc::clone(&self.timeout_total);
                 let work = async move {
                     let _guard = in_flight_guard;
-                    // Bound concurrent in-flight sessions to
-                    // `sync_config.max_concurrent` (default 30); when
-                    // saturated, queued jobs wait here rather than
-                    // running unbounded. The session timeout below
-                    // still applies once the permit is held.
-                    let _permit = concurrency.acquire_owned().await.ok();
                     let started = Instant::now();
-                    let outcome = tokio::time::timeout(
-                        session_timeout,
-                        sync_manager.handle_opened_stream(peer_id, stream),
-                    )
+                    // #2319: one `timeout` covers BOTH waiting for a
+                    // concurrency permit and running the session, so
+                    // total wall time per responder slot is bounded by
+                    // `session_timeout`. Without bounding the acquire, a
+                    // saturated actor (every `max_concurrent` slot held
+                    // by a stuck session) would park this job
+                    // indefinitely and pin the peer's inbound stream
+                    // open until the peer itself gives up.
+                    let outcome = tokio::time::timeout(session_timeout, async move {
+                        let _permit = concurrency.acquire_owned().await.ok();
+                        sync_manager.handle_opened_stream(peer_id, stream).await
+                    })
                     .await;
                     match &outcome {
                         Ok(()) => {
@@ -501,45 +503,31 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                 let work = async move {
                     let _context_guard = context_guard;
                     let _guard = in_flight_guard;
-                    // #2319: bound the permit wait. If every concurrency
-                    // slot is held by sessions that are themselves stuck
-                    // (e.g. a synchronous merkle/CRDT-merge loop the
-                    // session-deadline `timeout` below can't preempt),
-                    // an unbounded `acquire_owned().await` would park
-                    // this initiator forever — and since it accepted the
-                    // job off the mailbox, `SyncManager::start` already
-                    // cleared this context's `last_sync` to `None`, so
-                    // with no result ever coming back the context stays
-                    // "in progress" permanently ("Sync already in
-                    // progress" forever). Time the acquire out and emit a
-                    // failure result instead so `apply_session_result`
-                    // clears the flag and the periodic loop retries.
-                    let permit = match tokio::time::timeout(
-                        session_timeout,
-                        concurrency.acquire_owned(),
-                    )
-                    .await
-                    {
-                        Ok(p) => p.ok(),
-                        Err(_elapsed) => {
-                            let _prev = error_total.fetch_add(1, Ordering::Relaxed);
-                            let chosen_peer = peer_id.unwrap_or_else(PeerId::random);
-                            return (
-                                Ok(Err(eyre::eyre!(
-                                    "initiator could not acquire a concurrency permit within {:?} — actor saturated by stuck sessions (#2319)",
-                                    session_timeout
-                                ))),
-                                session_timeout,
-                                chosen_peer,
-                            );
-                        }
-                    };
-                    let _permit = permit;
                     let started = Instant::now();
-                    let outcome = tokio::time::timeout(
-                        session_timeout,
-                        sync_manager.perform_interval_sync(context_id, peer_id),
-                    )
+                    // #2319: one `timeout` covers BOTH waiting for a
+                    // concurrency permit and running `perform_interval_sync`,
+                    // so total wall time is bounded by `session_timeout`
+                    // (not 2×, which two separate timeouts gave — and 2×
+                    // is the watchdog's whole grace, so a permit-starved
+                    // session could otherwise trip a spurious synthetic
+                    // failure while still legitimately running). If every
+                    // slot is held by sessions stuck in a synchronous
+                    // merge loop the `timeout` can't preempt, an
+                    // unbounded `acquire_owned().await` would park this
+                    // initiator forever — and since it accepted the job
+                    // off the mailbox, `SyncManager::start` already
+                    // cleared this context's `last_sync` to `None`, so
+                    // with no result the context stays "in progress"
+                    // permanently. On timeout the `Err(Elapsed)` outcome
+                    // below still yields a (failure) result, so
+                    // `apply_session_result` clears the flag and the
+                    // periodic loop retries.
+                    let outcome = tokio::time::timeout(session_timeout, async move {
+                        let _permit = concurrency.acquire_owned().await.ok();
+                        sync_manager
+                            .perform_interval_sync(context_id, peer_id)
+                            .await
+                    })
                     .await;
 
                     let chosen_peer = outcome
