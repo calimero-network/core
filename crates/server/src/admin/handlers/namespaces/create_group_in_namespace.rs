@@ -153,12 +153,23 @@ pub async fn handler(
                 }
             }
 
-            if body.group_name.is_some() {
+            if let Some(name) = body.group_name.as_deref() {
                 // Seed the subgroup's initial metadata record stamped with the
                 // creator's identity / wall-clock — not the zero-value
                 // `Default` (which would surface as misleading provenance via
                 // the API); later `GroupOp::GroupMetadataSet` ops supersede it.
-                if let Err(err) = calimero_context::group_store::set_group_metadata(
+                // Validate the name here too — this seed bypasses the op-apply
+                // validator.
+                if let Err(reason) = calimero_primitives::metadata::validate_metadata_payload(
+                    Some(name),
+                    &std::collections::BTreeMap::new(),
+                ) {
+                    warn!(
+                        group_id=%hex::encode(group_id.to_bytes()),
+                        %reason,
+                        "Group created but the requested name is invalid; not persisted"
+                    );
+                } else if let Err(err) = calimero_context::group_store::set_group_metadata(
                     &state.store,
                     &group_id,
                     &calimero_primitives::metadata::MetadataRecord {

@@ -403,6 +403,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // rather than the zero-value `Default` so the provenance fields
                 // aren't misleading.
                 if group_name.is_some()
+                    && calimero_primitives::metadata::validate_metadata_payload(
+                        group_name.as_deref(),
+                        &std::collections::BTreeMap::new(),
+                    )
+                    .is_ok()
                     && group_store::get_group_metadata(&datastore, &group_id)?.is_none()
                 {
                     group_store::set_group_metadata(
