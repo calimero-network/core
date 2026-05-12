@@ -6393,3 +6393,58 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
         "receiver's post-apply per-context snapshot must equal the signer's"
     );
 }
+
+#[test]
+fn cascade_remove_member_does_not_change_group_state_hash() {
+    // Pins the invariant relied on by the ordering comment at the
+    // `verify_post_apply_state_hashes` call site: cascade-removal
+    // touches `ContextIdentity` rows only, never `GroupMeta` or
+    // `GroupMember` rows, so the group state hash before and after
+    // a cascade is identical. If a future refactor makes cascade
+    // also touch group-level rows, this test fires and the ordering
+    // comment in `apply_group_op_mutations` must be revisited
+    // (otherwise the post-apply hash would diverge from the
+    // pre-apply simulation on every honest receiver).
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let target = PublicKey::from([0xD0; 32]);
+    let context_id = ContextId::from([0xE0; 32]);
+
+    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
+
+    // Register a context and write a ContextIdentity for `target`
+    // — exactly the row cascade_remove_member_from_group_tree
+    // deletes.
+    register_context_in_group(&store, &gid, &context_id).unwrap();
+    let id_key = calimero_store::key::ContextIdentity::new(context_id, target);
+    let mut handle = store.handle();
+    handle
+        .put(
+            &id_key,
+            &calimero_store::types::ContextIdentity {
+                private_key: None,
+                sender_key: None,
+            },
+        )
+        .unwrap();
+    drop(handle);
+
+    let hash_before = compute_group_state_hash(&store, &gid).unwrap();
+    cascade_remove_member_from_group_tree(&store, &gid, &target).unwrap();
+    let hash_after = compute_group_state_hash(&store, &gid).unwrap();
+
+    assert_eq!(
+        hash_before, hash_after,
+        "cascade-removal must not change the group state hash — \
+         it touches ContextIdentity rows, which are not in the hash inputs"
+    );
+    // Sanity: the row it WAS supposed to delete is gone.
+    let handle = store.handle();
+    assert!(
+        !handle.has(&id_key).unwrap(),
+        "cascade should have deleted target's ContextIdentity row"
+    );
+}

@@ -1109,15 +1109,29 @@ fn apply_group_op_mutations(
             // check runs. Cleared if/when the member is re-added.
             mark_denied(store, group_id, member)?;
             // Ordering invariant: `verify_post_apply_state_hashes`
-            // must run AFTER the last membership-mutating step of
-            // this op (here `remove_group_member` — `mark_denied`
-            // and `cascade_remove_member_from_group_tree` don't
-            // change `compute_group_state_hash`'s inputs) so the
-            // local post-apply hash matches the signer's pre-apply
-            // simulation. Adding any further membership-row
-            // mutation between `remove_group_member` and this call
-            // will make the recomputed hash diverge from the signed
-            // claim on every honest receiver.
+            // must run AFTER the last mutation that touches inputs
+            // to `compute_group_state_hash` (i.e. `GroupMeta` rows
+            // and `GroupMember` rows for this `group_id`). Of the
+            // three preceding steps here only `remove_group_member`
+            // touches those inputs:
+            //
+            // * `cascade_remove_member_from_group_tree` deletes
+            //   `ContextIdentity` rows in the state-DAG-layer
+            //   column — disjoint from `GroupMember`. Does not
+            //   affect the hash.
+            // * `mark_denied` writes a `GroupDeniedMember` row — a
+            //   separate column. Does not affect the hash.
+            // * `remove_group_member` deletes the `GroupMember`
+            //   row — this is the step the pre-apply simulation
+            //   in `compute_group_state_hash_after_remove` mirrors.
+            //
+            // Adding any future mutation between
+            // `remove_group_member` and this call that DOES touch
+            // `GroupMeta` or `GroupMember` rows for `group_id` will
+            // make the recomputed hash diverge from the signed
+            // claim on every honest receiver. The pre-apply
+            // simulation only models the single removal; any extra
+            // mutation here is invisible to it.
             verify_post_apply_state_hashes(
                 store,
                 group_id,
