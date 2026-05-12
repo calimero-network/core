@@ -10,7 +10,8 @@ use eyre::{bail, Result as EyreResult};
 
 use super::permission_checker::PermissionChecker;
 use super::{
-    context_tree::ContextTreeService, get_group_for_context, load_group_meta, save_group_meta,
+    context_tree::ContextTreeService, delete_context_metadata, get_group_for_context,
+    load_group_meta, save_group_meta,
 };
 
 /// Service that applies context registration and detachment mutations.
@@ -54,6 +55,9 @@ impl<'a> ContextRegistrationService<'a> {
             Some(g) if g == self.group_id => {
                 ContextTreeService::new(self.store, self.group_id)
                     .unregister_context(context_id)?;
+                // Drop the context's metadata record so detach doesn't leave
+                // an orphaned `GroupContextMetadata` row behind.
+                delete_context_metadata(self.store, &self.group_id, context_id)?;
                 Ok(())
             }
             Some(_) => bail!("context is registered to a different group"),

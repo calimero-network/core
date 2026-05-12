@@ -7,6 +7,7 @@ pub mod crdt;
 pub mod events;
 pub mod hash;
 pub mod identity;
+pub mod metadata;
 pub mod reflect;
 pub mod utils;
 pub mod version;

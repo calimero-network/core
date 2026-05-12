@@ -50,7 +50,7 @@ pub async fn handler(
                 payload: CreateGroupInvitationApiResponse {
                     data: CreateGroupInvitationApiResponseData {
                         invitation: resp.invitation,
-                        group_alias: resp.group_alias,
+                        group_name: resp.group_name,
                     },
                 },
             }

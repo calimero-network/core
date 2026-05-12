@@ -61,7 +61,7 @@ pub async fn handler(
             app_key,
             application_id: req.application_id,
             upgrade_policy: req.upgrade_policy,
-            alias: req.alias,
+            name: req.name,
             parent_group_id,
         })
         .await

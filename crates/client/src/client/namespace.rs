@@ -12,7 +12,7 @@ use super::{ClientAuthenticator, ClientStorage};
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateGroupInNamespaceApiRequest {
-    group_alias: Option<String>,
+    group_name: Option<String>,
 }
 
 impl<A, S> super::Client<A, S>
@@ -125,13 +125,13 @@ where
     pub async fn create_group_in_namespace(
         &self,
         namespace_id: &str,
-        group_alias: Option<String>,
+        group_name: Option<String>,
     ) -> Result<serde_json::Value> {
         let response = self
             .connection
             .post(
                 &format!("admin-api/namespaces/{namespace_id}/groups"),
-                CreateGroupInNamespaceApiRequest { group_alias },
+                CreateGroupInNamespaceApiRequest { group_name },
             )
             .await?;
         Ok(response)

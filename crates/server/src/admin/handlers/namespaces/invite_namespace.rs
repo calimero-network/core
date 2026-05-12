@@ -107,15 +107,15 @@ pub async fn handler(
 
         let mut data = Vec::with_capacity(invitations.len());
         for (group_id, invitation) in invitations {
-            let group_alias =
-                match calimero_context::group_store::get_group_alias(&state.store, &group_id) {
-                    Ok(alias) => alias,
+            let group_name =
+                match calimero_context::group_store::get_group_metadata(&state.store, &group_id) {
+                    Ok(rec) => rec.and_then(|r| r.name),
                     Err(err) => return parse_api_error(err).into_response(),
                 };
             data.push(RecursiveInvitationEntry {
                 group_id: hex::encode(group_id.to_bytes()),
                 invitation,
-                group_alias,
+                group_name,
             });
         }
 
@@ -142,7 +142,7 @@ pub async fn handler(
             payload: CreateGroupInvitationApiResponse {
                 data: CreateGroupInvitationApiResponseData {
                     invitation: resp.invitation,
-                    group_alias: resp.group_alias,
+                    group_name: resp.group_name,
                 },
             },
         }

@@ -19,7 +19,7 @@
 <div class="g4" style="margin-bottom:36px;">
   <div class="stat"><div class="v">Ed25519</div><div class="l">signed ops</div></div>
   <div class="stat"><div class="v">DAG</div><div class="l">causal ordering</div></div>
-  <div class="stat"><div class="v">5</div><div class="l">capability bits</div></div>
+  <div class="stat"><div class="v">6</div><div class="l">capability bits</div></div>
   <div class="stat"><div class="v">20+</div><div class="l">op variants</div></div>
 </div>
 
@@ -35,7 +35,7 @@
   <rect x="70" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#f59e0b" stroke-width="1.5"/>
   <text x="145" y="78" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">GroupStore</text>
   <text x="145" y="96" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Members, capabilities</text>
-  <text x="145" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Contexts, aliases</text>
+  <text x="145" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Contexts, metadata</text>
 
   <rect x="250" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#8b5cf6" stroke-width="1.5"/>
   <text x="325" y="78" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">DagStore</text>
@@ -60,7 +60,7 @@
   <rect x="550" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#f59e0b" stroke-width="1.5"/>
   <text x="625" y="78" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">GroupStore</text>
   <text x="625" y="96" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Members, capabilities</text>
-  <text x="625" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Contexts, aliases</text>
+  <text x="625" y="112" text-anchor="middle" fill="#6b6b80" font-family="DM Sans, sans-serif" font-size="9">Contexts, metadata</text>
 
   <rect x="730" y="55" width="150" height="80" rx="8" fill="#0f0f16" stroke="#8b5cf6" stroke-width="1.5"/>
   <text x="805" y="78" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600">DagStore</text>
@@ -263,9 +263,9 @@
     <div class="fr"><div class="fp">TargetApplicationSet</div><div class="fd">Set target application for the group (admin or MANAGE_APPLICATION)</div></div>
     <div class="fr"><div class="fp">ContextRegistered</div><div class="fd">Bind a new context to the group (admin or CAN_CREATE_CONTEXT)</div></div>
     <div class="fr"><div class="fp">ContextDetached</div><div class="fd">Remove context from group (admin only)</div></div>
-    <div class="fr"><div class="fp">ContextAliasSet</div><div class="fd">Set human-readable context alias (admin or context creator)</div></div>
-    <div class="fr"><div class="fp">MemberAliasSet</div><div class="fd">Set human-readable member alias (admin or self)</div></div>
-    <div class="fr"><div class="fp">GroupAliasSet</div><div class="fd">Set human-readable group alias (admin only)</div></div>
+    <div class="fr"><div class="fp">ContextMetadataSet</div><div class="fd">Set a context's metadata record &mdash; name + opaque data (admin or CAN_MANAGE_METADATA)</div></div>
+    <div class="fr"><div class="fp">MemberMetadataSet</div><div class="fd">Set a member's metadata record (self, or admin / CAN_MANAGE_METADATA for any member)</div></div>
+    <div class="fr"><div class="fp">GroupMetadataSet</div><div class="fd">Set the group's metadata record (admin or CAN_MANAGE_METADATA)</div></div>
     <div class="fr"><div class="fp">GroupDelete</div><div class="fd">Delete the group (admin only, requires no contexts)</div></div>
     <div class="fr"><div class="fp">GroupMigrationSet</div><div class="fd">Configure migration parameters (admin or MANAGE_APPLICATION)</div></div>
     <div class="fr"><div class="fp">JoinWithInvitationClaim</div><div class="fd">Invitation-based group join (inviter must be admin or CAN_INVITE_MEMBERS)</div></div>
@@ -286,7 +286,7 @@
 <div class="card gb">
 <h2>Create Context Flow</h2>
 <div class="step"><div class="n">1</div><h4>Admin calls create_context</h4><p>API receives <span class="code">group_id</span> (or auto-creates group). Uses the node's namespace identity keypair (from the datastore) if no explicit secret provided.</p></div>
-<div class="step"><div class="n">2</div><h4>Handler signs GroupOps</h4><p>Emits a sequence: <span class="code">ContextRegistered</span> &rarr; optional <span class="code">ContextAliasSet</span>. Each is a <span class="code">SignedGroupOp</span> applied locally and published via gossip.</p></div>
+<div class="step"><div class="n">2</div><h4>Handler signs GroupOps</h4><p>Emits a sequence: <span class="code">ContextRegistered</span> &rarr; optional <span class="code">ContextMetadataSet</span>. Each is a <span class="code">SignedGroupOp</span> applied locally and published via gossip.</p></div>
 <div class="step"><div class="n">3</div><h4>Local apply + OpLog</h4><p><span class="code">group_store::apply_local_signed_group_op</span> verifies signature, checks state_hash, updates KV rows, appends to op log, recomputes DAG heads.</p></div>
 <div class="step"><div class="n">4</div><h4>Gossip propagation</h4><p>Published on <span class="code">group/&lt;hex&gt;</span> topic. Remote nodes receive via <span class="code">SignedGroupOpV1</span> broadcast, verify, and apply the same ops.</p></div>
 </div>
@@ -496,7 +496,7 @@
 <div class="fr"><div class="fp">context/src/metrics.rs</div><div class="fd">Prometheus metrics: execution count/duration, namespace retry/decode events, membership policy rejections.</div></div>
 
 <h3>Storage Layer</h3>
-<div class="fr"><div class="fp">store/src/key/group/mod.rs</div><div class="fd">26+ typed key prefixes for Column::Group: GroupMeta, GroupMember, OpLog, OpHead, Nonce, Context indexes, capabilities, aliases, <strong>NamespaceIdentity (0x37), NamespaceGovOp (0x38), NamespaceGovHead (0x39), GroupKeyEntry (0x3A), GroupParentRef (0x36), GroupChildIndex (0x35)</strong>.</div></div>
+<div class="fr"><div class="fp">store/src/key/group/mod.rs</div><div class="fd">26+ typed key prefixes for Column::Group: GroupMeta, GroupMember, OpLog, OpHead, Nonce, Context indexes, capabilities, aliases, <strong>NamespaceIdentity (0x37), NamespaceGovOp (0x38), NamespaceGovHead (0x39), GroupKeyEntry (0x3A), GroupParentRef (0x36), GroupChildIndex (0x35)</strong>. Aliases were replaced by MetadataRecord rows (0x2D&ndash;0x2F).</div></div>
 <div class="fr"><div class="fp">store/src/types/group.rs</div><div class="fd">Value types: <span class="code">GroupOpHeadValue</span>, <span class="code">GroupMetaValue</span>, <span class="code">GroupUpgradeValue</span>, <span class="code">NamespaceIdentityValue</span>, <span class="code">NamespaceGovHeadValue</span>.</div></div>
 
 <h3>Network Integration</h3>
@@ -506,7 +506,7 @@
 <div class="fr"><div class="fp">node/src/sync/manager/mod.rs</div><div class="fd">Responds to <span class="code">GroupDeltaRequest</span> and <span class="code">NamespaceBackfillRequest</span> by scanning op log and sending responses.</div></div>
 
 <h3>Handlers</h3>
-<div class="fr"><div class="fp">context/src/handlers/create_context.rs</div><div class="fd">Emits ContextRegistered + optional alias as signed ops. Uses namespace identity for signing.</div></div>
+<div class="fr"><div class="fp">context/src/handlers/create_context.rs</div><div class="fd">Emits ContextRegistered + optional ContextMetadataSet as signed ops. Uses namespace identity for signing.</div></div>
 <div class="fr"><div class="fp">context/src/handlers/join_group.rs</div><div class="fd">Invitation claim flow: generates/retrieves namespace identity, subscribes to namespace topic, stream-requests join, unwraps group key, applies governance ops snapshot, auto-joins contexts.</div></div>
 <div class="fr"><div class="fp">context/src/handlers/apply_signed_namespace_op.rs</div><div class="fd">Namespace DagStore integration: feeds namespace ops into the namespace-level DAG.</div></div>
 <div class="fr"><div class="fp">context/src/handlers/apply_signed_group_op.rs</div><div class="fd">Group DagStore integration: feeds op into DAG, handles pending/applied/error states.</div></div>

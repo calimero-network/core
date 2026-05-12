@@ -2,14 +2,15 @@ use calimero_server_primitives::admin::{
     AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
     CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
     DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
-    GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinContextApiResponse,
-    JoinGroupApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
+    GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GroupInfoApiResponse,
+    JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
     LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
     NamespaceApiResponse, NamespaceIdentityApiResponse, RegisterGroupSigningKeyApiResponse,
     RemoveGroupMembersApiResponse, ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetMemberCapabilitiesApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
-    UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
+    SyncGroupApiResponse, UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse,
+    UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -42,6 +43,14 @@ impl Report for GroupInfoApiResponse {
         let _ = table.add_row(vec!["Upgrade Policy", &format!("{:?}", d.upgrade_policy)]);
         let _ = table.add_row(vec!["Members", &d.member_count.to_string()]);
         let _ = table.add_row(vec!["Contexts", &d.context_count.to_string()]);
+        if let Some(meta) = d.metadata.as_ref() {
+            if let Some(ref name) = meta.name {
+                let _ = table.add_row(vec!["Name", name]);
+            }
+            if !meta.data.is_empty() {
+                let _ = table.add_row(vec!["Data".to_owned(), format!("{} keys", meta.data.len())]);
+            }
+        }
         if let Some(ref upgrade) = d.active_upgrade {
             let _ = table.add_row(vec!["Active Upgrade Status", &upgrade.status]);
         }
@@ -88,8 +97,8 @@ impl Report for NamespaceApiResponse {
         let _ = table.add_row(vec!["Members", &self.member_count.to_string()]);
         let _ = table.add_row(vec!["Contexts", &self.context_count.to_string()]);
         let _ = table.add_row(vec!["Subgroups", &self.subgroup_count.to_string()]);
-        if let Some(ref alias) = self.alias {
-            let _ = table.add_row(vec!["Alias", alias]);
+        if let Some(ref name) = self.name {
+            let _ = table.add_row(vec!["Name", name]);
         }
         println!("{table}");
     }
@@ -110,7 +119,7 @@ impl Report for ListNamespacesApiResponse {
             Cell::new("Members").fg(Color::Blue),
             Cell::new("Contexts").fg(Color::Blue),
             Cell::new("Subgroups").fg(Color::Blue),
-            Cell::new("Alias").fg(Color::Blue),
+            Cell::new("Name").fg(Color::Blue),
         ]);
         for ns in &self.data {
             let _ = table.add_row(vec![
@@ -120,7 +129,7 @@ impl Report for ListNamespacesApiResponse {
                 ns.member_count.to_string(),
                 ns.context_count.to_string(),
                 ns.subgroup_count.to_string(),
-                ns.alias.clone().unwrap_or_else(|| "-".to_owned()),
+                ns.name.clone().unwrap_or_else(|| "-".to_owned()),
             ]);
         }
         println!("{table}");
@@ -150,12 +159,12 @@ impl Report for ListNamespaceGroupsApiResponse {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Group ID").fg(Color::Blue),
-            Cell::new("Alias").fg(Color::Blue),
+            Cell::new("Name").fg(Color::Blue),
         ]);
         for group in &self.data {
             let _ = table.add_row(vec![
                 group.group_id.clone(),
-                group.alias.clone().unwrap_or_else(|| "-".to_owned()),
+                group.name.clone().unwrap_or_else(|| "-".to_owned()),
             ]);
         }
         println!("{table}");
@@ -172,12 +181,12 @@ impl Report for ListSubgroupsApiResponse {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Group ID").fg(Color::Blue),
-            Cell::new("Alias").fg(Color::Blue),
+            Cell::new("Name").fg(Color::Blue),
         ]);
         for group in &self.subgroups {
             let _ = table.add_row(vec![
                 group.group_id.clone(),
-                group.alias.clone().unwrap_or_else(|| "-".to_owned()),
+                group.name.clone().unwrap_or_else(|| "-".to_owned()),
             ]);
         }
         println!("{table}");
@@ -227,11 +236,13 @@ impl Report for ListGroupMembersApiResponse {
             let _ = table.set_header(vec![
                 Cell::new("Identity").fg(Color::Blue),
                 Cell::new("Role").fg(Color::Blue),
+                Cell::new("Name").fg(Color::Blue),
             ]);
             for member in &self.members {
                 let _ = table.add_row(vec![
                     member.identity.to_string(),
                     format!("{:?}", member.role),
+                    member.name.clone().unwrap_or_else(|| "-".to_owned()),
                 ]);
             }
             println!("{table}");
@@ -274,11 +285,11 @@ impl Report for ListGroupContextsApiResponse {
             let mut table = Table::new();
             let _ = table.set_header(vec![
                 Cell::new("Context ID").fg(Color::Blue),
-                Cell::new("Alias").fg(Color::Blue),
+                Cell::new("Name").fg(Color::Blue),
             ]);
             for entry in &self.data {
-                let alias = entry.alias.as_deref().unwrap_or("-");
-                let _ = table.add_row(vec![entry.context_id.clone(), alias.to_owned()]);
+                let name = entry.name.as_deref().unwrap_or("-");
+                let _ = table.add_row(vec![entry.context_id.clone(), name.to_owned()]);
             }
             println!("{table}");
         }
@@ -521,5 +532,39 @@ impl Report for SetDefaultCapabilitiesApiResponse {
 impl Report for SetSubgroupVisibilityApiResponse {
     fn report(&self) {
         println!("{}", "Subgroup visibility updated successfully".green());
+    }
+}
+
+impl Report for GetMetadataApiResponse {
+    fn report(&self) {
+        let Some(record) = self.data.as_ref() else {
+            println!("{}", "(no metadata set)".dimmed());
+            return;
+        };
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Field").fg(Color::Blue),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec![
+            "Name".to_owned(),
+            record.name.clone().unwrap_or_else(|| "-".to_owned()),
+        ]);
+        let _ = table.add_row(vec!["Updated At".to_owned(), record.updated_at.to_string()]);
+        let _ = table.add_row(vec!["Updated By".to_owned(), record.updated_by.to_string()]);
+        if record.data.is_empty() {
+            let _ = table.add_row(vec!["Data".to_owned(), "(empty)".to_owned()]);
+        } else {
+            for (k, v) in &record.data {
+                let _ = table.add_row(vec![format!("data.{k}"), v.clone()]);
+            }
+        }
+        println!("{table}");
+    }
+}
+
+impl Report for SetMetadataApiResponse {
+    fn report(&self) {
+        println!("{}", "Metadata updated successfully".green());
     }
 }

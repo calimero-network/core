@@ -11,8 +11,8 @@ use eyre::Result as EyreResult;
 
 use super::{
     collect_keys_with_prefix, delete_all_context_last_migrations, delete_all_group_signing_keys,
-    delete_all_member_aliases, delete_all_member_capabilities, delete_default_capabilities,
-    delete_group_alias, delete_group_meta, delete_group_upgrade, delete_subgroup_visibility,
+    delete_all_member_capabilities, delete_all_member_metadata, delete_default_capabilities,
+    delete_group_meta, delete_group_metadata, delete_group_upgrade, delete_subgroup_visibility,
     list_group_members, remove_group_member,
 };
 
@@ -240,7 +240,8 @@ pub fn remove_all_member_context_joins(
     Ok(joins)
 }
 
-/// Remove all local rows for a group (metadata, members, caps, aliases, ...).
+/// Remove all local rows for a group (group meta, members, caps, metadata
+/// records, ...).
 /// Caller must enforce admin authorization and `count_group_contexts == 0`.
 pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     let members_snapshot = list_group_members(store, group_id, 0, usize::MAX)?;
@@ -262,10 +263,10 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     }
 
     delete_all_member_capabilities(store, group_id)?;
-    delete_all_member_aliases(store, group_id)?;
+    delete_all_member_metadata(store, group_id)?;
     delete_default_capabilities(store, group_id)?;
     delete_subgroup_visibility(store, group_id)?;
-    delete_group_alias(store, group_id)?;
+    delete_group_metadata(store, group_id)?;
     delete_all_context_last_migrations(store, group_id)?;
     delete_group_upgrade(store, group_id)?;
     delete_all_group_signing_keys(store, group_id)?;

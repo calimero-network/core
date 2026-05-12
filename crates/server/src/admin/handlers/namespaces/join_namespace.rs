@@ -40,7 +40,7 @@ pub async fn handler(
         .ctx_client
         .join_group(JoinGroupRequest {
             invitation: req.invitation,
-            group_alias: req.group_alias,
+            group_name: req.group_name,
         })
         .await
         .map_err(parse_api_error);

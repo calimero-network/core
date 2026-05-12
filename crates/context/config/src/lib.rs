@@ -182,6 +182,15 @@ impl MemberCapabilities {
     /// subgroup's members), so this check is deterministic among exactly the
     /// peers that apply it — no root-level restriction needed.
     pub const CAN_MANAGE_VISIBILITY: u32 = 1 << 7;
+    /// Permits a member to set the `name` / `data` of the group, its members,
+    /// or its contexts (the `*MetadataSet` ops) without holding full admin.
+    /// Group admins hold this implicitly; a member may always set *their own*
+    /// member metadata regardless of holding this bit. Like
+    /// [`Self::CAN_MANAGE_VISIBILITY`], the `*MetadataSet` ops are
+    /// group-scoped (encrypted to the target group's members), so this check
+    /// is deterministic among exactly the peers that apply it — no root-level
+    /// restriction needed.
+    pub const CAN_MANAGE_METADATA: u32 = 1 << 8;
 }
 
 #[derive(Debug, Serialize, Deserialize)]

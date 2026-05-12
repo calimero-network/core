@@ -39,7 +39,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             identity_secret,
             init_params,
             group_id,
-            alias,
+            name,
             ..
         }: CreateContextRequest,
         _ctx: &mut Self::Context,
@@ -58,7 +58,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             &application_id,
             identity_secret,
             group_id,
-            alias,
+            name,
             &self.datastore,
         ) {
             Ok(res) => res,
@@ -74,7 +74,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             identity_secret,
             sender_key,
             group_id,
-            alias,
+            name,
         } = prepared;
 
         let group_id_for_response = group_id;
@@ -112,7 +112,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                         init_params,
                         guard,
                         group_id_for_response,
-                        alias,
+                        name,
                     )
                     .into_actor(act)
                 })
@@ -151,7 +151,7 @@ struct Prepared<'a> {
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
     group_id: ContextGroupId,
-    alias: Option<String>,
+    name: Option<String>,
 }
 
 impl Prepared<'_> {
@@ -164,7 +164,7 @@ impl Prepared<'_> {
         application_id: &ApplicationId,
         identity_secret: Option<PrivateKey>,
         group_id: ContextGroupId,
-        alias: Option<String>,
+        name: Option<String>,
         datastore: &Store,
     ) -> eyre::Result<Self> {
         let external_config = ContextConfigParams {
@@ -284,7 +284,7 @@ impl Prepared<'_> {
             identity_secret,
             sender_key,
             group_id,
-            alias,
+            name,
         })
     }
 }
@@ -305,7 +305,7 @@ async fn create_context(
     init_params: Vec<u8>,
     guard: OwnedMutexGuard<ContextId>,
     group_id: ContextGroupId,
-    alias: Option<String>,
+    name: Option<String>,
 ) -> eyre::Result<Hash> {
     let storage = ContextStorage::from(datastore.clone(), context.id);
     // Create private storage (node-local, NOT synchronized)
@@ -484,7 +484,7 @@ async fn create_context(
     node_client.subscribe(&context.id).await?;
     node_client.subscribe_namespace(group_id.to_bytes()).await?;
 
-    if let Some(ref alias_str) = alias {
+    if let Some(ref name_str) = name {
         let sk = PrivateKey::from(*identity_secret);
         let report = group_store::sign_apply_and_publish(
             &datastore,
@@ -492,13 +492,14 @@ async fn create_context(
             &ack_router,
             &group_id,
             &sk,
-            GroupOp::ContextAliasSet {
+            GroupOp::ContextMetadataSet {
                 context_id: context.id,
-                alias: alias_str.clone(),
+                name: Some(name_str.clone()),
+                data: BTreeMap::new(),
             },
         )
         .await?;
-        report.observe("create_context", "ContextAliasSet");
+        report.observe("create_context", "ContextMetadataSet");
     }
 
     Ok(context.root_hash)

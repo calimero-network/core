@@ -673,18 +673,19 @@ pub struct GroupContextLastMigrationValue {
     pub method: String,
 }
 
-pub const GROUP_CONTEXT_ALIAS_PREFIX: u8 = 0x2F;
+pub const GROUP_CONTEXT_METADATA_PREFIX: u8 = 0x2F;
 
-/// Stores the human-readable alias for a context within a group.
-/// Key: prefix (1 byte) + group_id (32 bytes) + context_id (32 bytes) → alias string
+/// Stores the [`MetadataRecord`](calimero_primitives::metadata::MetadataRecord)
+/// for a context registered within a group.
+/// Key: prefix (1 byte) + group_id (32 bytes) + context_id (32 bytes) → `MetadataRecord`
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupContextAlias(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+pub struct GroupContextMetadata(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
 
-impl GroupContextAlias {
+impl GroupContextMetadata {
     #[must_use]
     pub fn new(group_id: [u8; 32], context_id: PrimitiveContextId) -> Self {
-        Self(Key(GenericArray::from([GROUP_CONTEXT_ALIAS_PREFIX])
+        Self(Key(GenericArray::from([GROUP_CONTEXT_METADATA_PREFIX])
             .concat(GenericArray::from(group_id))
             .concat(GenericArray::from(*context_id))))
     }
@@ -704,7 +705,7 @@ impl GroupContextAlias {
     }
 }
 
-impl AsKeyParts for GroupContextAlias {
+impl AsKeyParts for GroupContextMetadata {
     type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
 
     fn column() -> Column {
@@ -716,7 +717,7 @@ impl AsKeyParts for GroupContextAlias {
     }
 }
 
-impl FromKeyParts for GroupContextAlias {
+impl FromKeyParts for GroupContextMetadata {
     type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
@@ -724,27 +725,28 @@ impl FromKeyParts for GroupContextAlias {
     }
 }
 
-impl Debug for GroupContextAlias {
+impl Debug for GroupContextMetadata {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupContextAlias")
+        f.debug_struct("GroupContextMetadata")
             .field("group_id", &self.group_id())
             .field("context_id", &self.context_id())
             .finish()
     }
 }
 
-pub const GROUP_MEMBER_ALIAS_PREFIX: u8 = 0x2D;
+pub const GROUP_MEMBER_METADATA_PREFIX: u8 = 0x2D;
 
-/// Stores a human-readable alias for a group member scoped to a specific group.
-/// Key: prefix (1 byte) + group_id (32 bytes) + member_pk (32 bytes) → alias String
+/// Stores the [`MetadataRecord`](calimero_primitives::metadata::MetadataRecord)
+/// for a group member, scoped to a specific group.
+/// Key: prefix (1 byte) + group_id (32 bytes) + member_pk (32 bytes) → `MetadataRecord`
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupMemberAlias(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+pub struct GroupMemberMetadata(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
 
-impl GroupMemberAlias {
+impl GroupMemberMetadata {
     #[must_use]
     pub fn new(group_id: [u8; 32], member: PrimitivePublicKey) -> Self {
-        Self(Key(GenericArray::from([GROUP_MEMBER_ALIAS_PREFIX])
+        Self(Key(GenericArray::from([GROUP_MEMBER_METADATA_PREFIX])
             .concat(GenericArray::from(group_id))
             .concat(GenericArray::from(*member))))
     }
@@ -764,7 +766,7 @@ impl GroupMemberAlias {
     }
 }
 
-impl AsKeyParts for GroupMemberAlias {
+impl AsKeyParts for GroupMemberMetadata {
     type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
 
     fn column() -> Column {
@@ -776,7 +778,7 @@ impl AsKeyParts for GroupMemberAlias {
     }
 }
 
-impl FromKeyParts for GroupMemberAlias {
+impl FromKeyParts for GroupMemberMetadata {
     type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
@@ -784,28 +786,29 @@ impl FromKeyParts for GroupMemberAlias {
     }
 }
 
-impl Debug for GroupMemberAlias {
+impl Debug for GroupMemberMetadata {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupMemberAlias")
+        f.debug_struct("GroupMemberMetadata")
             .field("group_id", &self.group_id())
             .field("member", &self.member())
             .finish()
     }
 }
 
-pub const GROUP_ALIAS_PREFIX: u8 = 0x2E;
+pub const GROUP_METADATA_PREFIX: u8 = 0x2E;
 
-/// Stores a human-readable alias for the group itself.
-/// Key: prefix (1 byte) + group_id (32 bytes) → alias String
+/// Stores the [`MetadataRecord`](calimero_primitives::metadata::MetadataRecord)
+/// for the group itself (a namespace is a root group, so this covers it).
+/// Key: prefix (1 byte) + group_id (32 bytes) → `MetadataRecord`
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct GroupAlias(Key<(GroupPrefix, GroupIdComponent)>);
+pub struct GroupMetadata(Key<(GroupPrefix, GroupIdComponent)>);
 
-impl GroupAlias {
+impl GroupMetadata {
     #[must_use]
     pub fn new(group_id: [u8; 32]) -> Self {
         Self(Key(
-            GenericArray::from([GROUP_ALIAS_PREFIX]).concat(GenericArray::from(group_id))
+            GenericArray::from([GROUP_METADATA_PREFIX]).concat(GenericArray::from(group_id))
         ))
     }
 
@@ -817,7 +820,7 @@ impl GroupAlias {
     }
 }
 
-impl AsKeyParts for GroupAlias {
+impl AsKeyParts for GroupMetadata {
     type Components = (GroupPrefix, GroupIdComponent);
 
     fn column() -> Column {
@@ -829,7 +832,7 @@ impl AsKeyParts for GroupAlias {
     }
 }
 
-impl FromKeyParts for GroupAlias {
+impl FromKeyParts for GroupMetadata {
     type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
@@ -837,9 +840,9 @@ impl FromKeyParts for GroupAlias {
     }
 }
 
-impl Debug for GroupAlias {
+impl Debug for GroupMetadata {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GroupAlias")
+        f.debug_struct("GroupMetadata")
             .field("group_id", &self.group_id())
             .finish()
     }
@@ -1983,9 +1986,9 @@ mod tests {
             GROUP_SUBGROUP_VIS_PREFIX,
             GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
             GROUP_LOCAL_GOV_NONCE_PREFIX,
-            GROUP_MEMBER_ALIAS_PREFIX,
-            GROUP_ALIAS_PREFIX,
-            GROUP_CONTEXT_ALIAS_PREFIX,
+            GROUP_MEMBER_METADATA_PREFIX,
+            GROUP_METADATA_PREFIX,
+            GROUP_CONTEXT_METADATA_PREFIX,
             GROUP_OP_LOG_PREFIX,
             GROUP_OP_HEAD_PREFIX,
             GROUP_MEMBER_CONTEXT_PREFIX,
@@ -2009,13 +2012,33 @@ mod tests {
     }
 
     #[test]
-    fn group_member_alias_roundtrip() {
+    fn group_member_metadata_roundtrip() {
         let gid = [0xDA; 32];
         let pk = PrimitivePublicKey::from([0xDB; 32]);
-        let key = GroupMemberAlias::new(gid, pk);
+        let key = GroupMemberMetadata::new(gid, pk);
         assert_eq!(key.group_id(), gid);
         assert_eq!(key.member(), pk);
-        assert_eq!(key.as_key().as_bytes()[0], GROUP_MEMBER_ALIAS_PREFIX);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_MEMBER_METADATA_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 65);
+    }
+
+    #[test]
+    fn group_metadata_roundtrip() {
+        let gid = [0xDC; 32];
+        let key = GroupMetadata::new(gid);
+        assert_eq!(key.group_id(), gid);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_METADATA_PREFIX);
+        assert_eq!(key.as_key().as_bytes().len(), 33);
+    }
+
+    #[test]
+    fn group_context_metadata_roundtrip() {
+        let gid = [0xDD; 32];
+        let ctx = PrimitiveContextId::from([0xDE; 32]);
+        let key = GroupContextMetadata::new(gid, ctx);
+        assert_eq!(key.group_id(), gid);
+        assert_eq!(key.context_id(), ctx);
+        assert_eq!(key.as_key().as_bytes()[0], GROUP_CONTEXT_METADATA_PREFIX);
         assert_eq!(key.as_key().as_bytes().len(), 65);
     }
 
