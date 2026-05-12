@@ -16,7 +16,7 @@ use crate::AdminState;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupInNamespaceBody {
-    pub group_alias: Option<String>,
+    pub group_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,14 +153,19 @@ pub async fn handler(
                 }
             }
 
-            if let Some(alias) = body.group_alias.as_deref() {
-                if let Err(err) =
-                    calimero_context::group_store::set_group_alias(&state.store, &group_id, alias)
-                {
+            if body.group_name.is_some() {
+                if let Err(err) = calimero_context::group_store::set_group_metadata(
+                    &state.store,
+                    &group_id,
+                    &calimero_primitives::metadata::MetadataRecord {
+                        name: body.group_name.clone(),
+                        ..Default::default()
+                    },
+                ) {
                     warn!(
                         group_id=%hex::encode(group_id.to_bytes()),
                         ?err,
-                        "Group created but failed to persist alias"
+                        "Group created but failed to persist name"
                     );
                 }
             }

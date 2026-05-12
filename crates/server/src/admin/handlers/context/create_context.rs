@@ -45,7 +45,7 @@ pub async fn handler(
             req.initialization_params,
             req.context_seed.map(Into::into),
             group_id,
-            req.alias,
+            req.name,
         )
         .await
         .map_err(parse_api_error);

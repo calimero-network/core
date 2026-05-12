@@ -3,8 +3,8 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_client::group::SetMemberAliasRequest;
-use calimero_server_primitives::admin::SetMemberAliasApiRequest;
+use calimero_context_client::group::SetMemberMetadataRequest;
+use calimero_server_primitives::admin::{SetMemberMetadataApiRequest, SetMetadataApiResponse};
 use tracing::{error, info};
 
 use super::{parse_group_id, parse_identity};
@@ -12,13 +12,12 @@ use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::auth::AuthenticatedKey;
 use crate::AdminState;
-use calimero_server_primitives::admin::SetMemberAliasApiResponse;
 
 pub async fn handler(
     Path((group_id_str, identity_str)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
     auth_key: Option<Extension<AuthenticatedKey>>,
-    ValidatedJson(req): ValidatedJson<SetMemberAliasApiRequest>,
+    ValidatedJson(req): ValidatedJson<SetMemberMetadataApiRequest>,
 ) -> impl IntoResponse {
     let group_id = match parse_group_id(&group_id_str) {
         Ok(id) => id,
@@ -30,14 +29,15 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    info!(group_id=%group_id_str, identity=%identity_str, alias=%req.alias, "Setting member alias");
+    info!(group_id=%group_id_str, identity=%identity_str, ?req.name, "Setting member metadata");
 
     let result = state
         .ctx_client
-        .set_member_alias(SetMemberAliasRequest {
+        .set_member_metadata(SetMemberMetadataRequest {
             group_id,
             member,
-            alias: req.alias,
+            name: req.name,
+            data: req.data,
             requester: auth_key.map(|Extension(k)| k.0).or(req.requester),
         })
         .await
@@ -45,14 +45,14 @@ pub async fn handler(
 
     match result {
         Ok(()) => {
-            info!(group_id=%group_id_str, identity=%identity_str, "Member alias set");
+            info!(group_id=%group_id_str, identity=%identity_str, "Member metadata set");
             ApiResponse {
-                payload: SetMemberAliasApiResponse {},
+                payload: SetMetadataApiResponse {},
             }
             .into_response()
         }
         Err(err) => {
-            error!(group_id=%group_id_str, identity=%identity_str, error=?err, "Failed to set member alias");
+            error!(group_id=%group_id_str, identity=%identity_str, error=?err, "Failed to set member metadata");
             err.into_response()
         }
     }

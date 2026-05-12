@@ -30,7 +30,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
         &mut self,
         JoinGroupRequest {
             invitation,
-            group_alias,
+            group_name,
         }: JoinGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -396,8 +396,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // Phase 3: Auto-join contexts from the response.
                 // -------------------------------------------------------
 
-                if let Some(ref alias_str) = group_alias {
-                    group_store::set_group_alias(&datastore, &group_id, alias_str)?;
+                if group_name.is_some() {
+                    group_store::set_group_metadata(
+                        &datastore,
+                        &group_id,
+                        &calimero_primitives::metadata::MetadataRecord {
+                            name: group_name.clone(),
+                            ..Default::default()
+                        },
+                    )?;
                 }
 
                 let contexts = &join_result.context_ids;

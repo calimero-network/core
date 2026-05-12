@@ -200,12 +200,16 @@ pub(crate) fn setup(
             put(groups::update_member_role::handler),
         )
         .route(
-            "/groups/:group_id/alias",
-            put(groups::set_group_alias::handler),
+            "/groups/:group_id/metadata",
+            put(groups::set_group_metadata::handler),
         )
         .route(
-            "/groups/:group_id/members/:identity/alias",
-            put(groups::set_member_alias::handler),
+            "/groups/:group_id/members/:identity/metadata",
+            put(groups::set_member_metadata::handler),
+        )
+        .route(
+            "/groups/:group_id/contexts/:context_id/metadata",
+            put(groups::set_context_metadata::handler),
         )
         .route(
             "/groups/:group_id/contexts/:context_id/remove",

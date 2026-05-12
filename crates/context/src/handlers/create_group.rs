@@ -25,7 +25,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             app_key,
             application_id,
             upgrade_policy,
-            alias,
+            name,
             parent_group_id,
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
@@ -164,8 +164,15 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     "stored initial group key"
                 );
 
-                if let Some(ref alias_str) = alias {
-                    group_store::set_group_alias(&datastore, &group_id, alias_str)?;
+                if name.is_some() {
+                    group_store::set_group_metadata(
+                        &datastore,
+                        &group_id,
+                        &calimero_primitives::metadata::MetadataRecord {
+                            name: name.clone(),
+                            ..Default::default()
+                        },
+                    )?;
                 }
 
                 // In the namespace model, group hierarchy is tracked in the

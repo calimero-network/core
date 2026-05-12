@@ -1,8 +1,11 @@
+use std::collections::BTreeMap;
+
 use actix::Message;
 use calimero_context_config::types::{AppKey, ContextGroupId, SignedGroupOpenInvitation};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
+use calimero_primitives::metadata::MetadataRecord;
 
 use crate::messages::MigrationParams;
 
@@ -36,7 +39,7 @@ pub struct CreateGroupRequest {
     pub app_key: Option<AppKey>,
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
-    pub alias: Option<String>,
+    pub name: Option<String>,
     pub parent_group_id: Option<ContextGroupId>,
 }
 
@@ -129,7 +132,8 @@ pub struct GroupInfoResponse {
     pub active_upgrade: Option<GroupUpgradeInfo>,
     pub default_capabilities: u32,
     pub subgroup_visibility: String,
-    pub alias: Option<String>,
+    /// Full metadata record for the group (name + opaque `data` map).
+    pub metadata: MetadataRecord,
     /// SHA-256 hash of the group's authorization-relevant state
     /// (members + roles + admin + owner + target app), produced by
     /// `compute_group_state_hash`. Used by clients to detect governance
@@ -160,13 +164,13 @@ pub struct ListGroupMembersResponse {
 pub struct GroupMemberEntry {
     pub identity: PublicKey,
     pub role: GroupMemberRole,
-    pub alias: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct GroupContextEntry {
     pub context_id: ContextId,
-    pub alias: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -181,16 +185,16 @@ impl Message for ListGroupContextsRequest {
 }
 
 /// Direct local persist — used when applying replicated governance ops.
-/// For user-initiated changes, use [`GroupOp::ContextAliasSet`](crate::local_governance::GroupOp::ContextAliasSet)
+/// For user-initiated changes, use [`GroupOp::ContextMetadataSet`](crate::local_governance::GroupOp::ContextMetadataSet)
 /// via `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
-pub struct StoreContextAliasRequest {
+pub struct StoreContextMetadataRequest {
     pub group_id: ContextGroupId,
     pub context_id: ContextId,
-    pub alias: String,
+    pub record: MetadataRecord,
 }
 
-impl Message for StoreContextAliasRequest {
+impl Message for StoreContextMetadataRequest {
     type Result = eyre::Result<()>;
 }
 
@@ -247,13 +251,13 @@ impl Message for CreateGroupInvitationRequest {
 #[derive(Debug)]
 pub struct CreateGroupInvitationResponse {
     pub invitation: SignedGroupOpenInvitation,
-    pub group_alias: Option<String>,
+    pub group_name: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct JoinGroupRequest {
     pub invitation: SignedGroupOpenInvitation,
-    pub group_alias: Option<String>,
+    pub group_name: Option<String>,
 }
 
 impl Message for JoinGroupRequest {
@@ -287,7 +291,7 @@ pub struct GroupSummary {
     pub target_application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
-    pub alias: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -544,15 +548,6 @@ impl Message for StoreSubgroupVisibilityRequest {
 }
 
 #[derive(Debug)]
-pub struct BroadcastGroupAliasesRequest {
-    pub group_id: ContextGroupId,
-}
-
-impl Message for BroadcastGroupAliasesRequest {
-    type Result = eyre::Result<()>;
-}
-
-#[derive(Debug)]
 pub struct BroadcastGroupLocalStateRequest {
     pub group_id: ContextGroupId,
 }
@@ -562,52 +557,67 @@ impl Message for BroadcastGroupLocalStateRequest {
 }
 
 #[derive(Debug)]
-pub struct SetMemberAliasRequest {
+pub struct SetMemberMetadataRequest {
     pub group_id: ContextGroupId,
     pub member: PublicKey,
-    pub alias: String,
+    pub name: Option<String>,
+    pub data: BTreeMap<String, String>,
     pub requester: Option<PublicKey>,
 }
 
-impl Message for SetMemberAliasRequest {
+impl Message for SetMemberMetadataRequest {
     type Result = eyre::Result<()>;
 }
 
 /// Direct local persist — used when applying replicated governance ops.
-/// For user-initiated changes, use [`SetMemberAliasRequest`] instead, which
+/// For user-initiated changes, use [`SetMemberMetadataRequest`] instead, which
 /// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
-pub struct StoreMemberAliasRequest {
+pub struct StoreMemberMetadataRequest {
     pub group_id: ContextGroupId,
     pub member: PublicKey,
-    pub alias: String,
+    pub record: MetadataRecord,
 }
 
-impl Message for StoreMemberAliasRequest {
+impl Message for StoreMemberMetadataRequest {
     type Result = eyre::Result<()>;
 }
 
 #[derive(Debug)]
-pub struct SetGroupAliasRequest {
+pub struct SetGroupMetadataRequest {
     pub group_id: ContextGroupId,
-    pub alias: String,
+    pub name: Option<String>,
+    pub data: BTreeMap<String, String>,
     pub requester: Option<PublicKey>,
 }
 
-impl Message for SetGroupAliasRequest {
+impl Message for SetGroupMetadataRequest {
+    type Result = eyre::Result<()>;
+}
+
+#[derive(Debug)]
+pub struct SetContextMetadataRequest {
+    pub group_id: ContextGroupId,
+    pub context_id: ContextId,
+    pub name: Option<String>,
+    pub data: BTreeMap<String, String>,
+    pub requester: Option<PublicKey>,
+}
+
+impl Message for SetContextMetadataRequest {
     type Result = eyre::Result<()>;
 }
 
 /// Direct local persist — used when applying replicated governance ops.
-/// For user-initiated changes, use [`SetGroupAliasRequest`] instead, which
+/// For user-initiated changes, use [`SetGroupMetadataRequest`] instead, which
 /// goes through `sign_apply_and_publish` (governance op, replicated via gossip).
 #[derive(Debug)]
-pub struct StoreGroupAliasRequest {
+pub struct StoreGroupMetadataRequest {
     pub group_id: ContextGroupId,
-    pub alias: String,
+    pub record: MetadataRecord,
 }
 
-impl Message for StoreGroupAliasRequest {
+impl Message for StoreGroupMetadataRequest {
     type Result = eyre::Result<()>;
 }
 
@@ -674,7 +684,7 @@ pub struct NamespaceSummary {
     pub target_application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
-    pub alias: Option<String>,
+    pub name: Option<String>,
     pub member_count: usize,
     pub context_count: usize,
     pub subgroup_count: usize,

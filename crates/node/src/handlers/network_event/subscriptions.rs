@@ -32,8 +32,7 @@ pub(super) fn handle_subscribed(
             let _ignored = ctx.spawn(
                 async move {
                     use calimero_context_client::group::{
-                        BroadcastGroupAliasesRequest, BroadcastGroupLocalStateRequest,
-                        SyncGroupRequest,
+                        BroadcastGroupLocalStateRequest, SyncGroupRequest,
                     };
                     use calimero_context_config::types::ContextGroupId;
 
@@ -46,15 +45,6 @@ pub(super) fn handle_subscribed(
                         .await
                     {
                         warn!(?err, "Failed to auto-sync group after peer subscription");
-                    }
-                    if let Err(err) = context_client
-                        .broadcast_group_aliases(BroadcastGroupAliasesRequest { group_id })
-                        .await
-                    {
-                        warn!(
-                            ?err,
-                            "Failed to re-broadcast group aliases after peer subscription"
-                        );
                     }
                     if let Err(err) = context_client
                         .broadcast_group_local_state(BroadcastGroupLocalStateRequest { group_id })

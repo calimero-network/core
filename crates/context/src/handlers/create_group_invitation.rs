@@ -96,7 +96,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .map_err(|e| eyre::eyre!("signing failed: {e}"))?;
             let inviter_signature = hex::encode(signature.to_bytes());
 
-            let group_alias = group_store::get_group_alias(&datastore, &group_id)?;
+            let group_name = group_store::get_group_metadata(&datastore, &group_id)?.and_then(|r| r.name);
 
             Ok((
                 SignedGroupOpenInvitation {
@@ -109,11 +109,11 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // the inviter's view persistently.
                     application_id: Some(*meta.target_application_id.as_ref()),
                 },
-                group_alias,
+                group_name,
             ))
         })();
 
-        let (signed_invitation, group_alias) = match result {
+        let (signed_invitation, group_name) = match result {
             Ok(v) => v,
             Err(e) => return ActorResponse::reply(Err(e)),
         };
@@ -123,7 +123,7 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
         // in a RootOp::MemberJoined on the namespace topic.
         ActorResponse::reply(Ok(CreateGroupInvitationResponse {
             invitation: signed_invitation,
-            group_alias,
+            group_name,
         }))
     }
 }

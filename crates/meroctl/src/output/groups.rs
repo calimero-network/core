@@ -42,6 +42,15 @@ impl Report for GroupInfoApiResponse {
         let _ = table.add_row(vec!["Upgrade Policy", &format!("{:?}", d.upgrade_policy)]);
         let _ = table.add_row(vec!["Members", &d.member_count.to_string()]);
         let _ = table.add_row(vec!["Contexts", &d.context_count.to_string()]);
+        if let Some(ref name) = d.metadata.name {
+            let _ = table.add_row(vec!["Name", name]);
+        }
+        if !d.metadata.data.is_empty() {
+            let _ = table.add_row(vec![
+                "Data".to_owned(),
+                format!("{} keys", d.metadata.data.len()),
+            ]);
+        }
         if let Some(ref upgrade) = d.active_upgrade {
             let _ = table.add_row(vec!["Active Upgrade Status", &upgrade.status]);
         }
@@ -88,8 +97,8 @@ impl Report for NamespaceApiResponse {
         let _ = table.add_row(vec!["Members", &self.member_count.to_string()]);
         let _ = table.add_row(vec!["Contexts", &self.context_count.to_string()]);
         let _ = table.add_row(vec!["Subgroups", &self.subgroup_count.to_string()]);
-        if let Some(ref alias) = self.alias {
-            let _ = table.add_row(vec!["Alias", alias]);
+        if let Some(ref name) = self.name {
+            let _ = table.add_row(vec!["Name", name]);
         }
         println!("{table}");
     }
@@ -110,7 +119,7 @@ impl Report for ListNamespacesApiResponse {
             Cell::new("Members").fg(Color::Blue),
             Cell::new("Contexts").fg(Color::Blue),
             Cell::new("Subgroups").fg(Color::Blue),
-            Cell::new("Alias").fg(Color::Blue),
+            Cell::new("Name").fg(Color::Blue),
         ]);
         for ns in &self.data {
             let _ = table.add_row(vec![
@@ -120,7 +129,7 @@ impl Report for ListNamespacesApiResponse {
                 ns.member_count.to_string(),
                 ns.context_count.to_string(),
                 ns.subgroup_count.to_string(),
-                ns.alias.clone().unwrap_or_else(|| "-".to_owned()),
+                ns.name.clone().unwrap_or_else(|| "-".to_owned()),
             ]);
         }
         println!("{table}");
@@ -150,12 +159,12 @@ impl Report for ListNamespaceGroupsApiResponse {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Group ID").fg(Color::Blue),
-            Cell::new("Alias").fg(Color::Blue),
+            Cell::new("Name").fg(Color::Blue),
         ]);
         for group in &self.data {
             let _ = table.add_row(vec![
                 group.group_id.clone(),
-                group.alias.clone().unwrap_or_else(|| "-".to_owned()),
+                group.name.clone().unwrap_or_else(|| "-".to_owned()),
             ]);
         }
         println!("{table}");
@@ -172,12 +181,12 @@ impl Report for ListSubgroupsApiResponse {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Group ID").fg(Color::Blue),
-            Cell::new("Alias").fg(Color::Blue),
+            Cell::new("Name").fg(Color::Blue),
         ]);
         for group in &self.subgroups {
             let _ = table.add_row(vec![
                 group.group_id.clone(),
-                group.alias.clone().unwrap_or_else(|| "-".to_owned()),
+                group.name.clone().unwrap_or_else(|| "-".to_owned()),
             ]);
         }
         println!("{table}");
@@ -227,11 +236,13 @@ impl Report for ListGroupMembersApiResponse {
             let _ = table.set_header(vec![
                 Cell::new("Identity").fg(Color::Blue),
                 Cell::new("Role").fg(Color::Blue),
+                Cell::new("Name").fg(Color::Blue),
             ]);
             for member in &self.members {
                 let _ = table.add_row(vec![
                     member.identity.to_string(),
                     format!("{:?}", member.role),
+                    member.name.clone().unwrap_or_else(|| "-".to_owned()),
                 ]);
             }
             println!("{table}");
@@ -274,11 +285,11 @@ impl Report for ListGroupContextsApiResponse {
             let mut table = Table::new();
             let _ = table.set_header(vec![
                 Cell::new("Context ID").fg(Color::Blue),
-                Cell::new("Alias").fg(Color::Blue),
+                Cell::new("Name").fg(Color::Blue),
             ]);
             for entry in &self.data {
-                let alias = entry.alias.as_deref().unwrap_or("-");
-                let _ = table.add_row(vec![entry.context_id.clone(), alias.to_owned()]);
+                let name = entry.name.as_deref().unwrap_or("-");
+                let _ = table.add_row(vec![entry.context_id.clone(), name.to_owned()]);
             }
             println!("{table}");
         }
