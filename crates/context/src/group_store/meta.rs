@@ -83,6 +83,14 @@ pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> Eyr
 
     let mut members = list_group_members(store, group_id, 0, usize::MAX)?;
     members.sort_by(|a, b| a.0.cmp(&b.0));
+    // Dedup-by-key against the theoretical case of duplicate
+    // `GroupMember` rows for the same public key (would only happen
+    // under store corruption — `list_group_members` is a prefix scan
+    // over uniquely-keyed rows in normal operation). Without this,
+    // `hash_group_state`'s strict-less-than `debug_assert` would fire
+    // in dev / test on duplicates and silently double-hash the same
+    // member in release. Defensive only.
+    members.dedup_by(|a, b| a.0 == b.0);
 
     hash_group_state(group_id, &meta, &members)
 }
@@ -154,6 +162,10 @@ pub fn compute_group_state_hash_after_remove(
     let mut members = list_group_members(store, group_id, 0, usize::MAX)?;
     members.retain(|(pk, _role)| pk != removed_member);
     members.sort_by(|a, b| a.0.cmp(&b.0));
+    // Same dedup-against-corrupt-store defense as
+    // `compute_group_state_hash`. Both helpers must stay in lockstep
+    // — they hash the same logical input set.
+    members.dedup_by(|a, b| a.0 == b.0);
 
     hash_group_state(group_id, &meta, &members)
 }
@@ -217,25 +229,47 @@ pub fn snapshot_context_state_hashes(
 /// atomic. Callers must invoke this from a serializing context where
 /// no concurrent namespace governance op can land between the reads —
 /// in practice the `ContextManager` actor that owns all governance
-/// publishing. A reader running outside that serialization could
-/// receive a position whose `governance_dag_heads` and
-/// `group_state_hash` describe different points in time. The receiver
-/// would detect the resulting hash mismatch in
-/// `verify_post_apply_state_hashes` and trip a spurious divergence
-/// warning, but no state is adopted from the mismatch, so the worst
-/// case is operator noise.
+/// publishing.
+///
+/// Defense-in-depth: this function uses a **read-twice / bail on
+/// mismatch** pattern (mirrors `compute_governance_position_for_context`
+/// at `handlers/execute/mod.rs`). Read the heads, compute the hash,
+/// re-read the heads — if the set changed we know a concurrent
+/// governance op landed and the captured position is internally
+/// inconsistent. Bail with an error rather than sign a malformed
+/// cut. A caller running outside the actor serialization gets a hard
+/// error instead of a silently-wrong position that would generate
+/// spurious divergence warnings on every honest receiver.
 ///
 /// Once the cut is built it travels intact in the signed op — there's
 /// no second read by receivers, so the only race is on the signer's
-/// side.
+/// side and is now caught here.
 pub fn build_governance_cut(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<GovernancePosition> {
     let namespace_id = resolve_namespace(store, group_id)?;
     let dag = NamespaceDagService::new(store, namespace_id.to_bytes());
-    let governance_dag_heads = dag.read_head_record()?.parent_hashes;
+    let heads_before = dag.read_head_record()?.parent_hashes;
     let group_state_hash = compute_group_state_hash(store, group_id)?;
-    GovernancePosition::new(*group_id, group_state_hash, governance_dag_heads)
+    let heads_after = dag.read_head_record()?.parent_hashes;
+    // Set-equality, not Vec-equality. Storage iteration order isn't
+    // guaranteed to be stable across reads, so a Vec compare would
+    // false-positive on every reorder. A concurrent op landing
+    // changes the SET of heads, which is what we want to catch.
+    let heads_changed = {
+        use std::collections::HashSet;
+        heads_before.len() != heads_after.len()
+            || heads_before.iter().collect::<HashSet<_>>()
+                != heads_after.iter().collect::<HashSet<_>>()
+    };
+    if heads_changed {
+        return Err(eyre!(
+            "build_governance_cut: namespace DAG heads changed mid-read for group {} — \
+             refusing to emit an internally-inconsistent cut",
+            hex::encode(group_id.to_bytes())
+        ));
+    }
+    GovernancePosition::new(*group_id, group_state_hash, heads_before)
         .map_err(|e| eyre!("invalid governance position at sign time: {e}"))
 }

@@ -858,7 +858,7 @@ fn verify_post_apply_state_hashes(
     // signed expected context as divergent (false-positive storm).
     // `None` here means the check was skipped or the snapshot
     // errored; the warn omits the per-context fields in that case.
-    let divergent: Option<Vec<ContextId>> = if check_context_hashes {
+    let context_diff: Option<ContextHashDiff> = if check_context_hashes {
         match snapshot_context_state_hashes(store, group_id) {
             Ok(actual_context_state_hashes) => Some(diff_sorted_context_hashes(
                 group_id,
@@ -882,27 +882,40 @@ fn verify_post_apply_state_hashes(
     };
 
     let group_diverges = matches!(group_outcome, Some((true, _)));
-    let context_diverges = divergent.as_ref().is_some_and(|v| !v.is_empty());
+    let context_diverges = context_diff.as_ref().is_some_and(|d| !d.is_empty());
     if !group_diverges && !context_diverges {
         return;
     }
 
-    // Branch the warn so the operator can tell which half ran. When
-    // a half was skipped we omit its fields entirely rather than
-    // logging `0000…` as the actual value.
-    match (group_outcome, divergent) {
-        (Some((_, actual_group)), Some(divergent_vec)) => {
+    // Branch the warn so the operator can tell which half ran AND
+    // which kind of context divergence fired. The three context
+    // buckets — hash_differs, only_in_expected, only_in_actual —
+    // distinguish the partition-window CRDT case (`hash_differs`),
+    // the fresh-node-catchup case (`only_in_expected`), and the
+    // receiver-ahead case (`only_in_actual`). Operators that see
+    // only `only_in_expected` populated on a freshly-joined node
+    // can recognise normal bootstrap noise; a populated
+    // `hash_differs` is the real signal anchor-sync reconcile
+    // consumes.
+    let format_ids = |ids: &[ContextId]| -> Vec<String> {
+        ids.iter()
+            .map(|c| hex::encode(AsRef::<[u8; 32]>::as_ref(c)))
+            .collect()
+    };
+    match (group_outcome, context_diff) {
+        (Some((_, actual_group)), Some(diff)) => {
             tracing::warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 op_kind,
                 group_hash_diverges = group_diverges,
                 expected_group_state_hash = %hex::encode(expected_group_state_hash),
                 actual_group_state_hash = %hex::encode(actual_group),
-                divergent_context_count = divergent_vec.len(),
-                divergent_context_ids = ?divergent_vec
-                    .iter()
-                    .map(|c| hex::encode(AsRef::<[u8; 32]>::as_ref(c)))
-                    .collect::<Vec<_>>(),
+                hash_differs_count = diff.hash_differs.len(),
+                only_in_expected_count = diff.only_in_expected.len(),
+                only_in_actual_count = diff.only_in_actual.len(),
+                hash_differs = ?format_ids(&diff.hash_differs),
+                only_in_expected = ?format_ids(&diff.only_in_expected),
+                only_in_actual = ?format_ids(&diff.only_in_actual),
                 "cross-DAG state-hash divergence detected on apply — reconcile-via-anchor will heal"
             );
         }
@@ -917,16 +930,17 @@ fn verify_post_apply_state_hashes(
                 "cross-DAG group-state hash divergence detected on apply — reconcile-via-anchor will heal"
             );
         }
-        (None, Some(divergent_vec)) => {
+        (None, Some(diff)) => {
             tracing::warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 op_kind,
                 group_hash_check = "skipped",
-                divergent_context_count = divergent_vec.len(),
-                divergent_context_ids = ?divergent_vec
-                    .iter()
-                    .map(|c| hex::encode(AsRef::<[u8; 32]>::as_ref(c)))
-                    .collect::<Vec<_>>(),
+                hash_differs_count = diff.hash_differs.len(),
+                only_in_expected_count = diff.only_in_expected.len(),
+                only_in_actual_count = diff.only_in_actual.len(),
+                hash_differs = ?format_ids(&diff.hash_differs),
+                only_in_expected = ?format_ids(&diff.only_in_expected),
+                only_in_actual = ?format_ids(&diff.only_in_actual),
                 "cross-DAG per-context state-hash divergence detected on apply — reconcile-via-anchor will heal"
             );
         }
@@ -941,25 +955,46 @@ fn verify_post_apply_state_hashes(
 }
 
 /// Linear merge-scan of two `(ContextId, [u8; 32])` slices both
-/// pre-sorted by `ContextId`. Returns the ids that diverge — hash
-/// differs, or the id is present in only one side. O(n) time and
-/// O(divergent.len()) space; replaces an earlier two-`BTreeMap`
-/// approach that was O(n log n) on an apply-time hot path.
+/// pre-sorted by `ContextId`. Returns a [`ContextHashDiff`] grouping
+/// divergent ids by category — hash differs, only in expected,
+/// only in actual. O(n) time and O(divergent.len()) space; replaces
+/// an earlier two-`BTreeMap` approach that was O(n log n) on an
+/// apply-time hot path.
 ///
-/// Emits a debug log for ids present only in `actual` (the receiver
-/// has a context the sender didn't include in the snapshot) and for
-/// ids present only in `expected` (the sender snapshotted a context
-/// the receiver hasn't materialized yet). The "only in expected"
-/// case is the dominant noise source on freshly-joined nodes whose
-/// `ContextMeta` rows haven't been written yet — operators can
-/// filter on this debug line to distinguish bootstrap catchup from
-/// real partition-window divergence.
+/// Emits a debug log per id for the only-in-actual and only-in-expected
+/// paths. The "only in expected" case is the dominant noise source on
+/// freshly-joined nodes whose `ContextMeta` rows haven't been written
+/// yet; the parent warn log distinguishes the three buckets so
+/// operators can recognise bootstrap noise (only-in-expected populated,
+/// hash-differs empty) from real partition-window divergence
+/// (hash-differs populated).
+/// Categorized divergence report from `diff_sorted_context_hashes`.
+/// The three buckets distinguish the three cases an operator cares
+/// about in the warn log: a real hash mismatch on a shared context
+/// (the partition-window state-DAG case), a context the signer
+/// snapshotted that the receiver hasn't materialized (fresh-node
+/// catchup, expected noise), and a context the receiver materialized
+/// after the signer signed (receiver-ahead, also expected noise).
+struct ContextHashDiff {
+    hash_differs: Vec<ContextId>,
+    only_in_expected: Vec<ContextId>,
+    only_in_actual: Vec<ContextId>,
+}
+
+impl ContextHashDiff {
+    fn is_empty(&self) -> bool {
+        self.hash_differs.is_empty()
+            && self.only_in_expected.is_empty()
+            && self.only_in_actual.is_empty()
+    }
+}
+
 fn diff_sorted_context_hashes(
     group_id: &ContextGroupId,
     op_kind: &'static str,
     expected: &[(ContextId, [u8; 32])],
     actual: &[(ContextId, [u8; 32])],
-) -> Vec<ContextId> {
+) -> ContextHashDiff {
     // The merge-scan is only correct when both inputs are sorted by
     // `ContextId`. `actual` comes from `snapshot_context_state_hashes`
     // which sorts before returning. `expected` rides on a signed op
@@ -977,7 +1012,11 @@ fn diff_sorted_context_hashes(
         actual.windows(2).all(|w| w[0].0 < w[1].0),
         "actual context-hash snapshot must be strictly sorted by ContextId"
     );
-    let mut divergent = Vec::new();
+    let mut diff = ContextHashDiff {
+        hash_differs: Vec::new(),
+        only_in_expected: Vec::new(),
+        only_in_actual: Vec::new(),
+    };
     let mut i = 0;
     let mut j = 0;
     while i < expected.len() && j < actual.len() {
@@ -986,7 +1025,7 @@ fn diff_sorted_context_hashes(
         match e_cid.cmp(a_cid) {
             std::cmp::Ordering::Equal => {
                 if e_hash != a_hash {
-                    divergent.push(*e_cid);
+                    diff.hash_differs.push(*e_cid);
                 }
                 i += 1;
                 j += 1;
@@ -999,7 +1038,7 @@ fn diff_sorted_context_hashes(
                     "context in signed snapshot but not materialized locally — \
                      fresh node catchup or partition-window divergence"
                 );
-                divergent.push(*e_cid);
+                diff.only_in_expected.push(*e_cid);
                 i += 1;
             }
             std::cmp::Ordering::Greater => {
@@ -1010,7 +1049,7 @@ fn diff_sorted_context_hashes(
                     "context materialized locally but not in signed snapshot — \
                      receiver applied a registration the signer's view missed"
                 );
-                divergent.push(*a_cid);
+                diff.only_in_actual.push(*a_cid);
                 j += 1;
             }
         }
@@ -1025,7 +1064,7 @@ fn diff_sorted_context_hashes(
             "context in signed snapshot but not materialized locally — \
              fresh node catchup or partition-window divergence"
         );
-        divergent.push(*cid);
+        diff.only_in_expected.push(*cid);
         i += 1;
     }
     while j < actual.len() {
@@ -1037,10 +1076,10 @@ fn diff_sorted_context_hashes(
             "context materialized locally but not in signed snapshot — \
              receiver applied a registration the signer's view missed"
         );
-        divergent.push(*cid);
+        diff.only_in_actual.push(*cid);
         j += 1;
     }
-    divergent
+    diff
 }
 
 /// Apply the mutation described by a [`GroupOp`] to the local store.

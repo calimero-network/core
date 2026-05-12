@@ -6207,10 +6207,10 @@ fn build_governance_cut_carries_current_group_state_hash() {
 #[test]
 fn diff_sorted_context_hashes_pins_merge_scan_semantics() {
     // Pin the linear-merge divergence logic that replaced the
-    // earlier two-`BTreeMap` build. Identical, hash-differs,
-    // only-in-expected, and only-in-actual all return the expected
-    // divergent-id set in input order (which equals sorted order
-    // since both inputs are sorted by `ContextId`).
+    // earlier two-`BTreeMap` build. Each case asserts on the
+    // categorized buckets — hash_differs, only_in_expected,
+    // only_in_actual — so the warn-log routing at the call site is
+    // also covered.
     use super::diff_sorted_context_hashes;
     let group_id = test_group_id();
     let cid_a = ContextId::from([0x01; 32]);
@@ -6223,65 +6223,64 @@ fn diff_sorted_context_hashes_pins_merge_scan_semantics() {
     let h_c = [0xCC; 32];
     let h_d = [0xDD; 32];
 
-    // Identical — empty divergent set.
+    // Identical — every bucket empty.
     let expected = vec![(cid_a, h_a), (cid_b, h_b)];
     let actual = vec![(cid_a, h_a), (cid_b, h_b)];
-    assert!(diff_sorted_context_hashes(&group_id, "test", &expected, &actual).is_empty());
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert!(diff.is_empty());
 
-    // Same ids, different hash on one — only that id is divergent.
+    // Same ids, different hash on one — that id lands in hash_differs.
     let actual = vec![(cid_a, h_a), (cid_b, h_b_alt)];
-    assert_eq!(
-        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
-        vec![cid_b]
-    );
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert_eq!(diff.hash_differs, vec![cid_b]);
+    assert!(diff.only_in_expected.is_empty());
+    assert!(diff.only_in_actual.is_empty());
 
-    // Expected has an id actual lacks (fresh-node case) — that id is
-    // divergent.
+    // Expected has an id actual lacks (fresh-node case) — only_in_expected.
     let expected = vec![(cid_a, h_a), (cid_b, h_b), (cid_c, h_c)];
     let actual = vec![(cid_a, h_a), (cid_c, h_c)];
-    assert_eq!(
-        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
-        vec![cid_b]
-    );
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert!(diff.hash_differs.is_empty());
+    assert_eq!(diff.only_in_expected, vec![cid_b]);
+    assert!(diff.only_in_actual.is_empty());
 
-    // Actual has an id expected lacks (receiver applied a
-    // registration the signer's view missed).
+    // Actual has an id expected lacks (receiver-ahead) — only_in_actual.
     let expected = vec![(cid_a, h_a), (cid_c, h_c)];
     let actual = vec![(cid_a, h_a), (cid_b, h_b), (cid_c, h_c)];
-    assert_eq!(
-        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
-        vec![cid_b]
-    );
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert!(diff.hash_differs.is_empty());
+    assert!(diff.only_in_expected.is_empty());
+    assert_eq!(diff.only_in_actual, vec![cid_b]);
 
-    // Mixed: one matching, one hash-diff, one only-in-expected, one
-    // only-in-actual. Order follows the merge advance — expected[1]
-    // hash-diffs first (cid_b), then expected[2] only (cid_c), then
-    // actual tail (cid_d).
+    // Mixed: one matching (cid_a), one hash-diff (cid_b), one
+    // only-in-expected (cid_c), one only-in-actual (cid_d).
     let expected = vec![(cid_a, h_a), (cid_b, h_b), (cid_c, h_c)];
     let actual = vec![(cid_a, h_a), (cid_b, h_b_alt), (cid_d, h_d)];
-    assert_eq!(
-        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
-        vec![cid_b, cid_c, cid_d]
-    );
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert_eq!(diff.hash_differs, vec![cid_b]);
+    assert_eq!(diff.only_in_expected, vec![cid_c]);
+    assert_eq!(diff.only_in_actual, vec![cid_d]);
 
-    // One side empty.
+    // One side empty — everything lands in the other bucket.
     let actual: Vec<(ContextId, [u8; 32])> = Vec::new();
     let expected = vec![(cid_a, h_a), (cid_b, h_b)];
-    assert_eq!(
-        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
-        vec![cid_a, cid_b]
-    );
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert_eq!(diff.only_in_expected, vec![cid_a, cid_b]);
+    assert!(diff.hash_differs.is_empty());
+    assert!(diff.only_in_actual.is_empty());
+
     let expected: Vec<(ContextId, [u8; 32])> = Vec::new();
     let actual = vec![(cid_a, h_a), (cid_b, h_b)];
-    assert_eq!(
-        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
-        vec![cid_a, cid_b]
-    );
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert_eq!(diff.only_in_actual, vec![cid_a, cid_b]);
+    assert!(diff.hash_differs.is_empty());
+    assert!(diff.only_in_expected.is_empty());
 
-    // Both empty.
+    // Both empty — every bucket empty.
     let expected: Vec<(ContextId, [u8; 32])> = Vec::new();
     let actual: Vec<(ContextId, [u8; 32])> = Vec::new();
-    assert!(diff_sorted_context_hashes(&group_id, "test", &expected, &actual).is_empty());
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert!(diff.is_empty());
 }
 
 #[test]
@@ -6446,5 +6445,65 @@ fn cascade_remove_member_does_not_change_group_state_hash() {
     assert!(
         !handle.has(&id_key).unwrap(),
         "cascade should have deleted target's ContextIdentity row"
+    );
+}
+
+#[test]
+fn mark_denied_does_not_change_group_state_hash() {
+    // Mirrors the cascade invariant test: the verify-call-site
+    // ordering comment claims `mark_denied` doesn't touch
+    // `compute_group_state_hash`'s inputs. This pins it — a future
+    // refactor that moves the denial flag into the `GroupMember`
+    // row (instead of a separate `GroupDeniedMember` column) would
+    // trip this test and force a rethink of where the verify call
+    // sits relative to other mutations.
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let target = PublicKey::from([0xD0; 32]);
+
+    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
+    remove_group_member(&store, &gid, &target).unwrap();
+
+    let hash_before = compute_group_state_hash(&store, &gid).unwrap();
+    mark_denied(&store, &gid, &target).unwrap();
+    let hash_after = compute_group_state_hash(&store, &gid).unwrap();
+
+    assert_eq!(
+        hash_before, hash_after,
+        "mark_denied must not change the group state hash — \
+         it writes a GroupDeniedMember row, not GroupMeta or GroupMember"
+    );
+}
+
+#[test]
+fn compute_group_state_hash_after_remove_never_returns_zeros_for_real_group() {
+    // SHA-256 of any real `GroupMeta` + member set is astronomically
+    // unlikely to produce all-zeros. This test pins the practical
+    // guarantee: for a populated group with a real meta and at least
+    // one member, the precomputed post-remove hash must NOT be the
+    // sentinel value `[0u8; 32]`. If a future bug short-circuits the
+    // hasher and returns zeros, every receiver would silently treat
+    // the signed claim as "no claim" and the convergence check would
+    // be effectively disabled. This catches that class of regression
+    // at the helper boundary.
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let target = PublicKey::from([0xD0; 32]);
+    let bystander = PublicKey::from([0xD1; 32]);
+
+    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
+    add_group_member(&store, &gid, &bystander, GroupMemberRole::Member).unwrap();
+
+    let hash = compute_group_state_hash_after_remove(&store, &gid, &target).unwrap();
+    assert_ne!(
+        hash, [0u8; 32],
+        "post-remove hash collided with the no-claim sentinel — \
+         convergence check would be silently disabled"
     );
 }
