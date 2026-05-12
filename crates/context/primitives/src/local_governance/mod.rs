@@ -11,6 +11,8 @@
 //! members can read it). Non-members store an opaque **skeleton** for
 //! group-scoped ops they cannot decrypt.
 
+use std::collections::BTreeMap;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::application::ApplicationId;
@@ -108,16 +110,28 @@ pub enum GroupOp {
     /// parent-group members holding `CAN_JOIN_OPEN_SUBGROUPS` are inherited
     /// as members of this subgroup. See [`crate::group::SetSubgroupVisibilityRequest`].
     SubgroupVisibilitySet { mode: u8 },
-    /// Human-readable alias for a context within the group.
-    /// **Signer:** group admin.
-    ContextAliasSet {
-        context_id: ContextId,
-        alias: String,
+    /// Wholly replace the metadata record (name + opaque `data`) of the group
+    /// itself (a namespace is a root group, so this covers it).
+    /// **Signer:** group admin or holder of `CAN_MANAGE_METADATA`.
+    GroupMetadataSet {
+        name: Option<String>,
+        data: BTreeMap<String, String>,
     },
-    /// Human-readable alias for a member within the group.
-    MemberAliasSet { member: PublicKey, alias: String },
-    /// Human-readable alias for the group itself.
-    GroupAliasSet { alias: String },
+    /// Wholly replace a group member's metadata record.
+    /// **Signer:** group admin, holder of `CAN_MANAGE_METADATA`, or the member
+    /// themselves.
+    MemberMetadataSet {
+        member: PublicKey,
+        name: Option<String>,
+        data: BTreeMap<String, String>,
+    },
+    /// Wholly replace a group-registered context's metadata record.
+    /// **Signer:** group admin or holder of `CAN_MANAGE_METADATA`.
+    ContextMetadataSet {
+        context_id: ContextId,
+        name: Option<String>,
+        data: BTreeMap<String, String>,
+    },
     /// Delete the group locally (no registered contexts; same constraints as CLI delete).
     GroupDelete,
     /// Update group migration bytes in [`GroupMetaValue`] (admin).
@@ -199,9 +213,9 @@ impl GroupOp {
             GroupOp::ContextRegistered { .. } => "context_registered",
             GroupOp::ContextDetached { .. } => "context_detached",
             GroupOp::SubgroupVisibilitySet { .. } => "subgroup_visibility_set",
-            GroupOp::ContextAliasSet { .. } => "context_alias_set",
-            GroupOp::MemberAliasSet { .. } => "member_alias_set",
-            GroupOp::GroupAliasSet { .. } => "group_alias_set",
+            GroupOp::GroupMetadataSet { .. } => "group_metadata_set",
+            GroupOp::MemberMetadataSet { .. } => "member_metadata_set",
+            GroupOp::ContextMetadataSet { .. } => "context_metadata_set",
             GroupOp::GroupDelete => "group_delete",
             GroupOp::GroupMigrationSet { .. } => "group_migration_set",
             GroupOp::ContextCapabilityGranted { .. } => "context_capability_granted",
