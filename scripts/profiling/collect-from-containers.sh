@@ -1,6 +1,16 @@
 #!/bin/bash
 # Collect profiling data from Docker containers
 # Usage: collect-from-containers.sh <test-name> <logs-dir> <data-dir> <reports-dir>
+#
+# NOTE: `merobox bootstrap run` tears the runtime nodes down on exit, so by the
+# time this step runs the `fuzzy-*-node-N` containers are usually already gone
+# and the `docker exec`/`docker cp` calls below are no-ops. Container logs are
+# kept by the workflow's live `docker logs -f` watcher; the perf `.data` +
+# jemalloc heaps survive via the host bind mount — `entrypoint-profiling.sh`
+# mirrors `/profiling/data` to `$CALIMERO_HOME/profiling-dump` on shutdown and
+# `harvest-host-profiling.sh` picks that up afterwards (that's the authoritative
+# collector). This script is best-effort extra coverage for the rare case a
+# container is still alive.
 
 set -e
 
