@@ -69,6 +69,11 @@ pub fn validate_metadata_payload(
     data: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     if let Some(name) = name {
+        if name.is_empty() {
+            return Err(
+                "metadata name must not be the empty string — use null to clear it".to_owned(),
+            );
+        }
         if name.len() > MAX_METADATA_NAME_LEN {
             return Err(format!(
                 "metadata name too long: {} bytes (max {MAX_METADATA_NAME_LEN})",
@@ -83,6 +88,9 @@ pub fn validate_metadata_payload(
         ));
     }
     for (k, v) in data {
+        if k.is_empty() {
+            return Err("metadata data key must not be the empty string".to_owned());
+        }
         if k.len() > MAX_METADATA_DATA_KEY_LEN {
             return Err(format!(
                 "metadata data key too long: {} bytes (max {MAX_METADATA_DATA_KEY_LEN})",
@@ -125,6 +133,12 @@ mod tests {
         let mut big_value = BTreeMap::new();
         let _ = big_value.insert("k".to_owned(), "v".repeat(MAX_METADATA_DATA_VALUE_LEN + 1));
         assert!(validate_metadata_payload(None, &big_value).is_err());
+
+        // Empty name / empty data key are rejected (use `None` to clear a name).
+        assert!(validate_metadata_payload(Some(""), &BTreeMap::new()).is_err());
+        let mut empty_key = BTreeMap::new();
+        let _ = empty_key.insert(String::new(), "v".to_owned());
+        assert!(validate_metadata_payload(None, &empty_key).is_err());
     }
 
     #[test]
