@@ -2326,9 +2326,31 @@ pub struct SetMetadataApiRequest {
 
 impl Validate for SetMetadataApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
+        // Bound the opaque `data` map so a single op can't bloat the
+        // replicated governance state. These limits are deliberately
+        // generous; apps needing more should use context CRDT state.
+        const MAX_DATA_ENTRIES: usize = 64;
+        const MAX_DATA_KEY_LEN: usize = 64;
+        const MAX_DATA_VALUE_LEN: usize = 4096;
+
         let mut errors = Vec::new();
         if let Some(ref name) = self.name {
             if let Some(e) = validate_string_length(name, "name", 64) {
+                errors.push(e);
+            }
+        }
+        if self.data.len() > MAX_DATA_ENTRIES {
+            errors.push(ValidationError::TooManyItems {
+                field: "data",
+                max: MAX_DATA_ENTRIES,
+                actual: self.data.len(),
+            });
+        }
+        for (k, v) in &self.data {
+            if let Some(e) = validate_string_length(k, "data key", MAX_DATA_KEY_LEN) {
+                errors.push(e);
+            }
+            if let Some(e) = validate_string_length(v, "data value", MAX_DATA_VALUE_LEN) {
                 errors.push(e);
             }
         }

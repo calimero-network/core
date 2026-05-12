@@ -19,6 +19,7 @@ use crate::identity::PublicKey;
 /// former alias rows were) — it is replicated governance state but not
 /// consensus-relevant state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)

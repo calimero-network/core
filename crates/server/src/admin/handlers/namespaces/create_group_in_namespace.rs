@@ -154,11 +154,17 @@ pub async fn handler(
             }
 
             if body.group_name.is_some() {
+                // Seed the subgroup's initial metadata record stamped with the
+                // creator's identity / wall-clock — not the zero-value
+                // `Default` (which would surface as misleading provenance via
+                // the API); later `GroupOp::GroupMetadataSet` ops supersede it.
                 if let Err(err) = calimero_context::group_store::set_group_metadata(
                     &state.store,
                     &group_id,
                     &calimero_primitives::metadata::MetadataRecord {
                         name: body.group_name.clone(),
+                        updated_at: calimero_context::group_store::now_millis(),
+                        updated_by: signer_pk,
                         ..Default::default()
                     },
                 ) {

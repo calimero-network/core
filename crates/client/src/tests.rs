@@ -122,7 +122,7 @@ async fn get_group_info() {
                 "activeUpgrade": null,
                 "defaultCapabilities": 0,
                 "subgroupVisibility": "open",
-                "metadata": { "name": null, "data": {}, "updated_at": 0, "updated_by": ZERO_BS58 },
+                "metadata": { "name": null, "data": {}, "updatedAt": 0, "updatedBy": ZERO_BS58 },
                 "groupStateHash": "0000000000000000000000000000000000000000000000000000000000000000"
             }
         })))

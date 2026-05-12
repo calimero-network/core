@@ -794,7 +794,7 @@ const MAX_DAG_HEADS: usize = 64;
 /// initial metadata record on group create/join). This is informational only
 /// (it is deliberately excluded from `compute_group_state_hash`), so a small
 /// per-peer skew is acceptable.
-pub(crate) fn now_millis() -> u64 {
+pub fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
@@ -936,9 +936,17 @@ fn apply_group_op_mutations(
             )?;
         }
         GroupOp::MemberMetadataSet { member, name, data } => {
-            // A member may always set *their own* metadata; otherwise this is
-            // gated like the other metadata ops.
-            if signer != member {
+            // A member may always set *their own* metadata — but only if they
+            // actually are a member of this group; otherwise this is gated like
+            // the other metadata ops (admin or CAN_MANAGE_METADATA).
+            if signer == member {
+                if !check_group_membership(store, group_id, signer)? {
+                    bail!(
+                        "signer {signer} is not a member of group {}",
+                        hex::encode(group_id.to_bytes())
+                    );
+                }
+            } else {
                 permissions.require_can_manage_metadata(signer)?;
             }
             set_member_metadata(
