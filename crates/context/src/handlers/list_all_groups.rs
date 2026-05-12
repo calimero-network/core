@@ -24,16 +24,17 @@ impl Handler<ListAllGroupsRequest> for ContextManager {
                 };
                 if group_store::check_group_membership(&self.datastore, &group_id, &node_identity)?
                 {
-                    let alias = group_store::get_group_alias(&self.datastore, &group_id)
+                    let name = group_store::get_group_metadata(&self.datastore, &group_id)
                         .ok()
-                        .flatten();
+                        .flatten()
+                        .and_then(|r| r.name);
                     summaries.push(GroupSummary {
                         group_id,
                         app_key: meta.app_key.into(),
                         target_application_id: meta.target_application_id,
                         upgrade_policy: meta.upgrade_policy,
                         created_at: meta.created_at,
-                        alias,
+                        name,
                     });
                 }
             }

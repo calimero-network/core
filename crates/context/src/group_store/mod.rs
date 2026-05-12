@@ -2,6 +2,7 @@ use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
 use calimero_store::key::FromKeyParts;
 use calimero_store::key::{
     AsKeyParts, GroupMemberValue, GroupMetaValue, GroupOpHeadValue, GroupUpgradeValue,
@@ -12,7 +13,6 @@ use eyre::{bail, Result as EyreResult};
 
 use calimero_context_client::local_governance::SignedNamespaceOp;
 
-mod aliases;
 mod capabilities;
 mod context_registration;
 mod context_tree;
@@ -29,6 +29,7 @@ mod membership_policy_rules;
 mod membership_status;
 mod membership_view;
 mod meta;
+mod metadata;
 mod migrations;
 mod namespace;
 mod namespace_dag;
@@ -42,11 +43,6 @@ mod tee;
 mod upgrades;
 use self::local_state::persist_group_governance_progress;
 
-pub use self::aliases::{
-    build_namespace_summary, count_group_contexts, delete_all_member_aliases, delete_group_alias,
-    enumerate_group_contexts_with_aliases, enumerate_member_aliases, get_context_alias,
-    get_group_alias, get_member_alias, set_context_alias, set_group_alias, set_member_alias,
-};
 pub use self::capabilities::{
     delete_all_member_capabilities, delete_default_capabilities, delete_subgroup_visibility,
     enumerate_member_capabilities, get_context_member_capability, get_default_capabilities,
@@ -92,6 +88,13 @@ pub use self::meta::{
     build_governance_cut, compute_group_state_hash, compute_group_state_hash_after_remove,
     delete_group_meta, enumerate_all_groups, load_group_meta, save_group_meta,
     snapshot_context_state_hashes,
+};
+pub use self::metadata::{
+    build_namespace_summary, count_group_contexts, delete_all_member_metadata,
+    delete_context_metadata, delete_group_metadata, delete_member_metadata,
+    enumerate_group_contexts_with_names, enumerate_member_metadata, get_context_metadata,
+    get_group_metadata, get_member_metadata, set_context_metadata, set_group_metadata,
+    set_member_metadata,
 };
 pub use self::migrations::{
     delete_all_context_last_migrations, get_context_last_migration, set_context_last_migration,
@@ -484,34 +487,42 @@ impl<'a> GroupHandle<'a> {
         count_group_contexts(self.store, &self.group_id)
     }
 
-    // --- Aliases ---
-    pub fn set_alias(&self, alias: &str) -> EyreResult<()> {
-        set_group_alias(self.store, &self.group_id, alias)
+    // --- Metadata records ---
+    pub fn set_metadata(&self, record: &MetadataRecord) -> EyreResult<()> {
+        set_group_metadata(self.store, &self.group_id, record)
     }
-    pub fn get_alias(&self) -> EyreResult<Option<String>> {
-        get_group_alias(self.store, &self.group_id)
+    pub fn get_metadata(&self) -> EyreResult<Option<MetadataRecord>> {
+        get_group_metadata(self.store, &self.group_id)
     }
-    pub fn set_member_alias(&self, member: &PublicKey, alias: &str) -> EyreResult<()> {
-        set_member_alias(self.store, &self.group_id, member, alias)
+    pub fn set_member_metadata(
+        &self,
+        member: &PublicKey,
+        record: &MetadataRecord,
+    ) -> EyreResult<()> {
+        set_member_metadata(self.store, &self.group_id, member, record)
     }
-    pub fn get_member_alias(&self, member: &PublicKey) -> EyreResult<Option<String>> {
-        get_member_alias(self.store, &self.group_id, member)
+    pub fn get_member_metadata(&self, member: &PublicKey) -> EyreResult<Option<MetadataRecord>> {
+        get_member_metadata(self.store, &self.group_id, member)
     }
-    pub fn set_context_alias(&self, ctx_id: &ContextId, alias: &str) -> EyreResult<()> {
-        set_context_alias(self.store, &self.group_id, ctx_id, alias)
+    pub fn set_context_metadata(
+        &self,
+        ctx_id: &ContextId,
+        record: &MetadataRecord,
+    ) -> EyreResult<()> {
+        set_context_metadata(self.store, &self.group_id, ctx_id, record)
     }
-    pub fn get_context_alias(&self, ctx_id: &ContextId) -> EyreResult<Option<String>> {
-        get_context_alias(self.store, &self.group_id, ctx_id)
+    pub fn get_context_metadata(&self, ctx_id: &ContextId) -> EyreResult<Option<MetadataRecord>> {
+        get_context_metadata(self.store, &self.group_id, ctx_id)
     }
-    pub fn enumerate_contexts_with_aliases(
+    pub fn enumerate_contexts_with_names(
         &self,
         offset: usize,
         limit: usize,
     ) -> EyreResult<Vec<(ContextId, Option<String>)>> {
-        enumerate_group_contexts_with_aliases(self.store, &self.group_id, offset, limit)
+        enumerate_group_contexts_with_names(self.store, &self.group_id, offset, limit)
     }
-    pub fn enumerate_member_aliases(&self) -> EyreResult<Vec<(PublicKey, String)>> {
-        enumerate_member_aliases(self.store, &self.group_id)
+    pub fn enumerate_member_metadata(&self) -> EyreResult<Vec<(PublicKey, MetadataRecord)>> {
+        enumerate_member_metadata(self.store, &self.group_id)
     }
 
     // --- Capabilities ---
@@ -778,6 +789,18 @@ const MAX_PARENT_OP_HASHES: usize = 256;
 /// Maximum DAG heads before forcing a synthetic merge. Prevents unbounded
 /// growth from many concurrent admins operating without merges.
 const MAX_DAG_HEADS: usize = 64;
+
+/// Wall-clock milliseconds since the Unix epoch. Used to stamp
+/// [`MetadataRecord::updated_at`] at apply time (and when a handler seeds an
+/// initial metadata record on group create/join). This is informational only
+/// (it is deliberately excluded from `compute_group_state_hash`), so a small
+/// per-peer skew is acceptable.
+pub fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
 
 /// Compare local post-apply state hashes against the values signed
 /// into `MemberRemoved` / `MemberLeft` and emit a structured warn log
@@ -1253,16 +1276,74 @@ fn apply_group_op_mutations(
             };
             settings.set_subgroup_visibility(signer, visibility)?;
         }
-        GroupOp::ContextAliasSet { context_id, alias } => {
-            permissions.require_admin(signer)?;
-            set_context_alias(store, group_id, context_id, alias)?;
+        GroupOp::GroupMetadataSet { name, data } => {
+            permissions.require_can_manage_metadata(signer)?;
+            validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
+            set_group_metadata(
+                store,
+                group_id,
+                &MetadataRecord {
+                    name: name.clone(),
+                    data: data.clone(),
+                    updated_at: now_millis(),
+                    updated_by: *signer,
+                },
+            )?;
         }
-        GroupOp::MemberAliasSet { member, alias } => {
-            permissions.require_admin_or_self(signer, member)?;
-            set_member_alias(store, group_id, member, alias)?;
+        GroupOp::MemberMetadataSet { member, name, data } => {
+            // A member may always set *their own* metadata — but only if they
+            // actually are a member of this group; otherwise this is gated like
+            // the other metadata ops (admin or CAN_MANAGE_METADATA).
+            if signer == member {
+                if !check_group_membership(store, group_id, signer)? {
+                    bail!(
+                        "signer {signer} is not a member of group {}",
+                        hex::encode(group_id.to_bytes())
+                    );
+                }
+            } else {
+                permissions.require_can_manage_metadata(signer)?;
+            }
+            validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
+            set_member_metadata(
+                store,
+                group_id,
+                member,
+                &MetadataRecord {
+                    name: name.clone(),
+                    data: data.clone(),
+                    updated_at: now_millis(),
+                    updated_by: *signer,
+                },
+            )?;
         }
-        GroupOp::GroupAliasSet { alias } => {
-            settings.set_group_alias(signer, alias)?;
+        GroupOp::ContextMetadataSet {
+            context_id,
+            name,
+            data,
+        } => {
+            permissions.require_can_manage_metadata(signer)?;
+            // Reject metadata for a context that isn't registered in this
+            // group — otherwise we'd create orphaned `GroupContextMetadata`
+            // rows for contexts in a different group (or no group at all).
+            if get_group_for_context(store, context_id)? != Some(*group_id) {
+                bail!(
+                    "context {context_id} is not registered in group {}",
+                    hex::encode(group_id.to_bytes())
+                );
+            }
+            validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
+            set_context_metadata(
+                store,
+                group_id,
+                context_id,
+                &MetadataRecord {
+                    name: name.clone(),
+                    data: data.clone(),
+                    updated_at: now_millis(),
+                    updated_by: *signer,
+                },
+            )?;
         }
         GroupOp::GroupDelete => {
             // Owner-only. Admins can no longer delete the group on their

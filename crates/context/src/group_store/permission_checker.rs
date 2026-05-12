@@ -122,6 +122,17 @@ impl<'a> PermissionChecker<'a> {
         )
     }
 
+    /// Allow if `identity` is a group admin (incl. inherited admin) or holds
+    /// `CAN_MANAGE_METADATA` for `self.group_id`. Used by the `*MetadataSet`
+    /// ops (a member setting *their own* member metadata bypasses this — see
+    /// the apply path).
+    pub fn require_can_manage_metadata(&self, identity: &PublicKey) -> EyreResult<()> {
+        if self.is_authorized_with_capability(identity, MemberCapabilities::CAN_MANAGE_METADATA)? {
+            return Ok(());
+        }
+        bail!("only group admin or members with CAN_MANAGE_METADATA can change group metadata")
+    }
+
     /// Resolves "admin or holds `capability_bit`" with Open-subgroup
     /// inheritance applied (issue #2256).
     ///

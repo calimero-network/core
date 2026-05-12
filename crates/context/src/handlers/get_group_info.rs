@@ -42,7 +42,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                     calimero_context_config::VisibilityMode::Restricted => "restricted".to_owned(),
                 };
 
-            let alias = group_store::get_group_alias(&self.datastore, &group_id)?;
+            let metadata = group_store::get_group_metadata(&self.datastore, &group_id)?;
 
             let state_hash = group_store::compute_group_state_hash(&self.datastore, &group_id)?;
 
@@ -56,7 +56,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 active_upgrade,
                 default_capabilities,
                 subgroup_visibility,
-                alias,
+                metadata,
                 state_hash,
             })
         })();

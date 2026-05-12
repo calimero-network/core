@@ -6,6 +6,7 @@ use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey, WalletType};
+use calimero_primitives::metadata::MetadataRecord;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -222,7 +223,7 @@ pub struct CreateContextRequest {
     pub group_id: String,
     pub identity_secret: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
+    pub name: Option<String>,
 }
 
 impl CreateContextRequest {
@@ -240,7 +241,7 @@ impl CreateContextRequest {
             initialization_params,
             group_id,
             identity_secret,
-            alias: None,
+            name: None,
         }
     }
 }
@@ -1562,7 +1563,7 @@ pub struct CreateGroupApiRequest {
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
+    pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_group_id: Option<String>,
 }
@@ -1597,7 +1598,7 @@ pub struct CreateNamespaceApiRequest {
     pub application_id: ApplicationId,
     pub upgrade_policy: UpgradePolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
+    pub name: Option<String>,
 }
 
 impl Validate for CreateNamespaceApiRequest {
@@ -1687,8 +1688,10 @@ pub struct GroupInfoApiResponseData {
     pub active_upgrade: Option<GroupUpgradeStatusApiData>,
     pub default_capabilities: u32,
     pub subgroup_visibility: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
+    /// Full metadata record for the group (name + opaque `data` map), or
+    /// omitted if none has ever been set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<MetadataRecord>,
     /// Hex-encoded SHA-256 hash of the group's authorization-relevant
     /// state. Mirrors `contextStateHash` on context responses; lets
     /// clients poll for governance convergence across nodes.
@@ -1765,7 +1768,7 @@ pub struct GroupMemberApiEntry {
     pub identity: PublicKey,
     pub role: GroupMemberRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1779,7 +1782,7 @@ pub struct ListGroupMembersQuery {
 pub struct GroupContextEntryResponse {
     pub context_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1902,7 +1905,7 @@ pub struct CreateGroupInvitationApiResponse {
 pub struct CreateGroupInvitationApiResponseData {
     pub invitation: SignedGroupOpenInvitation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_alias: Option<String>,
+    pub group_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1911,7 +1914,7 @@ pub struct RecursiveInvitationEntry {
     pub group_id: String,
     pub invitation: SignedGroupOpenInvitation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_alias: Option<String>,
+    pub group_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1966,7 +1969,7 @@ pub struct ReparentGroupApiResponse {
 pub struct SubgroupEntryApiResponse {
     pub group_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1980,7 +1983,7 @@ pub struct ListSubgroupsApiResponse {
 pub struct NamespaceGroupEntryApiResponse {
     pub group_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1994,7 +1997,7 @@ pub struct ListNamespaceGroupsApiResponse {
 pub struct JoinGroupApiRequest {
     pub invitation: SignedGroupOpenInvitation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_alias: Option<String>,
+    pub group_name: Option<String>,
 }
 
 impl Validate for JoinGroupApiRequest {
@@ -2066,7 +2069,7 @@ pub struct GroupSummaryApiData {
     pub upgrade_policy: UpgradePolicy,
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
+    pub name: Option<String>,
 }
 
 // ---- Update Group Settings ----
@@ -2306,57 +2309,54 @@ impl Validate for SetMemberCapabilitiesApiRequest {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct SetMemberCapabilitiesApiResponse {}
 
-// ---- Set Member Alias ----
+// ---- Set Metadata (group / member / context) ----
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SetMemberAliasApiRequest {
-    pub alias: String,
+pub struct SetMetadataApiRequest {
+    /// New display name. Absent field keeps the current name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Replacement opaque `data` map; stored verbatim by core.
+    #[serde(default)]
+    pub data: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<PublicKey>,
 }
 
-impl Validate for SetMemberAliasApiRequest {
+impl Validate for SetMetadataApiRequest {
     fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-        if self.alias.is_empty() {
-            errors.push(ValidationError::EmptyField { field: "alias" });
+        // Delegate to the single source of truth — the exact same checks the
+        // `*MetadataSet` op-apply path enforces (size limits, non-empty name,
+        // non-empty data keys) — so an HTTP request that would later fail at
+        // apply time is rejected here with a clean 400 instead.
+        match calimero_primitives::metadata::validate_metadata_payload(
+            self.name.as_deref(),
+            &self.data,
+        ) {
+            Ok(()) => Vec::new(),
+            Err(reason) => vec![ValidationError::InvalidFormat {
+                field: "metadata",
+                reason,
+            }],
         }
-        if let Some(e) = validate_string_length(&self.alias, "alias", 64) {
-            errors.push(e);
-        }
-        errors
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SetMemberAliasApiResponse {}
+pub type SetMemberMetadataApiRequest = SetMetadataApiRequest;
+pub type SetGroupMetadataApiRequest = SetMetadataApiRequest;
+pub type SetContextMetadataApiRequest = SetMetadataApiRequest;
 
-// ---- Set Group Alias ----
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetMetadataApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SetGroupAliasApiRequest {
-    pub alias: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester: Option<PublicKey>,
+pub struct GetMetadataApiResponse {
+    /// The metadata record, or `null` if none has ever been set for the
+    /// target (group / member / context).
+    pub data: Option<MetadataRecord>,
 }
-
-impl Validate for SetGroupAliasApiRequest {
-    fn validate(&self) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-        if self.alias.is_empty() {
-            errors.push(ValidationError::EmptyField { field: "alias" });
-        }
-        if let Some(e) = validate_string_length(&self.alias, "alias", 64) {
-            errors.push(e);
-        }
-        errors
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SetGroupAliasApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2548,7 +2548,7 @@ pub struct NamespaceApiResponse {
     pub upgrade_policy: String,
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
+    pub name: Option<String>,
     pub member_count: usize,
     pub context_count: usize,
     pub subgroup_count: usize,

@@ -29,19 +29,20 @@ pub async fn handler(
 
     let mut entries = Vec::with_capacity(groups.len());
     for group_id in groups {
-        let alias = match calimero_context::group_store::get_group_alias(&state.store, &group_id) {
-            Ok(alias) => alias,
+        let name = match calimero_context::group_store::get_group_metadata(&state.store, &group_id)
+        {
+            Ok(rec) => rec.and_then(|r| r.name),
             Err(err) => {
                 error!(
                     ?err,
-                    "Failed to resolve group alias while listing namespace groups"
+                    "Failed to resolve group metadata while listing namespace groups"
                 );
                 return parse_api_error(err).into_response();
             }
         };
         entries.push(NamespaceGroupEntryApiResponse {
             group_id: hex::encode(group_id.to_bytes()),
-            alias,
+            name,
         });
     }
 

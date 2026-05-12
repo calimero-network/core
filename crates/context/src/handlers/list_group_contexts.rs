@@ -23,7 +23,7 @@ impl Handler<ListGroupContextsRequest> for ContextManager {
             if !group_store::check_group_membership(&self.datastore, &group_id, &node_identity)? {
                 bail!("node is not a member of group '{group_id:?}'");
             }
-            group_store::enumerate_group_contexts_with_aliases(
+            group_store::enumerate_group_contexts_with_names(
                 &self.datastore,
                 &group_id,
                 offset,
@@ -32,7 +32,7 @@ impl Handler<ListGroupContextsRequest> for ContextManager {
             .map(|entries| {
                 entries
                     .into_iter()
-                    .map(|(context_id, alias)| GroupContextEntry { context_id, alias })
+                    .map(|(context_id, name)| GroupContextEntry { context_id, name })
                     .collect()
             })
         })();

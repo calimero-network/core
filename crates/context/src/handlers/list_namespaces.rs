@@ -106,7 +106,7 @@ mod tests {
             target_application_id: ApplicationId::from([0x22; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
             created_at: 1_700_000_000,
-            alias: None,
+            name: None,
             member_count: 1,
             context_count: 2,
             subgroup_count: 3,

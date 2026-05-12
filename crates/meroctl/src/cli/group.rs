@@ -11,6 +11,7 @@ pub mod join_context;
 pub mod leave;
 pub mod leave_context;
 pub mod members;
+pub mod metadata;
 pub mod reparent;
 pub mod settings;
 pub mod signing_key;
@@ -67,6 +68,11 @@ pub enum GroupSubCommands {
     Update(update::UpdateCommand),
     Members(members::MembersCommand),
     Contexts(contexts::ContextsCommand),
+    Metadata(metadata::MetadataCommand),
+    #[command(alias = "member-metadata")]
+    MemberMetadata(metadata::MemberMetadataCommand),
+    #[command(alias = "context-metadata")]
+    ContextMetadata(metadata::ContextMetadataCommand),
     Reparent(reparent::ReparentCommand),
     Subgroups(subgroups::SubgroupsCommand),
     #[command(alias = "signing-key")]
@@ -91,6 +97,9 @@ impl GroupCommand {
             GroupSubCommands::Update(cmd) => cmd.run(environment).await,
             GroupSubCommands::Members(cmd) => cmd.run(environment).await,
             GroupSubCommands::Contexts(cmd) => cmd.run(environment).await,
+            GroupSubCommands::Metadata(cmd) => cmd.run(environment).await,
+            GroupSubCommands::MemberMetadata(cmd) => cmd.run(environment).await,
+            GroupSubCommands::ContextMetadata(cmd) => cmd.run(environment).await,
             GroupSubCommands::Reparent(cmd) => cmd.run(environment).await,
             GroupSubCommands::Subgroups(cmd) => cmd.run(environment).await,
             GroupSubCommands::SigningKey(cmd) => cmd.run(environment).await,

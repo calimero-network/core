@@ -23,8 +23,8 @@ pub struct CreateCommand {
     #[clap(long, help = "Deadline in seconds for coordinated upgrade policy")]
     pub deadline_secs: Option<u64>,
 
-    #[clap(long, help = "Optional human-readable alias")]
-    pub alias: Option<String>,
+    #[clap(long, help = "Optional human-readable name for the namespace")]
+    pub name: Option<String>,
 }
 
 impl CreateCommand {
@@ -34,7 +34,7 @@ impl CreateCommand {
         let request = CreateNamespaceApiRequest {
             application_id: self.application_id,
             upgrade_policy,
-            alias: self.alias,
+            name: self.name,
         };
 
         let client = environment.client()?;
