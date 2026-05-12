@@ -843,4 +843,89 @@ mod tests {
         assert_eq!(stats.nodes_compared, 0);
         assert_eq!(stats.entities_merged, 0);
     }
+
+    /// An opaque (no-`crdt_type`) Merkle leaf must be emitted as a real *leaf*
+    /// `TreeNode` (not a malformed empty `internal` node, which the peer drops as
+    /// "Invalid TreeNode") carrying a synthetic LWW wire type.
+    #[test]
+    fn get_local_tree_node_returns_leaf_for_no_crdt_entity() {
+        use std::sync::Arc;
+
+        use calimero_storage::action::Action;
+        use calimero_storage::entities::{ChildInfo, Metadata};
+        use calimero_storage::interface::ApplyContext;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+
+        let context_id = ContextId::from([0xCA; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(&store, context_id, identity);
+
+        // `Id::new([118; 32])` == `Root::<T>::entry_id()` — an opaque leaf.
+        let root_id = Id::new(*context_id.as_ref());
+        let opaque_id = Id::new([118u8; 32]);
+
+        with_runtime_env(runtime_env.clone(), || {
+            // Create the context root.
+            Interface::<MainStorage>::apply_action(
+                Action::Update {
+                    id: root_id,
+                    data: vec![],
+                    ancestors: vec![],
+                    metadata: Metadata::default(),
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("create root");
+
+            // Add the opaque leaf as a child of root — `Metadata::new` => crdt_type None.
+            let root_hash = Index::<MainStorage>::get_hashes_for(root_id)
+                .ok()
+                .flatten()
+                .map(|(full, _)| full)
+                .unwrap_or([0; 32]);
+            let root_meta = Index::<MainStorage>::get_index(root_id)
+                .ok()
+                .flatten()
+                .map(|idx| idx.metadata.clone())
+                .unwrap_or_default();
+            Interface::<MainStorage>::apply_action(
+                Action::Add {
+                    id: opaque_id,
+                    data: b"app-root-state".to_vec(),
+                    ancestors: vec![ChildInfo::new(root_id, root_hash, root_meta)],
+                    metadata: Metadata::new(100, 100),
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("add opaque leaf");
+
+            // Sanity: it really is opaque.
+            assert!(
+                Index::<MainStorage>::get_index(opaque_id)
+                    .unwrap()
+                    .unwrap()
+                    .metadata
+                    .crdt_type
+                    .is_none(),
+                "seeded entity must have crdt_type == None"
+            );
+
+            let node = get_local_tree_node(context_id, opaque_id.as_bytes(), false)
+                .expect("get_local_tree_node should not error")
+                .expect("node should exist");
+
+            assert!(node.is_leaf(), "opaque entity must be emitted as a leaf");
+            assert!(!node.is_internal(), "opaque entity must not be an internal node");
+            assert!(node.is_valid(), "opaque leaf node must be structurally valid");
+            let leaf_data = node.leaf_data.as_ref().expect("leaf must carry leaf_data");
+            assert!(
+                matches!(leaf_data.metadata.crdt_type, CrdtType::LwwRegister { .. }),
+                "opaque leaf must carry a synthetic LwwRegister wire type, got {:?}",
+                leaf_data.metadata.crdt_type
+            );
+            assert_eq!(leaf_data.value, b"app-root-state");
+        });
+    }
 }
