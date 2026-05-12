@@ -172,6 +172,15 @@ pub fn handle_entity_push(
     calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
         let mut applied = 0u32;
         for leaf in entities {
+            if !leaf.is_valid() {
+                tracing::warn!(
+                    %context_id,
+                    key = %hex::encode(leaf.key),
+                    len = leaf.value.len(),
+                    "pushed entity exceeds MAX_LEAF_VALUE_SIZE, skipping"
+                );
+                continue;
+            }
             match apply_leaf_with_crdt_merge(context_id, leaf) {
                 Ok(()) => applied += 1,
                 Err(e) => {

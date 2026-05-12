@@ -45,7 +45,7 @@ use async_trait::async_trait;
 use calimero_node_primitives::sync::{
     compare_tree_nodes, create_runtime_env, InitPayload, LeafMetadata, MessagePayload,
     StreamMessage, SyncProtocolExecutor, SyncTransport, TreeCompareResult, TreeLeafData, TreeNode,
-    TreeNodeResponse, MAX_NODES_PER_RESPONSE,
+    TreeNodeResponse, MAX_LEAF_VALUE_SIZE, MAX_NODES_PER_RESPONSE,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
@@ -669,7 +669,15 @@ fn collect_leaves_recursive(
                 LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
                     .with_created_at(index.metadata.created_at());
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
-            leaves.push(leaf_data);
+            if leaf_data.value.len() > MAX_LEAF_VALUE_SIZE {
+                warn!(
+                    %entity_id,
+                    len = leaf_data.value.len(),
+                    "leaf value exceeds MAX_LEAF_VALUE_SIZE, skipping push"
+                );
+            } else {
+                leaves.push(leaf_data);
+            }
         }
     } else {
         // Internal node — recurse into children
