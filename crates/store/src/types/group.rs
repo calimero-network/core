@@ -64,19 +64,19 @@ impl PredefinedEntry for key::GroupLocalGovNonce {
     type DataType<'a> = u64;
 }
 
-impl PredefinedEntry for key::GroupContextAlias {
+impl PredefinedEntry for key::GroupContextMetadata {
     type Codec = Borsh;
-    type DataType<'a> = String;
+    type DataType<'a> = calimero_primitives::metadata::MetadataRecord;
 }
 
-impl PredefinedEntry for key::GroupMemberAlias {
+impl PredefinedEntry for key::GroupMemberMetadata {
     type Codec = Borsh;
-    type DataType<'a> = String;
+    type DataType<'a> = calimero_primitives::metadata::MetadataRecord;
 }
 
-impl PredefinedEntry for key::GroupAlias {
+impl PredefinedEntry for key::GroupMetadata {
     type Codec = Borsh;
-    type DataType<'a> = String;
+    type DataType<'a> = calimero_primitives::metadata::MetadataRecord;
 }
 
 impl PredefinedEntry for key::GroupOpLog {
