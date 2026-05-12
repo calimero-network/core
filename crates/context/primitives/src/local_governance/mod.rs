@@ -113,7 +113,11 @@ pub enum GroupOp {
     /// Carries the same three convergence claims as `MemberRemoved`,
     /// signed by the leaver. The leaver is honest by definition for
     /// self-leave; a Byzantine leaver claiming false canonical hashes
-    /// is caught by other peers' hash verification on apply.
+    /// triggers a divergence warning on apply at each receiver but the
+    /// op is **not rejected** — the apply path logs the mismatch and
+    /// moves on, leaving the canonical view to be re-established by an
+    /// admin-signed `MemberRemoved` or anchor-sync reconcile. The
+    /// signed hashes are a detection signal, not an adoption gate.
     MemberLeft {
         member: PublicKey,
         cut: GovernancePosition,

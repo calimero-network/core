@@ -1,5 +1,5 @@
 use calimero_context_config::types::{ContextGroupId, GovernancePosition};
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{ContextMeta, GroupMeta, GroupMetaValue, GROUP_META_PREFIX};
 use calimero_store::Store;
@@ -84,12 +84,30 @@ pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> Eyr
     let mut members = list_group_members(store, group_id, 0, usize::MAX)?;
     members.sort_by(|a, b| a.0.cmp(&b.0));
 
+    hash_group_state(group_id, &meta, &members)
+}
+
+/// Single source of truth for the group state hash byte layout. Both
+/// `compute_group_state_hash` (post-apply, reads real store state) and
+/// `compute_group_state_hash_after_remove` (pre-apply simulation) feed
+/// their prepared sorted-member list here so any change to the hash
+/// format is structurally guaranteed to apply to both paths — no
+/// silent sign/verify divergence from a one-sided update.
+///
+/// **Caller contract**: `members` MUST be sorted by `PublicKey` byte
+/// ordering. The hash is order-sensitive; an unsorted slice produces a
+/// different digest for the same logical set and breaks convergence.
+fn hash_group_state(
+    group_id: &ContextGroupId,
+    meta: &GroupMetaValue,
+    members_sorted: &[(PublicKey, GroupMemberRole)],
+) -> EyreResult<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(group_id.to_bytes());
     hasher.update(AsRef::<[u8]>::as_ref(&meta.admin_identity));
     hasher.update(AsRef::<[u8]>::as_ref(&meta.owner_identity));
     hasher.update(meta.target_application_id.as_ref());
-    for (pk, role) in &members {
+    for (pk, role) in members_sorted {
         hasher.update(AsRef::<[u8]>::as_ref(pk));
         let role_bytes =
             borsh::to_vec(role).map_err(|e| eyre!("role serialization failed: {e}"))?;
@@ -128,18 +146,7 @@ pub fn compute_group_state_hash_after_remove(
     members.retain(|(pk, _role)| pk != removed_member);
     members.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut hasher = Sha256::new();
-    hasher.update(group_id.to_bytes());
-    hasher.update(AsRef::<[u8]>::as_ref(&meta.admin_identity));
-    hasher.update(AsRef::<[u8]>::as_ref(&meta.owner_identity));
-    hasher.update(meta.target_application_id.as_ref());
-    for (pk, role) in &members {
-        hasher.update(AsRef::<[u8]>::as_ref(pk));
-        let role_bytes =
-            borsh::to_vec(role).map_err(|e| eyre!("role serialization failed: {e}"))?;
-        hasher.update(&role_bytes);
-    }
-    Ok(hasher.finalize().into())
+    hash_group_state(group_id, &meta, &members)
 }
 
 /// Snapshot the current CRDT root hash for every context registered

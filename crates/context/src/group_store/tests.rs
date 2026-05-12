@@ -6203,3 +6203,83 @@ fn build_governance_cut_carries_current_group_state_hash() {
         "fresh namespace has no DAG heads"
     );
 }
+
+#[test]
+fn diff_sorted_context_hashes_pins_merge_scan_semantics() {
+    // Pin the linear-merge divergence logic that replaced the
+    // earlier two-`BTreeMap` build. Identical, hash-differs,
+    // only-in-expected, and only-in-actual all return the expected
+    // divergent-id set in input order (which equals sorted order
+    // since both inputs are sorted by `ContextId`).
+    use super::diff_sorted_context_hashes;
+    let group_id = test_group_id();
+    let cid_a = ContextId::from([0x01; 32]);
+    let cid_b = ContextId::from([0x02; 32]);
+    let cid_c = ContextId::from([0x03; 32]);
+    let cid_d = ContextId::from([0x04; 32]);
+    let h_a = [0xAA; 32];
+    let h_b = [0xBB; 32];
+    let h_b_alt = [0xB0; 32];
+    let h_c = [0xCC; 32];
+    let h_d = [0xDD; 32];
+
+    // Identical — empty divergent set.
+    let expected = vec![(cid_a, h_a), (cid_b, h_b)];
+    let actual = vec![(cid_a, h_a), (cid_b, h_b)];
+    assert!(diff_sorted_context_hashes(&group_id, "test", &expected, &actual).is_empty());
+
+    // Same ids, different hash on one — only that id is divergent.
+    let actual = vec![(cid_a, h_a), (cid_b, h_b_alt)];
+    assert_eq!(
+        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
+        vec![cid_b]
+    );
+
+    // Expected has an id actual lacks (fresh-node case) — that id is
+    // divergent.
+    let expected = vec![(cid_a, h_a), (cid_b, h_b), (cid_c, h_c)];
+    let actual = vec![(cid_a, h_a), (cid_c, h_c)];
+    assert_eq!(
+        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
+        vec![cid_b]
+    );
+
+    // Actual has an id expected lacks (receiver applied a
+    // registration the signer's view missed).
+    let expected = vec![(cid_a, h_a), (cid_c, h_c)];
+    let actual = vec![(cid_a, h_a), (cid_b, h_b), (cid_c, h_c)];
+    assert_eq!(
+        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
+        vec![cid_b]
+    );
+
+    // Mixed: one matching, one hash-diff, one only-in-expected, one
+    // only-in-actual. Order follows the merge advance — expected[1]
+    // hash-diffs first (cid_b), then expected[2] only (cid_c), then
+    // actual tail (cid_d).
+    let expected = vec![(cid_a, h_a), (cid_b, h_b), (cid_c, h_c)];
+    let actual = vec![(cid_a, h_a), (cid_b, h_b_alt), (cid_d, h_d)];
+    assert_eq!(
+        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
+        vec![cid_b, cid_c, cid_d]
+    );
+
+    // One side empty.
+    let actual: Vec<(ContextId, [u8; 32])> = Vec::new();
+    let expected = vec![(cid_a, h_a), (cid_b, h_b)];
+    assert_eq!(
+        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
+        vec![cid_a, cid_b]
+    );
+    let expected: Vec<(ContextId, [u8; 32])> = Vec::new();
+    let actual = vec![(cid_a, h_a), (cid_b, h_b)];
+    assert_eq!(
+        diff_sorted_context_hashes(&group_id, "test", &expected, &actual),
+        vec![cid_a, cid_b]
+    );
+
+    // Both empty.
+    let expected: Vec<(ContextId, [u8; 32])> = Vec::new();
+    let actual: Vec<(ContextId, [u8; 32])> = Vec::new();
+    assert!(diff_sorted_context_hashes(&group_id, "test", &expected, &actual).is_empty());
+}

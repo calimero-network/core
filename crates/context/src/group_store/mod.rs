@@ -779,10 +779,6 @@ const MAX_PARENT_OP_HASHES: usize = 256;
 /// growth from many concurrent admins operating without merges.
 const MAX_DAG_HEADS: usize = 64;
 
-/// Apply the mutation described by a [`GroupOp`] to the local store.
-///
-/// Handles authorization checks and state mutations for ALL `GroupOp` variants.
-/// Returns `Ok(true)` if the op was handled, `Ok(false)` if the variant is not
 /// Compare local post-apply state hashes against the values signed
 /// into `MemberRemoved` / `MemberLeft` and emit a structured warn log
 /// on mismatch. Does NOT roll back the apply or return an error — the
@@ -798,15 +794,20 @@ const MAX_DAG_HEADS: usize = 64;
 ///    recompute the hash should not fail under normal conditions; if
 ///    it does we log the failure and move on — the apply already
 ///    happened, no rollback is possible at this layer.
-/// 2. **Empty signed values** (zero hash, no per-context entries). A
-///    sender that didn't precompute the signed claims (older op
-///    shapes from before the signed-claim wire change, or test
-///    helpers using placeholder values) signs zeros; comparing against
-///    a real post-apply hash would spuriously trigger a mismatch every
-///    time. Treat all-zero `expected_group_state_hash` AND empty
-///    `expected_context_state_hashes` as "no claim made" — skip the
-///    check entirely. Once the network has fully rolled forward to
-///    signed-claim ops this branch becomes dead and can be removed.
+/// 2. **Empty signed values per field.** A sender that didn't
+///    precompute the signed claims (older op shapes from before the
+///    signed-claim wire change, or test helpers using placeholder
+///    values) signs zeros; comparing against a real post-apply hash
+///    would spuriously trigger a mismatch every time. The two fields
+///    are checked independently: an all-zero `expected_group_state_hash`
+///    skips only the group-state comparison, an empty
+///    `expected_context_state_hashes` skips only the per-context
+///    comparison. **Groups with zero registered contexts correctly
+///    trigger only the group-state check** — empty actual + empty
+///    expected match, no per-context divergence is reported, and the
+///    group-state half is what catches membership-row drift. Once the
+///    network has fully rolled forward to signed-claim ops these
+///    sentinels become dead and can be removed.
 fn verify_post_apply_state_hashes(
     store: &Store,
     group_id: &ContextGroupId,
@@ -814,60 +815,51 @@ fn verify_post_apply_state_hashes(
     expected_group_state_hash: &[u8; 32],
     expected_context_state_hashes: &[(ContextId, [u8; 32])],
 ) {
-    // No-claim sentinel — see #2 above.
-    if *expected_group_state_hash == [0u8; 32] && expected_context_state_hashes.is_empty() {
+    let check_group_hash = *expected_group_state_hash != [0u8; 32];
+    let check_context_hashes = !expected_context_state_hashes.is_empty();
+    if !check_group_hash && !check_context_hashes {
         return;
     }
 
-    let actual_group_state_hash = match compute_group_state_hash(store, group_id) {
-        Ok(h) => h,
-        Err(err) => {
-            tracing::warn!(
-                group_id = %hex::encode(group_id.to_bytes()),
-                op_kind,
-                %err,
-                "post-apply group-state hash recompute failed; skipping convergence check"
-            );
-            return;
+    let (group_hash_diverges, actual_group_state_hash) = if check_group_hash {
+        match compute_group_state_hash(store, group_id) {
+            Ok(actual) => (actual != *expected_group_state_hash, actual),
+            Err(err) => {
+                tracing::warn!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    op_kind,
+                    %err,
+                    "post-apply group-state hash recompute failed; skipping convergence check"
+                );
+                (false, [0u8; 32])
+            }
         }
+    } else {
+        (false, [0u8; 32])
     };
 
-    let actual_context_state_hashes = match snapshot_context_state_hashes(store, group_id) {
-        Ok(v) => v,
-        Err(err) => {
-            tracing::warn!(
-                group_id = %hex::encode(group_id.to_bytes()),
-                op_kind,
-                %err,
-                "post-apply per-context state-hash snapshot failed; skipping convergence check"
-            );
-            return;
-        }
+    let divergent: Vec<ContextId> = if check_context_hashes {
+        let actual_context_state_hashes = match snapshot_context_state_hashes(store, group_id) {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    op_kind,
+                    %err,
+                    "post-apply per-context state-hash snapshot failed; skipping convergence check"
+                );
+                Vec::new()
+            }
+        };
+        diff_sorted_context_hashes(
+            group_id,
+            op_kind,
+            expected_context_state_hashes,
+            &actual_context_state_hashes,
+        )
+    } else {
+        Vec::new()
     };
-
-    let group_hash_diverges = actual_group_state_hash != *expected_group_state_hash;
-
-    // Build the divergent-context-id list from set comparison: an
-    // entry diverges if the receiver's hash for that context differs
-    // from the admin's, OR if the receiver has a context the admin
-    // didn't include (admin's view was missing it), OR vice versa.
-    // For the §8.3.2 partition case the second form is what fires.
-    let expected_map: std::collections::BTreeMap<ContextId, [u8; 32]> =
-        expected_context_state_hashes.iter().copied().collect();
-    let actual_map: std::collections::BTreeMap<ContextId, [u8; 32]> =
-        actual_context_state_hashes.iter().copied().collect();
-    let mut divergent: Vec<ContextId> = Vec::new();
-    for (cid, expected) in &expected_map {
-        match actual_map.get(cid) {
-            Some(actual) if actual == expected => {}
-            _ => divergent.push(*cid),
-        }
-    }
-    for cid in actual_map.keys() {
-        if !expected_map.contains_key(cid) {
-            divergent.push(*cid);
-        }
-    }
 
     if group_hash_diverges || !divergent.is_empty() {
         tracing::warn!(
@@ -886,6 +878,96 @@ fn verify_post_apply_state_hashes(
     }
 }
 
+/// Linear merge-scan of two `(ContextId, [u8; 32])` slices both
+/// pre-sorted by `ContextId`. Returns the ids that diverge — hash
+/// differs, or the id is present in only one side. O(n) time and
+/// O(divergent.len()) space; replaces an earlier two-`BTreeMap`
+/// approach that was O(n log n) on an apply-time hot path.
+///
+/// Emits a debug log for ids present only in `actual` (the receiver
+/// has a context the sender didn't include in the snapshot) and for
+/// ids present only in `expected` (the sender snapshotted a context
+/// the receiver hasn't materialized yet). The "only in expected"
+/// case is the dominant noise source on freshly-joined nodes whose
+/// `ContextMeta` rows haven't been written yet — operators can
+/// filter on this debug line to distinguish bootstrap catchup from
+/// real partition-window divergence.
+fn diff_sorted_context_hashes(
+    group_id: &ContextGroupId,
+    op_kind: &'static str,
+    expected: &[(ContextId, [u8; 32])],
+    actual: &[(ContextId, [u8; 32])],
+) -> Vec<ContextId> {
+    let mut divergent = Vec::new();
+    let mut i = 0;
+    let mut j = 0;
+    while i < expected.len() && j < actual.len() {
+        let (e_cid, e_hash) = &expected[i];
+        let (a_cid, a_hash) = &actual[j];
+        match e_cid.cmp(a_cid) {
+            std::cmp::Ordering::Equal => {
+                if e_hash != a_hash {
+                    divergent.push(*e_cid);
+                }
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => {
+                tracing::debug!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    op_kind,
+                    context_id = %hex::encode(AsRef::<[u8; 32]>::as_ref(e_cid)),
+                    "context in signed snapshot but not materialized locally — \
+                     fresh node catchup or partition-window divergence"
+                );
+                divergent.push(*e_cid);
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                tracing::debug!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    op_kind,
+                    context_id = %hex::encode(AsRef::<[u8; 32]>::as_ref(a_cid)),
+                    "context materialized locally but not in signed snapshot — \
+                     receiver applied a registration the signer's view missed"
+                );
+                divergent.push(*a_cid);
+                j += 1;
+            }
+        }
+    }
+    // Tail handling: anything left on either side is one-sided.
+    while i < expected.len() {
+        let (cid, _) = &expected[i];
+        tracing::debug!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            op_kind,
+            context_id = %hex::encode(AsRef::<[u8; 32]>::as_ref(cid)),
+            "context in signed snapshot but not materialized locally — \
+             fresh node catchup or partition-window divergence"
+        );
+        divergent.push(*cid);
+        i += 1;
+    }
+    while j < actual.len() {
+        let (cid, _) = &actual[j];
+        tracing::debug!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            op_kind,
+            context_id = %hex::encode(AsRef::<[u8; 32]>::as_ref(cid)),
+            "context materialized locally but not in signed snapshot — \
+             receiver applied a registration the signer's view missed"
+        );
+        divergent.push(*cid);
+        j += 1;
+    }
+    divergent
+}
+
+/// Apply the mutation described by a [`GroupOp`] to the local store.
+///
+/// Handles authorization checks and state mutations for ALL `GroupOp` variants.
+/// Returns `Ok(true)` if the op was handled, `Ok(false)` if the variant is not
 /// recognized (callers decide whether to error or log).
 ///
 /// This is the single source of truth for group governance mutations -- both
