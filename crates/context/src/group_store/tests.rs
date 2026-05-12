@@ -588,6 +588,82 @@ fn namespace_dag_service_advance_dag_head_prunes_parent_hashes() {
     assert_eq!(head.next_nonce, 4);
 }
 
+/// Re-applying the same op (e.g. a node's own published op coming back via
+/// sync backfill, which the in-memory `DagStore` dedup set doesn't cover)
+/// must not append `delta_id` to the head set a second time — a head set
+/// with duplicates makes `compute_governance_position` refuse to embed a
+/// position and every peer then rejects the node's deltas (#2327).
+#[test]
+fn namespace_dag_service_advance_dag_head_is_idempotent_for_same_delta() {
+    let store = test_store();
+    let namespace_id = [0x77; 32];
+    let dag = NamespaceDagService::new(&store, namespace_id);
+
+    let delta_a = [0xA1; 32];
+    let delta_b = [0xB2; 32];
+
+    dag.advance_dag_head(delta_a, &[], 1).unwrap();
+    dag.advance_dag_head(delta_b, &[], 2).unwrap();
+    // Same op replayed — parents are unchanged, so it doesn't supersede any
+    // existing head; it must still not duplicate itself.
+    dag.advance_dag_head(delta_b, &[], 2).unwrap();
+    dag.advance_dag_head(delta_b, &[], 2).unwrap();
+
+    let raw = raw_namespace_dag_heads(&store, namespace_id);
+    assert_eq!(
+        raw,
+        vec![delta_a, delta_b],
+        "head set must stay duplicate-free"
+    );
+}
+
+/// A head set that is *already* corrupted with duplicates (older build, or a
+/// not-yet-found path) must self-heal: the next `advance_dag_head` collapses
+/// the duplicates, and `read_head_record` de-dups defensively on read.
+#[test]
+fn namespace_dag_service_heals_pre_existing_duplicate_heads() {
+    let store = test_store();
+    let namespace_id = [0x78; 32];
+
+    let delta_a = [0xA1; 32];
+    let delta_b = [0xB2; 32];
+    let delta_c = [0xC3; 32];
+
+    // Plant a corrupted head set directly.
+    let mut handle = store.handle();
+    handle
+        .put(
+            &calimero_store::key::NamespaceGovHead::new(namespace_id),
+            &calimero_store::key::NamespaceGovHeadValue {
+                sequence: 5,
+                dag_heads: vec![delta_a, delta_b, delta_a, delta_b],
+            },
+        )
+        .unwrap();
+    drop(handle);
+
+    // Read de-dups on the fly (preserving first-seen order).
+    let dag = NamespaceDagService::new(&store, namespace_id);
+    let head = dag.read_head_record().unwrap();
+    assert_eq!(head.parent_hashes, vec![delta_a, delta_b]);
+    assert_eq!(head.next_nonce, 6);
+
+    // The next governance op heals the persisted value too: it supersedes
+    // `delta_b` (a parent) and appends `delta_c` exactly once.
+    dag.advance_dag_head(delta_c, &[delta_b], 6).unwrap();
+    let raw = raw_namespace_dag_heads(&store, namespace_id);
+    assert_eq!(raw, vec![delta_a, delta_c]);
+}
+
+fn raw_namespace_dag_heads(store: &Store, namespace_id: [u8; 32]) -> Vec<[u8; 32]> {
+    store
+        .handle()
+        .get(&calimero_store::key::NamespaceGovHead::new(namespace_id))
+        .unwrap()
+        .map(|h| h.dag_heads)
+        .unwrap_or_default()
+}
+
 #[test]
 fn namespace_dag_service_collects_skeleton_delta_ids_by_group() {
     use calimero_context_client::local_governance::{OpaqueSkeleton, StoredNamespaceEntry};
@@ -3680,6 +3756,66 @@ fn governance_group_reparented_via_signed_op() {
     assert!(
         new_children.contains(&leaf_gid),
         "leaf attached to new_parent"
+    );
+}
+
+/// Re-applying an already-applied `SignedNamespaceOp` is a no-op: the
+/// op-log already has it, so `apply_signed_op` short-circuits and doesn't
+/// re-run side effects or re-append `delta_id` to the namespace DAG head
+/// set. Regression for #2327 (duplicate heads → empty `GovernancePosition`
+/// → peers reject all of the node's deltas).
+#[test]
+fn governance_apply_signed_op_is_idempotent_on_replay() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xC0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: [0xC1; 32],
+            parent_id: ns_id,
+        }),
+    )
+    .expect("sign create op");
+    let delta_id = op.content_hash().expect("content_hash");
+
+    gov.apply_signed_op(&op).expect("first apply");
+    assert_eq!(
+        raw_namespace_dag_heads(&store, ns_id),
+        vec![delta_id],
+        "head set after first apply"
+    );
+
+    // Replay the exact same op — should be a no-op, not a duplicate head.
+    let replay = gov.apply_signed_op(&op).expect("replay apply");
+    assert!(replay.pending_deliveries.is_empty());
+    assert!(replay.key_unwrap_failures.is_empty());
+    assert_eq!(
+        raw_namespace_dag_heads(&store, ns_id),
+        vec![delta_id],
+        "head set must stay duplicate-free after replay"
     );
 }
 

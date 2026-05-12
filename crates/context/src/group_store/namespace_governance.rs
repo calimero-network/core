@@ -22,6 +22,7 @@ use super::{
     load_current_group_key_record, load_group_key_by_id, load_group_meta,
     namespace_dag::{NamespaceDagService, NamespaceHead},
     namespace_membership::NamespaceMembershipService,
+    namespace_op_log::NamespaceOpLogService,
     namespace_retry::NamespaceRetryService,
     save_group_meta, set_local_gov_nonce, store_group_key, unwrap_group_key, PermissionChecker,
 };
@@ -110,6 +111,28 @@ impl<'a> NamespaceGovernance<'a> {
     pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
         op.verify_signature()
             .map_err(|e| eyre::eyre!("signed namespace op: {e}"))?;
+
+        let delta_id = op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+
+        // Idempotency guard. If this exact op is already in our local op-log
+        // it has already been applied — `advance_dag_head` ran for it and any
+        // side effects fired. A re-receive (typically a node's *own* published
+        // op coming back via sync backfill — the in-memory `DagStore` dedup
+        // set never saw the publisher path, so it can't filter it) must be a
+        // no-op: re-running `advance_dag_head` here would append `delta_id` to
+        // the head set a second time, and a head set with duplicates makes
+        // `compute_governance_position` refuse to embed a position, so every
+        // peer then rejects all of this node's state deltas (#2327).
+        if NamespaceOpLogService::new(self.store, self.namespace_id).contains_op(delta_id)? {
+            tracing::debug!(
+                namespace_id = %hex::encode(self.namespace_id),
+                delta_id = %hex::encode(delta_id),
+                "namespace governance op already applied; skipping re-apply (#2327)"
+            );
+            return Ok(ApplyNamespaceOpResult::default());
+        }
 
         let mut result = ApplyNamespaceOpResult::default();
 
@@ -291,9 +314,6 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        let delta_id = op
-            .content_hash()
-            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
         let head = self.read_head_record()?;
         self.advance_dag_head(delta_id, &op.parent_op_hashes, head.next_nonce)?;
         self.store_operation(op)?;
