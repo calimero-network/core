@@ -511,6 +511,52 @@ pub fn namespace_member_pubkeys(
     Ok(pubkeys)
 }
 
+/// Enumerate the trusted-anchor set for `group_id` per RFC decision #22:
+/// `{Owner} ∪ {Admins} ∪ {ReadOnlyTee members}`.
+///
+/// Anchors are the preferred targets for sync requests — they're the
+/// peers whose canonical view the cross-DAG authorization model treats
+/// as authoritative. Plain `Member` / `ReadOnly` peers can still serve
+/// sync if asked; clients just shouldn't preferentially target them.
+///
+/// **Returns identities, not peer-ids.** Mapping identity → libp2p
+/// peer-id is the caller's job (today: via the `peer_identities` cache
+/// populated by verified message receive paths).
+///
+/// **Direct anchors only.** This does not walk up the namespace tree
+/// for inherited admins of Open subgroups. The inherited-admin case is
+/// covered by `is_inherited_admin` at the apply-time authorization
+/// layer; missing an inherited anchor at peer-selection time degrades
+/// to random fallback (not a correctness bug).
+///
+/// **TeeAdmissionPolicy is already enforced.** A member only holds the
+/// `ReadOnlyTee` role if `MemberJoinedViaTeeAttestation` admitted them
+/// (see `apply_group_op_mutations`). The role in the store IS the
+/// admission proof — no need to re-verify the TEE policy here. A peer
+/// self-declaring `ReadOnlyTee` without a valid attestation cannot
+/// reach this code path.
+pub fn trusted_anchors_for_group(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<std::collections::BTreeSet<PublicKey>> {
+    // BTreeSet deduplicates the common `owner_identity == admin_identity`
+    // shape automatically; no explicit conditional needed.
+    let mut anchors = std::collections::BTreeSet::new();
+    if let Some(meta) = load_group_meta(store, group_id)? {
+        let _ = anchors.insert(meta.owner_identity);
+        let _ = anchors.insert(meta.admin_identity);
+    }
+    for (pk, role) in list_group_members(store, group_id, 0, usize::MAX)? {
+        match role {
+            GroupMemberRole::Admin | GroupMemberRole::ReadOnlyTee => {
+                let _ = anchors.insert(pk);
+            }
+            GroupMemberRole::Member | GroupMemberRole::ReadOnly => {}
+        }
+    }
+    Ok(anchors)
+}
+
 pub fn count_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
     let gid = group_id.to_bytes();
     count_keys_with_prefix(

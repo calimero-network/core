@@ -101,6 +101,13 @@ pub(super) fn handle_namespace_governance_delta(
     let readiness_addr = this.readiness_addr.clone();
 
     let op_for_ack = op.clone();
+    // Capture the signer for the peer-identity cache before `op` is
+    // consumed by `apply_signed_namespace_op` below. Signature was
+    // already verified above, so the identity is real; the recording
+    // itself is gated on `Applied` below to skip relayed duplicates and
+    // pending ops where the delivering peer didn't necessarily originate
+    // the message.
+    let signer = op.signer;
     let _ignored = ctx.spawn(
         async move {
             let outcome = match context_client.apply_signed_namespace_op(op).await {
@@ -122,6 +129,12 @@ pub(super) fn handle_namespace_governance_delta(
                 if let Some(addr) = &readiness_addr {
                     addr.do_send(crate::readiness::NamespaceOpApplied { namespace_id });
                 }
+
+                // Record the (peer, identity) pair now that the
+                // signature verified, the nonce was monotonic, and the
+                // op applied successfully. Consumed by anchor-preferred
+                // sync peer selection. See `NodeState::peer_identities`.
+                node_state.observe_peer_identity(source, signer);
 
                 // Governance-pending active drain: a governance op that just applied may
                 // unblock state deltas previously buffered as `Unknown`.
