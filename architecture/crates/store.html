@@ -307,12 +307,12 @@
 
 <div class="g3" style="margin-top:18px;margin-bottom:18px;">
   <div class="cb">
-    <h4 style="color:#06b6d4;">Map</h4>
+    <h4 style="color:#06b6d4;">UnorderedMap</h4>
     <p style="margin-top:8px;">Observed-remove map. Concurrent puts to the same key are resolved by LWW using <span class="code">HybridTimestamp</span>. Deletions are tracked as tombstones until causally stable.</p>
   </div>
   <div class="cb">
-    <h4 style="color:#06b6d4;">Set</h4>
-    <p style="margin-top:8px;">Observed-remove set. Add/remove conflicts resolved in favor of add (add-wins semantics). Internally backed by a Map with unit values.</p>
+    <h4 style="color:#06b6d4;">UnorderedSet</h4>
+    <p style="margin-top:8px;">Observed-remove set. Add/remove conflicts resolved in favor of add (add-wins semantics). Internally backed by an <span class="code">UnorderedMap</span> with unit values.</p>
   </div>
   <div class="cb">
     <h4 style="color:#06b6d4;">LwwRegister</h4>
@@ -322,13 +322,9 @@
 
 <h3>Core Traits</h3>
 <div class="typedef" style="margin-bottom:14px;">
-<span class="kw">pub struct</span> <span class="ty">HybridTimestamp</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">wall_clock</span>: u64,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">logical</span>: u32,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="field">node_id</span>: <span class="ty">NodeId</span>, <span class="comment">// tiebreaker</span><br>
-}<br><br>
+<span class="kw">pub struct</span> <span class="ty">HybridTimestamp</span>(<span class="ty">Timestamp</span>); <span class="comment">// from uhlc: NTP64 wall-clock + 128-bit node ID tiebreaker</span><br><br>
 <span class="kw">pub trait</span> <span class="ty">Mergeable</span> {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">merge</span>(&amp;mut self, other: &amp;Self);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">fn</span> <span class="field">merge</span>(&amp;mut self, other: &amp;Self) -&gt; <span class="ty">Result</span>&lt;(), <span class="ty">MergeError</span>&gt;;<br>
 }
 </div>
 
@@ -377,8 +373,160 @@
 </div>
 <div class="cb">
 <h4>Counter</h4>
-<p>G-Counter (grow-only). Each node increments its own slot; <span class="code">value()</span> returns the sum across all nodes. Naturally commutative and idempotent.</p>
+<p>Generic over <span class="code">ALLOW_DECREMENT: bool</span>. Default <span class="code">Counter&lt;false&gt;</span> (alias <span class="code">GCounter</span>) is grow-only: each node increments its own slot and <span class="code">value()</span> returns the sum across all nodes. <span class="code">Counter&lt;true&gt;</span> (alias <span class="code">PNCounter</span>) layers a second per-node map to also support decrement. Both variants are commutative and idempotent.</p>
 </div>
+</div>
+</div>
+
+<div class="card gc">
+<h3 id="storage-primitives">Storage Primitives</h3>
+<p style="margin-bottom:10px;">Beyond the public CRDT collections above (<span class="code">UnorderedMap</span>, <span class="code">Vector</span>, <span class="code">UnorderedSet</span>, <span class="code">LwwRegister</span>, <span class="code">Counter</span>) the storage layer provides wrappers that constrain who can write what. Three flavours of constraint:</p>
+<ul style="margin-bottom:14px;padding-left:20px;">
+  <li><strong>Signature-based</strong> (<span class="code">UserStorage</span>, <span class="code">SharedStorage</span>, <span class="code">AuthoredMap</span>, <span class="code">AuthoredVector</span>) — the context manager signs each mutating action with the executor's private key (<a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/context/src/handlers/execute/mod.rs" target="_blank" rel="noopener"><code>sign_authorized_actions</code> in crates/context/src/handlers/execute/mod.rs</a>) after WASM returns its outcome. Peers verify the signature at merge time in <a class="gh-link" href="https://github.com/calimero-network/core/blob/master/crates/storage/src/interface.rs" target="_blank" rel="noopener"><code>Interface::apply_action</code> in crates/storage/src/interface.rs</a> using the runtime's <span class="code">ed25519_verify</span> host function and reject the action with <span class="code">InvalidSignature</span> on mismatch.</li>
+  <li><strong>Structural</strong> (<span class="code">FrozenStorage</span>) — no per-identity signature; immutability after first write is enforced by content-addressing. Once the SHA-256 hash → value mapping is published, attempts to overwrite the same hash are rejected.</li>
+  <li><strong>None</strong> (the public collections) — anyone in the context can write, update, or remove any entry. Listed below for contrast.</li>
+</ul>
+
+<h4 style="margin-top:18px;margin-bottom:10px;">Comparison</h4>
+<table class="prim-table">
+<thead><tr>
+  <th>Primitive</th>
+  <th>Storage stamp</th>
+  <th>Keyspace</th>
+  <th>Writes new</th>
+  <th>Mutates existing</th>
+  <th>Reads</th>
+</tr></thead>
+<tbody>
+<tr class="baseline">
+  <td><span class="pt-name">UnorderedMap&lt;K,V&gt;</span><div class="pt-desc">(public baseline — no auth)</div></td>
+  <td><span class="pt-code">—</span></td>
+  <td><span class="pt-desc">K → V</span></td>
+  <td><span class="pt-desc">anyone</span></td>
+  <td><span class="pt-desc">anyone</span></td>
+  <td><span class="pt-desc">everyone</span></td>
+</tr>
+<tr>
+  <td><span class="pt-name">UserStorage&lt;T&gt;</span></td>
+  <td><span class="pt-code">User { owner = executor_id }</span></td>
+  <td><span class="pt-desc">PublicKey → T, disjoint per-user slots</span></td>
+  <td><span class="pt-desc">only into your own slot</span></td>
+  <td><span class="pt-desc">only your own slot</span></td>
+  <td><span class="pt-desc">everyone (<span class="code">get_for_user</span>)</span></td>
+</tr>
+<tr>
+  <td><span class="pt-name">FrozenStorage&lt;T&gt;</span><div class="pt-desc">(structural — no signature check)</div></td>
+  <td><span class="pt-code">Frozen</span></td>
+  <td><span class="pt-desc">Hash(value) → T, content-addressed</span></td>
+  <td><span class="pt-desc">anyone</span></td>
+  <td><span class="pt-desc">nobody — immutable</span></td>
+  <td><span class="pt-desc">everyone</span></td>
+</tr>
+<tr>
+  <td><span class="pt-name">SharedStorage&lt;T&gt;</span></td>
+  <td><span class="pt-code">Shared { writers, frozen }</span></td>
+  <td><span class="pt-desc">one slot with T (T often a nested map)</span></td>
+  <td><span class="pt-desc">signer ∈ writers</span></td>
+  <td><span class="pt-desc">signer ∈ writers; writers rotatable if !frozen</span></td>
+  <td><span class="pt-desc">everyone</span></td>
+</tr>
+<tr>
+  <td><span class="pt-name">AuthoredMap&lt;K,V&gt;</span></td>
+  <td><span class="pt-code">User { owner }</span> per-entry</td>
+  <td><span class="pt-desc">shared keyspace, K → V</span></td>
+  <td><span class="pt-desc">anyone (becomes owner)</span></td>
+  <td><span class="pt-desc">only owner</span></td>
+  <td><span class="pt-desc">everyone</span></td>
+</tr>
+<tr>
+  <td><span class="pt-name">AuthoredVector&lt;V&gt;</span></td>
+  <td><span class="pt-code">User { owner }</span> per-entry</td>
+  <td><span class="pt-desc">shared sequence, index → V</span></td>
+  <td><span class="pt-desc">anyone (push, becomes owner)</span></td>
+  <td><span class="pt-desc">only owner (update / tombstone)</span></td>
+  <td><span class="pt-desc">everyone</span></td>
+</tr>
+</tbody>
+</table>
+
+<h4 style="margin-top:14px;margin-bottom:8px;">Picking one</h4>
+<!-- KEEP IN SYNC with sdk.html#storage-primitives decision tree -->
+<div class="prim-tree">what guarantee do you need?
+  ├── none, public                              <span class="arrow">→</span> <span class="public">UnorderedMap / Vector / UnorderedSet / LwwRegister / Counter</span>
+  ├── immutable, content-addressed              <span class="arrow">→</span> <span class="target">FrozenStorage&lt;T&gt;</span>
+  └── identity-bound writes ↓
+        ├── one slot per user, disjoint          <span class="arrow">→</span> <span class="target">UserStorage&lt;T&gt;</span>
+        ├── one shared slot, named writer set    <span class="arrow">→</span> <span class="target">SharedStorage&lt;T&gt;</span>
+        ├── shared keyspace, per-entry author    <span class="arrow">→</span> <span class="target">AuthoredMap&lt;K,V&gt;</span>
+        └── shared sequence, per-entry author    <span class="arrow">→</span> <span class="target">AuthoredVector&lt;V&gt;</span></div>
+
+<div class="g2" style="margin-bottom:14px;">
+  <div class="cb">
+    <h4>UserStorage&lt;T&gt;</h4>
+    <p style="margin-top:8px;">Per-user slot keyed by <span class="code">PublicKey</span>. The executor can only write into their own slot (<span class="code">env::executor_id()</span>); reads are unrestricted. Internally an <span class="code">UnorderedMap&lt;PublicKey, T&gt;</span>.</p>
+  </div>
+  <div class="cb">
+    <h4>SharedStorage&lt;T&gt;</h4>
+    <p style="margin-top:8px;">A single value writable by any signer in a mutable <span class="code">writers</span> set. Any current writer can rotate the set unless it is frozen. The context manager signs each write after WASM returns its outcome; peers verify the signature against the stored writer set at merge time. See <a href="https://github.com/calimero-network/core/blob/master/docs/adr/0001-shared-storage-concurrent-rotation.md" target="_blank" rel="noopener">ADR&nbsp;0001</a> for the rotation-during-concurrent-write contract.</p>
+  </div>
+</div>
+<div class="g2" style="margin-bottom:14px;">
+  <div class="cb">
+    <h4>FrozenStorage&lt;T&gt;</h4>
+    <p style="margin-top:8px;">Content-addressable immutable storage. <span class="code">insert</span> returns a SHA-256 hash; reads are by hash. Same value always yields the same hash, and entries cannot be updated once written. Internally an <span class="code">UnorderedMap&lt;Hash, FrozenValue&lt;T&gt;&gt;</span> with first-write-wins semantics.</p>
+  </div>
+  <div class="cb">
+    <h4>AuthoredMap&lt;K, V&gt;</h4>
+    <p style="margin-top:8px;">Shared keyspace map with per-entry ownership. Any member can insert a new key; only the inserter can <span class="code">update</span> or <span class="code">remove</span> their own entries. Each entry carries a <span class="code">StorageType::User { owner }</span> stamp set from the executor's public key at insert time.</p>
+  </div>
+</div>
+<div class="g2">
+  <div class="cb">
+    <h4>AuthoredVector&lt;V&gt;</h4>
+    <p style="margin-top:8px;">Ordered shared vector with per-entry ownership. Any member can <span class="code">push</span>; only the pusher can <span class="code">update</span> or <span class="code">tombstone</span> their entry. There is no physical <span class="code">remove</span> — shifting indices would complicate concurrent-push merge semantics. Use <span class="code">tombstone(idx)</span> to retract a slot.</p>
+  </div>
+  <div class="cb">
+    <h4>Merge-time enforcement (signature-based primitives)</h4>
+    <p style="margin-top:8px;margin-bottom:6px;">Local <span class="code">update</span>/<span class="code">remove</span> calls short-circuit non-owner attempts so bugs surface in-process. The load-bearing check happens at merge time in <span class="code">Interface::apply_action</span>:</p>
+    <ul style="padding-left:18px;margin-top:0;">
+      <li><strong>Signature</strong> — the runtime's <span class="code">ed25519_verify</span> host function is called against the entry's stored <span class="code">owner</span> (or, for <span class="code">SharedStorage</span>, against the current writer set). Mismatch returns <span class="code">InvalidSignature</span>.</li>
+      <li><strong>Replay nonce</strong> — incoming nonce must be <em>strictly greater</em> than the stored value; equal nonces are rejected as <span class="code">NonceReplay</span> (i.e. the comparison is <span class="code">incoming &gt; stored</span>, not <span class="code">≥</span>). The nonce is the action's <span class="code">SignatureData.nonce</span>, set from <span class="code">env::time_now()</span> (a wall-clock nanosecond timestamp from <span class="code">SystemTime::now()</span>) at action build time. <em>Caveat:</em> wall-clock time is not strictly monotonic across NTP slews, leap-second corrections, VM-host clock changes, or process restarts. Two consecutive writes on the same node can collide or step backward under those conditions, in which case the second write is rejected as <span class="code">NonceReplay</span>; conversely a node with a far-future clock can write a nonce that effectively locks the entity until later honest writes catch up. Per the inline comment in <span class="code">interface.rs</span>, the nonce check is itself a transitional v2 mechanism that the project plans to retire after a soak period in favour of DAG-causal verification.</li>
+      <li><strong>Per-entity scope</strong> — the stored nonce lives on the individual storage entity (the row keyed by entity <span class="code">id</span>), not on the owner globally. For <span class="code">AuthoredMap</span> each map key is its own entity; for <span class="code">UserStorage</span> each per-user slot; for <span class="code">SharedStorage</span> the single value.</li>
+      <li><strong>Entity binding</strong> — a signed action targeting one entity cannot be replayed against a different entity even when the same key signed both: the entity <span class="code">id</span> is part of the bytes hashed by <span class="code">Action::payload_for_signing()</span>, so the signature is bound to that specific entity.</li>
+    </ul>
+  </div>
+</div>
+
+<h4 style="margin-top:14px;margin-bottom:8px;">Key distinctions</h4>
+<div class="g2">
+  <div class="cb">
+    <h4 style="font-size:.95rem;">UserStorage vs AuthoredMap</h4>
+    <p style="margin-top:6px;">Both stamp entries with <span class="code">StorageType::User { owner }</span>. The difference is keying:</p>
+    <ul style="margin-top:4px;padding-left:18px;">
+      <li><span class="code">UserStorage&lt;T&gt;</span>: key <em>is</em> the public key, slots are disjoint per user.</li>
+      <li><span class="code">AuthoredMap&lt;K,V&gt;</span>: key is application-defined, owner is recorded in the entry's metadata. Two users can compete to insert the same key; first writer wins, subsequent updates are owner-only.</li>
+    </ul>
+  </div>
+  <div class="cb">
+    <h4 style="font-size:.95rem;">SharedStorage vs AuthoredMap</h4>
+    <p style="margin-top:6px;">Both allow mutation after creation. The difference is the granularity of the writer set:</p>
+    <ul style="margin-top:4px;padding-left:18px;">
+      <li><span class="code">SharedStorage&lt;T&gt;</span>: one collection-level writer set governs one logical T. Several named members can co-author the same value.</li>
+      <li><span class="code">AuthoredMap&lt;K,V&gt;</span>: per-entry writer set (currently size-1 = single author). The writer varies per key.</li>
+    </ul>
+  </div>
+</div>
+
+<h4 style="margin-top:14px;margin-bottom:8px;">Why composition doesn't replace these primitives</h4>
+<div class="g2">
+  <div class="cb">
+    <h4 style="font-size:.95rem;">AuthoredMap is not <span class="code">UnorderedMap&lt;K, SharedStorage&lt;V&gt;&gt;</span></h4>
+    <p style="margin-top:6px;">You can nest <span class="code">SharedStorage</span> inside an <span class="code">UnorderedMap</span> for per-key multi-writer values, but the outer map is still public — outer keys can be inserted, overwritten, or removed by anyone. <span class="code">AuthoredMap</span> puts the ownership stamp on the entry itself within a shared keyspace, so K cannot be replaced by non-owners.</p>
+  </div>
+  <div class="cb">
+    <h4 style="font-size:.95rem;">SharedStorage is not <span class="code">UnorderedMap&lt;K, UserStorage&lt;V&gt;&gt;</span></h4>
+    <p style="margin-top:6px;">You can nest <span class="code">UserStorage</span> inside an <span class="code">UnorderedMap</span> for per-key single-author values, but again the outer map is public (key-level tampering remains possible). And there is no way to model "several named people co-own this value" without a writer set — exactly what <span class="code">SharedStorage</span> provides.</p>
+  </div>
 </div>
 </div>
 
