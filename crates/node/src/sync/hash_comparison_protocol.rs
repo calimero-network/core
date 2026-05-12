@@ -659,18 +659,17 @@ fn collect_leaves_recursive(
     if children_ids.is_empty() {
         // Leaf node — collect its data
         if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-            if let Some(ref crdt_type) = index.metadata.crdt_type {
-                let metadata =
-                    LeafMetadata::new(crdt_type.clone(), index.metadata.updated_at(), [0u8; 32])
-                        .with_created_at(index.metadata.created_at());
-                let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
-                leaves.push(leaf_data);
-            } else {
-                warn!(
-                    %entity_id,
-                    "collect_leaves_recursive: leaf missing crdt_type, skipping"
-                );
-            }
+            let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
+                // Opaque leaf — carry it with a synthetic LWW wire type so it is
+                // pushed (and is `is_valid()` on the peer), not silently dropped.
+                trace!(%entity_id, "opaque leaf, synthesised LWW wire type for push");
+                CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
+            });
+            let metadata =
+                LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
+                    .with_created_at(index.metadata.created_at());
+            let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
+            leaves.push(leaf_data);
         }
     } else {
         // Internal node — recurse into children
