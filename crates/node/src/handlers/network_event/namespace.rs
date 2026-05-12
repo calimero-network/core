@@ -504,9 +504,8 @@ async fn fetch_and_apply_namespace_backfill(
             // divergence surfaces here and we drop it, no later path
             // will re-emit it. Defer firing until after the batch
             // so the apply loop is contiguous.
-            let mut pending_divergences: Vec<
-                calimero_context_client::messages::DivergenceReport,
-            > = Vec::new();
+            let mut pending_divergences: Vec<calimero_context_client::messages::DivergenceReport> =
+                Vec::new();
             for (delta_id, op_bytes) in deltas {
                 if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(&op_bytes) {
                     match context_client.apply_signed_namespace_op(op).await {
