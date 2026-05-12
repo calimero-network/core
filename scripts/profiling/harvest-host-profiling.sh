@@ -38,7 +38,7 @@ ERR_LOG=$(mktemp -t harvest-host-profiling.XXXXXX.err)
 trap 'rm -f "$ERR_LOG"' EXIT
 
 found=0
-HARVESTED=""   # newline-delimited realpaths of dumps already taken — dedup key
+HARVESTED=""   # newline-delimited absolute paths of dumps already taken — dedup key
 
 # Print $1 with the $WORKSPACE prefix stripped, so logs stay tidy.
 rel() { local p="$1"; printf '%s' "${p#"$WORKSPACE"/}"; }
@@ -48,8 +48,13 @@ harvest_dump() {
     local dump="$1" node_name="$2"
     local dest="$DEST_ROOT/$node_name"
     local key err size perf_count heap_count
+    # Canonical path so the same dump reached two ways (primary vs sweep)
+    # dedups; falls back to the literal path only if the dir vanished, in
+    # which case the copy below fails harmlessly anyway.
     key=$(cd "$dump" 2>/dev/null && pwd -P) || key="$dump"
-    case $'\n'"$HARVESTED"$'\n' in *$'\n'"$key"$'\n'*) return ;; esac   # already taken
+    # `grep -qxF` (whole-line, fixed-string) — robust if the path ever
+    # contains shell-pattern metacharacters, unlike a `case` glob match.
+    grep -qxF -- "$key" <<<"$HARVESTED" && return   # already taken
     HARVESTED="$HARVESTED$key"$'\n'
     if ! mkdir -p "$dest" 2>"$ERR_LOG"; then
         err=$(head -3 "$ERR_LOG" 2>/dev/null | tr '\n' ' ')
@@ -81,12 +86,18 @@ fi
 
 # 2) Always sweep the workspace for any other `*/profiling-dump` dirs (the data
 #    dir is relative to merobox's CWD and has drifted before). `harvest_dump`
-#    dedups against the primary pass by realpath, so re-finding the same dirs is
-#    harmless; this also catches the case where the primary pass found *some*
-#    nodes but others landed elsewhere.
+#    dedups against the primary pass by canonical path, so re-finding the same
+#    dirs is harmless; this also catches the case where the primary pass found
+#    *some* nodes but others landed elsewhere.
+#
+#    Only `fuzzy-*` node dirs are eligible — merobox names every fuzzy node
+#    `fuzzy-<suite>-node-N` — so a stray `profiling-dump` from an unrelated job
+#    that somehow survived inside the (checkout-cleaned) workspace can't bleed in.
 while IFS= read -r dump; do
     [ -d "$dump" ] || continue
-    harvest_dump "$dump" "$(basename "$(dirname "$dump")")"
+    node_name=$(basename "$(dirname "$dump")")
+    case "$node_name" in fuzzy-*) ;; *) continue ;; esac
+    harvest_dump "$dump" "$node_name"
 done < <(find "$WORKSPACE" -maxdepth 6 -type d -name profiling-dump 2>/dev/null)
 
 if [ "$found" -eq 0 ]; then
