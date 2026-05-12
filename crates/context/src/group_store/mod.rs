@@ -895,9 +895,14 @@ fn verify_post_apply_state_hashes(
                     group_id = %hex::encode(group_id.to_bytes()),
                     op_kind,
                     %err,
-                    "post-apply group-state hash recompute failed; skipping convergence check"
+                    "post-apply group-state hash recompute failed; skipping group-state check"
                 );
-                return None;
+                // `None` here means this half couldn't run — must NOT
+                // `return None` here, because the per-context half may
+                // still confirm divergence below and surface a report
+                // the reconcile path needs. Bailing the whole function
+                // on a half-error silently drops that signal.
+                None
             }
         }
     } else {
@@ -925,7 +930,11 @@ fn verify_post_apply_state_hashes(
                     "post-apply per-context state-hash snapshot failed; skipping per-context \
                      convergence check"
                 );
-                return None;
+                // Same reason as the group-state error path: do NOT
+                // bail the whole function. If the group-state half
+                // already confirmed divergence above we still need
+                // to surface a report so reconcile can fire.
+                None
             }
         }
     } else {

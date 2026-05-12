@@ -2991,12 +2991,32 @@ impl SyncManager {
     /// arrival of another signed op, or a sync interval tick, will
     /// re-attempt convergence. A hard error here would only inflate
     /// noise; the warn logs are the operator signal.
+    ///
+    /// Backoff: prior failed attempts for the same context impose an
+    /// exponential cooldown (see [`reconcile_cooldown`]). Within that
+    /// window, this is a no-op — the next signed op or sync tick will
+    /// re-trigger once cooldown lapses. A successful post-adoption
+    /// verify clears the backoff state immediately.
     async fn reconcile_one_divergent_context(
         &self,
         context_id: ContextId,
         expected_root_hash: [u8; 32],
         op_kind: &'static str,
     ) {
+        if let Some((remaining, failures)) =
+            reconcile_remaining_cooldown(&self.node_state.reconcile_attempts, &context_id)
+        {
+            tracing::debug!(
+                %context_id,
+                op_kind,
+                consecutive_failures = failures,
+                cooldown_remaining_secs = remaining.as_secs(),
+                "reconcile-after-divergence: skipping — prior attempts failed and the \
+                 per-context cooldown is still active; will re-attempt after backoff lapses"
+            );
+            return;
+        }
+
         let anchors = self.anchor_identities_for_context(&context_id);
         if anchors.is_empty() {
             tracing::warn!(
@@ -3013,12 +3033,38 @@ impl SyncManager {
         // context" — same source the regular sync path uses.
         let topic = TopicHash::from_raw(context_id);
         let mesh_peers = self.network_client.mesh_peers(topic).await;
+        // Walk mesh peers explicitly so cache-miss skips are visible
+        // to operators. A peer with no `peer_identities` entry has not
+        // yet been observed signing a verified message in this group;
+        // it is invisible to the anchor predicate even if it would be
+        // an anchor in practice. Counting and logging those skips
+        // distinguishes "no anchors reachable" from "anchors reachable
+        // but cache hasn't warmed yet" in the no-anchor warn below.
+        let mut peers_missing_cache_entry: usize = 0;
+        let mut peers_known_not_anchor: usize = 0;
         let anchor_peer = mesh_peers.iter().copied().find(|peer| {
-            self.node_state
-                .peer_identities
-                .get(peer)
-                .map(|ids| ids.iter().any(|id| anchors.contains(id)))
-                .unwrap_or(false)
+            match self.node_state.peer_identities.get(peer) {
+                Some(ids) => {
+                    if ids.iter().any(|id| anchors.contains(id)) {
+                        true
+                    } else {
+                        peers_known_not_anchor += 1;
+                        false
+                    }
+                }
+                None => {
+                    peers_missing_cache_entry += 1;
+                    tracing::debug!(
+                        %context_id,
+                        %peer,
+                        op_kind,
+                        "reconcile-after-divergence: mesh peer skipped — no peer_identities \
+                         cache entry yet (peer has not been observed signing a verified \
+                         message); cache warms as the peer's signed traffic is processed"
+                    );
+                    false
+                }
+            }
         });
         let Some(anchor_peer) = anchor_peer else {
             tracing::warn!(
@@ -3026,6 +3072,8 @@ impl SyncManager {
                 op_kind,
                 anchor_count = anchors.len(),
                 connected_mesh_peers = mesh_peers.len(),
+                peers_missing_cache_entry,
+                peers_known_not_anchor,
                 "reconcile-after-divergence: no connected mesh peer matches the anchor set — \
                  falling back to operator path; reconcile will re-attempt on the next signed \
                  op or sync tick"
@@ -3049,21 +3097,43 @@ impl SyncManager {
                     ?protocol,
                     "reconcile-after-divergence: anchor sync completed; verifying post-adoption hash"
                 );
-                self.verify_post_reconcile_root_hash(
+                let converged = self.verify_post_reconcile_root_hash(
                     context_id,
                     expected_root_hash,
                     anchor_peer,
                     op_kind,
                 );
+                if converged {
+                    record_reconcile_success(&self.node_state.reconcile_attempts, &context_id);
+                } else {
+                    let failures = record_reconcile_failure(
+                        &self.node_state.reconcile_attempts,
+                        context_id,
+                    );
+                    tracing::warn!(
+                        %context_id,
+                        op_kind,
+                        consecutive_failures = failures,
+                        next_cooldown_secs = reconcile_cooldown(failures).as_secs(),
+                        "reconcile-after-divergence: recorded failure; subsequent reconcile \
+                         attempts for this context are gated by the backoff window"
+                    );
+                }
             }
             Err(err) => {
+                let failures = record_reconcile_failure(
+                    &self.node_state.reconcile_attempts,
+                    context_id,
+                );
                 tracing::warn!(
                     %context_id,
                     %anchor_peer,
                     op_kind,
                     %err,
+                    consecutive_failures = failures,
+                    next_cooldown_secs = reconcile_cooldown(failures).as_secs(),
                     "reconcile-after-divergence: anchor sync failed; reconcile will re-attempt \
-                     on the next signed op or sync tick"
+                     after the backoff window lapses"
                 );
             }
         }
@@ -3084,7 +3154,7 @@ impl SyncManager {
         expected_root_hash: [u8; 32],
         anchor_peer: PeerId,
         op_kind: &'static str,
-    ) {
+    ) -> bool {
         let Ok(Some(context)) = self.context_client.get_context(&context_id) else {
             tracing::warn!(
                 %context_id,
@@ -3093,7 +3163,7 @@ impl SyncManager {
                 "reconcile-after-divergence: context not found locally after anchor sync — \
                  cannot verify root hash"
             );
-            return;
+            return false;
         };
 
         let actual_root_hash: [u8; 32] = *AsRef::<[u8; 32]>::as_ref(&context.root_hash);
@@ -3105,6 +3175,7 @@ impl SyncManager {
                 root_hash = %hex::encode(actual_root_hash),
                 "reconcile-after-divergence: post-adoption hash matches signed expected — converged"
             );
+            true
         } else {
             tracing::warn!(
                 %context_id,
@@ -3116,8 +3187,79 @@ impl SyncManager {
                  either the anchor served non-canonical state or local apply diverged again; \
                  operator-investigation territory until pre-adoption rejection lands"
             );
+            false
         }
     }
+}
+
+/// Exponential cooldown for the reconcile-after-divergence backoff,
+/// capped at 30 min. `consecutive_failures == 0` is illegal (the
+/// caller only invokes this when at least one failure has been
+/// recorded); we treat it the same as `1` to avoid an arithmetic
+/// surprise. Schedule:
+///
+/// - 1 failure → 30s
+/// - 2 failures → 60s
+/// - 3 failures → 2m
+/// - 4 failures → 4m
+/// - 5 failures → 8m
+/// - 6 failures → 16m
+/// - 7+ failures → 30m (cap)
+///
+/// Free function so backoff math can be unit-tested independently.
+fn reconcile_cooldown(consecutive_failures: u32) -> std::time::Duration {
+    const BASE_SECS: u64 = 30;
+    const MAX: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    let exp = consecutive_failures.saturating_sub(1).min(8);
+    let secs = BASE_SECS.saturating_mul(1u64 << u64::from(exp));
+    std::time::Duration::from_secs(secs).min(MAX)
+}
+
+/// If `context_id` has a recorded prior failure that is still within
+/// its cooldown window, return `Some((remaining_cooldown,
+/// consecutive_failures))`. Otherwise — no entry, or the cooldown has
+/// elapsed — return `None`.
+fn reconcile_remaining_cooldown(
+    attempts: &dashmap::DashMap<ContextId, crate::state::ReconcileAttempt>,
+    context_id: &ContextId,
+) -> Option<(std::time::Duration, u32)> {
+    let entry = attempts.get(context_id)?;
+    let cooldown = reconcile_cooldown(entry.consecutive_failures);
+    let elapsed = entry.last_attempt_at.elapsed();
+    let remaining = cooldown.checked_sub(elapsed)?;
+    if remaining.is_zero() {
+        None
+    } else {
+        Some((remaining, entry.consecutive_failures))
+    }
+}
+
+/// Record a reconcile failure for `context_id`: bump
+/// `consecutive_failures` and stamp `last_attempt_at = now`. Returns
+/// the new failure count so the caller can log the next cooldown
+/// directly.
+fn record_reconcile_failure(
+    attempts: &dashmap::DashMap<ContextId, crate::state::ReconcileAttempt>,
+    context_id: ContextId,
+) -> u32 {
+    let mut entry = attempts
+        .entry(context_id)
+        .or_insert_with(|| crate::state::ReconcileAttempt {
+            last_attempt_at: std::time::Instant::now(),
+            consecutive_failures: 0,
+        });
+    entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+    entry.last_attempt_at = std::time::Instant::now();
+    entry.consecutive_failures
+}
+
+/// Clear backoff state for `context_id` after a successful reconcile.
+/// Subsequent divergences are treated as fresh — no inherited cooldown.
+fn record_reconcile_success(
+    attempts: &dashmap::DashMap<ContextId, crate::state::ReconcileAttempt>,
+    context_id: &ContextId,
+) {
+    let _ = attempts.remove(context_id);
 }
 
 /// Stable-partition `peers` so peers with an observed trusted-anchor

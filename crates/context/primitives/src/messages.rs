@@ -149,12 +149,6 @@ impl Message for ApplySignedGroupOpRequest {
     type Result = eyre::Result<bool>;
 }
 
-/// Outcome of applying a signed namespace governance op.
-///
-/// Needed by callers that must distinguish "pending, please trigger backfill"
-/// from "duplicate, do nothing" — the underlying DAG used to collapse both
-/// into `Ok(false)`, causing every duplicate gossip op to open a redundant
-/// backfill stream.
 /// Post-apply state-hash divergence detected by the cross-DAG
 /// convergence check (the signed-claims path on `MemberRemoved` /
 /// `MemberLeft`). The node-side handler routes this to the
@@ -175,6 +169,12 @@ pub struct DivergenceReport {
     pub only_in_actual: Vec<ContextId>,
 }
 
+/// Outcome of applying a signed namespace governance op.
+///
+/// Needed by callers that must distinguish "pending, please trigger backfill"
+/// from "duplicate, do nothing" — the underlying DAG used to collapse both
+/// into `Ok(false)`, causing every duplicate gossip op to open a redundant
+/// backfill stream.
 #[derive(Debug, Clone)]
 pub enum NamespaceApplyOutcome {
     /// Op was applied immediately. Carries the optional post-apply
