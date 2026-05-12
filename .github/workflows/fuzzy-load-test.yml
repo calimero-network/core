@@ -371,26 +371,10 @@ jobs:
       - name: Collect profiling reports
         if: always() && steps.image.outputs.profiling == 'true'
         run: |
-          # harvest-host-profiling.sh copied each node's profiling-dump/ — incl.
-          # the entrypoint-rendered reports/ subdir (flamegraph SVGs) — into
-          # profiling-data/<suite>/<node>/. Lift just those reports/ trees into a
-          # lightweight standalone artifact; the full raw perf/heap data stays
-          # in profiling-data-*. (The old collect-from-containers.sh path that
-          # was supposed to fill this was a no-op — merobox tears the containers
-          # down before that step runs.)
-          src=profiling-data/kv-store; dst=profiling-reports/kv-store
-          mkdir -p "$dst"
-          find "$src" -type d -name reports 2>/dev/null | while IFS= read -r d; do
-            [ -n "$(ls -A "$d" 2>/dev/null)" ] || continue
-            node=$(basename "$(dirname "$d")")
-            mkdir -p "$dst/$node"
-            cp -r "$d/." "$dst/$node/" 2>/dev/null || true
-          done
-          if [ -n "$(find "$dst" -type f 2>/dev/null)" ]; then
-            echo "Rendered profiling reports collected:"; find "$dst" -type f
-          else
-            echo "::notice::No rendered profiling reports under $src/*/reports/ — the in-container flamegraph render produced nothing this run; raw perf/heap data is still in the profiling-data-* artifact."
-          fi
+          chmod +x scripts/profiling/lift-reports.sh
+          ./scripts/profiling/lift-reports.sh \
+            "profiling-data/kv-store" \
+            "profiling-reports/kv-store"
 
       - name: Set test result
         id: set-result
@@ -653,22 +637,10 @@ jobs:
       - name: Collect profiling reports
         if: always() && steps.image.outputs.profiling == 'true'
         run: |
-          # See the kv-store job for the rationale — lift the entrypoint-rendered
-          # reports/ subdirs out of the harvested per-node data into a small
-          # standalone artifact; raw perf/heap data stays in profiling-data-*.
-          src=profiling-data/kv-store-with-handlers; dst=profiling-reports/kv-store-with-handlers
-          mkdir -p "$dst"
-          find "$src" -type d -name reports 2>/dev/null | while IFS= read -r d; do
-            [ -n "$(ls -A "$d" 2>/dev/null)" ] || continue
-            node=$(basename "$(dirname "$d")")
-            mkdir -p "$dst/$node"
-            cp -r "$d/." "$dst/$node/" 2>/dev/null || true
-          done
-          if [ -n "$(find "$dst" -type f 2>/dev/null)" ]; then
-            echo "Rendered profiling reports collected:"; find "$dst" -type f
-          else
-            echo "::notice::No rendered profiling reports under $src/*/reports/ — the in-container flamegraph render produced nothing this run; raw perf/heap data is still in the profiling-data-* artifact."
-          fi
+          chmod +x scripts/profiling/lift-reports.sh
+          ./scripts/profiling/lift-reports.sh \
+            "profiling-data/kv-store-with-handlers" \
+            "profiling-reports/kv-store-with-handlers"
 
       - name: Set test result
         id: set-result-handlers
@@ -924,22 +896,10 @@ jobs:
       - name: Collect profiling reports
         if: always() && steps.image.outputs.profiling == 'true'
         run: |
-          # See the kv-store job for the rationale — lift the entrypoint-rendered
-          # reports/ subdirs out of the harvested per-node data into a small
-          # standalone artifact; raw perf/heap data stays in profiling-data-*.
-          src=profiling-data/scaffolding-e2e; dst=profiling-reports/scaffolding-e2e
-          mkdir -p "$dst"
-          find "$src" -type d -name reports 2>/dev/null | while IFS= read -r d; do
-            [ -n "$(ls -A "$d" 2>/dev/null)" ] || continue
-            node=$(basename "$(dirname "$d")")
-            mkdir -p "$dst/$node"
-            cp -r "$d/." "$dst/$node/" 2>/dev/null || true
-          done
-          if [ -n "$(find "$dst" -type f 2>/dev/null)" ]; then
-            echo "Rendered profiling reports collected:"; find "$dst" -type f
-          else
-            echo "::notice::No rendered profiling reports under $src/*/reports/ — the in-container flamegraph render produced nothing this run; raw perf/heap data is still in the profiling-data-* artifact."
-          fi
+          chmod +x scripts/profiling/lift-reports.sh
+          ./scripts/profiling/lift-reports.sh \
+            "profiling-data/scaffolding-e2e" \
+            "profiling-reports/scaffolding-e2e"
 
       - name: Set test result
         id: set-result-e2e
@@ -1195,22 +1155,10 @@ jobs:
       - name: Collect profiling reports
         if: always() && steps.image.outputs.profiling == 'true'
         run: |
-          # See the kv-store job for the rationale — lift the entrypoint-rendered
-          # reports/ subdirs out of the harvested per-node data into a small
-          # standalone artifact; raw perf/heap data stays in profiling-data-*.
-          src=profiling-data/group-governance; dst=profiling-reports/group-governance
-          mkdir -p "$dst"
-          find "$src" -type d -name reports 2>/dev/null | while IFS= read -r d; do
-            [ -n "$(ls -A "$d" 2>/dev/null)" ] || continue
-            node=$(basename "$(dirname "$d")")
-            mkdir -p "$dst/$node"
-            cp -r "$d/." "$dst/$node/" 2>/dev/null || true
-          done
-          if [ -n "$(find "$dst" -type f 2>/dev/null)" ]; then
-            echo "Rendered profiling reports collected:"; find "$dst" -type f
-          else
-            echo "::notice::No rendered profiling reports under $src/*/reports/ — the in-container flamegraph render produced nothing this run; raw perf/heap data is still in the profiling-data-* artifact."
-          fi
+          chmod +x scripts/profiling/lift-reports.sh
+          ./scripts/profiling/lift-reports.sh \
+            "profiling-data/group-governance" \
+            "profiling-reports/group-governance"
 
       - name: Set test result
         id: set-result-gov

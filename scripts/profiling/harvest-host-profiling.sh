@@ -58,8 +58,13 @@ harvest_dump() {
     key=$(cd "$dump" 2>/dev/null && pwd -P) || key="$dump"
     # `grep -qxF` (whole-line, fixed-string) — robust if the path ever
     # contains shell-pattern metacharacters, unlike a `case` glob match.
-    grep -qxF -- "$key" <<<"$HARVESTED" && return   # already taken
-    HARVESTED="$HARVESTED$key"$'\n'
+    # Pipe instead of a `<<<` here-string so this works under a POSIX `sh`
+    # too, not just bash. (`find`/`while read` already can't survive a path
+    # with an embedded newline, so the dedup string can't either — that's a
+    # pre-existing constraint on the whole workspace, not introduced here.)
+    printf '%s\n' "$HARVESTED" | grep -qxF -- "$key" && return   # already taken
+    HARVESTED="${HARVESTED}${key}
+"
     if ! mkdir -p "$dest" 2>"$ERR_LOG"; then
         err=$(head -3 "$ERR_LOG" 2>/dev/null | tr '\n' ' ')
         echo "  $node_name: ERROR — could not create $dest: ${err:-(no stderr captured)}"
@@ -85,6 +90,7 @@ harvest_dump() {
 
 # 1) Primary location: <src-root>/<node>/profiling-dump
 if [ -d "$SRC_ROOT" ]; then
+    echo "Harvesting from primary src-root '$SRC_ROOT':"
     for node_dir in "$SRC_ROOT"/*/; do
         [ -d "$node_dir" ] || continue
         dump="${node_dir%/}/profiling-dump"
@@ -99,23 +105,29 @@ fi
 #    relative to merobox's CWD and has drifted before). `harvest_dump` dedups
 #    against the primary pass by canonical path, so re-finding the same dirs is
 #    harmless; this also catches the case where the primary pass found *some*
-#    nodes but others landed elsewhere. Eligibility is doubly constrained so a
-#    stray dir from an unrelated job (already unlikely — `actions/checkout`
-#    cleans the workspace) can't bleed into the artifact:
-#      - the dump must live under `$WORKSPACE/data/` or `$WORKSPACE/workflows/`
-#        — the only two places merobox could plausibly write node data dirs
+#    nodes but others landed elsewhere. The sweep is bounded two ways:
+#      - `find` only descends `$WORKSPACE/data` and `$WORKSPACE/workflows` —
+#        the only two places merobox could plausibly write node data dirs
 #        (`./data/<node>` from the repo root, or — in the pre-#2278 layout —
-#        `workflows/fuzzy-tests/<suite>/data/<node>`; hence maxdepth 6:
-#        workflows / fuzzy-tests / <suite> / data / <node> / profiling-dump);
+#        `workflows/fuzzy-tests/<suite>/data/<node>`; hence maxdepth 5:
+#        fuzzy-tests / <suite> / data / <node> / profiling-dump). Scoping the
+#        `find` itself (rather than scanning all of `$WORKSPACE` and filtering
+#        after) keeps us out of `crates/`, `target/`, etc. and means a stray
+#        `profiling-dump` from elsewhere on a reused runner can't bleed in.
+#        `find`'s default `-P` doesn't follow a symlinked start dir, so a
+#        symlinked `data/`/`workflows/` would just yield nothing, not escape.
 #      - the dump's parent dir must be named `fuzzy-*` (merobox names every
 #        fuzzy node `fuzzy-<suite>-node-N`).
 while IFS= read -r dump; do
     [ -d "$dump" ] || continue
-    case "$dump" in "$WORKSPACE"/data/*|"$WORKSPACE"/workflows/*) ;; *) continue ;; esac
     node_name=$(basename "$(dirname "$dump")")
     case "$node_name" in fuzzy-*) ;; *) continue ;; esac
     harvest_dump "$dump" "$node_name"
-done < <(find "$WORKSPACE" -maxdepth 6 -type d -name profiling-dump 2>/dev/null)
+done < <(
+    for sweep_root in "$WORKSPACE/data" "$WORKSPACE/workflows"; do
+        [ -d "$sweep_root" ] && find "$sweep_root" -maxdepth 5 -type d -name profiling-dump 2>/dev/null
+    done
+)
 
 if [ "$found" -eq 0 ]; then
     echo "::warning::harvest-host-profiling: harvested 0 profiling-dump dirs (src-root='$SRC_ROOT', workspace='$WORKSPACE')."
