@@ -816,6 +816,20 @@ const MAX_DAG_HEADS: usize = 64;
 ///    field in `Option<Vec<...>>` to disambiguate would be a
 ///    wire-format churn for no behavioral gain.
 ///
+///    **Bounded residual**: if a group transitions from "has
+///    contexts" to "has no contexts" (every registered context was
+///    detached), a removal signed in that state would carry an
+///    empty list. A receiver that hasn't yet applied the matching
+///    `ContextDetached` ops still has its registrations and the
+///    per-context check would be skipped on it. This is not a
+///    silent gap — the receiver's namespace DAG heads disagree with
+///    the signer's `cut.governance_dag_heads` in this scenario, so
+///    the cross-DAG membership check on subsequent state deltas
+///    returns `Unknown { needed }` and buffers them until the
+///    detach ops arrive (or anchor-sync reconciles). The hash
+///    check skip is therefore additive to an existing detection
+///    path, not the sole defense.
+///
 ///    Once the network has fully rolled forward to signed-claim ops
 ///    the zero sentinel becomes dead and can be removed; the
 ///    empty-list "no contexts" case stays valid forever.
@@ -1481,6 +1495,23 @@ fn apply_group_op_mutations(
             // governance-level departure (membership row removed, peers
             // observe the leave) without the rotation. Same caveat applies
             // to the namespace cascade above — row-removal only.
+            //
+            // Ordering invariant (mirrors `MemberRemoved`'s call site):
+            // `verify_post_apply_state_hashes` must run after the last
+            // mutation that touches `GroupMeta` or `GroupMember` rows
+            // for `group_id`. The namespace-leave cascade above operates
+            // on DESCENDANT group ids — those mutations don't change
+            // `compute_group_state_hash(group_id)`'s inputs (the hash
+            // only reads members of THIS group, not descendants). The
+            // `remove_group_member(store, group_id, member)` call just
+            // above is the only mutation here that affects the hash;
+            // `cascade_remove_member_from_group_tree` touches
+            // `ContextIdentity` rows and `mark_denied` touches
+            // `GroupDeniedMember` rows, both in separate columns. If a
+            // future mutation between `remove_group_member` and this
+            // call DOES touch `GroupMeta` or `GroupMember` rows for
+            // `group_id`, the recomputed hash will diverge from the
+            // signer's pre-apply simulation on every honest receiver.
             verify_post_apply_state_hashes(
                 store,
                 group_id,

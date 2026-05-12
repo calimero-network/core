@@ -6337,6 +6337,13 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
     let bystander_pk = PublicKey::from([0xD1; 32]);
 
     // Bootstrap: a meta + admin + target + bystander member set.
+    // No parent group is set, which means `resolve_namespace` treats
+    // `gid` as its own namespace (the no-parent case). That lets
+    // `build_governance_cut` succeed below with empty
+    // `governance_dag_heads` — a deterministic empty namespace DAG
+    // for a self-rooted group. If `resolve_namespace`'s no-parent
+    // semantics ever change, this test's bootstrap shape will need
+    // an explicit `nest_group` call.
     let mut meta = test_meta();
     meta.admin_identity = admin_pk;
     meta.owner_identity = admin_pk;

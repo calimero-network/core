@@ -233,13 +233,17 @@ pub fn snapshot_context_state_hashes(
 ///
 /// Defense-in-depth: this function uses a **read-twice / bail on
 /// mismatch** pattern (mirrors `compute_governance_position_for_context`
-/// at `handlers/execute/mod.rs`). Read the heads, compute the hash,
-/// re-read the heads — if the set changed we know a concurrent
-/// governance op landed and the captured position is internally
-/// inconsistent. Bail with an error rather than sign a malformed
-/// cut. A caller running outside the actor serialization gets a hard
-/// error instead of a silently-wrong position that would generate
-/// spurious divergence warnings on every honest receiver.
+/// at `handlers/execute/mod.rs`) for **both** the namespace DAG
+/// heads and the group state hash. A concurrent namespace
+/// governance op would change the heads set; a concurrent
+/// group-level op (e.g. `MemberAdded` racing this read) would
+/// change the group state hash without touching the heads. Both
+/// are detected and produce a hard error rather than a malformed
+/// cut that would generate spurious divergence warnings on every
+/// honest receiver.
+///
+/// The price is one extra hash recompute + one extra heads read per
+/// `MemberRemoved` / `MemberLeft` sign — cold path, not a hot loop.
 ///
 /// Once the cut is built it travels intact in the signed op — there's
 /// no second read by receivers, so the only race is on the signer's
@@ -251,7 +255,8 @@ pub fn build_governance_cut(
     let namespace_id = resolve_namespace(store, group_id)?;
     let dag = NamespaceDagService::new(store, namespace_id.to_bytes());
     let heads_before = dag.read_head_record()?.parent_hashes;
-    let group_state_hash = compute_group_state_hash(store, group_id)?;
+    let group_state_hash_before = compute_group_state_hash(store, group_id)?;
+    let group_state_hash_after = compute_group_state_hash(store, group_id)?;
     let heads_after = dag.read_head_record()?.parent_hashes;
     // Set-equality, not Vec-equality. Storage iteration order isn't
     // guaranteed to be stable across reads, so a Vec compare would
@@ -270,6 +275,13 @@ pub fn build_governance_cut(
             hex::encode(group_id.to_bytes())
         ));
     }
-    GovernancePosition::new(*group_id, group_state_hash, heads_before)
+    if group_state_hash_before != group_state_hash_after {
+        return Err(eyre!(
+            "build_governance_cut: group state hash changed mid-read for group {} — \
+             a concurrent group-level op landed; refusing to emit a stale-hash cut",
+            hex::encode(group_id.to_bytes())
+        ));
+    }
+    GovernancePosition::new(*group_id, group_state_hash_before, heads_before)
         .map_err(|e| eyre!("invalid governance position at sign time: {e}"))
 }
