@@ -1310,3 +1310,87 @@ fn group_member_without_keys_has_none_keys() {
     assert_eq!(value.private_key, None);
     assert_eq!(value.sender_key, None);
 }
+
+/// Regression for #2327: a node that applies a namespace governance op it
+/// already has (e.g. its own published op coming back via sync backfill —
+/// the `group_store` apply path doesn't dedup against the actor's in-memory
+/// `DagStore`) must NOT accumulate a duplicate in its namespace DAG head
+/// set. A duplicated head set makes `GovernancePosition::new` fail, so the
+/// node ships state deltas with an empty governance position and every peer
+/// rejects all of its writes ("author is not a member of the group at
+/// governance cut").
+#[test]
+fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
+    use calimero_context::group_store::NamespaceDagService;
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::types::GovernancePosition;
+
+    let mut rng = OsRng;
+    let gid = sample_group_id();
+    let ns_id = gid.to_bytes();
+
+    let store = empty_store();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let joiner_sk = PrivateKey::random(&mut rng);
+    let joiner_pk = joiner_sk.public_key();
+
+    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // A real MemberJoined op (signer = joiner, with an admin-signed invitation),
+    // matching the `two_nodes_converge_on_namespace_member_joined` setup.
+    let invitation = GroupInvitationFromAdmin {
+        inviter_identity: SignerId::from(*admin_pk.digest()),
+        group_id: gid,
+        expiration_timestamp: 9_999_999_999,
+        secret_salt: [0x42; 32],
+        invited_role: 1,
+    };
+    let inv_bytes = borsh::to_vec(&invitation).expect("borsh invitation");
+    let inv_hash = Sha256::digest(&inv_bytes);
+    let inv_sig = admin_sk.sign(&inv_hash).expect("sign invitation");
+    let signed_invitation = SignedGroupOpenInvitation {
+        invitation,
+        inviter_signature: hex::encode(inv_sig.to_bytes()),
+        application_id: None,
+    };
+
+    let ns_op = SignedNamespaceOp::sign(
+        &joiner_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member: joiner_pk,
+            signed_invitation,
+        }),
+    )
+    .expect("sign MemberJoined");
+    let op_hash = ns_op.content_hash().expect("content_hash");
+
+    // 1) "Publish locally": apply the op once.
+    group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    // 2) "Re-receive via sync backfill": the same op arrives again.
+    group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+    group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
+
+    // The namespace DAG head set must contain the op exactly once.
+    let (heads, _next_nonce) = NamespaceDagService::new(&store, ns_id)
+        .read_head()
+        .expect("read namespace dag head");
+    assert_eq!(
+        heads,
+        vec![op_hash],
+        "namespace DAG head set must stay duplicate-free across re-applies"
+    );
+
+    // And a node at this cut can embed a non-empty GovernancePosition — i.e.
+    // `governance_dag_heads_len == 1`, so peers will accept its state deltas.
+    let state_hash = compute_group_state_hash(&store, &gid).expect("compute_group_state_hash");
+    let position = GovernancePosition::new(gid, state_hash, heads.clone())
+        .expect("GovernancePosition must be embeddable (non-duplicate heads)");
+    assert_eq!(position.governance_dag_heads, vec![op_hash]);
+    assert!(group_store::check_group_membership(&store, &gid, &joiner_pk).unwrap());
+}
