@@ -5715,3 +5715,176 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
         "re-add must clear the deny-list entry — semantics from design discussion"
     );
 }
+
+// ---------------------------------------------------------------------
+// Trusted-anchor set (E5) — `trusted_anchors_for_group`
+//
+// Anchor set per RFC decision #22: `{Owner} ∪ {Admins} ∪ {ReadOnlyTee}`.
+// These tests pin the membership rule against the materialized member
+// set; the peer-selection wiring that consumes this is tested
+// separately in the node crate.
+// ---------------------------------------------------------------------
+
+#[test]
+fn trusted_anchors_empty_when_meta_absent() {
+    // No `save_group_meta` call — no group exists. Should return an
+    // empty set, not error. Caller falls back to random selection.
+    let store = test_store();
+    let gid = test_group_id();
+    let anchors = trusted_anchors_for_group(&store, &gid).unwrap();
+    assert!(anchors.is_empty(), "expected empty set, got {anchors:?}");
+}
+
+#[test]
+fn trusted_anchors_includes_owner_and_legacy_admin() {
+    // Fresh group: owner_identity == admin_identity (the creator).
+    // Anchor set contains just that one pubkey.
+    let store = test_store();
+    let gid = test_group_id();
+    let creator = PublicKey::from([0x01; 32]);
+    save_group_meta(&store, &gid, &sample_meta_with_admin(creator)).unwrap();
+
+    let anchors = trusted_anchors_for_group(&store, &gid).unwrap();
+    assert!(anchors.contains(&creator), "creator must be an anchor");
+    assert_eq!(
+        anchors.len(),
+        1,
+        "fresh group: owner == admin, exactly one anchor expected, got {anchors:?}"
+    );
+}
+
+#[test]
+fn trusted_anchors_includes_owner_distinct_from_legacy_admin() {
+    // Post-`TransferOwnership` shape: owner_identity != admin_identity.
+    // Both must be in the anchor set — admin_identity is the legacy
+    // fallback creator marker that `is_group_admin` still honors.
+    use calimero_store::key::GroupMetaValue;
+    let store = test_store();
+    let gid = test_group_id();
+    let creator = PublicKey::from([0x01; 32]);
+    let new_owner = PublicKey::from([0x02; 32]);
+    let meta = GroupMetaValue {
+        app_key: [0xBB; 32],
+        target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+        upgrade_policy: calimero_primitives::context::UpgradePolicy::Automatic,
+        created_at: 1_700_000_000,
+        admin_identity: creator,
+        owner_identity: new_owner,
+        migration: None,
+        auto_join: true,
+    };
+    save_group_meta(&store, &gid, &meta).unwrap();
+
+    let anchors = trusted_anchors_for_group(&store, &gid).unwrap();
+    assert!(anchors.contains(&creator), "legacy admin must be an anchor");
+    assert!(
+        anchors.contains(&new_owner),
+        "owner (post-transfer) must be an anchor"
+    );
+    assert_eq!(anchors.len(), 2);
+}
+
+#[test]
+fn trusted_anchors_includes_admin_members() {
+    let store = test_store();
+    let gid = test_group_id();
+    let creator = PublicKey::from([0x01; 32]);
+    let admin_a = PublicKey::from([0xA1; 32]);
+    let admin_b = PublicKey::from([0xA2; 32]);
+
+    save_group_meta(&store, &gid, &sample_meta_with_admin(creator)).unwrap();
+    add_group_member(&store, &gid, &admin_a, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &admin_b, GroupMemberRole::Admin).unwrap();
+
+    let anchors = trusted_anchors_for_group(&store, &gid).unwrap();
+    assert!(anchors.contains(&creator));
+    assert!(anchors.contains(&admin_a));
+    assert!(anchors.contains(&admin_b));
+    assert_eq!(anchors.len(), 3);
+}
+
+#[test]
+fn trusted_anchors_includes_read_only_tee_members() {
+    // ReadOnlyTee members are in the anchor set because the role is
+    // gated at apply-time by `MemberJoinedViaTeeAttestation` (see the
+    // `apply_group_op_mutations` carve-out): a peer cannot
+    // self-declare `ReadOnlyTee` without admission. The role in the
+    // store IS the admission proof.
+    let store = test_store();
+    let gid = test_group_id();
+    let creator = PublicKey::from([0x01; 32]);
+    let tee_attested = PublicKey::from([0xC1; 32]);
+
+    save_group_meta(&store, &gid, &sample_meta_with_admin(creator)).unwrap();
+    add_group_member(&store, &gid, &tee_attested, GroupMemberRole::ReadOnlyTee).unwrap();
+
+    let anchors = trusted_anchors_for_group(&store, &gid).unwrap();
+    assert!(anchors.contains(&tee_attested));
+    assert_eq!(anchors.len(), 2);
+}
+
+#[test]
+fn trusted_anchors_excludes_plain_members_and_read_only() {
+    // Plain `Member` and `ReadOnly` peers can still serve sync if
+    // asked, but clients should NOT preferentially target them.
+    let store = test_store();
+    let gid = test_group_id();
+    let creator = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0xB1; 32]);
+    let read_only = PublicKey::from([0xB2; 32]);
+
+    save_group_meta(&store, &gid, &sample_meta_with_admin(creator)).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+    add_group_member(&store, &gid, &read_only, GroupMemberRole::ReadOnly).unwrap();
+
+    let anchors = trusted_anchors_for_group(&store, &gid).unwrap();
+    assert!(
+        !anchors.contains(&member),
+        "plain Member must not be an anchor"
+    );
+    assert!(
+        !anchors.contains(&read_only),
+        "plain ReadOnly must not be an anchor"
+    );
+    assert_eq!(anchors.len(), 1, "only the creator should be in the set");
+}
+
+#[test]
+fn trusted_anchors_mixed_roles() {
+    // Full mix: owner, separate legacy admin, two admin members, one
+    // ReadOnlyTee, one plain Member, one ReadOnly. Anchor set should
+    // be {owner, legacy_admin, admin_a, admin_b, tee} — size 5.
+    use calimero_store::key::GroupMetaValue;
+    let store = test_store();
+    let gid = test_group_id();
+    let owner = PublicKey::from([0x01; 32]);
+    let legacy_admin = PublicKey::from([0x02; 32]);
+    let admin_a = PublicKey::from([0xA1; 32]);
+    let admin_b = PublicKey::from([0xA2; 32]);
+    let tee = PublicKey::from([0xC1; 32]);
+    let member = PublicKey::from([0xB1; 32]);
+    let read_only = PublicKey::from([0xB2; 32]);
+
+    let meta = GroupMetaValue {
+        app_key: [0xBB; 32],
+        target_application_id: calimero_primitives::application::ApplicationId::from([0xCC; 32]),
+        upgrade_policy: calimero_primitives::context::UpgradePolicy::Automatic,
+        created_at: 1_700_000_000,
+        admin_identity: legacy_admin,
+        owner_identity: owner,
+        migration: None,
+        auto_join: true,
+    };
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin_a, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &admin_b, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &tee, GroupMemberRole::ReadOnlyTee).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+    add_group_member(&store, &gid, &read_only, GroupMemberRole::ReadOnly).unwrap();
+
+    let anchors = trusted_anchors_for_group(&store, &gid).unwrap();
+    let expected: std::collections::BTreeSet<_> = [owner, legacy_admin, admin_a, admin_b, tee]
+        .into_iter()
+        .collect();
+    assert_eq!(anchors, expected, "anchor set mismatch");
+}

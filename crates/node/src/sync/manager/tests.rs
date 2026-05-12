@@ -334,3 +334,135 @@ mod session_watchdog_tests {
         ));
     }
 }
+
+// =========================================================================
+// `partition_peers_anchor_first` — anchor-preferred peer ordering
+// =========================================================================
+//
+// Contract: stable order within each (anchor / non-anchor) partition.
+// The caller pre-shuffles for randomness; this helper just hoists the
+// anchor partition to the front without reordering within it.
+//
+// These exercise the pure-function shape. The integration (looking up
+// the anchor identity set from the store and threading it through
+// `perform_interval_sync`) is covered by the `trusted_anchors_*`
+// helper-level tests in `calimero-context` and end-to-end by multi-node
+// e2e runs.
+
+use std::collections::BTreeSet;
+
+use calimero_primitives::identity::PublicKey;
+use dashmap::DashMap;
+use libp2p::PeerId;
+
+use super::partition_peers_anchor_first;
+
+fn dummy_peer(n: u8) -> PeerId {
+    // Deterministic peer-id keyed by a single byte — only equality
+    // matters here, not the byte structure.
+    let seed = [n; 32];
+    let kp = libp2p::identity::Keypair::ed25519_from_bytes(seed).expect("valid seed");
+    PeerId::from_public_key(&kp.public())
+}
+
+fn dummy_pk(n: u8) -> PublicKey {
+    PublicKey::from([n; 32])
+}
+
+#[test]
+fn partition_empty_anchors_set_returns_zero() {
+    // No anchor set defined → no preference; every peer is non-anchor.
+    let mut peers = vec![dummy_peer(1), dummy_peer(2), dummy_peer(3)];
+    let cache: DashMap<PeerId, BTreeSet<PublicKey>> = DashMap::new();
+    let anchors: BTreeSet<PublicKey> = BTreeSet::new();
+
+    let count = partition_peers_anchor_first(&mut peers, &cache, &anchors);
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn partition_empty_cache_no_anchors_found() {
+    // Anchor set non-empty but we've observed nothing → fall back to
+    // non-anchor; relative order preserved.
+    let mut peers = vec![dummy_peer(1), dummy_peer(2)];
+    let original = peers.clone();
+    let cache: DashMap<PeerId, BTreeSet<PublicKey>> = DashMap::new();
+    let anchors: BTreeSet<PublicKey> = [dummy_pk(0xAA)].into_iter().collect();
+
+    let count = partition_peers_anchor_first(&mut peers, &cache, &anchors);
+    assert_eq!(count, 0);
+    assert_eq!(peers, original);
+}
+
+#[test]
+fn partition_all_peers_are_anchors() {
+    let peer1 = dummy_peer(1);
+    let peer2 = dummy_peer(2);
+    let pk_admin = dummy_pk(0xAA);
+    let cache: DashMap<PeerId, BTreeSet<PublicKey>> = DashMap::new();
+    let _replaced = cache.insert(peer1, [pk_admin].into_iter().collect());
+    let _replaced = cache.insert(peer2, [pk_admin].into_iter().collect());
+    let anchors: BTreeSet<PublicKey> = [pk_admin].into_iter().collect();
+
+    let mut peers = vec![peer1, peer2];
+    let count = partition_peers_anchor_first(&mut peers, &cache, &anchors);
+    assert_eq!(count, 2);
+    assert_eq!(peers, vec![peer1, peer2]);
+}
+
+#[test]
+fn partition_mixed_anchor_and_non_anchor_preserves_relative_order() {
+    let anchor_a = dummy_peer(1);
+    let anchor_b = dummy_peer(2);
+    let plain_a = dummy_peer(3);
+    let plain_b = dummy_peer(4);
+    let pk_admin = dummy_pk(0xAA);
+
+    let cache: DashMap<PeerId, BTreeSet<PublicKey>> = DashMap::new();
+    let _replaced = cache.insert(anchor_a, [pk_admin].into_iter().collect());
+    let _replaced = cache.insert(anchor_b, [pk_admin].into_iter().collect());
+
+    let anchors: BTreeSet<PublicKey> = [pk_admin].into_iter().collect();
+
+    // Pre-shuffled order interleaves the two partitions.
+    let mut peers = vec![plain_a, anchor_a, plain_b, anchor_b];
+    let count = partition_peers_anchor_first(&mut peers, &cache, &anchors);
+    assert_eq!(count, 2);
+    // Anchors first (anchor_a before anchor_b, preserved from input),
+    // then non-anchors (plain_a before plain_b, preserved).
+    assert_eq!(peers, vec![anchor_a, anchor_b, plain_a, plain_b]);
+}
+
+#[test]
+fn partition_peer_with_one_anchor_identity_among_many_qualifies() {
+    // A peer can host multiple context identities — partition matches
+    // if ANY identity intersects the anchor set.
+    let peer = dummy_peer(1);
+    let pk_admin = dummy_pk(0xAA);
+    let pk_other_context = dummy_pk(0xBB);
+
+    let cache: DashMap<PeerId, BTreeSet<PublicKey>> = DashMap::new();
+    let _replaced = cache.insert(peer, [pk_admin, pk_other_context].into_iter().collect());
+
+    let anchors: BTreeSet<PublicKey> = [pk_admin].into_iter().collect();
+
+    let mut peers = vec![peer];
+    let count = partition_peers_anchor_first(&mut peers, &cache, &anchors);
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn partition_peer_with_only_non_anchor_identities_does_not_qualify() {
+    let peer = dummy_peer(1);
+    let pk_member = dummy_pk(0xCC);
+    let pk_admin = dummy_pk(0xAA);
+
+    let cache: DashMap<PeerId, BTreeSet<PublicKey>> = DashMap::new();
+    let _replaced = cache.insert(peer, [pk_member].into_iter().collect());
+
+    let anchors: BTreeSet<PublicKey> = [pk_admin].into_iter().collect();
+
+    let mut peers = vec![peer];
+    let count = partition_peers_anchor_first(&mut peers, &cache, &anchors);
+    assert_eq!(count, 0);
+}
