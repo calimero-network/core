@@ -117,14 +117,24 @@ impl<'a> NamespaceGovernance<'a> {
             .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
 
         // Idempotency guard. If this exact op is already in our local op-log
-        // it has already been applied — `advance_dag_head` ran for it and any
-        // side effects fired. A re-receive (typically a node's *own* published
-        // op coming back via sync backfill — the in-memory `DagStore` dedup
-        // set never saw the publisher path, so it can't filter it) must be a
-        // no-op: re-running `advance_dag_head` here would append `delta_id` to
-        // the head set a second time, and a head set with duplicates makes
+        // it has already been applied — `advance_dag_head` ran for it (see the
+        // store/advance ordering note below) and any side effects fired. A
+        // re-receive (typically a node's *own* published op coming back via
+        // sync backfill — the in-memory `DagStore` dedup set never saw the
+        // publisher path, so it can't filter it) must be a no-op: re-running
+        // `advance_dag_head` here would append `delta_id` to the head set a
+        // second time, and a head set with duplicates makes
         // `compute_governance_position` refuse to embed a position, so every
         // peer then rejects all of this node's state deltas (#2327).
+        //
+        // The guard suppresses *all* of the apply work below — the per-op-kind
+        // side effects in the match arms included. Re-running them would either
+        // be redundant (they're written replay-safe) or actively wrong (a
+        // second `PendingKeyDelivery`); a maintainer adding a new side effect
+        // should keep it replay-safe rather than rely on this guard never
+        // firing. The encrypted-op *retry* path is unaffected: it re-applies
+        // via `decrypt_and_apply_group_op` → `apply_group_op_inner`, not
+        // `apply_signed_op`, and is bounded by the per-signer nonce check there.
         if NamespaceOpLogService::new(self.store, self.namespace_id).contains_op(delta_id)? {
             tracing::debug!(
                 namespace_id = %hex::encode(self.namespace_id),
@@ -314,6 +324,16 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
+        // Ordering: advance the head first, then write the op to the log. The
+        // store gives us no transaction across the two, so on a crash in
+        // between, retry sees `contains_op == false` and re-applies — which
+        // re-runs the (replay-safe) side effects above and calls
+        // `advance_dag_head` again, where the dedup makes the second add a
+        // no-op. The reverse order (log then advance) would instead leave the
+        // op logged but the head un-advanced, and the idempotency guard would
+        // then *skip* the retry, permanently dropping `delta_id` from the head
+        // set — strictly worse. A truly atomic update would need a
+        // single-batch write spanning both keys.
         let head = self.read_head_record()?;
         self.advance_dag_head(delta_id, &op.parent_op_hashes, head.next_nonce)?;
         self.store_operation(op)?;

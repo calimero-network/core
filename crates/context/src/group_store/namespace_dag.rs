@@ -74,6 +74,14 @@ impl<'a> NamespaceDagService<'a> {
         Ok(self.read_head_record()?.into_tuple())
     }
 
+    /// Advance the namespace DAG head: drop the heads this op supersedes (its
+    /// parents) and add `delta_id`.
+    ///
+    /// This is a read-modify-write on the single `NamespaceGovHead` key; it is
+    /// safe because namespace governance op application is serialized at the
+    /// call site (the `ContextManager` actor handler holds the per-namespace
+    /// `DagStore` lock — see `Handler<ApplySignedNamespaceOpRequest>`), so
+    /// there is no concurrent writer to lose an update to.
     pub fn advance_dag_head(
         &self,
         delta_id: [u8; 32],
@@ -86,26 +94,26 @@ impl<'a> NamespaceDagService<'a> {
         drop(handle);
 
         let parent_set: HashSet<[u8; 32]> = parent_ids.iter().copied().collect();
-        let mut seen: HashSet<[u8; 32]> = HashSet::new();
-        let mut new_heads: Vec<[u8; 32]> = current
-            .map(|h| h.dag_heads)
-            .unwrap_or_default()
-            .into_iter()
-            // drop heads this op supersedes (they're its parents) ...
-            .filter(|h| !parent_set.contains(h))
-            // ... and never carry a duplicate forward: a stored head set must
-            // be unique, otherwise `compute_governance_position` refuses to
-            // embed a position and every peer rejects the node's deltas
-            // ("author is not a member of the group at governance cut") — see
-            // issue #2327.
-            .filter(|h| seen.insert(*h))
-            .collect();
+        // Drop the heads this op supersedes (its parents) and collapse any
+        // pre-existing duplicates: a stored head set must be unique, otherwise
+        // `compute_governance_position` refuses to embed a position and every
+        // peer rejects the node's deltas ("author is not a member of the group
+        // at governance cut") — see issue #2327. (Collapsing here also heals a
+        // store corrupted by an older build on its next governance op.)
+        let mut new_heads = dedup_preserving_order(
+            current
+                .map(|h| h.dag_heads)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|h| !parent_set.contains(h))
+                .collect(),
+        );
         // `delta_id` may already be a head when this exact op is applied more
         // than once (e.g. a node re-receives, via sync backfill, an op it had
         // already applied or published locally — the in-memory DagStore's
         // dedup set doesn't cover the publisher path). Re-applying it must be
         // a no-op for the head set, not a second entry.
-        if seen.insert(delta_id) {
+        if !new_heads.contains(&delta_id) {
             new_heads.push(delta_id);
         }
         debug_assert!(
