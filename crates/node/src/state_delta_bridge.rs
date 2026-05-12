@@ -35,9 +35,14 @@ use crate::handlers::state_delta::{handle_state_delta, StateDeltaContext, StateD
 /// rebroadcast path.
 pub const STATE_DELTA_CHANNEL_CAPACITY: usize = 2048;
 
-/// Per-delta processing budget. Bounds the worst case where any
-/// downstream await wedges (e.g. slow WASM merge-apply, #2199); on
-/// timeout the delta is dropped and sync recovery retries.
+/// Soft per-delta processing budget. *Not* a hard cap: `handle_state_delta`
+/// drives `context_client.execute`, whose WASM merge-apply runs on a
+/// `spawn_blocking` thread that can't be cancelled. Abandoning the job on a
+/// hard timeout would release the DAG write lock while that apply completes
+/// and `commit()`s its writes anyway — late, racing the next delta and
+/// leaving storage holding a delta the DAG doesn't have. So exceeding this
+/// threshold only logs a warning and bumps `over_budget_total`; the job runs
+/// to completion. The durable fix for the underlying slowness is #2199/#2238.
 const STATE_DELTA_PROCESSING_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Periodic summary log interval.
@@ -116,12 +121,13 @@ pub struct StateDeltaActor {
     /// Successful `handle_state_delta` returns.
     processed_total: Arc<AtomicU64>,
     /// Failed `handle_state_delta` returns (decryption, DAG apply,
-    /// handler exec). Distinct from `timeout_total`.
+    /// handler exec). Distinct from `over_budget_total`.
     error_total: Arc<AtomicU64>,
-    /// Per-delta processing budget exceeded — separate from
-    /// `error_total` so a timeout storm is distinguishable from a
-    /// pure application-error storm in the summary log.
-    timeout_total: Arc<AtomicU64>,
+    /// Jobs that exceeded [`STATE_DELTA_PROCESSING_TIMEOUT`] (and kept
+    /// running — see that const). Separate from `error_total` so a
+    /// slow-merge storm is distinguishable from an application-error
+    /// storm in the summary log.
+    over_budget_total: Arc<AtomicU64>,
     dropped_total: Arc<AtomicU64>,
 }
 
@@ -131,7 +137,7 @@ impl StateDeltaActor {
             in_flight: Arc::new(AtomicU64::new(0)),
             processed_total: Arc::new(AtomicU64::new(0)),
             error_total: Arc::new(AtomicU64::new(0)),
-            timeout_total: Arc::new(AtomicU64::new(0)),
+            over_budget_total: Arc::new(AtomicU64::new(0)),
             dropped_total,
         }
     }
@@ -139,13 +145,13 @@ impl StateDeltaActor {
     fn log_summary(&self) {
         let processed = self.processed_total.load(Ordering::Relaxed);
         let errors = self.error_total.load(Ordering::Relaxed);
-        let timeouts = self.timeout_total.load(Ordering::Relaxed);
+        let over_budget = self.over_budget_total.load(Ordering::Relaxed);
         let dropped = self.dropped_total.load(Ordering::Relaxed);
         let in_flight = self.in_flight.load(Ordering::Relaxed);
         info!(
             processed_total = processed,
             error_total = errors,
-            timeout_total = timeouts,
+            over_budget_total = over_budget,
             dropped_total = dropped,
             in_flight,
             "StateDelta actor summary"
@@ -175,7 +181,7 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
     fn handle(&mut self, job: StateDeltaJob, ctx: &mut Self::Context) {
         let processed_total = Arc::clone(&self.processed_total);
         let error_total = Arc::clone(&self.error_total);
-        let timeout_total = Arc::clone(&self.timeout_total);
+        let over_budget_total = Arc::clone(&self.over_budget_total);
 
         // RAII guard so `in_flight` is decremented even on panic.
         let in_flight_guard = InFlightGuard::new(Arc::clone(&self.in_flight));
@@ -190,28 +196,44 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
         let work = async move {
             let _guard = in_flight_guard;
             let started = Instant::now();
-            let outcome = tokio::time::timeout(
-                STATE_DELTA_PROCESSING_TIMEOUT,
-                handle_state_delta(context, message),
-            )
-            .await;
-            match &outcome {
-                Ok(Ok(())) => {
+            let fut = handle_state_delta(context, message);
+            tokio::pin!(fut);
+            // Soft budget: if `handle_state_delta` runs long, warn and bump
+            // a counter, but DO NOT abandon it. Its downstream WASM apply
+            // runs on a `spawn_blocking` thread that can't be cancelled;
+            // dropping this future would release the DAG write lock while
+            // that apply completes and commits late, racing the next delta
+            // (storage holds a delta the DAG doesn't — re-synced, re-applied,
+            // divergent). The merge-apply is gas-bounded so it terminates.
+            // See #2199 / #2238.
+            let result = match tokio::time::timeout(STATE_DELTA_PROCESSING_TIMEOUT, &mut fut).await
+            {
+                Ok(r) => r,
+                Err(_elapsed) => {
+                    let _prev = over_budget_total.fetch_add(1, Ordering::Relaxed);
+                    warn!(
+                        %context_id,
+                        ?delta_id,
+                        over_budget_secs = STATE_DELTA_PROCESSING_TIMEOUT.as_secs(),
+                        "StateDelta worker over soft budget — still processing (a spawn_blocking apply can't be cancelled without leaving storage/DAG divergent); see #2199/#2238"
+                    );
+                    fut.await
+                }
+            };
+            match &result {
+                Ok(()) => {
                     let _prev = processed_total.fetch_add(1, Ordering::Relaxed);
                 }
-                Ok(Err(_)) => {
+                Err(_) => {
                     let _prev = error_total.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(_elapsed) => {
-                    let _prev = timeout_total.fetch_add(1, Ordering::Relaxed);
-                }
             }
-            (outcome, started)
+            (result, started)
         };
 
         let _spawn_handle = ctx.spawn(work.into_actor(self).map(
-            move |(outcome, started), _act, _ctx| match outcome {
-                Ok(Ok(())) => {
+            move |(result, started), _act, _ctx| match result {
+                Ok(()) => {
                     debug!(
                         %context_id,
                         ?delta_id,
@@ -219,17 +241,8 @@ impl Handler<StateDeltaJob> for StateDeltaActor {
                         "StateDelta worker completed"
                     );
                 }
-                Ok(Err(err)) => {
+                Err(err) => {
                     warn!(?err, %context_id, ?delta_id, "Failed to handle state delta");
-                }
-                Err(_elapsed) => {
-                    warn!(
-                        %context_id,
-                        ?delta_id,
-                        timeout_secs = STATE_DELTA_PROCESSING_TIMEOUT.as_secs(),
-                        elapsed_ms = started.elapsed().as_millis(),
-                        "StateDelta worker exceeded processing budget — dropping delta, sync recovery will retry (#2199)"
-                    );
                 }
             },
         ));
