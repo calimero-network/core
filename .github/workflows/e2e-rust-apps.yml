@@ -185,6 +185,15 @@ jobs:
           - workflow: dm-subgroup-privacy
             file: workflows/dm-subgroup-privacy.yml
             app: scaffolding-e2e
+          - workflow: member-removed-multi-context-convergence
+            file: workflows/member-removed-multi-context-convergence.yml
+            app: scaffolding-e2e
+          - workflow: member-removed-late-joiner-catchup
+            file: workflows/member-removed-late-joiner-catchup.yml
+            app: scaffolding-e2e
+          - workflow: member-removed-partition-window-reconcile
+            file: workflows/member-removed-partition-window-reconcile.yml
+            app: scaffolding-e2e
           - workflow: group-default-capabilities-propagation
             file: workflows/group-default-capabilities-propagation.yml
             app: scaffolding-e2e
