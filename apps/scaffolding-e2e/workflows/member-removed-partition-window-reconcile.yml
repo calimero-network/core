@@ -6,25 +6,32 @@ description: >
     1. Three nodes synced in a namespace with one context.
     2. Admin (node-1) is partitioned off the docker bridge —
        no inter-container traffic in or out, but the node keeps
-       running and retains state.
+       running and retains state. Host→container RPC (via the
+       host-mapped port) still works, which is what lets the test
+       talk to admin while it's partitioned from peers.
     3. Node-2 writes to the context. Node-3 receives the write
-       (they're still on the bridge). Admin does NOT see it.
-    4. Partition heals (`docker network connect bridge node-1`).
-    5. Admin immediately removes node-2. The signed
-       `MemberRemoved` op carries `expected_context_state_hashes`
-       reflecting admin's view — which doesn't include node-2's
-       in-flight write because admin signed before catching up.
-    6. The op propagates to node-3. node-3 applies it, then
-       recomputes its context root hash — which DOES reflect
-       node-2's write. The hashes diverge.
+       (they're still on the bridge). Admin does NOT see it —
+       admin is partitioned off the inter-container path.
+    4. **Admin removes node-2 while still partitioned.** Because
+       admin has not seen node-2's partition-window write, admin's
+       signed `MemberRemoved` op carries
+       `expected_context_state_hashes` reflecting the *pre-write*
+       view. The op is signed and stored locally; the broadcast
+       can't reach peers yet (admin is partitioned).
+    5. Partition heals (`docker network connect bridge node-1`).
+       Admin's signed removal propagates via gossipsub /
+       governance backfill to node-3.
+    6. node-3 applies the removal, then recomputes its context
+       root hash — which DOES reflect node-2's write. The hashes
+       diverge.
     7. The apply pipeline surfaces a `DivergenceReport`. The node
        handler routes it to the sync manager's reconcile path,
        which picks admin (the only trusted-anchor identity node-3
        has observed signing applied messages) as the sync target.
-    8. node-3 pulls canonical state from admin via Snapshot sync.
-       After adoption, node-3's root hash matches admin's signed
-       expected value: node-2's late write is gone from node-3's
-       view of the context.
+    8. node-3 pulls canonical state from admin. After adoption,
+       node-3's root hash matches admin's signed expected value:
+       node-2's late write is gone from node-3's view of the
+       context.
     9. Convergence: node-3's context state matches node-1's.
 
   This is the §8.3.2 partition-window case from the cross-DAG
@@ -34,13 +41,14 @@ description: >
   (admin or other Admin/ReadOnlyTee) is reachable; no operator
   intervention required.
 
-  Known limitation in the docker-bridge partition approach used
-  here: re-attaching the container drains any TCP packets the OS
-  buffered while it was disconnected, so the gossipsub mesh may
-  catch up faster than a "real" network partition would. The test
-  works around this by signing the removal in the same step as
-  the reconnect, before peer catchup can deliver node-2's write
-  to admin.
+  Why sign before reconnect (not after, as a prior iteration of
+  this workflow did): re-attaching the container drains any TCP
+  packets the OS buffered while it was disconnected, so signing
+  *after* reconnect races admin's gossipsub catch-up. If admin
+  applies node-2's write before signing, the signed expected
+  hash *includes* the write, no divergence fires, and the test
+  passes vacuously (the reconcile path never executes). Signing
+  while partitioned is what makes the divergence deterministic.
 
 force_pull_image: false
 near_devnet: false
@@ -184,12 +192,34 @@ steps:
     statements:
       - 'json_equal({{pre_reconcile_read_node3}}, {"output": "node2_write_admin_will_miss"})'
 
-  # --- Phase 4: heal the partition AND remove node-2 in close
-  #     succession. The removal op signed by admin carries
-  #     `expected_context_state_hashes` reflecting admin's view —
-  #     which doesn't yet include node-2's partition-window write
-  #     (admin was just disconnected, hasn't drained TCP buffers
-  #     yet, hasn't applied the delta). ---
+  # --- Phase 4: admin removes node-2 WHILE STILL PARTITIONED.
+  #     Admin's RPC remains reachable from the host via the
+  #     host-mapped port — the bridge disconnect only cuts
+  #     inter-container traffic, not host→container traffic. So
+  #     the RPC call lands, the removal op is signed locally
+  #     against admin's pre-write view, and applied to admin's
+  #     local governance DAG. Broadcast to peers fails (admin is
+  #     partitioned), but the signed op is now durable on admin.
+  #
+  #     Signing here (not after reconnect) is what makes the
+  #     `expected_context_state_hashes` deterministically exclude
+  #     node-2's partition-window write: admin has never seen the
+  #     write at this point and cannot race a TCP-buffer drain. ---
+
+  - name: Admin removes node-2 while still partitioned (signs against pre-write view)
+    type: remove_group_members
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    members:
+      - '{{identity_node2}}'
+
+  # --- Phase 5: heal the partition. Admin's already-signed removal
+  #     propagates to node-3 via gossipsub re-mesh + governance
+  #     backfill / sync tick. node-3 applies it, recomputes its
+  #     post-apply state hash, sees the divergence against admin's
+  #     signed expected, and the apply pipeline emits a
+  #     `DivergenceReport` that the node handler routes to the
+  #     reconcile-after-divergence path. ---
 
   - name: Heal admin's partition
     type: script
@@ -198,14 +228,7 @@ steps:
     args:
       - e2e-node-1
 
-  - name: Admin removes node-2 (signs against pre-write view)
-    type: remove_group_members
-    node: e2e-node-1
-    group_id: '{{namespace_id}}'
-    members:
-      - '{{identity_node2}}'
-
-  # --- Phase 5: wait for the signed removal to propagate to node-3
+  # --- Phase 6: wait for the signed removal to propagate to node-3
   #     AND for node-3's reconcile-after-divergence to fire its
   #     anchor sync. The reconcile happens inside the apply path's
   #     follow-up spawn; allow time for it to complete. ---
@@ -223,7 +246,7 @@ steps:
     type: wait
     seconds: 10
 
-  # --- Phase 6: assertions on the converged state ---
+  # --- Phase 7: assertions on the converged state ---
 
   - name: Confirm node-3 sees node-2 removed
     type: list_group_members

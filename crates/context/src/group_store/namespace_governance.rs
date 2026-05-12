@@ -178,7 +178,7 @@ impl<'a> NamespaceGovernance<'a> {
                         // call. Without this, "Unexpected length of input"
                         // is ambiguous between the identity read, the key
                         // store, or the retry walk.
-                        let mut apply_kd = || -> EyreResult<()> {
+                        let mut apply_kd = || -> EyreResult<Option<super::DivergenceReport>> {
                             if let Some(identity) =
                                 get_namespace_identity_record(self.store, &ns_id).map_err(|e| {
                                     eyre::eyre!("get_namespace_identity_record: {e}")
@@ -214,13 +214,14 @@ impl<'a> NamespaceGovernance<'a> {
                                                 group_id: *group_id,
                                                 recipient: recipient_sk.public_key(),
                                             });
-                                            self.retry_encrypted_ops_for_group(*group_id).map_err(
-                                                |e| {
+                                            let retry_divergence = self
+                                                .retry_encrypted_ops_for_group(*group_id)
+                                                .map_err(|e| {
                                                     eyre::eyre!(
                                                         "retry_encrypted_ops_for_group: {e}"
                                                     )
-                                                },
-                                            )?;
+                                                })?;
+                                            return Ok(retry_divergence);
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -235,18 +236,32 @@ impl<'a> NamespaceGovernance<'a> {
                                     }
                                 }
                             }
-                            Ok(())
+                            Ok(None)
                         };
-                        if let Err(e) = apply_kd() {
-                            tracing::warn!(
-                                group_id = %hex::encode(group_id),
-                                error = %e,
-                                "KeyDelivery side-effect failed; DAG apply continues"
-                            );
-                            result.key_unwrap_failures.push(KeyUnwrapFailure {
-                                group_id: *group_id,
-                                reason: format!("KeyDelivery side-effect failed: {e}"),
-                            });
+                        match apply_kd() {
+                            Ok(retry_divergence) => {
+                                if retry_divergence.is_some() {
+                                    // KeyDelivery itself never produces a
+                                    // post-apply divergence — only the
+                                    // retried encrypted ops can. Merge
+                                    // their LWW report into the same
+                                    // outbox slot the fresh-arrival path
+                                    // uses so the node handler routes it
+                                    // to `reconcile_after_divergence`.
+                                    result.divergence = retry_divergence;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    group_id = %hex::encode(group_id),
+                                    error = %e,
+                                    "KeyDelivery side-effect failed; DAG apply continues"
+                                );
+                                result.key_unwrap_failures.push(KeyUnwrapFailure {
+                                    group_id: *group_id,
+                                    reason: format!("KeyDelivery side-effect failed: {e}"),
+                                });
+                            }
                         }
                     }
                     RootOp::MemberJoined {
@@ -604,7 +619,10 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(report)
     }
 
-    fn retry_encrypted_ops_for_group(&self, group_id: [u8; 32]) -> EyreResult<()> {
+    fn retry_encrypted_ops_for_group(
+        &self,
+        group_id: [u8; 32],
+    ) -> EyreResult<Option<super::DivergenceReport>> {
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
         let retry_candidates = retry_service
@@ -614,6 +632,15 @@ impl<'a> NamespaceGovernance<'a> {
         if attempted > 0 {
             record_namespace_retry_event("collected");
         }
+
+        // Last-writer-wins across retry candidates that surface
+        // divergence. The outbox carrying this report to the node
+        // handler is a single slot (see `governance_dag.rs`), so
+        // collapsing here matches the fresh-arrival path's LWW
+        // semantics. In practice each retry batch unblocks a small
+        // number of ops and at most one is a `MemberRemoved` /
+        // `MemberLeft` that could report divergence.
+        let mut retry_divergence: Option<super::DivergenceReport> = None;
 
         for candidate in &retry_candidates {
             let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
@@ -625,20 +652,24 @@ impl<'a> NamespaceGovernance<'a> {
                 &candidate.group_key,
                 encrypted,
             ) {
-                // Divergence reports from retry-path applies are
-                // intentionally dropped: a retry replay's only
-                // observers are the ops it unblocks, and emitting a
-                // reconcile trigger from inside a retry loop would
-                // double-trigger when the same op also surfaces via
-                // the fresh-arrival path. The fresh path is where the
-                // node handler routes divergence; the retry path is
-                // bookkeeping.
-                Ok(_divergence) => {
+                // Surface divergence from retry-path applies. Once a
+                // retry replay applies an op, the DAG marks any later
+                // fresh arrival of the same op as `Duplicate` and the
+                // apply work — including the post-apply hash check —
+                // is skipped. That makes the retry path the *only*
+                // opportunity to detect divergence on retried ops:
+                // dropping it here means the reconcile trigger never
+                // fires for `MemberRemoved` / `MemberLeft` ops that
+                // were buffered pending `KeyDelivery`.
+                Ok(divergence) => {
                     record_namespace_retry_event("applied");
                     tracing::info!(
                         group_id = %hex::encode(group_id),
                         "retried encrypted op after KeyDelivery"
                     );
+                    if divergence.is_some() {
+                        retry_divergence = divergence;
+                    }
                 }
                 Err(e) => {
                     record_namespace_retry_event("failed");
@@ -655,7 +686,7 @@ impl<'a> NamespaceGovernance<'a> {
             record_namespace_retry_event("none");
         }
 
-        Ok(())
+        Ok(retry_divergence)
     }
 
     fn decrypt_and_apply_group_op(
