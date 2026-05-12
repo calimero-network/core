@@ -802,12 +802,23 @@ const MAX_DAG_HEADS: usize = 64;
 ///    are checked independently: an all-zero `expected_group_state_hash`
 ///    skips only the group-state comparison, an empty
 ///    `expected_context_state_hashes` skips only the per-context
-///    comparison. **Groups with zero registered contexts correctly
-///    trigger only the group-state check** — empty actual + empty
-///    expected match, no per-context divergence is reported, and the
-///    group-state half is what catches membership-row drift. Once the
-///    network has fully rolled forward to signed-claim ops these
-///    sentinels become dead and can be removed.
+///    comparison.
+///
+///    **Ambiguity acknowledged:** an empty list is "no claim" from a
+///    legacy sender AND "no contexts to claim" from a current
+///    sender on a context-less group. The two cases are
+///    indistinguishable on the wire, so the per-context check is
+///    skipped in both. This is acceptable because a context-less
+///    group has nothing per-context to compare anyway — the empty
+///    actual would match the empty expected. The group-state half
+///    still runs and catches any membership-row drift, which is the
+///    interesting failure mode for context-less groups. Wrapping the
+///    field in `Option<Vec<...>>` to disambiguate would be a
+///    wire-format churn for no behavioral gain.
+///
+///    Once the network has fully rolled forward to signed-claim ops
+///    the zero sentinel becomes dead and can be removed; the
+///    empty-list "no contexts" case stays valid forever.
 fn verify_post_apply_state_hashes(
     store: &Store,
     group_id: &ContextGroupId,
@@ -821,9 +832,13 @@ fn verify_post_apply_state_hashes(
         return;
     }
 
-    let (group_hash_diverges, actual_group_state_hash) = if check_group_hash {
+    // Group-state half. `None` here means the check was either
+    // skipped (no claim) or the recompute itself errored — in both
+    // cases we suppress the hash fields from the divergence warn so
+    // an operator doesn't see misleading `0000…` values.
+    let group_outcome: Option<(bool, [u8; 32])> = if check_group_hash {
         match compute_group_state_hash(store, group_id) {
-            Ok(actual) => (actual != *expected_group_state_hash, actual),
+            Ok(actual) => Some((actual != *expected_group_state_hash, actual)),
             Err(err) => {
                 tracing::warn!(
                     group_id = %hex::encode(group_id.to_bytes()),
@@ -831,50 +846,95 @@ fn verify_post_apply_state_hashes(
                     %err,
                     "post-apply group-state hash recompute failed; skipping convergence check"
                 );
-                (false, [0u8; 32])
+                None
             }
         }
     } else {
-        (false, [0u8; 32])
+        None
     };
 
-    let divergent: Vec<ContextId> = if check_context_hashes {
-        let actual_context_state_hashes = match snapshot_context_state_hashes(store, group_id) {
-            Ok(v) => v,
+    // Per-context half. A snapshot error must NOT fall through to
+    // the diff with an empty `actual` — that would report every
+    // signed expected context as divergent (false-positive storm).
+    // `None` here means the check was skipped or the snapshot
+    // errored; the warn omits the per-context fields in that case.
+    let divergent: Option<Vec<ContextId>> = if check_context_hashes {
+        match snapshot_context_state_hashes(store, group_id) {
+            Ok(actual_context_state_hashes) => Some(diff_sorted_context_hashes(
+                group_id,
+                op_kind,
+                expected_context_state_hashes,
+                &actual_context_state_hashes,
+            )),
             Err(err) => {
                 tracing::warn!(
                     group_id = %hex::encode(group_id.to_bytes()),
                     op_kind,
                     %err,
-                    "post-apply per-context state-hash snapshot failed; skipping convergence check"
+                    "post-apply per-context state-hash snapshot failed; skipping per-context \
+                     convergence check"
                 );
-                Vec::new()
+                None
             }
-        };
-        diff_sorted_context_hashes(
-            group_id,
-            op_kind,
-            expected_context_state_hashes,
-            &actual_context_state_hashes,
-        )
+        }
     } else {
-        Vec::new()
+        None
     };
 
-    if group_hash_diverges || !divergent.is_empty() {
-        tracing::warn!(
-            group_id = %hex::encode(group_id.to_bytes()),
-            op_kind,
-            group_hash_diverges,
-            expected_group_state_hash = %hex::encode(expected_group_state_hash),
-            actual_group_state_hash = %hex::encode(actual_group_state_hash),
-            divergent_context_count = divergent.len(),
-            divergent_context_ids = ?divergent
-                .iter()
-                .map(|c| hex::encode(AsRef::<[u8; 32]>::as_ref(c)))
-                .collect::<Vec<_>>(),
-            "cross-DAG state-hash divergence detected on apply — reconcile-via-anchor will heal"
-        );
+    let group_diverges = matches!(group_outcome, Some((true, _)));
+    let context_diverges = divergent.as_ref().is_some_and(|v| !v.is_empty());
+    if !group_diverges && !context_diverges {
+        return;
+    }
+
+    // Branch the warn so the operator can tell which half ran. When
+    // a half was skipped we omit its fields entirely rather than
+    // logging `0000…` as the actual value.
+    match (group_outcome, divergent) {
+        (Some((_, actual_group)), Some(divergent_vec)) => {
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                op_kind,
+                group_hash_diverges = group_diverges,
+                expected_group_state_hash = %hex::encode(expected_group_state_hash),
+                actual_group_state_hash = %hex::encode(actual_group),
+                divergent_context_count = divergent_vec.len(),
+                divergent_context_ids = ?divergent_vec
+                    .iter()
+                    .map(|c| hex::encode(AsRef::<[u8; 32]>::as_ref(c)))
+                    .collect::<Vec<_>>(),
+                "cross-DAG state-hash divergence detected on apply — reconcile-via-anchor will heal"
+            );
+        }
+        (Some((_, actual_group)), None) => {
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                op_kind,
+                group_hash_diverges = group_diverges,
+                expected_group_state_hash = %hex::encode(expected_group_state_hash),
+                actual_group_state_hash = %hex::encode(actual_group),
+                per_context_check = "skipped",
+                "cross-DAG group-state hash divergence detected on apply — reconcile-via-anchor will heal"
+            );
+        }
+        (None, Some(divergent_vec)) => {
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                op_kind,
+                group_hash_check = "skipped",
+                divergent_context_count = divergent_vec.len(),
+                divergent_context_ids = ?divergent_vec
+                    .iter()
+                    .map(|c| hex::encode(AsRef::<[u8; 32]>::as_ref(c)))
+                    .collect::<Vec<_>>(),
+                "cross-DAG per-context state-hash divergence detected on apply — reconcile-via-anchor will heal"
+            );
+        }
+        (None, None) => {
+            // Unreachable: both halves skipped means we'd have
+            // early-returned above (`!group_diverges && !context_diverges`).
+            // Listed for exhaustiveness; no log line.
+        }
     }
 }
 
@@ -898,6 +958,23 @@ fn diff_sorted_context_hashes(
     expected: &[(ContextId, [u8; 32])],
     actual: &[(ContextId, [u8; 32])],
 ) -> Vec<ContextId> {
+    // The merge-scan is only correct when both inputs are sorted by
+    // `ContextId`. `actual` comes from `snapshot_context_state_hashes`
+    // which sorts before returning. `expected` rides on a signed op
+    // whose deterministic content hash requires the sender's
+    // `snapshot_context_state_hashes` to have sorted before signing,
+    // so a peer that didn't sort would have produced a different
+    // op content hash and been dedup'd / rejected at the wire layer.
+    // The assertion catches dev / test misuse where the contract is
+    // violated before it becomes a quiet divergence-report bug.
+    debug_assert!(
+        expected.windows(2).all(|w| w[0].0 < w[1].0),
+        "expected context-hash snapshot must be strictly sorted by ContextId"
+    );
+    debug_assert!(
+        actual.windows(2).all(|w| w[0].0 < w[1].0),
+        "actual context-hash snapshot must be strictly sorted by ContextId"
+    );
     let mut divergent = Vec::new();
     let mut i = 0;
     let mut j = 0;

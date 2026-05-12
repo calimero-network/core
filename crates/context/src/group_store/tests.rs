@@ -6283,3 +6283,33 @@ fn diff_sorted_context_hashes_pins_merge_scan_semantics() {
     let actual: Vec<(ContextId, [u8; 32])> = Vec::new();
     assert!(diff_sorted_context_hashes(&group_id, "test", &expected, &actual).is_empty());
 }
+
+#[test]
+#[should_panic(expected = "expected context-hash snapshot must be strictly sorted")]
+fn diff_sorted_context_hashes_panics_on_unsorted_expected() {
+    // Pins the sorted-input debug assertion. Catches dev / test
+    // misuse before it becomes a quiet false-divergence-report bug.
+    // The signed-op wire content hash is computed over the snapshot
+    // as sorted, so an unsorted `expected` on the wire would have
+    // failed dedup / verification upstream — this assertion is a
+    // safety net for in-process callers.
+    use super::diff_sorted_context_hashes;
+    let group_id = test_group_id();
+    let cid_a = ContextId::from([0x01; 32]);
+    let cid_b = ContextId::from([0x02; 32]);
+    let unsorted = vec![(cid_b, [0u8; 32]), (cid_a, [0u8; 32])];
+    let sorted = vec![(cid_a, [0u8; 32]), (cid_b, [0u8; 32])];
+    let _ = diff_sorted_context_hashes(&group_id, "test", &unsorted, &sorted);
+}
+
+#[test]
+#[should_panic(expected = "actual context-hash snapshot must be strictly sorted")]
+fn diff_sorted_context_hashes_panics_on_unsorted_actual() {
+    use super::diff_sorted_context_hashes;
+    let group_id = test_group_id();
+    let cid_a = ContextId::from([0x01; 32]);
+    let cid_b = ContextId::from([0x02; 32]);
+    let sorted = vec![(cid_a, [0u8; 32]), (cid_b, [0u8; 32])];
+    let unsorted = vec![(cid_b, [0u8; 32]), (cid_a, [0u8; 32])];
+    let _ = diff_sorted_context_hashes(&group_id, "test", &sorted, &unsorted);
+}
