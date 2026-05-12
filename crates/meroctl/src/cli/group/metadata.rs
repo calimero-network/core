@@ -20,10 +20,14 @@ fn parse_kv(s: &str) -> Result<(String, String)> {
 /// Shared `set` options for the read-modify-write subcommands.
 #[derive(Args, Clone, Debug)]
 pub struct SetOpts {
-    #[clap(long, help = "Set the display name")]
+    #[clap(long, help = "Set the display name (omit to keep the current name)")]
     pub name: Option<String>,
 
-    #[clap(long, conflicts_with = "name", help = "Clear the display name")]
+    #[clap(
+        long,
+        conflicts_with = "name",
+        help = "Clear the display name (omit to keep it)"
+    )]
     pub clear_name: bool,
 
     #[clap(
@@ -57,6 +61,11 @@ pub struct SetOpts {
 
 impl SetOpts {
     /// Combine the current record with these options into an API request.
+    ///
+    /// Name: `--clear-name` removes it; otherwise `--name` overrides it;
+    /// otherwise the current name is kept. Data: `--set`/`--unset` patch the
+    /// current `data` map, unless `--replace-data` is given (then the `--set`
+    /// pairs become the whole map and `--unset` is rejected at the CLI layer).
     fn into_request(
         self,
         current: calimero_primitives::metadata::MetadataRecord,

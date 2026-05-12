@@ -39,6 +39,9 @@ pub async fn handler(
             context_id,
             name: req.name,
             data: req.data,
+            // Authenticated key (when present) wins over an explicit
+            // `requester` in the body — the body field is only honored for
+            // unauthenticated / local calls.
             requester: auth_key.map(|Extension(k)| k.0).or(req.requester),
         })
         .await
