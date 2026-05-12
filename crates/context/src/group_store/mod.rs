@@ -790,10 +790,11 @@ const MAX_PARENT_OP_HASHES: usize = 256;
 const MAX_DAG_HEADS: usize = 64;
 
 /// Wall-clock milliseconds since the Unix epoch. Used to stamp
-/// [`MetadataRecord::updated_at`] at apply time. This is informational only
+/// [`MetadataRecord::updated_at`] at apply time (and when a handler seeds an
+/// initial metadata record on group create/join). This is informational only
 /// (it is deliberately excluded from `compute_group_state_hash`), so a small
 /// per-peer skew is acceptable.
-fn now_millis() -> u64 {
+pub(crate) fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))

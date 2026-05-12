@@ -4,23 +4,16 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_client::group::{GetContextMetadataRequest, SetContextMetadataRequest};
-use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     GetMetadataApiResponse, SetContextMetadataApiRequest, SetMetadataApiResponse,
 };
 use tracing::{error, info};
 
-use super::parse_group_id;
+use super::{parse_context_id, parse_group_id};
 use crate::admin::handlers::validation::ValidatedJson;
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::auth::AuthenticatedKey;
 use crate::AdminState;
-
-fn parse_context_id(s: &str) -> Result<ContextId, Box<axum::response::Response>> {
-    s.parse().map_err(|err| {
-        Box::new(parse_api_error(eyre::eyre!("invalid context_id '{s}': {err}")).into_response())
-    })
-}
 
 pub async fn handler(
     Path((group_id_str, context_id_str)): Path<(String, String)>,
@@ -34,7 +27,7 @@ pub async fn handler(
     };
     let context_id = match parse_context_id(&context_id_str) {
         Ok(id) => id,
-        Err(err) => return (*err).into_response(),
+        Err(err) => return err.into_response(),
     };
 
     info!(group_id=%group_id_str, context_id=%context_id_str, "Setting context metadata");
@@ -76,7 +69,7 @@ pub async fn get_handler(
     };
     let context_id = match parse_context_id(&context_id_str) {
         Ok(id) => id,
-        Err(err) => return (*err).into_response(),
+        Err(err) => return err.into_response(),
     };
 
     match state

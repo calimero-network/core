@@ -165,11 +165,19 @@ impl Handler<CreateGroupRequest> for ContextManager {
                 );
 
                 if name.is_some() {
+                    // Seed the group's initial metadata record locally, stamped
+                    // with the creator's identity / wall-clock — not the
+                    // zero-value `Default` (which would surface through the API
+                    // as misleading provenance). Like under the former alias,
+                    // this is a local seed; later `GroupOp::GroupMetadataSet`
+                    // ops replicate and supersede it.
                     group_store::set_group_metadata(
                         &datastore,
                         &group_id,
                         &calimero_primitives::metadata::MetadataRecord {
                             name: name.clone(),
+                            updated_at: group_store::now_millis(),
+                            updated_by: admin_identity,
                             ..Default::default()
                         },
                     )?;
