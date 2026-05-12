@@ -103,14 +103,16 @@ start_profiling() {
     local perf_output="$PROFILING_OUTPUT_DIR/perf-${node_name}.data"
     local perf_log="$PROFILING_OUTPUT_DIR/perf-${node_name}.log"
     
-    echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz, call-graph: dwarf)..."
-    # `--call-graph dwarf` (not bare `-g` = frame pointers): merod is a Rust
-    # release build, which omits frame pointers, so frame-pointer unwinding
-    # produces shallow/garbage stacks — useless for a flamegraph. DWARF
-    # unwinding (8KB stack snapshots per sample) costs more I/O but is the
-    # only thing that gives a real call graph here. (Supported by every perf
-    # since ~3.9; the image ships linux-tools-generic.)
-    perf record -F "$PERF_SAMPLE_FREQ" --call-graph dwarf -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
+    echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz, call-graph: fp)..."
+    # `-g` = frame-pointer unwinding. The profiling image builds merod with
+    # `-C force-frame-pointers=yes` under `[profile.profiling]` (debug=true,
+    # strip=false) precisely so this works — `%rbp` chains give correct deep
+    # stacks here, the capture is cheap, and `perf script | stackcollapse |
+    # flamegraph.pl` renders cleanly against the binary's symtab. (Don't swap
+    # this for `--call-graph dwarf` without also bumping `-m` and capping the
+    # snapshot size, and verifying merod's .debug_* survives the release
+    # pipeline — otherwise the render fails and perf thrashes its mmap ring.)
+    perf record -F "$PERF_SAMPLE_FREQ" -g -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
     PERF_PID=$!
     echo $PERF_PID > "$PROFILING_OUTPUT_DIR/perf.pid"
     
