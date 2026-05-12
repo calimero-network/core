@@ -12,8 +12,9 @@ use tokio::sync::oneshot;
 use crate::group::{
     AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupLocalStateRequest,
     CreateGroupInvitationRequest, CreateGroupRequest, DeleteGroupRequest, DeleteNamespaceRequest,
-    DetachContextFromGroupRequest, GetGroupForContextRequest, GetGroupInfoRequest,
-    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetNamespaceIdentityRequest,
+    DetachContextFromGroupRequest, GetContextMetadataRequest, GetGroupForContextRequest,
+    GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetNamespaceIdentityRequest,
     JoinContextRequest, JoinGroupRequest, LeaveContextRequest, LeaveGroupRequest,
     LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
@@ -408,6 +409,18 @@ pub enum ContextMessage {
     SetContextMetadata {
         request: SetContextMetadataRequest,
         outcome: oneshot::Sender<<SetContextMetadataRequest as Message>::Result>,
+    },
+    GetGroupMetadata {
+        request: GetGroupMetadataRequest,
+        outcome: oneshot::Sender<<GetGroupMetadataRequest as Message>::Result>,
+    },
+    GetMemberMetadata {
+        request: GetMemberMetadataRequest,
+        outcome: oneshot::Sender<<GetMemberMetadataRequest as Message>::Result>,
+    },
+    GetContextMetadata {
+        request: GetContextMetadataRequest,
+        outcome: oneshot::Sender<<GetContextMetadataRequest as Message>::Result>,
     },
     StoreGroupContext {
         request: StoreGroupContextRequest,

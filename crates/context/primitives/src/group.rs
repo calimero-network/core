@@ -448,6 +448,37 @@ pub struct LeaveNamespaceResponse {
     pub member_public_key: PublicKey,
 }
 
+// ---- Metadata getters ----
+
+#[derive(Copy, Clone, Debug)]
+pub struct GetGroupMetadataRequest {
+    pub group_id: ContextGroupId,
+}
+
+impl Message for GetGroupMetadataRequest {
+    type Result = eyre::Result<MetadataRecord>;
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct GetMemberMetadataRequest {
+    pub group_id: ContextGroupId,
+    pub member: PublicKey,
+}
+
+impl Message for GetMemberMetadataRequest {
+    type Result = eyre::Result<MetadataRecord>;
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct GetContextMetadataRequest {
+    pub group_id: ContextGroupId,
+    pub context_id: ContextId,
+}
+
+impl Message for GetContextMetadataRequest {
+    type Result = eyre::Result<MetadataRecord>;
+}
+
 // ---- Group Permission Types ----
 
 #[derive(Debug)]

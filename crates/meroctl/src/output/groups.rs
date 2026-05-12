@@ -2,14 +2,15 @@ use calimero_server_primitives::admin::{
     AddGroupMembersApiResponse, CreateGroupApiResponse, CreateGroupInvitationApiResponse,
     CreateNamespaceApiResponse, DeleteGroupApiResponse, DeleteNamespaceApiResponse,
     DetachContextFromGroupApiResponse, GetGroupUpgradeStatusApiResponse,
-    GetMemberCapabilitiesApiResponse, GroupInfoApiResponse, JoinContextApiResponse,
-    JoinGroupApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
+    GetMemberCapabilitiesApiResponse, GetMetadataApiResponse, GroupInfoApiResponse,
+    JoinContextApiResponse, JoinGroupApiResponse, LeaveContextApiResponse, LeaveGroupApiResponse,
     LeaveNamespaceApiResponse, ListGroupContextsApiResponse, ListGroupMembersApiResponse,
     ListNamespaceGroupsApiResponse, ListNamespacesApiResponse, ListSubgroupsApiResponse,
     NamespaceApiResponse, NamespaceIdentityApiResponse, RegisterGroupSigningKeyApiResponse,
     RemoveGroupMembersApiResponse, ReparentGroupApiResponse, SetDefaultCapabilitiesApiResponse,
-    SetMemberCapabilitiesApiResponse, SetSubgroupVisibilityApiResponse, SyncGroupApiResponse,
-    UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse, UpgradeGroupApiResponse,
+    SetMemberCapabilitiesApiResponse, SetMetadataApiResponse, SetSubgroupVisibilityApiResponse,
+    SyncGroupApiResponse, UpdateGroupSettingsApiResponse, UpdateMemberRoleApiResponse,
+    UpgradeGroupApiResponse,
 };
 use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
@@ -532,5 +533,44 @@ impl Report for SetDefaultCapabilitiesApiResponse {
 impl Report for SetSubgroupVisibilityApiResponse {
     fn report(&self) {
         println!("{}", "Subgroup visibility updated successfully".green());
+    }
+}
+
+impl Report for GetMetadataApiResponse {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Field").fg(Color::Blue),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec![
+            "Name".to_owned(),
+            self.data
+                .name
+                .clone()
+                .unwrap_or_else(|| "-".to_owned()),
+        ]);
+        let _ = table.add_row(vec![
+            "Updated At".to_owned(),
+            self.data.updated_at.to_string(),
+        ]);
+        let _ = table.add_row(vec![
+            "Updated By".to_owned(),
+            self.data.updated_by.to_string(),
+        ]);
+        if self.data.data.is_empty() {
+            let _ = table.add_row(vec!["Data".to_owned(), "(empty)".to_owned()]);
+        } else {
+            for (k, v) in &self.data.data {
+                let _ = table.add_row(vec![format!("data.{k}"), v.clone()]);
+            }
+        }
+        println!("{table}");
+    }
+}
+
+impl Report for SetMetadataApiResponse {
+    fn report(&self) {
+        println!("{}", "Metadata updated successfully".green());
     }
 }

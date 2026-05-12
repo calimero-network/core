@@ -12,6 +12,7 @@ use calimero_primitives::common::DIGEST_SIZE;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::metadata::MetadataRecord;
 use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
 use eyre::{ContextCompat, WrapErr};
@@ -24,9 +25,10 @@ use crate::group::{
     AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupLocalStateRequest,
     CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
     CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DeleteNamespaceRequest,
-    DeleteNamespaceResponse, DetachContextFromGroupRequest, GetGroupForContextRequest,
-    GetGroupInfoRequest, GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest,
-    GetMemberCapabilitiesResponse, GetNamespaceIdentityRequest, GroupContextEntry,
+    DeleteNamespaceResponse, DetachContextFromGroupRequest, GetContextMetadataRequest,
+    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
+    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
+    GetMemberMetadataRequest, GetNamespaceIdentityRequest, GroupContextEntry,
     GroupInfoResponse, GroupSummary, GroupUpgradeInfo, JoinContextRequest, JoinContextResponse,
     JoinGroupRequest, JoinGroupResponse, LeaveContextRequest, LeaveContextResponse,
     LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest, LeaveNamespaceResponse,
@@ -1168,6 +1170,24 @@ impl ContextClient {
         SetContextMetadata,
         SetContextMetadataRequest,
         eyre::Result<()>
+    );
+    forward_to_actor!(
+        get_group_metadata,
+        GetGroupMetadata,
+        GetGroupMetadataRequest,
+        eyre::Result<MetadataRecord>
+    );
+    forward_to_actor!(
+        get_member_metadata,
+        GetMemberMetadata,
+        GetMemberMetadataRequest,
+        eyre::Result<MetadataRecord>
+    );
+    forward_to_actor!(
+        get_context_metadata,
+        GetContextMetadata,
+        GetContextMetadataRequest,
+        eyre::Result<MetadataRecord>
     );
     forward_to_actor!(
         store_group_context,

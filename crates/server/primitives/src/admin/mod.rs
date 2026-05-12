@@ -2343,6 +2343,12 @@ pub struct SetMetadataApiResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetMetadataApiResponse {
+    pub data: MetadataRecord,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetMemberCapabilitiesApiResponse {
     pub data: GetMemberCapabilitiesApiData,
 }

@@ -201,15 +201,16 @@ pub(crate) fn setup(
         )
         .route(
             "/groups/:group_id/metadata",
-            put(groups::set_group_metadata::handler),
+            get(groups::set_group_metadata::get_handler).put(groups::set_group_metadata::handler),
         )
         .route(
             "/groups/:group_id/members/:identity/metadata",
-            put(groups::set_member_metadata::handler),
+            get(groups::set_member_metadata::get_handler).put(groups::set_member_metadata::handler),
         )
         .route(
             "/groups/:group_id/contexts/:context_id/metadata",
-            put(groups::set_context_metadata::handler),
+            get(groups::set_context_metadata::get_handler)
+                .put(groups::set_context_metadata::handler),
         )
         .route(
             "/groups/:group_id/contexts/:context_id/remove",

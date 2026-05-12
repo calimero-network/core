@@ -17,10 +17,13 @@ pub mod delete_group;
 pub mod delete_namespace;
 pub mod detach_context_from_group;
 pub mod execute;
+pub mod get_context_metadata;
 pub mod get_group_for_context;
 pub mod get_group_info;
+pub mod get_group_metadata;
 pub mod get_group_upgrade_status;
 pub mod get_member_capabilities;
+pub mod get_member_metadata;
 pub mod get_namespace_identity;
 pub mod join_context;
 pub mod join_group;
@@ -201,6 +204,15 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetContextMetadata { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetGroupMetadata { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetMemberMetadata { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetContextMetadata { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::StoreGroupContext { request, outcome } => {

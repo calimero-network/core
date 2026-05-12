@@ -3,8 +3,10 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_client::group::SetGroupMetadataRequest;
-use calimero_server_primitives::admin::{SetGroupMetadataApiRequest, SetMetadataApiResponse};
+use calimero_context_client::group::{GetGroupMetadataRequest, SetGroupMetadataRequest};
+use calimero_server_primitives::admin::{
+    GetMetadataApiResponse, SetGroupMetadataApiRequest, SetMetadataApiResponse,
+};
 use tracing::{error, info};
 
 use super::parse_group_id;
@@ -24,7 +26,7 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    info!(group_id=%group_id_str, ?req.name, "Setting group metadata");
+    info!(group_id=%group_id_str, "Setting group metadata");
 
     let result = state
         .ctx_client
@@ -49,5 +51,28 @@ pub async fn handler(
             error!(group_id=%group_id_str, error=?err, "Failed to set group metadata");
             err.into_response()
         }
+    }
+}
+
+pub async fn get_handler(
+    Path(group_id_str): Path<String>,
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    let group_id = match parse_group_id(&group_id_str) {
+        Ok(id) => id,
+        Err(err) => return err.into_response(),
+    };
+
+    match state
+        .ctx_client
+        .get_group_metadata(GetGroupMetadataRequest { group_id })
+        .await
+        .map_err(parse_api_error)
+    {
+        Ok(record) => ApiResponse {
+            payload: GetMetadataApiResponse { data: record },
+        }
+        .into_response(),
+        Err(err) => err.into_response(),
     }
 }

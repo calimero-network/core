@@ -245,6 +245,12 @@ pub struct SetCapabilitiesCommand {
 
     #[clap(
         long,
+        help = "Allow member to set name/data on the group, its members, or its contexts"
+    )]
+    pub can_manage_metadata: bool,
+
+    #[clap(
+        long,
         help = "Public key of the requester (group admin). Auto-resolved from node group identity if omitted"
     )]
     pub requester: Option<PublicKey>,
@@ -270,6 +276,9 @@ impl SetCapabilitiesCommand {
         }
         if self.can_manage_visibility {
             capabilities |= 1 << 7;
+        }
+        if self.can_manage_metadata {
+            capabilities |= 1 << 8;
         }
 
         let identity_hex = hex::encode(self.identity.digest());
@@ -388,6 +397,14 @@ impl CheckAccessCommand {
         println!(
             "CAN_MANAGE_VISIBILITY:   {}",
             if caps & (1 << 7) != 0 {
+                "true"
+            } else {
+                "false"
+            }
+        );
+        println!(
+            "CAN_MANAGE_METADATA:     {}",
+            if caps & (1 << 8) != 0 {
                 "true"
             } else {
                 "false"
