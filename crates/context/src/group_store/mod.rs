@@ -959,6 +959,15 @@ fn apply_group_op_mutations(
             data,
         } => {
             permissions.require_can_manage_metadata(signer)?;
+            // Reject metadata for a context that isn't registered in this
+            // group — otherwise we'd create orphaned `GroupContextMetadata`
+            // rows for contexts in a different group (or no group at all).
+            if get_group_for_context(store, context_id)? != Some(*group_id) {
+                bail!(
+                    "context {context_id} is not registered in group {}",
+                    hex::encode(group_id.to_bytes())
+                );
+            }
             set_context_metadata(
                 store,
                 group_id,

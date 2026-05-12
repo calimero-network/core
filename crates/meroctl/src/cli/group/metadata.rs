@@ -37,7 +37,8 @@ pub struct SetOpts {
     #[clap(
         long = "unset",
         value_name = "KEY",
-        help = "Remove a data entry (repeatable). Ignored with --replace-data"
+        conflicts_with = "replace_data",
+        help = "Remove a data entry (repeatable). Mutually exclusive with --replace-data"
     )]
     pub unset: Vec<String>,
 
@@ -76,10 +77,10 @@ impl SetOpts {
         for (k, v) in self.set {
             let _ = data.insert(k, v);
         }
-        if !self.replace_data {
-            for k in &self.unset {
-                let _ = data.remove(k);
-            }
+        // `--unset` and `--replace-data` are mutually exclusive at the clap
+        // layer, so this only runs in the merge path.
+        for k in &self.unset {
+            let _ = data.remove(k);
         }
 
         SetMetadataApiRequest {
