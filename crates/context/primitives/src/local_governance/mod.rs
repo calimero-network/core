@@ -94,6 +94,15 @@ pub enum GroupOp {
     /// Apply-time mismatch is logged as a structured warning but does
     /// not roll back the apply; the canonical view is the admin's, and
     /// reconciliation against an anchor is the recovery path.
+    ///
+    /// **Two different group-state hashes travel in this op, by
+    /// design:** `cut.group_state_hash` is the **pre-apply** snapshot
+    /// (the state the signer signed against — used by receivers as
+    /// the descend-from boundary for the membership walk), while
+    /// `expected_group_state_hash` is the **post-apply** simulation
+    /// (used by receivers as the convergence target after they apply
+    /// the op). They have different values, different roles, and
+    /// different consumers; do not collapse them.
     MemberRemoved {
         member: PublicKey,
         cut: GovernancePosition,

@@ -102,6 +102,15 @@ fn hash_group_state(
     meta: &GroupMetaValue,
     members_sorted: &[(PublicKey, GroupMemberRole)],
 ) -> EyreResult<[u8; 32]> {
+    // Sorted-input contract enforced in dev / test, compiled out in
+    // release. Catches a caller that forgets to sort before
+    // delegating — the same shape used by `diff_sorted_context_hashes`.
+    debug_assert!(
+        members_sorted
+            .windows(2)
+            .all(|w| AsRef::<[u8]>::as_ref(&w[0].0) < AsRef::<[u8]>::as_ref(&w[1].0)),
+        "hash_group_state: members must be strictly sorted by PublicKey byte order"
+    );
     let mut hasher = Sha256::new();
     hasher.update(group_id.to_bytes());
     hasher.update(AsRef::<[u8]>::as_ref(&meta.admin_identity));
@@ -168,6 +177,18 @@ pub fn compute_group_state_hash_after_remove(
 /// joined yet) are skipped, not errored. Hashing what isn't there
 /// would put zero bytes in the snapshot and force a divergence on
 /// every receiver that has the context materialized.
+///
+/// **Asymmetric skip behavior between signer and receiver — by
+/// design.** The signer's call (at op-construction time) writes
+/// whichever contexts it has materialized into the signed claim. The
+/// receiver's call (during apply-time verification) reads its own
+/// materialized set. A context the signer had but the receiver
+/// doesn't appears as "only in expected" in the diff — and that's
+/// exactly the partition-window signal the anchor-sync reconcile
+/// path consumes to heal. On freshly-joined receivers many contexts
+/// may be unmaterialized and produce this signal in bulk; the
+/// per-context debug log in `diff_sorted_context_hashes` lets
+/// operators distinguish bootstrap catchup from real divergence.
 pub fn snapshot_context_state_hashes(
     store: &Store,
     group_id: &ContextGroupId,
@@ -192,12 +213,21 @@ pub fn snapshot_context_state_hashes(
 /// same descend-from boundary the signer signed against (not against
 /// each receiver's possibly-different local namespace heads).
 ///
-/// No double-read race window — the cut is captured once and travels
-/// in the signed op. If governance heads advance between this read
-/// and signing, the cut is slightly stale but still a valid
-/// descend-from boundary; the membership walk only requires the heads
-/// to exist in the receiver's DAG, not to be the receiver's current
-/// heads.
+/// The two store reads (DAG heads and group state hash) are NOT
+/// atomic. Callers must invoke this from a serializing context where
+/// no concurrent namespace governance op can land between the reads —
+/// in practice the `ContextManager` actor that owns all governance
+/// publishing. A reader running outside that serialization could
+/// receive a position whose `governance_dag_heads` and
+/// `group_state_hash` describe different points in time. The receiver
+/// would detect the resulting hash mismatch in
+/// `verify_post_apply_state_hashes` and trip a spurious divergence
+/// warning, but no state is adopted from the mismatch, so the worst
+/// case is operator noise.
+///
+/// Once the cut is built it travels intact in the signed op — there's
+/// no second read by receivers, so the only race is on the signer's
+/// side.
 pub fn build_governance_cut(
     store: &Store,
     group_id: &ContextGroupId,

@@ -931,9 +931,11 @@ fn verify_post_apply_state_hashes(
             );
         }
         (None, None) => {
-            // Unreachable: both halves skipped means we'd have
-            // early-returned above (`!group_diverges && !context_diverges`).
-            // Listed for exhaustiveness; no log line.
+            // Reachable when both halves errored — each error path
+            // already emitted its own warn upstream, so nothing to add
+            // here. Also reachable if both checks were skipped (the
+            // early return at the top of the function catches that
+            // ordinarily, but listing it keeps the match exhaustive).
         }
     }
 }
@@ -1106,6 +1108,16 @@ fn apply_group_op_mutations(
             // dropped at the receive entry point before the cross-DAG
             // check runs. Cleared if/when the member is re-added.
             mark_denied(store, group_id, member)?;
+            // Ordering invariant: `verify_post_apply_state_hashes`
+            // must run AFTER the last membership-mutating step of
+            // this op (here `remove_group_member` — `mark_denied`
+            // and `cascade_remove_member_from_group_tree` don't
+            // change `compute_group_state_hash`'s inputs) so the
+            // local post-apply hash matches the signer's pre-apply
+            // simulation. Adding any further membership-row
+            // mutation between `remove_group_member` and this call
+            // will make the recomputed hash diverge from the signed
+            // claim on every honest receiver.
             verify_post_apply_state_hashes(
                 store,
                 group_id,

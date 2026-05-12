@@ -6313,3 +6313,83 @@ fn diff_sorted_context_hashes_panics_on_unsorted_actual() {
     let unsorted = vec![(cid_b, [0u8; 32]), (cid_a, [0u8; 32])];
     let _ = diff_sorted_context_hashes(&group_id, "test", &sorted, &unsorted);
 }
+
+#[test]
+fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
+    // End-to-end sanity check that the convergence pipeline closes
+    // on the happy path: an admin precomputes the signed claims via
+    // the real sign-time helpers, signs and applies a `MemberRemoved`,
+    // and the receiver's post-apply state matches the signer's
+    // simulation. Every other test in this crate uses the
+    // `dummy_member_removed_op` helper which signs zeros — those
+    // tests cover apply semantics but not the verify path, so a
+    // future regression in the precompute-vs-actual equivalence
+    // would slip through without this one.
+    use calimero_context_client::local_governance::SignedGroupOp;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let target_pk = PublicKey::from([0xD0; 32]);
+    let bystander_pk = PublicKey::from([0xD1; 32]);
+
+    // Bootstrap: a meta + admin + target + bystander member set.
+    let mut meta = test_meta();
+    meta.admin_identity = admin_pk;
+    meta.owner_identity = admin_pk;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target_pk, GroupMemberRole::Member).unwrap();
+    add_group_member(&store, &gid, &bystander_pk, GroupMemberRole::Member).unwrap();
+
+    // Real sign-time precomputation: admin's view of the post-apply
+    // state, signed alongside the op.
+    let cut = build_governance_cut(&store, &gid).unwrap();
+    let expected_group_state_hash =
+        compute_group_state_hash_after_remove(&store, &gid, &target_pk).unwrap();
+    let expected_context_state_hashes = snapshot_context_state_hashes(&store, &gid).unwrap();
+
+    let signed = SignedGroupOp::sign(
+        &admin_sk,
+        gid.to_bytes(),
+        vec![],
+        compute_group_state_hash(&store, &gid).unwrap(),
+        1,
+        GroupOp::MemberRemoved {
+            member: target_pk,
+            cut,
+            expected_group_state_hash,
+            expected_context_state_hashes: expected_context_state_hashes.clone(),
+        },
+    )
+    .expect("sign MemberRemoved with real claims");
+
+    // Apply on a sibling store that started from the same state.
+    let receiver = test_store();
+    save_group_meta(&receiver, &gid, &meta).unwrap();
+    add_group_member(&receiver, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&receiver, &gid, &target_pk, GroupMemberRole::Member).unwrap();
+    add_group_member(&receiver, &gid, &bystander_pk, GroupMemberRole::Member).unwrap();
+    apply_local_signed_group_op(&receiver, &signed).expect("apply MemberRemoved");
+
+    // Receiver's actual post-apply hashes match the signed expected.
+    // This is what `verify_post_apply_state_hashes` checks internally;
+    // the apply succeeds with no warning when these match. If the
+    // helpers ever drift from the live `compute_group_state_hash` /
+    // `Snapshot::root_hash` semantics, this assertion catches it
+    // before the warn-log path fires on every honest apply.
+    let receiver_group_hash = compute_group_state_hash(&receiver, &gid).unwrap();
+    assert_eq!(
+        receiver_group_hash, expected_group_state_hash,
+        "receiver's post-apply group state hash must equal the signer's pre-apply simulation"
+    );
+    let receiver_context_hashes = snapshot_context_state_hashes(&receiver, &gid).unwrap();
+    assert_eq!(
+        receiver_context_hashes, expected_context_state_hashes,
+        "receiver's post-apply per-context snapshot must equal the signer's"
+    );
+}
