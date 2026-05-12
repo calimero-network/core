@@ -1024,9 +1024,11 @@ mod tests {
         // Alice has the `Root<T>` entry — a leaf with NO crdt_type (opaque).
         // Seeded directly via storage so `crdt_type` stays `None`.
         let opaque_value = b"app-root-state-v1".to_vec();
-        alice
-            .storage()
-            .add_entity(Id::new(ROOT_ENTRY_ID), &opaque_value, Metadata::new(100, 100));
+        alice.storage().add_entity(
+            Id::new(ROOT_ENTRY_ID),
+            &opaque_value,
+            Metadata::new(100, 100),
+        );
 
         // Sanity: Alice's opaque entity is genuinely opaque.
         let alice_idx = alice
@@ -1039,7 +1041,10 @@ mod tests {
         );
 
         // Bob does not have it → diverged.
-        assert!(bob.storage().get_entity_data(Id::new(ROOT_ENTRY_ID)).is_none());
+        assert!(bob
+            .storage()
+            .get_entity_data(Id::new(ROOT_ENTRY_ID))
+            .is_none());
         assert_ne!(
             alice.root_hash(),
             bob.root_hash(),
@@ -1053,7 +1058,9 @@ mod tests {
 
         // (a) Bob now has the same entity bytes.
         assert_eq!(
-            bob.storage().get_entity_data(Id::new(ROOT_ENTRY_ID)).as_deref(),
+            bob.storage()
+                .get_entity_data(Id::new(ROOT_ENTRY_ID))
+                .as_deref(),
             Some(opaque_value.as_slice()),
             "Bob should have the opaque entity bytes after sync"
         );
@@ -1099,8 +1106,11 @@ mod tests {
         // Bob has the `Root<T>` entry — a leaf with NO crdt_type (opaque).
         // Seeded directly via storage so `crdt_type` stays `None`.
         let opaque_value = b"app-root-state-v1".to_vec();
-        bob.storage()
-            .add_entity(Id::new(ROOT_ENTRY_ID), &opaque_value, Metadata::new(100, 100));
+        bob.storage().add_entity(
+            Id::new(ROOT_ENTRY_ID),
+            &opaque_value,
+            Metadata::new(100, 100),
+        );
 
         // Sanity: Bob's opaque entity is genuinely opaque.
         let bob_idx = bob
@@ -1113,7 +1123,10 @@ mod tests {
         );
 
         // Alice does not have it → diverged.
-        assert!(alice.storage().get_entity_data(Id::new(ROOT_ENTRY_ID)).is_none());
+        assert!(alice
+            .storage()
+            .get_entity_data(Id::new(ROOT_ENTRY_ID))
+            .is_none());
         assert_ne!(
             alice.root_hash(),
             bob.root_hash(),
@@ -1128,7 +1141,10 @@ mod tests {
 
         // (a) Alice now has the same entity bytes.
         assert_eq!(
-            alice.storage().get_entity_data(Id::new(ROOT_ENTRY_ID)).as_deref(),
+            alice
+                .storage()
+                .get_entity_data(Id::new(ROOT_ENTRY_ID))
+                .as_deref(),
             Some(opaque_value.as_slice()),
             "Alice should have Bob's opaque entity bytes after sync"
         );

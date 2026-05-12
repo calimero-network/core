@@ -601,8 +601,8 @@ mod tests {
         // a leaf with a synthetic `LwwRegister { inner_type: "Opaque" }` type;
         // such a node must be structurally valid so the receiving peer does not
         // drop it as "Invalid TreeNode".
-        let metadata = LeafMetadata::new(CrdtType::lww_register("Opaque"), 42, [0u8; 32])
-            .with_created_at(7);
+        let metadata =
+            LeafMetadata::new(CrdtType::lww_register("Opaque"), 42, [0u8; 32]).with_created_at(7);
         let leaf_data = TreeLeafData::new([118u8; 32], b"app-root-state".to_vec(), metadata);
         let node = TreeNode::leaf([118u8; 32], [9u8; 32], leaf_data);
 

@@ -665,9 +665,8 @@ fn collect_leaves_recursive(
                 trace!(%entity_id, "opaque leaf, synthesised LWW wire type for push");
                 CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
             });
-            let metadata =
-                LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
-                    .with_created_at(index.metadata.created_at());
+            let metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
+                .with_created_at(index.metadata.created_at());
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
             if leaf_data.value.len() > MAX_LEAF_VALUE_SIZE {
                 warn!(
@@ -925,8 +924,14 @@ mod tests {
                 .expect("node should exist");
 
             assert!(node.is_leaf(), "opaque entity must be emitted as a leaf");
-            assert!(!node.is_internal(), "opaque entity must not be an internal node");
-            assert!(node.is_valid(), "opaque leaf node must be structurally valid");
+            assert!(
+                !node.is_internal(),
+                "opaque entity must not be an internal node"
+            );
+            assert!(
+                node.is_valid(),
+                "opaque leaf node must be structurally valid"
+            );
             let leaf_data = node.leaf_data.as_ref().expect("leaf must carry leaf_data");
             assert!(
                 matches!(leaf_data.metadata.crdt_type, CrdtType::LwwRegister { .. }),
