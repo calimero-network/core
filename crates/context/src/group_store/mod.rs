@@ -2,7 +2,7 @@ use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_primitives::metadata::MetadataRecord;
+use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
 use calimero_store::key::FromKeyParts;
 use calimero_store::key::{
     AsKeyParts, GroupMemberValue, GroupMetaValue, GroupOpHeadValue, GroupUpgradeValue,
@@ -924,6 +924,7 @@ fn apply_group_op_mutations(
         }
         GroupOp::GroupMetadataSet { name, data } => {
             permissions.require_can_manage_metadata(signer)?;
+            validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
             set_group_metadata(
                 store,
                 group_id,
@@ -949,6 +950,7 @@ fn apply_group_op_mutations(
             } else {
                 permissions.require_can_manage_metadata(signer)?;
             }
+            validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
             set_member_metadata(
                 store,
                 group_id,
@@ -976,6 +978,7 @@ fn apply_group_op_mutations(
                     hex::encode(group_id.to_bytes())
                 );
             }
+            validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
             set_context_metadata(
                 store,
                 group_id,

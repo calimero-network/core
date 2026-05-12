@@ -49,9 +49,83 @@ impl Default for MetadataRecord {
     }
 }
 
+/// Max length of [`MetadataRecord::name`], in bytes.
+pub const MAX_METADATA_NAME_LEN: usize = 64;
+/// Max number of entries in [`MetadataRecord::data`].
+pub const MAX_METADATA_DATA_ENTRIES: usize = 64;
+/// Max length of a [`MetadataRecord::data`] key, in bytes.
+pub const MAX_METADATA_DATA_KEY_LEN: usize = 64;
+/// Max length of a [`MetadataRecord::data`] value, in bytes.
+pub const MAX_METADATA_DATA_VALUE_LEN: usize = 4096;
+
+/// Validate a metadata payload (`name` + `data`) against the hard protocol
+/// limits. Enforced both at the HTTP entry point and on the `*MetadataSet`
+/// op-apply path — gossip-replicated ops are checked too, so a peer can't
+/// bloat the replicated governance state. Returns a human-readable reason on
+/// violation. These limits are part of the protocol: changing them is a
+/// breaking change.
+pub fn validate_metadata_payload(
+    name: Option<&str>,
+    data: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if let Some(name) = name {
+        if name.len() > MAX_METADATA_NAME_LEN {
+            return Err(format!(
+                "metadata name too long: {} bytes (max {MAX_METADATA_NAME_LEN})",
+                name.len()
+            ));
+        }
+    }
+    if data.len() > MAX_METADATA_DATA_ENTRIES {
+        return Err(format!(
+            "metadata data has too many entries: {} (max {MAX_METADATA_DATA_ENTRIES})",
+            data.len()
+        ));
+    }
+    for (k, v) in data {
+        if k.len() > MAX_METADATA_DATA_KEY_LEN {
+            return Err(format!(
+                "metadata data key too long: {} bytes (max {MAX_METADATA_DATA_KEY_LEN})",
+                k.len()
+            ));
+        }
+        if v.len() > MAX_METADATA_DATA_VALUE_LEN {
+            return Err(format!(
+                "metadata data value too long: {} bytes (max {MAX_METADATA_DATA_VALUE_LEN})",
+                v.len()
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::MetadataRecord;
+    use std::collections::BTreeMap;
+
+    use super::{
+        validate_metadata_payload, MetadataRecord, MAX_METADATA_DATA_ENTRIES,
+        MAX_METADATA_DATA_VALUE_LEN, MAX_METADATA_NAME_LEN,
+    };
+
+    #[test]
+    fn payload_validation_bounds() {
+        assert!(validate_metadata_payload(Some("general"), &BTreeMap::new()).is_ok());
+        assert!(validate_metadata_payload(None, &BTreeMap::new()).is_ok());
+
+        let long_name = "x".repeat(MAX_METADATA_NAME_LEN + 1);
+        assert!(validate_metadata_payload(Some(&long_name), &BTreeMap::new()).is_err());
+
+        let mut too_many = BTreeMap::new();
+        for i in 0..=MAX_METADATA_DATA_ENTRIES {
+            let _ = too_many.insert(format!("k{i}"), "v".to_owned());
+        }
+        assert!(validate_metadata_payload(None, &too_many).is_err());
+
+        let mut big_value = BTreeMap::new();
+        let _ = big_value.insert("k".to_owned(), "v".repeat(MAX_METADATA_DATA_VALUE_LEN + 1));
+        assert!(validate_metadata_payload(None, &big_value).is_err());
+    }
 
     #[test]
     fn default_is_empty() {
