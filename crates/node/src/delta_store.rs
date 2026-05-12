@@ -42,10 +42,17 @@ use crate::sync::rotation_log_reader;
 /// across restarts. Per #2272 review.
 const MAX_TOPOLOGY_ENTRIES: usize = 10_000;
 
-/// Bound on `context_client.execute(...)` inside `apply()`. The caller
-/// holds the DAG write lock during this await; without a bound, a slow
-/// WASM merge-apply (#2199) propagates as a 30s+ lock hold. Returning
-/// `ApplyError` here releases the lock and lets sync recovery retry.
+/// Soft budget for `context_client.execute(...)` inside `apply()`. The
+/// caller holds the DAG write lock during this await; a slow WASM
+/// merge-apply (#2199) therefore pins it. This is *not* a hard cap: the
+/// apply runs on a `spawn_blocking` thread that cannot be cancelled, and
+/// abandoning it here would release the DAG write lock while the apply
+/// completes and `commit()`s its storage writes anyway — late, racing the
+/// next delta (the delta would be in storage but absent from the DAG, then
+/// re-synced and re-applied → divergent root hash). The merge-apply is
+/// gas-bounded so it terminates, and post-#2238 is fast enough that holding
+/// the lock for its duration is acceptable; exceeding this threshold only
+/// produces a warning. See #2199 / #2238.
 const WASM_APPLY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Result of adding a delta with cascaded event information
@@ -222,26 +229,39 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
 
         let wasm_start = std::time::Instant::now();
 
-        // Bounded so the caller's DAG write lock can't be pinned by a
-        // slow WASM merge-apply (#2199).
-        let outcome = tokio::time::timeout(
-            WASM_APPLY_TIMEOUT,
-            self.context_client.execute(
-                &self.context_id,
-                &self.our_identity,
-                "__calimero_sync_next".to_owned(),
-                artifact,
-                vec![],
-                None,
-            ),
-        )
-        .await
-        .map_err(|_elapsed| {
-            ApplyError::Application(format!(
-                "WASM execution exceeded {}s budget (#2186)",
-                WASM_APPLY_TIMEOUT.as_secs()
-            ))
-        })?
+        // Do NOT bound this with a hard `timeout`: `context_client.execute`
+        // runs the WASM merge-apply on a `spawn_blocking` thread, which
+        // can't be cancelled. If we timed out and dropped this future, the
+        // caller's DAG write lock would be released and the delta recorded
+        // as not-applied, while the blocking apply ran to completion and
+        // then `commit()`d its storage writes + bumped `context.root_hash`
+        // anyway — late, racing the next delta's apply. Storage would hold
+        // a delta the DAG doesn't know about (re-synced, re-applied,
+        // divergent root hash). So we keep waiting; the apply is gas-bounded
+        // (it terminates) and post-#2238 is fast. Only warn if it runs long.
+        // See #2199 / #2238.
+        let execute = self.context_client.execute(
+            &self.context_id,
+            &self.our_identity,
+            "__calimero_sync_next".to_owned(),
+            artifact,
+            vec![],
+            None,
+        );
+        tokio::pin!(execute);
+        let outcome = match tokio::time::timeout(WASM_APPLY_TIMEOUT, &mut execute).await {
+            Ok(res) => res,
+            Err(_elapsed) => {
+                warn!(
+                    context_id = %self.context_id,
+                    delta_id = %Hash::from(delta.id),
+                    over_budget_secs = WASM_APPLY_TIMEOUT.as_secs(),
+                    is_merge = is_merge_scenario,
+                    "WASM merge-apply over soft budget — still waiting (a spawn_blocking apply can't be cancelled without leaving storage/DAG divergent); see #2199/#2238"
+                );
+                execute.await
+            }
+        }
         .map_err(|e| ApplyError::Application(format!("WASM execution failed: {e}")))?;
 
         let wasm_elapsed_ms = wasm_start.elapsed().as_secs_f64() * 1000.0;
