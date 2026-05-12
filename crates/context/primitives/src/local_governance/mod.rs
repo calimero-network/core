@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_context_config::types::SignedGroupOpenInvitation;
+use calimero_context_config::types::{GovernancePosition, SignedGroupOpenInvitation};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -33,6 +33,12 @@ pub use ack_router::AckRouter;
 
 /// Wire/schema version for [`SignedGroupOp`].
 ///
+/// v4: `MemberRemoved` and `MemberLeft` now carry the signed governance-DAG
+/// cut, the expected post-apply group state hash, and the expected
+/// post-apply per-context CRDT state hashes. Receivers detect divergence by
+/// comparing their computed hashes against the signed values after apply.
+/// Pre-1.0 wire change; old-shape ops are rejected outright.
+///
 /// v3: Added `state_hash: [u8; 32]` — each op commits to the group's
 /// authorization-relevant state at signing time. On apply, a non-zero
 /// state hash is verified against the current state to reject stale ops.
@@ -42,7 +48,7 @@ pub use ack_router::AckRouter;
 ///
 /// v1 was internal to feature branch development and never deployed to any
 /// persistent network. No backward-compatible deserialization is needed.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 3;
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 4;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
@@ -62,7 +68,49 @@ pub enum GroupOp {
         role: GroupMemberRole,
     },
     /// Remove a member.
-    MemberRemoved { member: PublicKey },
+    ///
+    /// Carries three signed claims for cross-DAG convergence:
+    ///
+    /// - `cut`: the namespace governance-DAG position the admin signed
+    ///   against. Receivers use this — not their own local heads — as
+    ///   the descend-from boundary for the apply-time cross-DAG
+    ///   membership check. Two peers at different governance positions
+    ///   evaluate the same answer for any in-flight delta from the
+    ///   removed member.
+    ///
+    /// - `expected_group_state_hash`: governance state hash
+    ///   (`compute_group_state_hash`) AFTER the admin's local apply.
+    ///   Receivers compute their own post-apply hash and compare;
+    ///   mismatch signals divergence in membership rows / capabilities
+    ///   / meta. Computed by simulating the removal pre-apply (pure
+    ///   function of current members minus the removed identity).
+    ///
+    /// - `expected_context_state_hashes`: per-context CRDT root hash at
+    ///   sign time, one entry per context registered under `group_id`,
+    ///   sorted by `context_id` for deterministic op-content hashing.
+    ///   Catches the case where a receiver applied legitimate
+    ///   pre-removal state-DAG deltas from the now-removed member that
+    ///   never reached the admin — the receiver's post-apply context
+    ///   hash differs, divergence is detectable, anchor-sync reconcile fires.
+    ///
+    /// Apply-time mismatch is logged as a structured warning but does
+    /// not roll back the apply; the canonical view is the admin's, and
+    /// reconciliation against an anchor is the recovery path.
+    ///
+    /// **Two different group-state hashes travel in this op, by
+    /// design:** `cut.group_state_hash` is the **pre-apply** snapshot
+    /// (the state the signer signed against — used by receivers as
+    /// the descend-from boundary for the membership walk), while
+    /// `expected_group_state_hash` is the **post-apply** simulation
+    /// (used by receivers as the convergence target after they apply
+    /// the op). They have different values, different roles, and
+    /// different consumers; do not collapse them.
+    MemberRemoved {
+        member: PublicKey,
+        cut: GovernancePosition,
+        expected_group_state_hash: [u8; 32],
+        expected_context_state_hashes: Vec<(ContextId, [u8; 32])>,
+    },
     /// Self-leave: a member voluntarily exits the group. Distinct from
     /// `MemberRemoved` for audit clarity (this is a member choosing to
     /// leave; `MemberRemoved` is admin-initiated). Apply requires
@@ -72,7 +120,21 @@ pub enum GroupOp {
     /// (planned as a follow-up). For full cryptographic leave today,
     /// pair with admin-initiated `MemberRemoved`.
     /// See `architecture/membership-and-leave.html` § 5.
-    MemberLeft { member: PublicKey },
+    ///
+    /// Carries the same three convergence claims as `MemberRemoved`,
+    /// signed by the leaver. The leaver is honest by definition for
+    /// self-leave; a Byzantine leaver claiming false canonical hashes
+    /// triggers a divergence warning on apply at each receiver but the
+    /// op is **not rejected** — the apply path logs the mismatch and
+    /// moves on, leaving the canonical view to be re-established by an
+    /// admin-signed `MemberRemoved` or anchor-sync reconcile. The
+    /// signed hashes are a detection signal, not an adoption gate.
+    MemberLeft {
+        member: PublicKey,
+        cut: GovernancePosition,
+        expected_group_state_hash: [u8; 32],
+        expected_context_state_hashes: Vec<(ContextId, [u8; 32])>,
+    },
     /// Set a member’s role (same as upsert member with new role).
     MemberRoleSet {
         member: PublicKey,

@@ -75,10 +75,35 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
 
+        // Sign-time hash precomputation, mirroring `MemberRemoved`. The
+        // leaver simulates the post-leave state so receivers can detect
+        // divergence. See `compute_group_state_hash_after_remove` and
+        // `snapshot_context_state_hashes`.
+        let cut = match group_store::build_governance_cut(&self.datastore, &namespace_id) {
+            Ok(c) => c,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+        let expected_group_state_hash = match group_store::compute_group_state_hash_after_remove(
+            &self.datastore,
+            &namespace_id,
+            &member_public_key,
+        ) {
+            Ok(h) => h,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+        let expected_context_state_hashes =
+            match group_store::snapshot_context_state_hashes(&self.datastore, &namespace_id) {
+                Ok(v) => v,
+                Err(err) => return ActorResponse::reply(Err(err)),
+            };
+
         ActorResponse::r#async(
             async move {
                 let op = calimero_context_client::local_governance::GroupOp::MemberLeft {
                     member: member_public_key,
+                    cut,
+                    expected_group_state_hash,
+                    expected_context_state_hashes,
                 };
 
                 // The apply path detects "this group is the namespace" and

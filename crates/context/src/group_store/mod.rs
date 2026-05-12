@@ -85,8 +85,9 @@ pub use self::membership_policy::MembershipPolicy;
 pub use self::membership_status::{membership_status_at, MembershipStatus};
 pub use self::membership_view::GroupMembershipView;
 pub use self::meta::{
-    compute_group_state_hash, delete_group_meta, enumerate_all_groups, load_group_meta,
-    save_group_meta,
+    build_governance_cut, compute_group_state_hash, compute_group_state_hash_after_remove,
+    delete_group_meta, enumerate_all_groups, load_group_meta, save_group_meta,
+    snapshot_context_state_hashes,
 };
 pub use self::metadata::{
     build_namespace_summary, count_group_contexts, delete_all_member_metadata,
@@ -801,6 +802,323 @@ pub fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Compare local post-apply state hashes against the values signed
+/// into `MemberRemoved` / `MemberLeft` and emit a structured warn log
+/// on mismatch. Does NOT roll back the apply or return an error — the
+/// signed op is already valid (signature verified earlier), and the
+/// admin's view is canonical by definition. The mismatch is a signal
+/// that this receiver's state has diverged from the canonical view,
+/// to be resolved by reconcile-via-anchor sync (a future PR); until
+/// then the warn line is what surfaces the divergence to operators.
+///
+/// Two failure modes deliberately accept-and-log rather than error:
+///
+/// 1. **Hash computation fails.** Reading the post-apply state to
+///    recompute the hash should not fail under normal conditions; if
+///    it does we log the failure and move on — the apply already
+///    happened, no rollback is possible at this layer.
+/// 2. **Empty signed values per field.** A sender that didn't
+///    precompute the signed claims (older op shapes from before the
+///    signed-claim wire change, or test helpers using placeholder
+///    values) signs zeros; comparing against a real post-apply hash
+///    would spuriously trigger a mismatch every time. The two fields
+///    are checked independently: an all-zero `expected_group_state_hash`
+///    skips only the group-state comparison, an empty
+///    `expected_context_state_hashes` skips only the per-context
+///    comparison.
+///
+///    **Ambiguity acknowledged:** an empty list is "no claim" from a
+///    legacy sender AND "no contexts to claim" from a current
+///    sender on a context-less group. The two cases are
+///    indistinguishable on the wire, so the per-context check is
+///    skipped in both. This is acceptable because a context-less
+///    group has nothing per-context to compare anyway — the empty
+///    actual would match the empty expected. The group-state half
+///    still runs and catches any membership-row drift, which is the
+///    interesting failure mode for context-less groups. Wrapping the
+///    field in `Option<Vec<...>>` to disambiguate would be a
+///    wire-format churn for no behavioral gain.
+///
+///    **Bounded residual**: if a group transitions from "has
+///    contexts" to "has no contexts" (every registered context was
+///    detached), a removal signed in that state would carry an
+///    empty list. A receiver that hasn't yet applied the matching
+///    `ContextDetached` ops still has its registrations and the
+///    per-context check would be skipped on it. This is not a
+///    silent gap — the receiver's namespace DAG heads disagree with
+///    the signer's `cut.governance_dag_heads` in this scenario, so
+///    the cross-DAG membership check on subsequent state deltas
+///    returns `Unknown { needed }` and buffers them until the
+///    detach ops arrive (or anchor-sync reconciles). The hash
+///    check skip is therefore additive to an existing detection
+///    path, not the sole defense.
+///
+///    Once the network has fully rolled forward to signed-claim ops
+///    the zero sentinel becomes dead and can be removed; the
+///    empty-list "no contexts" case stays valid forever.
+fn verify_post_apply_state_hashes(
+    store: &Store,
+    group_id: &ContextGroupId,
+    op_kind: &'static str,
+    expected_group_state_hash: &[u8; 32],
+    expected_context_state_hashes: &[(ContextId, [u8; 32])],
+) {
+    let check_group_hash = *expected_group_state_hash != [0u8; 32];
+    let check_context_hashes = !expected_context_state_hashes.is_empty();
+    if !check_group_hash && !check_context_hashes {
+        return;
+    }
+
+    // Group-state half. `None` here means the check was either
+    // skipped (no claim) or the recompute itself errored — in both
+    // cases we suppress the hash fields from the divergence warn so
+    // an operator doesn't see misleading `0000…` values.
+    let group_outcome: Option<(bool, [u8; 32])> = if check_group_hash {
+        match compute_group_state_hash(store, group_id) {
+            Ok(actual) => Some((actual != *expected_group_state_hash, actual)),
+            Err(err) => {
+                tracing::warn!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    op_kind,
+                    %err,
+                    "post-apply group-state hash recompute failed; skipping convergence check"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Per-context half. A snapshot error must NOT fall through to
+    // the diff with an empty `actual` — that would report every
+    // signed expected context as divergent (false-positive storm).
+    // `None` here means the check was skipped or the snapshot
+    // errored; the warn omits the per-context fields in that case.
+    let context_diff: Option<ContextHashDiff> = if check_context_hashes {
+        match snapshot_context_state_hashes(store, group_id) {
+            Ok(actual_context_state_hashes) => Some(diff_sorted_context_hashes(
+                group_id,
+                op_kind,
+                expected_context_state_hashes,
+                &actual_context_state_hashes,
+            )),
+            Err(err) => {
+                tracing::warn!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    op_kind,
+                    %err,
+                    "post-apply per-context state-hash snapshot failed; skipping per-context \
+                     convergence check"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let group_diverges = matches!(group_outcome, Some((true, _)));
+    let context_diverges = context_diff.as_ref().is_some_and(|d| !d.is_empty());
+    if !group_diverges && !context_diverges {
+        return;
+    }
+
+    // Branch the warn so the operator can tell which half ran AND
+    // which kind of context divergence fired. The three context
+    // buckets — hash_differs, only_in_expected, only_in_actual —
+    // distinguish the partition-window CRDT case (`hash_differs`),
+    // the fresh-node-catchup case (`only_in_expected`), and the
+    // receiver-ahead case (`only_in_actual`). Operators that see
+    // only `only_in_expected` populated on a freshly-joined node
+    // can recognise normal bootstrap noise; a populated
+    // `hash_differs` is the real signal anchor-sync reconcile
+    // consumes.
+    let format_ids = |ids: &[ContextId]| -> Vec<String> {
+        ids.iter()
+            .map(|c| hex::encode(AsRef::<[u8; 32]>::as_ref(c)))
+            .collect()
+    };
+    match (group_outcome, context_diff) {
+        (Some((_, actual_group)), Some(diff)) => {
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                op_kind,
+                group_hash_diverges = group_diverges,
+                expected_group_state_hash = %hex::encode(expected_group_state_hash),
+                actual_group_state_hash = %hex::encode(actual_group),
+                hash_differs_count = diff.hash_differs.len(),
+                only_in_expected_count = diff.only_in_expected.len(),
+                only_in_actual_count = diff.only_in_actual.len(),
+                hash_differs = ?format_ids(&diff.hash_differs),
+                only_in_expected = ?format_ids(&diff.only_in_expected),
+                only_in_actual = ?format_ids(&diff.only_in_actual),
+                "cross-DAG state-hash divergence detected on apply — reconcile-via-anchor will heal"
+            );
+        }
+        (Some((_, actual_group)), None) => {
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                op_kind,
+                group_hash_diverges = group_diverges,
+                expected_group_state_hash = %hex::encode(expected_group_state_hash),
+                actual_group_state_hash = %hex::encode(actual_group),
+                per_context_check = "skipped",
+                "cross-DAG group-state hash divergence detected on apply — reconcile-via-anchor will heal"
+            );
+        }
+        (None, Some(diff)) => {
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                op_kind,
+                group_hash_check = "skipped",
+                hash_differs_count = diff.hash_differs.len(),
+                only_in_expected_count = diff.only_in_expected.len(),
+                only_in_actual_count = diff.only_in_actual.len(),
+                hash_differs = ?format_ids(&diff.hash_differs),
+                only_in_expected = ?format_ids(&diff.only_in_expected),
+                only_in_actual = ?format_ids(&diff.only_in_actual),
+                "cross-DAG per-context state-hash divergence detected on apply — reconcile-via-anchor will heal"
+            );
+        }
+        (None, None) => {
+            // Reachable when both halves errored — each error path
+            // already emitted its own warn upstream, so nothing to add
+            // here. Also reachable if both checks were skipped (the
+            // early return at the top of the function catches that
+            // ordinarily, but listing it keeps the match exhaustive).
+        }
+    }
+}
+
+/// Linear merge-scan of two `(ContextId, [u8; 32])` slices both
+/// pre-sorted by `ContextId`. Returns a [`ContextHashDiff`] grouping
+/// divergent ids by category — hash differs, only in expected,
+/// only in actual. O(n) time and O(divergent.len()) space; replaces
+/// an earlier two-`BTreeMap` approach that was O(n log n) on an
+/// apply-time hot path.
+///
+/// Emits a debug log per id for the only-in-actual and only-in-expected
+/// paths. The "only in expected" case is the dominant noise source on
+/// freshly-joined nodes whose `ContextMeta` rows haven't been written
+/// yet; the parent warn log distinguishes the three buckets so
+/// operators can recognise bootstrap noise (only-in-expected populated,
+/// hash-differs empty) from real partition-window divergence
+/// (hash-differs populated).
+/// Categorized divergence report from `diff_sorted_context_hashes`.
+/// The three buckets distinguish the three cases an operator cares
+/// about in the warn log: a real hash mismatch on a shared context
+/// (the partition-window state-DAG case), a context the signer
+/// snapshotted that the receiver hasn't materialized (fresh-node
+/// catchup, expected noise), and a context the receiver materialized
+/// after the signer signed (receiver-ahead, also expected noise).
+struct ContextHashDiff {
+    hash_differs: Vec<ContextId>,
+    only_in_expected: Vec<ContextId>,
+    only_in_actual: Vec<ContextId>,
+}
+
+impl ContextHashDiff {
+    fn is_empty(&self) -> bool {
+        self.hash_differs.is_empty()
+            && self.only_in_expected.is_empty()
+            && self.only_in_actual.is_empty()
+    }
+}
+
+fn diff_sorted_context_hashes(
+    group_id: &ContextGroupId,
+    op_kind: &'static str,
+    expected: &[(ContextId, [u8; 32])],
+    actual: &[(ContextId, [u8; 32])],
+) -> ContextHashDiff {
+    // The merge-scan is only correct when both inputs are sorted by
+    // `ContextId`. `actual` comes from `snapshot_context_state_hashes`
+    // which sorts before returning. `expected` rides on a signed op
+    // whose deterministic content hash requires the sender's
+    // `snapshot_context_state_hashes` to have sorted before signing,
+    // so a peer that didn't sort would have produced a different
+    // op content hash and been dedup'd / rejected at the wire layer.
+    // The assertion catches dev / test misuse where the contract is
+    // violated before it becomes a quiet divergence-report bug.
+    debug_assert!(
+        expected.windows(2).all(|w| w[0].0 < w[1].0),
+        "expected context-hash snapshot must be strictly sorted by ContextId"
+    );
+    debug_assert!(
+        actual.windows(2).all(|w| w[0].0 < w[1].0),
+        "actual context-hash snapshot must be strictly sorted by ContextId"
+    );
+    let mut diff = ContextHashDiff {
+        hash_differs: Vec::new(),
+        only_in_expected: Vec::new(),
+        only_in_actual: Vec::new(),
+    };
+    let mut i = 0;
+    let mut j = 0;
+    while i < expected.len() && j < actual.len() {
+        let (e_cid, e_hash) = &expected[i];
+        let (a_cid, a_hash) = &actual[j];
+        match e_cid.cmp(a_cid) {
+            std::cmp::Ordering::Equal => {
+                if e_hash != a_hash {
+                    diff.hash_differs.push(*e_cid);
+                }
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => {
+                tracing::debug!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    op_kind,
+                    context_id = %hex::encode(AsRef::<[u8; 32]>::as_ref(e_cid)),
+                    "context in signed snapshot but not materialized locally — \
+                     fresh node catchup or partition-window divergence"
+                );
+                diff.only_in_expected.push(*e_cid);
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                tracing::debug!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    op_kind,
+                    context_id = %hex::encode(AsRef::<[u8; 32]>::as_ref(a_cid)),
+                    "context materialized locally but not in signed snapshot — \
+                     receiver applied a registration the signer's view missed"
+                );
+                diff.only_in_actual.push(*a_cid);
+                j += 1;
+            }
+        }
+    }
+    // Tail handling: anything left on either side is one-sided.
+    while i < expected.len() {
+        let (cid, _) = &expected[i];
+        tracing::debug!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            op_kind,
+            context_id = %hex::encode(AsRef::<[u8; 32]>::as_ref(cid)),
+            "context in signed snapshot but not materialized locally — \
+             fresh node catchup or partition-window divergence"
+        );
+        diff.only_in_expected.push(*cid);
+        i += 1;
+    }
+    while j < actual.len() {
+        let (cid, _) = &actual[j];
+        tracing::debug!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            op_kind,
+            context_id = %hex::encode(AsRef::<[u8; 32]>::as_ref(cid)),
+            "context materialized locally but not in signed snapshot — \
+             receiver applied a registration the signer's view missed"
+        );
+        diff.only_in_actual.push(*cid);
+        j += 1;
+    }
+    diff
+}
+
 /// Apply the mutation described by a [`GroupOp`] to the local store.
 ///
 /// Handles authorization checks and state mutations for ALL `GroupOp` variants.
@@ -839,7 +1157,12 @@ fn apply_group_op_mutations(
                 role: role.clone(),
             });
         }
-        GroupOp::MemberRemoved { member } => {
+        GroupOp::MemberRemoved {
+            member,
+            expected_group_state_hash,
+            expected_context_state_hashes,
+            ..
+        } => {
             permissions.require_manage_members(signer, "remove member")?;
             permissions.require_admin_to_remove_admin(signer, member)?;
             // Owner is immune to involuntary removal. Owner must
@@ -861,6 +1184,37 @@ fn apply_group_op_mutations(
             // dropped at the receive entry point before the cross-DAG
             // check runs. Cleared if/when the member is re-added.
             mark_denied(store, group_id, member)?;
+            // Ordering invariant: `verify_post_apply_state_hashes`
+            // must run AFTER the last mutation that touches inputs
+            // to `compute_group_state_hash` (i.e. `GroupMeta` rows
+            // and `GroupMember` rows for this `group_id`). Of the
+            // three preceding steps here only `remove_group_member`
+            // touches those inputs:
+            //
+            // * `cascade_remove_member_from_group_tree` deletes
+            //   `ContextIdentity` rows in the state-DAG-layer
+            //   column — disjoint from `GroupMember`. Does not
+            //   affect the hash.
+            // * `mark_denied` writes a `GroupDeniedMember` row — a
+            //   separate column. Does not affect the hash.
+            // * `remove_group_member` deletes the `GroupMember`
+            //   row — this is the step the pre-apply simulation
+            //   in `compute_group_state_hash_after_remove` mirrors.
+            //
+            // Adding any future mutation between
+            // `remove_group_member` and this call that DOES touch
+            // `GroupMeta` or `GroupMember` rows for `group_id` will
+            // make the recomputed hash diverge from the signed
+            // claim on every honest receiver. The pre-apply
+            // simulation only models the single removal; any extra
+            // mutation here is invisible to it.
+            verify_post_apply_state_hashes(
+                store,
+                group_id,
+                "MemberRemoved",
+                expected_group_state_hash,
+                expected_context_state_hashes,
+            );
             crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
                 group_id: group_id.to_bytes(),
                 member: *member,
@@ -1116,7 +1470,12 @@ fn apply_group_op_mutations(
                 subgroups: *auto_follow_subgroups,
             });
         }
-        GroupOp::MemberLeft { member } => {
+        GroupOp::MemberLeft {
+            member,
+            expected_group_state_hash,
+            expected_context_state_hashes,
+            ..
+        } => {
             // Self-leave: signer must equal the member being removed.
             // No capability check beyond self-equality — any member can
             // leave themselves without admin involvement.
@@ -1217,6 +1576,30 @@ fn apply_group_op_mutations(
             // governance-level departure (membership row removed, peers
             // observe the leave) without the rotation. Same caveat applies
             // to the namespace cascade above — row-removal only.
+            //
+            // Ordering invariant (mirrors `MemberRemoved`'s call site):
+            // `verify_post_apply_state_hashes` must run after the last
+            // mutation that touches `GroupMeta` or `GroupMember` rows
+            // for `group_id`. The namespace-leave cascade above operates
+            // on DESCENDANT group ids — those mutations don't change
+            // `compute_group_state_hash(group_id)`'s inputs (the hash
+            // only reads members of THIS group, not descendants). The
+            // `remove_group_member(store, group_id, member)` call just
+            // above is the only mutation here that affects the hash;
+            // `cascade_remove_member_from_group_tree` touches
+            // `ContextIdentity` rows and `mark_denied` touches
+            // `GroupDeniedMember` rows, both in separate columns. If a
+            // future mutation between `remove_group_member` and this
+            // call DOES touch `GroupMeta` or `GroupMember` rows for
+            // `group_id`, the recomputed hash will diverge from the
+            // signer's pre-apply simulation on every honest receiver.
+            verify_post_apply_state_hashes(
+                store,
+                group_id,
+                "MemberLeft",
+                expected_group_state_hash,
+                expected_context_state_hashes,
+            );
             crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
                 group_id: group_id.to_bytes(),
                 member: *member,
