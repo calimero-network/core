@@ -122,6 +122,7 @@ async fn get_group_info() {
                 "activeUpgrade": null,
                 "defaultCapabilities": 0,
                 "subgroupVisibility": "open",
+                "metadata": { "name": null, "data": {}, "updated_at": 0, "updated_by": ZERO_BS58 },
                 "groupStateHash": "0000000000000000000000000000000000000000000000000000000000000000"
             }
         })))
@@ -412,7 +413,7 @@ async fn create_namespace() {
         .create_namespace(CreateNamespaceApiRequest {
             application_id: ApplicationId::from([0u8; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
-            alias: None,
+            name: None,
         })
         .await
         .unwrap();
@@ -431,7 +432,7 @@ async fn get_namespace() {
                 "targetApplicationId": ZERO_BS58,
                 "upgradePolicy": "Automatic",
                 "createdAt": 0,
-                "alias": null,
+                "name": null,
                 "memberCount": 0,
                 "contextCount": 0,
                 "subgroupCount": 0
@@ -542,7 +543,7 @@ async fn join_namespace() {
             GID,
             JoinGroupApiRequest {
                 invitation,
-                group_alias: None,
+                group_name: None,
             },
         )
         .await
@@ -820,7 +821,7 @@ async fn create_namespace_returns_err_on_server_error() {
         .create_namespace(CreateNamespaceApiRequest {
             application_id: ApplicationId::from([0u8; 32]),
             upgrade_policy: UpgradePolicy::Automatic,
-            alias: None,
+            name: None,
         })
         .await;
 

@@ -420,12 +420,13 @@ fn two_nodes_converge_on_context_alias_as_admin() {
         vec![],
         [0u8; 32],
         1,
-        GroupOp::ContextAliasSet {
+        GroupOp::ContextMetadataSet {
             context_id,
-            alias: "wire-alias".to_owned(),
+            name: Some("wire-alias".to_owned()),
+            data: Default::default(),
         },
     )
-    .expect("sign ContextAliasSet");
+    .expect("sign ContextMetadataSet");
 
     for payload in [
         borsh_to_vec(&op1).expect("encode op1"),
@@ -436,14 +437,16 @@ fn two_nodes_converge_on_context_alias_as_admin() {
     }
 
     assert_eq!(
-        group_store::get_context_alias(&store_a, &gid, &context_id)
+        group_store::get_context_metadata(&store_a, &gid, &context_id)
             .unwrap()
+            .and_then(|r| r.name)
             .as_deref(),
         Some("wire-alias")
     );
     assert_eq!(
-        group_store::get_context_alias(&store_b, &gid, &context_id)
+        group_store::get_context_metadata(&store_b, &gid, &context_id)
             .unwrap()
+            .and_then(|r| r.name)
             .as_deref(),
         Some("wire-alias")
     );

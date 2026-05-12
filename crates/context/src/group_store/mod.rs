@@ -43,13 +43,6 @@ mod tee;
 mod upgrades;
 use self::local_state::persist_group_governance_progress;
 
-pub use self::metadata::{
-    build_namespace_summary, count_group_contexts, delete_all_member_metadata,
-    delete_context_metadata, delete_group_metadata, delete_member_metadata,
-    enumerate_group_contexts_with_names, enumerate_member_metadata, get_context_metadata,
-    get_group_metadata, get_member_metadata, set_context_metadata, set_group_metadata,
-    set_member_metadata,
-};
 pub use self::capabilities::{
     delete_all_member_capabilities, delete_default_capabilities, delete_subgroup_visibility,
     enumerate_member_capabilities, get_context_member_capability, get_default_capabilities,
@@ -93,6 +86,13 @@ pub use self::membership_view::GroupMembershipView;
 pub use self::meta::{
     compute_group_state_hash, delete_group_meta, enumerate_all_groups, load_group_meta,
     save_group_meta,
+};
+pub use self::metadata::{
+    build_namespace_summary, count_group_contexts, delete_all_member_metadata,
+    delete_context_metadata, delete_group_metadata, delete_member_metadata,
+    enumerate_group_contexts_with_names, enumerate_member_metadata, get_context_metadata,
+    get_group_metadata, get_member_metadata, set_context_metadata, set_group_metadata,
+    set_member_metadata,
 };
 pub use self::migrations::{
     delete_all_context_last_migrations, get_context_last_migration, set_context_last_migration,

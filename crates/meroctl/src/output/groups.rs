@@ -545,10 +545,7 @@ impl Report for GetMetadataApiResponse {
         ]);
         let _ = table.add_row(vec![
             "Name".to_owned(),
-            self.data
-                .name
-                .clone()
-                .unwrap_or_else(|| "-".to_owned()),
+            self.data.name.clone().unwrap_or_else(|| "-".to_owned()),
         ]);
         let _ = table.add_row(vec![
             "Updated At".to_owned(),

@@ -96,7 +96,8 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .map_err(|e| eyre::eyre!("signing failed: {e}"))?;
             let inviter_signature = hex::encode(signature.to_bytes());
 
-            let group_name = group_store::get_group_metadata(&datastore, &group_id)?.and_then(|r| r.name);
+            let group_name =
+                group_store::get_group_metadata(&datastore, &group_id)?.and_then(|r| r.name);
 
             Ok((
                 SignedGroupOpenInvitation {

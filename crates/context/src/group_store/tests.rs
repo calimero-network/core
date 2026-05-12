@@ -364,9 +364,20 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
     assert_eq!(meta.app_key, [0xAB; 32]);
     assert_eq!(meta.target_application_id, app_id);
 
-    settings.set_group_alias(&admin, "group-main").unwrap();
+    set_group_metadata(
+        &store,
+        &gid,
+        &calimero_primitives::metadata::MetadataRecord {
+            name: Some("group-main".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert_eq!(
-        get_group_alias(&store, &gid).unwrap().as_deref(),
+        get_group_metadata(&store, &gid)
+            .unwrap()
+            .and_then(|r| r.name)
+            .as_deref(),
         Some("group-main")
     );
 }
@@ -1105,16 +1116,18 @@ fn apply_local_member_alias_member_signer_or_admin() {
         vec![],
         [0u8; 32],
         1,
-        GroupOp::MemberAliasSet {
+        GroupOp::MemberMetadataSet {
             member: member_pk,
-            alias: "alice".to_owned(),
+            name: Some("alice".to_owned()),
+            data: Default::default(),
         },
     )
     .unwrap();
     apply_local_signed_group_op(&store, &op).unwrap();
     assert_eq!(
-        get_member_alias(&store, &gid, &member_pk)
+        get_member_metadata(&store, &gid, &member_pk)
             .unwrap()
+            .and_then(|r| r.name)
             .as_deref(),
         Some("alice")
     );
@@ -1126,9 +1139,10 @@ fn apply_local_member_alias_member_signer_or_admin() {
         vec![],
         [0u8; 32],
         1,
-        GroupOp::MemberAliasSet {
+        GroupOp::MemberMetadataSet {
             member: member_pk,
-            alias: "bob".to_owned(),
+            name: Some("bob".to_owned()),
+            data: Default::default(),
         },
     )
     .unwrap();
@@ -1140,16 +1154,18 @@ fn apply_local_member_alias_member_signer_or_admin() {
         vec![],
         [0u8; 32],
         1,
-        GroupOp::MemberAliasSet {
+        GroupOp::MemberMetadataSet {
             member: member_pk,
-            alias: "carol".to_owned(),
+            name: Some("carol".to_owned()),
+            data: Default::default(),
         },
     )
     .unwrap();
     apply_local_signed_group_op(&store, &admin_op).unwrap();
     assert_eq!(
-        get_member_alias(&store, &gid, &member_pk)
+        get_member_metadata(&store, &gid, &member_pk)
             .unwrap()
+            .and_then(|r| r.name)
             .as_deref(),
         Some("carol")
     );
@@ -1207,15 +1223,16 @@ fn apply_local_context_alias_admin_or_creator() {
         vec![],
         [0u8; 32],
         2,
-        GroupOp::ContextAliasSet {
+        GroupOp::ContextMetadataSet {
             context_id,
-            alias: "from-creator".to_owned(),
+            name: Some("from-creator".to_owned()),
+            data: Default::default(),
         },
     )
     .unwrap();
     assert!(
         apply_local_signed_group_op(&store, &op_creator_alias).is_err(),
-        "non-admin creator should be rejected"
+        "non-admin creator without CAN_MANAGE_METADATA should be rejected"
     );
 
     let op_admin = SignedGroupOp::sign(
@@ -1224,16 +1241,18 @@ fn apply_local_context_alias_admin_or_creator() {
         vec![],
         [0u8; 32],
         1,
-        GroupOp::ContextAliasSet {
+        GroupOp::ContextMetadataSet {
             context_id,
-            alias: "from-admin".to_owned(),
+            name: Some("from-admin".to_owned()),
+            data: Default::default(),
         },
     )
     .unwrap();
     apply_local_signed_group_op(&store, &op_admin).unwrap();
     assert_eq!(
-        get_context_alias(&store, &gid, &context_id)
+        get_context_metadata(&store, &gid, &context_id)
             .unwrap()
+            .and_then(|r| r.name)
             .as_deref(),
         Some("from-admin")
     );
@@ -2731,12 +2750,29 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
         calimero_context_config::VisibilityMode::Restricted,
     )
     .unwrap();
-    set_group_alias(&store, &gid, "g-alias").unwrap();
+    set_group_metadata(
+        &store,
+        &gid,
+        &calimero_primitives::metadata::MetadataRecord {
+            name: Some("g-alias".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     set_context_last_migration(&store, &gid, &context, "v2").unwrap();
 
     add_group_member(&store, &gid, &member, GroupMemberRole::Admin).unwrap();
     add_group_member(&store, &gid, &member2, GroupMemberRole::Member).unwrap();
-    set_member_alias(&store, &gid, &member2, "member2").unwrap();
+    set_member_metadata(
+        &store,
+        &gid,
+        &member2,
+        &calimero_primitives::metadata::MetadataRecord {
+            name: Some("member2".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     set_member_capability(&store, &gid, &member2, 0b010).unwrap();
     set_local_gov_nonce(&store, &gid, &member, 7).unwrap();
 
@@ -2780,7 +2816,7 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     delete_group_local_rows(&store, &gid).unwrap();
 
     assert!(load_group_meta(&store, &gid).unwrap().is_none());
-    assert!(get_group_alias(&store, &gid).unwrap().is_none());
+    assert!(get_group_metadata(&store, &gid).unwrap().is_none());
     assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
     // Subgroup visibility falls back to Restricted when the row is absent
     // — that's how a successful delete is observed by the typed API.
@@ -2791,7 +2827,7 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     assert!(enumerate_member_capabilities(&store, &gid)
         .unwrap()
         .is_empty());
-    assert!(enumerate_member_aliases(&store, &gid).unwrap().is_empty());
+    assert!(enumerate_member_metadata(&store, &gid).unwrap().is_empty());
     assert!(get_context_last_migration(&store, &gid, &context)
         .unwrap()
         .is_none());
@@ -5713,5 +5749,188 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
     assert!(
         !is_denied(&store, &gid, &target_pk).unwrap(),
         "re-add must clear the deny-list entry — semantics from design discussion"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Metadata records: CAN_MANAGE_METADATA gate + state-hash exclusion.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn permission_checker_can_manage_metadata() {
+    use calimero_context_config::MemberCapabilities;
+
+    let store = test_store();
+    let gid = ContextGroupId::from([0x9C; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0x02; 32]);
+
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+
+    let checker = PermissionChecker::new(&store, gid);
+
+    // Admin always passes.
+    assert!(checker.require_can_manage_metadata(&admin).is_ok());
+    // Bare member denied.
+    assert!(checker.require_can_manage_metadata(&member).is_err());
+    // Granting the cap flips it.
+    set_member_capability(
+        &store,
+        &gid,
+        &member,
+        MemberCapabilities::CAN_MANAGE_METADATA,
+    )
+    .unwrap();
+    assert!(checker.require_can_manage_metadata(&member).is_ok());
+}
+
+#[test]
+fn metadata_set_does_not_change_group_state_hash() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let before = compute_group_state_hash(&store, &gid).unwrap();
+
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::GroupMetadataSet {
+            name: Some("renamed".to_owned()),
+            data: {
+                let mut d = std::collections::BTreeMap::new();
+                let _ = d.insert("topic".to_owned(), "general".to_owned());
+                d
+            },
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op).unwrap();
+
+    let after = compute_group_state_hash(&store, &gid).unwrap();
+    assert_eq!(
+        before, after,
+        "GroupMetadataSet must not perturb the group state hash"
+    );
+    assert_eq!(
+        get_group_metadata(&store, &gid)
+            .unwrap()
+            .and_then(|r| r.name)
+            .as_deref(),
+        Some("renamed")
+    );
+}
+
+#[test]
+fn member_metadata_self_set_allowed_others_gated() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_context_config::MemberCapabilities;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    let alice_sk = PrivateKey::random(&mut rng);
+    let alice_pk = alice_sk.public_key();
+    add_group_member(&store, &gid, &alice_pk, GroupMemberRole::Member).unwrap();
+    let bob_sk = PrivateKey::random(&mut rng);
+    let bob_pk = bob_sk.public_key();
+    add_group_member(&store, &gid, &bob_pk, GroupMemberRole::Member).unwrap();
+
+    // Alice sets her own metadata — allowed.
+    let op = SignedGroupOp::sign(
+        &alice_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberMetadataSet {
+            member: alice_pk,
+            name: Some("alice".to_owned()),
+            data: Default::default(),
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op).unwrap();
+
+    // Alice tries to set Bob's metadata — rejected (no CAN_MANAGE_METADATA).
+    let op_bad = SignedGroupOp::sign(
+        &alice_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        2,
+        GroupOp::MemberMetadataSet {
+            member: bob_pk,
+            name: Some("not-bob".to_owned()),
+            data: Default::default(),
+        },
+    )
+    .unwrap();
+    assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
+
+    // Group-level metadata by a bare member — rejected.
+    let op_group = SignedGroupOp::sign(
+        &alice_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        3,
+        GroupOp::GroupMetadataSet {
+            name: Some("nope".to_owned()),
+            data: Default::default(),
+        },
+    )
+    .unwrap();
+    assert!(apply_local_signed_group_op(&store, &op_group).is_err());
+
+    // Grant CAN_MANAGE_METADATA — now Alice can set Bob's and the group's.
+    set_member_capability(
+        &store,
+        &gid,
+        &alice_pk,
+        MemberCapabilities::CAN_MANAGE_METADATA,
+    )
+    .unwrap();
+    let op_ok = SignedGroupOp::sign(
+        &alice_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        4,
+        GroupOp::GroupMetadataSet {
+            name: Some("renamed".to_owned()),
+            data: Default::default(),
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op_ok).unwrap();
+    assert_eq!(
+        get_group_metadata(&store, &gid)
+            .unwrap()
+            .and_then(|r| r.name)
+            .as_deref(),
+        Some("renamed")
     );
 }

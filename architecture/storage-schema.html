@@ -380,30 +380,31 @@
   </div>
 </details>
 
-<h3>Aliases (0x2D–0x2F)</h3>
+<h3>Metadata records (0x2D–0x2F)</h3>
+<p>Each entry holds a <code>MetadataRecord { name: Option&lt;String&gt;, data: BTreeMap&lt;String,String&gt;, updated_at: u64, updated_by: PublicKey }</code>. The <code>data</code> map is opaque to core (stored/replicated verbatim, never interpreted). These rows are replicated governance state but — like the former alias rows — are deliberately excluded from <code>compute_group_state_hash</code>.</p>
 <table class="schema-table">
 <thead><tr><th>Prefix</th><th>Key Struct</th><th>Key Layout</th><th>Value Type</th><th>Description</th></tr></thead>
 <tbody>
 <tr>
   <td class="sp">0x2D</td>
-  <td class="sk">GroupMemberAlias</td>
+  <td class="sk">GroupMemberMetadata</td>
   <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x2D</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">identity (32)</span></span></td>
-  <td class="sv">String</td>
-  <td class="sd">Human-readable member alias</td>
+  <td class="sv">MetadataRecord</td>
+  <td class="sd">Per-member metadata (name + opaque data)</td>
 </tr>
 <tr>
   <td class="sp">0x2E</td>
-  <td class="sk">GroupAlias</td>
+  <td class="sk">GroupMetadata</td>
   <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x2E</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span></span></td>
-  <td class="sv">String</td>
-  <td class="sd">Group alias (human-readable name)</td>
+  <td class="sv">MetadataRecord</td>
+  <td class="sd">Per-group metadata (name + opaque data; a namespace is a root group)</td>
 </tr>
 <tr>
   <td class="sp">0x2F</td>
-  <td class="sk">GroupContextAlias</td>
+  <td class="sk">GroupContextMetadata</td>
   <td class="sl"><span class="byte-layout"><span class="seg seg-prefix">0x2F</span><span class="plus">+</span><span class="seg seg-id">group_id (32)</span><span class="plus">+</span><span class="seg seg-id2">context_id (32)</span></span></td>
-  <td class="sv">String</td>
-  <td class="sd">Context alias within group</td>
+  <td class="sv">MetadataRecord</td>
+  <td class="sd">Per-context metadata within a group (name + opaque data)</td>
 </tr>
 </tbody>
 </table>

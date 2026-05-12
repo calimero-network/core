@@ -47,13 +47,19 @@ pub struct SetOpts {
     )]
     pub replace_data: bool,
 
-    #[clap(long, help = "Requester public key (auto-resolved from node identity if omitted)")]
+    #[clap(
+        long,
+        help = "Requester public key (auto-resolved from node identity if omitted)"
+    )]
     pub requester: Option<PublicKey>,
 }
 
 impl SetOpts {
     /// Combine the current record with these options into an API request.
-    fn into_request(self, current: calimero_primitives::metadata::MetadataRecord) -> SetMetadataApiRequest {
+    fn into_request(
+        self,
+        current: calimero_primitives::metadata::MetadataRecord,
+    ) -> SetMetadataApiRequest {
         let name = if self.clear_name {
             None
         } else if self.name.is_some() {
@@ -117,7 +123,9 @@ impl MetadataCommand {
             }
             MetadataSubCommands::Set { group_id, opts } => {
                 let current = client.get_group_metadata(&group_id).await?.data;
-                let response = client.set_group_metadata(&group_id, opts.into_request(current)).await?;
+                let response = client
+                    .set_group_metadata(&group_id, opts.into_request(current))
+                    .await?;
                 environment.output.write(&response);
             }
         }
@@ -167,7 +175,10 @@ impl MemberMetadataCommand {
                 opts,
             } => {
                 let identity_hex = hex::encode(member.digest());
-                let current = client.get_member_metadata(&group_id, &identity_hex).await?.data;
+                let current = client
+                    .get_member_metadata(&group_id, &identity_hex)
+                    .await?
+                    .data;
                 let response = client
                     .set_member_metadata(&group_id, &identity_hex, opts.into_request(current))
                     .await?;
