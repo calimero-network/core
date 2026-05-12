@@ -168,10 +168,28 @@ pub(super) fn handle_namespace_governance_delta(
                 // Best-effort: no anchor connected → logged and
                 // dropped; re-attempted on the next signed op or
                 // sync tick.
+                //
+                // Detached via `actix::spawn` so a multi-second
+                // Snapshot / HashComparison sync doesn't block the
+                // governance-apply task — the actor's mailbox needs
+                // to keep draining (other signed ops, acks, and the
+                // proactive backfill for `Pending`). `actix::spawn`
+                // is the right primitive here: the inner future
+                // touches non-`Send` types via the sync manager, so
+                // `tokio::spawn` (which requires `Send`) can't take
+                // it; `actix::spawn` schedules on the current arbiter
+                // and stays single-threaded with the actor. The
+                // arbiter's task queue runs the detached future
+                // concurrently with the actor's mailbox drain.
+                // Errors are already logged inside
+                // `reconcile_after_divergence`; the spawned task has
+                // no return value to consume.
                 if let Some(report) = divergence {
-                    sync_manager
-                        .reconcile_after_divergence(report.clone())
-                        .await;
+                    let sm = sync_manager.clone();
+                    let report = report.clone();
+                    drop(actix::spawn(async move {
+                        sm.reconcile_after_divergence(report).await;
+                    }));
                 }
             }
 

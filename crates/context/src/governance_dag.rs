@@ -81,11 +81,24 @@ impl NamespaceGovernanceApplier {
     /// Read and clear the outbox. Called by the handler after
     /// `add_delta_with_outcome` returns to retrieve any divergence
     /// the apply path detected.
+    ///
+    /// Recovers from a poisoned mutex via `into_inner` instead of
+    /// discarding the report on poison: the outbox is plain
+    /// `Option<DivergenceReport>` with no internal invariants a panic
+    /// could leave half-written, so the slot's value is still
+    /// well-formed. Dropping it silently would mean the reconcile
+    /// path never fires on the report a poison-inducing panic was
+    /// concurrent with — exactly the operator-investigation signal
+    /// we need to preserve.
     pub fn take_divergence(&self) -> Option<DivergenceReport> {
-        self.divergence_outbox
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take())
+        let mut slot = self.divergence_outbox.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!(
+                "divergence_outbox mutex was poisoned by a prior panic; recovering the \
+                     inner value so the divergence report still reaches the reconcile path"
+            );
+            poisoned.into_inner()
+        });
+        slot.take()
     }
 }
 
@@ -103,9 +116,21 @@ impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
             // future change introduces that, the handler will see
             // the last report — preferable to silently dropping all
             // but the first.
-            if let Ok(mut slot) = self.divergence_outbox.lock() {
-                *slot = Some(report);
-            }
+            //
+            // Mutex poison: recover the inner slot rather than drop
+            // the report. The slot is plain `Option<_>`; no half-
+            // written invariants for a panic to leave behind. Losing
+            // the divergence here would mean the reconcile path
+            // never fires on this op.
+            let mut slot = self.divergence_outbox.lock().unwrap_or_else(|poisoned| {
+                tracing::warn!(
+                    "divergence_outbox mutex was poisoned by a prior panic; recovering \
+                         the inner slot so this divergence report still reaches the \
+                         reconcile path"
+                );
+                poisoned.into_inner()
+            });
+            *slot = Some(report);
         }
         Ok(())
     }

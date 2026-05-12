@@ -139,7 +139,7 @@ steps:
 
   - name: Partition admin away from peers
     type: script
-    script: apps/scaffolding-e2e/scripts/disconnect-node-from-bridge.sh
+    script: scripts/disconnect-node-from-bridge.sh
     target: local
     args:
       - e2e-node-1
@@ -193,7 +193,7 @@ steps:
 
   - name: Heal admin's partition
     type: script
-    script: apps/scaffolding-e2e/scripts/connect-node-to-bridge.sh
+    script: scripts/connect-node-to-bridge.sh
     target: local
     args:
       - e2e-node-1

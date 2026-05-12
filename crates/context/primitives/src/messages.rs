@@ -193,13 +193,6 @@ pub enum NamespaceApplyOutcome {
 }
 
 impl NamespaceApplyOutcome {
-    /// `true` when the op was applied (regardless of divergence).
-    /// Convenience for sites that previously matched on the unit
-    /// variant.
-    pub fn is_applied(&self) -> bool {
-        matches!(self, Self::Applied { .. })
-    }
-
     /// `true` if the op is pending and a backfill should be triggered.
     pub fn is_pending(&self) -> bool {
         matches!(self, Self::Pending)
