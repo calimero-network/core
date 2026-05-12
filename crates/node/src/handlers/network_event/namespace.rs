@@ -94,6 +94,11 @@ pub(super) fn handle_namespace_governance_delta(
     let node_client = this.clients.node.clone();
     let node_state = this.state.clone();
     let network_client = this.managers.sync.network_client.clone();
+    // Clone of the sync manager used to fire reconcile-via-anchor on
+    // a `MemberRemoved` / `MemberLeft` apply that reports state-hash
+    // divergence. Cloning is cheap (Arc-wrapped fields) and the
+    // spawned task needs an owned handle.
+    let sync_manager = this.managers.sync.clone();
     let sync_timeout = this.managers.sync.sync_config.timeout;
     let pull_budget_max_peers = this.managers.sync.sync_config.parent_pull_additional_peers;
     let pull_budget_duration = this.managers.sync.sync_config.parent_pull_budget;
@@ -125,7 +130,7 @@ pub(super) fn handle_namespace_governance_delta(
             // HIGH-severity finding). `Pending` and `Duplicate` outcomes
             // do NOT advance our applied count — Pending is waiting on
             // parents (no real progress yet) and Duplicate is a re-deliver.
-            if matches!(outcome, NamespaceApplyOutcome::Applied) {
+            if let NamespaceApplyOutcome::Applied { divergence } = &outcome {
                 if let Some(addr) = &readiness_addr {
                     addr.do_send(crate::readiness::NamespaceOpApplied { namespace_id });
                 }
@@ -152,6 +157,22 @@ pub(super) fn handle_namespace_governance_delta(
                     sync_timeout,
                 };
                 crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
+
+                // Reconcile-via-anchor: if `MemberRemoved` / `MemberLeft`
+                // apply reported state-hash divergence from the signed
+                // claims, pull canonical state from a trusted anchor.
+                // The sync manager method picks an anchor peer (from
+                // the group's trusted-anchor set, filtered through the
+                // verified peer-identity cache) and verifies the
+                // post-adoption hash against the signed expected.
+                // Best-effort: no anchor connected → logged and
+                // dropped; re-attempted on the next signed op or
+                // sync tick.
+                if let Some(report) = divergence {
+                    sync_manager
+                        .reconcile_after_divergence(report.clone())
+                        .await;
+                }
             }
 
             // Phase 4: emit a `SignedAck` on the same topic when we've
@@ -161,7 +182,7 @@ pub(super) fn handle_namespace_governance_delta(
             // application, and Duplicate would just inflate gossip with
             // no observable change to the publisher's dedup-by-signer
             // counting.
-            if matches!(outcome, NamespaceApplyOutcome::Applied) {
+            if matches!(outcome, NamespaceApplyOutcome::Applied { .. }) {
                 emit_namespace_ack(&context_client, &network_client, namespace_id, &op_for_ack)
                     .await;
             }
@@ -221,7 +242,7 @@ pub(super) fn handle_namespace_governance_delta(
             // time grows the namespace governance DAG without bound
             // until it hits the backfill cap and never converges again
             // (#2319). `Pending` likewise has nothing to deliver yet.
-            if matches!(outcome, NamespaceApplyOutcome::Applied) {
+            if matches!(outcome, NamespaceApplyOutcome::Applied { .. }) {
                 crate::key_delivery::maybe_publish_key_delivery(
                     &context_client,
                     &node_client,
@@ -454,7 +475,7 @@ async fn fetch_and_apply_namespace_backfill(
             for (delta_id, op_bytes) in deltas {
                 if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(&op_bytes) {
                     match context_client.apply_signed_namespace_op(op).await {
-                        Ok(NamespaceApplyOutcome::Applied) => any_applied = true,
+                        Ok(NamespaceApplyOutcome::Applied { .. }) => any_applied = true,
                         Ok(_) => {}
                         Err(err) => {
                             warn!(

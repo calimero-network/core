@@ -2936,6 +2936,188 @@ impl SyncManager {
 
         Ok(Some(()))
     }
+
+    /// Schedule reconcile-via-anchor for every per-context hash
+    /// mismatch in `report`. Called by the namespace governance op
+    /// receive handler after `MemberRemoved` / `MemberLeft` apply
+    /// reports state-hash divergence from the signed claims.
+    ///
+    /// One sync attempt per divergent context (`hash_differs`):
+    /// pick a connected anchor peer (via the trusted-anchor set for
+    /// the op's group + the verified `peer_identities` cache),
+    /// initiate Snapshot sync against that peer, and after sync
+    /// completes compare the receiver's new root hash against the
+    /// signed expected. Mismatch on post-adoption verify is logged
+    /// loudly — a follow-up will tighten this into pre-adoption
+    /// rejection with rollback once the store has transactional
+    /// staging.
+    ///
+    /// `only_in_expected` and `only_in_actual` entries are NOT
+    /// reconciled here — those buckets reflect namespace-DAG
+    /// drift (a registration the receiver hasn't seen yet, or a
+    /// registration the signer hadn't seen). The cross-DAG
+    /// membership check on subsequent state deltas catches that
+    /// via `Unknown { needed }` → buffer; routing them through
+    /// anchor sync would burn bandwidth on cases the existing
+    /// catch-up path handles correctly.
+    pub async fn reconcile_after_divergence(
+        &self,
+        report: calimero_context_client::messages::DivergenceReport,
+    ) {
+        if report.hash_differs.is_empty() {
+            tracing::debug!(
+                group_id = %hex::encode(report.group_id.to_bytes()),
+                op_kind = report.op_kind,
+                group_hash_diverges = report.group_hash_diverges,
+                only_in_expected_count = report.only_in_expected.len(),
+                only_in_actual_count = report.only_in_actual.len(),
+                "reconcile-after-divergence: no per-context hash mismatches to reconcile; \
+                 namespace-DAG drift (if any) is handled by the cross-DAG check on \
+                 subsequent state deltas"
+            );
+            return;
+        }
+
+        for (context_id, expected_root_hash) in &report.hash_differs {
+            self.reconcile_one_divergent_context(*context_id, *expected_root_hash, report.op_kind)
+                .await;
+        }
+    }
+
+    /// Reconcile a single divergent context against a trusted anchor.
+    ///
+    /// Returns silently after logging — there is no error to bubble
+    /// up to the caller because reconcile is best-effort: a future
+    /// arrival of another signed op, or a sync interval tick, will
+    /// re-attempt convergence. A hard error here would only inflate
+    /// noise; the warn logs are the operator signal.
+    async fn reconcile_one_divergent_context(
+        &self,
+        context_id: ContextId,
+        expected_root_hash: [u8; 32],
+        op_kind: &'static str,
+    ) {
+        let anchors = self.anchor_identities_for_context(&context_id);
+        if anchors.is_empty() {
+            tracing::warn!(
+                %context_id,
+                op_kind,
+                "reconcile-after-divergence: no trusted anchors defined for this context's \
+                 group — falling back to operator path (no automatic recovery)"
+            );
+            return;
+        }
+
+        // Pick an anchor from the gossipsub mesh on the context's
+        // topic. The mesh is a superset of "peers known to host this
+        // context" — same source the regular sync path uses.
+        let topic = TopicHash::from_raw(context_id);
+        let mesh_peers = self.network_client.mesh_peers(topic).await;
+        let anchor_peer = mesh_peers.iter().copied().find(|peer| {
+            self.node_state
+                .peer_identities
+                .get(peer)
+                .map(|ids| ids.iter().any(|id| anchors.contains(id)))
+                .unwrap_or(false)
+        });
+        let Some(anchor_peer) = anchor_peer else {
+            tracing::warn!(
+                %context_id,
+                op_kind,
+                anchor_count = anchors.len(),
+                connected_mesh_peers = mesh_peers.len(),
+                "reconcile-after-divergence: no connected mesh peer matches the anchor set — \
+                 falling back to operator path; reconcile will re-attempt on the next signed \
+                 op or sync tick"
+            );
+            return;
+        };
+
+        tracing::info!(
+            %context_id,
+            %anchor_peer,
+            op_kind,
+            expected_root_hash = %hex::encode(expected_root_hash),
+            "reconcile-after-divergence: pulling canonical state from trusted anchor"
+        );
+
+        match self.initiate_sync(context_id, anchor_peer).await {
+            Ok((peer_used, protocol)) => {
+                tracing::info!(
+                    %context_id,
+                    %peer_used,
+                    ?protocol,
+                    "reconcile-after-divergence: anchor sync completed; verifying post-adoption hash"
+                );
+                self.verify_post_reconcile_root_hash(
+                    context_id,
+                    expected_root_hash,
+                    anchor_peer,
+                    op_kind,
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    %context_id,
+                    %anchor_peer,
+                    op_kind,
+                    %err,
+                    "reconcile-after-divergence: anchor sync failed; reconcile will re-attempt \
+                     on the next signed op or sync tick"
+                );
+            }
+        }
+    }
+
+    /// Compare the local context's `root_hash` against the signed
+    /// `expected_root_hash` from the triggering op. On match, log
+    /// at info level — the reconcile succeeded. On mismatch, log
+    /// loudly at warn: the anchor served state that does not match
+    /// the canonical expected, OR the local apply diverged again
+    /// after sync. Either is operator-investigation territory and
+    /// a follow-up will replace this post-adoption check with
+    /// pre-adoption rejection + rollback once the store layer has
+    /// transactional staging.
+    fn verify_post_reconcile_root_hash(
+        &self,
+        context_id: ContextId,
+        expected_root_hash: [u8; 32],
+        anchor_peer: PeerId,
+        op_kind: &'static str,
+    ) {
+        let Ok(Some(context)) = self.context_client.get_context(&context_id) else {
+            tracing::warn!(
+                %context_id,
+                %anchor_peer,
+                op_kind,
+                "reconcile-after-divergence: context not found locally after anchor sync — \
+                 cannot verify root hash"
+            );
+            return;
+        };
+
+        let actual_root_hash: [u8; 32] = *AsRef::<[u8; 32]>::as_ref(&context.root_hash);
+        if actual_root_hash == expected_root_hash {
+            tracing::info!(
+                %context_id,
+                %anchor_peer,
+                op_kind,
+                root_hash = %hex::encode(actual_root_hash),
+                "reconcile-after-divergence: post-adoption hash matches signed expected — converged"
+            );
+        } else {
+            tracing::warn!(
+                %context_id,
+                %anchor_peer,
+                op_kind,
+                expected_root_hash = %hex::encode(expected_root_hash),
+                actual_root_hash = %hex::encode(actual_root_hash),
+                "reconcile-after-divergence: post-adoption hash does NOT match signed expected — \
+                 either the anchor served non-canonical state or local apply diverged again; \
+                 operator-investigation territory until pre-adoption rejection lands"
+            );
+        }
+    }
 }
 
 /// Stable-partition `peers` so peers with an observed trusted-anchor
@@ -3141,7 +3323,7 @@ impl SyncManager {
                 }
             };
             match self.context_client.apply_signed_namespace_op(op).await {
-                Ok(NamespaceApplyOutcome::Applied) => {
+                Ok(NamespaceApplyOutcome::Applied { .. }) => {
                     applied += 1;
                     newly_applied += 1;
                 }
@@ -3616,7 +3798,7 @@ impl SyncManager {
                                     );
                                 }
                                 Ok(outcome) => {
-                                    if matches!(outcome, NamespaceApplyOutcome::Applied) {
+                                    if matches!(outcome, NamespaceApplyOutcome::Applied { .. }) {
                                         newly_applied = true;
                                         // Only react to a *newly-applied*
                                         // `MemberJoined`. On `Duplicate`

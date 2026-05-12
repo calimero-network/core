@@ -48,6 +48,13 @@ pub struct KeyUnwrapFailure {
 pub struct ApplyNamespaceOpResult {
     pub pending_deliveries: Vec<PendingKeyDelivery>,
     pub key_unwrap_failures: Vec<KeyUnwrapFailure>,
+    /// Post-apply hash divergence detected by the cross-DAG state-hash
+    /// check inside a `MemberRemoved` / `MemberLeft` apply. The node
+    /// handler routes this to the reconcile-via-anchor sync trigger.
+    /// `None` for ops that don't carry signed convergence claims, for
+    /// ops that match the receiver's view, and for ops that don't go
+    /// through the verify path at all.
+    pub divergence: Option<super::DivergenceReport>,
 }
 
 pub(crate) fn min_acks_after_local_mutation(
@@ -287,7 +294,24 @@ impl<'a> NamespaceGovernance<'a> {
                 };
 
                 if let Some(group_key) = resolved_key {
-                    self.decrypt_and_apply_group_op(op, &group_id_typed, &group_key, encrypted)?;
+                    // Surface any post-apply hash divergence reported by
+                    // `MemberRemoved` / `MemberLeft` apply so the node
+                    // handler can route it to the reconcile-via-anchor
+                    // trigger. Multiple group ops can be applied per
+                    // namespace op in theory (e.g. retry path replays);
+                    // in practice each namespace op carries one
+                    // encrypted group op, so the assignment is a simple
+                    // overwrite. Any prior `None` is preserved if this
+                    // op reports `None`.
+                    let report = self.decrypt_and_apply_group_op(
+                        op,
+                        &group_id_typed,
+                        &group_key,
+                        encrypted,
+                    )?;
+                    if report.is_some() {
+                        result.divergence = report;
+                    }
                 }
 
                 if let Some(rotation) = key_rotation {
@@ -601,7 +625,15 @@ impl<'a> NamespaceGovernance<'a> {
                 &candidate.group_key,
                 encrypted,
             ) {
-                Ok(()) => {
+                // Divergence reports from retry-path applies are
+                // intentionally dropped: a retry replay's only
+                // observers are the ops it unblocks, and emitting a
+                // reconcile trigger from inside a retry loop would
+                // double-trigger when the same op also surfaces via
+                // the fresh-arrival path. The fresh path is where the
+                // node handler routes divergence; the retry path is
+                // bookkeeping.
+                Ok(_divergence) => {
                     record_namespace_retry_event("applied");
                     tracing::info!(
                         group_id = %hex::encode(group_id),
@@ -632,7 +664,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: &ContextGroupId,
         group_key: &[u8; 32],
         encrypted: &EncryptedGroupOp,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<Option<super::DivergenceReport>> {
         let inner_op = decrypt_group_op(group_key, encrypted)?;
 
         let signed_group_op = SignedGroupOp {
@@ -655,7 +687,7 @@ impl<'a> NamespaceGovernance<'a> {
         signer: &PublicKey,
         nonce: u64,
         op: &GroupOp,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<Option<super::DivergenceReport>> {
         let last = get_local_gov_nonce(self.store, group_id, signer)?.unwrap_or(0);
         if nonce <= last {
             tracing::debug!(
@@ -664,7 +696,7 @@ impl<'a> NamespaceGovernance<'a> {
                 signer = %signer,
                 "ignoring namespace group op with already-processed nonce"
             );
-            return Ok(());
+            return Ok(None);
         }
 
         if let GroupOp::ContextRegistered {
@@ -710,7 +742,7 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        let handled = apply_group_op_mutations(self.store, group_id, signer, op)?;
+        let (handled, divergence) = apply_group_op_mutations(self.store, group_id, signer, op)?;
         if !handled {
             tracing::debug!(
                 ?op,
@@ -719,7 +751,7 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         set_local_gov_nonce(self.store, group_id, signer, nonce)?;
-        Ok(())
+        Ok(divergence)
     }
 
     fn require_namespace_admin(&self, signer: &PublicKey) -> EyreResult<()> {

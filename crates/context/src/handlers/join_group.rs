@@ -172,7 +172,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 for op_bytes in &join_result.governance_ops {
                     if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(op_bytes) {
                         match context_client.apply_signed_namespace_op(op).await {
-                            Ok(NamespaceApplyOutcome::Applied) => {
+                            Ok(NamespaceApplyOutcome::Applied { .. }) => {
                                 any_applied = true;
                             }
                             Ok(_) => {}
