@@ -14,7 +14,8 @@ use calimero_context::group_store::{
 };
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::{
-    ContextGroupId, GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+    ContextGroupId, GovernancePosition, GroupInvitationFromAdmin, SignedGroupOpenInvitation,
+    SignerId,
 };
 use calimero_context_config::MemberCapabilities;
 use calimero_dag::DagStore;
@@ -33,6 +34,21 @@ fn empty_store() -> Store {
 
 fn sample_group_id() -> ContextGroupId {
     ContextGroupId::from([0x77u8; 32])
+}
+
+/// `MemberRemoved` with placeholder cross-DAG claims for tests that
+/// only exercise convergence on the membership-row mutation. The
+/// hashes intentionally don't match real post-apply state — these
+/// tests don't verify the mismatch-detection path (that's covered
+/// separately by `compute_group_state_hash_after_remove` unit tests).
+fn dummy_member_removed(group_id: ContextGroupId, member: PublicKey) -> GroupOp {
+    GroupOp::MemberRemoved {
+        member,
+        cut: GovernancePosition::new(group_id, [0u8; 32], vec![])
+            .expect("empty heads is a valid GovernancePosition"),
+        expected_group_state_hash: [0u8; 32],
+        expected_context_state_hashes: Vec::new(),
+    }
 }
 
 fn sample_meta(admin: PublicKey) -> GroupMetaValue {
@@ -999,7 +1015,7 @@ fn state_hash_prevents_concurrent_op_divergence() {
         vec![[0u8; 32]],
         state_hash_c,
         1,
-        GroupOp::MemberRemoved { member: admin_a_pk },
+        dummy_member_removed(sample_group_id(), admin_a_pk),
     )
     .unwrap();
 
@@ -1084,7 +1100,7 @@ fn cascade_removal_on_member_kick() {
         vec![[0u8; 32]],
         [0u8; 32],
         1,
-        GroupOp::MemberRemoved { member: member_pk },
+        dummy_member_removed(sample_group_id(), member_pk),
     )
     .unwrap();
     apply_local_signed_group_op(&store, &op).unwrap();
@@ -1147,7 +1163,7 @@ fn cascade_removal_deterministic_across_nodes() {
         vec![[0u8; 32]],
         [0u8; 32],
         1,
-        GroupOp::MemberRemoved { member: member_pk },
+        dummy_member_removed(sample_group_id(), member_pk),
     )
     .unwrap();
     apply_local_signed_group_op(&node_a, &op).unwrap();

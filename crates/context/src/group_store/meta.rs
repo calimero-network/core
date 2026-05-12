@@ -1,10 +1,15 @@
-use calimero_context_config::types::ContextGroupId;
-use calimero_store::key::{GroupMeta, GroupMetaValue, GROUP_META_PREFIX};
+use calimero_context_config::types::{ContextGroupId, GovernancePosition};
+use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
+use calimero_store::key::{ContextMeta, GroupMeta, GroupMetaValue, GROUP_META_PREFIX};
 use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
 use sha2::{Digest, Sha256};
 
-use super::{collect_keys_with_prefix_paginated, list_group_members};
+use super::{
+    collect_keys_with_prefix_paginated, enumerate_group_contexts, list_group_members,
+    resolve_namespace, NamespaceDagService,
+};
 
 pub fn load_group_meta(
     store: &Store,
@@ -91,4 +96,109 @@ pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> Eyr
         hasher.update(&role_bytes);
     }
     Ok(hasher.finalize().into())
+}
+
+/// Return the group state hash that would result if `removed_member`
+/// were dropped from the group's member set. Pure simulation: reads
+/// the current materialized state, removes the named identity from the
+/// sorted-by-pubkey member list in-memory, and hashes — mirrors what
+/// [`compute_group_state_hash`] would compute after a `MemberRemoved`
+/// or `MemberLeft` apply.
+///
+/// Used at sign time so the admin (or leaver) can populate the
+/// `expected_group_state_hash` field on `MemberRemoved` / `MemberLeft`
+/// before the apply runs locally. Receivers compute the real hash
+/// after their own apply and compare; mismatch surfaces membership-row
+/// divergence.
+///
+/// Idempotent on a non-member input — if `removed_member` isn't in the
+/// set, the result is the same as `compute_group_state_hash` on the
+/// current state. The op apply path bails on non-members independently;
+/// this helper just computes deterministically over whatever set it
+/// finds.
+pub fn compute_group_state_hash_after_remove(
+    store: &Store,
+    group_id: &ContextGroupId,
+    removed_member: &PublicKey,
+) -> EyreResult<[u8; 32]> {
+    let meta = load_group_meta(store, group_id)?
+        .ok_or_else(|| eyre!("group not found for state hash computation"))?;
+
+    let mut members = list_group_members(store, group_id, 0, usize::MAX)?;
+    members.retain(|(pk, _role)| pk != removed_member);
+    members.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut hasher = Sha256::new();
+    hasher.update(group_id.to_bytes());
+    hasher.update(AsRef::<[u8]>::as_ref(&meta.admin_identity));
+    hasher.update(AsRef::<[u8]>::as_ref(&meta.owner_identity));
+    hasher.update(meta.target_application_id.as_ref());
+    for (pk, role) in &members {
+        hasher.update(AsRef::<[u8]>::as_ref(pk));
+        let role_bytes =
+            borsh::to_vec(role).map_err(|e| eyre!("role serialization failed: {e}"))?;
+        hasher.update(&role_bytes);
+    }
+    Ok(hasher.finalize().into())
+}
+
+/// Snapshot the current CRDT root hash for every context registered
+/// under `group_id`. Returned sorted by `context_id` for deterministic
+/// op-content hashing (the result lands inside a signed governance op
+/// whose content hash is the dedup key).
+///
+/// `MemberRemoved` / `MemberLeft` don't directly mutate per-context
+/// CRDT state, so this is simply the admin's view of "what these
+/// contexts look like right now" at sign time. Receivers compare
+/// against their own context roots after applying the removal; a
+/// divergent root means the receiver applied legitimate pre-removal
+/// state-DAG deltas from the now-removed member that admin's view
+/// didn't include — the partition-window case the anchor-sync
+/// reconcile path will heal.
+///
+/// Contexts whose `ContextMeta` row is missing (registered in the
+/// group index but not yet materialized — e.g. fresh node that hasn't
+/// joined yet) are skipped, not errored. Hashing what isn't there
+/// would put zero bytes in the snapshot and force a divergence on
+/// every receiver that has the context materialized.
+pub fn snapshot_context_state_hashes(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
+    let context_ids = enumerate_group_contexts(store, group_id, 0, usize::MAX)?;
+    let handle = store.handle();
+    let mut entries = Vec::new();
+    for context_id in context_ids {
+        let key = ContextMeta::new(context_id);
+        if let Some(meta) = handle.get(&key)? {
+            entries.push((context_id, meta.root_hash));
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries)
+}
+
+/// Build the current cross-DAG cut for `group_id` — pre-apply group
+/// state hash bundled with the namespace governance DAG heads at this
+/// moment. Used as the `cut` field in `MemberRemoved` / `MemberLeft`
+/// ops so receivers' apply-time membership check evaluates against the
+/// same descend-from boundary the signer signed against (not against
+/// each receiver's possibly-different local namespace heads).
+///
+/// No double-read race window — the cut is captured once and travels
+/// in the signed op. If governance heads advance between this read
+/// and signing, the cut is slightly stale but still a valid
+/// descend-from boundary; the membership walk only requires the heads
+/// to exist in the receiver's DAG, not to be the receiver's current
+/// heads.
+pub fn build_governance_cut(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<GovernancePosition> {
+    let namespace_id = resolve_namespace(store, group_id)?;
+    let dag = NamespaceDagService::new(store, namespace_id.to_bytes());
+    let governance_dag_heads = dag.read_head_record()?.parent_hashes;
+    let group_state_hash = compute_group_state_hash(store, group_id)?;
+    GovernancePosition::new(*group_id, group_state_hash, governance_dag_heads)
+        .map_err(|e| eyre!("invalid governance position at sign time: {e}"))
 }

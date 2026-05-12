@@ -89,8 +89,9 @@ pub use self::membership_policy::MembershipPolicy;
 pub use self::membership_status::{membership_status_at, MembershipStatus};
 pub use self::membership_view::GroupMembershipView;
 pub use self::meta::{
-    compute_group_state_hash, delete_group_meta, enumerate_all_groups, load_group_meta,
-    save_group_meta,
+    build_governance_cut, compute_group_state_hash, compute_group_state_hash_after_remove,
+    delete_group_meta, enumerate_all_groups, load_group_meta, save_group_meta,
+    snapshot_context_state_hashes,
 };
 pub use self::migrations::{
     delete_all_context_last_migrations, get_context_last_migration, set_context_last_migration,
@@ -782,6 +783,109 @@ const MAX_DAG_HEADS: usize = 64;
 ///
 /// Handles authorization checks and state mutations for ALL `GroupOp` variants.
 /// Returns `Ok(true)` if the op was handled, `Ok(false)` if the variant is not
+/// Compare local post-apply state hashes against the values signed
+/// into `MemberRemoved` / `MemberLeft` and emit a structured warn log
+/// on mismatch. Does NOT roll back the apply or return an error — the
+/// signed op is already valid (signature verified earlier), and the
+/// admin's view is canonical by definition. The mismatch is a signal
+/// that this receiver's state has diverged from the canonical view,
+/// to be resolved by reconcile-via-anchor sync (a future PR); until
+/// then the warn line is what surfaces the divergence to operators.
+///
+/// Two failure modes deliberately accept-and-log rather than error:
+///
+/// 1. **Hash computation fails.** Reading the post-apply state to
+///    recompute the hash should not fail under normal conditions; if
+///    it does we log the failure and move on — the apply already
+///    happened, no rollback is possible at this layer.
+/// 2. **Empty signed values** (zero hash, no per-context entries). A
+///    sender that didn't precompute the signed claims (older op
+///    shapes from before the signed-claim wire change, or test
+///    helpers using placeholder values) signs zeros; comparing against
+///    a real post-apply hash would spuriously trigger a mismatch every
+///    time. Treat all-zero `expected_group_state_hash` AND empty
+///    `expected_context_state_hashes` as "no claim made" — skip the
+///    check entirely. Once the network has fully rolled forward to
+///    signed-claim ops this branch becomes dead and can be removed.
+fn verify_post_apply_state_hashes(
+    store: &Store,
+    group_id: &ContextGroupId,
+    op_kind: &'static str,
+    expected_group_state_hash: &[u8; 32],
+    expected_context_state_hashes: &[(ContextId, [u8; 32])],
+) {
+    // No-claim sentinel — see #2 above.
+    if *expected_group_state_hash == [0u8; 32] && expected_context_state_hashes.is_empty() {
+        return;
+    }
+
+    let actual_group_state_hash = match compute_group_state_hash(store, group_id) {
+        Ok(h) => h,
+        Err(err) => {
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                op_kind,
+                %err,
+                "post-apply group-state hash recompute failed; skipping convergence check"
+            );
+            return;
+        }
+    };
+
+    let actual_context_state_hashes = match snapshot_context_state_hashes(store, group_id) {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                op_kind,
+                %err,
+                "post-apply per-context state-hash snapshot failed; skipping convergence check"
+            );
+            return;
+        }
+    };
+
+    let group_hash_diverges = actual_group_state_hash != *expected_group_state_hash;
+
+    // Build the divergent-context-id list from set comparison: an
+    // entry diverges if the receiver's hash for that context differs
+    // from the admin's, OR if the receiver has a context the admin
+    // didn't include (admin's view was missing it), OR vice versa.
+    // For the §8.3.2 partition case the second form is what fires.
+    let expected_map: std::collections::BTreeMap<ContextId, [u8; 32]> =
+        expected_context_state_hashes.iter().copied().collect();
+    let actual_map: std::collections::BTreeMap<ContextId, [u8; 32]> =
+        actual_context_state_hashes.iter().copied().collect();
+    let mut divergent: Vec<ContextId> = Vec::new();
+    for (cid, expected) in &expected_map {
+        match actual_map.get(cid) {
+            Some(actual) if actual == expected => {}
+            _ => divergent.push(*cid),
+        }
+    }
+    for cid in actual_map.keys() {
+        if !expected_map.contains_key(cid) {
+            divergent.push(*cid);
+        }
+    }
+
+    if group_hash_diverges || !divergent.is_empty() {
+        tracing::warn!(
+            group_id = %hex::encode(group_id.to_bytes()),
+            op_kind,
+            group_hash_diverges,
+            expected_group_state_hash = %hex::encode(expected_group_state_hash),
+            actual_group_state_hash = %hex::encode(actual_group_state_hash),
+            divergent_context_count = divergent.len(),
+            divergent_context_ids = ?divergent
+                .iter()
+                .map(|c| hex::encode(AsRef::<[u8; 32]>::as_ref(c)))
+                .collect::<Vec<_>>(),
+            "cross-DAG state-hash divergence detected on apply — reconcile-via-anchor will heal"
+        );
+    }
+}
+
 /// recognized (callers decide whether to error or log).
 ///
 /// This is the single source of truth for group governance mutations -- both
@@ -816,7 +920,12 @@ fn apply_group_op_mutations(
                 role: role.clone(),
             });
         }
-        GroupOp::MemberRemoved { member } => {
+        GroupOp::MemberRemoved {
+            member,
+            expected_group_state_hash,
+            expected_context_state_hashes,
+            ..
+        } => {
             permissions.require_manage_members(signer, "remove member")?;
             permissions.require_admin_to_remove_admin(signer, member)?;
             // Owner is immune to involuntary removal. Owner must
@@ -838,6 +947,13 @@ fn apply_group_op_mutations(
             // dropped at the receive entry point before the cross-DAG
             // check runs. Cleared if/when the member is re-added.
             mark_denied(store, group_id, member)?;
+            verify_post_apply_state_hashes(
+                store,
+                group_id,
+                "MemberRemoved",
+                expected_group_state_hash,
+                expected_context_state_hashes,
+            );
             crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
                 group_id: group_id.to_bytes(),
                 member: *member,
@@ -1035,7 +1151,12 @@ fn apply_group_op_mutations(
                 subgroups: *auto_follow_subgroups,
             });
         }
-        GroupOp::MemberLeft { member } => {
+        GroupOp::MemberLeft {
+            member,
+            expected_group_state_hash,
+            expected_context_state_hashes,
+            ..
+        } => {
             // Self-leave: signer must equal the member being removed.
             // No capability check beyond self-equality — any member can
             // leave themselves without admin involvement.
@@ -1136,6 +1257,13 @@ fn apply_group_op_mutations(
             // governance-level departure (membership row removed, peers
             // observe the leave) without the rotation. Same caveat applies
             // to the namespace cascade above — row-removal only.
+            verify_post_apply_state_hashes(
+                store,
+                group_id,
+                "MemberLeft",
+                expected_group_state_hash,
+                expected_context_state_hashes,
+            );
             crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
                 group_id: group_id.to_bytes(),
                 member: *member,
