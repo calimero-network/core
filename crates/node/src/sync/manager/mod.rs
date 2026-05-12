@@ -125,6 +125,50 @@ impl Clone for SyncManager {
     }
 }
 
+/// True if `context_id` had a dispatch attempt recorded in `map` less
+/// than `interval` ago.
+///
+/// Used in [`SyncManager::start`] to stop the every-tick re-attempt
+/// storm after the `SyncSessionActor` mailbox returns `Full` (#2319): a
+/// dropped dispatch records `Instant::now()` here, and we skip the
+/// context until `interval` has elapsed. Distinct from `SyncState`'s
+/// `last_sync` — touching that on a dropped dispatch is what #2317
+/// forbids, since it would leave the context "in progress" forever with
+/// no result to clear it.
+pub(crate) fn dispatch_recently_attempted(
+    map: &HashMap<ContextId, time::Instant>,
+    context_id: &ContextId,
+    interval: time::Duration,
+) -> bool {
+    map.get(context_id)
+        .is_some_and(|attempted| attempted.elapsed() < interval)
+}
+
+/// True if an initiator dispatched for `context_id` looks wedged: its
+/// dispatch was recorded in `dispatched_at` more than `grace` ago and
+/// the context's [`SyncState`] still shows it "in progress"
+/// (`last_sync == None`), i.e. no `SyncSessionResult` ever cleared it.
+///
+/// The #2319 watchdog in [`SyncManager::start`] uses this to detect a
+/// `SyncSessionActor` whose single arbiter thread is stuck in a
+/// synchronous merkle/CRDT-merge loop the per-session
+/// `tokio::time::timeout` can't preempt — when it returns true the
+/// manager synthesises an `on_failure` so the context is eligible for a
+/// fresh dispatch rather than logging "Sync already in progress" forever.
+pub(crate) fn session_dispatch_wedged(
+    dispatched_at: &HashMap<ContextId, time::Instant>,
+    state: &HashMap<ContextId, SyncState>,
+    context_id: &ContextId,
+    grace: time::Duration,
+) -> bool {
+    dispatched_at
+        .get(context_id)
+        .is_some_and(|dispatched| dispatched.elapsed() >= grace)
+        && state
+            .get(context_id)
+            .is_some_and(|s| s.last_sync().is_none())
+}
+
 impl SyncManager {
     pub(crate) fn new(
         sync_config: SyncConfig,
@@ -280,6 +324,45 @@ impl SyncManager {
 
         let mut state = HashMap::<_, SyncState>::new();
 
+        // #2319: per-context "last dispatch attempt" instants. When a
+        // `try_send` to the `SyncSessionActor` returns `Full`/`Closed`
+        // we record the context here and skip re-dispatching it until
+        // `sync_config.interval` has elapsed — otherwise every interval
+        // tick (and every heartbeat-driven re-trigger) re-attempts and
+        // re-drops, which is the wedge in #2319. A real
+        // `SyncSessionResult` clears the entry. Distinct from
+        // `SyncState.last_sync`, which #2317 forbids touching on a
+        // dropped dispatch.
+        let mut last_dispatch_attempt = HashMap::<ContextId, time::Instant>::new();
+
+        // #2319: watchdog. Once an initiator is dispatched (Phase 3
+        // below clears the context's `last_sync` to `None`), a
+        // `SyncSessionResult` is supposed to arrive and call
+        // `on_success`/`on_failure` to clear it. If the `SyncSessionActor`
+        // wedges — its single arbiter thread stuck in a synchronous
+        // merkle/CRDT-merge loop that the per-session `tokio::time::timeout`
+        // can't preempt, or its mailbox saturated by such sessions — that
+        // result never comes and the context stays "in progress" forever
+        // ("Sync already in progress" on every tick, never converging
+        // again). Record when we dispatched; if no result has cleared
+        // the entry within `SESSION_WEDGE_GRACE` we synthesise an
+        // `on_failure` so the context becomes eligible again and the
+        // periodic loop retries with a fresh dispatch. The entry is
+        // cleared by the real result on `session_result_rx`.
+        const SESSION_WEDGE_GRACE_MULTIPLIER: u32 = 2;
+        let session_wedge_grace =
+            self.sync_config.session_deadline * SESSION_WEDGE_GRACE_MULTIPLIER;
+        let mut initiator_dispatched_at = HashMap::<ContextId, time::Instant>::new();
+
+        // #2319: rate-limit the "mailbox full" warn to ≤1 per context
+        // per `MAILBOX_FULL_SUMMARY_WINDOW`; the rest roll up into one
+        // info line per window so the wedge is still visible without
+        // drowning the log.
+        const MAILBOX_FULL_SUMMARY_WINDOW: time::Duration = time::Duration::from_secs(60);
+        let mut last_full_warn = HashMap::<ContextId, time::Instant>::new();
+        let mut full_drops_in_window: u64 = 0;
+        let mut full_window_started = time::Instant::now();
+
         let mut requested_ctx = None;
         let mut requested_peer = None;
 
@@ -358,8 +441,66 @@ impl SyncManager {
             tokio::select! {
                 _ = next_sync.tick() => {
                     debug!("Performing interval sync");
+                    // #2319: roll up rate-limited mailbox-full drops.
+                    if full_window_started.elapsed() >= MAILBOX_FULL_SUMMARY_WINDOW {
+                        if full_drops_in_window > 0 {
+                            info!(
+                                full_drops_in_window,
+                                contexts_affected = last_full_warn.len(),
+                                "SyncSession mailbox-full drop rollup (last {:?}) (#2319)",
+                                MAILBOX_FULL_SUMMARY_WINDOW
+                            );
+                        }
+                        full_drops_in_window = 0;
+                        full_window_started = time::Instant::now();
+                        last_full_warn.retain(|_, t| t.elapsed() < MAILBOX_FULL_SUMMARY_WINDOW);
+                    }
+                    // #2319 watchdog: any context whose initiator was
+                    // dispatched longer than `session_wedge_grace` ago
+                    // and is still flagged "in progress" — its session
+                    // (or the whole `SyncSessionActor`) is wedged and no
+                    // `SyncSessionResult` is coming. Synthesise a
+                    // failure so the context is eligible again; the
+                    // dispatch loop below will retry it this tick.
+                    let wedged: Vec<ContextId> = initiator_dispatched_at
+                        .keys()
+                        .copied()
+                        .filter(|context_id| {
+                            session_dispatch_wedged(
+                                &initiator_dispatched_at,
+                                &state,
+                                context_id,
+                                session_wedge_grace,
+                            )
+                        })
+                        .collect();
+                    // Drop the dispatch record either way once past grace
+                    // (a still-in-progress entry that's been there >grace
+                    // is what we just failed; a no-longer-in-progress one
+                    // already got a result that removed it, but be tidy).
+                    initiator_dispatched_at
+                        .retain(|_, dispatched_at| dispatched_at.elapsed() < session_wedge_grace);
+                    for context_id in wedged {
+                        warn!(
+                            %context_id,
+                            grace = ?session_wedge_grace,
+                            "SyncSession initiator produced no result within watchdog grace — assuming a wedged session/actor; failing it so periodic-sync retries (#2319)"
+                        );
+                        if let Some(s) = state.get_mut(&context_id) {
+                            s.on_failure(
+                                "sync session wedged — no SyncSessionResult within watchdog grace (#2319)"
+                                    .to_owned(),
+                            );
+                        }
+                    }
                 }
                 Some(result) = session_result_rx.recv() => {
+                    // #2319: a real result means this context is no
+                    // longer wedged behind a full mailbox — drop the
+                    // dispatch-attempt backoff so it isn't throttled —
+                    // and the watchdog timer for it is satisfied.
+                    let _removed = last_dispatch_attempt.remove(&result.context_id);
+                    let _removed = initiator_dispatched_at.remove(&result.context_id);
                     apply_session_result(&mut state, result);
                     continue;
                 }
@@ -432,6 +573,22 @@ impl SyncManager {
                     }
                 };
 
+                // #2319: respect the dispatch-attempt backoff. After a
+                // `Full` mailbox we wait one `interval` before retrying
+                // this context rather than re-attempting (and re-dropping)
+                // on every tick. Explicit requests bypass it, same as the
+                // recency override below.
+                if requested_ctx.is_none()
+                    && dispatch_recently_attempted(
+                        &last_dispatch_attempt,
+                        &context_id,
+                        self.sync_config.interval,
+                    )
+                {
+                    debug!(%context_id, "Skipping sync — dispatch recently attempted, mailbox was full (#2319)");
+                    continue;
+                }
+
                 // Phase 1: read-only eligibility check. We must not
                 // mutate `state` here because a failed `try_send`
                 // below would leave `last_sync = None` with no future
@@ -472,10 +629,20 @@ impl SyncManager {
                 }) {
                     Ok(()) => true,
                     Err(SyncSessionSendError::Full) => {
-                        warn!(
-                            %context_id,
-                            "SyncSession actor mailbox full — skipping initiator dispatch (#2316); next interval tick will retry"
-                        );
+                        full_drops_in_window += 1;
+                        let warn_now = last_full_warn
+                            .get(&context_id)
+                            .is_none_or(|t| t.elapsed() >= MAILBOX_FULL_SUMMARY_WINDOW);
+                        if warn_now {
+                            warn!(
+                                %context_id,
+                                "SyncSession actor mailbox full — skipping initiator dispatch; backing off this context for {:?} (#2316/#2319)",
+                                self.sync_config.interval
+                            );
+                            let _prev = last_full_warn.insert(context_id, time::Instant::now());
+                        } else {
+                            debug!(%context_id, "SyncSession actor mailbox full — skipping (rate-limited; see periodic rollup) (#2319)");
+                        }
                         false
                     }
                     Err(SyncSessionSendError::Closed) => {
@@ -488,13 +655,18 @@ impl SyncManager {
                 };
 
                 if !dispatched {
+                    // #2319: record the failed attempt so the next
+                    // interval tick backs off instead of re-dropping.
+                    let _prev = last_dispatch_attempt.insert(context_id, time::Instant::now());
                     continue;
                 }
 
                 // Phase 3: dispatch succeeded — mark the context as
                 // in-flight. A `SyncSessionResult` will arrive on
                 // `session_result_rx` and call `on_success` /
-                // `on_failure` to clear the flag.
+                // `on_failure` to clear the flag — or, if it never does,
+                // the #2319 watchdog above fails it after the grace.
+                let _prev = initiator_dispatched_at.insert(context_id, time::Instant::now());
                 if is_first_sync {
                     info!(%context_id, "Syncing for the first time");
                     let mut new_state = SyncState::new();
@@ -2178,11 +2350,23 @@ impl SyncManager {
         &self,
         context_id: ContextId,
         our_identity: PublicKey,
-        deltas: Vec<calimero_node_primitives::delta_buffer::BufferedDelta>,
+        mut deltas: Vec<calimero_node_primitives::delta_buffer::BufferedDelta>,
         _fallback_peer: PeerId,
     ) {
         use crate::handlers::state_delta::{replay_buffered_delta, ReplayBufferedDeltaInput};
         use std::collections::{HashMap, HashSet};
+
+        // #2319 determinism: deltas land in the buffer in gossipsub
+        // arrival order, which differs node-to-node — replaying them in
+        // that order makes two nodes apply *concurrent* deltas to storage
+        // in different sequences, which (for any merge that isn't
+        // perfectly order-independent) yields a different Merkle root for
+        // the same delta set. Replay in a canonical, causally-consistent
+        // order — HLC, then delta id as a tiebreaker — so every node
+        // applies the same sequence. (The DAG cascade still re-orders for
+        // genuine causal dependencies; this only pins the order of
+        // concurrent ones.)
+        deltas.sort_by(|a, b| a.hlc.cmp(&b.hlc).then_with(|| a.id.cmp(&b.id)));
 
         // Build a set of IDs that are "covered" by the snapshot
         // This includes:
@@ -3334,13 +3518,23 @@ impl SyncManager {
                                 Ok(outcome) => {
                                     if matches!(outcome, NamespaceApplyOutcome::Applied) {
                                         newly_applied = true;
+                                        // Only react to a *newly-applied*
+                                        // `MemberJoined`. On `Duplicate`
+                                        // (the common case — a backfill
+                                        // re-sends the whole DAG every
+                                        // round) re-publishing a fresh
+                                        // `KeyDelivery` each time would
+                                        // grow the namespace governance
+                                        // DAG without bound until it hits
+                                        // the backfill cap and never
+                                        // converges again (#2319).
+                                        crate::key_delivery::maybe_publish_key_delivery(
+                                            &self.context_client,
+                                            &self.node_client,
+                                            &op,
+                                        )
+                                        .await;
                                     }
-                                    crate::key_delivery::maybe_publish_key_delivery(
-                                        &self.context_client,
-                                        &self.node_client,
-                                        &op,
-                                    )
-                                    .await;
                                 }
                             }
                         }

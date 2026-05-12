@@ -320,8 +320,24 @@ pub struct LeafMetadata {
     /// CRDT type for proper merge semantics.
     pub crdt_type: CrdtType,
 
-    /// HLC timestamp of last modification.
+    /// HLC timestamp of last modification (maps to `Metadata::updated_at`).
     pub hlc_timestamp: u64,
+
+    /// Entity creation timestamp (maps to `Metadata::created_at`).
+    ///
+    /// **Must** be carried over the wire: `ChildInfo` orders a parent's
+    /// children by `created_at` (then `id`), and that order feeds the
+    /// parent's — and ultimately the root's — Merkle hash. If a node that
+    /// received an entity via HashComparison repair stamped it with
+    /// `created_at = 0` (the old behaviour) while another node has the
+    /// originating `created_at` from delta-apply, the two compute a
+    /// different root hash for identical logical state — the
+    /// "Same DAG heads but different root hash" divergence in #2319 — and
+    /// HashComparison can never heal it because the repair itself
+    /// reintroduces the mismatch. Defaults to `0` only for legacy/test
+    /// constructions that don't know it; production builders set it from
+    /// the entity's stored `Metadata::created_at`.
+    pub created_at: u64,
 
     /// Version counter (for some CRDT types).
     pub version: u64,
@@ -334,16 +350,28 @@ pub struct LeafMetadata {
 }
 
 impl LeafMetadata {
-    /// Create metadata with required fields.
+    /// Create metadata with required fields. `created_at` defaults to
+    /// `0`; production builders should chain [`with_created_at`] from the
+    /// entity's stored `Metadata::created_at` (see the field docs).
+    ///
+    /// [`with_created_at`]: LeafMetadata::with_created_at
     #[must_use]
     pub fn new(crdt_type: CrdtType, hlc_timestamp: u64, collection_id: [u8; 32]) -> Self {
         Self {
             crdt_type,
             hlc_timestamp,
+            created_at: 0,
             version: 0,
             collection_id,
             parent_id: None,
         }
+    }
+
+    /// Set the entity creation timestamp (`Metadata::created_at`).
+    #[must_use]
+    pub fn with_created_at(mut self, created_at: u64) -> Self {
+        self.created_at = created_at;
+        self
     }
 
     /// Set version.

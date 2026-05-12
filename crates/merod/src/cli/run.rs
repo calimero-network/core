@@ -152,6 +152,7 @@ impl RunCommand {
             ),
             sync: SyncConfig {
                 timeout: config.sync.timeout,
+                session_deadline: config.sync.session_deadline,
                 interval: config.sync.interval,
                 frequency: config.sync.frequency,
                 ..Default::default() // Use defaults for new fields

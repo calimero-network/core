@@ -235,7 +235,18 @@ async fn run_initiator_impl<T: SyncTransport>(
         }
 
         // Process each node
-        for remote_node in nodes {
+        for (node_idx, remote_node) in nodes.into_iter().enumerate() {
+            // #2319: the SyncSessionActor runs every session on one
+            // arbiter thread, and `apply_leaf_with_crdt_merge` (the WASM
+            // CRDT merge below) is synchronous with no await between
+            // merges — a full 1000-leaf batch (MAX_NODES_PER_RESPONSE)
+            // would pin the thread and stall the actor's mailbox. Yield
+            // every 64 nodes so the actor can accept/drain queued jobs
+            // mid-repair.
+            if node_idx != 0 && node_idx % 64 == 0 {
+                tokio::task::yield_now().await;
+            }
+
             if !remote_node.is_valid() {
                 warn!(%context_id, "Invalid TreeNode, skipping");
                 continue;
@@ -323,6 +334,10 @@ async fn run_initiator_impl<T: SyncTransport>(
                 }
             }
         }
+
+        // #2319: yield once per peer round-trip batch too, in case the
+        // batch was < 64 nodes but we are walking thousands of them.
+        tokio::task::yield_now().await;
     }
 
     // Close the transport to signal completion to the responder
@@ -632,7 +647,8 @@ fn collect_leaves_recursive(
         if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
             if let Some(ref crdt_type) = index.metadata.crdt_type {
                 let metadata =
-                    LeafMetadata::new(crdt_type.clone(), index.metadata.updated_at(), [0u8; 32]);
+                    LeafMetadata::new(crdt_type.clone(), index.metadata.updated_at(), [0u8; 32])
+                        .with_created_at(index.metadata.created_at());
                 let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
                 leaves.push(leaf_data);
             } else {
@@ -776,7 +792,8 @@ fn get_local_tree_node(
                     vec![],
                 )));
             };
-            let metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32]);
+            let metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
+                .with_created_at(index.metadata.created_at());
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
             Ok(Some(TreeNode::leaf(
                 *entity_id.as_bytes(),

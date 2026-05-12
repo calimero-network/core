@@ -5,6 +5,7 @@ use calimero_blobstore::BlobManager as BlobStore;
 use calimero_context_client::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
+use prometheus_client::metrics::counter::Counter;
 
 use crate::readiness::{ReadinessCache, ReadinessCacheNotify, ReadinessConfig, ReadinessManager};
 use crate::sync::SyncManager;
@@ -61,9 +62,16 @@ pub struct NodeManager {
     /// inbound sync streams here instead of `ctx.spawn`'ing them on
     /// this actor's Arbiter (issue #2316).
     pub(crate) sync_session_tx: crate::sync_session_bridge::SyncSessionSender,
+    /// `sync_root_hash_divergence_detected_total` — incremented by the
+    /// hash-heartbeat handler each time it observes a peer with the same
+    /// DAG heads but a different storage root hash (#2319). Lets vmagent
+    /// alert on divergence rate without grepping logs; with the #2319
+    /// determinism fixes this should stay near zero.
+    pub(crate) divergence_detected: Counter,
 }
 
 impl NodeManager {
+    #[expect(clippy::too_many_arguments, reason = "wiring-only constructor")]
     pub(crate) fn new(
         blobstore: BlobStore,
         sync_manager: SyncManager,
@@ -73,6 +81,7 @@ impl NodeManager {
         state: NodeState,
         state_delta_tx: crate::state_delta_bridge::StateDeltaSender,
         sync_session_tx: crate::sync_session_bridge::SyncSessionSender,
+        divergence_detected: Counter,
     ) -> Self {
         Self {
             clients: NodeClients {
@@ -90,6 +99,7 @@ impl NodeManager {
             readiness_addr: None,
             state_delta_tx,
             sync_session_tx,
+            divergence_detected,
         }
     }
 }

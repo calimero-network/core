@@ -33,6 +33,7 @@ use crate::cli;
 
 // Sync configuration - aggressive defaults for fast CRDT convergence
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_SYNC_SESSION_DEADLINE: Duration = Duration::from_secs(30);
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(10);
 
@@ -280,6 +281,7 @@ impl InitCommand {
             ),
             SyncConfig {
                 timeout: DEFAULT_SYNC_TIMEOUT,
+                session_deadline: DEFAULT_SYNC_SESSION_DEADLINE,
                 interval: DEFAULT_SYNC_INTERVAL,
                 frequency: DEFAULT_SYNC_FREQUENCY,
             },

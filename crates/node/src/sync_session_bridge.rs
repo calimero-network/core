@@ -16,14 +16,24 @@
 //! letting mesh peers prune the busy node — exactly the failure
 //! described in #2293.
 //!
-//! ## Backpressure
+//! ## Backpressure (#2316 + #2319)
 //!
 //! Bounded Actix mailbox via `set_mailbox_capacity`; `Addr::try_send`
 //! returns `SendError::Full` on overflow. On overflow the dispatch
-//! site logs the drop; the existing periodic-sync interval and
-//! heartbeat-driven sync triggers cover dropped initiators, and
-//! peers will retry dropped responder streams via their own retry
-//! logic.
+//! site backs the context off for one sync interval (#2319 — see
+//! `SyncManager::start`) instead of re-attempting every tick; the
+//! periodic-sync interval and heartbeat-driven sync triggers cover
+//! dropped initiators, and peers will retry dropped responder streams
+//! via their own retry logic. Drops are counted per-reason in
+//! [`SyncSessionMetrics`].
+//!
+//! In addition (#2319) a per-`ContextId` in-flight gate refuses a
+//! second initiator for a context that already has one running, and
+//! each session runs under `sync_config.session_deadline` — an outer
+//! `tokio::time::timeout` (defaults to the 30 s `sync_config.timeout`,
+//! the per-step budget; lowerable per deployment) so a stuck session
+//! frees its slot — and stops burning the actor's single arbiter
+//! thread — predictably.
 //!
 //! ## Mirrors `state_delta_bridge`
 //!
@@ -41,7 +51,12 @@ use actix::{
 };
 use calimero_network_primitives::stream::Stream;
 use calimero_primitives::context::ContextId;
+use dashmap::DashMap;
 use libp2p::PeerId;
+use prometheus_client::encoding::EncodeLabelSet;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::family::Family;
+use prometheus_client::registry::Registry;
 use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, info, warn};
 
@@ -59,6 +74,120 @@ pub const SYNC_SESSION_CHANNEL_CAPACITY: usize = 256;
 
 /// Periodic summary log interval.
 const SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Why a [`SyncSessionJob`] was dropped instead of run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropReason {
+    /// Actor mailbox at capacity (`try_send` -> `Full`).
+    MailboxFull,
+    /// Actor stopped / shutting down (`try_send` -> `Closed`).
+    ActorClosed,
+    /// An `Initiator` job arrived for a `ContextId` that already has a
+    /// session in flight on the actor (#2319 per-context gate).
+    ContextBusy,
+}
+
+impl DropReason {
+    /// Prometheus `reason` label value. Adding a variant forces an
+    /// update here (and in [`SyncSessionMetrics`]) — the matches are
+    /// exhaustive, so it's compiler-enforced, not a documented invariant.
+    fn label(self) -> &'static str {
+        match self {
+            DropReason::MailboxFull => "mailbox_full",
+            DropReason::ActorClosed => "actor_closed",
+            DropReason::ContextBusy => "context_busy",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct DropReasonLabel {
+    reason: String,
+}
+
+/// Prometheus + summary-log accounting for the sync-session actor
+/// (#2319 Step 4).
+///
+/// Holds one owned [`Counter`] handle per [`DropReason`] — clones of the
+/// entries in the `sync_session_jobs_dropped_total{reason=...}`
+/// Prometheus family. The family itself stays in the registry;
+/// `prometheus_client::Counter` is `Arc`-backed, so incrementing a
+/// handle here updates the registered metric. `record_drop` dispatches
+/// with an exhaustive `match` (no array indexing, no implicit
+/// discriminant invariant — adding a [`DropReason`] won't compile until
+/// the new field + match arms are added), is a single atomic increment
+/// with no allocation, and `dropped_total` (the once-a-minute
+/// `log_summary` line) is just the sum of the three — no second source
+/// of truth. Cloned (cheaply) into the [`SyncSessionSender`] (mailbox
+/// `Full`/`Closed` drops) and the [`SyncSessionActor`]
+/// (per-context-busy drops).
+#[derive(Clone, Debug)]
+pub struct SyncSessionMetrics {
+    mailbox_full: Counter,
+    actor_closed: Counter,
+    context_busy: Counter,
+}
+
+impl SyncSessionMetrics {
+    /// Create and register metrics under the `sync_session` sub-registry.
+    pub fn new(registry: &mut Registry) -> Self {
+        let dropped = Family::<DropReasonLabel, Counter>::default();
+        let sub = registry.sub_registry_with_prefix("sync_session");
+        sub.register(
+            "jobs_dropped_total",
+            "SyncSessionJobs dropped without running, by reason",
+            dropped.clone(),
+        );
+        Self::from_family(&dropped)
+    }
+
+    /// Unregistered variant for unit tests.
+    #[cfg(test)]
+    pub fn new_unregistered() -> Self {
+        Self::from_family(&Family::<DropReasonLabel, Counter>::default())
+    }
+
+    fn from_family(dropped: &Family<DropReasonLabel, Counter>) -> Self {
+        let counter = |reason: DropReason| {
+            dropped
+                .get_or_create(&DropReasonLabel {
+                    reason: reason.label().to_owned(),
+                })
+                .clone()
+        };
+        Self {
+            mailbox_full: counter(DropReason::MailboxFull),
+            actor_closed: counter(DropReason::ActorClosed),
+            context_busy: counter(DropReason::ContextBusy),
+        }
+    }
+
+    fn counter(&self, reason: DropReason) -> &Counter {
+        match reason {
+            DropReason::MailboxFull => &self.mailbox_full,
+            DropReason::ActorClosed => &self.actor_closed,
+            DropReason::ContextBusy => &self.context_busy,
+        }
+    }
+
+    /// Record one dropped job. Single atomic increment on the
+    /// pre-created per-reason counter — no allocation.
+    pub fn record_drop(&self, reason: DropReason) {
+        let _prev = self.counter(reason).inc();
+    }
+
+    /// Total dropped jobs across all reasons (for `log_summary`).
+    /// Derived from the per-reason counters — no duplicate atomic.
+    pub fn dropped_total(&self) -> u64 {
+        self.mailbox_full.get() + self.actor_closed.get() + self.context_busy.get()
+    }
+
+    /// Read the per-reason counter — used by `log_summary` (and tests
+    /// verifying `record_drop` routes each reason to the right metric).
+    fn count(&self, reason: DropReason) -> u64 {
+        self.counter(reason).get()
+    }
+}
 
 /// Result reported back to `SyncManager::start` for state tracking
 /// (success-count, backoff). Mirrors the tuple the legacy
@@ -93,6 +222,20 @@ impl Drop for InFlightGuard {
     }
 }
 
+/// RAII guard that removes a `ContextId` from
+/// [`SyncSessionActor::in_flight_initiators`] on drop, including
+/// panic/timeout/cancel unwinds (#2319).
+struct ContextGuard {
+    map: Arc<DashMap<ContextId, ()>>,
+    context_id: ContextId,
+}
+
+impl Drop for ContextGuard {
+    fn drop(&mut self) {
+        let _removed = self.map.remove(&self.context_id);
+    }
+}
+
 /// One unit of work routed to [`SyncSessionActor`].
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -116,7 +259,7 @@ pub enum SyncSessionJob {
 #[derive(Clone, Debug)]
 pub struct SyncSessionSender {
     addr: Addr<SyncSessionActor>,
-    dropped_total: Arc<AtomicU64>,
+    metrics: SyncSessionMetrics,
 }
 
 /// Error returned by [`SyncSessionSender::try_send`].
@@ -129,19 +272,19 @@ pub enum SyncSessionSendError {
 }
 
 impl SyncSessionSender {
-    /// Non-blocking enqueue. Increments the drop counter on both
-    /// `Full` and `Closed` so the periodic summary log doesn't
-    /// undercount drops if the actor crashes or shuts down while the
-    /// system is still running.
+    /// Non-blocking enqueue. Counts the drop (per-reason + total) on
+    /// both `Full` and `Closed` so the periodic summary log and
+    /// Prometheus don't undercount drops if the actor crashes or shuts
+    /// down while the system is still running.
     pub fn try_send(&self, job: SyncSessionJob) -> Result<(), SyncSessionSendError> {
         match self.addr.try_send(job) {
             Ok(()) => Ok(()),
             Err(actix::dev::SendError::Full(_)) => {
-                let _prev = self.dropped_total.fetch_add(1, Ordering::Relaxed);
+                self.metrics.record_drop(DropReason::MailboxFull);
                 Err(SyncSessionSendError::Full)
             }
             Err(actix::dev::SendError::Closed(_)) => {
-                let _prev = self.dropped_total.fetch_add(1, Ordering::Relaxed);
+                self.metrics.record_drop(DropReason::ActorClosed);
                 Err(SyncSessionSendError::Closed)
             }
         }
@@ -153,6 +296,11 @@ impl SyncSessionSender {
 /// the network/gossipsub task or the NodeManager mailbox.
 pub struct SyncSessionActor {
     sync_manager: SyncManager,
+    /// Outer per-session `tokio::time::timeout` — `sync_config.session_deadline`
+    /// (#2319; defaults to the 30 s `sync_config.timeout`, the
+    /// per-step budget, but is separately tunable). Bounds how long one
+    /// stuck session can hold a concurrency slot and burn the arbiter
+    /// thread.
     session_timeout: Duration,
     /// Caps concurrently-running sessions at `sync_config.max_concurrent`
     /// (default 30). The mailbox bounds *queued* jobs; this bounds
@@ -162,6 +310,16 @@ pub struct SyncSessionActor {
     /// has no timeout — so the per-session `tokio::time::timeout` only
     /// applies to the work *after* the permit is held.
     concurrency: Arc<Semaphore>,
+    /// One in-flight `Initiator` session per `ContextId` (#2319). A
+    /// second initiator for the same context is dropped (counted as
+    /// `ContextBusy`) rather than queued — two concurrent syncs of one
+    /// context's state would race, and the dispatch loop's Phase-1
+    /// "Sync already in progress" check was the only thing that
+    /// prevented it before, which #2319 showed is not airtight under
+    /// mailbox backpressure. Responder jobs are per-stream, not
+    /// per-context, so they are not gated here; the global `concurrency`
+    /// semaphore still caps total in-flight work.
+    in_flight_initiators: Arc<DashMap<ContextId, ()>>,
     /// Initiator results are forwarded here so `SyncManager::start`
     /// can update its per-context tracking state. `None` means
     /// results are dropped (e.g. in unit tests). Unbounded because a
@@ -170,11 +328,11 @@ pub struct SyncSessionActor {
     /// stalling that context — same failure shape as the C1 dispatch
     /// stall fixed earlier in #2317.
     result_tx: Option<mpsc::UnboundedSender<SyncSessionResult>>,
+    metrics: SyncSessionMetrics,
     in_flight: Arc<AtomicU64>,
     processed_total: Arc<AtomicU64>,
     error_total: Arc<AtomicU64>,
     timeout_total: Arc<AtomicU64>,
-    dropped_total: Arc<AtomicU64>,
 }
 
 impl SyncSessionActor {
@@ -183,18 +341,19 @@ impl SyncSessionActor {
         session_timeout: Duration,
         max_concurrent: usize,
         result_tx: Option<mpsc::UnboundedSender<SyncSessionResult>>,
-        dropped_total: Arc<AtomicU64>,
+        metrics: SyncSessionMetrics,
     ) -> Self {
         Self {
             sync_manager,
             session_timeout,
             concurrency: Arc::new(Semaphore::new(max_concurrent)),
+            in_flight_initiators: Arc::new(DashMap::new()),
             result_tx,
+            metrics,
             in_flight: Arc::new(AtomicU64::new(0)),
             processed_total: Arc::new(AtomicU64::new(0)),
             error_total: Arc::new(AtomicU64::new(0)),
             timeout_total: Arc::new(AtomicU64::new(0)),
-            dropped_total,
         }
     }
 
@@ -202,14 +361,21 @@ impl SyncSessionActor {
         let processed = self.processed_total.load(Ordering::Relaxed);
         let errors = self.error_total.load(Ordering::Relaxed);
         let timeouts = self.timeout_total.load(Ordering::Relaxed);
-        let dropped = self.dropped_total.load(Ordering::Relaxed);
+        let dropped = self.metrics.dropped_total();
+        // #2319: `record_drop(ContextBusy)` already counts this; reuse
+        // that Prometheus counter rather than a parallel atomic that
+        // could drift.
+        let per_context_busy = self.metrics.count(DropReason::ContextBusy);
         let in_flight = self.in_flight.load(Ordering::Relaxed);
+        let in_flight_contexts = self.in_flight_initiators.len();
         info!(
             processed_total = processed,
             error_total = errors,
             timeout_total = timeouts,
             dropped_total = dropped,
+            per_context_busy_total = per_context_busy,
             in_flight,
+            in_flight_contexts,
             "SyncSession actor summary"
         );
     }
@@ -235,8 +401,6 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
     type Result = ();
 
     fn handle(&mut self, job: SyncSessionJob, ctx: &mut Self::Context) {
-        let in_flight_guard = InFlightGuard::new(Arc::clone(&self.in_flight));
-
         let session_timeout = self.session_timeout;
         let sync_manager = self.sync_manager.clone();
         let result_tx = self.result_tx.clone();
@@ -244,6 +408,7 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
 
         match job {
             SyncSessionJob::Responder { peer_id, stream } => {
+                let in_flight_guard = InFlightGuard::new(Arc::clone(&self.in_flight));
                 // Responder: `handle_opened_stream` returns `()` so
                 // there is no `error_total` distinction here — only
                 // `processed_total` and `timeout_total`.
@@ -251,17 +416,19 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                 let timeout_total = Arc::clone(&self.timeout_total);
                 let work = async move {
                     let _guard = in_flight_guard;
-                    // Bound concurrent in-flight sessions to
-                    // `sync_config.max_concurrent` (default 30); when
-                    // saturated, queued jobs wait here rather than
-                    // running unbounded. The session timeout below
-                    // still applies once the permit is held.
-                    let _permit = concurrency.acquire_owned().await.ok();
                     let started = Instant::now();
-                    let outcome = tokio::time::timeout(
-                        session_timeout,
-                        sync_manager.handle_opened_stream(peer_id, stream),
-                    )
+                    // #2319: one `timeout` covers BOTH waiting for a
+                    // concurrency permit and running the session, so
+                    // total wall time per responder slot is bounded by
+                    // `session_timeout`. Without bounding the acquire, a
+                    // saturated actor (every `max_concurrent` slot held
+                    // by a stuck session) would park this job
+                    // indefinitely and pin the peer's inbound stream
+                    // open until the peer itself gives up.
+                    let outcome = tokio::time::timeout(session_timeout, async move {
+                        let _permit = concurrency.acquire_owned().await.ok();
+                        sync_manager.handle_opened_stream(peer_id, stream).await
+                    })
                     .await;
                     match &outcome {
                         Ok(()) => {
@@ -298,17 +465,69 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
                 context_id,
                 peer_id,
             } => {
+                // #2319: refuse a duplicate initiator for this context.
+                if self.in_flight_initiators.insert(context_id, ()).is_some() {
+                    self.metrics.record_drop(DropReason::ContextBusy);
+                    debug!(
+                        %context_id,
+                        "SyncSession actor already running an initiator for this context — dropping duplicate (#2319)"
+                    );
+                    // We accepted this job off the mailbox (`try_send`
+                    // returned `Ok`), so `SyncManager::start` has already
+                    // run Phase 3 and cleared the context's `last_sync`
+                    // to `None` ("in progress"). If we returned without
+                    // a result the context would stay `None` forever —
+                    // the exact #2317 permanent-stall. Send a synthetic
+                    // failure so `apply_session_result` clears it and the
+                    // periodic loop retries on the next eligible tick.
+                    if let Some(tx) = &result_tx {
+                        let _ignored = tx.send(SyncSessionResult {
+                            context_id,
+                            peer_id: peer_id.unwrap_or_else(PeerId::random),
+                            took: Duration::ZERO,
+                            result: Ok(Err(eyre::eyre!(
+                                "initiator skipped — a sync session for this context is already in flight on the actor (#2319)"
+                            ))),
+                        });
+                    }
+                    return;
+                }
+                let context_guard = ContextGuard {
+                    map: Arc::clone(&self.in_flight_initiators),
+                    context_id,
+                };
+                let in_flight_guard = InFlightGuard::new(Arc::clone(&self.in_flight));
                 let processed_total = Arc::clone(&self.processed_total);
                 let error_total = Arc::clone(&self.error_total);
                 let timeout_total = Arc::clone(&self.timeout_total);
                 let work = async move {
+                    let _context_guard = context_guard;
                     let _guard = in_flight_guard;
-                    let _permit = concurrency.acquire_owned().await.ok();
                     let started = Instant::now();
-                    let outcome = tokio::time::timeout(
-                        session_timeout,
-                        sync_manager.perform_interval_sync(context_id, peer_id),
-                    )
+                    // #2319: one `timeout` covers BOTH waiting for a
+                    // concurrency permit and running `perform_interval_sync`,
+                    // so total wall time is bounded by `session_timeout`
+                    // (not 2×, which two separate timeouts gave — and 2×
+                    // is the watchdog's whole grace, so a permit-starved
+                    // session could otherwise trip a spurious synthetic
+                    // failure while still legitimately running). If every
+                    // slot is held by sessions stuck in a synchronous
+                    // merge loop the `timeout` can't preempt, an
+                    // unbounded `acquire_owned().await` would park this
+                    // initiator forever — and since it accepted the job
+                    // off the mailbox, `SyncManager::start` already
+                    // cleared this context's `last_sync` to `None`, so
+                    // with no result the context stays "in progress"
+                    // permanently. On timeout the `Err(Elapsed)` outcome
+                    // below still yields a (failure) result, so
+                    // `apply_session_result` clears the flag and the
+                    // periodic loop retries.
+                    let outcome = tokio::time::timeout(session_timeout, async move {
+                        let _permit = concurrency.acquire_owned().await.ok();
+                        sync_manager
+                            .perform_interval_sync(context_id, peer_id)
+                            .await
+                    })
                     .await;
 
                     let chosen_peer = outcome
@@ -387,6 +606,11 @@ impl Handler<SyncSessionJob> for SyncSessionActor {
 /// recreate the legacy `FuturesUnordered` queue + `max_concurrent`
 /// cap that `SyncManager::start` enforced before #2316.
 ///
+/// `session_deadline` is the outer per-session `tokio::time::timeout`
+/// (#2319 — pass `config.sync.session_deadline`; defaults to the 30 s
+/// `config.sync.timeout` so cold-start snapshot syncs aren't cut off).
+/// Drop counters are registered under `sync_session` in `registry`.
+///
 /// `result_tx` is the channel `SyncManager::start` reads from to
 /// update its per-context tracking state. Pass `None` to discard
 /// results (used in unit tests).
@@ -395,40 +619,66 @@ pub fn start_sync_session_actor(
     capacity: usize,
     max_concurrent: usize,
     sync_manager: SyncManager,
-    session_timeout: Duration,
+    session_deadline: Duration,
     result_tx: Option<mpsc::UnboundedSender<SyncSessionResult>>,
+    registry: &mut Registry,
 ) -> SyncSessionSender {
-    let dropped_total = Arc::new(AtomicU64::new(0));
-    let dropped_for_actor = Arc::clone(&dropped_total);
+    let metrics = SyncSessionMetrics::new(registry);
+    let metrics_for_actor = metrics.clone();
 
     let addr = SyncSessionActor::start_in_arbiter(arbiter, move |ctx| {
         ctx.set_mailbox_capacity(capacity);
         SyncSessionActor::new(
             sync_manager,
-            session_timeout,
+            session_deadline,
             max_concurrent,
             result_tx,
-            dropped_for_actor,
+            metrics_for_actor,
         )
     });
 
-    SyncSessionSender {
-        addr,
-        dropped_total,
-    }
+    SyncSessionSender { addr, metrics }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Sender wrapper compiles, clones, and exposes a working
-    /// `dropped_total` handle when started on a fresh Actix Arbiter.
-    /// (Functional coverage is in the kv-store-with-handlers fuzzy
-    /// test under issue #2316 acceptance criteria.)
     #[test]
-    fn dropped_total_starts_at_zero() {
-        let dropped_total = Arc::new(AtomicU64::new(0));
-        assert_eq!(dropped_total.load(Ordering::Relaxed), 0);
+    fn metrics_start_at_zero() {
+        let m = SyncSessionMetrics::new_unregistered();
+        assert_eq!(m.dropped_total(), 0);
+        assert_eq!(m.count(DropReason::MailboxFull), 0);
+        assert_eq!(m.count(DropReason::ActorClosed), 0);
+        assert_eq!(m.count(DropReason::ContextBusy), 0);
+    }
+
+    #[test]
+    fn record_drop_routes_each_reason_to_its_own_counter() {
+        let m = SyncSessionMetrics::new_unregistered();
+        m.record_drop(DropReason::MailboxFull);
+        m.record_drop(DropReason::MailboxFull);
+        m.record_drop(DropReason::ActorClosed);
+        m.record_drop(DropReason::ContextBusy);
+        assert_eq!(m.count(DropReason::MailboxFull), 2);
+        assert_eq!(m.count(DropReason::ActorClosed), 1);
+        assert_eq!(m.count(DropReason::ContextBusy), 1);
+        assert_eq!(m.dropped_total(), 4);
+    }
+
+    #[test]
+    fn dropped_total_is_the_sum_of_per_reason_counters() {
+        let m = SyncSessionMetrics::new_unregistered();
+        for _ in 0..3 {
+            m.record_drop(DropReason::ContextBusy);
+        }
+        m.record_drop(DropReason::MailboxFull);
+        assert_eq!(
+            m.dropped_total(),
+            m.count(DropReason::MailboxFull)
+                + m.count(DropReason::ActorClosed)
+                + m.count(DropReason::ContextBusy)
+        );
+        assert_eq!(m.dropped_total(), 4);
     }
 }

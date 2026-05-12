@@ -61,10 +61,23 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     // Check if entity already exists
     let existing_index = Index::<MainStorage>::get_index(entity_id).ok().flatten();
 
-    // Build metadata from leaf info
+    // Build metadata from leaf info.
+    //
+    // `created_at` matters: `ChildInfo` orders a parent's children by
+    // `created_at` (then `id`), and that order feeds the parent's — and
+    // the root's — Merkle hash. For a *new* entity received here we must
+    // use the originating `created_at` carried in the leaf, not the
+    // `Metadata::default()` zero, or this node sorts the entity
+    // differently from one that received it via delta-apply → diverging
+    // root hash (the #2319 "Same DAG heads, different root hash" bug).
+    // For an *existing* entity the storage layer keeps the stored
+    // `created_at` and ignores this value, so setting it unconditionally
+    // is harmless. (`leaf.metadata.created_at` is `0` only when the peer
+    // ran pre-#2322 code that didn't transmit it.)
     let mut metadata = Metadata::default();
     metadata.crdt_type = Some(leaf.metadata.crdt_type.clone());
     metadata.updated_at = leaf.metadata.hlc_timestamp.into();
+    metadata.created_at = leaf.metadata.created_at;
 
     let action = if existing_index.is_some() {
         // Update existing entity - storage layer handles CRDT merge
