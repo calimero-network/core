@@ -48,6 +48,7 @@ use calimero_node_primitives::sync::{
     TreeNodeResponse, MAX_NODES_PER_RESPONSE,
 };
 use calimero_primitives::context::ContextId;
+use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::env::with_runtime_env;
@@ -60,6 +61,19 @@ use tracing::{debug, info, trace, warn};
 
 /// Maximum number of pending node requests (DFS stack depth limit).
 const MAX_PENDING_NODES: usize = 10_000;
+
+/// Synthetic `CrdtType::LwwRegister` inner-type name used on the wire for a
+/// Merkle leaf whose stored `index.metadata.crdt_type` is `None` ("opaque"
+/// leaf — e.g. the WASM app's `Root<T>` state entry `Id::new([118; 32])`).
+///
+/// The storage layer treats `crdt_type == None` and
+/// `crdt_type == Some(LwwRegister { .. })` identically for merge (incoming
+/// wins iff `updated_at >= existing`), and `crdt_type` is *not* an input to a
+/// leaf's Merkle hash (`Metadata` is `#[borsh(skip)]` on `Element`), so
+/// emitting a leaf with this synthetic type is wire-format-stable and
+/// merge-equivalent to the `None` it stands in for. See
+/// `docs/superpowers/specs/2026-05-13-opaque-leaf-sync-design.md`.
+const OPAQUE_LEAF_CRDT_TYPE_NAME: &str = "Opaque";
 
 /// Maximum depth allowed in TreeNodeRequest.
 pub const MAX_REQUEST_DEPTH: u8 = 16;
@@ -780,18 +794,14 @@ fn get_local_tree_node(
     if children_ids.is_empty() {
         // Leaf node
         if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-            let Some(crdt_type) = index.metadata.crdt_type.clone() else {
-                // No CRDT type — treat as opaque node; sync via delta exchange, not EntityPush.
-                warn!(
-                    %entity_id,
-                    "leaf has no CRDT type, treating as opaque node"
-                );
-                return Ok(Some(TreeNode::internal(
-                    *entity_id.as_bytes(),
-                    full_hash,
-                    vec![],
-                )));
-            };
+            let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
+                // No CRDT type ("opaque" leaf — e.g. the `Root<T>` state entry).
+                // Emit a real *leaf* (not a malformed empty `internal` node, which the
+                // peer's `TreeNode::is_valid()` rejects) carrying a synthetic LWW wire
+                // type — merge-equivalent to `None` and Merkle-hash-neutral.
+                trace!(%entity_id, "opaque leaf, synthesised LWW wire type for sync");
+                CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
+            });
             let metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
                 .with_created_at(index.metadata.created_at());
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
