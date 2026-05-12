@@ -5883,7 +5883,8 @@ fn trusted_anchors_mixed_roles() {
     add_group_member(&store, &gid, &read_only, GroupMemberRole::ReadOnly).unwrap();
 
     let anchors = trusted_anchors_for_group(&store, &gid).unwrap();
-    let expected: std::collections::BTreeSet<_> =
-        [owner, legacy_admin, admin_a, admin_b, tee].into_iter().collect();
+    let expected: std::collections::BTreeSet<_> = [owner, legacy_admin, admin_a, admin_b, tee]
+        .into_iter()
+        .collect();
     assert_eq!(anchors, expected, "anchor set mismatch");
 }

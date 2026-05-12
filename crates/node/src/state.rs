@@ -189,7 +189,11 @@ impl NodeState {
     /// message verifies and applies — see field-level docs on
     /// `peer_identities` for the trust model. Idempotent.
     pub(crate) fn observe_peer_identity(&self, peer_id: PeerId, identity: PublicKey) {
-        let _inserted = self.peer_identities.entry(peer_id).or_default().insert(identity);
+        let _inserted = self
+            .peer_identities
+            .entry(peer_id)
+            .or_default()
+            .insert(identity);
     }
 
     /// Push a state delta into the governance-pending buffer. Called when

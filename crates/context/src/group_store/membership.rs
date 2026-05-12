@@ -539,15 +539,17 @@ pub fn trusted_anchors_for_group(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<std::collections::BTreeSet<PublicKey>> {
+    // BTreeSet deduplicates the common `owner_identity == admin_identity`
+    // shape automatically; no explicit conditional needed.
     let mut anchors = std::collections::BTreeSet::new();
     if let Some(meta) = load_group_meta(store, group_id)? {
-        let _inserted = anchors.insert(meta.owner_identity);
-        let _inserted = anchors.insert(meta.admin_identity);
+        let _ = anchors.insert(meta.owner_identity);
+        let _ = anchors.insert(meta.admin_identity);
     }
     for (pk, role) in list_group_members(store, group_id, 0, usize::MAX)? {
         match role {
             GroupMemberRole::Admin | GroupMemberRole::ReadOnlyTee => {
-                let _inserted = anchors.insert(pk);
+                let _ = anchors.insert(pk);
             }
             GroupMemberRole::Member | GroupMemberRole::ReadOnly => {}
         }

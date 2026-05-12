@@ -2948,6 +2948,14 @@ impl SyncManager {
 /// `anchors` set returns 0 immediately — no point sorting if every
 /// peer is going to be non-anchor.
 ///
+/// The anchor predicate is materialized into a `Vec<bool>` keyed by
+/// the peer's original index before sorting. This avoids reacquiring
+/// the `DashMap` shard lock O(n log n) times during `sort_by_key`'s
+/// comparisons, and prevents a concurrent cache mutation from causing
+/// the post-sort anchor count to disagree with the actual partition
+/// boundary — both `sort_by_key` and the count read from the same
+/// snapshot.
+///
 /// Free function (not a method) so it can be unit-tested against
 /// synthetic inputs without spinning up a sync manager.
 fn partition_peers_anchor_first(
@@ -2961,16 +2969,23 @@ fn partition_peers_anchor_first(
     if anchors.is_empty() {
         return 0;
     }
-    let is_anchor = |peer: &libp2p::PeerId| -> bool {
-        peer_identities
-            .get(peer)
-            .map(|ids| ids.iter().any(|id| anchors.contains(id)))
-            .unwrap_or(false)
-    };
-    // sort_by_key is stable, so the caller's random shuffle order is
-    // preserved within each partition.
-    peers.sort_by_key(|p| !is_anchor(p));
-    peers.iter().filter(|p| is_anchor(p)).count()
+    let anchor_flags: Vec<bool> = peers
+        .iter()
+        .map(|peer| {
+            peer_identities
+                .get(peer)
+                .map(|ids| ids.iter().any(|id| anchors.contains(id)))
+                .unwrap_or(false)
+        })
+        .collect();
+    // sort_by_key over a pre-indexed flag table — stable, so the
+    // caller's random shuffle order is preserved within each partition.
+    let mut indices: Vec<usize> = (0..peers.len()).collect();
+    indices.sort_by_key(|&i| !anchor_flags[i]);
+    let anchor_count = anchor_flags.iter().filter(|&&f| f).count();
+    let reordered: Vec<libp2p::PeerId> = indices.iter().map(|&i| peers[i]).collect();
+    peers.copy_from_slice(&reordered);
+    anchor_count
 }
 
 impl SyncManager {
