@@ -32,7 +32,11 @@ DEST_ROOT="${2:?Error: dest-root is required}"
 # Bound the fallback search to the checkout. On GHA $GITHUB_WORKSPACE is the
 # repo root; outside CI fall back to $PWD. Searching only here keeps us from
 # scooping up a stray `profiling-dump` dir from elsewhere on a reused runner.
+# Guard against a bogus value (empty, `/`, or a non-dir) so the sweep can't
+# end up traversing the whole filesystem.
 WORKSPACE="${GITHUB_WORKSPACE:-$PWD}"
+case "$WORKSPACE" in ""|"/") WORKSPACE="$PWD" ;; esac
+[ -d "$WORKSPACE" ] || WORKSPACE="$PWD"
 
 ERR_LOG=$(mktemp -t harvest-host-profiling.XXXXXX.err)
 trap 'rm -f "$ERR_LOG"' EXIT
@@ -65,6 +69,13 @@ harvest_dump() {
         err=$(head -3 "$ERR_LOG" 2>/dev/null | tr '\n' ' ')
         echo "  $node_name: WARNING — cp may be incomplete: ${err:-(no stderr captured)}"
     fi
+    # Count this as harvested only if something actually landed — a copy that
+    # failed outright leaves $dest empty and shouldn't suppress the
+    # zero-harvest warning below.
+    if [ -z "$(ls -A "$dest" 2>/dev/null)" ]; then
+        echo "  $node_name: WARNING — nothing copied from $(rel "$dump"); not counting as harvested"
+        return
+    fi
     size=$(du -sh "$dest" 2>/dev/null | awk '{print $1}')
     perf_count=$(find "$dest" -maxdepth 2 -name 'perf-*.data' 2>/dev/null | wc -l | tr -d ' ')
     heap_count=$(find "$dest" -maxdepth 2 -name 'jemalloc.*.heap' 2>/dev/null | wc -l | tr -d ' ')
@@ -84,17 +95,23 @@ else
     echo "Primary src-root '$SRC_ROOT' does not exist — relying on the workspace search."
 fi
 
-# 2) Always sweep the workspace for any other `*/profiling-dump` dirs (the data
-#    dir is relative to merobox's CWD and has drifted before). `harvest_dump`
-#    dedups against the primary pass by canonical path, so re-finding the same
-#    dirs is harmless; this also catches the case where the primary pass found
-#    *some* nodes but others landed elsewhere.
-#
-#    Only `fuzzy-*` node dirs are eligible — merobox names every fuzzy node
-#    `fuzzy-<suite>-node-N` — so a stray `profiling-dump` from an unrelated job
-#    that somehow survived inside the (checkout-cleaned) workspace can't bleed in.
+# 2) Always sweep for any other `*/profiling-dump` dirs (the data dir is
+#    relative to merobox's CWD and has drifted before). `harvest_dump` dedups
+#    against the primary pass by canonical path, so re-finding the same dirs is
+#    harmless; this also catches the case where the primary pass found *some*
+#    nodes but others landed elsewhere. Eligibility is doubly constrained so a
+#    stray dir from an unrelated job (already unlikely — `actions/checkout`
+#    cleans the workspace) can't bleed into the artifact:
+#      - the dump must live under `$WORKSPACE/data/` or `$WORKSPACE/workflows/`
+#        — the only two places merobox could plausibly write node data dirs
+#        (`./data/<node>` from the repo root, or — in the pre-#2278 layout —
+#        `workflows/fuzzy-tests/<suite>/data/<node>`; hence maxdepth 6:
+#        workflows / fuzzy-tests / <suite> / data / <node> / profiling-dump);
+#      - the dump's parent dir must be named `fuzzy-*` (merobox names every
+#        fuzzy node `fuzzy-<suite>-node-N`).
 while IFS= read -r dump; do
     [ -d "$dump" ] || continue
+    case "$dump" in "$WORKSPACE"/data/*|"$WORKSPACE"/workflows/*) ;; *) continue ;; esac
     node_name=$(basename "$(dirname "$dump")")
     case "$node_name" in fuzzy-*) ;; *) continue ;; esac
     harvest_dump "$dump" "$node_name"
