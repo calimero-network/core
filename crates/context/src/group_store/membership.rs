@@ -9,8 +9,8 @@ use eyre::{bail, Result as EyreResult};
 use super::namespace::{get_parent_group, MAX_NAMESPACE_DEPTH};
 use super::{
     collect_keys_with_prefix, collect_keys_with_prefix_paginated, count_keys_with_prefix,
-    get_member_capability, get_subgroup_visibility, load_group_meta, set_member_capability,
-    GroupStoreError,
+    delete_member_metadata, get_member_capability, get_subgroup_visibility, load_group_meta,
+    set_member_capability, GroupStoreError,
 };
 
 pub fn add_group_member(
@@ -67,9 +67,16 @@ pub fn remove_group_member(
     group_id: &ContextGroupId,
     identity: &PublicKey,
 ) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupMember::new(group_id.to_bytes(), *identity);
-    handle.delete(&key)?;
+    {
+        let mut handle = store.handle();
+        handle.delete(&GroupMember::new(group_id.to_bytes(), *identity))?;
+    }
+    // A removed member's metadata record is no longer relevant — drop it so
+    // per-member removal (`MemberRemoved`/`MemberLeft`, cascade,
+    // `recursive_remove_member`, …) doesn't leak orphaned
+    // `GroupMemberMetadata` rows. The bulk `delete_group_local_rows` path
+    // also clears these.
+    delete_member_metadata(store, group_id, identity)?;
     Ok(())
 }
 

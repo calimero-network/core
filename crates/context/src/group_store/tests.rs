@@ -6071,6 +6071,35 @@ fn member_metadata_self_set_allowed_others_gated() {
     );
 }
 
+#[test]
+fn remove_group_member_clears_member_metadata() {
+    use calimero_primitives::metadata::MetadataRecord;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let member = PublicKey::from([0x42; 32]);
+    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+    set_member_metadata(
+        &store,
+        &gid,
+        &member,
+        &MetadataRecord {
+            name: Some("departing".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(get_member_metadata(&store, &gid, &member)
+        .unwrap()
+        .is_some());
+
+    remove_group_member(&store, &gid, &member).unwrap();
+    assert!(get_member_metadata(&store, &gid, &member)
+        .unwrap()
+        .is_none());
+}
+
 // ---------------------------------------------------------------------
 // Trusted-anchor set (E5) — `trusted_anchors_for_group`
 //
