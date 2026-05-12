@@ -1678,6 +1678,17 @@ pub struct NamespaceGovHeadValue {
 /// Prefix for group key entries.
 pub const GROUP_KEY_PREFIX: u8 = 0x3A;
 
+/// Prefix for the per-group deny-list. An entry under
+/// `(group_id, member_pubkey)` means the member is currently denied at the
+/// network/topic layer — state deltas they sign are dropped before reaching
+/// the cross-DAG check. Populated on `MemberRemoved` / `MemberLeft` /
+/// equivalent removal apply; cleared on `MemberAdded` /
+/// `MemberJoinedViaTeeAttestation` apply for the same member (handles
+/// re-add). Per-group rather than per-peer-id because the same identity
+/// can be a member of multiple groups; denying their connection wholesale
+/// would drop legitimate traffic for groups they still belong to.
+pub const GROUP_DENIED_MEMBER_PREFIX: u8 = 0x3B;
+
 /// Stores a group encryption key by `(group_id, key_id)`.
 ///
 /// Key layout: `prefix(1) + group_id(32) + key_id(32)` = 65 bytes.
@@ -1736,6 +1747,71 @@ impl Debug for GroupKeyEntry {
         f.debug_struct("GroupKeyEntry")
             .field("group_id", &self.group_id())
             .field("key_id", &self.key_id())
+            .finish()
+    }
+}
+
+/// Per-group deny-list entry. Presence of the key marks `identity` as
+/// currently denied for `group_id` — the receive-side network filter drops
+/// state deltas they sign before the cross-DAG check runs. Cleared on
+/// `MemberAdded` for the same `(group_id, identity)` pair so re-adding a
+/// previously-removed member transparently re-allows their traffic.
+///
+/// Key layout: `prefix(1) + group_id(32) + identity(32)` = 65 bytes —
+/// same shape as `GroupMember` so prefix scans over `(group_id, *)` work
+/// the same way.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupDeniedMember(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupDeniedMember {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], identity: PrimitivePublicKey) -> Self {
+        Self(Key(GenericArray::from([GROUP_DENIED_MEMBER_PREFIX])
+            .concat(GenericArray::from(group_id))
+            .concat(GenericArray::from(*identity))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        pk.into()
+    }
+}
+
+impl AsKeyParts for GroupDeniedMember {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupDeniedMember {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupDeniedMember {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupDeniedMember")
+            .field("group_id", &self.group_id())
+            .field("identity", &self.identity())
             .finish()
     }
 }
@@ -1919,6 +1995,8 @@ mod tests {
             NAMESPACE_IDENTITY_PREFIX,
             NAMESPACE_GOV_OP_PREFIX,
             NAMESPACE_GOV_HEAD_PREFIX,
+            GROUP_KEY_PREFIX,
+            GROUP_DENIED_MEMBER_PREFIX,
         ];
         for i in 0..prefixes.len() {
             for j in (i + 1)..prefixes.len() {
