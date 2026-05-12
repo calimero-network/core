@@ -231,6 +231,7 @@ pub(super) fn handle_namespace_governance_delta(
                     &context_client,
                     &node_client,
                     &network_client,
+                    &sync_manager,
                     source,
                     namespace_id,
                     Vec::new(),
@@ -242,6 +243,7 @@ pub(super) fn handle_namespace_governance_delta(
                     &context_client,
                     &node_client,
                     &network_client,
+                    &sync_manager,
                     source,
                     namespace_id,
                     sync_timeout,
@@ -368,6 +370,7 @@ async fn resolve_namespace_pending(
     context_client: &calimero_context_client::client::ContextClient,
     node_client: &calimero_node_primitives::client::NodeClient,
     network_client: &NetworkClient,
+    sync_manager: &crate::sync::SyncManager,
     initial_peer: libp2p::PeerId,
     namespace_id: [u8; 32],
     sync_timeout: tokio::time::Duration,
@@ -437,6 +440,7 @@ async fn resolve_namespace_pending(
             context_client,
             node_client,
             network_client,
+            sync_manager,
             next_peer,
             namespace_id,
             Vec::new(),
@@ -451,6 +455,7 @@ async fn fetch_and_apply_namespace_backfill(
     context_client: &calimero_context_client::client::ContextClient,
     node_client: &calimero_node_primitives::client::NodeClient,
     network_client: &NetworkClient,
+    sync_manager: &crate::sync::SyncManager,
     peer: libp2p::PeerId,
     namespace_id: [u8; 32],
     delta_ids: Vec<[u8; 32]>,
@@ -490,10 +495,27 @@ async fn fetch_and_apply_namespace_backfill(
             ..
         })) => {
             let mut any_applied = false;
+            // Collect divergence reports from `MemberRemoved` /
+            // `MemberLeft` ops applying via the backfill path. Same
+            // reasoning as the gossip-receive path: once the DAG
+            // marks the op `Applied`, any later gossipsub delivery of
+            // the same op becomes `Duplicate` and the apply work —
+            // including the post-apply hash check — is skipped. If
+            // divergence surfaces here and we drop it, no later path
+            // will re-emit it. Defer firing until after the batch
+            // so the apply loop is contiguous.
+            let mut pending_divergences: Vec<
+                calimero_context_client::messages::DivergenceReport,
+            > = Vec::new();
             for (delta_id, op_bytes) in deltas {
                 if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(&op_bytes) {
                     match context_client.apply_signed_namespace_op(op).await {
-                        Ok(NamespaceApplyOutcome::Applied { .. }) => any_applied = true,
+                        Ok(NamespaceApplyOutcome::Applied { divergence }) => {
+                            any_applied = true;
+                            if let Some(report) = divergence {
+                                pending_divergences.push(report);
+                            }
+                        }
                         Ok(_) => {}
                         Err(err) => {
                             warn!(
@@ -506,6 +528,12 @@ async fn fetch_and_apply_namespace_backfill(
                         }
                     }
                 }
+            }
+            // Route any divergences surfaced by the apply loop to the
+            // reconcile-via-anchor path. The helper itself logs and
+            // backs off internally; no error to propagate here.
+            for report in pending_divergences {
+                sync_manager.reconcile_after_divergence(report).await;
             }
             if any_applied {
                 // FSM notify after the batch — same rationale as the

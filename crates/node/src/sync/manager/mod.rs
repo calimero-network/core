@@ -3981,6 +3981,20 @@ impl SyncManager {
                 );
                 use calimero_context_client::messages::NamespaceApplyOutcome;
                 let mut newly_applied = false;
+                // Collect divergence reports surfaced by `MemberRemoved` /
+                // `MemberLeft` ops arriving via the namespace-backfill
+                // path. Same reasoning as the gossip-receive path: once
+                // the DAG marks an op `Applied`, any later gossipsub
+                // arrival of the same op becomes `Duplicate` and the
+                // apply work — including the post-apply hash check —
+                // is skipped. If a `MemberRemoved` op arrives first via
+                // backfill and divergence is dropped here, no later
+                // path will re-surface it. Fire reconcile after the
+                // batch loop so we don't hold `&mut` borrows across an
+                // await on `self`.
+                let mut pending_divergences: Vec<
+                    calimero_context_client::messages::DivergenceReport,
+                > = Vec::new();
                 for (delta_id, op_bytes) in deltas {
                     match borsh::from_slice::<
                         calimero_context_client::local_governance::SignedNamespaceOp,
@@ -4018,27 +4032,29 @@ impl SyncManager {
                                         "failed to apply namespace governance op from backfill"
                                     );
                                 }
-                                Ok(outcome) => {
-                                    if matches!(outcome, NamespaceApplyOutcome::Applied { .. }) {
-                                        newly_applied = true;
-                                        // Only react to a *newly-applied*
-                                        // `MemberJoined`. On `Duplicate`
-                                        // (the common case — a backfill
-                                        // re-sends the whole DAG every
-                                        // round) re-publishing a fresh
-                                        // `KeyDelivery` each time would
-                                        // grow the namespace governance
-                                        // DAG without bound until it hits
-                                        // the backfill cap and never
-                                        // converges again (#2319).
-                                        crate::key_delivery::maybe_publish_key_delivery(
-                                            &self.context_client,
-                                            &self.node_client,
-                                            &op,
-                                        )
-                                        .await;
+                                Ok(NamespaceApplyOutcome::Applied { divergence }) => {
+                                    newly_applied = true;
+                                    if let Some(report) = divergence {
+                                        pending_divergences.push(report);
                                     }
+                                    // Only react to a *newly-applied*
+                                    // `MemberJoined`. On `Duplicate`
+                                    // (the common case — a backfill
+                                    // re-sends the whole DAG every
+                                    // round) re-publishing a fresh
+                                    // `KeyDelivery` each time would
+                                    // grow the namespace governance
+                                    // DAG without bound until it hits
+                                    // the backfill cap and never
+                                    // converges again (#2319).
+                                    crate::key_delivery::maybe_publish_key_delivery(
+                                        &self.context_client,
+                                        &self.node_client,
+                                        &op,
+                                    )
+                                    .await;
                                 }
+                                Ok(_) => {}
                             }
                         }
                         Err(err) => {
@@ -4058,6 +4074,18 @@ impl SyncManager {
                 // See the governance-catch-up notify above for rationale.
                 if newly_applied {
                     self.node_client.notify_namespace_op_applied(namespace_id);
+                }
+
+                // Route any divergence reports surfaced during the
+                // backfill apply loop to the reconcile-via-anchor path.
+                // Run sequentially after the batch finishes; we're
+                // already in an async method on `&self` so no spawn
+                // is needed here (the gossip-receive path uses
+                // `actix::spawn` because it runs inside an actor's
+                // mailbox slot; this method is invoked by the sync
+                // tick which has no such constraint).
+                for report in pending_divergences {
+                    self.reconcile_after_divergence(report).await;
                 }
             }
             _ => {
