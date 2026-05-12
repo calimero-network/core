@@ -22,6 +22,7 @@ use super::{
     load_current_group_key_record, load_group_key_by_id, load_group_meta,
     namespace_dag::{NamespaceDagService, NamespaceHead},
     namespace_membership::NamespaceMembershipService,
+    namespace_op_log::NamespaceOpLogService,
     namespace_retry::NamespaceRetryService,
     save_group_meta, set_local_gov_nonce, store_group_key, unwrap_group_key, PermissionChecker,
 };
@@ -110,6 +111,38 @@ impl<'a> NamespaceGovernance<'a> {
     pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
         op.verify_signature()
             .map_err(|e| eyre::eyre!("signed namespace op: {e}"))?;
+
+        let delta_id = op
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+
+        // Idempotency guard. If this exact op is already in our local op-log
+        // it has already been applied — `advance_dag_head` ran for it (see the
+        // store/advance ordering note below) and any side effects fired. A
+        // re-receive (typically a node's *own* published op coming back via
+        // sync backfill — the in-memory `DagStore` dedup set never saw the
+        // publisher path, so it can't filter it) must be a no-op: re-running
+        // `advance_dag_head` here would append `delta_id` to the head set a
+        // second time, and a head set with duplicates makes
+        // `compute_governance_position` refuse to embed a position, so every
+        // peer then rejects all of this node's state deltas (#2327).
+        //
+        // The guard suppresses *all* of the apply work below — the per-op-kind
+        // side effects in the match arms included. Re-running them would either
+        // be redundant (they're written replay-safe) or actively wrong (a
+        // second `PendingKeyDelivery`); a maintainer adding a new side effect
+        // should keep it replay-safe rather than rely on this guard never
+        // firing. The encrypted-op *retry* path is unaffected: it re-applies
+        // via `decrypt_and_apply_group_op` → `apply_group_op_inner`, not
+        // `apply_signed_op`, and is bounded by the per-signer nonce check there.
+        if NamespaceOpLogService::new(self.store, self.namespace_id).contains_op(delta_id)? {
+            tracing::debug!(
+                namespace_id = %hex::encode(self.namespace_id),
+                delta_id = %hex::encode(delta_id),
+                "namespace governance op already applied; skipping re-apply (#2327)"
+            );
+            return Ok(ApplyNamespaceOpResult::default());
+        }
 
         let mut result = ApplyNamespaceOpResult::default();
 
@@ -291,9 +324,18 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        let delta_id = op
-            .content_hash()
-            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        // Ordering: advance the head first, then write the op to the log —
+        // `publish_post_gate` uses the same order. The store gives us no
+        // transaction across the two keys, so this ordering is the one that
+        // keeps the idempotency guard's invariant ("op in the log ⟹ its head
+        // advance already ran"): a crash between the two writes leaves the op
+        // *not* in the log, so a retry sees `contains_op == false` and
+        // re-applies — re-running the (replay-safe) side effects above and
+        // calling `advance_dag_head` again, where the dedup makes the second
+        // add a no-op. The reverse order would leave the op logged but the
+        // head un-advanced, and a later re-receive would hit the guard, skip
+        // the apply, and never advance the head for it. A truly atomic update
+        // would need a single-batch write spanning both keys.
         let head = self.read_head_record()?;
         self.advance_dag_head(delta_id, &op.parent_op_hashes, head.next_nonce)?;
         self.store_operation(op)?;
@@ -477,8 +519,15 @@ impl<'a> NamespaceGovernance<'a> {
             .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
         let parent_ids = signed.parent_op_hashes.clone();
 
-        self.store_operation(&signed)?;
+        // Advance the head first, then write the op to the log — same order as
+        // `apply_signed_op`. This keeps the invariant the idempotency guard in
+        // `apply_signed_op` relies on: "op in the local op-log ⟹ its head
+        // advance already ran". If these were reversed, a crash in between
+        // would leave the op logged but the head un-advanced, and a later
+        // re-receive of that op would hit the guard, skip the apply, and never
+        // advance the head for it — orphaning it from the DAG head lineage.
         self.advance_dag_head(delta_id, &parent_ids, head.next_nonce)?;
+        self.store_operation(&signed)?;
 
         // Same signal as in `sign_apply_and_publish` above — the local DAG
         // just advanced on the publisher path, so the readiness FSM needs
