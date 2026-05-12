@@ -1253,5 +1253,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Profiling Artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "- profiling-data-*: Raw profiling data" >> $GITHUB_STEP_SUMMARY
-          echo "- profiling-reports-*: Generated reports (flamegraphs, memory reports)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`profiling-data-<suite>-*\`: per-node \`perf-*.data\` (CPU, dwarf call-graphs), \`perf-*.map\` (WASM JIT symbols), jemalloc \`*.heap\` dumps, and (when rendering succeeds) \`<node>/reports/flamegraph-{cpu,memory}-*.svg\`. Harvested from the node host data dirs (\`./data/<node>/profiling-dump/\`)." >> $GITHUB_STEP_SUMMARY
+          echo "- \`profiling-reports-<suite>-*\`: only present if \`collect-from-containers.sh\` managed a post-run \`docker cp\` (usually empty — merobox tears the containers down on exit; the rendered SVGs come through under \`profiling-data-*\` instead)." >> $GITHUB_STEP_SUMMARY
