@@ -1009,6 +1009,11 @@ pub async fn handle_state_delta(
                     group_id = ?pos.group_id,
                     "cross-DAG check: author authorized at governance cut"
                 );
+                // Record the (peer, identity) pair now that we know the
+                // signature verified AND the author is an authorized
+                // member at the named cut. Consumed by anchor-preferred
+                // sync peer selection. See `NodeState::peer_identities`.
+                node_state.observe_peer_identity(source, author_id);
             }
             Ok(MembershipStatus::Removed { last_role }) => {
                 warn!(
