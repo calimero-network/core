@@ -2,7 +2,18 @@ name: AI Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # `synchronize` (re-run on every push) deliberately omitted to control
+    # cost — a review fires on PR open / reopen / draft→ready, not on each
+    # push. Re-trigger a review by toggling draft or via workflow_dispatch.
+    types: [opened, reopened, ready_for_review]
+    # Skipped only when ALL changed files are under docs/architecture/docs-static —
+    # mixed PRs still trigger a review (standard GitHub Actions paths-ignore semantics).
+    # Pure-doc PRs are owned by the `Doc Auto-Update` workflow; this avoids paying
+    # twice for the same diff.
+    paths-ignore:
+      - 'docs/**'
+      - 'architecture/**'
+      - 'docs-static/**'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -49,7 +60,7 @@ jobs:
       # prevent an upstream change from running with this repo's secrets.
       # Bump deliberately when adopting new reviewer features.
       - name: Install ai-code-reviewer
-        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@71b0895c1908504b18f07f2856adfc9c8c8d1e4e
+        run: pip install git+https://github.com/calimero-network/ai-code-reviewer.git@25f51a9d76278b55cbfed813fb35a80ae2c458e9
 
       - name: Determine PR number and agent count
         id: pr
@@ -59,7 +70,8 @@ jobs:
             echo "agents=${{ github.event.inputs.agents }}"    >> $GITHUB_OUTPUT
           else
             echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-            echo "agents=3"                                        >> $GITHUB_OUTPUT
+            # Default to 1 agent for cost; bump via workflow_dispatch when needed.
+            echo "agents=1"                                        >> $GITHUB_OUTPUT
           fi
 
       - name: Run AI Code Review
