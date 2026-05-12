@@ -42,8 +42,7 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                     calimero_context_config::VisibilityMode::Restricted => "restricted".to_owned(),
                 };
 
-            let metadata =
-                group_store::get_group_metadata(&self.datastore, &group_id)?.unwrap_or_default();
+            let metadata = group_store::get_group_metadata(&self.datastore, &group_id)?;
 
             let state_hash = group_store::compute_group_state_hash(&self.datastore, &group_id)?;
 

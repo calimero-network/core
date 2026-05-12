@@ -11,8 +11,7 @@ impl Handler<GetMemberMetadataRequest> for ContextManager {
         GetMemberMetadataRequest { group_id, member }: GetMemberMetadataRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result = group_store::get_member_metadata(&self.datastore, &group_id, &member)
-            .map(|rec| rec.unwrap_or_default());
+        let result = group_store::get_member_metadata(&self.datastore, &group_id, &member);
         ActorResponse::reply(result)
     }
 }

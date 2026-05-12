@@ -43,14 +43,13 @@ impl Report for GroupInfoApiResponse {
         let _ = table.add_row(vec!["Upgrade Policy", &format!("{:?}", d.upgrade_policy)]);
         let _ = table.add_row(vec!["Members", &d.member_count.to_string()]);
         let _ = table.add_row(vec!["Contexts", &d.context_count.to_string()]);
-        if let Some(ref name) = d.metadata.name {
-            let _ = table.add_row(vec!["Name", name]);
-        }
-        if !d.metadata.data.is_empty() {
-            let _ = table.add_row(vec![
-                "Data".to_owned(),
-                format!("{} keys", d.metadata.data.len()),
-            ]);
+        if let Some(meta) = d.metadata.as_ref() {
+            if let Some(ref name) = meta.name {
+                let _ = table.add_row(vec!["Name", name]);
+            }
+            if !meta.data.is_empty() {
+                let _ = table.add_row(vec!["Data".to_owned(), format!("{} keys", meta.data.len())]);
+            }
         }
         if let Some(ref upgrade) = d.active_upgrade {
             let _ = table.add_row(vec!["Active Upgrade Status", &upgrade.status]);
@@ -538,6 +537,10 @@ impl Report for SetSubgroupVisibilityApiResponse {
 
 impl Report for GetMetadataApiResponse {
     fn report(&self) {
+        let Some(record) = self.data.as_ref() else {
+            println!("{}", "(no metadata set)".dimmed());
+            return;
+        };
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Field").fg(Color::Blue),
@@ -545,20 +548,14 @@ impl Report for GetMetadataApiResponse {
         ]);
         let _ = table.add_row(vec![
             "Name".to_owned(),
-            self.data.name.clone().unwrap_or_else(|| "-".to_owned()),
+            record.name.clone().unwrap_or_else(|| "-".to_owned()),
         ]);
-        let _ = table.add_row(vec![
-            "Updated At".to_owned(),
-            self.data.updated_at.to_string(),
-        ]);
-        let _ = table.add_row(vec![
-            "Updated By".to_owned(),
-            self.data.updated_by.to_string(),
-        ]);
-        if self.data.data.is_empty() {
+        let _ = table.add_row(vec!["Updated At".to_owned(), record.updated_at.to_string()]);
+        let _ = table.add_row(vec!["Updated By".to_owned(), record.updated_by.to_string()]);
+        if record.data.is_empty() {
             let _ = table.add_row(vec!["Data".to_owned(), "(empty)".to_owned()]);
         } else {
-            for (k, v) in &self.data.data {
+            for (k, v) in &record.data {
                 let _ = table.add_row(vec![format!("data.{k}"), v.clone()]);
             }
         }

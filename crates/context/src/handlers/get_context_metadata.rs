@@ -14,8 +14,7 @@ impl Handler<GetContextMetadataRequest> for ContextManager {
         }: GetContextMetadataRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result = group_store::get_context_metadata(&self.datastore, &group_id, &context_id)
-            .map(|rec| rec.unwrap_or_default());
+        let result = group_store::get_context_metadata(&self.datastore, &group_id, &context_id);
         ActorResponse::reply(result)
     }
 }

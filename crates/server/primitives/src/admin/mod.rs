@@ -1688,8 +1688,10 @@ pub struct GroupInfoApiResponseData {
     pub active_upgrade: Option<GroupUpgradeStatusApiData>,
     pub default_capabilities: u32,
     pub subgroup_visibility: String,
-    /// Full metadata record for the group (name + opaque `data` map).
-    pub metadata: MetadataRecord,
+    /// Full metadata record for the group (name + opaque `data` map), or
+    /// omitted if none has ever been set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<MetadataRecord>,
     /// Hex-encoded SHA-256 hash of the group's authorization-relevant
     /// state. Mirrors `contextStateHash` on context responses; lets
     /// clients poll for governance convergence across nodes.
@@ -2344,7 +2346,9 @@ pub struct SetMetadataApiResponse {}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetMetadataApiResponse {
-    pub data: MetadataRecord,
+    /// The metadata record, or `null` if none has ever been set for the
+    /// target (group / member / context).
+    pub data: Option<MetadataRecord>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

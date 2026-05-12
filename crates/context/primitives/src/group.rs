@@ -133,7 +133,8 @@ pub struct GroupInfoResponse {
     pub default_capabilities: u32,
     pub subgroup_visibility: String,
     /// Full metadata record for the group (name + opaque `data` map).
-    pub metadata: MetadataRecord,
+    /// The group's metadata record, or `None` if none has been set.
+    pub metadata: Option<MetadataRecord>,
     /// SHA-256 hash of the group's authorization-relevant state
     /// (members + roles + admin + owner + target app), produced by
     /// `compute_group_state_hash`. Used by clients to detect governance
@@ -456,7 +457,7 @@ pub struct GetGroupMetadataRequest {
 }
 
 impl Message for GetGroupMetadataRequest {
-    type Result = eyre::Result<MetadataRecord>;
+    type Result = eyre::Result<Option<MetadataRecord>>;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -466,7 +467,7 @@ pub struct GetMemberMetadataRequest {
 }
 
 impl Message for GetMemberMetadataRequest {
-    type Result = eyre::Result<MetadataRecord>;
+    type Result = eyre::Result<Option<MetadataRecord>>;
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -476,7 +477,7 @@ pub struct GetContextMetadataRequest {
 }
 
 impl Message for GetContextMetadataRequest {
-    type Result = eyre::Result<MetadataRecord>;
+    type Result = eyre::Result<Option<MetadataRecord>>;
 }
 
 // ---- Group Permission Types ----

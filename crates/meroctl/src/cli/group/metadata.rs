@@ -122,7 +122,11 @@ impl MetadataCommand {
                 environment.output.write(&response);
             }
             MetadataSubCommands::Set { group_id, opts } => {
-                let current = client.get_group_metadata(&group_id).await?.data;
+                let current = client
+                    .get_group_metadata(&group_id)
+                    .await?
+                    .data
+                    .unwrap_or_default();
                 let response = client
                     .set_group_metadata(&group_id, opts.into_request(current))
                     .await?;
@@ -178,7 +182,8 @@ impl MemberMetadataCommand {
                 let current = client
                     .get_member_metadata(&group_id, &identity_hex)
                     .await?
-                    .data;
+                    .data
+                    .unwrap_or_default();
                 let response = client
                     .set_member_metadata(&group_id, &identity_hex, opts.into_request(current))
                     .await?;
@@ -235,7 +240,11 @@ impl ContextMetadataCommand {
                 opts,
             } => {
                 let cid = context_id.to_string();
-                let current = client.get_context_metadata(&group_id, &cid).await?.data;
+                let current = client
+                    .get_context_metadata(&group_id, &cid)
+                    .await?
+                    .data
+                    .unwrap_or_default();
                 let response = client
                     .set_context_metadata(&group_id, &cid, opts.into_request(current))
                     .await?;

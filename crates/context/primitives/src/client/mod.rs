@@ -1175,19 +1175,19 @@ impl ContextClient {
         get_group_metadata,
         GetGroupMetadata,
         GetGroupMetadataRequest,
-        eyre::Result<MetadataRecord>
+        eyre::Result<Option<MetadataRecord>>
     );
     forward_to_actor!(
         get_member_metadata,
         GetMemberMetadata,
         GetMemberMetadataRequest,
-        eyre::Result<MetadataRecord>
+        eyre::Result<Option<MetadataRecord>>
     );
     forward_to_actor!(
         get_context_metadata,
         GetContextMetadata,
         GetContextMetadataRequest,
-        eyre::Result<MetadataRecord>
+        eyre::Result<Option<MetadataRecord>>
     );
     forward_to_actor!(
         store_group_context,
