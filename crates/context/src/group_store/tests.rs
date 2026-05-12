@@ -18,6 +18,22 @@ fn test_group_id() -> ContextGroupId {
     ContextGroupId::from([0xAA; 32])
 }
 
+/// Build a `MemberRemoved` op with placeholder cross-DAG claims for
+/// tests that don't exercise the convergence-detection path. The
+/// claims here are deliberately zero/empty so a receiver verifying
+/// against actual post-apply state will see a mismatch — tests that
+/// hit the apply path either ignore the mismatch (it's a warn-log,
+/// not a hard reject) or use the real `compute_*` helpers.
+fn dummy_member_removed_op(group_id: ContextGroupId, member: PublicKey) -> GroupOp {
+    GroupOp::MemberRemoved {
+        member,
+        cut: calimero_context_config::types::GovernancePosition::new(group_id, [0u8; 32], vec![])
+            .expect("empty heads is a valid GovernancePosition"),
+        expected_group_state_hash: [0u8; 32],
+        expected_context_state_hashes: Vec::new(),
+    }
+}
+
 fn test_meta() -> GroupMetaValue {
     GroupMetaValue {
         app_key: [0xBB; 32],
@@ -1394,7 +1410,7 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
 
 #[test]
 fn apply_local_signed_group_op_rejects_last_admin_removal() {
-    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_context_client::local_governance::SignedGroupOp;
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
@@ -1414,7 +1430,7 @@ fn apply_local_signed_group_op_rejects_last_admin_removal() {
         vec![],
         [0u8; 32],
         1,
-        GroupOp::MemberRemoved { member: admin_pk },
+        dummy_member_removed_op(test_group_id(), admin_pk),
     )
     .unwrap();
     assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
@@ -5623,7 +5639,7 @@ fn fast_path_role_promotion_picks_current_role() {
 }
 
 // ---------------------------------------------------------------------
-// Per-group deny-list (D1) tests
+// Per-group deny-list tests
 //
 // Exercise the marking / clearing primitives directly. Apply-path
 // integration (MemberAdded clearing on re-add, MemberRemoved /
@@ -5792,7 +5808,7 @@ fn deny_list_member_removed_op_marks_entry() {
         vec![],
         compute_group_state_hash(&store, &gid).unwrap(),
         1,
-        GroupOp::MemberRemoved { member: target_pk },
+        dummy_member_removed_op(gid, target_pk),
     )
     .expect("sign MemberRemoved");
     apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
@@ -5826,7 +5842,7 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
         vec![],
         compute_group_state_hash(&store, &gid).unwrap(),
         1,
-        GroupOp::MemberRemoved { member: target_pk },
+        dummy_member_removed_op(gid, target_pk),
     )
     .expect("sign MemberRemoved");
     apply_local_signed_group_op(&store, &rm).expect("apply MemberRemoved");
@@ -5853,7 +5869,7 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
 }
 
 // ---------------------------------------------------------------------
-// Trusted-anchor set (E5) — `trusted_anchors_for_group`
+// Trusted-anchor set — `trusted_anchors_for_group`
 //
 // Anchor set per RFC decision #22: `{Owner} ∪ {Admins} ∪ {ReadOnlyTee}`.
 // These tests pin the membership rule against the materialized member
@@ -6023,4 +6039,478 @@ fn trusted_anchors_mixed_roles() {
         .into_iter()
         .collect();
     assert_eq!(anchors, expected, "anchor set mismatch");
+}
+
+// ---------------------------------------------------------------------
+// Cross-DAG state-hash claims on MemberRemoved / MemberLeft
+//
+// `MemberRemoved` and `MemberLeft` carry signed `expected_group_state_hash`
+// and `expected_context_state_hashes`. Receivers compute the same hashes
+// post-apply and compare; mismatch surfaces a structured warn log
+// (does not roll back the apply). These tests pin the precomputation
+// helpers and the equivalence between precomputed and actually-applied
+// state hashes.
+// ---------------------------------------------------------------------
+
+#[test]
+fn compute_group_state_hash_after_remove_matches_post_apply_hash() {
+    // The sign-time precompute must produce the same hash that
+    // `compute_group_state_hash` returns AFTER a real apply.
+    // Without this equivalence, every honest receiver would observe a
+    // spurious mismatch on every MemberRemoved.
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let to_remove = PublicKey::from([0xB1; 32]);
+    let bystander = PublicKey::from([0xB2; 32]);
+
+    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &to_remove, GroupMemberRole::Member).unwrap();
+    add_group_member(&store, &gid, &bystander, GroupMemberRole::Member).unwrap();
+
+    let precomputed = compute_group_state_hash_after_remove(&store, &gid, &to_remove).unwrap();
+
+    // Actually remove and recompute via the real helper.
+    remove_group_member(&store, &gid, &to_remove).unwrap();
+    let actual = compute_group_state_hash(&store, &gid).unwrap();
+
+    assert_eq!(
+        precomputed, actual,
+        "precomputed post-remove hash must equal actually-applied hash"
+    );
+}
+
+#[test]
+fn compute_group_state_hash_after_remove_non_member_is_idempotent() {
+    // If `removed_member` isn't currently in the set, the precompute
+    // returns the same hash as `compute_group_state_hash` on the
+    // current state. The op apply path bails on non-members
+    // separately; this helper just hashes deterministically over
+    // whatever it finds.
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let stranger = PublicKey::from([0xCC; 32]);
+
+    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+
+    let current = compute_group_state_hash(&store, &gid).unwrap();
+    let precomputed = compute_group_state_hash_after_remove(&store, &gid, &stranger).unwrap();
+
+    assert_eq!(current, precomputed);
+}
+
+#[test]
+fn snapshot_context_state_hashes_returns_sorted_by_context_id() {
+    // Deterministic ordering is required because the snapshot lands
+    // inside a signed op whose content hash is the dedup key; a
+    // non-deterministic order would produce different content hashes
+    // for the same logical op and break gossip dedup.
+    use calimero_store::key::ContextMeta;
+    use calimero_store::types::ContextMeta as ContextMetaValue;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+
+    // Register three contexts in non-sorted order, give each a
+    // distinct root_hash so we can verify the values come back paired
+    // with the right context.
+    let cid_c = ContextId::from([0xCC; 32]);
+    let cid_a = ContextId::from([0xAA; 32]);
+    let cid_b = ContextId::from([0xBB; 32]);
+    for cid in [cid_c, cid_a, cid_b] {
+        register_context_in_group(&store, &gid, &cid).unwrap();
+        let mut handle = store.handle();
+        let meta = ContextMetaValue::new(
+            calimero_store::key::ApplicationMeta::new(
+                calimero_primitives::application::ApplicationId::from([0u8; 32]),
+            ),
+            *AsRef::<[u8; 32]>::as_ref(&cid),
+            vec![],
+            None,
+        );
+        handle.put(&ContextMeta::new(cid), &meta).unwrap();
+    }
+
+    let snapshot = snapshot_context_state_hashes(&store, &gid).unwrap();
+    let ids: Vec<ContextId> = snapshot.iter().map(|(c, _)| *c).collect();
+
+    assert_eq!(
+        ids,
+        vec![cid_a, cid_b, cid_c],
+        "must be sorted by ContextId"
+    );
+    // Per-entry root_hash matches the meta we wrote.
+    for (cid, root) in &snapshot {
+        assert_eq!(
+            root,
+            AsRef::<[u8; 32]>::as_ref(cid),
+            "snapshot root_hash must equal the value in ContextMeta"
+        );
+    }
+}
+
+#[test]
+fn snapshot_context_state_hashes_skips_unmaterialized_contexts() {
+    // A context registered in the group index but missing its
+    // ContextMeta (fresh node not joined yet) must be skipped, not
+    // hashed as zeros — zero-hashing would force a spurious mismatch
+    // on every receiver that has the context materialized.
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+
+    let cid = ContextId::from([0xAB; 32]);
+    register_context_in_group(&store, &gid, &cid).unwrap();
+    // Deliberately do NOT write a ContextMeta for this context.
+
+    let snapshot = snapshot_context_state_hashes(&store, &gid).unwrap();
+    assert!(
+        snapshot.is_empty(),
+        "unmaterialized contexts must be skipped, got {snapshot:?}"
+    );
+}
+
+#[test]
+fn build_governance_cut_carries_current_group_state_hash() {
+    // The `cut` field's `group_state_hash` is the PRE-apply hash
+    // (admin's view at sign time, not the post-apply view). Receivers
+    // use the cut to identify which namespace-DAG position to walk
+    // for the membership check — that walk needs the current group
+    // state to make sense.
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+
+    let pre_apply_hash = compute_group_state_hash(&store, &gid).unwrap();
+    let cut = build_governance_cut(&store, &gid).unwrap();
+
+    assert_eq!(
+        cut.group_state_hash, pre_apply_hash,
+        "cut must carry the pre-apply (current) group state hash"
+    );
+    assert_eq!(cut.group_id, gid);
+    // No namespace governance ops have run, so heads are empty.
+    assert!(
+        cut.governance_dag_heads.is_empty(),
+        "fresh namespace has no DAG heads"
+    );
+}
+
+#[test]
+fn diff_sorted_context_hashes_pins_merge_scan_semantics() {
+    // Pin the linear-merge divergence logic that replaced the
+    // earlier two-`BTreeMap` build. Each case asserts on the
+    // categorized buckets — hash_differs, only_in_expected,
+    // only_in_actual — so the warn-log routing at the call site is
+    // also covered.
+    use super::diff_sorted_context_hashes;
+    let group_id = test_group_id();
+    let cid_a = ContextId::from([0x01; 32]);
+    let cid_b = ContextId::from([0x02; 32]);
+    let cid_c = ContextId::from([0x03; 32]);
+    let cid_d = ContextId::from([0x04; 32]);
+    let h_a = [0xAA; 32];
+    let h_b = [0xBB; 32];
+    let h_b_alt = [0xB0; 32];
+    let h_c = [0xCC; 32];
+    let h_d = [0xDD; 32];
+
+    // Identical — every bucket empty.
+    let expected = vec![(cid_a, h_a), (cid_b, h_b)];
+    let actual = vec![(cid_a, h_a), (cid_b, h_b)];
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert!(diff.is_empty());
+
+    // Same ids, different hash on one — that id lands in hash_differs.
+    let actual = vec![(cid_a, h_a), (cid_b, h_b_alt)];
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert_eq!(diff.hash_differs, vec![cid_b]);
+    assert!(diff.only_in_expected.is_empty());
+    assert!(diff.only_in_actual.is_empty());
+
+    // Expected has an id actual lacks (fresh-node case) — only_in_expected.
+    let expected = vec![(cid_a, h_a), (cid_b, h_b), (cid_c, h_c)];
+    let actual = vec![(cid_a, h_a), (cid_c, h_c)];
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert!(diff.hash_differs.is_empty());
+    assert_eq!(diff.only_in_expected, vec![cid_b]);
+    assert!(diff.only_in_actual.is_empty());
+
+    // Actual has an id expected lacks (receiver-ahead) — only_in_actual.
+    let expected = vec![(cid_a, h_a), (cid_c, h_c)];
+    let actual = vec![(cid_a, h_a), (cid_b, h_b), (cid_c, h_c)];
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert!(diff.hash_differs.is_empty());
+    assert!(diff.only_in_expected.is_empty());
+    assert_eq!(diff.only_in_actual, vec![cid_b]);
+
+    // Mixed: one matching (cid_a), one hash-diff (cid_b), one
+    // only-in-expected (cid_c), one only-in-actual (cid_d).
+    let expected = vec![(cid_a, h_a), (cid_b, h_b), (cid_c, h_c)];
+    let actual = vec![(cid_a, h_a), (cid_b, h_b_alt), (cid_d, h_d)];
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert_eq!(diff.hash_differs, vec![cid_b]);
+    assert_eq!(diff.only_in_expected, vec![cid_c]);
+    assert_eq!(diff.only_in_actual, vec![cid_d]);
+
+    // One side empty — everything lands in the other bucket.
+    let actual: Vec<(ContextId, [u8; 32])> = Vec::new();
+    let expected = vec![(cid_a, h_a), (cid_b, h_b)];
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert_eq!(diff.only_in_expected, vec![cid_a, cid_b]);
+    assert!(diff.hash_differs.is_empty());
+    assert!(diff.only_in_actual.is_empty());
+
+    let expected: Vec<(ContextId, [u8; 32])> = Vec::new();
+    let actual = vec![(cid_a, h_a), (cid_b, h_b)];
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert_eq!(diff.only_in_actual, vec![cid_a, cid_b]);
+    assert!(diff.hash_differs.is_empty());
+    assert!(diff.only_in_expected.is_empty());
+
+    // Both empty — every bucket empty.
+    let expected: Vec<(ContextId, [u8; 32])> = Vec::new();
+    let actual: Vec<(ContextId, [u8; 32])> = Vec::new();
+    let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
+    assert!(diff.is_empty());
+}
+
+#[test]
+#[should_panic(expected = "expected context-hash snapshot must be strictly sorted")]
+fn diff_sorted_context_hashes_panics_on_unsorted_expected() {
+    // Pins the sorted-input debug assertion. Catches dev / test
+    // misuse before it becomes a quiet false-divergence-report bug.
+    // The signed-op wire content hash is computed over the snapshot
+    // as sorted, so an unsorted `expected` on the wire would have
+    // failed dedup / verification upstream — this assertion is a
+    // safety net for in-process callers.
+    use super::diff_sorted_context_hashes;
+    let group_id = test_group_id();
+    let cid_a = ContextId::from([0x01; 32]);
+    let cid_b = ContextId::from([0x02; 32]);
+    let unsorted = vec![(cid_b, [0u8; 32]), (cid_a, [0u8; 32])];
+    let sorted = vec![(cid_a, [0u8; 32]), (cid_b, [0u8; 32])];
+    let _ = diff_sorted_context_hashes(&group_id, "test", &unsorted, &sorted);
+}
+
+#[test]
+#[should_panic(expected = "actual context-hash snapshot must be strictly sorted")]
+fn diff_sorted_context_hashes_panics_on_unsorted_actual() {
+    use super::diff_sorted_context_hashes;
+    let group_id = test_group_id();
+    let cid_a = ContextId::from([0x01; 32]);
+    let cid_b = ContextId::from([0x02; 32]);
+    let sorted = vec![(cid_a, [0u8; 32]), (cid_b, [0u8; 32])];
+    let unsorted = vec![(cid_b, [0u8; 32]), (cid_a, [0u8; 32])];
+    let _ = diff_sorted_context_hashes(&group_id, "test", &sorted, &unsorted);
+}
+
+#[test]
+fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
+    // End-to-end sanity check that the convergence pipeline closes
+    // on the happy path: an admin precomputes the signed claims via
+    // the real sign-time helpers, signs and applies a `MemberRemoved`,
+    // and the receiver's post-apply state matches the signer's
+    // simulation. Every other test in this crate uses the
+    // `dummy_member_removed_op` helper which signs zeros — those
+    // tests cover apply semantics but not the verify path, so a
+    // future regression in the precompute-vs-actual equivalence
+    // would slip through without this one.
+    use calimero_context_client::local_governance::SignedGroupOp;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    let target_pk = PublicKey::from([0xD0; 32]);
+    let bystander_pk = PublicKey::from([0xD1; 32]);
+
+    // Bootstrap: a meta + admin + target + bystander member set.
+    // No parent group is set, which means `resolve_namespace` treats
+    // `gid` as its own namespace (the no-parent case). That lets
+    // `build_governance_cut` succeed below with empty
+    // `governance_dag_heads` — a deterministic empty namespace DAG
+    // for a self-rooted group. If `resolve_namespace`'s no-parent
+    // semantics ever change, this test's bootstrap shape will need
+    // an explicit `nest_group` call.
+    let mut meta = test_meta();
+    meta.admin_identity = admin_pk;
+    meta.owner_identity = admin_pk;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target_pk, GroupMemberRole::Member).unwrap();
+    add_group_member(&store, &gid, &bystander_pk, GroupMemberRole::Member).unwrap();
+
+    // Real sign-time precomputation: admin's view of the post-apply
+    // state, signed alongside the op.
+    let cut = build_governance_cut(&store, &gid).unwrap();
+    let expected_group_state_hash =
+        compute_group_state_hash_after_remove(&store, &gid, &target_pk).unwrap();
+    let expected_context_state_hashes = snapshot_context_state_hashes(&store, &gid).unwrap();
+
+    let signed = SignedGroupOp::sign(
+        &admin_sk,
+        gid.to_bytes(),
+        vec![],
+        compute_group_state_hash(&store, &gid).unwrap(),
+        1,
+        GroupOp::MemberRemoved {
+            member: target_pk,
+            cut,
+            expected_group_state_hash,
+            expected_context_state_hashes: expected_context_state_hashes.clone(),
+        },
+    )
+    .expect("sign MemberRemoved with real claims");
+
+    // Apply on a sibling store that started from the same state.
+    let receiver = test_store();
+    save_group_meta(&receiver, &gid, &meta).unwrap();
+    add_group_member(&receiver, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&receiver, &gid, &target_pk, GroupMemberRole::Member).unwrap();
+    add_group_member(&receiver, &gid, &bystander_pk, GroupMemberRole::Member).unwrap();
+    apply_local_signed_group_op(&receiver, &signed).expect("apply MemberRemoved");
+
+    // Receiver's actual post-apply hashes match the signed expected.
+    // This is what `verify_post_apply_state_hashes` checks internally;
+    // the apply succeeds with no warning when these match. If the
+    // helpers ever drift from the live `compute_group_state_hash` /
+    // `Snapshot::root_hash` semantics, this assertion catches it
+    // before the warn-log path fires on every honest apply.
+    let receiver_group_hash = compute_group_state_hash(&receiver, &gid).unwrap();
+    assert_eq!(
+        receiver_group_hash, expected_group_state_hash,
+        "receiver's post-apply group state hash must equal the signer's pre-apply simulation"
+    );
+    let receiver_context_hashes = snapshot_context_state_hashes(&receiver, &gid).unwrap();
+    assert_eq!(
+        receiver_context_hashes, expected_context_state_hashes,
+        "receiver's post-apply per-context snapshot must equal the signer's"
+    );
+}
+
+#[test]
+fn cascade_remove_member_does_not_change_group_state_hash() {
+    // Pins the invariant relied on by the ordering comment at the
+    // `verify_post_apply_state_hashes` call site: cascade-removal
+    // touches `ContextIdentity` rows only, never `GroupMeta` or
+    // `GroupMember` rows, so the group state hash before and after
+    // a cascade is identical. If a future refactor makes cascade
+    // also touch group-level rows, this test fires and the ordering
+    // comment in `apply_group_op_mutations` must be revisited
+    // (otherwise the post-apply hash would diverge from the
+    // pre-apply simulation on every honest receiver).
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let target = PublicKey::from([0xD0; 32]);
+    let context_id = ContextId::from([0xE0; 32]);
+
+    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
+
+    // Register a context and write a ContextIdentity for `target`
+    // — exactly the row cascade_remove_member_from_group_tree
+    // deletes.
+    register_context_in_group(&store, &gid, &context_id).unwrap();
+    let id_key = calimero_store::key::ContextIdentity::new(context_id, target);
+    let mut handle = store.handle();
+    handle
+        .put(
+            &id_key,
+            &calimero_store::types::ContextIdentity {
+                private_key: None,
+                sender_key: None,
+            },
+        )
+        .unwrap();
+    drop(handle);
+
+    let hash_before = compute_group_state_hash(&store, &gid).unwrap();
+    cascade_remove_member_from_group_tree(&store, &gid, &target).unwrap();
+    let hash_after = compute_group_state_hash(&store, &gid).unwrap();
+
+    assert_eq!(
+        hash_before, hash_after,
+        "cascade-removal must not change the group state hash — \
+         it touches ContextIdentity rows, which are not in the hash inputs"
+    );
+    // Sanity: the row it WAS supposed to delete is gone.
+    let handle = store.handle();
+    assert!(
+        !handle.has(&id_key).unwrap(),
+        "cascade should have deleted target's ContextIdentity row"
+    );
+}
+
+#[test]
+fn mark_denied_does_not_change_group_state_hash() {
+    // Mirrors the cascade invariant test: the verify-call-site
+    // ordering comment claims `mark_denied` doesn't touch
+    // `compute_group_state_hash`'s inputs. This pins it — a future
+    // refactor that moves the denial flag into the `GroupMember`
+    // row (instead of a separate `GroupDeniedMember` column) would
+    // trip this test and force a rethink of where the verify call
+    // sits relative to other mutations.
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let target = PublicKey::from([0xD0; 32]);
+
+    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
+    remove_group_member(&store, &gid, &target).unwrap();
+
+    let hash_before = compute_group_state_hash(&store, &gid).unwrap();
+    mark_denied(&store, &gid, &target).unwrap();
+    let hash_after = compute_group_state_hash(&store, &gid).unwrap();
+
+    assert_eq!(
+        hash_before, hash_after,
+        "mark_denied must not change the group state hash — \
+         it writes a GroupDeniedMember row, not GroupMeta or GroupMember"
+    );
+}
+
+#[test]
+fn compute_group_state_hash_after_remove_never_returns_zeros_for_real_group() {
+    // SHA-256 of any real `GroupMeta` + member set is astronomically
+    // unlikely to produce all-zeros. This test pins the practical
+    // guarantee: for a populated group with a real meta and at least
+    // one member, the precomputed post-remove hash must NOT be the
+    // sentinel value `[0u8; 32]`. If a future bug short-circuits the
+    // hasher and returns zeros, every receiver would silently treat
+    // the signed claim as "no claim" and the convergence check would
+    // be effectively disabled. This catches that class of regression
+    // at the helper boundary.
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let target = PublicKey::from([0xD0; 32]);
+    let bystander = PublicKey::from([0xD1; 32]);
+
+    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
+    add_group_member(&store, &gid, &bystander, GroupMemberRole::Member).unwrap();
+
+    let hash = compute_group_state_hash_after_remove(&store, &gid, &target).unwrap();
+    assert_ne!(
+        hash, [0u8; 32],
+        "post-remove hash collided with the no-claim sentinel — \
+         convergence check would be silently disabled"
+    );
 }

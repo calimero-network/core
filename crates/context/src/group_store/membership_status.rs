@@ -414,10 +414,10 @@ fn prefix_walk_membership(
                         current_role = Some(role.clone());
                         last_known_role = Some(role);
                     }
-                    GroupOp::MemberRemoved { member } if member == *signer => {
+                    GroupOp::MemberRemoved { member, .. } if member == *signer => {
                         current_role = None;
                     }
-                    GroupOp::MemberLeft { member } if member == *signer => {
+                    GroupOp::MemberLeft { member, .. } if member == *signer => {
                         current_role = None;
                     }
                     _ => {}

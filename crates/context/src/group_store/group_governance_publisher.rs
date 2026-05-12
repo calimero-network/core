@@ -56,11 +56,29 @@ impl<'a> GroupGovernancePublisher<'a> {
         signer_sk: &PrivateKey,
         removed_member: &PublicKey,
     ) -> EyreResult<Option<DeliveryReport>> {
+        // Sign-time hash precomputation: simulate the post-apply state
+        // before the apply runs, so the signed op carries the admin's
+        // canonical view that receivers can verify against. Apply order
+        // (compute → sign → apply locally) avoids needing transactional
+        // rollback in the local apply pipeline — the hashes are pure
+        // functions of pre-apply state and a deterministic op effect.
+        let cut = super::build_governance_cut(self.store, &self.group_id)?;
+        let expected_group_state_hash = super::compute_group_state_hash_after_remove(
+            self.store,
+            &self.group_id,
+            removed_member,
+        )?;
+        let expected_context_state_hashes =
+            super::snapshot_context_state_hashes(self.store, &self.group_id)?;
+
         self.sign_apply_and_publish_inner(
             ack_router,
             signer_sk,
             GroupOp::MemberRemoved {
                 member: *removed_member,
+                cut,
+                expected_group_state_hash,
+                expected_context_state_hashes,
             },
             Some(removed_member),
         )
