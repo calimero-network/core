@@ -85,9 +85,8 @@ pub use self::membership_policy::MembershipPolicy;
 pub use self::membership_status::{membership_status_at, MembershipStatus};
 pub use self::membership_view::GroupMembershipView;
 pub use self::meta::{
-    build_governance_cut, compute_group_state_hash, compute_group_state_hash_after_remove,
-    delete_group_meta, enumerate_all_groups, load_group_meta, save_group_meta,
-    snapshot_context_state_hashes,
+    compute_group_state_hash, compute_group_state_hash_after_remove, delete_group_meta,
+    enumerate_all_groups, load_group_meta, save_group_meta, snapshot_context_state_hashes,
 };
 pub use self::metadata::{
     build_namespace_summary, count_group_contexts, delete_all_member_metadata,
@@ -846,11 +845,11 @@ pub fn now_millis() -> u64 {
 ///    `ContextDetached` ops still has its registrations and the
 ///    per-context check would be skipped on it. This is not a
 ///    silent gap — the receiver's namespace DAG heads disagree with
-///    the signer's `cut.governance_dag_heads` in this scenario, so
-///    the cross-DAG membership check on subsequent state deltas
-///    returns `Unknown { needed }` and buffers them until the
-///    detach ops arrive (or anchor-sync reconciles). The hash
-///    check skip is therefore additive to an existing detection
+///    the signer's `SignedNamespaceOp.parent_op_hashes` in this
+///    scenario, so the cross-DAG membership check on subsequent
+///    state deltas returns `Unknown { needed }` and buffers them
+///    until the detach ops arrive (or anchor-sync reconciles). The
+///    hash check skip is therefore additive to an existing detection
 ///    path, not the sole defense.
 ///
 ///    Once the network has fully rolled forward to signed-claim ops
