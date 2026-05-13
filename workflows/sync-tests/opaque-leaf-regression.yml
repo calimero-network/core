@@ -92,8 +92,10 @@ steps:
     # matches mero-drive's e2e and is enough for *invitation visibility*
     # specifically. The longer membership-state-propagation race that
     # bit `bdc61af` (node-2 rejecting node-1's sync streams as
-    # "inbound stream for unknown context") fires *after* join_context,
-    # not here — it's covered by the `wait_for_sync` step below.
+    # "inbound stream for unknown context") is now handled inside the
+    # responder via a bounded materialisation wait in
+    # `sync::manager::internal_handle_opened_stream` — no workflow-level
+    # guard needed.
     type: wait
     seconds: 10
 
@@ -111,24 +113,6 @@ steps:
     context_id: "{{ctx_id}}"
     outputs:
       node2_key: memberPublicKey
-
-  - name: Wait for context-membership sync after join
-    # Second guard against the membership-propagation race observed on
-    # bdc61af: even after `join_context` returns success, node-2 may not
-    # yet recognise node-1's identity as a context member until the
-    # membership delta finishes propagating. wait_for_sync against the
-    # context here blocks until both nodes converge on the same view of
-    # the (still-empty) Root, which implicitly means both have applied
-    # the membership state. Without this, the write loop below races
-    # the membership propagation and sync sessions get rejected as
-    # "inbound stream for unknown context".
-    type: wait_for_sync
-    context_id: "{{ctx_id}}"
-    nodes:
-      - sync-regression-node-1
-      - sync-regression-node-2
-    timeout: 60
-    check_interval: 2
 
   - name: Assert bootstrap shape
     type: assert
