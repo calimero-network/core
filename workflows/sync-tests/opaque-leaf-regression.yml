@@ -88,15 +88,14 @@ steps:
 
   - name: Wait for namespace governance to gossip
     # Namespace governance DAG needs to propagate to node-2 before the
-    # join op. Bumped from 10s to 30s after a CI failure on bdc61af
-    # showed node-2 still rejecting node-1's sync streams with
-    # "inbound stream for unknown context, closing cleanly" — namespace
-    # membership state hadn't propagated within 10s on a contended
-    # GHA runner. The opaque-leaf fix this PR introduces is verified by
-    # the deterministic sim tests in `crates/node/tests/sync_sim/
-    # protocol.rs`; this e2e is smoke coverage and shouldn't be flaky.
+    # join op (otherwise `join_namespace` 404s on the invitation). 10s
+    # matches mero-drive's e2e and is enough for *invitation visibility*
+    # specifically. The longer membership-state-propagation race that
+    # bit `bdc61af` (node-2 rejecting node-1's sync streams as
+    # "inbound stream for unknown context") fires *after* join_context,
+    # not here — it's covered by the `wait_for_sync` step below.
     type: wait
-    seconds: 30
+    seconds: 10
 
   - name: Node-2 joins namespace
     type: join_namespace
