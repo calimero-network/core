@@ -87,10 +87,16 @@ steps:
       ns_invite: invitation
 
   - name: Wait for namespace governance to gossip
-    # Namespace governance DAG needs a moment to propagate to node-2 before
-    # the join op. Matches mero-drive's "Wait for namespace gossip" step.
+    # Namespace governance DAG needs to propagate to node-2 before the
+    # join op. Bumped from 10s to 30s after a CI failure on bdc61af
+    # showed node-2 still rejecting node-1's sync streams with
+    # "inbound stream for unknown context, closing cleanly" — namespace
+    # membership state hadn't propagated within 10s on a contended
+    # GHA runner. The opaque-leaf fix this PR introduces is verified by
+    # the deterministic sim tests in `crates/node/tests/sync_sim/
+    # protocol.rs`; this e2e is smoke coverage and shouldn't be flaky.
     type: wait
-    seconds: 10
+    seconds: 30
 
   - name: Node-2 joins namespace
     type: join_namespace
@@ -107,6 +113,24 @@ steps:
     outputs:
       node2_key: memberPublicKey
 
+  - name: Wait for context-membership sync after join
+    # Second guard against the membership-propagation race observed on
+    # bdc61af: even after `join_context` returns success, node-2 may not
+    # yet recognise node-1's identity as a context member until the
+    # membership delta finishes propagating. wait_for_sync against the
+    # context here blocks until both nodes converge on the same view of
+    # the (still-empty) Root, which implicitly means both have applied
+    # the membership state. Without this, the write loop below races
+    # the membership propagation and sync sessions get rejected as
+    # "inbound stream for unknown context".
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - sync-regression-node-1
+      - sync-regression-node-2
+    timeout: 60
+    check_interval: 2
+
   - name: Assert bootstrap shape
     type: assert
     statements:
@@ -117,10 +141,11 @@ steps:
       - "is_set({{node2_key}})"
 
   # ── Phase 2: Initial sync ───────────────────────────────────────────
-  # First `wait_for_sync` after the join. Both Roots are empty here; in a
-  # healthy mesh delta sync handles it. This is the same step that fails
-  # pre-fix in mero-drive E2E (main) once meaningful state has accrued —
-  # included here mostly to document the baseline before writes start.
+  # First `wait_for_sync` *after writes start* — at this point both Roots
+  # are still empty; in a healthy mesh delta sync handles it. The earlier
+  # `wait_for_sync` after `join_context` (above) already covered the
+  # membership-propagation race, so this is just a sanity baseline before
+  # the cross-node-write rounds.
   - name: Initial sync (empty Root state)
     type: wait_for_sync
     context_id: "{{ctx_id}}"
