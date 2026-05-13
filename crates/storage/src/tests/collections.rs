@@ -3,7 +3,6 @@
 //! Tests all collection types (UnorderedMap, Vector, UnorderedSet)
 //! Moved from inline tests in collections modules for better organization
 
-use crate::address::Id;
 use crate::collections::{CrdtType, Root, UnorderedMap, UnorderedSet, Vector};
 use crate::env;
 use crate::index::Index;
@@ -21,16 +20,17 @@ use serial_test::serial;
 #[serial]
 fn test_root_entry_gets_lww_register_crdt_type() {
     // Other tests in this binary also touch `MainStorage` (a global,
-    // process-wide store) at the same `ROOT_ENTRY_ID`. Reset so we observe a
+    // process-wide store) at the same entry id. Reset so we observe a
     // fresh `Root::new` rather than stale state from a prior test.
     env::reset_for_testing();
 
-    // `Id::new([118; 32])` == `Root::<T>::entry_id()`.
-    const ROOT_ENTRY_ID: [u8; 32] = [118u8; 32];
-
     let _root = Root::new(|| UnorderedMap::<String, String>::new());
 
-    let index = <Index<MainStorage>>::get_index(Id::new(ROOT_ENTRY_ID))
+    // Cross-reference the entry's id by calling `Root::entry_id()` directly
+    // instead of hardcoding `[118; 32]`, so this test moves in lock-step with
+    // the constructor if that ever changes.
+    let entry_id = Root::<UnorderedMap<String, String>>::entry_id();
+    let index = <Index<MainStorage>>::get_index(entry_id)
         .expect("get_index should not error")
         .expect("Root entry index should exist");
 
