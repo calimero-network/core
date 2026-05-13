@@ -62,7 +62,6 @@ impl<'a> GroupGovernancePublisher<'a> {
         // (compute → sign → apply locally) avoids needing transactional
         // rollback in the local apply pipeline — the hashes are pure
         // functions of pre-apply state and a deterministic op effect.
-        let cut = super::build_governance_cut(self.store, &self.group_id)?;
         let expected_group_state_hash = super::compute_group_state_hash_after_remove(
             self.store,
             &self.group_id,
@@ -76,7 +75,6 @@ impl<'a> GroupGovernancePublisher<'a> {
             signer_sk,
             GroupOp::MemberRemoved {
                 member: *removed_member,
-                cut,
                 expected_group_state_hash,
                 expected_context_state_hashes,
             },

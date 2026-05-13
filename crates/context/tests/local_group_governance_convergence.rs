@@ -41,11 +41,9 @@ fn sample_group_id() -> ContextGroupId {
 /// hashes intentionally don't match real post-apply state — these
 /// tests don't verify the mismatch-detection path (that's covered
 /// separately by `compute_group_state_hash_after_remove` unit tests).
-fn dummy_member_removed(group_id: ContextGroupId, member: PublicKey) -> GroupOp {
+fn dummy_member_removed(member: PublicKey) -> GroupOp {
     GroupOp::MemberRemoved {
         member,
-        cut: GovernancePosition::new(group_id, [0u8; 32], vec![])
-            .expect("empty heads is a valid GovernancePosition"),
         expected_group_state_hash: [0u8; 32],
         expected_context_state_hashes: Vec::new(),
     }
@@ -1018,7 +1016,7 @@ fn state_hash_prevents_concurrent_op_divergence() {
         vec![[0u8; 32]],
         state_hash_c,
         1,
-        dummy_member_removed(sample_group_id(), admin_a_pk),
+        dummy_member_removed(admin_a_pk),
     )
     .unwrap();
 
@@ -1103,7 +1101,7 @@ fn cascade_removal_on_member_kick() {
         vec![[0u8; 32]],
         [0u8; 32],
         1,
-        dummy_member_removed(sample_group_id(), member_pk),
+        dummy_member_removed(member_pk),
     )
     .unwrap();
     apply_local_signed_group_op(&store, &op).unwrap();
@@ -1166,7 +1164,7 @@ fn cascade_removal_deterministic_across_nodes() {
         vec![[0u8; 32]],
         [0u8; 32],
         1,
-        dummy_member_removed(sample_group_id(), member_pk),
+        dummy_member_removed(member_pk),
     )
     .unwrap();
     apply_local_signed_group_op(&node_a, &op).unwrap();

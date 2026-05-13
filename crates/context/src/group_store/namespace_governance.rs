@@ -48,6 +48,13 @@ pub struct KeyUnwrapFailure {
 pub struct ApplyNamespaceOpResult {
     pub pending_deliveries: Vec<PendingKeyDelivery>,
     pub key_unwrap_failures: Vec<KeyUnwrapFailure>,
+    /// Post-apply hash divergence detected by the cross-DAG state-hash
+    /// check inside a `MemberRemoved` / `MemberLeft` apply. The node
+    /// handler routes this to the reconcile-via-anchor sync trigger.
+    /// `None` for ops that don't carry signed convergence claims, for
+    /// ops that match the receiver's view, and for ops that don't go
+    /// through the verify path at all.
+    pub divergence: Option<super::DivergenceReport>,
 }
 
 pub(crate) fn min_acks_after_local_mutation(
@@ -171,7 +178,7 @@ impl<'a> NamespaceGovernance<'a> {
                         // call. Without this, "Unexpected length of input"
                         // is ambiguous between the identity read, the key
                         // store, or the retry walk.
-                        let mut apply_kd = || -> EyreResult<()> {
+                        let mut apply_kd = || -> EyreResult<Option<super::DivergenceReport>> {
                             if let Some(identity) =
                                 get_namespace_identity_record(self.store, &ns_id).map_err(|e| {
                                     eyre::eyre!("get_namespace_identity_record: {e}")
@@ -207,13 +214,14 @@ impl<'a> NamespaceGovernance<'a> {
                                                 group_id: *group_id,
                                                 recipient: recipient_sk.public_key(),
                                             });
-                                            self.retry_encrypted_ops_for_group(*group_id).map_err(
-                                                |e| {
+                                            let retry_divergence = self
+                                                .retry_encrypted_ops_for_group(*group_id)
+                                                .map_err(|e| {
                                                     eyre::eyre!(
                                                         "retry_encrypted_ops_for_group: {e}"
                                                     )
-                                                },
-                                            )?;
+                                                })?;
+                                            return Ok(retry_divergence);
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -228,18 +236,32 @@ impl<'a> NamespaceGovernance<'a> {
                                     }
                                 }
                             }
-                            Ok(())
+                            Ok(None)
                         };
-                        if let Err(e) = apply_kd() {
-                            tracing::warn!(
-                                group_id = %hex::encode(group_id),
-                                error = %e,
-                                "KeyDelivery side-effect failed; DAG apply continues"
-                            );
-                            result.key_unwrap_failures.push(KeyUnwrapFailure {
-                                group_id: *group_id,
-                                reason: format!("KeyDelivery side-effect failed: {e}"),
-                            });
+                        match apply_kd() {
+                            Ok(retry_divergence) => {
+                                if retry_divergence.is_some() {
+                                    // KeyDelivery itself never produces a
+                                    // post-apply divergence — only the
+                                    // retried encrypted ops can. Merge
+                                    // their LWW report into the same
+                                    // outbox slot the fresh-arrival path
+                                    // uses so the node handler routes it
+                                    // to `reconcile_after_divergence`.
+                                    result.divergence = retry_divergence;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    group_id = %hex::encode(group_id),
+                                    error = %e,
+                                    "KeyDelivery side-effect failed; DAG apply continues"
+                                );
+                                result.key_unwrap_failures.push(KeyUnwrapFailure {
+                                    group_id: *group_id,
+                                    reason: format!("KeyDelivery side-effect failed: {e}"),
+                                });
+                            }
                         }
                     }
                     RootOp::MemberJoined {
@@ -287,7 +309,24 @@ impl<'a> NamespaceGovernance<'a> {
                 };
 
                 if let Some(group_key) = resolved_key {
-                    self.decrypt_and_apply_group_op(op, &group_id_typed, &group_key, encrypted)?;
+                    // Surface any post-apply hash divergence reported by
+                    // `MemberRemoved` / `MemberLeft` apply so the node
+                    // handler can route it to the reconcile-via-anchor
+                    // trigger. Multiple group ops can be applied per
+                    // namespace op in theory (e.g. retry path replays);
+                    // in practice each namespace op carries one
+                    // encrypted group op, so the assignment is a simple
+                    // overwrite. Any prior `None` is preserved if this
+                    // op reports `None`.
+                    let report = self.decrypt_and_apply_group_op(
+                        op,
+                        &group_id_typed,
+                        &group_key,
+                        encrypted,
+                    )?;
+                    if report.is_some() {
+                        result.divergence = report;
+                    }
                 }
 
                 if let Some(rotation) = key_rotation {
@@ -580,7 +619,10 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(report)
     }
 
-    fn retry_encrypted_ops_for_group(&self, group_id: [u8; 32]) -> EyreResult<()> {
+    fn retry_encrypted_ops_for_group(
+        &self,
+        group_id: [u8; 32],
+    ) -> EyreResult<Option<super::DivergenceReport>> {
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
         let retry_candidates = retry_service
@@ -590,6 +632,15 @@ impl<'a> NamespaceGovernance<'a> {
         if attempted > 0 {
             record_namespace_retry_event("collected");
         }
+
+        // Last-writer-wins across retry candidates that surface
+        // divergence. The outbox carrying this report to the node
+        // handler is a single slot (see `governance_dag.rs`), so
+        // collapsing here matches the fresh-arrival path's LWW
+        // semantics. In practice each retry batch unblocks a small
+        // number of ops and at most one is a `MemberRemoved` /
+        // `MemberLeft` that could report divergence.
+        let mut retry_divergence: Option<super::DivergenceReport> = None;
 
         for candidate in &retry_candidates {
             let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
@@ -601,12 +652,24 @@ impl<'a> NamespaceGovernance<'a> {
                 &candidate.group_key,
                 encrypted,
             ) {
-                Ok(()) => {
+                // Surface divergence from retry-path applies. Once a
+                // retry replay applies an op, the DAG marks any later
+                // fresh arrival of the same op as `Duplicate` and the
+                // apply work — including the post-apply hash check —
+                // is skipped. That makes the retry path the *only*
+                // opportunity to detect divergence on retried ops:
+                // dropping it here means the reconcile trigger never
+                // fires for `MemberRemoved` / `MemberLeft` ops that
+                // were buffered pending `KeyDelivery`.
+                Ok(divergence) => {
                     record_namespace_retry_event("applied");
                     tracing::info!(
                         group_id = %hex::encode(group_id),
                         "retried encrypted op after KeyDelivery"
                     );
+                    if divergence.is_some() {
+                        retry_divergence = divergence;
+                    }
                 }
                 Err(e) => {
                     record_namespace_retry_event("failed");
@@ -623,7 +686,7 @@ impl<'a> NamespaceGovernance<'a> {
             record_namespace_retry_event("none");
         }
 
-        Ok(())
+        Ok(retry_divergence)
     }
 
     fn decrypt_and_apply_group_op(
@@ -632,7 +695,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: &ContextGroupId,
         group_key: &[u8; 32],
         encrypted: &EncryptedGroupOp,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<Option<super::DivergenceReport>> {
         let inner_op = decrypt_group_op(group_key, encrypted)?;
 
         let signed_group_op = SignedGroupOp {
@@ -655,7 +718,7 @@ impl<'a> NamespaceGovernance<'a> {
         signer: &PublicKey,
         nonce: u64,
         op: &GroupOp,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<Option<super::DivergenceReport>> {
         let last = get_local_gov_nonce(self.store, group_id, signer)?.unwrap_or(0);
         if nonce <= last {
             tracing::debug!(
@@ -664,7 +727,7 @@ impl<'a> NamespaceGovernance<'a> {
                 signer = %signer,
                 "ignoring namespace group op with already-processed nonce"
             );
-            return Ok(());
+            return Ok(None);
         }
 
         if let GroupOp::ContextRegistered {
@@ -710,7 +773,7 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        let handled = apply_group_op_mutations(self.store, group_id, signer, op)?;
+        let (handled, divergence) = apply_group_op_mutations(self.store, group_id, signer, op)?;
         if !handled {
             tracing::debug!(
                 ?op,
@@ -719,7 +782,7 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         set_local_gov_nonce(self.store, group_id, signer, nonce)?;
-        Ok(())
+        Ok(divergence)
     }
 
     fn require_namespace_admin(&self, signer: &PublicKey) -> EyreResult<()> {

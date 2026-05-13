@@ -87,10 +87,6 @@ impl Handler<LeaveGroupRequest> for ContextManager {
         // Sign-time hash precomputation, mirroring `MemberRemoved`. The
         // leaver simulates the post-leave state so receivers can detect
         // divergence.
-        let cut = match group_store::build_governance_cut(&self.datastore, &group_id) {
-            Ok(c) => c,
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
         let expected_group_state_hash = match group_store::compute_group_state_hash_after_remove(
             &self.datastore,
             &group_id,
@@ -109,7 +105,6 @@ impl Handler<LeaveGroupRequest> for ContextManager {
             async move {
                 let op = calimero_context_client::local_governance::GroupOp::MemberLeft {
                     member: member_public_key,
-                    cut,
                     expected_group_state_hash,
                     expected_context_state_hashes,
                 };
