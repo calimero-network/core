@@ -27,7 +27,6 @@ nuke_on_start: true
 nuke_on_end: false
 
 nodes:
-  chain_id: calimero-testnet
   count: 2
   # The GHA wrapper (`sync-regression.yml`) builds `merod:local` from the
   # PR HEAD and loads it into docker before invoking merobox — that's the
@@ -36,9 +35,15 @@ nodes:
   # test. `--image merod:local` on the merobox CLI overrides this anyway,
   # but specify it here so a local `merobox bootstrap run` works without
   # the override.
+  #
+  # NB: no `use_image_entrypoint` / `chain_id` here, on purpose — those
+  # are the *profiling* fuzzy-workflow shape, used with the
+  # `merod:edge-profiling` image that wraps the binary in `perf record`.
+  # For the plain `merod:edge`/`merod:local` images (no profiling
+  # wrapper), merobox invokes the merod CLI directly — same shape as
+  # every working e2e workflow under `apps/*/workflows/*.yml`.
   image: merod:local
   prefix: sync-regression-node
-  use_image_entrypoint: true
 
 steps:
   # ── Phase 1: Bootstrap mesh + namespace + context ───────────────────
