@@ -291,6 +291,50 @@ steps:
     statements:
       - 'json_equal({{sub_name2}}, "renamed-by-node2")'
 
+  # --- Phase 5c: a granted member can keep updating the record ---
+  # Wholly-replace RMW: the second write supersedes the first and
+  # carries a fresh `data` map. Confirms the capability is durable
+  # (not single-use) and that updates land both `name` and `data`.
+
+  - name: Node-2 updates subgroup metadata after grant
+    type: set_group_metadata
+    node: e2e-node-2
+    group_id: '{{sub}}'
+    record_name: 'general-updated'
+    data:
+      topic: 'random-banter'
+      archived: 'true'
+
+  - name: Wait for subgroup metadata update sync
+    type: wait_for_sync
+    group_id: '{{sub}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 30
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after subgroup metadata update sync
+    type: wait
+    seconds: 5
+
+  - name: Get subgroup metadata from node-1 after update
+    type: get_group_metadata
+    node: e2e-node-1
+    group_id: '{{sub}}'
+    outputs:
+      sub_name3: name
+      sub_topic3: data.topic
+      sub_archived3: data.archived
+
+  - name: Assert subgroup updated by node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{sub_name3}}, "general-updated")'
+      - 'json_equal({{sub_topic3}}, "random-banter")'
+      - 'json_equal({{sub_archived3}}, "true")'
+
   # --- Phase 6: Member metadata — a member may always set its own ---
   # record, no capability required.
 
