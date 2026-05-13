@@ -360,6 +360,36 @@ jobs:
             "profiling-data/kv-store" \
             "profiling-reports/kv-store"
 
+      # merobox#233 (merged 2026-05-12): with `stop_all_nodes: false` in the
+      # fuzzy workflow YAML (already set), the merobox bootstrap process exits
+      # but leaves containers running. We then send each merod container an
+      # *explicit* `docker stop` with `--time=120`, giving the in-container
+      # SIGTERM trap (`entrypoint-profiling.sh`'s `cleanup`) up to 120s to
+      # finish `stop_profiling` (15s perf-flush) → merod-stop (10s) →
+      # `preserve_to_host_mount` (perf+memory flamegraph render → bind
+      # mount). Pre-#233 / pre-this-step, merobox's `atexit` handler stopped
+      # containers with Docker's default ~10s timeout — SIGKILL arrived
+      # before the trap finished and `reports/` never got created on any
+      # node. See the `profiling-data-group-governance-499-25799459525`
+      # artifact for evidence of the bug this fixes.
+      - name: Graceful merod container shutdown (let trap render flamegraphs)
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          mkdir -p fuzzy-test-logs/kv-store
+          # Filter to merobox-started merod containers, exclude short-lived
+          # `*-init` (already long gone, not useful for trap-driven preserve).
+          containers=$(docker ps --filter "label=calimero.node=true" \
+                                 --format '{{.Names}}' 2>/dev/null \
+                       | grep -v -- '-init$' || true)
+          if [ -z "$containers" ]; then
+            echo "No live merod containers — stop_all_nodes:false honored? merobox-version=$(merobox --version 2>/dev/null || echo '?')"
+            exit 0
+          fi
+          echo "Stopping $(echo "$containers" | wc -l | tr -d ' ') live container(s) with --time=120..."
+          echo "$containers" \
+            | xargs -r -n1 docker stop --time=120 2>&1 \
+            | tee fuzzy-test-logs/kv-store/docker-stop.log
+
       - name: Collect profiling data from host-side bind mounts
         if: always() && steps.image.outputs.profiling == 'true'
         run: |
@@ -626,6 +656,23 @@ jobs:
             "profiling-data/kv-store-with-handlers" \
             "profiling-reports/kv-store-with-handlers"
 
+      # See kv-store job for rationale — same shape, different log subdir.
+      - name: Graceful merod container shutdown (let trap render flamegraphs)
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          mkdir -p fuzzy-test-logs/kv-store-with-handlers
+          containers=$(docker ps --filter "label=calimero.node=true" \
+                                 --format '{{.Names}}' 2>/dev/null \
+                       | grep -v -- '-init$' || true)
+          if [ -z "$containers" ]; then
+            echo "No live merod containers — stop_all_nodes:false honored? merobox-version=$(merobox --version 2>/dev/null || echo '?')"
+            exit 0
+          fi
+          echo "Stopping $(echo "$containers" | wc -l | tr -d ' ') live container(s) with --time=120..."
+          echo "$containers" \
+            | xargs -r -n1 docker stop --time=120 2>&1 \
+            | tee fuzzy-test-logs/kv-store-with-handlers/docker-stop.log
+
       - name: Collect profiling data from host-side bind mounts
         if: always() && steps.image.outputs.profiling == 'true'
         run: |
@@ -885,6 +932,23 @@ jobs:
             "profiling-data/scaffolding-e2e" \
             "profiling-reports/scaffolding-e2e"
 
+      # See kv-store job for rationale — same shape, different log subdir.
+      - name: Graceful merod container shutdown (let trap render flamegraphs)
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          mkdir -p fuzzy-test-logs/scaffolding-e2e
+          containers=$(docker ps --filter "label=calimero.node=true" \
+                                 --format '{{.Names}}' 2>/dev/null \
+                       | grep -v -- '-init$' || true)
+          if [ -z "$containers" ]; then
+            echo "No live merod containers — stop_all_nodes:false honored? merobox-version=$(merobox --version 2>/dev/null || echo '?')"
+            exit 0
+          fi
+          echo "Stopping $(echo "$containers" | wc -l | tr -d ' ') live container(s) with --time=120..."
+          echo "$containers" \
+            | xargs -r -n1 docker stop --time=120 2>&1 \
+            | tee fuzzy-test-logs/scaffolding-e2e/docker-stop.log
+
       - name: Collect profiling data from host-side bind mounts
         if: always() && steps.image.outputs.profiling == 'true'
         run: |
@@ -1143,6 +1207,23 @@ jobs:
             "fuzzy-test-logs/group-governance" \
             "profiling-data/group-governance" \
             "profiling-reports/group-governance"
+
+      # See kv-store job for rationale — same shape, different log subdir.
+      - name: Graceful merod container shutdown (let trap render flamegraphs)
+        if: always() && steps.image.outputs.profiling == 'true'
+        run: |
+          mkdir -p fuzzy-test-logs/group-governance
+          containers=$(docker ps --filter "label=calimero.node=true" \
+                                 --format '{{.Names}}' 2>/dev/null \
+                       | grep -v -- '-init$' || true)
+          if [ -z "$containers" ]; then
+            echo "No live merod containers — stop_all_nodes:false honored? merobox-version=$(merobox --version 2>/dev/null || echo '?')"
+            exit 0
+          fi
+          echo "Stopping $(echo "$containers" | wc -l | tr -d ' ') live container(s) with --time=120..."
+          echo "$containers" \
+            | xargs -r -n1 docker stop --time=120 2>&1 \
+            | tee fuzzy-test-logs/group-governance/docker-stop.log
 
       - name: Collect profiling data from host-side bind mounts
         if: always() && steps.image.outputs.profiling == 'true'
