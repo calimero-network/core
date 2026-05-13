@@ -309,6 +309,13 @@ impl<'a> NamespaceGovernance<'a> {
                 };
 
                 if let Some(group_key) = resolved_key {
+                    tracing::info!(
+                        target: "metadata_diag",
+                        group_id = %hex::encode(group_id),
+                        key_id = %hex::encode(key_id),
+                        nonce = op.nonce,
+                        "NamespaceOp::Group fresh-arrival: key resolved, applying"
+                    );
                     // Surface any post-apply hash divergence reported by
                     // `MemberRemoved` / `MemberLeft` apply so the node
                     // handler can route it to the reconcile-via-anchor
@@ -318,15 +325,36 @@ impl<'a> NamespaceGovernance<'a> {
                     // encrypted group op, so the assignment is a simple
                     // overwrite. Any prior `None` is preserved if this
                     // op reports `None`.
-                    let report = self.decrypt_and_apply_group_op(
+                    match self.decrypt_and_apply_group_op(
                         op,
                         &group_id_typed,
                         &group_key,
                         encrypted,
-                    )?;
-                    if report.is_some() {
-                        result.divergence = report;
+                    ) {
+                        Ok(report) => {
+                            if report.is_some() {
+                                result.divergence = report;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                target: "metadata_diag",
+                                group_id = %hex::encode(group_id),
+                                nonce = op.nonce,
+                                error = %e,
+                                "NamespaceOp::Group fresh-arrival: APPLY ERRORED"
+                            );
+                            return Err(e);
+                        }
                     }
+                } else {
+                    tracing::warn!(
+                        target: "metadata_diag",
+                        group_id = %hex::encode(group_id),
+                        key_id = %hex::encode(key_id),
+                        nonce = op.nonce,
+                        "NamespaceOp::Group fresh-arrival: NO KEY — buffered for retry"
+                    );
                 }
 
                 if let Some(rotation) = key_rotation {

@@ -1383,11 +1383,28 @@ fn apply_group_op_mutations(
             name,
             data,
         } => {
+            tracing::info!(
+                target: "metadata_diag",
+                group_id = %hex::encode(group_id.to_bytes()),
+                %context_id,
+                signer = %signer,
+                name = ?name,
+                data_keys = ?data.keys().collect::<Vec<_>>(),
+                "ContextMetadataSet apply: entry"
+            );
             permissions.require_can_manage_metadata(signer)?;
             // Reject metadata for a context that isn't registered in this
             // group — otherwise we'd create orphaned `GroupContextMetadata`
             // rows for contexts in a different group (or no group at all).
-            if get_group_for_context(store, context_id)? != Some(*group_id) {
+            let registered = get_group_for_context(store, context_id)?;
+            if registered != Some(*group_id) {
+                tracing::warn!(
+                    target: "metadata_diag",
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    %context_id,
+                    registered_in = ?registered.map(|g| hex::encode(g.to_bytes())),
+                    "ContextMetadataSet apply: BAIL — context not registered in this group"
+                );
                 bail!(
                     "context {context_id} is not registered in group {}",
                     hex::encode(group_id.to_bytes())
@@ -1405,6 +1422,12 @@ fn apply_group_op_mutations(
                     updated_by: *signer,
                 },
             )?;
+            tracing::info!(
+                target: "metadata_diag",
+                group_id = %hex::encode(group_id.to_bytes()),
+                %context_id,
+                "ContextMetadataSet apply: stored"
+            );
         }
         GroupOp::GroupDelete => {
             // Owner-only. Admins can no longer delete the group on their

@@ -36,9 +36,17 @@ pub fn get_context_metadata(
     context_id: &ContextId,
 ) -> EyreResult<Option<MetadataRecord>> {
     let handle = store.handle();
-    handle
+    let result: EyreResult<Option<MetadataRecord>> = handle
         .get(&GroupContextMetadata::new(group_id.to_bytes(), *context_id))
-        .map_err(Into::into)
+        .map_err(Into::into);
+    tracing::info!(
+        target: "metadata_diag",
+        group_id = %hex::encode(group_id.to_bytes()),
+        %context_id,
+        present = matches!(result, Ok(Some(_))),
+        "get_context_metadata: read"
+    );
+    result
 }
 
 /// Returns context IDs together with their optional display names
