@@ -1177,103 +1177,114 @@ mod tests {
     /// the (already-defined-but-unpopulated) `LeafMetadata.parent_id`
     /// field, and the receiver uses it as the ancestor in `Action::Add`.
     ///
-    /// This test seeds Alice with a 2-level Merkle tree — a parent
-    /// (`Root<T>` placeholder) and a *nested* leaf as its child — and
-    /// verifies that after HashComparison sync, Bob has the nested leaf
-    /// at the SAME parent (not directly under context root), and both
-    /// nodes' root hashes converge.
+    /// This test mirrors the production cross-node-writes scenario: both
+    /// nodes share a parent entity AND each have a sibling child under it
+    /// (so the parent is "internal" on both sides — analogous to the
+    /// items collection of a kv-store that already has prior entries).
+    /// Then Alice adds a NEW child under the parent. After HashComparison
+    /// sync, Bob must have that new child under the same parent and the
+    /// root hashes must converge.
+    ///
+    /// Pre-fix, Bob's `apply_leaf_with_crdt_merge` ignored
+    /// `leaf.metadata.parent_id` (it was always `None` on the wire) and
+    /// attached the new child to context root. So Bob's parent kept its
+    /// single original child, while Alice's parent had two children →
+    /// different parent hashes → different root hashes, forever.
     #[tokio::test]
     async fn test_nested_leaf_converges_at_correct_merkle_position() {
         use calimero_primitives::crdt::CrdtType;
         use calimero_storage::address::Id;
         use calimero_storage::entities::Metadata;
 
-        // `Id::new([118; 32])` == `Root::<T>::entry_id()` — same fixed id
-        // every WASM-app context's root state lives at.
-        const ROOT_ENTRY_ID: [u8; 32] = [118u8; 32];
-        // A distinct id for the nested child — would-be `Root<T>::items["k1"]`.
-        const NESTED_CHILD_ID: [u8; 32] = [200u8; 32];
-
         let ctx = shared_context();
         let mut alice = SimNode::new_in_context("alice", ctx);
-        let mut bob = SimNode::new_in_context("bob", ctx);
+        let bob = SimNode::new_in_context("bob", ctx);
 
-        // Shared base so both nodes are initialised (non-zero root hash).
-        let base_id = EntityId::from_u64(1000);
-        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
-        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
-        assert_eq!(alice.root_hash(), bob.root_hash());
-
-        // Alice has the `Root<T>` parent entry — give it a real CRDT type
-        // so the new code path (`parent_id` propagation for typed leaves)
-        // is what's under test, not the opaque-leaf path.
-        let parent_id = Id::new(ROOT_ENTRY_ID);
-        let mut parent_meta = Metadata::new(100, 100);
-        parent_meta.crdt_type = Some(CrdtType::lww_register("RootValue"));
-        alice
-            .storage()
-            .add_entity(parent_id, b"parent-state", parent_meta);
-
-        // Alice also has a *nested* child entity hanging off that parent
-        // (not off context root) — this is the topology that
-        // `LeafMetadata.parent_id` must carry over the wire.
-        let nested_id = Id::new(NESTED_CHILD_ID);
-        let mut nested_meta = Metadata::new(200, 200);
-        nested_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
-        let nested_value = b"value-from-alice".to_vec();
-        alice
-            .storage()
-            .add_entity_with_parent(nested_id, parent_id, &nested_value, nested_meta);
-
-        // Sanity check the local topology on alice.
-        let alice_nested = alice
-            .storage()
-            .get_index(nested_id)
-            .expect("alice should have the nested entity");
+        // Both nodes share the parent + one initial child under it. After
+        // these inserts both nodes have an identical 2-level tree: parent
+        // (with one child) under context root. Same data, same metadata
+        // → same `own_hash` and `full_hash` everywhere; root hashes match.
+        let parent_storage_id = Id::new([1u8; 32]);
+        let initial_child_id = Id::new([2u8; 32]);
+        let mut child_meta = Metadata::new(50, 50);
+        child_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        for node in [&alice, &bob] {
+            node.storage()
+                .add_entity(parent_storage_id, b"shared-parent", Metadata::new(50, 50));
+            node.storage().add_entity_with_parent(
+                initial_child_id,
+                parent_storage_id,
+                b"shared-child",
+                child_meta.clone(),
+            );
+        }
         assert_eq!(
-            alice_nested.parent_id(),
-            Some(parent_id),
-            "alice's nested entity must be parented to ROOT_ENTRY_ID, not context root"
+            alice.root_hash(),
+            bob.root_hash(),
+            "nodes start at the same root with parent + shared child"
         );
 
-        // Bob doesn't have either entity yet → diverged.
-        assert!(bob.storage().get_entity_data(parent_id).is_none());
-        assert!(bob.storage().get_entity_data(nested_id).is_none());
+        // Alice adds a NEW child under the same parent — analogous to a
+        // local `kv.set("gamma", ...)` after both nodes already have
+        // `kv.set("alpha", ...)` settled. This is the topology where
+        // `LeafMetadata.parent_id` must be honoured on push.
+        let new_child_id = Id::new([200u8; 32]);
+        let mut new_child_meta = Metadata::new(200, 200);
+        new_child_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        let new_child_value = b"value-from-alice".to_vec();
+        alice.storage().add_entity_with_parent(
+            new_child_id,
+            parent_storage_id,
+            &new_child_value,
+            new_child_meta,
+        );
+
+        // Alice's local topology: new child under the shared parent.
+        let alice_new = alice
+            .storage()
+            .get_index(new_child_id)
+            .expect("alice should have the new child");
+        assert_eq!(
+            alice_new.parent_id(),
+            Some(parent_storage_id),
+            "alice's new child must be parented to the shared parent, not context root"
+        );
+
+        // Bob doesn't have it yet → diverged.
+        assert!(bob.storage().get_entity_data(new_child_id).is_none());
         assert_ne!(
             alice.root_hash(),
             bob.root_hash(),
-            "nodes should be diverged on the nested-leaf subtree"
+            "nodes should be diverged on the new child"
         );
 
-        // Alice initiates HashComparison sync with Bob → Bob must apply
-        // BOTH entities AND place the nested one under the correct
-        // parent (not directly under context root).
+        // Alice initiates HashComparison sync with Bob.
         execute_hash_comparison_sync(&mut alice, &bob)
             .await
             .expect("sync should succeed");
 
-        // (a) Bob has the nested entity's bytes.
+        // (a) Bob has the new child's bytes.
         assert_eq!(
-            bob.storage().get_entity_data(nested_id).as_deref(),
-            Some(nested_value.as_slice()),
-            "Bob should have the nested entity bytes after sync"
+            bob.storage().get_entity_data(new_child_id).as_deref(),
+            Some(new_child_value.as_slice()),
+            "Bob should have the new child's bytes after sync"
         );
 
-        // (b) **The structural assertion**: Bob's nested entity is
-        // parented to ROOT_ENTRY_ID, not to context root. Pre-fix this
+        // (b) **The structural assertion**: Bob's new child is parented
+        // to the shared parent, not to context root. Pre-fix this
         // assertion fails — `apply_leaf_with_crdt_merge` placed the
         // entity as a direct child of context root.
-        let bob_nested = bob
+        let bob_new = bob
             .storage()
-            .get_index(nested_id)
-            .expect("bob should have the nested entity");
+            .get_index(new_child_id)
+            .expect("bob should have the new child");
         assert_eq!(
-            bob_nested.parent_id(),
-            Some(parent_id),
-            "Bob's nested entity must be parented to ROOT_ENTRY_ID (the sender's parent), \
-             not to context root — the parent_id from LeafMetadata must be honoured. \
-             A failure here is the 'Same DAG heads, different root hash' bug under cross-\
-             node nested writes (bdc61af Round-2 failure)."
+            bob_new.parent_id(),
+            Some(parent_storage_id),
+            "Bob's new child must be parented to the shared parent (the sender's parent), \
+             not to context root — `LeafMetadata.parent_id` must be honoured by the apply \
+             path. A failure here is the 'Same DAG heads, different root hash' bug under \
+             cross-node writes to a non-root collection (bdc61af Round-2 failure)."
         );
 
         // (c) Merkle root hashes converged. With the wrong parent on Bob,
@@ -1282,7 +1293,7 @@ mod tests {
         assert_eq!(
             alice.root_hash(),
             bob.root_hash(),
-            "root hashes should converge — nested leaf placed at correct Merkle position"
+            "root hashes should converge — new child placed at correct Merkle position"
         );
     }
 }
