@@ -278,6 +278,23 @@ impl<'a> NamespaceGovernance<'a> {
                             });
                         }
                     }
+                    RootOp::MemberJoinedOpen { member, group_id } => {
+                        // Same delivery-trigger semantics as `MemberJoined` —
+                        // any peer that holds the group key publishes a
+                        // `KeyDelivery` wrapped for the joiner. Authority
+                        // for this op is validated in `execute_member_joined_open`
+                        // (we ran it via `apply_root_op` above before this
+                        // match), so by the time we get here the path is
+                        // confirmed Inherited.
+                        let group_id_typed = ContextGroupId::from(*group_id);
+                        if load_current_group_key_record(self.store, &group_id_typed)?.is_some() {
+                            result.pending_deliveries.push(PendingKeyDelivery {
+                                namespace_id: op.namespace_id,
+                                group_id: group_id_typed.to_bytes(),
+                                joiner_pk: *member,
+                            });
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -823,6 +840,9 @@ impl<'a> NamespaceGovernance<'a> {
                 member,
                 signed_invitation,
             } => self.execute_member_joined(op, member, signed_invitation),
+            RootOp::MemberJoinedOpen { member, group_id } => {
+                self.execute_member_joined_open(op, *member, *group_id)
+            }
             RootOp::KeyDelivery { .. } => Ok(()),
         }
     }
@@ -1160,6 +1180,51 @@ impl<'a> NamespaceGovernance<'a> {
             member,
             signed_invitation,
         )
+    }
+
+    /// Apply check for `RootOp::MemberJoinedOpen`. The op is cleartext,
+    /// the outer `SignedNamespaceOp.signer` MUST equal `member` (proves
+    /// key ownership), and `member` MUST have an Inherited membership
+    /// path to `group_id` — i.e. the subgroup is `Open` and they hold
+    /// `CAN_JOIN_OPEN_SUBGROUPS` at the namespace root (the same
+    /// check `join_context.rs` runs locally before letting the joiner
+    /// proceed). We don't mutate state here — the side-effect (pushing
+    /// a `PendingKeyDelivery` if we hold the key) happens in the outer
+    /// `apply_signed_op` match.
+    fn execute_member_joined_open(
+        &self,
+        op: &SignedNamespaceOp,
+        member: PublicKey,
+        group_id: [u8; 32],
+    ) -> EyreResult<()> {
+        if op.signer != member {
+            eyre::bail!(
+                "MemberJoinedOpen rejected: outer signer {} doesn't match member {}",
+                op.signer,
+                member
+            );
+        }
+        let gid = ContextGroupId::from(group_id);
+        match super::check_group_membership_path(self.store, &gid, &member)? {
+            super::MembershipPath::Inherited { .. } => Ok(()),
+            super::MembershipPath::Direct => {
+                // Direct members go through `MemberJoined` or `add_group_members`
+                // — they shouldn't be using this op.
+                eyre::bail!(
+                    "MemberJoinedOpen rejected: signer {} is a direct member of {:?}; \
+                     use MemberJoined or add_group_members instead",
+                    member,
+                    gid
+                );
+            }
+            super::MembershipPath::None => {
+                eyre::bail!(
+                    "MemberJoinedOpen rejected: signer {} has no membership path to {:?}",
+                    member,
+                    gid
+                );
+            }
+        }
     }
 }
 

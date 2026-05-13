@@ -383,6 +383,29 @@ pub enum RootOp {
         /// signature. Peers use this to verify the join was authorized.
         signed_invitation: SignedGroupOpenInvitation,
     },
+    /// A namespace member just self-joined an `Open` subgroup whose
+    /// `Open` visibility (+ their namespace-level
+    /// `CAN_JOIN_OPEN_SUBGROUPS` capability) is the authorisation —
+    /// there is no admin-signed invitation in this case.
+    ///
+    /// **Cleartext.** The outer `SignedNamespaceOp` MUST be signed by
+    /// the joining member (proves key ownership). On apply, peers
+    /// verify the joiner has an Inherited membership path to
+    /// `group_id` via `check_group_membership_path`; if so, any peer
+    /// that holds the group key publishes a
+    /// [`KeyDelivery`](RootOp::KeyDelivery) wrapping it for the
+    /// joiner. The peer that locally holds the key is the one whose
+    /// `pending_deliveries` accumulates this delivery on apply.
+    ///
+    /// This op closes the "self-join Open subgroup, can't decrypt
+    /// state-DAG messages" gap — `join_context` previously inserted
+    /// a `ContextIdentity` with `sender_key: None` for the inherited
+    /// case and never asked any holder of the group key to deliver
+    /// it. See `handlers/join_context.rs`.
+    MemberJoinedOpen {
+        member: PublicKey,
+        group_id: [u8; 32],
+    },
     /// Delivers the current group key to a specific member.
     ///
     /// Published by an existing member after seeing `MemberJoined` on the
@@ -410,6 +433,7 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::AdminChanged { .. }) => "admin_changed",
             NamespaceOp::Root(RootOp::PolicyUpdated { .. }) => "policy_updated",
             NamespaceOp::Root(RootOp::MemberJoined { .. }) => "member_joined",
+            NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => "member_joined_open",
             NamespaceOp::Root(RootOp::KeyDelivery { .. }) => "key_delivery",
             NamespaceOp::Group { .. } => "group_op",
         }
