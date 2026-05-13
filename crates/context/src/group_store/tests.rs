@@ -24,11 +24,9 @@ fn test_group_id() -> ContextGroupId {
 /// against actual post-apply state will see a mismatch — tests that
 /// hit the apply path either ignore the mismatch (it's a warn-log,
 /// not a hard reject) or use the real `compute_*` helpers.
-fn dummy_member_removed_op(group_id: ContextGroupId, member: PublicKey) -> GroupOp {
+fn dummy_member_removed_op(_group_id: ContextGroupId, member: PublicKey) -> GroupOp {
     GroupOp::MemberRemoved {
         member,
-        cut: calimero_context_config::types::GovernancePosition::new(group_id, [0u8; 32], vec![])
-            .expect("empty heads is a valid GovernancePosition"),
         expected_group_state_hash: [0u8; 32],
         expected_context_state_hashes: Vec::new(),
     }
@@ -6425,34 +6423,6 @@ fn snapshot_context_state_hashes_skips_unmaterialized_contexts() {
 }
 
 #[test]
-fn build_governance_cut_carries_current_group_state_hash() {
-    // The `cut` field's `group_state_hash` is the PRE-apply hash
-    // (admin's view at sign time, not the post-apply view). Receivers
-    // use the cut to identify which namespace-DAG position to walk
-    // for the membership check — that walk needs the current group
-    // state to make sense.
-    let store = test_store();
-    let gid = test_group_id();
-    let admin = PublicKey::from([0x01; 32]);
-    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-
-    let pre_apply_hash = compute_group_state_hash(&store, &gid).unwrap();
-    let cut = build_governance_cut(&store, &gid).unwrap();
-
-    assert_eq!(
-        cut.group_state_hash, pre_apply_hash,
-        "cut must carry the pre-apply (current) group state hash"
-    );
-    assert_eq!(cut.group_id, gid);
-    // No namespace governance ops have run, so heads are empty.
-    assert!(
-        cut.governance_dag_heads.is_empty(),
-        "fresh namespace has no DAG heads"
-    );
-}
-
-#[test]
 fn diff_sorted_context_hashes_pins_merge_scan_semantics() {
     // Pin the linear-merge divergence logic that replaced the
     // earlier two-`BTreeMap` build. Each case asserts on the
@@ -6588,13 +6558,6 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
     let bystander_pk = PublicKey::from([0xD1; 32]);
 
     // Bootstrap: a meta + admin + target + bystander member set.
-    // No parent group is set, which means `resolve_namespace` treats
-    // `gid` as its own namespace (the no-parent case). That lets
-    // `build_governance_cut` succeed below with empty
-    // `governance_dag_heads` — a deterministic empty namespace DAG
-    // for a self-rooted group. If `resolve_namespace`'s no-parent
-    // semantics ever change, this test's bootstrap shape will need
-    // an explicit `nest_group` call.
     let mut meta = test_meta();
     meta.admin_identity = admin_pk;
     meta.owner_identity = admin_pk;
@@ -6605,7 +6568,6 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
 
     // Real sign-time precomputation: admin's view of the post-apply
     // state, signed alongside the op.
-    let cut = build_governance_cut(&store, &gid).unwrap();
     let expected_group_state_hash =
         compute_group_state_hash_after_remove(&store, &gid, &target_pk).unwrap();
     let expected_context_state_hashes = snapshot_context_state_hashes(&store, &gid).unwrap();
@@ -6618,7 +6580,6 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
         1,
         GroupOp::MemberRemoved {
             member: target_pk,
-            cut,
             expected_group_state_hash,
             expected_context_state_hashes: expected_context_state_hashes.clone(),
         },
@@ -6795,8 +6756,6 @@ fn apply_group_op_mutations_surfaces_divergence_on_hash_mismatch() {
     let wrong_hash = [0xFFu8; 32];
     let op = GroupOp::MemberRemoved {
         member: target,
-        cut: calimero_context_config::types::GovernancePosition::new(gid, [0u8; 32], vec![])
-            .expect("empty heads is valid"),
         expected_group_state_hash: wrong_hash,
         expected_context_state_hashes: Vec::new(),
     };
@@ -6837,8 +6796,6 @@ fn apply_group_op_mutations_no_divergence_on_matching_hash() {
         compute_group_state_hash_after_remove(&store, &gid, &target).unwrap();
     let op = GroupOp::MemberRemoved {
         member: target,
-        cut: calimero_context_config::types::GovernancePosition::new(gid, [0u8; 32], vec![])
-            .expect("empty heads is valid"),
         expected_group_state_hash: real_post_apply_hash,
         expected_context_state_hashes: Vec::new(),
     };

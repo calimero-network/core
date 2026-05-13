@@ -85,9 +85,8 @@ pub use self::membership_policy::MembershipPolicy;
 pub use self::membership_status::{membership_status_at, MembershipStatus};
 pub use self::membership_view::GroupMembershipView;
 pub use self::meta::{
-    build_governance_cut, compute_group_state_hash, compute_group_state_hash_after_remove,
-    delete_group_meta, enumerate_all_groups, load_group_meta, save_group_meta,
-    snapshot_context_state_hashes,
+    compute_group_state_hash, compute_group_state_hash_after_remove, delete_group_meta,
+    enumerate_all_groups, load_group_meta, save_group_meta, snapshot_context_state_hashes,
 };
 pub use self::metadata::{
     build_namespace_summary, count_group_contexts, delete_all_member_metadata,
