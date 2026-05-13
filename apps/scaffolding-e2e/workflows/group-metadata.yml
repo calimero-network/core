@@ -308,19 +308,43 @@ steps:
     record_name: 'should-fail'
     expected_failure: true
 
-  # Grant CAN_MANAGE_METADATA = 1 << 8 = 256 to node-2 in the namespace.
+  # Grant CAN_MANAGE_METADATA = 1 << 8 = 256 to node-2 on BOTH the
+  # namespace (for the cross-member member-metadata write in Phase 6)
+  # AND the subgroup (for the subgroup-metadata writes in Phases 5b/5c).
+  # Per `crates/context/src/group_store/permission_checker.rs:144-155`,
+  # non-admin capability grants do NOT inherit across the parent
+  # boundary — only admin-inherited authority crosses (#2256). So a
+  # member who needs to manage metadata on a subgroup needs the bit
+  # explicitly on that subgroup, not just on the namespace.
   # (calimero-network/core: crates/context/config/src/lib.rs,
   #  MemberCapabilities::CAN_MANAGE_METADATA)
-  - name: Grant node-2 CAN_MANAGE_METADATA
+  - name: Grant node-2 CAN_MANAGE_METADATA on namespace
     type: set_member_capabilities
     node: e2e-node-1
     group_id: '{{ns}}'
     member_id: '{{node2_id}}'
     capabilities: 256
 
-  - name: Wait for capability sync
+  - name: Grant node-2 CAN_MANAGE_METADATA on subgroup
+    type: set_member_capabilities
+    node: e2e-node-1
+    group_id: '{{sub}}'
+    member_id: '{{node2_id}}'
+    capabilities: 256
+
+  - name: Wait for namespace capability sync
     type: wait_for_sync
     group_id: '{{ns}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 30
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Wait for subgroup capability sync
+    type: wait_for_sync
+    group_id: '{{sub}}'
     nodes:
       - e2e-node-1
       - e2e-node-2
