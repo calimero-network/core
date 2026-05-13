@@ -3,7 +3,6 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
-// Removed: NonZeroUsize (no longer using height)
 
 use async_stream::stream;
 use calimero_context_config::types::GovernancePosition;

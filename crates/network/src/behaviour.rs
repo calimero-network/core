@@ -126,6 +126,20 @@ impl Behaviour {
                         // is cheap and removes the cold-start window where
                         // the mesh isn't formed yet and `broadcast()` would
                         // otherwise drop the delta (issues #2122, #2236).
+                        //
+                        // Security note: bypassing the mesh also bypasses
+                        // gossipsub's per-peer scoring and prune-backoff
+                        // on the publish path. That is acceptable here
+                        // because every Calimero topic is admission-gated
+                        // by signed governance membership — a non-member
+                        // peer can subscribe at the transport but their
+                        // forwarded/published messages are rejected at the
+                        // governance/cryptographic layer (`state_delta`
+                        // and `governance_broadcast` validators) before
+                        // they can influence application state. Scoring-
+                        // based abuse mitigation is therefore not load-
+                        // bearing on this code path; the governance layer
+                        // is.
                         gossipsub::ConfigBuilder::default()
                             .mesh_n_low(GOSSIPSUB_MESH_N_LOW)
                             .mesh_n(GOSSIPSUB_MESH_N)

@@ -31,6 +31,20 @@ pub const DEFAULT_PORT: u16 = 2428; // CHAT in T9
 pub const GOSSIPSUB_MESH_N_LOW: usize = 2;
 pub const GOSSIPSUB_MESH_N: usize = 4;
 pub const GOSSIPSUB_MESH_N_HIGH: usize = 8;
+
+/// Minimum outbound mesh peers per topic. libp2p enforces the invariant
+/// `mesh_outbound_min ≤ mesh_n_low / 2`, so with `mesh_n_low = 2` this
+/// must be 1.
+///
+/// Security note: in larger public swarms, `mesh_outbound_min = 2` is
+/// the conventional defence against an inbound-only Sybil cluster
+/// monopolising a node's mesh. Calimero topics are namespace-gated by
+/// signed governance membership (a non-member's gossipsub subscription
+/// is accepted at the transport but their messages are rejected at the
+/// governance/cryptographic layer in `state_delta` handling), so the
+/// Sybil-via-subscription vector that motivates the default isn't load-
+/// bearing here. The trade-off is explicit and bounded by the
+/// `mesh_n_low/2` invariant rather than a free choice.
 pub const GOSSIPSUB_MESH_OUTBOUND_MIN: usize = 1;
 
 // https://github.com/ipfs/kubo/blob/efdef7fdcfeeb30e2f1ce3dbf65b6460b58afaaf/config/bootstrap_peers.go#L17-L24

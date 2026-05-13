@@ -6,7 +6,7 @@ use crate::NetworkManager;
 impl Handler<MeshStats> for NetworkManager {
     type Result = <MeshStats as Message>::Result;
 
-    fn handle(&mut self, MeshStats: MeshStats, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, _msg: MeshStats, _ctx: &mut Context<Self>) -> Self::Result {
         let gossipsub = &self.swarm.behaviour().gossipsub;
         gossipsub
             .topics()
