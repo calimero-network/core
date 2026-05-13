@@ -78,7 +78,14 @@ impl<'a> NamespaceRetryService<'a> {
         // in this group" precondition. Sorting here keeps every
         // signer's ops in their original publish order while still
         // letting independent signers interleave.
-        candidates.sort_by_key(|c| (*<calimero_primitives::identity::PublicKey as AsRef<[u8; 32]>>::as_ref(&c.signed_op.signer), c.signed_op.nonce));
+        candidates.sort_by_key(|c| {
+            (
+                *<calimero_primitives::identity::PublicKey as AsRef<[u8; 32]>>::as_ref(
+                    &c.signed_op.signer,
+                ),
+                c.signed_op.nonce,
+            )
+        });
 
         Ok(candidates)
     }
