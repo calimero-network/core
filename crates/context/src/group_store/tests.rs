@@ -24,7 +24,7 @@ fn test_group_id() -> ContextGroupId {
 /// against actual post-apply state will see a mismatch — tests that
 /// hit the apply path either ignore the mismatch (it's a warn-log,
 /// not a hard reject) or use the real `compute_*` helpers.
-fn dummy_member_removed_op(_group_id: ContextGroupId, member: PublicKey) -> GroupOp {
+fn dummy_member_removed_op(member: PublicKey) -> GroupOp {
     GroupOp::MemberRemoved {
         member,
         expected_group_state_hash: [0u8; 32],
@@ -1447,7 +1447,7 @@ fn apply_local_signed_group_op_rejects_last_admin_removal() {
         vec![],
         [0u8; 32],
         1,
-        dummy_member_removed_op(test_group_id(), admin_pk),
+        dummy_member_removed_op(admin_pk),
     )
     .unwrap();
     assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
@@ -5842,7 +5842,7 @@ fn deny_list_member_removed_op_marks_entry() {
         vec![],
         compute_group_state_hash(&store, &gid).unwrap(),
         1,
-        dummy_member_removed_op(gid, target_pk),
+        dummy_member_removed_op(target_pk),
     )
     .expect("sign MemberRemoved");
     apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
@@ -5876,7 +5876,7 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
         vec![],
         compute_group_state_hash(&store, &gid).unwrap(),
         1,
-        dummy_member_removed_op(gid, target_pk),
+        dummy_member_removed_op(target_pk),
     )
     .expect("sign MemberRemoved");
     apply_local_signed_group_op(&store, &rm).expect("apply MemberRemoved");

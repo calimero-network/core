@@ -845,11 +845,11 @@ pub fn now_millis() -> u64 {
 ///    `ContextDetached` ops still has its registrations and the
 ///    per-context check would be skipped on it. This is not a
 ///    silent gap — the receiver's namespace DAG heads disagree with
-///    the signer's `cut.governance_dag_heads` in this scenario, so
-///    the cross-DAG membership check on subsequent state deltas
-///    returns `Unknown { needed }` and buffers them until the
-///    detach ops arrive (or anchor-sync reconciles). The hash
-///    check skip is therefore additive to an existing detection
+///    the signer's `SignedNamespaceOp.parent_op_hashes` in this
+///    scenario, so the cross-DAG membership check on subsequent
+///    state deltas returns `Unknown { needed }` and buffers them
+///    until the detach ops arrive (or anchor-sync reconciles). The
+///    hash check skip is therefore additive to an existing detection
 ///    path, not the sole defense.
 ///
 ///    Once the network has fully rolled forward to signed-claim ops
