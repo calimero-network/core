@@ -94,6 +94,11 @@ pub(super) fn handle_namespace_governance_delta(
     let node_client = this.clients.node.clone();
     let node_state = this.state.clone();
     let network_client = this.managers.sync.network_client.clone();
+    // Clone of the sync manager used to fire reconcile-via-anchor on
+    // a `MemberRemoved` / `MemberLeft` apply that reports state-hash
+    // divergence. Cloning is cheap (Arc-wrapped fields) and the
+    // spawned task needs an owned handle.
+    let sync_manager = this.managers.sync.clone();
     let sync_timeout = this.managers.sync.sync_config.timeout;
     let pull_budget_max_peers = this.managers.sync.sync_config.parent_pull_additional_peers;
     let pull_budget_duration = this.managers.sync.sync_config.parent_pull_budget;
@@ -125,7 +130,7 @@ pub(super) fn handle_namespace_governance_delta(
             // HIGH-severity finding). `Pending` and `Duplicate` outcomes
             // do NOT advance our applied count — Pending is waiting on
             // parents (no real progress yet) and Duplicate is a re-deliver.
-            if matches!(outcome, NamespaceApplyOutcome::Applied) {
+            if let NamespaceApplyOutcome::Applied { divergence } = &outcome {
                 if let Some(addr) = &readiness_addr {
                     addr.do_send(crate::readiness::NamespaceOpApplied { namespace_id });
                 }
@@ -152,6 +157,40 @@ pub(super) fn handle_namespace_governance_delta(
                     sync_timeout,
                 };
                 crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
+
+                // Reconcile-via-anchor: if `MemberRemoved` / `MemberLeft`
+                // apply reported state-hash divergence from the signed
+                // claims, pull canonical state from a trusted anchor.
+                // The sync manager method picks an anchor peer (from
+                // the group's trusted-anchor set, filtered through the
+                // verified peer-identity cache) and verifies the
+                // post-adoption hash against the signed expected.
+                // Best-effort: no anchor connected → logged and
+                // dropped; re-attempted on the next signed op or
+                // sync tick.
+                //
+                // Detached via `actix::spawn` so a multi-second
+                // Snapshot / HashComparison sync doesn't block the
+                // governance-apply task — the actor's mailbox needs
+                // to keep draining (other signed ops, acks, and the
+                // proactive backfill for `Pending`). `actix::spawn`
+                // is the right primitive here: the inner future
+                // touches non-`Send` types via the sync manager, so
+                // `tokio::spawn` (which requires `Send`) can't take
+                // it; `actix::spawn` schedules on the current arbiter
+                // and stays single-threaded with the actor. The
+                // arbiter's task queue runs the detached future
+                // concurrently with the actor's mailbox drain.
+                // Errors are already logged inside
+                // `reconcile_after_divergence`; the spawned task has
+                // no return value to consume.
+                if let Some(report) = divergence {
+                    let sm = sync_manager.clone();
+                    let report = report.clone();
+                    drop(actix::spawn(async move {
+                        sm.reconcile_after_divergence(report).await;
+                    }));
+                }
             }
 
             // Phase 4: emit a `SignedAck` on the same topic when we've
@@ -161,7 +200,7 @@ pub(super) fn handle_namespace_governance_delta(
             // application, and Duplicate would just inflate gossip with
             // no observable change to the publisher's dedup-by-signer
             // counting.
-            if matches!(outcome, NamespaceApplyOutcome::Applied) {
+            if matches!(outcome, NamespaceApplyOutcome::Applied { .. }) {
                 emit_namespace_ack(&context_client, &network_client, namespace_id, &op_for_ack)
                     .await;
             }
@@ -192,6 +231,7 @@ pub(super) fn handle_namespace_governance_delta(
                     &context_client,
                     &node_client,
                     &network_client,
+                    &sync_manager,
                     source,
                     namespace_id,
                     Vec::new(),
@@ -203,6 +243,7 @@ pub(super) fn handle_namespace_governance_delta(
                     &context_client,
                     &node_client,
                     &network_client,
+                    &sync_manager,
                     source,
                     namespace_id,
                     sync_timeout,
@@ -221,7 +262,7 @@ pub(super) fn handle_namespace_governance_delta(
             // time grows the namespace governance DAG without bound
             // until it hits the backfill cap and never converges again
             // (#2319). `Pending` likewise has nothing to deliver yet.
-            if matches!(outcome, NamespaceApplyOutcome::Applied) {
+            if matches!(outcome, NamespaceApplyOutcome::Applied { .. }) {
                 crate::key_delivery::maybe_publish_key_delivery(
                     &context_client,
                     &node_client,
@@ -329,6 +370,7 @@ async fn resolve_namespace_pending(
     context_client: &calimero_context_client::client::ContextClient,
     node_client: &calimero_node_primitives::client::NodeClient,
     network_client: &NetworkClient,
+    sync_manager: &crate::sync::SyncManager,
     initial_peer: libp2p::PeerId,
     namespace_id: [u8; 32],
     sync_timeout: tokio::time::Duration,
@@ -398,6 +440,7 @@ async fn resolve_namespace_pending(
             context_client,
             node_client,
             network_client,
+            sync_manager,
             next_peer,
             namespace_id,
             Vec::new(),
@@ -412,6 +455,7 @@ async fn fetch_and_apply_namespace_backfill(
     context_client: &calimero_context_client::client::ContextClient,
     node_client: &calimero_node_primitives::client::NodeClient,
     network_client: &NetworkClient,
+    sync_manager: &crate::sync::SyncManager,
     peer: libp2p::PeerId,
     namespace_id: [u8; 32],
     delta_ids: Vec<[u8; 32]>,
@@ -451,10 +495,26 @@ async fn fetch_and_apply_namespace_backfill(
             ..
         })) => {
             let mut any_applied = false;
+            // Collect divergence reports from `MemberRemoved` /
+            // `MemberLeft` ops applying via the backfill path. Same
+            // reasoning as the gossip-receive path: once the DAG
+            // marks the op `Applied`, any later gossipsub delivery of
+            // the same op becomes `Duplicate` and the apply work —
+            // including the post-apply hash check — is skipped. If
+            // divergence surfaces here and we drop it, no later path
+            // will re-emit it. Defer firing until after the batch
+            // so the apply loop is contiguous.
+            let mut pending_divergences: Vec<calimero_context_client::messages::DivergenceReport> =
+                Vec::new();
             for (delta_id, op_bytes) in deltas {
                 if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(&op_bytes) {
                     match context_client.apply_signed_namespace_op(op).await {
-                        Ok(NamespaceApplyOutcome::Applied) => any_applied = true,
+                        Ok(NamespaceApplyOutcome::Applied { divergence }) => {
+                            any_applied = true;
+                            if let Some(report) = divergence {
+                                pending_divergences.push(report);
+                            }
+                        }
                         Ok(_) => {}
                         Err(err) => {
                             warn!(
@@ -467,6 +527,12 @@ async fn fetch_and_apply_namespace_backfill(
                         }
                     }
                 }
+            }
+            // Route any divergences surfaced by the apply loop to the
+            // reconcile-via-anchor path. The helper itself logs and
+            // backs off internally; no error to propagate here.
+            for report in pending_divergences {
+                sync_manager.reconcile_after_divergence(report).await;
             }
             if any_applied {
                 // FSM notify after the batch — same rationale as the
