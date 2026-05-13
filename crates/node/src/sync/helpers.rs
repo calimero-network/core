@@ -88,15 +88,43 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
             metadata,
         }
     } else {
-        // Add new entity as child of root
-        // First ensure root exists
-        if Index::<MainStorage>::get_index(root_id)
+        // Add new entity. The leaf carries the *originating peer's*
+        // `parent_id` on the wire (see senders in
+        // `hash_comparison{,_protocol}.rs::get_local_tree_node` and
+        // `collect_leaves_recursive`); use it as the ancestor so the
+        // entity lands at the same Merkle position the originator has —
+        // critical for nested entities (e.g. `Root<KvStore>::items["k"]`
+        // lives under the items collection, not directly under the
+        // context root). Pre-fix this unconditionally used the context
+        // root, which silently corrupted the Merkle topology for any
+        // nested-collection entity and made the resulting root hashes
+        // irreconcilable: HashComparison would keep merging the same
+        // entities round after round with no convergence (38+ identical-
+        // stat sessions on bdc61af's Round 2).
+        //
+        // If the peer didn't transmit `parent_id` (legacy / out-of-sync
+        // peer), fall back to the context root — same behaviour as
+        // before this fix.
+        let parent_id = leaf.metadata.parent_id.map(Id::new).unwrap_or(root_id);
+
+        // Ensure the chosen parent has an index. For a freshly-pulled
+        // nested entity the parent may not yet exist locally — when the
+        // sender's `index.parent_id()` points at a parent we haven't
+        // pulled yet (HashComparison walks the tree top-down but a
+        // single EntityPush batch can deliver a child before its parent
+        // due to BFS-vs-DFS ordering and batch boundaries), create a
+        // placeholder index here so `Action::Add { ancestors: [parent] }`
+        // has something to attach to. When the parent itself arrives via
+        // a later push it'll go through the Update path (existing entity)
+        // and its real data + metadata replaces the placeholder; the
+        // child's `parent_id` link is preserved across that.
+        if Index::<MainStorage>::get_index(parent_id)
             .ok()
             .flatten()
             .is_none()
         {
-            let root_action = Action::Update {
-                id: root_id,
+            let parent_init = Action::Update {
+                id: parent_id,
                 data: vec![],
                 ancestors: vec![],
                 metadata: Metadata::default(),
@@ -105,22 +133,21 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
             // these bytes come from a peer who already verified them.
             // Empty ctx → verifier falls back to v2 stored-writers, which
             // is the safe semantic for already-verified replicated state.
-            Interface::<MainStorage>::apply_action(root_action, &ApplyContext::empty())?;
+            Interface::<MainStorage>::apply_action(parent_init, &ApplyContext::empty())?;
         }
 
-        // Get root info for ancestor chain
-        let root_hash = Index::<MainStorage>::get_hashes_for(root_id)
+        let parent_hash = Index::<MainStorage>::get_hashes_for(parent_id)
             .ok()
             .flatten()
             .map(|(full, _)| full)
             .unwrap_or([0; 32]);
-        let root_metadata = Index::<MainStorage>::get_index(root_id)
+        let parent_metadata = Index::<MainStorage>::get_index(parent_id)
             .ok()
             .flatten()
             .map(|idx| idx.metadata.clone())
             .unwrap_or_default();
 
-        let ancestor = ChildInfo::new(root_id, root_hash, root_metadata);
+        let ancestor = ChildInfo::new(parent_id, parent_hash, parent_metadata);
 
         Action::Add {
             id: entity_id,

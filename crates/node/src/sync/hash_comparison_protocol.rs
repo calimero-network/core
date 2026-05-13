@@ -656,33 +656,54 @@ fn collect_leaves_recursive(
         .map(|children| children.iter().map(|c| *c.id().as_bytes()).collect())
         .unwrap_or_default();
 
-    if children_ids.is_empty() {
-        // Leaf node — collect its data
-        if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-            let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
-                // Opaque leaf — carry it with a synthetic LWW wire type so it is
-                // pushed (and is `is_valid()` on the peer), not silently dropped.
-                trace!(%entity_id, "opaque leaf, synthesised LWW wire type for push");
-                CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
-            });
-            let metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
-                .with_created_at(index.metadata.created_at());
-            let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
-            if leaf_data.value.len() > MAX_LEAF_VALUE_SIZE {
-                warn!(
-                    %entity_id,
-                    len = leaf_data.value.len(),
-                    "leaf value exceeds MAX_LEAF_VALUE_SIZE, skipping push"
-                );
-            } else {
-                leaves.push(leaf_data);
-            }
+    // Emit this entity's own data if any. An "internal" Merkle node (one
+    // that has children) can also have its OWN data — e.g. `Root<T>` is
+    // a `Collection` storing app-root bytes AND parents the items
+    // collection. Pre-fix this branch was gated on `children_ids.is_empty()`
+    // and internal nodes' data was silently dropped, leaving the receiver
+    // with an empty placeholder parent and a divergent parent-Merkle hash
+    // even when all child leaves matched. Emit unconditionally; recurse
+    // separately into children below. (`is_root_request` is true only for
+    // the synthetic context-root entity which has no user data of its
+    // own — `find_by_id_raw` returns `None` there and the `if let Some`
+    // gate naturally skips it.)
+    if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
+        let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
+            // Opaque leaf — carry it with a synthetic LWW wire type so it is
+            // pushed (and is `is_valid()` on the peer), not silently dropped.
+            trace!(%entity_id, "opaque leaf, synthesised LWW wire type for push");
+            CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
+        });
+        // Carry the entity's Merkle parent_id on the wire so the receiver
+        // can place it at the correct position in *its* tree instead of
+        // always making it a direct child of the context root. The
+        // receiver's apply path (`apply_leaf_with_crdt_merge`) reads this
+        // back; pre-fix the field was always `None` and the receiver fell
+        // back to context-root, which silently corrupted the Merkle
+        // topology for any nested-collection entity → divergent root hash
+        // that HashComparison could never heal. See the smoke-test Round-2
+        // failure on bdc61af for evidence.
+        let mut metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
+            .with_created_at(index.metadata.created_at());
+        if let Some(parent_id) = index.parent_id() {
+            metadata = metadata.with_parent(*parent_id.as_bytes());
         }
-    } else {
-        // Internal node — recurse into children
-        for child_id in &children_ids {
-            collect_leaves_recursive(context_id, child_id, false, leaves, depth + 1)?;
+        let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
+        if leaf_data.value.len() > MAX_LEAF_VALUE_SIZE {
+            warn!(
+                %entity_id,
+                len = leaf_data.value.len(),
+                "leaf value exceeds MAX_LEAF_VALUE_SIZE, skipping push"
+            );
+        } else {
+            leaves.push(leaf_data);
         }
+    }
+
+    // Recurse into children if any — this is what makes
+    // `collect_leaves_recursive` walk the whole subtree.
+    for child_id in &children_ids {
+        collect_leaves_recursive(context_id, child_id, false, leaves, depth + 1)?;
     }
 
     Ok(())
@@ -808,8 +829,13 @@ fn get_local_tree_node(
                 trace!(%entity_id, "opaque leaf, synthesised LWW wire type for sync");
                 CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
             });
-            let metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
+            // Carry the leaf's Merkle parent_id on the wire — see the same
+            // comment in `collect_leaves_recursive` for rationale.
+            let mut metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
                 .with_created_at(index.metadata.created_at());
+            if let Some(parent_id) = index.parent_id() {
+                metadata = metadata.with_parent(*parent_id.as_bytes());
+            }
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
             Ok(Some(TreeNode::leaf(
                 *entity_id.as_bytes(),

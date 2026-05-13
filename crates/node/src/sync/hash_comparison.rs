@@ -350,13 +350,21 @@ impl SyncManager {
                         super::hash_comparison_protocol::OPAQUE_LEAF_CRDT_TYPE_NAME,
                     )
                 });
-                let metadata = LeafMetadata::new(
-                    crdt_type,
-                    index.metadata.updated_at(),
-                    // Collection ID - use parent if available
-                    [0u8; 32],
-                )
-                .with_created_at(index.metadata.created_at());
+                // Carry the leaf's Merkle parent_id on the wire so the
+                // initiator can reconstruct the entity at its proper Merkle
+                // position. Pre-fix this field was unconditionally `None`
+                // and the initiator's apply path fell back to "direct child
+                // of context root" — corrupting the topology for any nested-
+                // collection entity (every `Root<T>`-wrapped app, which is
+                // ~all of them). See the design spec for the wire-format
+                // analysis: the field already exists on `LeafMetadata`, just
+                // wasn't populated.
+                let mut metadata =
+                    LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
+                        .with_created_at(index.metadata.created_at());
+                if let Some(parent_id) = index.parent_id() {
+                    metadata = metadata.with_parent(*parent_id.as_bytes());
+                }
 
                 let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
 
