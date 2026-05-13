@@ -197,6 +197,16 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
             continue;
         };
         let datastore = input.node_clients.context.datastore();
+        // Forward-only invariant — see the gossip-receive site in
+        // `apply_authorized_state_delta` for the full contract. The
+        // governance-pending drain MUST use the buffered delta's
+        // signed `governance_position`, not the receiver's current
+        // state — the whole point of buffering was that the author
+        // signed against a cut the receiver wasn't caught up to. By
+        // the time we drain, the receiver's local DAG may have
+        // advanced past the signed cut (including a `MemberRemoved`
+        // for this author); forward-only resolves pre-removal writes
+        // to `Member` so the deferred apply is correct.
         let status = membership_status_at(datastore, &buffered.author_id, pos);
         match status {
             Ok(MembershipStatus::Member(_)) => {
@@ -1000,6 +1010,19 @@ pub async fn handle_state_delta(
 
     if let Some(pos) = governance_position.as_ref() {
         let datastore = node_clients.context.datastore();
+        // Forward-only invariant — load-bearing. The argument passed
+        // to `membership_status_at` is the delta's *signed* governance
+        // position (carried inside the delta envelope by the author at
+        // sign time), NOT the receiver's current local state. Pre-cut
+        // writes from a now-removed author resolve to `Member` here
+        // even on a receiver whose local DAG has already applied the
+        // removal — without this property, two peers that observe the
+        // `MemberRemoved` op in different orders relative to the
+        // pre-removal delta would diverge. Swapping this argument for
+        // current state or any post-cut heuristic reintroduces that
+        // divergence and turns valid pre-removal writes into rejected
+        // ones retroactively. Tests pinning this behavior live at
+        // `crates/context/src/group_store/membership_status.rs`.
         match membership_status_at(datastore, &author_id, pos) {
             Ok(MembershipStatus::Member(role)) => {
                 tracing::debug!(
@@ -1967,6 +1990,13 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
 
     if let Some(pos) = buffered.governance_position.as_ref() {
         let datastore = context_client.datastore();
+        // Forward-only invariant — same contract as the gossip-receive
+        // and drain sites. Snapshot-sync establishes a context-state
+        // baseline that may be at-or-ahead of the buffered delta's
+        // governance cut; resolving against the buffered (signed) cut,
+        // not local state, is what preserves pre-removal write
+        // validity on the replay path. See
+        // `apply_authorized_state_delta` site for full prose.
         match membership_status_at(datastore, &buffered.author_id, pos) {
             Ok(MembershipStatus::Member(role)) => {
                 debug!(

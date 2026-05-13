@@ -76,7 +76,32 @@ pub enum MembershipStatus {
 /// Determine [`MembershipStatus`] for `signer` against the governance state
 /// named by `position`.
 ///
-/// Three branches:
+/// # Forward-only contract — load-bearing
+///
+/// **`position` must come from a signed op or signed delta envelope — the
+/// position the author claimed at sign time. It must NOT be the receiver's
+/// current local state, nor any post-cut heuristic.** The function answers
+/// "was `signer` a member at the named cut?", not "is `signer` currently
+/// a member?" The two questions have different answers when the receiver
+/// has applied a `MemberRemoved` for `signer` since the cut was signed.
+///
+/// Forward-only is the property that makes apply-time membership
+/// decisions independent of the order in which a receiver observes ops:
+/// a pre-removal delta resolves to `Member` regardless of whether the
+/// receiver has already applied the later removal locally. Callers that
+/// pass the receiver's current state, or any state that may have advanced
+/// past the cut the author signed against, will return wrong answers
+/// for in-flight deltas crossing a `MemberRemoved` / `MemberLeft`, and
+/// peers that observe ops in different orders will diverge.
+///
+/// All three production call sites — gossip-receive, governance-pending
+/// drain, and snapshot-sync replay — pass `delta.governance_position`
+/// from the signed envelope. New callers must do the same. Tests pinning
+/// the property are at `prefix_walk_forward_only_*` and the canary
+/// `prefix_walk_forward_only_canary_retroactive_invalidation_would_break`.
+///
+/// # Three branches
+///
 ///
 /// 1. **Fast path** — `position.governance_dag_heads` equals current local
 ///    heads. Consults the materialized member set for an immediate

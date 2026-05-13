@@ -137,6 +137,77 @@ Per-member capability bits (<code>crates/context/config/src/lib.rs</code>, <code
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════
+     3a. Forward-only invariant
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="card gc">
+<h2>Forward-only invariant — load-bearing</h2>
+<p>
+The apply-time membership check is a function of <em>two things only</em>: the signer's identity
+and the governance-DAG position the signer signed against. It is <strong>not</strong> a function
+of the receiver's current local state. This is the <b>forward-only</b> property: a write authored
+at governance position <code>P</code> stays valid forever, even if the receiver has since applied
+a <code>MemberRemoved</code> for the signer at a later position <code>P'</code> in its local DAG.
+</p>
+
+<h3>Why this matters</h3>
+<p>
+Without forward-only, two peers receiving the same set of ops in different orders would end up
+with different state:
+</p>
+<ul>
+  <li>Peer A receives <code>MemberRemoved</code> first, then the pre-removal delta. If "is the
+  signer currently a member?" gates the apply, the delta is rejected.</li>
+  <li>Peer B receives the delta first, then <code>MemberRemoved</code>. The delta applies; the
+  later removal doesn't retroactively undo it.</li>
+</ul>
+<p>
+That divergence cascades: any subsequent delta that reads the (different) state diverges further,
+context root hashes drift apart, and the network has no honest convergence point. Forward-only
+removes the receive-order dependence: pre-removal writes always apply on every peer, regardless
+of when the receiver learns about the removal.
+</p>
+
+<h3>How it's implemented</h3>
+<p>
+Every state delta carries a <code>governance_position</code> field that names the governance-DAG
+heads the author observed at sign time. On receive, the apply path calls
+<code>membership_status_at(signer, delta.governance_position)</code> — which walks the
+<em>ancestry</em> of the signed heads and replays the membership state machine. The walk visits
+only the prefix that was already final when the delta was signed; anything causally <em>after</em>
+the signed cut (including a later <code>MemberRemoved</code> for this signer) is invisible to
+the walk and cannot retroactively invalidate the delta.
+</p>
+
+<h3>Where this can break</h3>
+<p>
+Two classes of change would silently re-introduce the divergence described above:
+</p>
+<ul>
+  <li><b>Calling the check with the wrong position.</b> Any caller of
+  <code>membership_status_at</code> that passes the receiver's current state (or any
+  post-cut heuristic) instead of the signed delta position breaks forward-only. The three
+  production call sites — gossip-receive, governance-pending drain, and snapshot-sync replay
+  — each carry inline comments naming this contract; reviewers should flag any new caller
+  that doesn't pass <code>delta.governance_position</code> verbatim.</li>
+  <li><b>Changing the prefix walk to visit descendants.</b> A "performance optimization" that
+  has the BFS catch up to local heads after visiting the signed heads would observe ops the
+  signer hadn't signed against, including later <code>MemberRemoved</code> ops. The function
+  doc on <code>prefix_walk_membership</code> and its regression tests (<code>prefix_walk_forward_only_*</code>)
+  pin this boundary.</li>
+</ul>
+
+<h3>Scope</h3>
+<p>
+Forward-only applies to <code>MemberRemoved</code> and <code>MemberLeft</code> — operations
+that <em>revoke</em> authorship. It does <strong>not</strong> apply to role demotions
+(<code>MemberRoleSet</code> transitioning a Member to ReadOnly): those are enforced against
+current state at the receive path, separately from the cross-DAG check, because a member who
+was demoted retains a different relationship to their pre-demotion writes than a member who
+was fully removed. See <code>is_read_only_for_context</code> for the live-state role gate.
+</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
      4. leave_context
      ═══════════════════════════════════════════════════════════════════ -->
 <div class="card gc">
