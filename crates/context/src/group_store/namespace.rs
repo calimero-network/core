@@ -13,7 +13,7 @@ use sha2::Digest;
 
 use super::{
     cascade_remove_member_from_group_tree, collect_keys_with_prefix, get_group_for_context,
-    get_group_member_role, get_op_head, remove_group_member,
+    get_group_member_role, remove_group_member,
 };
 
 pub(crate) const MAX_NAMESPACE_DEPTH: usize = 16;
@@ -29,32 +29,6 @@ pub struct NamespaceIdentityRecord {
 pub struct ResolvedNamespaceIdentity {
     pub namespace_id: ContextGroupId,
     pub identity: NamespaceIdentityRecord,
-}
-
-/// Namespace governance epoch: just the namespace DAG heads.
-///
-/// With the single-DAG model, governance epoch is simply the heads of
-/// the namespace DAG that contains this context's group.
-pub fn compute_namespace_governance_epoch(
-    store: &Store,
-    context_id: &ContextId,
-) -> EyreResult<Vec<[u8; 32]>> {
-    let Some(owning_gid) = get_group_for_context(store, context_id)? else {
-        return Ok(vec![]);
-    };
-
-    let ns_id = resolve_namespace(store, &owning_gid)?;
-    let ns_key = calimero_store::key::NamespaceGovHead::new(ns_id.to_bytes());
-    let handle = store.handle();
-    match handle.get(&ns_key)? {
-        Some(head) => Ok(head.dag_heads),
-        None => {
-            // Fall back to the old per-group DAG heads during migration.
-            get_op_head(store, &owning_gid)?
-                .map(|h| Ok(h.dag_heads))
-                .unwrap_or_else(|| Ok(vec![]))
-        }
-    }
 }
 
 /// Returns `true` if the member has a read-only role (`ReadOnly` or `ReadOnlyTee`)
