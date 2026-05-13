@@ -1080,16 +1080,20 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
     let group_key = [0x95; 32];
     let key_id = store_group_key(&store, &group, &group_key).unwrap();
 
-    // Pick a signer whose ops at nonces 1..=4 produce a content-hash
-    // iteration order DIFFERENT from nonce order. Tries up to 64 keys
-    // — collision against all 24 permutations would need astronomical
-    // luck; in practice the first or second key suffices.
-    let mut signer_sk = PrivateKey::random(&mut rng);
-    let mut signed_ops: Vec<SignedNamespaceOp> = Vec::new();
-    'pick: for _ in 0..64 {
-        signed_ops.clear();
-        for nonce in 1u64..=4 {
-            signed_ops.push(
+    // Search the random-key space for a signer whose 4 signed ops
+    // produce a content-hash iteration order DIFFERENT from nonce
+    // order. P(success per attempt) ≥ 23/24 ≈ 96 % (any non-identity
+    // permutation works), so 64 attempts have a silent-pass
+    // probability of (1/24)^64 ≈ 10^-88. The explicit `found` flag
+    // and the post-loop `assert!(found, …)` make that path loud
+    // rather than silently succeeding with in-order ops.
+    let max_attempts = 64;
+    let mut found = false;
+    let mut raw_nonces: Vec<u64> = Vec::new();
+    for _ in 0..max_attempts {
+        let signer_sk = PrivateKey::random(&mut rng);
+        let signed_ops: Vec<SignedNamespaceOp> = (1u64..=4)
+            .map(|nonce| {
                 SignedNamespaceOp::sign(
                     &signer_sk,
                     namespace_id,
@@ -1103,47 +1107,53 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
                         key_rotation: None,
                     },
                 )
-                .unwrap(),
-            );
-        }
-        // Compute the content-hash iteration order this signer would
-        // produce, by sorting (content_hash, nonce) pairs.
+                .unwrap()
+            })
+            .collect();
+
+        // Predict the content-hash iteration order these ops would
+        // produce in the store column (keyed by `(namespace_id,
+        // content_hash)`), without actually persisting them yet.
         let mut by_hash: Vec<([u8; 32], u64)> = signed_ops
             .iter()
             .map(|op| (op.content_hash().unwrap(), op.nonce))
             .collect();
         by_hash.sort_by_key(|(h, _)| *h);
-        let hash_order_nonces: Vec<u64> = by_hash.iter().map(|(_, n)| *n).collect();
-        if hash_order_nonces != vec![1u64, 2, 3, 4] {
-            // Confirmed: this signer's content-hash order ≠ nonce order.
-            // Persist these ops and break.
-            let governance = NamespaceGovernance::new(&store, namespace_id);
-            for op in &signed_ops {
-                governance.store_operation(op).unwrap();
-            }
-            // Sanity-check: the raw-iteration nonce order matches the
-            // expected content-hash order, so we know the pre-sort
-            // candidate vec genuinely needs sorting.
-            let raw_entries = NamespaceOpLogService::new(&store, namespace_id)
-                .collect_signed_group_ops_for_group(group.to_bytes())
-                .unwrap();
-            let raw_nonces: Vec<u64> = raw_entries.iter().map(|e| e.signed_op.nonce).collect();
-            assert_eq!(
-                raw_nonces, hash_order_nonces,
-                "raw op-log iteration must reflect content-hash order"
-            );
-            assert_ne!(
-                raw_nonces,
-                vec![1u64, 2, 3, 4],
-                "test setup broken: raw iteration is already nonce-ordered, sort fix is unreachable"
-            );
-            break 'pick;
+        let predicted_nonces: Vec<u64> = by_hash.iter().map(|(_, n)| *n).collect();
+        if predicted_nonces == vec![1u64, 2, 3, 4] {
+            // This signer happens to produce in-nonce-order content
+            // hashes — wouldn't exercise the sort fix. Try again.
+            continue;
         }
-        signer_sk = PrivateKey::random(&mut rng);
+
+        // Good signer found. Persist via the same path used by the
+        // sibling test (`NamespaceGovernance::store_operation`), then
+        // confirm the raw op-log iteration actually came back in the
+        // predicted not-nonce-order — i.e. the bug path is reachable.
+        let governance = NamespaceGovernance::new(&store, namespace_id);
+        for op in &signed_ops {
+            governance.store_operation(op).unwrap();
+        }
+        raw_nonces = NamespaceOpLogService::new(&store, namespace_id)
+            .collect_signed_group_ops_for_group(group.to_bytes())
+            .unwrap()
+            .iter()
+            .map(|e| e.signed_op.nonce)
+            .collect();
+        assert_ne!(
+            raw_nonces,
+            vec![1u64, 2, 3, 4],
+            "test setup broken: raw op-log iteration is in nonce order, so the sort fix would be unreachable"
+        );
+        found = true;
+        break;
     }
     assert!(
-        !signed_ops.is_empty(),
-        "failed to find a signer producing out-of-order content hashes after 64 tries"
+        found,
+        "after {max_attempts} random signers, none produced content hashes out of nonce order — \
+         either a vanishingly improbable coincidence or `content_hash`/op encoding changed. \
+         Without an out-of-order raw iteration, the assertion below cannot distinguish a working \
+         sort from a missing sort, so this test would silently pass on a regression."
     );
 
     let retry = NamespaceRetryService::new(&store, namespace_id);
