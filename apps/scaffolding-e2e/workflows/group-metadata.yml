@@ -1,0 +1,335 @@
+name: E2E KV Store - Group Metadata
+description: >
+  End-to-end coverage for the generic metadata records introduced in
+  core #2338. Exercises all six merobox workflow step types
+  (set/get group, member, context metadata) and the
+  CAN_MANAGE_METADATA = 256 capability gate:
+
+    1. Bootstrap a namespace + Open subgroup + group-registered context
+       on node-1.
+    2. Write MetadataRecord values on the namespace, subgroup, and
+       context (name + opaque `data` map).
+    3. Invite node-2 into the namespace, add it to the subgroup, sync.
+    4. Read each record back from node-2 and json_assert the contents.
+    5. Confirm node-2 cannot set group metadata without
+       CAN_MANAGE_METADATA (expected_failure), then grant the
+       capability and confirm the same call succeeds.
+    6. Confirm a member may always set its own member metadata with
+       no capability granted.
+
+  Step types covered: set_group_metadata, get_group_metadata,
+  set_member_metadata, get_member_metadata, set_context_metadata,
+  get_context_metadata. Mirrors merobox/workflow-examples/
+  workflow-group-metadata-example.yml but adapted to the
+  scaffolding-e2e harness (e2e-node prefix, res/scaffolding_e2e.wasm,
+  force_pull_image: false — CI builds merod:local locally).
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Phase 1: Bootstrap namespace + subgroup + context on node-1 ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{ns}})"
+
+  - name: Create subgroup in namespace
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    group_name: 'general'
+    outputs:
+      sub: groupId
+
+  - name: Assert subgroup created
+    type: assert
+    statements:
+      - "is_set({{sub}})"
+
+  - name: Wait for subgroup governance propagation
+    type: wait
+    seconds: 5
+
+  - name: Create context in subgroup
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{sub}}'
+    outputs:
+      ctx: contextId
+
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{ctx}})"
+
+  # --- Phase 2: Write metadata records on node-1 ---
+
+  - name: Set namespace metadata
+    type: set_group_metadata
+    node: e2e-node-1
+    group_id: '{{ns}}'
+    record_name: 'Acme Workspace'
+    data:
+      topic: company-wide
+      icon: rocket
+
+  - name: Set subgroup metadata
+    type: set_group_metadata
+    node: e2e-node-1
+    group_id: '{{sub}}'
+    record_name: 'general'
+    data:
+      topic: everything
+      archived: 'false'
+
+  - name: Set context metadata
+    type: set_context_metadata
+    node: e2e-node-1
+    group_id: '{{sub}}'
+    context_id: '{{ctx}}'
+    record_name: 'general-main'
+    data:
+      kind: primary
+
+  # --- Phase 3: Invite node-2 into the namespace + add to subgroup ---
+
+  - name: Create namespace invitation
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      invitation: invitation
+
+  - name: Wait for namespace gossip
+    type: wait
+    seconds: 5
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{ns}}'
+    invitation: '{{invitation}}'
+    outputs:
+      node2_id: memberIdentity
+
+  - name: Assert node-2 joined
+    type: assert
+    statements:
+      - "is_set({{node2_id}})"
+
+  - name: Add node-2 to subgroup
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{sub}}'
+    members:
+      - identity: '{{node2_id}}'
+        role: Member
+
+  # Push the membership op immediately rather than waiting for the
+  # next gossip heartbeat (same pattern as group-member-channel-lifecycle).
+  - name: Force governance push on node-1
+    type: sync_group
+    node: e2e-node-1
+    group_id: '{{sub}}'
+
+  - name: Wait for member gossip
+    type: wait
+    seconds: 10
+
+  - name: Wait for subgroup sync
+    type: wait_for_sync
+    group_id: '{{sub}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 30
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after subgroup sync
+    type: wait
+    seconds: 5
+
+  # --- Phase 4: Read metadata back from node-2 ---
+  # `get_*_metadata` returns a MetadataRecord
+  # ({name, data, updatedAt, updatedBy}). `outputs:` supports dotted
+  # paths (e.g. `data.topic`) into that record; `json_assert` only
+  # resolves flat `{{var}}` placeholders, so the nested-value
+  # extraction has to happen here in `outputs:`.
+
+  - name: Get namespace metadata from node-2
+    type: get_group_metadata
+    node: e2e-node-2
+    group_id: '{{ns}}'
+    outputs:
+      ns_name: name
+      ns_topic: data.topic
+
+  - name: Assert namespace metadata
+    type: json_assert
+    statements:
+      - 'json_equal({{ns_name}}, "Acme Workspace")'
+      - 'json_equal({{ns_topic}}, "company-wide")'
+
+  - name: Get subgroup metadata from node-2
+    type: get_group_metadata
+    node: e2e-node-2
+    group_id: '{{sub}}'
+    outputs:
+      sub_name: name
+
+  - name: Assert subgroup metadata
+    type: json_assert
+    statements:
+      - 'json_equal({{sub_name}}, "general")'
+
+  - name: Get context metadata from node-2
+    type: get_context_metadata
+    node: e2e-node-2
+    group_id: '{{sub}}'
+    context_id: '{{ctx}}'
+    outputs:
+      ctx_name: name
+
+  - name: Assert context metadata
+    type: json_assert
+    statements:
+      - 'json_equal({{ctx_name}}, "general-main")'
+
+  # --- Phase 5: CAN_MANAGE_METADATA capability gate ---
+  # Node-2 has no metadata-management capability yet, so setting the
+  # subgroup's metadata must fail.
+
+  - name: Node-2 tries to rename subgroup without capability
+    type: set_group_metadata
+    node: e2e-node-2
+    group_id: '{{sub}}'
+    record_name: 'should-fail'
+    expected_failure: true
+
+  # Grant CAN_MANAGE_METADATA = 1 << 8 = 256 to node-2 in the namespace.
+  # (calimero-network/core: crates/context/config/src/lib.rs,
+  #  MemberCapabilities::CAN_MANAGE_METADATA)
+  - name: Grant node-2 CAN_MANAGE_METADATA
+    type: set_member_capabilities
+    node: e2e-node-1
+    group_id: '{{ns}}'
+    member_id: '{{node2_id}}'
+    capabilities: 256
+
+  - name: Wait for capability sync
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 30
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after capability sync
+    type: wait
+    seconds: 5
+
+  - name: Node-2 sets subgroup metadata with capability
+    type: set_group_metadata
+    node: e2e-node-2
+    group_id: '{{sub}}'
+    record_name: 'renamed-by-node2'
+
+  - name: Wait for subgroup metadata sync
+    type: wait_for_sync
+    group_id: '{{sub}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 30
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after subgroup metadata sync
+    type: wait
+    seconds: 5
+
+  - name: Get subgroup metadata from node-1 after rename
+    type: get_group_metadata
+    node: e2e-node-1
+    group_id: '{{sub}}'
+    outputs:
+      sub_name2: name
+
+  - name: Assert subgroup renamed by node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{sub_name2}}, "renamed-by-node2")'
+
+  # --- Phase 6: Member metadata — a member may always set its own ---
+  # record, no capability required.
+
+  - name: Node-2 sets its own member metadata
+    type: set_member_metadata
+    node: e2e-node-2
+    group_id: '{{ns}}'
+    member_id: '{{node2_id}}'
+    record_name: 'node-two'
+    data:
+      status: online
+
+  - name: Wait for member metadata sync
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 30
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after member metadata sync
+    type: wait
+    seconds: 5
+
+  - name: Get node-2 member metadata from node-1
+    type: get_member_metadata
+    node: e2e-node-1
+    group_id: '{{ns}}'
+    member_id: '{{node2_id}}'
+    outputs:
+      m2_name: name
+      m2_status: data.status
+
+  - name: Assert member metadata
+    type: json_assert
+    statements:
+      - 'json_equal({{m2_name}}, "node-two")'
+      - 'json_equal({{m2_status}}, "online")'
+
+stop_all_nodes: false
