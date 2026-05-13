@@ -139,9 +139,14 @@ if [ "$found" -eq 0 ]; then
     echo "::warning::harvest-host-profiling: harvested 0 profiling-dump dirs (src-root='$SRC_ROOT', workspace='$WORKSPACE')."
     echo "  Profiling-related files present under the workspace:"
     # Surface what *is* there (paths relative to the workspace) so a future
-    # path drift is obvious from the run log.
-    find "$WORKSPACE" -maxdepth 6 \( -name 'perf-*.data' -o -name 'profiling-dump' -o -name 'jemalloc.*.heap' \) 2>/dev/null \
-        | head -40 | while IFS= read -r p; do echo "    $(rel "$p")"; done
+    # path drift is obvious from the run log. Scope the diagnostic search to
+    # the same two roots the main sweep uses (`$WORKSPACE/data` +
+    # `$WORKSPACE/workflows`) so we don't traverse `crates/`, `target/`, etc.
+    # — same bounding rationale as the main sweep, just for diagnostics.
+    for diag_root in "$WORKSPACE/data" "$WORKSPACE/workflows"; do
+        [ -d "$diag_root" ] || continue
+        find "$diag_root" -maxdepth 5 \( -name 'perf-*.data' -o -name 'profiling-dump' -o -name 'jemalloc.*.heap' \) 2>/dev/null
+    done | head -40 | while IFS= read -r p; do echo "    $(rel "$p")"; done
     if [ -d "$WORKSPACE/data" ]; then
         echo "  ./data tree (maxdepth 3):"
         find "$WORKSPACE/data" -maxdepth 3 2>/dev/null | head -40 | while IFS= read -r p; do echo "    $(rel "$p")"; done
