@@ -1,6 +1,9 @@
 use core::time::Duration;
 
-use calimero_network_primitives::config::NetworkConfig;
+use calimero_network_primitives::config::{
+    NetworkConfig, GOSSIPSUB_MESH_N, GOSSIPSUB_MESH_N_HIGH, GOSSIPSUB_MESH_N_LOW,
+    GOSSIPSUB_MESH_OUTBOUND_MIN,
+};
 use calimero_network_primitives::specialized_node_invite::{
     SpecializedNodeInviteCodec, CALIMERO_SPECIALIZED_NODE_INVITE_PROTOCOL,
 };
@@ -108,12 +111,59 @@ impl Behaviour {
                     },
                     gossipsub: gossipsub::Behaviour::new(
                         gossipsub::MessageAuthenticity::Signed(key.clone()),
-                        // Lower backoffs so a leave/rejoin cycle on a
-                        // gossipsub topic re-forms the mesh within a few
-                        // heartbeats. Topic admission is gated by namespace
+                        // Defaults assume larger swarms. Match the water
+                        // marks to Calimero's 2–20 peer clusters so a 3-node
+                        // deployment sits at a stable mesh size instead of
+                        // the heartbeat path logging `Mesh low` every second
+                        // and re-running `get_random_peers` for no
+                        // candidates. Topic admission is gated by namespace
                         // membership at the governance layer, so the
-                        // permissionless defaults are not needed.
+                        // permissionless backoff defaults are not needed.
+                        //
+                        // `flood_publish` fans `publish()` out to every
+                        // subscribed peer (not just mesh peers). For
+                        // Calimero's small (dozens-of-members) topics this
+                        // is cheap and removes the cold-start window where
+                        // the mesh isn't formed yet and `broadcast()` would
+                        // otherwise drop the delta (issues #2122, #2236).
+                        //
+                        // Security note: bypassing the mesh also bypasses
+                        // gossipsub's per-peer scoring and prune-backoff
+                        // on the publish path. That is acceptable here
+                        // because every Calimero topic is admission-gated
+                        // by signed governance membership — a non-member
+                        // peer can subscribe at the transport but their
+                        // forwarded/published messages are rejected at the
+                        // governance/cryptographic layer (`state_delta`
+                        // and `governance_broadcast` validators) before
+                        // they can influence application state. Scoring-
+                        // based abuse mitigation is therefore not load-
+                        // bearing on this code path; the governance layer
+                        // is.
+                        //
+                        // Note on metadata exposure to passive
+                        // subscribers: `flood_publish` does not change
+                        // what envelope fields a non-member subscriber
+                        // can observe. State-delta artifacts are
+                        // encrypted with the namespace SharedKey
+                        // (`NodeClient::broadcast` in
+                        // `crates/node/primitives/src/client.rs`), but
+                        // the surrounding `BroadcastMessage` envelope
+                        // (context_id, author_id, dag_heads, root_hash,
+                        // governance metadata) is plaintext borsh. A
+                        // mesh-forwarded message has the same envelope
+                        // properties; `flood_publish` just makes
+                        // delivery deterministic rather than mesh-
+                        // timing-dependent. If the envelope-metadata
+                        // exposure ever becomes a threat, the fix is
+                        // either envelope encryption or admission-gated
+                        // subscription — neither is in scope here.
                         gossipsub::ConfigBuilder::default()
+                            .mesh_n_low(GOSSIPSUB_MESH_N_LOW)
+                            .mesh_n(GOSSIPSUB_MESH_N)
+                            .mesh_n_high(GOSSIPSUB_MESH_N_HIGH)
+                            .mesh_outbound_min(GOSSIPSUB_MESH_OUTBOUND_MIN)
+                            .flood_publish(true)
                             .unsubscribe_backoff(1)
                             .prune_backoff(Duration::from_secs(1))
                             .build()

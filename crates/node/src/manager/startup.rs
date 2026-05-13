@@ -77,6 +77,36 @@ impl NodeManager {
             },
         );
 
+        // Periodic gossipsub mesh-peer-count snapshot. Logs one entry per
+        // subscribed topic so CI / operators can see the actual mesh size,
+        // independent of the libp2p-gossipsub internal `Updating mesh,
+        // new mesh: {…}` heartbeat log (which reports additions, not
+        // current state, and is easy to misread as "mesh is empty" when
+        // the mesh has simply already been populated).
+        let _handle = ctx.run_interval(
+            Duration::from_secs(constants::MESH_STATS_LOG_FREQUENCY_S),
+            |act, ctx| {
+                let network_client = act.clients.node.network_client().clone();
+
+                let _ignored = ctx.spawn(
+                    async move {
+                        let stats = network_client.mesh_stats().await;
+                        if stats.is_empty() {
+                            debug!("gossipsub mesh: no subscribed topics");
+                            return;
+                        }
+                        let total: usize = stats.iter().map(|(_, n)| *n).sum();
+                        let topics = stats.len();
+                        for (topic, count) in &stats {
+                            debug!(%topic, mesh_peers = count, "gossipsub mesh size");
+                        }
+                        debug!(topics, total_mesh_peers = total, "gossipsub mesh summary");
+                    }
+                    .into_actor(act),
+                );
+            },
+        );
+
         let _handle = ctx.run_interval(
             Duration::from_secs(constants::PENDING_DELTAS_CLEANUP_FREQUENCY_S),
             |act, ctx| {

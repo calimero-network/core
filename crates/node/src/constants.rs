@@ -22,3 +22,11 @@ pub const OLD_BLOBS_EVICTION_FREQUENCY_S: u64 = 300;
 /// Rate limit duration for delta buffer overflow warnings (in seconds).
 /// Prevents log spam when buffer is under sustained pressure.
 pub const DELTA_BUFFER_DROP_WARNING_RATE_LIMIT_S: u64 = 5;
+
+/// How often the gossipsub mesh-peer-count snapshot is logged per node
+/// (in seconds). The snapshot is CI-observable evidence of actual mesh
+/// state — the libp2p-gossipsub `Updating mesh, new mesh: {}` log reports
+/// heartbeat-additions, not current mesh size, so without this signal
+/// "the mesh is empty" can't be told apart from "the mesh is full and
+/// nothing was added this tick."
+pub const MESH_STATS_LOG_FREQUENCY_S: u64 = 30;
