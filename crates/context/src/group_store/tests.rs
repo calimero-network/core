@@ -1046,6 +1046,75 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
 }
 
 #[test]
+fn namespace_retry_service_orders_candidates_by_signer_nonce() {
+    // Regression test for #2349: when a peer buffers several
+    // `NamespaceOp::Group` ops from the same signer pending
+    // `KeyDelivery`, the retry walk must apply them in nonce-ascending
+    // order. Otherwise `apply_group_op_inner`'s
+    // `if nonce <= last { skip duplicate }` check turns out-of-order
+    // application into permanent data loss: a later op applies first,
+    // bumps `last_nonce`, and every earlier op from the same signer
+    // gets dropped on the floor. This regression manifested in the
+    // group-metadata e2e as `ContextRegistered` (nonce N) being lost
+    // when `MemberAdded` (nonce N+5, lower content-hash) retried
+    // first, then `ContextMetadataSet` permanently bailing at the
+    // "context not registered in this group" check.
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x84; 32];
+    let group = ContextGroupId::from([0x85; 32]);
+    let signer_sk = PrivateKey::random(&mut rng);
+
+    let group_key = [0x95; 32];
+    let key_id = store_group_key(&store, &group, &group_key).unwrap();
+
+    let op_log = NamespaceOpLogService::new(&store, namespace_id);
+
+    // Persist 4 ops from the same signer at nonces 1, 2, 3, 4. We
+    // store them in nonce-ascending order; since the storage key is
+    // `(namespace_id, content_hash)`, the column-iteration order is
+    // content-hash order, which is unrelated to nonce order — that's
+    // exactly the conflict we want the sort fix to resolve.
+    for nonce in 1u64..=4 {
+        let signed = SignedNamespaceOp::sign(
+            &signer_sk,
+            namespace_id,
+            vec![],
+            [0u8; 32],
+            nonce,
+            NamespaceOp::Group {
+                group_id: group.to_bytes(),
+                key_id,
+                encrypted: encrypt_group_op(&group_key, &GroupOp::Noop).unwrap(),
+                key_rotation: None,
+            },
+        )
+        .unwrap();
+        op_log.store_signed_operation(&signed).unwrap();
+    }
+
+    let retry = NamespaceRetryService::new(&store, namespace_id);
+    let candidates = retry
+        .collect_retry_candidates_for_group(group.to_bytes())
+        .unwrap();
+
+    assert_eq!(candidates.len(), 4, "expected 4 retry candidates");
+
+    // The fix's contract: candidates are sorted by (signer, nonce)
+    // ascending. With a single signer, that's strict nonce order.
+    let nonces: Vec<u64> = candidates.iter().map(|c| c.signed_op.nonce).collect();
+    assert_eq!(
+        nonces,
+        vec![1, 2, 3, 4],
+        "retry candidates must apply in nonce order, not content-hash order"
+    );
+}
+
+#[test]
 fn apply_local_signed_group_op_nonce_and_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;

@@ -64,6 +64,22 @@ impl<'a> NamespaceRetryService<'a> {
             });
         }
 
+        // Sort by (signer, nonce) ascending so the apply order matches
+        // publish order per-signer. Without this sort, candidates come
+        // back in column-iteration order (sorted by `delta_id`, which
+        // is essentially a content hash) — when a higher-nonce op
+        // applies first, `apply_group_op_inner` advances the per-signer
+        // `last_nonce`, then incorrectly treats subsequent legitimate
+        // lower-nonce ops from the same signer as duplicates and skips
+        // them. That permanently loses earlier ops in the sequence
+        // (e.g. a `ContextRegistered` published before a later
+        // `MemberAdded` from the same admin), leaving a downstream
+        // `ContextMetadataSet` to bail at the "context not registered
+        // in this group" precondition. Sorting here keeps every
+        // signer's ops in their original publish order while still
+        // letting independent signers interleave.
+        candidates.sort_by_key(|c| (*<calimero_primitives::identity::PublicKey as AsRef<[u8; 32]>>::as_ref(&c.signed_op.signer), c.signed_op.nonce));
+
         Ok(candidates)
     }
 }
