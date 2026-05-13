@@ -224,6 +224,27 @@ steps:
     statements:
       - 'json_equal({{ctx_name}}, "general-main")'
 
+  # --- Phase 4b: pre-grant cross-member negative test ---
+  # A member may set its OWN member metadata unconditionally, but
+  # writing another member's record requires CAN_MANAGE_METADATA (or
+  # admin). Node-2 has no capability yet — writing node-1's record
+  # must fail.
+
+  - name: Get node-1 namespace identity
+    type: get_namespace_identity
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      node1_id: publicKey
+
+  - name: Node-2 tries to write node-1 member metadata without capability
+    type: set_member_metadata
+    node: e2e-node-2
+    group_id: '{{ns}}'
+    member_id: '{{node1_id}}'
+    record_name: 'should-fail-cross-member'
+    expected_failure: true
+
   # --- Phase 5: CAN_MANAGE_METADATA capability gate ---
   # Node-2 has no metadata-management capability yet, so setting the
   # subgroup's metadata must fail.
