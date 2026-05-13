@@ -63,7 +63,7 @@ where
         // of being an "opaque" (`crdt_type: None`) leaf. LWW-on-`updated_at` is
         // the right semantics for the WASM app-root value (more-recently-written
         // side wins). Entries already on disk keep `crdt_type: None` and are
-        // reconciled by the opaque-leaf sync fix (PR A).
+        // reconciled by the opaque-leaf sync fix in #2344.
         //
         // The inner-type label is `std::any::type_name::<T>()` to match the
         // codebase convention (cf. `LwwRegister<T>` in `crdt_impls.rs`); it is

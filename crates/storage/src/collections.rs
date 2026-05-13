@@ -266,8 +266,9 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// `id` must be `Some(_)`: the whole point of this method is to honour a
     /// caller-provided fixed id. Passing `None` would fall through to
     /// `Id::random()` and silently undo that contract, which is never what a
-    /// caller of `_with_crdt_type` wants — `debug_assert` catches it in
-    /// development.
+    /// caller of `_with_crdt_type` wants — the assert below holds in release
+    /// builds too so a `None` is a hard, observable failure, not a silent
+    /// random-id entry.
     pub(crate) fn insert_with_crdt_type(
         &mut self,
         id: Option<Id>,
@@ -275,7 +276,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         field_name: &str,
         crdt_type: CrdtType,
     ) -> StoreResult<T> {
-        debug_assert!(
+        assert!(
             id.is_some(),
             "insert_with_crdt_type requires a caller-provided id; use \
              insert_with_storage_type if you want a random id"
