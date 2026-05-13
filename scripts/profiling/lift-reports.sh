@@ -30,14 +30,24 @@ mkdir -p "$DST"
 found=0
 
 if [ -d "$SRC" ]; then
+    # -maxdepth 2 restricts to `<src>/<node>/reports` only — anything deeper is
+    # not a per-node reports tree and could be a stray dir from prior content,
+    # so don't pull it into the published artifact.
     while IFS= read -r reports_dir; do
         [ -d "$reports_dir" ] || continue
         [ -n "$(ls -A "$reports_dir" 2>/dev/null)" ] || continue
         node=$(basename "$(dirname "$reports_dir")")
         mkdir -p "$DST/$node"
         cp -r "$reports_dir/." "$DST/$node/" 2>/dev/null || true
-        found=$((found + 1))
-    done < <(find "$SRC" -type d -name reports 2>/dev/null)
+        # Only count as found if `cp` actually produced content; an empty
+        # destination dir means cp failed (e.g. permission denied) — the
+        # `|| true` would otherwise silently inflate `$found`.
+        if [ -n "$(ls -A "$DST/$node" 2>/dev/null)" ]; then
+            found=$((found + 1))
+        else
+            rmdir "$DST/$node" 2>/dev/null || true
+        fi
+    done < <(find "$SRC" -maxdepth 2 -type d -name reports 2>/dev/null)
 fi
 
 if [ -n "$(find "$DST" -type f 2>/dev/null)" ]; then

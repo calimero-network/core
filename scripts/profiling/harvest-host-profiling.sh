@@ -93,9 +93,15 @@ if [ -d "$SRC_ROOT" ]; then
     echo "Harvesting from primary src-root '$SRC_ROOT':"
     for node_dir in "$SRC_ROOT"/*/; do
         [ -d "$node_dir" ] || continue
+        node_name="$(basename "${node_dir%/}")"
         dump="${node_dir%/}/profiling-dump"
-        [ -d "$dump" ] || continue
-        harvest_dump "$dump" "$(basename "${node_dir%/}")"
+        if [ -d "$dump" ]; then
+            harvest_dump "$dump" "$node_name"
+        else
+            # Per-node diagnostic so partial harvests (some nodes profiled, some
+            # not) are visible in the log instead of being silently dropped.
+            echo "  $node_name: no profiling-dump dir — skipping"
+        fi
     done
 else
     echo "Primary src-root '$SRC_ROOT' does not exist — relying on the workspace search."
