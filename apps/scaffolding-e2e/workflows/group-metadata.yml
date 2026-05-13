@@ -192,12 +192,14 @@ steps:
     outputs:
       ns_name: name
       ns_topic: data.topic
+      ns_icon: data.icon
 
   - name: Assert namespace metadata
     type: json_assert
     statements:
       - 'json_equal({{ns_name}}, "Acme Workspace")'
       - 'json_equal({{ns_topic}}, "company-wide")'
+      - 'json_equal({{ns_icon}}, "rocket")'
 
   - name: Get subgroup metadata from node-2
     type: get_group_metadata
@@ -205,11 +207,15 @@ steps:
     group_id: '{{sub}}'
     outputs:
       sub_name: name
+      sub_topic: data.topic
+      sub_archived: data.archived
 
   - name: Assert subgroup metadata
     type: json_assert
     statements:
       - 'json_equal({{sub_name}}, "general")'
+      - 'json_equal({{sub_topic}}, "everything")'
+      - 'json_equal({{sub_archived}}, "false")'
 
   - name: Get context metadata from node-2
     type: get_context_metadata
@@ -218,16 +224,62 @@ steps:
     context_id: '{{ctx}}'
     outputs:
       ctx_name: name
+      ctx_kind: data.kind
 
   - name: Assert context metadata
     type: json_assert
     statements:
       - 'json_equal({{ctx_name}}, "general-main")'
+      - 'json_equal({{ctx_kind}}, "primary")'
+
+  # --- Phase 4a: pre-grant self-write member metadata ---
+  # A member may set its OWN member metadata unconditionally
+  # (`signer == member` short-circuit in
+  # crates/context/src/group_store/mod.rs::require_can_manage_metadata).
+  # Done BEFORE the capability grant in Phase 5 so the success path is
+  # not masked by CAN_MANAGE_METADATA.
+
+  - name: Node-2 sets its own member metadata (no capability)
+    type: set_member_metadata
+    node: e2e-node-2
+    group_id: '{{ns}}'
+    member_id: '{{node2_id}}'
+    record_name: 'node-two'
+    data:
+      status: online
+
+  - name: Wait for member metadata sync
+    type: wait_for_sync
+    group_id: '{{ns}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 30
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after member metadata sync
+    type: wait
+    seconds: 5
+
+  - name: Get node-2 member metadata from node-1
+    type: get_member_metadata
+    node: e2e-node-1
+    group_id: '{{ns}}'
+    member_id: '{{node2_id}}'
+    outputs:
+      m2_name: name
+      m2_status: data.status
+
+  - name: Assert self-written member metadata
+    type: json_assert
+    statements:
+      - 'json_equal({{m2_name}}, "node-two")'
+      - 'json_equal({{m2_status}}, "online")'
 
   # --- Phase 4b: pre-grant cross-member negative test ---
-  # A member may set its OWN member metadata unconditionally, but
-  # writing another member's record requires CAN_MANAGE_METADATA (or
-  # admin). Node-2 has no capability yet — writing node-1's record
+  # Writing another member's record requires CAN_MANAGE_METADATA (or
+  # admin). Node-2 still has no capability — writing node-1's record
   # must fail.
 
   - name: Get node-1 namespace identity
@@ -356,19 +408,22 @@ steps:
       - 'json_equal({{sub_topic3}}, "random-banter")'
       - 'json_equal({{sub_archived3}}, "true")'
 
-  # --- Phase 6: Member metadata — a member may always set its own ---
-  # record, no capability required.
+  # --- Phase 6: post-grant cross-member positive ---
+  # With CAN_MANAGE_METADATA, node-2 can now write *another* member's
+  # record — the same call that failed in Phase 4b must now succeed.
+  # Confirms the capability path on `set_member_metadata` (not just
+  # the `signer == member` short-circuit exercised in Phase 4a).
 
-  - name: Node-2 sets its own member metadata
+  - name: Node-2 writes node-1 member metadata with capability
     type: set_member_metadata
     node: e2e-node-2
     group_id: '{{ns}}'
-    member_id: '{{node2_id}}'
-    record_name: 'node-two'
+    member_id: '{{node1_id}}'
+    record_name: 'node-one-tagged-by-two'
     data:
-      status: online
+      tag: 'cross-member'
 
-  - name: Wait for member metadata sync
+  - name: Wait for cross-member metadata sync
     type: wait_for_sync
     group_id: '{{ns}}'
     nodes:
@@ -378,23 +433,23 @@ steps:
     check_interval: 2
     trigger_sync: true
 
-  - name: Settle after member metadata sync
+  - name: Settle after cross-member metadata sync
     type: wait
     seconds: 5
 
-  - name: Get node-2 member metadata from node-1
+  - name: Get node-1 member metadata from node-1
     type: get_member_metadata
     node: e2e-node-1
     group_id: '{{ns}}'
-    member_id: '{{node2_id}}'
+    member_id: '{{node1_id}}'
     outputs:
-      m2_name: name
-      m2_status: data.status
+      m1_name: name
+      m1_tag: data.tag
 
-  - name: Assert member metadata
+  - name: Assert cross-member metadata
     type: json_assert
     statements:
-      - 'json_equal({{m2_name}}, "node-two")'
-      - 'json_equal({{m2_status}}, "online")'
+      - 'json_equal({{m1_name}}, "node-one-tagged-by-two")'
+      - 'json_equal({{m1_tag}}, "cross-member")'
 
 stop_all_nodes: false
