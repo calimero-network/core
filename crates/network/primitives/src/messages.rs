@@ -127,6 +127,12 @@ pub enum NetworkMessage {
         request: MeshPeerCount,
         outcome: oneshot::Sender<<MeshPeerCount as actix::Message>::Result>,
     },
+    /// Get the per-topic mesh peer-count snapshot for every topic this
+    /// node is subscribed to.
+    MeshStats {
+        request: MeshStats,
+        outcome: oneshot::Sender<<MeshStats as actix::Message>::Result>,
+    },
     /// Announce blob availability to the DHT.
     AnnounceBlob {
         request: AnnounceBlob,
@@ -217,6 +223,20 @@ pub struct MeshPeers(pub TopicHash);
 
 impl actix::Message for MeshPeers {
     type Result = Vec<PeerId>;
+}
+
+/// Request a per-topic mesh peer-count snapshot covering every topic
+/// this node is currently subscribed to.
+///
+/// Returns `(topic_hash, mesh_peer_count)` pairs. Intended for periodic
+/// CI-observable logging so the actual mesh state is visible alongside
+/// the libp2p-gossipsub internal logs (which report mesh additions per
+/// heartbeat, not current mesh size, and are easy to misread).
+#[derive(Clone, Copy, Debug)]
+pub struct MeshStats;
+
+impl actix::Message for MeshStats {
+    type Result = Vec<(TopicHash, usize)>;
 }
 
 /// Request to open a direct stream to a peer.
