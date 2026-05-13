@@ -9,6 +9,30 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub const DEFAULT_PORT: u16 = 2428; // CHAT in T9
 
+/// Gossipsub mesh sizing for Calimero's typical 2–20 peer clusters.
+///
+/// libp2p's defaults (`mesh_n_low=5`, `mesh_n=6`, `mesh_n_high=12`,
+/// `mesh_outbound_min=2`) assume larger swarms. In a 3-node cluster, the
+/// default `mesh_n_low=5` is permanently unreachable — every heartbeat
+/// logs `Mesh low. Topic contains: 2 needs: 6` and re-runs
+/// `get_random_peers` for no candidates. Matching the water marks to the
+/// expected cluster size makes the mesh sit at steady state and the
+/// `Mesh low` path quiet.
+///
+/// These are also read by the governance Phase-1 readiness gate
+/// (`assert_transport_ready` in `crates/context/src/governance_broadcast`)
+/// as the upper bound for `required = min(GOSSIPSUB_MESH_N_LOW,
+/// known_subscribers)`. A mismatch between this constant and the value
+/// passed to `gossipsub::ConfigBuilder::mesh_n_low` in
+/// `crates/network/src/behaviour.rs` would either reject healthy
+/// publishes (gate too high — the mesh never reaches the required size)
+/// or admit publishes on an unhealthy mesh (gate too low). Keep them
+/// in sync via this single source of truth.
+pub const GOSSIPSUB_MESH_N_LOW: usize = 2;
+pub const GOSSIPSUB_MESH_N: usize = 4;
+pub const GOSSIPSUB_MESH_N_HIGH: usize = 8;
+pub const GOSSIPSUB_MESH_OUTBOUND_MIN: usize = 1;
+
 // https://github.com/ipfs/kubo/blob/efdef7fdcfeeb30e2f1ce3dbf65b6460b58afaaf/config/bootstrap_peers.go#L17-L24
 pub const IPFS_BOOT_NODES: &[&str] = &[
     "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",

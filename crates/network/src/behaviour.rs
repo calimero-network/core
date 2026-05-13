@@ -1,6 +1,9 @@
 use core::time::Duration;
 
-use calimero_network_primitives::config::NetworkConfig;
+use calimero_network_primitives::config::{
+    NetworkConfig, GOSSIPSUB_MESH_N, GOSSIPSUB_MESH_N_HIGH, GOSSIPSUB_MESH_N_LOW,
+    GOSSIPSUB_MESH_OUTBOUND_MIN,
+};
 use calimero_network_primitives::specialized_node_invite::{
     SpecializedNodeInviteCodec, CALIMERO_SPECIALIZED_NODE_INVITE_PROTOCOL,
 };
@@ -108,12 +111,27 @@ impl Behaviour {
                     },
                     gossipsub: gossipsub::Behaviour::new(
                         gossipsub::MessageAuthenticity::Signed(key.clone()),
-                        // Lower backoffs so a leave/rejoin cycle on a
-                        // gossipsub topic re-forms the mesh within a few
-                        // heartbeats. Topic admission is gated by namespace
+                        // Defaults assume larger swarms. Match the water
+                        // marks to Calimero's 2–20 peer clusters so a 3-node
+                        // deployment sits at a stable mesh size instead of
+                        // the heartbeat path logging `Mesh low` every second
+                        // and re-running `get_random_peers` for no
+                        // candidates. Topic admission is gated by namespace
                         // membership at the governance layer, so the
-                        // permissionless defaults are not needed.
+                        // permissionless backoff defaults are not needed.
+                        //
+                        // `flood_publish` fans `publish()` out to every
+                        // subscribed peer (not just mesh peers). For
+                        // Calimero's small (dozens-of-members) topics this
+                        // is cheap and removes the cold-start window where
+                        // the mesh isn't formed yet and `broadcast()` would
+                        // otherwise drop the delta (issues #2122, #2236).
                         gossipsub::ConfigBuilder::default()
+                            .mesh_n_low(GOSSIPSUB_MESH_N_LOW)
+                            .mesh_n(GOSSIPSUB_MESH_N)
+                            .mesh_n_high(GOSSIPSUB_MESH_N_HIGH)
+                            .mesh_outbound_min(GOSSIPSUB_MESH_OUTBOUND_MIN)
+                            .flood_publish(true)
                             .unsubscribe_backoff(1)
                             .prune_backoff(Duration::from_secs(1))
                             .build()
