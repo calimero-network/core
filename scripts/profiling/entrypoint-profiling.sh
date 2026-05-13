@@ -11,11 +11,45 @@ ENABLE_WASMER_PROFILING="${ENABLE_WASMER_PROFILING:-true}"
 PROFILING_OUTPUT_DIR="${PROFILING_OUTPUT_DIR:-/profiling/data}"
 PERF_SAMPLE_FREQ="${PERF_SAMPLE_FREQ:-99}"
 
+# Periodic preserve+render cadence. The default of 60s means a regression
+# that kills the container mid-run still leaves a flamegraph at most ~60s
+# stale on the bind mount — instead of leaving an empty `reports/` dir (or
+# no dir at all) when the final shutdown trap is cut short by Docker's
+# stop-timeout. Set `PRESERVE_INTERVAL_SECONDS=0` to disable.
+PRESERVE_INTERVAL_SECONDS="${PRESERVE_INTERVAL_SECONDS:-60}"
+
 MAIN_PID=""
 EXIT_CODE=0
+PRESERVE_LOOP_PID=""
 
 mkdir -p "$PROFILING_OUTPUT_DIR"
 mkdir -p "${PROFILING_REPORTS_DIR:-/profiling/reports}"
+
+# Best-effort: eagerly create the bind-mount reports dir at startup and open
+# a per-node status log there. `preserve_to_host_mount` does this too on
+# every preserve, but doing it here means a container killed *before*
+# perf/merod even start still leaves a visible `<bind>/profiling-dump/
+# profiling-status.log` so harvest-side diagnosis isn't blind. `:-` so an
+# unset `CALIMERO_HOME` (running outside merobox) is a no-op.
+EAGER_BIND_DEST="${CALIMERO_HOME:-}/profiling-dump"
+PROFILING_STATUS_LOG=""
+if [ -n "${CALIMERO_HOME:-}" ] && [ -d "$CALIMERO_HOME" ]; then
+    mkdir -p "$EAGER_BIND_DEST/reports" 2>/dev/null || true
+    PROFILING_STATUS_LOG="$EAGER_BIND_DEST/profiling-status.log"
+    : > "$PROFILING_STATUS_LOG" 2>/dev/null || PROFILING_STATUS_LOG=""
+fi
+
+# Append a timestamped diagnostic line to the persistent status log (if it
+# could be opened) AND echo to stdout. Use this for the few key decisions
+# the harvester needs to be able to see post-mortem (perf-record start,
+# perf-sanity fail, flamegraph render success/fail) — *not* every
+# `[Profiling] ...` echo (those still go to stdout and would bloat the log).
+profiling_status() {
+    local line
+    line="$(date -u +%Y-%m-%dT%H:%M:%SZ) ${NODE_NAME:-merod} $*"
+    echo "[Profiling] $*"
+    [ -n "$PROFILING_STATUS_LOG" ] && echo "$line" >> "$PROFILING_STATUS_LOG" 2>/dev/null
+}
 
 install_kernel_tools() {
     local kernel_version=$(uname -r)
@@ -83,20 +117,34 @@ install_kernel_tools() {
 start_profiling() {
     local pid=$1
     local node_name="${NODE_NAME:-merod}"
-    
-    echo "[Profiling] Starting profiling for PID $pid (node: $node_name)"
-    
+
+    profiling_status "start_profiling: pid=$pid node=$node_name"
+
     if [ "$ENABLE_PERF" != "true" ]; then
+        profiling_status "perf disabled via ENABLE_PERF=$ENABLE_PERF, skipping CPU profiling"
         return
     fi
-    
-    if ! perf record -o /dev/null -- true 2>/dev/null; then
-        echo "[Profiling] perf not compatible, skipping CPU profiling"
+
+    # Capture stderr of the perf-sanity check so a failure here ("Operation
+    # not permitted" → missing CAP_PERFMON, "perf_event_open failed" →
+    # paranoid=4, missing binary, etc.) is *visible* in the bind-mount
+    # status log — not just on stdout, which evaporates with the container.
+    # Without this, "only N of 4 nodes had perf data" is impossible to
+    # diagnose from the harvested artifact alone.
+    local sanity_err
+    sanity_err=$(perf record -o /dev/null -- true 2>&1)
+    if [ $? -ne 0 ]; then
+        profiling_status "perf-sanity FAILED on this node, skipping CPU profiling"
+        # Log the first 3 lines of perf's own error so we can tell EPERM
+        # (missing CAP_PERFMON) apart from missing binary / ABI mismatch.
+        printf '%s\n' "$sanity_err" | head -3 | while IFS= read -r l; do
+            profiling_status "  perf-sanity stderr: $l"
+        done
         return
     fi
-    
+
     if ! kill -0 "$pid" 2>/dev/null; then
-        echo "[Profiling] Process $pid is not running, cannot start perf"
+        profiling_status "target pid=$pid is not running, cannot start perf"
         return
     fi
     
@@ -118,16 +166,21 @@ start_profiling() {
     
     sleep 2
     if ! kill -0 "$PERF_PID" 2>/dev/null; then
-        echo "[Profiling] ERROR: perf process died immediately"
+        profiling_status "perf process died immediately after spawn (PERF_PID=$PERF_PID)"
         if [ -f "$perf_log" ]; then
-            echo "[Profiling] perf error log:"
-            cat "$perf_log" | head -20
+            # Surface perf's own first lines of stderr into the bind-mount
+            # status log so we can tell "perf_event_open: Operation not
+            # permitted" apart from "couldn't find binary" without docker
+            # logs.
+            head -5 "$perf_log" | while IFS= read -r l; do
+                profiling_status "  perf-log: $l"
+            done
         fi
         rm -f "$PROFILING_OUTPUT_DIR/perf.pid"
         return
     fi
-    
-    echo "[Profiling] perf recording with PID $PERF_PID"
+
+    profiling_status "perf recording started (PERF_PID=$PERF_PID, target=$pid, output=$perf_output)"
     
     sleep 2
     
@@ -341,9 +394,67 @@ preserve_to_host_mount() {
     return 0
 }
 
+start_periodic_preserve_loop() {
+    # Background loop that runs `preserve_to_host_mount` on a cadence
+    # (default 60s) for the whole life of the container. Why:
+    #
+    # The previous design only preserved on shutdown via the SIGTERM trap.
+    # Docker's stop-timeout (default 10s) often killed the container
+    # before the trap finished — `stop_profiling` waits up to 15s for
+    # perf to flush, then the merod-stop wait runs up to 10s, *then*
+    # `preserve_to_host_mount` rendered flamegraphs. By that point
+    # SIGKILL had already arrived, the bind mount got partial data
+    # (jemalloc heap files, no perf data on some nodes, no `reports/`
+    # directory at all on any node — see the
+    # `profiling-data-group-governance-499-25799459525` artifact).
+    #
+    # With this loop, the bind mount holds an at-most-${PRESERVE_INTERVAL}-
+    # stale copy of `/profiling/data/.` + a freshly-rendered flamegraph
+    # at all times. A truncated shutdown loses at most one interval's
+    # worth of samples, not the whole run.
+    #
+    # Cost: `cp -r` of ~50MB jemalloc dumps + a flamegraph render every
+    # 60s. The cp is fast (small files, same filesystem). The render is
+    # the expensive part — `perf script | stackcollapse | flamegraph.pl`
+    # on a 1.9MB perf.data takes ~2-3s. Both well under interval.
+    if [ "${PRESERVE_INTERVAL_SECONDS:-0}" -le 0 ]; then
+        profiling_status "periodic preserve disabled (PRESERVE_INTERVAL_SECONDS=0)"
+        return
+    fi
+    if [ -z "${CALIMERO_HOME:-}" ] || [ ! -d "${CALIMERO_HOME:-}" ]; then
+        profiling_status "CALIMERO_HOME unset or not a dir, skipping periodic preserve"
+        return
+    fi
+
+    (
+        # Run preserve_to_host_mount on the cadence. Each call is
+        # idempotent and overwrites the previous artifacts in place.
+        # Detached from the controlling terminal so a stray SIGINT to
+        # the main shell doesn't kill the loop separately from the
+        # `kill $PRESERVE_LOOP_PID` in cleanup().
+        while sleep "$PRESERVE_INTERVAL_SECONDS"; do
+            # `set -e` in the parent doesn't propagate to subshells, so a
+            # transient preserve failure here doesn't crash the loop —
+            # just retry on next tick.
+            preserve_to_host_mount >/dev/null 2>&1 || true
+        done
+    ) &
+    PRESERVE_LOOP_PID=$!
+    profiling_status "periodic preserve loop started (PID=$PRESERVE_LOOP_PID, interval=${PRESERVE_INTERVAL_SECONDS}s)"
+}
+
 cleanup() {
     local signal_exit_code=$?
     echo "[Profiling] Received signal, cleaning up..."
+
+    # Stop the periodic preserve loop first so its in-flight `cp`/render
+    # can't race the final `preserve_to_host_mount` call below. Even if
+    # this kill arrives mid-cp, the previous-tick artifacts on the bind
+    # mount are still good — that's the whole point of the loop.
+    if [ -n "$PRESERVE_LOOP_PID" ] && kill -0 "$PRESERVE_LOOP_PID" 2>/dev/null; then
+        kill -TERM "$PRESERVE_LOOP_PID" 2>/dev/null || true
+        wait "$PRESERVE_LOOP_PID" 2>/dev/null || true
+    fi
 
     stop_profiling
 
@@ -459,7 +570,13 @@ if [ "$ENABLE_PROFILING" = "true" ] && [ "$ENABLE_PERF" = "true" ] && [ "$SHOULD
     fi
     
     start_profiling $PERF_TARGET_PID
-    
+
+    # Spin the periodic-preserve loop AFTER perf is recording, so the
+    # first tick has fresh perf data to render. Loop runs until cleanup()
+    # kills it; even if Docker SIGKILLs us mid-trap, the bind mount holds
+    # an at-most-${PRESERVE_INTERVAL_SECONDS}-stale flamegraph.
+    start_periodic_preserve_loop
+
     wait $MAIN_PID
     EXIT_CODE=$?
 
