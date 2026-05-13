@@ -138,8 +138,12 @@ jobs:
 
           exit "$exit_code"
 
-      - name: Upload docker logs on failure
-        if: failure()
+      - name: Upload docker logs
+        # Always upload — green runs still need log evidence (e.g.
+        # confirming sync timing is actually fast, not just barely
+        # under the wait_for_sync budget). Matches the pattern in
+        # `e2e-rust-apps.yml` (`if: always()`).
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sync-regression-docker-logs
