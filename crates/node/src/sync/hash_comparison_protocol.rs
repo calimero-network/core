@@ -73,7 +73,7 @@ const MAX_PENDING_NODES: usize = 10_000;
 /// emitting a leaf with this synthetic type is wire-format-stable and
 /// merge-equivalent to the `None` it stands in for. See
 /// `docs/superpowers/specs/2026-05-13-opaque-leaf-sync-design.md`.
-const OPAQUE_LEAF_CRDT_TYPE_NAME: &str = "Opaque";
+pub(super) const OPAQUE_LEAF_CRDT_TYPE_NAME: &str = "Opaque";
 
 /// Maximum depth allowed in TreeNodeRequest.
 pub const MAX_REQUEST_DEPTH: u8 = 16;

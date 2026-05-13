@@ -177,7 +177,7 @@ pub fn handle_entity_push(
                     %context_id,
                     key = %hex::encode(leaf.key),
                     len = leaf.value.len(),
-                    "pushed entity exceeds MAX_LEAF_VALUE_SIZE, skipping"
+                    "pushed entity failed TreeLeafData::is_valid(), skipping"
                 );
                 continue;
             }
