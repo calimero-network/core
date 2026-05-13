@@ -64,8 +64,18 @@ where
         // the right semantics for the WASM app-root value (more-recently-written
         // side wins). Entries already on disk keep `crdt_type: None` and are
         // reconciled by the opaque-leaf sync fix (PR A).
+        //
+        // The inner-type label is `std::any::type_name::<T>()` to match the
+        // codebase convention (cf. `LwwRegister<T>` in `crdt_impls.rs`); it is
+        // metadata only — `crdt_type` is not in the Merkle hash, so the label
+        // is stable across versions.
         let value = inner
-            .insert_with_crdt_type(Some(id), f(), "root", CrdtType::lww_register("RootValue"))
+            .insert_with_crdt_type(
+                Some(id),
+                f(),
+                "root",
+                CrdtType::lww_register(std::any::type_name::<T>()),
+            )
             .unwrap();
 
         Self {
