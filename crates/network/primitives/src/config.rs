@@ -29,7 +29,16 @@ pub const DEFAULT_PORT: u16 = 2428; // CHAT in T9
 /// or admit publishes on an unhealthy mesh (gate too low). Keep them
 /// in sync via this single source of truth.
 pub const GOSSIPSUB_MESH_N_LOW: usize = 2;
+
+/// Target mesh size per topic (gossipsub `mesh_n`). Heartbeat backfill
+/// adds peers until the mesh reaches this size.
 pub const GOSSIPSUB_MESH_N: usize = 4;
+
+/// Upper bound before gossipsub prunes mesh peers (gossipsub `mesh_n_high`).
+/// At 8 we leave headroom for clusters up to 9 (8 peers + self) without
+/// pruning churn; the 8-node soak in `apps/scaffolding-e2e/workflows/
+/// mesh-soak-8node.yml` empirically reaches max 7 per topic (7 other
+/// peers in an 8-node cluster), staying below this cap.
 pub const GOSSIPSUB_MESH_N_HIGH: usize = 8;
 
 /// Minimum outbound mesh peers per topic. libp2p enforces the invariant

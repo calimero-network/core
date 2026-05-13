@@ -140,6 +140,24 @@ impl Behaviour {
                         // based abuse mitigation is therefore not load-
                         // bearing on this code path; the governance layer
                         // is.
+                        //
+                        // Note on metadata exposure to passive
+                        // subscribers: `flood_publish` does not change
+                        // what envelope fields a non-member subscriber
+                        // can observe. State-delta artifacts are
+                        // encrypted with the namespace SharedKey
+                        // (`NodeClient::broadcast` in
+                        // `crates/node/primitives/src/client.rs`), but
+                        // the surrounding `BroadcastMessage` envelope
+                        // (context_id, author_id, dag_heads, root_hash,
+                        // governance metadata) is plaintext borsh. A
+                        // mesh-forwarded message has the same envelope
+                        // properties; `flood_publish` just makes
+                        // delivery deterministic rather than mesh-
+                        // timing-dependent. If the envelope-metadata
+                        // exposure ever becomes a threat, the fix is
+                        // either envelope encryption or admission-gated
+                        // subscription — neither is in scope here.
                         gossipsub::ConfigBuilder::default()
                             .mesh_n_low(GOSSIPSUB_MESH_N_LOW)
                             .mesh_n(GOSSIPSUB_MESH_N)
