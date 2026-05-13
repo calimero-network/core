@@ -179,6 +179,9 @@ jobs:
           - workflow: group-member-channel-lifecycle
             file: workflows/group-member-channel-lifecycle.yml
             app: scaffolding-e2e
+          - workflow: group-metadata
+            file: workflows/group-metadata.yml
+            app: scaffolding-e2e
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
             app: scaffolding-e2e
