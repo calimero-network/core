@@ -142,6 +142,28 @@ pub(crate) struct NodeState {
     /// `(peer_id, identity)` pairs observed, which is itself bounded by
     /// group member count.
     pub(crate) peer_identities: Arc<DashMap<PeerId, BTreeSet<PublicKey>>>,
+    /// Per-context reconcile-after-divergence attempt state. Used by the
+    /// sync manager to apply exponential backoff between successive
+    /// reconcile attempts for the same context, so a persistently
+    /// misbehaving anchor (or a transient bug that re-fires divergence
+    /// every signed op) cannot wedge the node into a tight
+    /// divergence → reconcile → divergence loop.
+    ///
+    /// Entry semantics:
+    /// - Cleared on a successful post-adoption hash match.
+    /// - Updated on every failure (sync error OR post-adoption
+    ///   mismatch), with `consecutive_failures` incremented and
+    ///   `last_attempt_at` set to now.
+    /// - Cooldown computed as exponential backoff capped at 30 min;
+    ///   see [`reconcile_cooldown`] in `sync::manager`.
+    pub(crate) reconcile_attempts: Arc<DashMap<ContextId, ReconcileAttempt>>,
+}
+
+/// Per-context backoff state for the reconcile-after-divergence path.
+#[derive(Clone, Debug)]
+pub(crate) struct ReconcileAttempt {
+    pub(crate) last_attempt_at: Instant,
+    pub(crate) consecutive_failures: u32,
 }
 
 /// Maximum number of state deltas that may sit in the governance-pending
@@ -181,6 +203,7 @@ impl NodeState {
             sync_sessions: Arc::new(DashMap::new()),
             governance_pending: Arc::new(DashMap::new()),
             peer_identities: Arc::new(DashMap::new()),
+            reconcile_attempts: Arc::new(DashMap::new()),
         }
     }
 

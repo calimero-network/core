@@ -185,6 +185,25 @@ jobs:
           - workflow: dm-subgroup-privacy
             file: workflows/dm-subgroup-privacy.yml
             app: scaffolding-e2e
+          - workflow: member-removed-multi-context-convergence
+            file: workflows/member-removed-multi-context-convergence.yml
+            app: scaffolding-e2e
+          - workflow: member-removed-late-joiner-catchup
+            file: workflows/member-removed-late-joiner-catchup.yml
+            app: scaffolding-e2e
+          # The partition-window-reconcile workflow exists at
+          # `apps/scaffolding-e2e/workflows/member-removed-partition-window-reconcile.yml`
+          # but is intentionally NOT registered in the matrix yet.
+          # Docker-bridge partition primitives can't construct the
+          # divergence scenario deterministically: signing after the
+          # heal races the TCP-buffer drain (admin sees node-2's
+          # partition-window write before signing → no divergence),
+          # while signing during the partition is blocked by the
+          # readiness gate that requires mesh peers. The reconcile
+          # code path is covered by unit tests on
+          # `apply_group_op_mutations`; this e2e needs a more
+          # surgical partition primitive (e.g. iptables-level drop
+          # on a specific peer pair) to be deterministic.
           - workflow: group-default-capabilities-propagation
             file: workflows/group-default-capabilities-propagation.yml
             app: scaffolding-e2e

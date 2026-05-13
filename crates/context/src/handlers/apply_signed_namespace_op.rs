@@ -27,8 +27,18 @@ impl Handler<ApplySignedNamespaceOpRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 let mut dag = dag.lock().await;
-                match dag.add_delta_with_outcome(delta, &applier).await {
-                    Ok(AddDeltaOutcome::Applied) => Ok(NamespaceApplyOutcome::Applied),
+                let outcome = dag.add_delta_with_outcome(delta, &applier).await;
+                // Read-and-clear the applier's divergence outbox after
+                // the DAG call returns. The outbox is populated by the
+                // applier's `apply` impl when `MemberRemoved` /
+                // `MemberLeft` verify reports a state-hash mismatch.
+                // Only meaningful on `Applied` — `Pending` / `Duplicate`
+                // don't run the apply path.
+                let divergence = applier.take_divergence();
+                match outcome {
+                    Ok(AddDeltaOutcome::Applied) => {
+                        Ok(NamespaceApplyOutcome::Applied { divergence })
+                    }
                     Ok(AddDeltaOutcome::Pending) => Ok(NamespaceApplyOutcome::Pending),
                     Ok(AddDeltaOutcome::Duplicate) => Ok(NamespaceApplyOutcome::Duplicate),
                     Err(e) => Err(eyre::eyre!("namespace DAG apply error: {e}")),

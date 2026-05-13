@@ -6477,10 +6477,12 @@ fn diff_sorted_context_hashes_pins_merge_scan_semantics() {
     let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
     assert!(diff.is_empty());
 
-    // Same ids, different hash on one — that id lands in hash_differs.
+    // Same ids, different hash on one — that id lands in hash_differs
+    // paired with the EXPECTED hash (reconcile uses this to verify
+    // received state against the signed canonical value).
     let actual = vec![(cid_a, h_a), (cid_b, h_b_alt)];
     let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
-    assert_eq!(diff.hash_differs, vec![cid_b]);
+    assert_eq!(diff.hash_differs, vec![(cid_b, h_b)]);
     assert!(diff.only_in_expected.is_empty());
     assert!(diff.only_in_actual.is_empty());
 
@@ -6500,12 +6502,13 @@ fn diff_sorted_context_hashes_pins_merge_scan_semantics() {
     assert!(diff.only_in_expected.is_empty());
     assert_eq!(diff.only_in_actual, vec![cid_b]);
 
-    // Mixed: one matching (cid_a), one hash-diff (cid_b), one
-    // only-in-expected (cid_c), one only-in-actual (cid_d).
+    // Mixed: one matching (cid_a), one hash-diff (cid_b) carrying
+    // its expected hash, one only-in-expected (cid_c), one
+    // only-in-actual (cid_d).
     let expected = vec![(cid_a, h_a), (cid_b, h_b), (cid_c, h_c)];
     let actual = vec![(cid_a, h_a), (cid_b, h_b_alt), (cid_d, h_d)];
     let diff = diff_sorted_context_hashes(&group_id, "test", &expected, &actual);
-    assert_eq!(diff.hash_differs, vec![cid_b]);
+    assert_eq!(diff.hash_differs, vec![(cid_b, h_b)]);
     assert_eq!(diff.only_in_expected, vec![cid_c]);
     assert_eq!(diff.only_in_actual, vec![cid_d]);
 
@@ -6760,5 +6763,90 @@ fn compute_group_state_hash_after_remove_never_returns_zeros_for_real_group() {
         hash, [0u8; 32],
         "post-remove hash collided with the no-claim sentinel — \
          convergence check would be silently disabled"
+    );
+}
+
+#[test]
+fn apply_group_op_mutations_surfaces_divergence_on_hash_mismatch() {
+    // The verify path surfaces a structured `DivergenceReport` up
+    // through `apply_group_op_mutations` so the node handler can
+    // route it to the reconcile-via-anchor path. Without this
+    // plumbing, the existing warn log would be the only signal and
+    // recovery would require operator intervention.
+    use super::apply_group_op_mutations;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let target = PublicKey::from([0xD0; 32]);
+    let bystander = PublicKey::from([0xD1; 32]);
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
+    add_group_member(&store, &gid, &bystander, GroupMemberRole::Member).unwrap();
+
+    // Sign-time would precompute the real post-apply hash. Here we
+    // deliberately supply a wrong one — the receiver's apply will
+    // recompute and detect the mismatch.
+    let wrong_hash = [0xFFu8; 32];
+    let op = GroupOp::MemberRemoved {
+        member: target,
+        cut: calimero_context_config::types::GovernancePosition::new(gid, [0u8; 32], vec![])
+            .expect("empty heads is valid"),
+        expected_group_state_hash: wrong_hash,
+        expected_context_state_hashes: Vec::new(),
+    };
+
+    let (handled, divergence) = apply_group_op_mutations(&store, &gid, &admin, &op).unwrap();
+    assert!(handled, "MemberRemoved should be handled");
+    let report = divergence.expect("hash mismatch must produce a DivergenceReport");
+    assert!(
+        report.group_hash_diverges,
+        "group hash should diverge from the wrong expected"
+    );
+    assert_eq!(report.op_kind, "MemberRemoved");
+    assert_eq!(report.group_id, gid);
+}
+
+#[test]
+fn apply_group_op_mutations_no_divergence_on_matching_hash() {
+    // Mirror test: when the signed expected hash matches the real
+    // post-apply hash, the apply path returns `None` for divergence
+    // and no reconcile fires.
+    use super::apply_group_op_mutations;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let admin = PublicKey::from([0x01; 32]);
+    let target = PublicKey::from([0xD0; 32]);
+    let bystander = PublicKey::from([0xD1; 32]);
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
+    add_group_member(&store, &gid, &bystander, GroupMemberRole::Member).unwrap();
+
+    let real_post_apply_hash =
+        compute_group_state_hash_after_remove(&store, &gid, &target).unwrap();
+    let op = GroupOp::MemberRemoved {
+        member: target,
+        cut: calimero_context_config::types::GovernancePosition::new(gid, [0u8; 32], vec![])
+            .expect("empty heads is valid"),
+        expected_group_state_hash: real_post_apply_hash,
+        expected_context_state_hashes: Vec::new(),
+    };
+
+    let (handled, divergence) = apply_group_op_mutations(&store, &gid, &admin, &op).unwrap();
+    assert!(handled);
+    assert!(
+        divergence.is_none(),
+        "no divergence expected when hashes match, got {divergence:?}"
     );
 }

@@ -1,0 +1,204 @@
+name: E2E KV Store - MemberRemoved Late-Joiner Catchup
+description: >
+  A late-joining node materializes contexts via namespace-DAG
+  catchup, and during that window any incoming `MemberRemoved` op
+  will see a per-context snapshot on the late joiner that's
+  shorter than the signer's (the signer had all contexts
+  materialized when signing; the late joiner doesn't yet). The
+  diff produces `only_in_expected` entries — which is the
+  designed-for "fresh-node catchup" signal, NOT the partition-
+  window divergence the reconcile path is for.
+
+  This workflow pins that the late-joiner case produces a clean
+  catchup (no errors, no test failures), and that subsequent
+  state-DAG sync brings the late joiner to identical state as
+  the original members. The `only_in_expected` debug log fires
+  but is operationally fine; the cross-DAG check on the next
+  state delta drives convergence through the existing
+  `Unknown { needed }` → buffer → catch-up path, NOT through
+  anchor-sync.
+
+  Catches regressions where:
+    * a late-joiner spuriously triggers reconcile-via-anchor on
+      every membership op until it catches up (would burn anchor
+      bandwidth at scale)
+    * the apply path errors out instead of logging-and-continuing
+      when the signer's snapshot includes a context the receiver
+      hasn't materialized
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  # --- Setup phase: only node-1 and node-2 exist. ---
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Create context A
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_a: contextId
+
+  - name: Create context B
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_b: contextId
+
+  - name: Node-2 joins context A
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_a}}'
+
+  - name: Node-2 joins context B
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_b}}'
+
+  - name: Node-1 writes to context A
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_a}}'
+    method: set
+    args:
+      key: "early"
+      value: "before_node3_joined"
+
+  - name: Wait for context A baseline propagation
+    type: wait_for_sync
+    context_id: '{{ctx_a}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    trigger_sync: true
+
+  # --- Phase 2: node-3 joins the namespace. The contexts exist
+  #     but node-3 hasn't applied the `ContextRegistered` ops yet
+  #     (they arrive via namespace-DAG sync). Window of mismatch
+  #     between "registered in index" and "ContextMeta row present"
+  #     is what `snapshot_context_state_hashes` skips on the
+  #     receiver side. ---
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Node-3 joins namespace (does not auto-join contexts)
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node3}}'
+    outputs:
+      identity_node3: memberIdentity
+
+  # Deliberately do NOT have node-3 join the contexts here. The
+  # `MemberRemoved` op that arrives next will be applied on a
+  # node-3 that has the namespace but not the contexts — exactly
+  # the late-joiner-catchup snapshot asymmetry we want to test.
+
+  # --- Phase 3: admin removes node-2. node-3 receives the signed
+  #     op while its per-context view is still short, so the apply
+  #     path's diff produces `only_in_expected` entries. The test
+  #     asserts the apply still succeeds and node-3 eventually
+  #     converges to "node-2 removed". ---
+
+  - name: Admin removes node-2
+    type: remove_group_members
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    members:
+      - '{{identity_node2}}'
+
+  - name: Allow time for node-3 to receive and apply the removal
+    type: wait
+    seconds: 10
+
+  - name: Confirm node-3 sees node-2 removed despite late-joiner state
+    type: list_group_members
+    node: e2e-node-3
+    group_id: '{{namespace_id}}'
+    outputs:
+      members_on_node3: members
+
+  - name: Assert node-3's member list does not contain node-2
+    type: assert
+    statements:
+      - "not_contains({{members_on_node3}}, {{identity_node2}})"
+
+  # Now have node-3 join the contexts that already exist. It must
+  # be able to catch up cleanly — the only_in_expected divergence
+  # during the earlier apply must not have left node-3 in a
+  # corrupted state.
+
+  - name: Node-3 joins context A (after the removal)
+    type: join_context
+    node: e2e-node-3
+    context_id: '{{ctx_a}}'
+
+  - name: Wait for context A sync to node-3
+    type: wait_for_sync
+    context_id: '{{ctx_a}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-3
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node-3 reads ctx_a's earlier write
+    type: call
+    node: e2e-node-3
+    context_id: '{{ctx_a}}'
+    method: get
+    args:
+      key: "early"
+    outputs:
+      read_on_node3: result
+
+  - name: Assert node-3 sees pre-removal state on ctx_a
+    type: json_assert
+    statements:
+      - 'json_equal({{read_on_node3}}, {"output": "before_node3_joined"})'
+
+stop_all_nodes: false

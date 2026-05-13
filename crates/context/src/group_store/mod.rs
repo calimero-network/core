@@ -856,17 +856,31 @@ pub fn now_millis() -> u64 {
 ///    Once the network has fully rolled forward to signed-claim ops
 ///    the zero sentinel becomes dead and can be removed; the
 ///    empty-list "no contexts" case stays valid forever.
+/// Re-export of the cross-crate `DivergenceReport` carried inside
+/// `NamespaceApplyOutcome::Applied`. Defined in `calimero-context-client`
+/// because the message type that carries it lives there, and
+/// primitives can't depend on this crate. Internal apply-path users
+/// in `group_store` import it via this re-export.
+///
+/// `None` means no divergence detected (or no claim made by the
+/// signed op). `Some` means at least one of {group state hash,
+/// per-context state hash, set-membership of registered contexts}
+/// diverged from what the signer signed against. The reconcile-
+/// via-anchor path consumes the `hash_differs` list (carrying the
+/// **signed expected** hash) to verify received state before adopt.
+pub use calimero_context_client::messages::DivergenceReport;
+
 fn verify_post_apply_state_hashes(
     store: &Store,
     group_id: &ContextGroupId,
     op_kind: &'static str,
     expected_group_state_hash: &[u8; 32],
     expected_context_state_hashes: &[(ContextId, [u8; 32])],
-) {
+) -> Option<DivergenceReport> {
     let check_group_hash = *expected_group_state_hash != [0u8; 32];
     let check_context_hashes = !expected_context_state_hashes.is_empty();
     if !check_group_hash && !check_context_hashes {
-        return;
+        return None;
     }
 
     // Group-state half. `None` here means the check was either
@@ -881,8 +895,13 @@ fn verify_post_apply_state_hashes(
                     group_id = %hex::encode(group_id.to_bytes()),
                     op_kind,
                     %err,
-                    "post-apply group-state hash recompute failed; skipping convergence check"
+                    "post-apply group-state hash recompute failed; skipping group-state check"
                 );
+                // `None` here means this half couldn't run — must NOT
+                // `return None` here, because the per-context half may
+                // still confirm divergence below and surface a report
+                // the reconcile path needs. Bailing the whole function
+                // on a half-error silently drops that signal.
                 None
             }
         }
@@ -911,6 +930,10 @@ fn verify_post_apply_state_hashes(
                     "post-apply per-context state-hash snapshot failed; skipping per-context \
                      convergence check"
                 );
+                // Same reason as the group-state error path: do NOT
+                // bail the whole function. If the group-state half
+                // already confirmed divergence above we still need
+                // to surface a report so reconcile can fire.
                 None
             }
         }
@@ -921,7 +944,7 @@ fn verify_post_apply_state_hashes(
     let group_diverges = matches!(group_outcome, Some((true, _)));
     let context_diverges = context_diff.as_ref().is_some_and(|d| !d.is_empty());
     if !group_diverges && !context_diverges {
-        return;
+        return None;
     }
 
     // Branch the warn so the operator can tell which half ran AND
@@ -939,35 +962,43 @@ fn verify_post_apply_state_hashes(
             .map(|c| hex::encode(AsRef::<[u8; 32]>::as_ref(c)))
             .collect()
     };
-    match (group_outcome, context_diff) {
-        (Some((_, actual_group)), Some(diff)) => {
+    let format_hash_differs = |entries: &[(ContextId, [u8; 32])]| -> Vec<String> {
+        entries
+            .iter()
+            .map(|(c, _)| hex::encode(AsRef::<[u8; 32]>::as_ref(c)))
+            .collect()
+    };
+    let diff_ref = context_diff.as_ref();
+    let group_actual_for_log = group_outcome.map(|(_, h)| h);
+    match (group_outcome.is_some(), diff_ref) {
+        (true, Some(diff)) => {
             tracing::warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 op_kind,
                 group_hash_diverges = group_diverges,
                 expected_group_state_hash = %hex::encode(expected_group_state_hash),
-                actual_group_state_hash = %hex::encode(actual_group),
+                actual_group_state_hash = %hex::encode(group_actual_for_log.unwrap_or([0u8; 32])),
                 hash_differs_count = diff.hash_differs.len(),
                 only_in_expected_count = diff.only_in_expected.len(),
                 only_in_actual_count = diff.only_in_actual.len(),
-                hash_differs = ?format_ids(&diff.hash_differs),
+                hash_differs = ?format_hash_differs(&diff.hash_differs),
                 only_in_expected = ?format_ids(&diff.only_in_expected),
                 only_in_actual = ?format_ids(&diff.only_in_actual),
                 "cross-DAG state-hash divergence detected on apply — reconcile-via-anchor will heal"
             );
         }
-        (Some((_, actual_group)), None) => {
+        (true, None) => {
             tracing::warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 op_kind,
                 group_hash_diverges = group_diverges,
                 expected_group_state_hash = %hex::encode(expected_group_state_hash),
-                actual_group_state_hash = %hex::encode(actual_group),
+                actual_group_state_hash = %hex::encode(group_actual_for_log.unwrap_or([0u8; 32])),
                 per_context_check = "skipped",
                 "cross-DAG group-state hash divergence detected on apply — reconcile-via-anchor will heal"
             );
         }
-        (None, Some(diff)) => {
+        (false, Some(diff)) => {
             tracing::warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 op_kind,
@@ -975,20 +1006,42 @@ fn verify_post_apply_state_hashes(
                 hash_differs_count = diff.hash_differs.len(),
                 only_in_expected_count = diff.only_in_expected.len(),
                 only_in_actual_count = diff.only_in_actual.len(),
-                hash_differs = ?format_ids(&diff.hash_differs),
+                hash_differs = ?format_hash_differs(&diff.hash_differs),
                 only_in_expected = ?format_ids(&diff.only_in_expected),
                 only_in_actual = ?format_ids(&diff.only_in_actual),
                 "cross-DAG per-context state-hash divergence detected on apply — reconcile-via-anchor will heal"
             );
         }
-        (None, None) => {
-            // Reachable when both halves errored — each error path
-            // already emitted its own warn upstream, so nothing to add
-            // here. Also reachable if both checks were skipped (the
-            // early return at the top of the function catches that
-            // ordinarily, but listing it keeps the match exhaustive).
+        (false, None) => {
+            // Both halves errored — each error path already emitted
+            // its own warn upstream, so nothing to add here. We also
+            // return `None` for divergence: an errored recompute is
+            // not the same as a confirmed divergence, and triggering
+            // a reconcile here would burn anchor bandwidth on every
+            // transient store hiccup.
+            return None;
         }
     }
+
+    // Return the structured report so the apply path can route it
+    // to the reconcile-via-anchor handler. The report carries the
+    // signed expected per-context hashes so the reconcile path
+    // verifies adopted state against them — not against the
+    // anchor's claim, which could be lying.
+    Some(DivergenceReport {
+        group_id: *group_id,
+        op_kind,
+        group_hash_diverges: group_diverges,
+        hash_differs: context_diff
+            .as_ref()
+            .map(|d| d.hash_differs.clone())
+            .unwrap_or_default(),
+        only_in_expected: context_diff
+            .as_ref()
+            .map(|d| d.only_in_expected.clone())
+            .unwrap_or_default(),
+        only_in_actual: context_diff.map(|d| d.only_in_actual).unwrap_or_default(),
+    })
 }
 
 /// Linear merge-scan of two `(ContextId, [u8; 32])` slices both
@@ -1012,14 +1065,19 @@ fn verify_post_apply_state_hashes(
 /// snapshotted that the receiver hasn't materialized (fresh-node
 /// catchup, expected noise), and a context the receiver materialized
 /// after the signer signed (receiver-ahead, also expected noise).
-struct ContextHashDiff {
-    hash_differs: Vec<ContextId>,
-    only_in_expected: Vec<ContextId>,
-    only_in_actual: Vec<ContextId>,
+///
+/// `hash_differs` carries the **expected** hash alongside each
+/// divergent `ContextId`. The reconcile-via-anchor path consumes
+/// this pair: target a sync at `context_id`, then verify the
+/// received root hash against `expected_hash` before adopting.
+pub struct ContextHashDiff {
+    pub hash_differs: Vec<(ContextId, [u8; 32])>,
+    pub only_in_expected: Vec<ContextId>,
+    pub only_in_actual: Vec<ContextId>,
 }
 
 impl ContextHashDiff {
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.hash_differs.is_empty()
             && self.only_in_expected.is_empty()
             && self.only_in_actual.is_empty()
@@ -1062,7 +1120,7 @@ fn diff_sorted_context_hashes(
         match e_cid.cmp(a_cid) {
             std::cmp::Ordering::Equal => {
                 if e_hash != a_hash {
-                    diff.hash_differs.push(*e_cid);
+                    diff.hash_differs.push((*e_cid, *e_hash));
                 }
                 i += 1;
                 j += 1;
@@ -1132,11 +1190,16 @@ fn apply_group_op_mutations(
     group_id: &ContextGroupId,
     signer: &PublicKey,
     op: &GroupOp,
-) -> EyreResult<bool> {
+) -> EyreResult<(bool, Option<DivergenceReport>)> {
     let permissions = PermissionChecker::new(store, *group_id);
     let membership_policy = MembershipPolicy::new(store, *group_id);
     let settings = GroupSettingsService::new(store, *group_id);
     let context_registration = ContextRegistrationService::new(store, *group_id);
+    // Filled by the `MemberRemoved` / `MemberLeft` arms when their
+    // post-apply hash check reports divergence from the signed
+    // claims. The caller forwards this up the apply pipeline; the
+    // node-side handler routes it to the reconcile-via-anchor path.
+    let mut divergence: Option<DivergenceReport> = None;
 
     match op {
         GroupOp::Noop => {}
@@ -1208,7 +1271,7 @@ fn apply_group_op_mutations(
             // claim on every honest receiver. The pre-apply
             // simulation only models the single removal; any extra
             // mutation here is invisible to it.
-            verify_post_apply_state_hashes(
+            divergence = verify_post_apply_state_hashes(
                 store,
                 group_id,
                 "MemberRemoved",
@@ -1593,7 +1656,7 @@ fn apply_group_op_mutations(
             // call DOES touch `GroupMeta` or `GroupMember` rows for
             // `group_id`, the recomputed hash will diverge from the
             // signer's pre-apply simulation on every honest receiver.
-            verify_post_apply_state_hashes(
+            divergence = verify_post_apply_state_hashes(
                 store,
                 group_id,
                 "MemberLeft",
@@ -1651,10 +1714,10 @@ fn apply_group_op_mutations(
             save_group_meta(store, group_id, &meta)?;
         }
         #[allow(unreachable_patterns)]
-        _ => return Ok(false),
+        _ => return Ok((false, None)),
     }
 
-    Ok(true)
+    Ok((true, divergence))
 }
 
 /// Apply a [`SignedGroupOp`] to the local group store (signature, monotonic nonce, admin rules).
@@ -1715,7 +1778,14 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         return Ok(());
     }
 
-    if !apply_group_op_mutations(store, &group_id, &op.signer, &op.op)? {
+    let (handled, _divergence) = apply_group_op_mutations(store, &group_id, &op.signer, &op.op)?;
+    // The `_divergence` outcome is dropped on the local-apply path —
+    // this entry point is used by callers (local replay, tests) that
+    // are not the gossipsub-receive path. The reconcile-via-anchor
+    // trigger lives on the namespace-governance receive path
+    // (`namespace_governance::apply_signed_op`), which surfaces the
+    // report via `NamespaceApplyOutcome::Applied { divergence }`.
+    if !handled {
         bail!("unsupported group op variant for local apply");
     }
 

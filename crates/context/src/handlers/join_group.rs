@@ -168,11 +168,29 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 }
 
                 // Apply governance ops so the local DAG is up to date.
+                //
+                // Note on dropped divergence reports: the `divergence`
+                // field of `NamespaceApplyOutcome::Applied` is not
+                // routed to the reconcile-via-anchor path from here.
+                // This is acceptable for the join-response replay
+                // path specifically: the joiner is rebuilding state
+                // from a snapshot the inviter assembled, so a
+                // divergence between the snapshot and a signed
+                // `MemberRemoved` / `MemberLeft` claim it carries
+                // would indicate inviter-side inconsistency rather
+                // than the partition-window scenario reconcile is
+                // designed to heal. The next signed op the joiner
+                // sees post-join takes the gossip-receive path,
+                // which does route divergence to reconcile — so the
+                // recovery path is not permanently closed. Wiring
+                // reconcile in from here would require plumbing the
+                // node-side `SyncManager` into the context crate,
+                // which the layering prohibits.
                 let mut any_applied = false;
                 for op_bytes in &join_result.governance_ops {
                     if let Ok(op) = borsh::from_slice::<SignedNamespaceOp>(op_bytes) {
                         match context_client.apply_signed_namespace_op(op).await {
-                            Ok(NamespaceApplyOutcome::Applied) => {
+                            Ok(NamespaceApplyOutcome::Applied { .. }) => {
                                 any_applied = true;
                             }
                             Ok(_) => {}

@@ -466,3 +466,118 @@ fn partition_peer_with_only_non_anchor_identities_does_not_qualify() {
     let count = partition_peers_anchor_first(&mut peers, &cache, &anchors);
     assert_eq!(count, 0);
 }
+
+// =========================================================================
+// `reconcile_cooldown` / `record_reconcile_*` — backoff for the
+// reconcile-after-divergence path
+// =========================================================================
+//
+// Contract:
+// - `reconcile_cooldown(n)` doubles from a 30 s base, caps at 30 min.
+// - A failure record bumps the counter and refreshes the timestamp.
+// - A success record clears the entry entirely (no inherited cooldown).
+// - `reconcile_remaining_cooldown` returns `None` outside the window.
+
+use std::time::Duration;
+
+use calimero_primitives::context::ContextId;
+
+use super::{
+    reconcile_cooldown, reconcile_remaining_cooldown, record_reconcile_failure,
+    record_reconcile_success,
+};
+use crate::state::ReconcileAttempt;
+
+fn dummy_context(n: u8) -> ContextId {
+    ContextId::from([n; 32])
+}
+
+#[test]
+fn reconcile_cooldown_schedule_doubles_then_caps() {
+    assert_eq!(reconcile_cooldown(1), Duration::from_secs(30));
+    assert_eq!(reconcile_cooldown(2), Duration::from_secs(60));
+    assert_eq!(reconcile_cooldown(3), Duration::from_secs(120));
+    assert_eq!(reconcile_cooldown(4), Duration::from_secs(240));
+    assert_eq!(reconcile_cooldown(5), Duration::from_secs(480));
+    assert_eq!(reconcile_cooldown(6), Duration::from_secs(960));
+    assert_eq!(reconcile_cooldown(7), Duration::from_secs(30 * 60));
+    // Cap holds for arbitrarily large counters.
+    assert_eq!(reconcile_cooldown(50), Duration::from_secs(30 * 60));
+    assert_eq!(reconcile_cooldown(u32::MAX), Duration::from_secs(30 * 60));
+}
+
+#[test]
+fn reconcile_cooldown_zero_failures_treated_as_one() {
+    // The function is only meant to be called when at least one
+    // failure has been recorded; we still want a defined value at 0
+    // rather than a panic or underflow.
+    assert_eq!(reconcile_cooldown(0), Duration::from_secs(30));
+}
+
+#[test]
+fn record_reconcile_failure_increments_counter_and_stamps_time() {
+    let attempts: DashMap<ContextId, ReconcileAttempt> = DashMap::new();
+    let ctx = dummy_context(1);
+
+    assert_eq!(record_reconcile_failure(&attempts, ctx), 1);
+    assert_eq!(record_reconcile_failure(&attempts, ctx), 2);
+    assert_eq!(record_reconcile_failure(&attempts, ctx), 3);
+
+    let entry = attempts.get(&ctx).expect("entry was inserted");
+    assert_eq!(entry.consecutive_failures, 3);
+    // Stamp should be very recent (within the last few seconds).
+    assert!(entry.last_attempt_at.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn record_reconcile_success_clears_entry() {
+    let attempts: DashMap<ContextId, ReconcileAttempt> = DashMap::new();
+    let ctx = dummy_context(1);
+
+    let _ = record_reconcile_failure(&attempts, ctx);
+    let _ = record_reconcile_failure(&attempts, ctx);
+    assert!(attempts.contains_key(&ctx));
+
+    record_reconcile_success(&attempts, &ctx);
+    assert!(
+        !attempts.contains_key(&ctx),
+        "success should clear all backoff state for the context"
+    );
+}
+
+#[test]
+fn reconcile_remaining_cooldown_none_when_no_entry() {
+    let attempts: DashMap<ContextId, ReconcileAttempt> = DashMap::new();
+    let ctx = dummy_context(1);
+    assert!(reconcile_remaining_cooldown(&attempts, &ctx).is_none());
+}
+
+#[test]
+fn reconcile_remaining_cooldown_some_after_recent_failure() {
+    let attempts: DashMap<ContextId, ReconcileAttempt> = DashMap::new();
+    let ctx = dummy_context(1);
+    let _ = record_reconcile_failure(&attempts, ctx);
+
+    let (remaining, failures) =
+        reconcile_remaining_cooldown(&attempts, &ctx).expect("within cooldown");
+    assert_eq!(failures, 1);
+    // The first cooldown is 30 s; the test runs in <1 s.
+    assert!(remaining > Duration::from_secs(25));
+    assert!(remaining <= Duration::from_secs(30));
+}
+
+#[test]
+fn reconcile_remaining_cooldown_none_after_cooldown_lapsed() {
+    let attempts: DashMap<ContextId, ReconcileAttempt> = DashMap::new();
+    let ctx = dummy_context(1);
+    // Synthesize an entry whose timestamp is far enough in the past
+    // that even the maximum cooldown has lapsed.
+    let _replaced = attempts.insert(
+        ctx,
+        ReconcileAttempt {
+            last_attempt_at: std::time::Instant::now() - Duration::from_secs(60 * 60),
+            consecutive_failures: 7,
+        },
+    );
+    assert!(reconcile_remaining_cooldown(&attempts, &ctx).is_none());
+}
