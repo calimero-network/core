@@ -71,7 +71,7 @@ where
         // is stable across versions.
         let value = inner
             .insert_with_crdt_type(
-                Some(id),
+                id,
                 f(),
                 "root",
                 CrdtType::lww_register(std::any::type_name::<T>()),
@@ -85,7 +85,12 @@ where
         }
     }
 
-    fn entry_id() -> Id {
+    /// The fixed id of the single entry under a `Root<T>` collection.
+    ///
+    /// Visible to the storage tests so they can cross-reference the entry's
+    /// index without hardcoding `[118; 32]` and silently going stale if this
+    /// constant ever changes.
+    pub(crate) fn entry_id() -> Id {
         Id::new([118; 32])
     }
 
