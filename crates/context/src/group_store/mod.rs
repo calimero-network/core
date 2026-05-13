@@ -1189,6 +1189,13 @@ fn apply_group_op_mutations(
     signer: &PublicKey,
     op: &GroupOp,
 ) -> EyreResult<(bool, Option<DivergenceReport>)> {
+    tracing::info!(
+        target: "metadata_diag",
+        group_id = %hex::encode(group_id.to_bytes()),
+        signer = %signer,
+        op_kind = op.op_kind_label(),
+        "apply_group_op_mutations: entry"
+    );
     let permissions = PermissionChecker::new(store, *group_id);
     let membership_policy = MembershipPolicy::new(store, *group_id);
     let settings = GroupSettingsService::new(store, *group_id);
