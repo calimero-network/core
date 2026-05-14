@@ -33,6 +33,7 @@ impl Handler<JoinContextRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let context_client = self.context_client.clone();
         let node_client = self.node_client.clone();
+        let ack_router = std::sync::Arc::clone(&self.ack_router);
         ActorResponse::r#async(
             async move {
                 let mut group_id = group_store::get_group_for_context(&datastore, &context_id)?;
@@ -142,6 +143,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                     &group_id,
                     &joiner_identity,
                 )?;
+                let mut was_inherited = false;
                 match membership_path {
                     group_store::MembershipPath::None => {
                         bail!("identity is not a member of the group");
@@ -162,6 +164,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                             via_admin,
                             "context join authorized via inherited subgroup membership"
                         );
+                        was_inherited = true;
                     }
                 }
 
@@ -231,6 +234,51 @@ impl Handler<JoinContextRequest> for ContextManager {
                     %joiner_identity,
                     "joined context via group membership"
                 );
+
+                // Inherited members (Open subgroup, joined via the
+                // CAN_JOIN_OPEN_SUBGROUPS parent-walk) don't get a
+                // `KeyDelivery` from any admin — admin never called
+                // `add_group_members` for them. Without the group key
+                // their `sender_key` stays None on the ContextIdentity
+                // row above, which means they can't decrypt state-DAG
+                // messages and others can't decrypt theirs. Publish
+                // `RootOp::MemberJoinedOpen` signed by us so any peer
+                // holding the key responds with a `KeyDelivery` (same
+                // mechanism `MemberJoined` uses for invitation-based
+                // joins).
+                //
+                // Direct members are explicit-add via
+                // `add_group_members` and already get a `KeyDelivery`
+                // emitted alongside their `MemberAdded` — skip this
+                // path for them.
+                if was_inherited {
+                    let signer_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
+                    let op = calimero_context_client::local_governance::NamespaceOp::Root(
+                        calimero_context_client::local_governance::RootOp::MemberJoinedOpen {
+                            member: joiner_identity,
+                            group_id: group_id.to_bytes(),
+                        },
+                    );
+                    if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
+                        &datastore,
+                        &node_client,
+                        &ack_router,
+                        ns_id.to_bytes(),
+                        &signer_sk,
+                        op,
+                    )
+                    .await
+                    {
+                        warn!(
+                            ?e,
+                            %joiner_identity,
+                            %context_id,
+                            "failed to publish MemberJoinedOpen — key delivery to this \
+                             inherited joiner will be skipped; messages will appear local-only \
+                             until an admin explicitly add_group_members the joiner"
+                        );
+                    }
+                }
 
                 Ok(JoinContextResponse {
                     context_id,
