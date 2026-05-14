@@ -45,9 +45,10 @@ use async_trait::async_trait;
 use calimero_node_primitives::sync::{
     compare_tree_nodes, create_runtime_env, InitPayload, LeafMetadata, MessagePayload,
     StreamMessage, SyncProtocolExecutor, SyncTransport, TreeCompareResult, TreeLeafData, TreeNode,
-    TreeNodeResponse, MAX_NODES_PER_RESPONSE,
+    TreeNodeResponse, MAX_LEAF_VALUE_SIZE, MAX_NODES_PER_RESPONSE,
 };
 use calimero_primitives::context::ContextId;
+use calimero_primitives::crdt::CrdtType;
 use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
 use calimero_storage::env::with_runtime_env;
@@ -60,6 +61,19 @@ use tracing::{debug, info, trace, warn};
 
 /// Maximum number of pending node requests (DFS stack depth limit).
 const MAX_PENDING_NODES: usize = 10_000;
+
+/// Synthetic `CrdtType::LwwRegister` inner-type name used on the wire for a
+/// Merkle leaf whose stored `index.metadata.crdt_type` is `None` ("opaque"
+/// leaf — e.g. the WASM app's `Root<T>` state entry `Id::new([118; 32])`).
+///
+/// The storage layer treats `crdt_type == None` and
+/// `crdt_type == Some(LwwRegister { .. })` identically for merge (incoming
+/// wins iff `updated_at >= existing`), and `crdt_type` is *not* an input to a
+/// leaf's Merkle hash (`Metadata` is `#[borsh(skip)]` on `Element`), so
+/// emitting a leaf with this synthetic type is wire-format-stable and
+/// merge-equivalent to the `None` it stands in for. See
+/// `docs/superpowers/specs/2026-05-13-opaque-leaf-sync-design.md`.
+pub(super) const OPAQUE_LEAF_CRDT_TYPE_NAME: &str = "Opaque";
 
 /// Maximum depth allowed in TreeNodeRequest.
 pub const MAX_REQUEST_DEPTH: u8 = 16;
@@ -643,23 +657,51 @@ fn collect_leaves_recursive(
         .unwrap_or_default();
 
     if children_ids.is_empty() {
-        // Leaf node — collect its data
+        // Leaf node — collect its data. Internal nodes (children non-empty)
+        // are NOT emitted as leaves: storage-layer collection containers
+        // have structural Merkle bytes in their `find_by_id_raw` result
+        // (children list / `Collection` borsh) that aren't user data and
+        // would corrupt the receiver if applied as a leaf. Pushing only
+        // true leaves and reconstructing internal structure via parent_id
+        // links on those leaves is the correct shape for this protocol.
         if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-            if let Some(ref crdt_type) = index.metadata.crdt_type {
-                let metadata =
-                    LeafMetadata::new(crdt_type.clone(), index.metadata.updated_at(), [0u8; 32])
-                        .with_created_at(index.metadata.created_at());
-                let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
-                leaves.push(leaf_data);
-            } else {
+            let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
+                // Opaque leaf — carry it with a synthetic LWW wire type so it is
+                // pushed (and is `is_valid()` on the peer), not silently dropped.
+                trace!(%entity_id, "opaque leaf, synthesised LWW wire type for push");
+                CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
+            });
+            // Carry the leaf's Merkle parent_id on the wire so the
+            // receiver can place the entity at the correct position in
+            // *its* tree instead of always making it a direct child of
+            // the context root. The receiver's apply path
+            // (`apply_leaf_with_crdt_merge`) reads this back; pre-fix
+            // the field was always `None` and the receiver fell back to
+            // context-root, which silently corrupted the Merkle topology
+            // for any nested-collection entity → divergent root hash
+            // that HashComparison could never heal. See the smoke-test
+            // Round-2 failure on bdc61af for evidence.
+            let mut metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
+                .with_created_at(index.metadata.created_at());
+            if let Some(parent_id) = index.parent_id() {
+                metadata = metadata.with_parent(*parent_id.as_bytes());
+            }
+            let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
+            if leaf_data.value.len() > MAX_LEAF_VALUE_SIZE {
                 warn!(
                     %entity_id,
-                    "collect_leaves_recursive: leaf missing crdt_type, skipping"
+                    len = leaf_data.value.len(),
+                    "leaf value exceeds MAX_LEAF_VALUE_SIZE, skipping push"
                 );
+            } else {
+                leaves.push(leaf_data);
             }
         }
     } else {
-        // Internal node — recurse into children
+        // Internal node — recurse into children. Their parent_id on the
+        // wire identifies *this* entity as their parent, so the receiver
+        // can rebuild the tree structure without needing this internal
+        // node's bytes.
         for child_id in &children_ids {
             collect_leaves_recursive(context_id, child_id, false, leaves, depth + 1)?;
         }
@@ -780,20 +822,21 @@ fn get_local_tree_node(
     if children_ids.is_empty() {
         // Leaf node
         if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-            let Some(crdt_type) = index.metadata.crdt_type.clone() else {
-                // No CRDT type — treat as opaque node; sync via delta exchange, not EntityPush.
-                warn!(
-                    %entity_id,
-                    "leaf has no CRDT type, treating as opaque node"
-                );
-                return Ok(Some(TreeNode::internal(
-                    *entity_id.as_bytes(),
-                    full_hash,
-                    vec![],
-                )));
-            };
-            let metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
+            let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
+                // No CRDT type ("opaque" leaf — e.g. the `Root<T>` state entry).
+                // Emit a real *leaf* (not a malformed empty `internal` node, which the
+                // peer's `TreeNode::is_valid()` rejects) carrying a synthetic LWW wire
+                // type — merge-equivalent to `None` and Merkle-hash-neutral.
+                trace!(%entity_id, "opaque leaf, synthesised LWW wire type for sync");
+                CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
+            });
+            // Carry the leaf's Merkle parent_id on the wire — see the same
+            // comment in `collect_leaves_recursive` for rationale.
+            let mut metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
                 .with_created_at(index.metadata.created_at());
+            if let Some(parent_id) = index.parent_id() {
+                metadata = metadata.with_parent(*parent_id.as_bytes());
+            }
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
             Ok(Some(TreeNode::leaf(
                 *entity_id.as_bytes(),
@@ -833,5 +876,96 @@ mod tests {
         let stats = HashComparisonStats::default();
         assert_eq!(stats.nodes_compared, 0);
         assert_eq!(stats.entities_merged, 0);
+    }
+
+    /// An opaque (no-`crdt_type`) Merkle leaf must be emitted as a real *leaf*
+    /// `TreeNode` (not a malformed empty `internal` node, which the peer drops as
+    /// "Invalid TreeNode") carrying a synthetic LWW wire type.
+    #[test]
+    fn get_local_tree_node_returns_leaf_for_no_crdt_entity() {
+        use std::sync::Arc;
+
+        use calimero_storage::action::Action;
+        use calimero_storage::entities::{ChildInfo, Metadata};
+        use calimero_storage::interface::ApplyContext;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+
+        let context_id = ContextId::from([0xCA; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(&store, context_id, identity);
+
+        // `Id::new([118; 32])` == `Root::<T>::entry_id()` — an opaque leaf.
+        let root_id = Id::new(*context_id.as_ref());
+        let opaque_id = Id::new([118u8; 32]);
+
+        with_runtime_env(runtime_env.clone(), || {
+            // Create the context root.
+            Interface::<MainStorage>::apply_action(
+                Action::Update {
+                    id: root_id,
+                    data: vec![],
+                    ancestors: vec![],
+                    metadata: Metadata::default(),
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("create root");
+
+            // Add the opaque leaf as a child of root — `Metadata::new` => crdt_type None.
+            let root_hash = Index::<MainStorage>::get_hashes_for(root_id)
+                .ok()
+                .flatten()
+                .map(|(full, _)| full)
+                .unwrap_or([0; 32]);
+            let root_meta = Index::<MainStorage>::get_index(root_id)
+                .ok()
+                .flatten()
+                .map(|idx| idx.metadata.clone())
+                .unwrap_or_default();
+            Interface::<MainStorage>::apply_action(
+                Action::Add {
+                    id: opaque_id,
+                    data: b"app-root-state".to_vec(),
+                    ancestors: vec![ChildInfo::new(root_id, root_hash, root_meta)],
+                    metadata: Metadata::new(100, 100),
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("add opaque leaf");
+
+            // Sanity: it really is opaque.
+            assert!(
+                Index::<MainStorage>::get_index(opaque_id)
+                    .unwrap()
+                    .unwrap()
+                    .metadata
+                    .crdt_type
+                    .is_none(),
+                "seeded entity must have crdt_type == None"
+            );
+
+            let node = get_local_tree_node(context_id, opaque_id.as_bytes(), false)
+                .expect("get_local_tree_node should not error")
+                .expect("node should exist");
+
+            assert!(node.is_leaf(), "opaque entity must be emitted as a leaf");
+            assert!(
+                !node.is_internal(),
+                "opaque entity must not be an internal node"
+            );
+            assert!(
+                node.is_valid(),
+                "opaque leaf node must be structurally valid"
+            );
+            let leaf_data = node.leaf_data.as_ref().expect("leaf must carry leaf_data");
+            assert!(
+                matches!(leaf_data.metadata.crdt_type, CrdtType::LwwRegister { .. }),
+                "opaque leaf must carry a synthetic LwwRegister wire type, got {:?}",
+                leaf_data.metadata.crdt_type
+            );
+            assert_eq!(leaf_data.value, b"app-root-state");
+        });
     }
 }
