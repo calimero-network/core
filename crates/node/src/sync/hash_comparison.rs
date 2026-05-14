@@ -26,6 +26,7 @@ use calimero_node_primitives::sync::{
     TreeLeafData, TreeNode, TreeNodeResponse, MAX_NODES_PER_RESPONSE,
 };
 use calimero_primitives::context::ContextId;
+use calimero_primitives::crdt::CrdtType;
 use calimero_storage::address::Id;
 use calimero_storage::env::{with_runtime_env, RuntimeEnv};
 use calimero_storage::index::Index;
@@ -337,28 +338,33 @@ impl SyncManager {
         if children_ids.is_empty() {
             // Leaf node - try to get entity data
             if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-                let Some(crdt_type) = index.metadata.crdt_type.clone() else {
-                    // No CRDT type — entity is managed outside hash comparison (e.g. Root
-                    // sentinel). Return as an opaque internal node so its hash still
-                    // participates in divergence detection but it is never EntityPush'd.
-                    warn!(
-                        %context_id,
-                        entity_id = %entity_id,
-                        "leaf has no CRDT type, treating as opaque node"
-                    );
-                    return Ok(Some(TreeNode::internal(
-                        *entity_id.as_bytes(),
-                        full_hash,
-                        vec![],
-                    )));
-                };
-                let metadata = LeafMetadata::new(
-                    crdt_type,
-                    index.metadata.updated_at(),
-                    // Collection ID - use parent if available
-                    [0u8; 32],
-                )
-                .with_created_at(index.metadata.created_at());
+                let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
+                    // No CRDT type ("opaque" leaf — e.g. the `Root<T>` state entry).
+                    // Emit a real *leaf* (not a malformed empty `internal` node, which
+                    // the peer's `TreeNode::is_valid()` rejects) carrying a synthetic
+                    // LWW wire type — merge-equivalent to `None` and Merkle-hash-neutral.
+                    // Same Model-S fix as `hash_comparison_protocol.rs` (see
+                    // `OPAQUE_LEAF_CRDT_TYPE_NAME` there + opaque-leaf-sync design spec).
+                    trace!(%entity_id, "opaque leaf, synthesised LWW wire type for sync");
+                    CrdtType::lww_register(
+                        super::hash_comparison_protocol::OPAQUE_LEAF_CRDT_TYPE_NAME,
+                    )
+                });
+                // Carry the leaf's Merkle parent_id on the wire so the
+                // initiator can reconstruct the entity at its proper Merkle
+                // position. Pre-fix this field was unconditionally `None`
+                // and the initiator's apply path fell back to "direct child
+                // of context root" — corrupting the topology for any nested-
+                // collection entity (every `Root<T>`-wrapped app, which is
+                // ~all of them). See the design spec for the wire-format
+                // analysis: the field already exists on `LeafMetadata`, just
+                // wasn't populated.
+                let mut metadata =
+                    LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
+                        .with_created_at(index.metadata.created_at());
+                if let Some(parent_id) = index.parent_id() {
+                    metadata = metadata.with_parent(*parent_id.as_bytes());
+                }
 
                 let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
 

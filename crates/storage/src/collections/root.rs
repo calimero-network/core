@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 
-use super::{Collection, ROOT_ID};
+use super::{Collection, CrdtType, ROOT_ID};
 use crate::address::Id;
 use crate::delta::{push_comparison, StorageDelta};
 use crate::index::DeferredAncestorScope;
@@ -58,7 +58,25 @@ where
 
         let id = Self::entry_id();
 
-        let value = inner.insert(Some(id), f()).unwrap();
+        // Give the `Root<T>` entry an LWW `crdt_type` on creation so it goes
+        // through the normal CRDT leaf path during HashComparison sync instead
+        // of being an "opaque" (`crdt_type: None`) leaf. LWW-on-`updated_at` is
+        // the right semantics for the WASM app-root value (more-recently-written
+        // side wins). Entries already on disk keep `crdt_type: None` and are
+        // reconciled by the opaque-leaf sync fix in #2344.
+        //
+        // The inner-type label is `std::any::type_name::<T>()` to match the
+        // codebase convention (cf. `LwwRegister<T>` in `crdt_impls.rs`); it is
+        // metadata only — `crdt_type` is not in the Merkle hash, so the label
+        // is stable across versions.
+        let value = inner
+            .insert_with_crdt_type(
+                id,
+                f(),
+                "root",
+                CrdtType::lww_register(std::any::type_name::<T>()),
+            )
+            .unwrap();
 
         Self {
             inner,
@@ -67,7 +85,12 @@ where
         }
     }
 
-    fn entry_id() -> Id {
+    /// The fixed id of the single entry under a `Root<T>` collection.
+    ///
+    /// Visible to the storage tests so they can cross-reference the entry's
+    /// index without hardcoding `[118; 32]` and silently going stale if this
+    /// constant ever changes.
+    pub(crate) fn entry_id() -> Id {
         Id::new([118; 32])
     }
 
