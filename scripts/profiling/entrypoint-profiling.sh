@@ -103,16 +103,26 @@ start_profiling() {
     local perf_output="$PROFILING_OUTPUT_DIR/perf-${node_name}.data"
     local perf_log="$PROFILING_OUTPUT_DIR/perf-${node_name}.log"
     
-    echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz, call-graph: fp)..."
-    # `-g` = frame-pointer unwinding. The profiling image builds merod with
-    # `-C force-frame-pointers=yes` under `[profile.profiling]` (debug=true,
-    # strip=false) precisely so this works — `%rbp` chains give correct deep
-    # stacks here, the capture is cheap, and `perf script | stackcollapse |
-    # flamegraph.pl` renders cleanly against the binary's symtab. (Don't swap
-    # this for `--call-graph dwarf` without also bumping `-m` and capping the
-    # snapshot size, and verifying merod's .debug_* survives the release
-    # pipeline — otherwise the render fails and perf thrashes its mmap ring.)
-    perf record -F "$PERF_SAMPLE_FREQ" -g -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
+    echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz, call-graph: dwarf)..."
+    # `--call-graph dwarf,16384` instead of `-g` (frame-pointer): even though
+    # merod is built with `-C force-frame-pointers=yes` under
+    # `[profile.profiling]` (debug=true, strip=false), `%rbp` chains break
+    # across libc / libstdc++ / jemalloc / kernel transitions, producing
+    # thousands of [unknown] frames in the rendered flamegraph (~2k in the
+    # group-governance run on PR #2342). DWARF unwinds via `.debug_frame` and
+    # stays intact across those boundaries.
+    #
+    # Prior comment here warned not to swap to DWARF without also: bumping
+    # `-m`, capping snapshot size, and verifying merod's `.debug_*` survives
+    # the release pipeline. Addressed:
+    #   - snapshot size capped to 16384 B per stack (the `,16384` suffix).
+    #   - `-m 16M` enlarges the mmap ring so we don't drop samples while
+    #     copying out larger DWARF stack snapshots.
+    #   - `.debug_*` is preserved by `[profile.profiling]` (debug=true,
+    #     strip=false) — same profile the prior author relied on for
+    #     frame-pointer chains; we're using the DWARF info that was already
+    #     being shipped.
+    perf record -F "$PERF_SAMPLE_FREQ" --call-graph dwarf,16384 -m 16M -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
     PERF_PID=$!
     echo $PERF_PID > "$PROFILING_OUTPUT_DIR/perf.pid"
     
