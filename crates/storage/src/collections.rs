@@ -256,6 +256,40 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         self.insert_with_storage_type(id, item, StorageType::Public)
     }
 
+    /// Inserts an item into the collection with a fixed `id`, `field_name` and
+    /// `crdt_type` on the entry's storage element.
+    ///
+    /// Unlike [`Collection::new_with_field_name_and_crdt_type`] (which *derives*
+    /// the id from the field name), this keeps the caller-provided `id` — used
+    /// by `Root<T>` whose single entry has the fixed id `Id::new([118; 32])`.
+    ///
+    /// `id` is a plain `Id` (not `Option<Id>`) so the contract is enforced at
+    /// the type level — the method *requires* a caller-provided fixed id, and
+    /// the type signature reflects that. (`insert_with_storage_type` keeps
+    /// `Option<Id>` because for it `None` is a meaningful "let storage pick".)
+    pub(crate) fn insert_with_crdt_type(
+        &mut self,
+        id: Id,
+        item: T,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) -> StoreResult<T> {
+        let mut collection = CollectionMut::new(self);
+
+        let mut entry = Entry {
+            item,
+            storage: Element::new_with_field_name_and_crdt_type(
+                Some(id),
+                Some(field_name.to_string()),
+                crdt_type,
+            ),
+        };
+
+        collection.insert(&mut entry)?;
+
+        Ok(entry.item)
+    }
+
     /// Inserts an item into the collection with a specific StorageType.
     pub(crate) fn insert_with_storage_type(
         &mut self,

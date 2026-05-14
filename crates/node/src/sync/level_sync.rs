@@ -791,12 +791,20 @@ fn get_nodes_at_level(
                         continue;
                     };
 
-                    let metadata = calimero_node_primitives::sync::LeafMetadata::new(
+                    // Carry the leaf's Merkle parent_id on the wire so the
+                    // receiver can reconstruct it at the correct position
+                    // (matches the HashComparison apply path). Pre-fix the
+                    // receiver always rooted at context, corrupting the
+                    // Merkle topology of nested entities.
+                    let mut metadata = calimero_node_primitives::sync::LeafMetadata::new(
                         crdt_type,
                         child_index.metadata.updated_at(),
                         [0u8; 32],
                     )
                     .with_created_at(child_index.metadata.created_at());
+                    if let Some(parent_id) = child_index.parent_id() {
+                        metadata = metadata.with_parent(*parent_id.as_bytes());
+                    }
                     let leaf_data =
                         TreeLeafData::new(*child_storage_id.as_bytes(), entry_data, metadata);
 

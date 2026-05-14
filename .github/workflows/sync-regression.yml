@@ -1,0 +1,152 @@
+name: Sync regression (smoke)
+
+# Smoke regression for HashComparison sync — specifically the opaque-leaf
+# code path fixed in #2344. Mirrors mero-drive's failing E2E (main)
+# bootstrap pattern (2-node, namespace + context + interleaved writes)
+# end-to-end, in ~3 min of merobox runtime + ~3 min of cold-start.
+#
+# This is smoke coverage. The deterministic regression guard lives in
+# `crates/node/tests/sync_sim/protocol.rs` and runs on every PR via
+# cargo-test. A failure here is a real bug; a green here does not mean
+# every regression is caught.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/node/src/sync/**"
+      - "crates/node/primitives/src/sync/**"
+      - "crates/storage/src/**"
+      - "workflows/sync-tests/**"
+      - ".github/workflows/sync-regression.yml"
+      - ".github/actions/build-local-merod/**"
+      - ".github/actions/setup-merobox/**"
+
+  pull_request:
+    branches: [master]
+    paths:
+      - "crates/node/src/sync/**"
+      - "crates/node/primitives/src/sync/**"
+      - "crates/storage/src/**"
+      - "workflows/sync-tests/**"
+      - ".github/workflows/sync-regression.yml"
+      - ".github/actions/build-local-merod/**"
+      - ".github/actions/setup-merobox/**"
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_LOG: info,calimero_=debug
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  sync-regression:
+    name: Sync regression
+    # Same runner class as e2e-rust-apps so cold-start performance is
+    # comparable and we share the rust-ci cache.
+    runs-on: ubuntu-24.04-8cpu
+    # 15-min cap is generous: the workflow's own timeouts are 30s per
+    # `wait_for_sync`, so a regression fails in ~30s. The cap is for the
+    # cold-build steps (merod image + WASM) plus a safety margin.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          shared-key: sync-regression
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build local merod image
+        uses: ./.github/actions/build-local-merod
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build kv-store-with-handlers WASM
+        run: |
+          cd apps/kv-store-with-handlers
+          ./build.sh
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run sync-regression workflow
+        # `merobox bootstrap run` exits non-zero on any failed step
+        # (including a `wait_for_sync` timeout, which is the symptom
+        # under regression). No retry — a flake here is a real bug, same
+        # rationale as `e2e-rust-apps.yml`'s single-attempt policy.
+        run: |
+          mkdir -p docker-logs
+
+          # Stream docker logs to per-container files while the run is
+          # live. The init containers exit quickly and `merobox bootstrap
+          # run` tears the runtime containers down on its way out, so a
+          # post-run `docker logs` pass catches nothing — capture during
+          # the run instead. Same shape as e2e-rust-apps.yml and
+          # fuzzy-load-test.yml's watcher (calimero-network/merobox#207).
+          LOGDIR="$GITHUB_WORKSPACE/docker-logs"
+          WATCHER_STATE_DIR="$(mktemp -d)"
+          (
+            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+              for c in $(docker ps --filter "label=calimero.node=true" \
+                                   --format "{{.Names}}" 2>/dev/null \
+                         | grep -v -- '-init$' || true); do
+                mark="$WATCHER_STATE_DIR/${c}"
+                if [ ! -f "$mark" ]; then
+                  touch "$mark"
+                  echo "[log-watcher] following $c"
+                  docker logs -f --timestamps "$c" \
+                    > "$LOGDIR/${c}.log" 2>&1 &
+                fi
+              done
+              sleep 1
+            done
+          ) &
+          WATCHER_PID=$!
+
+          set +e
+          set -o pipefail
+          merobox bootstrap run \
+              workflows/sync-tests/opaque-leaf-regression.yml \
+              --image merod:local \
+              --e2e-mode \
+              --verbose 2>&1 | tee docker-logs/merobox-output.log
+          exit_code=$?
+          set +o pipefail
+
+          touch "$WATCHER_STATE_DIR/stop"
+          sleep 2
+          kill "$WATCHER_PID" 2>/dev/null || true
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
+
+          exit "$exit_code"
+
+      - name: Upload docker logs
+        # Always upload — green runs still need log evidence (e.g.
+        # confirming sync timing is actually fast, not just barely
+        # under the wait_for_sync budget). Matches the pattern in
+        # `e2e-rust-apps.yml` (`if: always()`).
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-regression-docker-logs
+          path: docker-logs/
+          retention-days: 7
+          if-no-files-found: ignore

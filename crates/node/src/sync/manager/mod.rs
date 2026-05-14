@@ -2720,24 +2720,96 @@ impl SyncManager {
             return Ok(Some(()));
         }
 
-        let Some(context) = self.context_client.get_context(&context_id)? else {
-            // An inbound stream for a context this node does not know about
-            // must not tear down unrelated in-flight sync activity. This
-            // happens during cold-start `join_context` when a subgroup /
-            // app-internal context leaks onto the sync channel before the
-            // joining node has materialised it. Close the stream cleanly
-            // and let the concurrent legitimate sync continue. (#2198)
-            warn!(
-                %context_id,
-                ?their_identity,
-                "inbound stream for unknown context, closing cleanly"
-            );
+        let context = match self.context_client.get_context(&context_id)? {
+            Some(ctx) => ctx,
+            None => {
+                // Race window: the dialer can trigger context-level sync as
+                // a cascade of namespace-topic subscription
+                // (`subscriptions.rs::handle_subscribed` → `sync_group` /
+                // `broadcast_group_local_state`) before this node's local
+                // `join_context` materialises the context entry. If the
+                // dialer is a member of the namespace this context belongs
+                // to, the inbound stream is legitimate — just early. Brief
+                // wait for materialisation, then proceed (or close if it
+                // really is an unknown context). Same race shape as the
+                // unknown-member catch-up below (#2237).
+                let store = self.context_client.datastore();
+                let dialer_is_namespace_member =
+                    match calimero_context::group_store::get_group_for_context(store, &context_id)?
+                    {
+                        Some(group_id) => calimero_context::group_store::check_group_membership(
+                            store,
+                            &group_id,
+                            &their_identity,
+                        )?,
+                        None => false,
+                    };
 
-            if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
-                error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+                if !dialer_is_namespace_member {
+                    // Genuinely unknown context (or cross-namespace stream
+                    // leak per #2198). Close cleanly so unrelated sync
+                    // activity is unaffected.
+                    warn!(
+                        %context_id,
+                        ?their_identity,
+                        "inbound stream for unknown context, closing cleanly"
+                    );
+
+                    if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
+                        error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+                    }
+
+                    return Ok(None);
+                }
+
+                // Bounded wait for local `join_context` to materialise the
+                // context entry. Poll cadence matches `FALLBACK_POLL` in
+                // `handlers/join_context.rs`. The 5 s budget comfortably
+                // covers the ~5 s gap observed between namespace-membership
+                // application and local context materialisation in the
+                // `bdc61af` smoke-regression artefact; cold-start cases
+                // beyond that fall through to the same OpaqueError as
+                // before — the dialer retries on its next sync interval.
+                const MATERIALIZATION_WINDOW: time::Duration = time::Duration::from_secs(5);
+                const MATERIALIZATION_POLL: time::Duration = time::Duration::from_millis(200);
+
+                let deadline = Instant::now() + MATERIALIZATION_WINDOW;
+                let mut materialised = None;
+                while Instant::now() < deadline {
+                    time::sleep(MATERIALIZATION_POLL).await;
+                    if let Some(ctx) = self.context_client.get_context(&context_id)? {
+                        materialised = Some(ctx);
+                        break;
+                    }
+                }
+
+                match materialised {
+                    Some(ctx) => {
+                        debug!(
+                            %context_id,
+                            ?their_identity,
+                            "context materialised during join race window, proceeding with inbound sync"
+                        );
+                        ctx
+                    }
+                    None => {
+                        debug!(
+                            %context_id,
+                            ?their_identity,
+                            "context not materialised within join race window, closing stream"
+                        );
+                        if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await
+                        {
+                            error!(
+                                %err,
+                                %context_id,
+                                "failed to send OpaqueError for unknown context"
+                            );
+                        }
+                        return Ok(None);
+                    }
+                }
             }
-
-            return Ok(None);
         };
 
         let mut _updated = None;

@@ -993,4 +993,307 @@ mod tests {
         assert_eq!(stats.entities_pushed, 0, "no-op when already synced");
         assert_eq!(alice.root_hash(), bob.root_hash());
     }
+
+    /// **REGRESSION GUARD (opaque-leaf sync)**: a Merkle leaf with no `crdt_type`
+    /// — the `Root<T>` app-state entry `Id::new([118; 32])` — present on one node
+    /// but not the other must reconcile via HashComparison so both converge.
+    ///
+    /// Before the fix, `get_local_tree_node` returned a malformed `internal` node
+    /// (empty children) for an opaque leaf and `collect_leaves_recursive` skipped
+    /// it, so the entity was never pushed/pulled and the two nodes' Merkle root
+    /// hashes stayed divergent forever.
+    #[tokio::test]
+    async fn test_opaque_leaf_converges_via_hash_comparison() {
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::Metadata;
+
+        // `Id::new([118; 32])` == `Root::<T>::entry_id()`.
+        const ROOT_ENTRY_ID: [u8; 32] = [118u8; 32];
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared base entity so both nodes are "initialized" (non-zero root hash),
+        // mirroring the real scenario where HashComparison (not Snapshot) runs.
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        assert_eq!(alice.root_hash(), bob.root_hash());
+
+        // Alice has the `Root<T>` entry — a leaf with NO crdt_type (opaque).
+        // Seeded directly via storage so `crdt_type` stays `None`.
+        let opaque_value = b"app-root-state-v1".to_vec();
+        alice.storage().add_entity(
+            Id::new(ROOT_ENTRY_ID),
+            &opaque_value,
+            Metadata::new(100, 100),
+        );
+
+        // Sanity: Alice's opaque entity is genuinely opaque.
+        let alice_idx = alice
+            .storage()
+            .get_index(Id::new(ROOT_ENTRY_ID))
+            .expect("alice should have the opaque entity");
+        assert!(
+            alice_idx.metadata.crdt_type.is_none(),
+            "seeded entity must have crdt_type == None"
+        );
+
+        // Bob does not have it → diverged.
+        assert!(bob
+            .storage()
+            .get_entity_data(Id::new(ROOT_ENTRY_ID))
+            .is_none());
+        assert_ne!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "nodes should be diverged on the opaque leaf"
+        );
+
+        // Alice initiates HashComparison sync with Bob.
+        execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("sync should succeed");
+
+        // (a) Bob now has the same entity bytes.
+        assert_eq!(
+            bob.storage()
+                .get_entity_data(Id::new(ROOT_ENTRY_ID))
+                .as_deref(),
+            Some(opaque_value.as_slice()),
+            "Bob should have the opaque entity bytes after sync"
+        );
+        // (b) Merkle root hashes converged.
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "root hashes should converge after syncing the opaque leaf"
+        );
+    }
+
+    /// **REGRESSION GUARD (opaque-leaf sync, responder side)**: the mirror of
+    /// `test_opaque_leaf_converges_via_hash_comparison` — here the opaque leaf
+    /// (a no-`crdt_type` entity) lives on the *responder* (Bob) and the
+    /// initiator (Alice) lacks it, so Alice must *pull* it via the tree-walk:
+    /// Bob's `get_local_tree_node` must emit the opaque entity as a real leaf,
+    /// and Alice's initiator applies it through the `remote_node.is_valid()`
+    /// guard and `apply_leaf_with_crdt_merge`.
+    ///
+    /// Before the fix, Bob's `get_local_tree_node` returned a malformed
+    /// `internal` node (empty children) for the opaque leaf, which Alice's
+    /// initiator drops as an invalid `TreeNode`, so the entity was never pulled
+    /// and the two nodes' Merkle root hashes stayed divergent forever.
+    #[tokio::test]
+    async fn test_opaque_leaf_on_responder_converges_via_hash_comparison() {
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::Metadata;
+
+        // `Id::new([118; 32])` == `Root::<T>::entry_id()`.
+        const ROOT_ENTRY_ID: [u8; 32] = [118u8; 32];
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared base entity so both nodes are "initialized" (non-zero root hash),
+        // mirroring the real scenario where HashComparison (not Snapshot) runs.
+        let base_id = EntityId::from_u64(1000);
+        alice.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(base_id, b"base".to_vec(), EntityMetadata::default());
+        assert_eq!(alice.root_hash(), bob.root_hash());
+
+        // Bob has the `Root<T>` entry — a leaf with NO crdt_type (opaque).
+        // Seeded directly via storage so `crdt_type` stays `None`.
+        let opaque_value = b"app-root-state-v1".to_vec();
+        bob.storage().add_entity(
+            Id::new(ROOT_ENTRY_ID),
+            &opaque_value,
+            Metadata::new(100, 100),
+        );
+
+        // Sanity: Bob's opaque entity is genuinely opaque.
+        let bob_idx = bob
+            .storage()
+            .get_index(Id::new(ROOT_ENTRY_ID))
+            .expect("bob should have the opaque entity");
+        assert!(
+            bob_idx.metadata.crdt_type.is_none(),
+            "seeded entity must have crdt_type == None"
+        );
+
+        // Alice does not have it → diverged.
+        assert!(alice
+            .storage()
+            .get_entity_data(Id::new(ROOT_ENTRY_ID))
+            .is_none());
+        assert_ne!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "nodes should be diverged on the opaque leaf"
+        );
+
+        // Alice initiates HashComparison sync with Bob → Alice must *pull* the
+        // opaque leaf via the tree-walk.
+        execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("sync should succeed");
+
+        // (a) Alice now has the same entity bytes.
+        assert_eq!(
+            alice
+                .storage()
+                .get_entity_data(Id::new(ROOT_ENTRY_ID))
+                .as_deref(),
+            Some(opaque_value.as_slice()),
+            "Alice should have Bob's opaque entity bytes after sync"
+        );
+        // (b) Merkle root hashes converged.
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "root hashes should converge after pulling the opaque leaf"
+        );
+    }
+
+    /// **REGRESSION GUARD (nested-collection convergence)**: when a leaf
+    /// pushed via HashComparison's `EntityPush` lives *under a non-root
+    /// parent* (e.g. `Root<KvStore>::items["k"]` is a child of the items
+    /// collection, not a direct child of the context root), the receiver
+    /// must place it at the SAME Merkle position the sender has — not
+    /// arbitrarily as a child of the context root.
+    ///
+    /// Pre-fix, `apply_leaf_with_crdt_merge` always attached a new
+    /// `Action::Add` to `ChildInfo::new(context_root, …)`. For any
+    /// non-root-direct-child entity, the receiver's local copy ended up
+    /// at a different Merkle position than the sender's, and the two
+    /// nodes' parent (and root) hashes diverged irreconcilably. The
+    /// observable signature was 38+ identical-stat HashComparison
+    /// sessions in a row on the receiver (each one "merging" the same
+    /// entities) with the root hash never converging — see the smoke-
+    /// test Round-2 failure on `bdc61af`.
+    ///
+    /// The fix carries the sender's `index.parent_id()` on the wire via
+    /// the (already-defined-but-unpopulated) `LeafMetadata.parent_id`
+    /// field, and the receiver uses it as the ancestor in `Action::Add`.
+    ///
+    /// This test mirrors the production cross-node-writes scenario: both
+    /// nodes share a parent entity AND each have a sibling child under it
+    /// (so the parent is "internal" on both sides — analogous to the
+    /// items collection of a kv-store that already has prior entries).
+    /// Then Alice adds a NEW child under the parent. After HashComparison
+    /// sync, Bob must have that new child under the same parent and the
+    /// root hashes must converge.
+    ///
+    /// Pre-fix, Bob's `apply_leaf_with_crdt_merge` ignored
+    /// `leaf.metadata.parent_id` (it was always `None` on the wire) and
+    /// attached the new child to context root. So Bob's parent kept its
+    /// single original child, while Alice's parent had two children →
+    /// different parent hashes → different root hashes, forever.
+    #[tokio::test]
+    async fn test_nested_leaf_converges_at_correct_merkle_position() {
+        use calimero_primitives::crdt::CrdtType;
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::Metadata;
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let bob = SimNode::new_in_context("bob", ctx);
+
+        // Both nodes share the parent + one initial child under it. After
+        // these inserts both nodes have an identical 2-level tree: parent
+        // (with one child) under context root. Same data, same metadata
+        // → same `own_hash` and `full_hash` everywhere; root hashes match.
+        let parent_storage_id = Id::new([1u8; 32]);
+        let initial_child_id = Id::new([2u8; 32]);
+        let mut child_meta = Metadata::new(50, 50);
+        child_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        for node in [&alice, &bob] {
+            node.storage()
+                .add_entity(parent_storage_id, b"shared-parent", Metadata::new(50, 50));
+            node.storage().add_entity_with_parent(
+                initial_child_id,
+                parent_storage_id,
+                b"shared-child",
+                child_meta.clone(),
+            );
+        }
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "nodes start at the same root with parent + shared child"
+        );
+
+        // Alice adds a NEW child under the same parent — analogous to a
+        // local `kv.set("gamma", ...)` after both nodes already have
+        // `kv.set("alpha", ...)` settled. This is the topology where
+        // `LeafMetadata.parent_id` must be honoured on push.
+        let new_child_id = Id::new([200u8; 32]);
+        let mut new_child_meta = Metadata::new(200, 200);
+        new_child_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        let new_child_value = b"value-from-alice".to_vec();
+        alice.storage().add_entity_with_parent(
+            new_child_id,
+            parent_storage_id,
+            &new_child_value,
+            new_child_meta,
+        );
+
+        // Alice's local topology: new child under the shared parent.
+        let alice_new = alice
+            .storage()
+            .get_index(new_child_id)
+            .expect("alice should have the new child");
+        assert_eq!(
+            alice_new.parent_id(),
+            Some(parent_storage_id),
+            "alice's new child must be parented to the shared parent, not context root"
+        );
+
+        // Bob doesn't have it yet → diverged.
+        assert!(bob.storage().get_entity_data(new_child_id).is_none());
+        assert_ne!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "nodes should be diverged on the new child"
+        );
+
+        // Alice initiates HashComparison sync with Bob.
+        execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("sync should succeed");
+
+        // (a) Bob has the new child's bytes.
+        assert_eq!(
+            bob.storage().get_entity_data(new_child_id).as_deref(),
+            Some(new_child_value.as_slice()),
+            "Bob should have the new child's bytes after sync"
+        );
+
+        // (b) **The structural assertion**: Bob's new child is parented
+        // to the shared parent, not to context root. Pre-fix this
+        // assertion fails — `apply_leaf_with_crdt_merge` placed the
+        // entity as a direct child of context root.
+        let bob_new = bob
+            .storage()
+            .get_index(new_child_id)
+            .expect("bob should have the new child");
+        assert_eq!(
+            bob_new.parent_id(),
+            Some(parent_storage_id),
+            "Bob's new child must be parented to the shared parent (the sender's parent), \
+             not to context root — `LeafMetadata.parent_id` must be honoured by the apply \
+             path. A failure here is the 'Same DAG heads, different root hash' bug under \
+             cross-node writes to a non-root collection (bdc61af Round-2 failure)."
+        );
+
+        // (c) Merkle root hashes converged. With the wrong parent on Bob,
+        // his parent (and therefore root) hash would differ from Alice's
+        // even when all leaf bytes match — this catches that divergence.
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "root hashes should converge — new child placed at correct Merkle position"
+        );
+    }
 }
