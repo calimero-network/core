@@ -3,11 +3,10 @@ use std::time::Instant;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{
-    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse,
+    JoinSubgroupInheritanceError, JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse,
 };
 use calimero_context_client::local_governance::{NamespaceOp, RootOp};
 use calimero_primitives::identity::PrivateKey;
-use eyre::bail;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
@@ -34,7 +33,7 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 // be joining. Caller's recovery is to sync the namespace
                 // (`POST /namespaces/:id/sync`) first.
                 if group_store::load_group_meta(&datastore, &group_id)?.is_none() {
-                    bail!("group not found");
+                    return Err(JoinSubgroupInheritanceError::GroupNotFound.into());
                 }
 
                 // Resolve the joiner's namespace identity. `None` here means
@@ -43,12 +42,7 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 let (joiner_identity, sk_bytes) =
                     group_store::resolve_namespace_identity(&datastore, &group_id)?
                         .map(|(pk, sk, _)| (pk, sk))
-                        .ok_or_else(|| {
-                            eyre::eyre!(
-                                "no namespace identity for this group; \
-                                 join the parent namespace first"
-                            )
-                        })?;
+                        .ok_or(JoinSubgroupInheritanceError::NoNamespaceIdentity)?;
 
                 let membership_path = group_store::check_group_membership_path(
                     &datastore,
@@ -56,7 +50,7 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     &joiner_identity,
                 )?;
 
-                let anchor = match membership_path {
+                match membership_path {
                     group_store::MembershipPath::Direct => {
                         info!(
                             ?group_id,
@@ -78,28 +72,37 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                             via_admin,
                             "self-join via inherited Open-subgroup membership"
                         );
-                        anchor
                     }
                     group_store::MembershipPath::None => {
-                        bail!("identity not eligible for inheritance-based join");
+                        return Err(JoinSubgroupInheritanceError::NotEligible.into());
                     }
-                };
-                let _ = anchor;
+                }
+
+                // If a prior `join_context` (or earlier call to this endpoint)
+                // already materialised the inheritance, the group key is local
+                // and there's nothing useful for `MemberJoinedOpen` to trigger
+                // — publishing it again would just be a redundant DAG op that
+                // no peer needs to act on. Short-circuit to the same response
+                // shape so clients can't tell which path ran.
+                if group_store::load_current_group_key(&datastore, &group_id)?.is_some() {
+                    info!(
+                        ?group_id,
+                        %joiner_identity,
+                        "join_subgroup_inheritance: group key already local, skipping publish"
+                    );
+                    return Ok(JoinSubgroupInheritanceResponse {
+                        group_id,
+                        member_public_key: joiner_identity,
+                        was_inherited: true,
+                    });
+                }
 
                 let ns_id = group_store::resolve_namespace(&datastore, &group_id)?;
 
                 // Subscribe BEFORE publishing so we cannot miss a
                 // `GroupKeyDelivered` that fires between publish and wait
-                // setup. Skip the wait entirely if the key is already local —
-                // an earlier `join_context` for a child of this subgroup may
-                // have published `MemberJoinedOpen` and received the key.
-                let needs_key_wait =
-                    group_store::load_current_group_key(&datastore, &group_id)?.is_none();
-                let mut op_event_rx = if needs_key_wait {
-                    Some(subscribe_op_events())
-                } else {
-                    None
-                };
+                // setup — the receiver could race us through the broadcast.
+                let mut op_event_rx = subscribe_op_events();
 
                 let signer_sk = PrivateKey::from(sk_bytes);
                 let op = NamespaceOp::Root(RootOp::MemberJoinedOpen {
@@ -116,53 +119,56 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 )
                 .await?;
 
-                if let Some(rx) = op_event_rx.as_mut() {
-                    let deadline = Instant::now() + key_delivery_fallback_wait;
-                    loop {
-                        match group_store::load_current_group_key(&datastore, &group_id) {
-                            Ok(Some(_)) => {
-                                info!(
-                                    ?group_id,
-                                    "group key acquired via gossip KeyDelivery fallback"
-                                );
-                                break;
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                warn!(
-                                    ?group_id,
-                                    ?e,
-                                    "transient store error during KeyDelivery wait — retrying"
-                                );
-                            }
+                let deadline = Instant::now() + key_delivery_fallback_wait;
+                loop {
+                    match group_store::load_current_group_key(&datastore, &group_id) {
+                        Ok(Some(_)) => {
+                            info!(
+                                ?group_id,
+                                "group key acquired via gossip KeyDelivery fallback"
+                            );
+                            break;
                         }
-                        let now = Instant::now();
-                        if now >= deadline {
+                        Ok(None) => {}
+                        Err(e) => {
+                            warn!(
+                                ?group_id,
+                                ?e,
+                                "transient store error during KeyDelivery wait — retrying"
+                            );
+                        }
+                    }
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Err(eyre::eyre!(
+                            "KeyDelivery timed out for group {group_id:?}: \
+                             no group key arrived within {}ms via the gossip fallback path; \
+                             join cannot proceed without a usable group key",
+                            key_delivery_fallback_wait.as_millis()
+                        ));
+                    }
+                    let remaining = deadline - now;
+                    match tokio::time::timeout(remaining, op_event_rx.recv()).await {
+                        Ok(Ok(OpEvent::GroupKeyDelivered {
+                            group_id: g,
+                            recipient,
+                        })) if g == group_id.to_bytes() && recipient == joiner_identity => {
+                            // `continue` (not `break`) is intentional: the
+                            // emitter publishes the event AFTER `store_group_key`
+                            // returns, so we re-read the store on the next
+                            // iteration where the unwrap is guaranteed to hit
+                            // and exit cleanly. Mirrors join_group.rs's loop.
+                            continue;
+                        }
+                        Ok(Ok(_)) => continue,
+                        Ok(Err(RecvError::Lagged(_))) => continue,
+                        Ok(Err(RecvError::Closed)) => {
                             return Err(eyre::eyre!(
-                                "KeyDelivery timed out for group {group_id:?}: \
-                                 no group key arrived within {}s via the gossip fallback path; \
-                                 join cannot proceed without a usable group key",
-                                key_delivery_fallback_wait.as_secs()
+                                "KeyDelivery channel closed before group key arrived for \
+                                 {group_id:?}: join cannot proceed without a usable group key"
                             ));
                         }
-                        let remaining = deadline - now;
-                        match tokio::time::timeout(remaining, rx.recv()).await {
-                            Ok(Ok(OpEvent::GroupKeyDelivered {
-                                group_id: g,
-                                recipient,
-                            })) if g == group_id.to_bytes() && recipient == joiner_identity => {
-                                continue;
-                            }
-                            Ok(Ok(_)) => continue,
-                            Ok(Err(RecvError::Lagged(_))) => continue,
-                            Ok(Err(RecvError::Closed)) => {
-                                return Err(eyre::eyre!(
-                                    "KeyDelivery channel closed before group key arrived for \
-                                     {group_id:?}: join cannot proceed without a usable group key"
-                                ));
-                            }
-                            Err(_) => continue,
-                        }
+                        Err(_) => continue,
                     }
                 }
 

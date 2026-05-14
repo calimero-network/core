@@ -6,6 +6,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
 use calimero_primitives::metadata::MetadataRecord;
+use thiserror::Error as ThisError;
 
 use crate::messages::MigrationParams;
 
@@ -397,6 +398,19 @@ pub struct JoinSubgroupInheritanceResponse {
     /// materialise inherited membership; `false` if they were already a
     /// direct member and the call was a no-op.
     pub was_inherited: bool,
+}
+
+/// Typed failure cases for the join-via-inheritance flow. Carried inside
+/// the actor's `eyre::Report` so the HTTP layer can `downcast_ref`
+/// without depending on error-message wording.
+#[derive(Clone, Copy, Debug, ThisError)]
+pub enum JoinSubgroupInheritanceError {
+    #[error("group not found")]
+    GroupNotFound,
+    #[error("no namespace identity for this group; join the parent namespace first")]
+    NoNamespaceIdentity,
+    #[error("identity not eligible for inheritance-based join")]
+    NotEligible,
 }
 
 /// Request to leave a context locally on this node. Purely a node-local opt-out:

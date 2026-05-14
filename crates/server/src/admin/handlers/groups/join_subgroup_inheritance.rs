@@ -3,7 +3,9 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_client::group::JoinSubgroupInheritanceRequest;
+use calimero_context_client::group::{
+    JoinSubgroupInheritanceError, JoinSubgroupInheritanceRequest,
+};
 use calimero_server_primitives::admin::{
     JoinSubgroupInheritanceApiResponse, JoinSubgroupInheritanceApiResponseData,
 };
@@ -55,25 +57,24 @@ pub async fn handler(
     }
 }
 
-/// Map the actor handler's `eyre::Report` to a typed `ApiError`. The
-/// handler bails with stable prefix strings so the HTTP layer can attach
-/// the right status code without a typed-error contract change.
+/// Map the actor handler's `eyre::Report` to a typed `ApiError`. Uses
+/// `downcast_ref` on the carried `JoinSubgroupInheritanceError` enum so
+/// the HTTP-status contract is anchored to a type, not to error-message
+/// wording.
 fn map_handler_error(err: eyre::Report) -> ApiError {
-    let msg = err.to_string();
-    if msg.starts_with("group not found") {
-        ApiError {
-            status_code: StatusCode::NOT_FOUND,
-            message: msg,
-        }
-    } else if msg.starts_with("identity not eligible") || msg.starts_with("no namespace identity") {
-        ApiError {
-            status_code: StatusCode::FORBIDDEN,
-            message: msg,
-        }
-    } else {
-        ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: msg,
-        }
+    if let Some(typed) = err.downcast_ref::<JoinSubgroupInheritanceError>() {
+        let status_code = match typed {
+            JoinSubgroupInheritanceError::GroupNotFound => StatusCode::NOT_FOUND,
+            JoinSubgroupInheritanceError::NoNamespaceIdentity
+            | JoinSubgroupInheritanceError::NotEligible => StatusCode::FORBIDDEN,
+        };
+        return ApiError {
+            status_code,
+            message: typed.to_string(),
+        };
+    }
+    ApiError {
+        status_code: StatusCode::INTERNAL_SERVER_ERROR,
+        message: err.to_string(),
     }
 }
