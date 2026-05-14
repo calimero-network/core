@@ -128,7 +128,18 @@ start_profiling() {
     #     strip=false) — same profile the prior author relied on for
     #     frame-pointer chains; we're using the DWARF info that was already
     #     being shipped.
-    perf record -F "$PERF_SAMPLE_FREQ" --call-graph dwarf,16384 -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
+    #
+    # `-N` (--no-buildid): skip perf record's build-id collection step.
+    # Without `-N`, perf record walks every DSO in /proc/PID/maps at
+    # shutdown to extract its build-id, falling back to forking addr2line.
+    # On merod that produced a storm of "addr2line /usr/local/bin/merod:
+    # could not read first record" errors during finalize (run
+    # 25855359129) and left perf.data with a 0-valued `data size` header
+    # field, so perf script refused to read it. The May 12 revert thought
+    # this addr2line failure was perf script's fault (it isn't) — it's
+    # perf record's. `-N` bypasses build-id collection entirely; DWARF
+    # unwinding still works via `.debug_frame` at perf script time.
+    perf record -F "$PERF_SAMPLE_FREQ" --call-graph dwarf,16384 -N -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
     PERF_PID=$!
     echo $PERF_PID > "$PROFILING_OUTPUT_DIR/perf.pid"
     
