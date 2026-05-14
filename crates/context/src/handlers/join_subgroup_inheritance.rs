@@ -1,16 +1,13 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{
     JoinSubgroupInheritanceError, JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse,
 };
-use calimero_context_client::local_governance::{NamespaceOp, RootOp};
+use calimero_context_client::local_governance::{KeyEnvelope, NamespaceOp, RootOp};
 use calimero_primitives::identity::PrivateKey;
-use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
-use crate::op_events::{subscribe as subscribe_op_events, OpEvent};
 use crate::{group_store, ContextManager};
 
 impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
@@ -24,7 +21,6 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
-        let key_delivery_fallback_wait = self.config.key_delivery_fallback_wait;
 
         ActorResponse::r#async(
             async move {
@@ -78,17 +74,13 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     }
                 }
 
-                // If a prior `join_context` (or earlier call to this endpoint)
-                // already materialised the inheritance, the group key is local
-                // and there's nothing useful for `MemberJoinedOpen` to trigger
-                // — publishing it again would just be a redundant DAG op that
-                // no peer needs to act on. Short-circuit to the same response
-                // shape so clients can't tell which path ran.
+                // Short-circuit if the subgroup key is already local (e.g.
+                // a prior `join_context` ran the inheritance materialisation).
                 if group_store::load_current_group_key(&datastore, &group_id)?.is_some() {
                     info!(
                         ?group_id,
                         %joiner_identity,
-                        "join_subgroup_inheritance: group key already local, skipping publish"
+                        "join_subgroup_inheritance: group key already local, skipping fetch"
                     );
                     return Ok(JoinSubgroupInheritanceResponse {
                         group_id,
@@ -99,17 +91,41 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
 
                 let ns_id = group_store::resolve_namespace(&datastore, &group_id)?;
 
-                // Subscribe BEFORE publishing so we cannot miss a
-                // `GroupKeyDelivered` that fires between publish and wait
-                // setup — the receiver could race us through the broadcast.
-                let mut op_event_rx = subscribe_op_events();
-
+                // Direct-stream key fetch: ask any peer holding the
+                // subgroup key for it via the dedicated
+                // `OpenSubgroupJoinRequest` protocol (#2357). Mirrors
+                // `request_namespace_join` from #2270 Phase 9.1 — the
+                // deterministic primary path for the inherited
+                // self-join, instead of the gossip-only
+                // `MemberJoinedOpen` → `KeyDelivery` round-trip that
+                // can't reliably complete in small clusters where the
+                // gossipsub mesh stays empty.
+                let envelope_bytes = node_client
+                    .request_open_subgroup_join(
+                        ns_id.to_bytes(),
+                        group_id.to_bytes(),
+                        joiner_identity,
+                    )
+                    .await?;
+                let envelope: KeyEnvelope = borsh::from_slice(&envelope_bytes)
+                    .map_err(|e| eyre::eyre!("decode KeyEnvelope from peer response: {e}"))?;
                 let signer_sk = PrivateKey::from(sk_bytes);
+                let group_key = group_store::unwrap_group_key(&signer_sk, &envelope)?;
+                let _key_id = group_store::store_group_key(&datastore, &group_id, &group_key)?;
+
+                // Publish `MemberJoinedOpen` so other peers (not just the
+                // responder) record our direct membership row and the
+                // governance DAG reflects the join. The publish is
+                // idempotent on apply (DAG delta-id dedup at
+                // `namespace_governance.rs:145`); on the unhappy path
+                // where gossip drops the op, this becomes a no-op for
+                // peers that don't see it — but our local key is already
+                // deterministic via the direct stream above.
                 let op = NamespaceOp::Root(RootOp::MemberJoinedOpen {
                     member: joiner_identity,
                     group_id: group_id.to_bytes(),
                 });
-                group_store::sign_apply_and_publish_namespace_op(
+                if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -117,59 +133,15 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     &signer_sk,
                     op,
                 )
-                .await?;
-
-                let deadline = Instant::now() + key_delivery_fallback_wait;
-                loop {
-                    match group_store::load_current_group_key(&datastore, &group_id) {
-                        Ok(Some(_)) => {
-                            info!(
-                                ?group_id,
-                                "group key acquired via gossip KeyDelivery fallback"
-                            );
-                            break;
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            warn!(
-                                ?group_id,
-                                ?e,
-                                "transient store error during KeyDelivery wait — retrying"
-                            );
-                        }
-                    }
-                    let now = Instant::now();
-                    if now >= deadline {
-                        return Err(eyre::eyre!(
-                            "KeyDelivery timed out for group {group_id:?}: \
-                             no group key arrived within {}ms via the gossip fallback path; \
-                             join cannot proceed without a usable group key",
-                            key_delivery_fallback_wait.as_millis()
-                        ));
-                    }
-                    let remaining = deadline - now;
-                    match tokio::time::timeout(remaining, op_event_rx.recv()).await {
-                        Ok(Ok(OpEvent::GroupKeyDelivered {
-                            group_id: g,
-                            recipient,
-                        })) if g == group_id.to_bytes() && recipient == joiner_identity => {
-                            // `continue` (not `break`) is intentional: the
-                            // emitter publishes the event AFTER `store_group_key`
-                            // returns, so we re-read the store on the next
-                            // iteration where the unwrap is guaranteed to hit
-                            // and exit cleanly. Mirrors join_group.rs's loop.
-                            continue;
-                        }
-                        Ok(Ok(_)) => continue,
-                        Ok(Err(RecvError::Lagged(_))) => continue,
-                        Ok(Err(RecvError::Closed)) => {
-                            return Err(eyre::eyre!(
-                                "KeyDelivery channel closed before group key arrived for \
-                                 {group_id:?}: join cannot proceed without a usable group key"
-                            ));
-                        }
-                        Err(_) => continue,
-                    }
+                .await
+                {
+                    warn!(
+                        ?group_id,
+                        ?e,
+                        "MemberJoinedOpen publish failed after direct-stream key fetch \
+                         succeeded — subgroup key is local but other peers may not see \
+                         the membership row until the next gossip sweep"
+                    );
                 }
 
                 Ok(JoinSubgroupInheritanceResponse {

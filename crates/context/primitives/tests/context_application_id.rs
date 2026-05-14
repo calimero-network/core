@@ -43,7 +43,8 @@ async fn setup_test_context_client() -> (ContextClient, TempDir) {
     let (ctx_sync_tx, _) = mpsc::channel(16);
     let (ns_sync_tx, _) = mpsc::channel(16);
     let (ns_join_tx, _) = mpsc::channel(16);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx);
+    let (open_subgroup_join_tx, _) = mpsc::channel(16);
+    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
     let node_manager = LazyRecipient::<NodeMessage>::new();
 
     // 4. Construct NodeClient
