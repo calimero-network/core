@@ -103,8 +103,13 @@ start_profiling() {
     local perf_output="$PROFILING_OUTPUT_DIR/perf-${node_name}.data"
     local perf_log="$PROFILING_OUTPUT_DIR/perf-${node_name}.log"
     
-    echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz)..."
-    perf record -F "$PERF_SAMPLE_FREQ" -g -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
+    echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz, call-graph: dwarf)..."
+    # DWARF unwinding instead of frame-pointer (-g): even with
+    # -C force-frame-pointers=yes on merod, transitions through libc,
+    # libstdc++, jemalloc, and kernel break frame-pointer chains and produce
+    # [unknown] frames. DWARF unwinds via .debug_frame and is robust across
+    # those boundaries. 16384-byte stack dumps cover deep async stacks.
+    perf record -F "$PERF_SAMPLE_FREQ" --call-graph dwarf,16384 -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
     PERF_PID=$!
     echo $PERF_PID > "$PROFILING_OUTPUT_DIR/perf.pid"
     

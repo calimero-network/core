@@ -37,6 +37,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf \
     # libunwind for proper stack unwinding in jemalloc heap profiling
     libunwind-dev \
+    # glibc debug symbols so perf can resolve frames inside libc (e.g.
+    # malloc/free/pthread/syscall wrappers). Without this, every transition
+    # through libc shows up as [unknown] in the CPU flamegraph.
+    libc6-dbg \
     # binutils for addr2line (symbol resolution)
     binutils \
     # Python for additional processing
