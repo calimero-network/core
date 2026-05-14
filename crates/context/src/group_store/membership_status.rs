@@ -189,8 +189,18 @@ pub fn membership_status_at(
         // we don't have a more precise role at the cross-DAG layer.
         return match super::membership::check_group_membership_path(store, &group_id, signer)? {
             super::membership::MembershipPath::Direct => {
-                // Already handled by `get_group_member_role` above.
-                Ok(MembershipStatus::NeverMember)
+                // Practically unreachable: `check_group_membership_path`
+                // returns `Direct` iff `has_direct_member` returned
+                // `true`, which reads the same store row that
+                // `get_group_member_role` reads above. The only way to
+                // arrive here is a write-race where a concurrent
+                // `MemberAdded` applied between the two reads. In that
+                // case the signer just became a direct member with the
+                // default `Member` role — return that rather than the
+                // misleading `NeverMember` an earlier revision used.
+                Ok(MembershipStatus::Member(
+                    calimero_primitives::context::GroupMemberRole::Member,
+                ))
             }
             super::membership::MembershipPath::Inherited { .. } => Ok(MembershipStatus::Member(
                 calimero_primitives::context::GroupMemberRole::Member,
