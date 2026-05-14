@@ -114,15 +114,21 @@ start_profiling() {
     #
     # Prior comment here warned not to swap to DWARF without also: bumping
     # `-m`, capping snapshot size, and verifying merod's `.debug_*` survives
-    # the release pipeline. Addressed:
+    # the release pipeline. Status:
     #   - snapshot size capped to 16384 B per stack (the `,16384` suffix).
-    #   - `-m 16M` enlarges the mmap ring so we don't drop samples while
-    #     copying out larger DWARF stack snapshots.
+    #   - `-m`: NOT bumped. The May 14 run (25850870046) tried `-m 16M` and
+    #     perf refused with "Permission error mapping pages, current value:
+    #     4096,0" because the container's `perf_event_mlock_kb` is 4 MB.
+    #     16 MB × 4 CPUs exceeds that, so perf wrote a 0-byte data file and
+    #     the entire CPU pipeline silently no-op'd. Using perf's default
+    #     (~2 MB total). If "Woken up N times" warnings show up in
+    #     perf-*.log, lower the dwarf snapshot size first; raising `-m`
+    #     requires kernel/host-side changes we can't make from a container.
     #   - `.debug_*` is preserved by `[profile.profiling]` (debug=true,
     #     strip=false) — same profile the prior author relied on for
     #     frame-pointer chains; we're using the DWARF info that was already
     #     being shipped.
-    perf record -F "$PERF_SAMPLE_FREQ" --call-graph dwarf,16384 -m 16M -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
+    perf record -F "$PERF_SAMPLE_FREQ" --call-graph dwarf,16384 -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
     PERF_PID=$!
     echo $PERF_PID > "$PROFILING_OUTPUT_DIR/perf.pid"
     
