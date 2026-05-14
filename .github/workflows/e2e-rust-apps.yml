@@ -179,6 +179,9 @@ jobs:
           - workflow: group-member-channel-lifecycle
             file: workflows/group-member-channel-lifecycle.yml
             app: scaffolding-e2e
+          - workflow: group-metadata
+            file: workflows/group-metadata.yml
+            app: scaffolding-e2e
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
             app: scaffolding-e2e
@@ -227,6 +230,9 @@ jobs:
             app: kv-store-with-shared-storage
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
+            app: scaffolding-e2e
+          - workflow: mesh-soak-8node
+            file: workflows/mesh-soak-8node.yml
             app: scaffolding-e2e
     steps:
       - name: Checkout code

@@ -1046,6 +1046,137 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
 }
 
 #[test]
+fn namespace_retry_service_orders_candidates_by_signer_nonce() {
+    // Regression test for #2349: when a peer buffers several
+    // `NamespaceOp::Group` ops from the same signer pending
+    // `KeyDelivery`, the retry walk must apply them in nonce-ascending
+    // order. Otherwise `apply_group_op_inner`'s
+    // `if nonce <= last { skip duplicate }` check turns out-of-order
+    // application into permanent data loss: a later op applies first,
+    // bumps `last_nonce`, and every earlier op from the same signer
+    // gets dropped on the floor. This regression manifested in the
+    // group-metadata e2e as `ContextRegistered` (nonce N) being lost
+    // when `MemberAdded` (nonce N+5, lower content-hash) retried
+    // first, then `ContextMetadataSet` permanently bailing at the
+    // "context not registered in this group" check.
+    //
+    // Test rigor: this test searches for a `signer_sk` whose 4 signed
+    // ops' content-hash ordering differs from nonce ordering, so the
+    // pre-sort iteration order is provably NOT [1,2,3,4]. That way,
+    // the post-sort `assert_eq!(nonces, vec![1,2,3,4])` is a real
+    // signal of the fix doing work — without the sort, the assertion
+    // fails. (The previous version of this test could have passed by
+    // coincidence if the random key happened to produce content
+    // hashes in nonce order.)
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x84; 32];
+    let group = ContextGroupId::from([0x85; 32]);
+
+    let group_key = [0x95; 32];
+    let key_id = store_group_key(&store, &group, &group_key).unwrap();
+
+    // Search the random-key space for a signer whose 4 signed ops
+    // produce a content-hash iteration order DIFFERENT from nonce
+    // order. P(success per attempt) ≥ 23/24 ≈ 96 % (any non-identity
+    // permutation works), so 64 attempts have a silent-pass
+    // probability of (1/24)^64 ≈ 10^-88. The explicit `found` flag
+    // and the post-loop `assert!(found, …)` make that path loud
+    // rather than silently succeeding with in-order ops.
+    let max_attempts = 64;
+    let mut found = false;
+    let mut raw_nonces: Vec<u64> = Vec::new();
+    for _ in 0..max_attempts {
+        let signer_sk = PrivateKey::random(&mut rng);
+        let signed_ops: Vec<SignedNamespaceOp> = (1u64..=4)
+            .map(|nonce| {
+                SignedNamespaceOp::sign(
+                    &signer_sk,
+                    namespace_id,
+                    vec![],
+                    [0u8; 32],
+                    nonce,
+                    NamespaceOp::Group {
+                        group_id: group.to_bytes(),
+                        key_id,
+                        encrypted: encrypt_group_op(&group_key, &GroupOp::Noop).unwrap(),
+                        key_rotation: None,
+                    },
+                )
+                .unwrap()
+            })
+            .collect();
+
+        // Predict the content-hash iteration order these ops would
+        // produce in the store column (keyed by `(namespace_id,
+        // content_hash)`), without actually persisting them yet.
+        let mut by_hash: Vec<([u8; 32], u64)> = signed_ops
+            .iter()
+            .map(|op| (op.content_hash().unwrap(), op.nonce))
+            .collect();
+        by_hash.sort_by_key(|(h, _)| *h);
+        let predicted_nonces: Vec<u64> = by_hash.iter().map(|(_, n)| *n).collect();
+        if predicted_nonces == vec![1u64, 2, 3, 4] {
+            // This signer happens to produce in-nonce-order content
+            // hashes — wouldn't exercise the sort fix. Try again.
+            continue;
+        }
+
+        // Good signer found. Persist via the same path used by the
+        // sibling test (`NamespaceGovernance::store_operation`), then
+        // confirm the raw op-log iteration actually came back in the
+        // predicted not-nonce-order — i.e. the bug path is reachable.
+        let governance = NamespaceGovernance::new(&store, namespace_id);
+        for op in &signed_ops {
+            governance.store_operation(op).unwrap();
+        }
+        raw_nonces = NamespaceOpLogService::new(&store, namespace_id)
+            .collect_signed_group_ops_for_group(group.to_bytes())
+            .unwrap()
+            .iter()
+            .map(|e| e.signed_op.nonce)
+            .collect();
+        assert_ne!(
+            raw_nonces,
+            vec![1u64, 2, 3, 4],
+            "test setup broken: raw op-log iteration is in nonce order, so the sort fix would be unreachable"
+        );
+        found = true;
+        break;
+    }
+    assert!(
+        found,
+        "after {max_attempts} random signers, none produced content hashes out of nonce order — \
+         either a vanishingly improbable coincidence or `content_hash`/op encoding changed. \
+         Without an out-of-order raw iteration, the assertion below cannot distinguish a working \
+         sort from a missing sort, so this test would silently pass on a regression."
+    );
+
+    let retry = NamespaceRetryService::new(&store, namespace_id);
+    let candidates = retry
+        .collect_retry_candidates_for_group(group.to_bytes())
+        .unwrap();
+
+    assert_eq!(candidates.len(), 4, "expected 4 retry candidates");
+
+    // The fix's contract: candidates are sorted by (signer_bytes, nonce)
+    // ascending. With a single signer, that's strict nonce order —
+    // even though we just proved the raw op-log iteration was NOT in
+    // nonce order. Without the sort fix in `NamespaceRetryService`,
+    // this assertion would fail.
+    let nonces: Vec<u64> = candidates.iter().map(|c| c.signed_op.nonce).collect();
+    assert_eq!(
+        nonces,
+        vec![1, 2, 3, 4],
+        "retry candidates must apply in nonce order, not content-hash order"
+    );
+}
+
+#[test]
 fn apply_local_signed_group_op_nonce_and_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
