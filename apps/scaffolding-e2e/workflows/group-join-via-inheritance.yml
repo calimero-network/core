@@ -110,12 +110,21 @@ steps:
   # and (d) return 200 with was_inherited: true.
 
   - name: Node-2 calls join-via-inheritance endpoint
-    type: script
-    script: apps/scaffolding-e2e/scripts/join-via-inheritance.sh
-    target: local
-    args:
-      - "2"
-      - '{{subgroup_id}}'
+    # Requires merobox >= 0.6.13 (PR adds the JoinSubgroupInheritanceStep)
+    # backed by calimero-client-py >= 0.6.11 (Python wrapper for the new
+    # core method). Both companion PRs ship in lockstep with this one.
+    type: join_subgroup_inheritance
+    node: join-inherit-node-2
+    group_id: '{{subgroup_id}}'
+    outputs:
+      inherit_member_pk: memberPublicKey
+      inherit_was_inherited: wasInherited
+
+  - name: Assert inheritance materialisation
+    type: assert
+    statements:
+      - "is_set({{inherit_member_pk}})"
+      - 'eq({{inherit_was_inherited}}, true)'
 
   # ── Phase 3: node-2 joins the context (key already delivered) ─────
   # This call should now be cheap because the group key is already
