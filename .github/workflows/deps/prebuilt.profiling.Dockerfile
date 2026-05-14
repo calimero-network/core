@@ -79,8 +79,11 @@ RUN ln -s /opt/FlameGraph/stackcollapse-perf.pl /usr/local/bin/stackcollapse-per
 # Create profiling directories
 RUN mkdir -p /profiling/data /profiling/reports /profiling/scripts
 
-# Bump this value to bust the GHA buildx cache from here onwards.
-LABEL calimero.profiling.cache_bust="2026-05-14-1"
+# Bump the value to bust the GHA buildx cache from here onwards.
+# Uses RUN (not LABEL) — buildx with cache-from=type=gha folds LABELs into
+# image metadata without producing a layer-hash boundary, so a LABEL does
+# not actually invalidate the downstream COPY. RUN does.
+RUN echo "cache_bust=2026-05-14-2" > /tmp/.profiling-cache-bust
 
 # Copy profiling scripts
 COPY scripts/profiling/ /profiling/scripts/
