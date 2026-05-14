@@ -79,6 +79,9 @@ RUN ln -s /opt/FlameGraph/stackcollapse-perf.pl /usr/local/bin/stackcollapse-per
 # Create profiling directories
 RUN mkdir -p /profiling/data /profiling/reports /profiling/scripts
 
+# Bump this value to bust the GHA buildx cache from here onwards.
+LABEL calimero.profiling.cache_bust="2026-05-14-1"
+
 # Copy profiling scripts
 COPY scripts/profiling/ /profiling/scripts/
 RUN chmod +x /profiling/scripts/*.sh
