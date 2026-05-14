@@ -306,10 +306,15 @@ preserve_to_host_mount() {
             --input "$perf_data" \
             --output "$cpu_svg" \
             --title "CPU Flamegraph - ${node_name}" \
-            >/dev/null 2>"$err_file"; then
+            >"$err_file" 2>&1; then
             echo "[Profiling] ✓ CPU flamegraph -> $cpu_svg"
         else
-            echo "[Profiling] WARNING: CPU flamegraph failed: $(head -1 "$err_file" 2>/dev/null)"
+            # Log the full generator output, not just the first line — the
+            # May 14 DWARF run silently produced zero CPU SVGs because the
+            # actual failure (perf script / addr2line / pipefail) was
+            # truncated to one line and never reached the GHA log.
+            echo "[Profiling] WARNING: CPU flamegraph failed; generator output:"
+            sed 's/^/[Profiling]   /' "$err_file" 2>/dev/null | head -40
         fi
     fi
 
