@@ -2237,6 +2237,22 @@ pub struct JoinContextApiResponseData {
     pub member_public_key: PublicKey,
 }
 
+// ---- Join Subgroup via Inheritance ----
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinSubgroupInheritanceApiResponse {
+    pub data: JoinSubgroupInheritanceApiResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinSubgroupInheritanceApiResponseData {
+    pub group_id: String,
+    pub member_public_key: PublicKey,
+    pub was_inherited: bool,
+}
+
 // ---- Leave Context (local-only opt-out) ----
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

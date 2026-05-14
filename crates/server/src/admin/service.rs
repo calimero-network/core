@@ -237,6 +237,10 @@ pub(crate) fn setup(
             post(groups::sync_group::handler),
         )
         .route(
+            "/groups/:group_id/join-via-inheritance",
+            post(groups::join_subgroup_inheritance::handler),
+        )
+        .route(
             "/contexts/:context_id/join",
             post(join_context::handler),
         )
