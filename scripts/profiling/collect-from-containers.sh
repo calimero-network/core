@@ -42,8 +42,13 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
                 if kill -0 "$PERF_PID" 2>/dev/null; then
                     echo "    Sending SIGINT to perf (PID $PERF_PID)..."
                     kill -INT "$PERF_PID" 2>/dev/null || true
-                    # Wait for perf to finish writing data
-                    for i in $(seq 1 10); do
+                    # 60s grace, matching entrypoint stop_profiling (b8f04ba2).
+                    # Was 10s and SIGKILLed perf mid-finalize for every suite
+                    # except Group Governance, leaving perf.data with `data
+                    # size field is 0`. This loop runs BEFORE merobox stops
+                    # the container, so it determines the actual grace window
+                    # in CI — the entrypoint trap never gets the chance to.
+                    for i in $(seq 1 60); do
                         if ! kill -0 "$PERF_PID" 2>/dev/null; then
                             echo "    perf stopped successfully"
                             break
