@@ -85,6 +85,12 @@ env:
   RUST_BACKTRACE: 1
   RUST_LOG: info,calimero_=debug
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  # merobox v0.6.13+ honours MEROBOX_STOP_TIMEOUT (calimero-network/merobox#238).
+  # Default in merobox is still 10s — too short for profiling-image merod nodes
+  # under load to flush perf.data on SIGTERM, which is why nodes 2-4 of every
+  # fuzzy suite lost their perf data prior to this. 120s matches the
+  # `docker stop --time=120` grace window used by collect-from-containers.sh.
+  MEROBOX_STOP_TIMEOUT: 120
 
 jobs:
   build:
