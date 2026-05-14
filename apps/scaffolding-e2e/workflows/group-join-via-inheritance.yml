@@ -106,8 +106,11 @@ steps:
   # This is the operation under test. node-2 has not called
   # join_context for any context inside the subgroup; the new endpoint
   # must (a) accept the call because their inherited membership path
-  # is valid, (b) publish MemberJoinedOpen, (c) wait for KeyDelivery,
-  # and (d) return 200 with was_inherited: true.
+  # is valid, (b) fetch the subgroup key from a peer via the
+  # `OpenSubgroupJoinRequest` direct-stream protocol (mirroring
+  # `request_namespace_join`), (c) store the key locally + publish
+  # `MemberJoinedOpen` for peer convergence, and (d) return 200 with
+  # `was_inherited: true` deterministically.
 
   - name: Node-2 calls join-via-inheritance endpoint
     # Requires merobox >= 0.6.13 (PR adds the JoinSubgroupInheritanceStep)
@@ -124,7 +127,8 @@ steps:
     type: assert
     statements:
       - "is_set({{inherit_member_pk}})"
-      - 'eq({{inherit_was_inherited}}, true)'
+      # `was_inherited` substitutes as the Python title-cased bool repr.
+      - 'equals({{inherit_was_inherited}}, True)'
 
   # ── Phase 3: node-2 joins the context (key already delivered) ─────
   # This call should now be cheap because the group key is already
