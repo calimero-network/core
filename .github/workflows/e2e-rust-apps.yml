@@ -185,6 +185,9 @@ jobs:
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
             app: scaffolding-e2e
+          - workflow: group-open-self-join-key-delivery
+            file: workflows/group-open-self-join-key-delivery.yml
+            app: scaffolding-e2e
           - workflow: dm-subgroup-privacy
             file: workflows/dm-subgroup-privacy.yml
             app: scaffolding-e2e

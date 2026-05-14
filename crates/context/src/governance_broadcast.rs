@@ -102,6 +102,7 @@ pub fn timeout_for_namespace_op(op: &NamespaceOp) -> Duration {
         }
         NamespaceOp::Root(
             RootOp::MemberJoined { .. }
+            | RootOp::MemberJoinedOpen { .. }
             | RootOp::GroupCreated { .. }
             | RootOp::GroupReparented { .. },
         ) => OP_ACK_MEMBER_CHANGE_TIMEOUT,
