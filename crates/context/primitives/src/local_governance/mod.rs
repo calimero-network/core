@@ -383,6 +383,16 @@ pub enum RootOp {
         /// signature. Peers use this to verify the join was authorized.
         signed_invitation: SignedGroupOpenInvitation,
     },
+    /// Delivers the current group key to a specific member.
+    ///
+    /// Published by an existing member after seeing `MemberJoined` on the
+    /// DAG. The group key is ECDH-wrapped so only the recipient can
+    /// decrypt it. No P2P handshake or online requirement — the joiner
+    /// picks this up when it processes the DAG.
+    KeyDelivery {
+        group_id: [u8; 32],
+        envelope: KeyEnvelope,
+    },
     /// A namespace member just self-joined an `Open` subgroup whose
     /// `Open` visibility (+ their namespace-level
     /// `CAN_JOIN_OPEN_SUBGROUPS` capability) is the authorisation —
@@ -402,19 +412,16 @@ pub enum RootOp {
     /// a `ContextIdentity` with `sender_key: None` for the inherited
     /// case and never asked any holder of the group key to deliver
     /// it. See `handlers/join_context.rs`.
+    ///
+    /// **Borsh ordering**: this variant is intentionally placed AFTER
+    /// `KeyDelivery` so that `KeyDelivery`'s discriminant is unchanged
+    /// from pre-fix releases — existing on-disk DAG ops continue to
+    /// deserialize correctly. Only the new `MemberJoinedOpen`
+    /// discriminant is added; older peers will fail to decode this
+    /// variant but won't mis-decode existing ones.
     MemberJoinedOpen {
         member: PublicKey,
         group_id: [u8; 32],
-    },
-    /// Delivers the current group key to a specific member.
-    ///
-    /// Published by an existing member after seeing `MemberJoined` on the
-    /// DAG. The group key is ECDH-wrapped so only the recipient can
-    /// decrypt it. No P2P handshake or online requirement — the joiner
-    /// picks this up when it processes the DAG.
-    KeyDelivery {
-        group_id: [u8; 32],
-        envelope: KeyEnvelope,
     },
 }
 

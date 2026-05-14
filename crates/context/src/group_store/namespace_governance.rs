@@ -1205,6 +1205,24 @@ impl<'a> NamespaceGovernance<'a> {
             );
         }
         let gid = ContextGroupId::from(group_id);
+        // Cross-namespace forgery guard: without this check, an attacker
+        // on namespace A could publish a MemberJoinedOpen naming a
+        // `group_id` from namespace B; `check_group_membership_path`
+        // walks parents up to whichever namespace root owns `gid`, so
+        // the path check below could succeed against B's data when this
+        // op is being applied in namespace A. Pin `gid` to this
+        // namespace — matches the implicit assumption in the sibling
+        // `MemberJoined` apply path.
+        let resolved_ns = super::resolve_namespace(self.store, &gid)?;
+        if resolved_ns.to_bytes() != self.namespace_id {
+            eyre::bail!(
+                "MemberJoinedOpen rejected: group_id {:?} resolves to namespace {:?}, \
+                 not this namespace {:?}",
+                gid,
+                resolved_ns,
+                ContextGroupId::from(self.namespace_id)
+            );
+        }
         match super::check_group_membership_path(self.store, &gid, &member)? {
             super::MembershipPath::Inherited { .. } => Ok(()),
             super::MembershipPath::Direct => {

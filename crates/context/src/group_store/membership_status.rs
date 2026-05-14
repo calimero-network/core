@@ -192,11 +192,9 @@ pub fn membership_status_at(
                 // Already handled by `get_group_member_role` above.
                 Ok(MembershipStatus::NeverMember)
             }
-            super::membership::MembershipPath::Inherited { .. } => Ok(
-                MembershipStatus::Member(
-                    calimero_primitives::context::GroupMemberRole::Member,
-                ),
-            ),
+            super::membership::MembershipPath::Inherited { .. } => Ok(MembershipStatus::Member(
+                calimero_primitives::context::GroupMemberRole::Member,
+            )),
             super::membership::MembershipPath::None => {
                 // See function-level doc for the `Removed` vs
                 // `NeverMember` conflation caveat — the prefix walk
@@ -389,6 +387,27 @@ fn prefix_walk_membership(
                     continue;
                 }
                 let role = role_from_invited_role(signed_invitation.invitation.invited_role);
+                current_role = Some(role.clone());
+                last_known_role = Some(role);
+            }
+            // Open-subgroup self-join via `CAN_JOIN_OPEN_SUBGROUPS`
+            // parent-walk. The op is the joiner's proof of membership in
+            // an Open subgroup; without recognising it here, the
+            // cross-DAG check returns `NeverMember` for inherited
+            // joiners and their state deltas get rejected — defeating
+            // the fix's intent on any peer whose heads don't match the
+            // writer's heads (i.e. any non-fast-path resolution). The
+            // op carries no role information — Open-subgroup inheritance
+            // grants `Member` role, matching the fold in
+            // `membership_status_at`'s Branch 1.
+            NamespaceOp::Root(RootOp::MemberJoinedOpen {
+                member,
+                group_id: op_gid,
+            }) => {
+                if member != signer || *op_gid != group_id.to_bytes() {
+                    continue;
+                }
+                let role = GroupMemberRole::Member;
                 current_role = Some(role.clone());
                 last_known_role = Some(role);
             }

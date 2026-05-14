@@ -114,6 +114,17 @@ steps:
     outputs:
       ctx_id: contextId
 
+  - name: Wait for subgroup visibility + context-registered ops to propagate
+    # `set_subgroup_visibility` and `create_context` issue governance
+    # ops that need to reach node-2 before its `join_context` runs the
+    # parent-walk inheritance check. Without this wait, node-2 may
+    # still see the subgroup as Restricted (or not yet know the
+    # context exists at all) when it tries to join — the inheritance
+    # check returns `MembershipPath::None` and `join_context` bails
+    # with "identity is not a member of the group".
+    type: wait
+    seconds: 10
+
   # ── Phase 2: node-2 self-joins via inherited path ─────────────────
   # This is the critical operation. No `add_group_members` is run for
   # node-2 on the Open subgroup — they're inherited from the parent
