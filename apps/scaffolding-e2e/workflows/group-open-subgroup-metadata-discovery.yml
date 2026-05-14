@@ -1,0 +1,204 @@
+name: E2E - Open Subgroup Metadata Discovery (issue #2358)
+description: >
+  Verifies that the `name` (and surrounding MetadataRecord) of an
+  Open subgroup is visible to namespace members who have NOT joined
+  that subgroup. This is the discovery prerequisite issue #2358
+  describes: without it, namespace members see a sidebar of
+  truncated-id stubs and cannot know what they're about to join.
+
+  Reproducer (per #2358 body):
+    1. Alice: create_namespace → invite Bob → Bob join_namespace.
+    2. Alice: create_group_in_namespace("Plans") → folder_id.
+    3. Alice: set_subgroup_visibility(folder_id, Open).
+    4. Alice: set_group_metadata(folder_id, name="Plans", data=...).
+    5. Bob: list_subgroups(namespace_id).
+       Expected: [{groupId, name: "Plans"}]
+       Pre-fix: [{groupId}]   (name field absent)
+
+  Bob never calls join_context / join_subgroup — he is a pure
+  namespace member. The crypto path that should make this work:
+  `GroupGovernancePublisher` already encrypts ops with the
+  *namespace* key for Open subgroups under an Open chain (issue
+  #2256), and `NamespaceGovernance` falls back to the namespace
+  keyring on receive (namespace_governance.rs ~302-309). So Bob
+  CAN decrypt; the failure must be downstream — most likely the
+  receive-side `require_can_manage_metadata(signer)` check, which
+  walks Bob's local store for Alice's admin/cap row in the
+  subgroup. Bob never received subgroup-keyed membership state,
+  so that lookup falls through to `is_inherited_admin`, which
+  may or may not resolve depending on what Alice's authority
+  looks like on Bob's side at apply time.
+
+  This workflow exists to confirm the failure mode empirically
+  before designing the fix. Both `list_subgroups` (matches the
+  issue's stated reproducer) and `get_group_metadata` are asserted
+  so we can tell exactly where the data does or does not arrive.
+
+  Companion to:
+    - #2256 / #2261 — Open-subgroup namespace-key encryption
+    - #2351 — RootOp::MemberJoinedOpen for self-join key delivery
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: open-md-node
+
+steps:
+  # ── Phase 1: Bootstrap ────────────────────────────────────────────
+
+  - name: Install application on node-1 (Alice)
+    type: install_application
+    node: open-md-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2 (Bob)
+    type: install_application
+    node: open-md-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Alice creates namespace
+    type: create_namespace
+    node: open-md-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+      alice_key: memberPublicKey
+
+  - name: Alice invites Bob to namespace
+    type: create_namespace_invitation
+    node: open-md-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      ns_invite: invitation
+
+  - name: Wait for namespace governance to gossip
+    # Matches the post-#2344 opaque-leaf-regression timing used by
+    # group-open-self-join-key-delivery.yml; covers invitation
+    # visibility so join_namespace doesn't 404.
+    type: wait
+    seconds: 10
+
+  - name: Bob joins namespace
+    # NOTE: Bob never joins the subgroup. Default member capabilities
+    # include CAN_JOIN_OPEN_SUBGROUPS, but the issue specifies that
+    # discovery (seeing the name in the sidebar) must work *before*
+    # Bob has joined any subgroup. So this is the only join he does.
+    type: join_namespace
+    node: open-md-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{ns_invite}}'
+    outputs:
+      bob_identity: memberIdentity
+
+  # ── Phase 2: Alice creates + names the Open subgroup ──────────────
+  # Order matches the issue's reproducer exactly: create → flip Open
+  # → set metadata. The visibility flip lands BEFORE the metadata op
+  # so the publisher's `is_open_chain_to_namespace` check sees Open
+  # at publish time → metadata op is encrypted with the namespace key.
+
+  - name: Alice creates subgroup in namespace
+    type: create_group_in_namespace
+    node: open-md-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: plans-folder
+    outputs:
+      subgroup_id: groupId
+
+  - name: Alice marks subgroup as Open
+    type: set_subgroup_visibility
+    node: open-md-node-1
+    group_id: '{{subgroup_id}}'
+    visibility: open
+
+  - name: Alice sets subgroup metadata
+    # The "discovery payload": name + an opaque data map a frontend
+    # might use for UI hints. The issue's option (c) proposes that
+    # only `name` (not `data`) needs namespace-scope visibility, so
+    # asserting both lets us tell which fields actually propagate.
+    type: set_group_metadata
+    node: open-md-node-1
+    group_id: '{{subgroup_id}}'
+    record_name: 'Plans'
+    data:
+      topic: discovery-test
+      icon: folder
+
+  - name: Wait for visibility + metadata governance to gossip
+    # Two consecutive GroupOp publishes against the namespace topic.
+    # Bob's namespace_governance receives, attempts subgroup-keyring
+    # decrypt (no subgroup membership → miss), falls back to the
+    # namespace keyring (he has the namespace key as a namespace
+    # member). On a working implementation, both ops apply and the
+    # metadata record lands in Bob's GroupMetadata(subgroup_id) row.
+    type: wait
+    seconds: 10
+
+  # ── Phase 3: Bob reads — without joining the subgroup ─────────────
+  # CRITICAL: no join_context / join_group / join_subgroup is run for
+  # Bob on the subgroup. He only has namespace membership.
+
+  - name: Bob lists subgroups of the namespace
+    type: list_subgroups
+    node: open-md-node-2
+    group_id: '{{namespace_id}}'
+    outputs:
+      bob_subgroups: subgroups
+      # Dotted-path extraction per merobox nested-json-parsing
+      # docs — `subgroups.0.name` indexes into the first entry.
+      # If the subgroup is missing entirely the workflow will fail
+      # at this output resolution with a missing-key error, which
+      # is itself useful diagnostic signal.
+      bob_first_subgroup_name: subgroups.0.name
+      bob_first_subgroup_id: subgroups.0.groupId
+
+  - name: Bob fetches the subgroup's metadata record directly
+    # Pre-fix expectation: returns null/empty, OR returns a record
+    # with `name: None`, depending on which path actually fails.
+    # The error mode here narrows where the data drops.
+    type: get_group_metadata
+    node: open-md-node-2
+    group_id: '{{subgroup_id}}'
+    outputs:
+      bob_md_name: name
+      bob_md_topic: data.topic
+      bob_md_icon: data.icon
+
+  # ── Phase 4: Assertions ───────────────────────────────────────────
+
+  - name: Assert Bob sees the subgroup at all
+    # `list_child_groups` reads GroupChildIndex rows which arrive via
+    # the public RootOp::GroupCreated path — so this should pass even
+    # pre-fix. If it doesn't, the bug is much deeper than the issue
+    # describes.
+    type: assert
+    statements:
+      - "is_set({{bob_subgroups}})"
+      - "is_set({{bob_first_subgroup_id}})"
+
+  - name: Assert Bob sees the subgroup name via list_subgroups (THE BUG)
+    # This is the exact assertion the issue body specifies as failing
+    # pre-fix. Post-fix it must pass.
+    type: json_assert
+    statements:
+      - 'json_equal({{bob_first_subgroup_name}}, "Plans")'
+
+  - name: Assert Bob can fetch the metadata record directly
+    # Cross-check via get_group_metadata. If list_subgroups fails but
+    # this passes, the bug is in list_subgroups' read path; if both
+    # fail, the metadata record never landed in Bob's store at all
+    # (the more likely failure mode given the publisher already
+    # namespace-encrypts the op).
+    type: json_assert
+    statements:
+      - 'json_equal({{bob_md_name}}, "Plans")'
+      - 'json_equal({{bob_md_topic}}, "discovery-test")'
+      - 'json_equal({{bob_md_icon}}, "folder")'
+
+stop_all_nodes: false
