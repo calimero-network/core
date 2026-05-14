@@ -7,6 +7,7 @@ pub mod get_group_info;
 pub mod get_group_upgrade_status;
 pub mod get_member_capabilities;
 pub mod get_tee_admission_policy;
+pub mod issue_ownership_proof;
 pub mod join_group;
 pub mod leave_group;
 pub mod list_all_groups;
