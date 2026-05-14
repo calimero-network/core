@@ -2,13 +2,13 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::sync::{Arc, OnceLock};
-// Removed: NonZeroUsize (no longer using height)
+use std::sync::Arc;
 
 use async_stream::stream;
 use calimero_context_config::types::GovernancePosition;
 use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::NetworkClient;
+use calimero_network_primitives::config::GOSSIPSUB_MESH_N_LOW;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::NodeEvent;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -137,22 +137,18 @@ pub struct LocalAppliedDelta {
 }
 
 /// Read libp2p's `mesh_n_low` once from the live `gossipsub::Config::default()`
-/// and cache it. Used by Phase-1 readiness in
+/// Gossipsub `mesh_n_low`. Used by Phase-1 readiness in
 /// `governance_broadcast::assert_transport_ready` as the upper bound for
 /// `required = min(mesh_n_low, known_subscribers)`.
 ///
-/// Reading from `Config::default()` (instead of hardcoding) keeps this
-/// value in sync across libp2p version bumps — the upstream default has
-/// shifted between releases (4 → 5 between older crates and the 0.49.x
-/// line currently pinned), and a hardcoded mismatch would either reject
-/// healthy publishes (`required` too high) or admit publishes on an
-/// unhealthy mesh (`required` too low). Calimero constructs the
-/// gossipsub behaviour with `Config::default()` at
-/// `crates/network/src/behaviour.rs:111`, so reading the same default
-/// here is faithful to the actor's configuration.
+/// Source: `GOSSIPSUB_MESH_N_LOW` in `calimero_network_primitives::config`,
+/// which is the same value passed to `gossipsub::ConfigBuilder::mesh_n_low`
+/// in `crates/network/src/behaviour.rs`. A mismatch between the gate and
+/// the actual gossipsub config would either reject healthy publishes
+/// (gate too high — the mesh never reaches the required size) or admit
+/// publishes on an unhealthy mesh (gate too low).
 fn gossipsub_mesh_n_low_default() -> usize {
-    static CACHED: OnceLock<usize> = OnceLock::new();
-    *CACHED.get_or_init(|| libp2p::gossipsub::Config::default().mesh_n_low())
+    GOSSIPSUB_MESH_N_LOW
 }
 
 #[derive(Clone, Debug)]

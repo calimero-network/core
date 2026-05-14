@@ -7,8 +7,8 @@ use tokio::sync::oneshot;
 
 use crate::blob_types::BlobAuth;
 use crate::messages::{
-    AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, NetworkMessage, OpenStream,
-    PeerCount, Publish, QueryBlob, RequestBlob, SendSpecializedNodeInvitationResponse,
+    AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, MeshStats, NetworkMessage,
+    OpenStream, PeerCount, Publish, QueryBlob, RequestBlob, SendSpecializedNodeInvitationResponse,
     SendSpecializedNodeVerificationRequest, Subscribe, Unsubscribe,
 };
 use crate::specialized_node_invite::{SpecializedNodeInvitationResponse, VerificationRequest};
@@ -157,6 +157,22 @@ impl NetworkClient {
         self.network_manager
             .send(NetworkMessage::MeshPeers {
                 request: MeshPeers(topic),
+                outcome: tx,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        rx.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Per-topic mesh peer-count snapshot for every topic this node is
+    /// subscribed to. Returns `(topic_hash, count)` pairs.
+    pub async fn mesh_stats(&self) -> Vec<(TopicHash, usize)> {
+        let (tx, rx) = oneshot::channel();
+
+        self.network_manager
+            .send(NetworkMessage::MeshStats {
+                request: MeshStats,
                 outcome: tx,
             })
             .await
