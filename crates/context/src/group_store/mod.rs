@@ -98,6 +98,7 @@ pub use self::metadata::{
 pub use self::migrations::{
     delete_all_context_last_migrations, get_context_last_migration, set_context_last_migration,
 };
+pub(crate) use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
     collect_descendant_groups, collect_subtree_for_cascade, collect_visible_descendant_groups,
     create_recursive_invitations, get_namespace_identity, get_namespace_identity_record,

@@ -10,6 +10,7 @@ use eyre::bail;
 use serde::Serialize;
 
 use crate::group_store;
+use crate::group_store::MAX_NAMESPACE_DEPTH;
 use crate::ContextManager;
 
 /// Domain-separation tag prepended to the serialized payload before signing.
@@ -70,10 +71,28 @@ pub(crate) fn build_ownership_proof(
         bail!("node is not a direct admin of this group");
     }
 
-    // TODO(#73): verify `context_id` actually belongs to `group_id` (via
-    // `enumerate_group_contexts` or a direct lookup). Left as a follow-up
-    // because tying it in here changes the test surface significantly and
-    // the cross-repo contract only depends on the signed payload bytes.
+    let ctx_group = group_store::get_group_for_context(store, &context_id)?
+        .ok_or_else(|| eyre::eyre!("context {context_id:?} is not registered in any group"))?;
+    // The caller scopes the proof to a namespace root; the context may live in
+    // that root or any descendant subgroup. Walk up from the context's group
+    // and require we reach `group_id` within the namespace depth bound.
+    let mut current = ctx_group;
+    let mut contained = current == group_id;
+    for _ in 0..MAX_NAMESPACE_DEPTH {
+        if contained {
+            break;
+        }
+        match group_store::get_parent_group(store, &current)? {
+            Some(parent) => {
+                current = parent;
+                contained = current == group_id;
+            }
+            None => break,
+        }
+    }
+    if !contained {
+        bail!("context {context_id:?} is not within the namespace rooted at {group_id:?}");
+    }
 
     let Some(signing_key_bytes) =
         group_store::resolve_group_signing_key(store, &group_id, &node_identity)?
@@ -87,11 +106,20 @@ pub(crate) fn build_ownership_proof(
         bail!("expires_at_ms must be in the future");
     }
 
+    // Derive the signer identity from the resolved signing key itself rather
+    // than trusting `node_identity`. In all reachable states these are equal
+    // (signing keys are stored keyed by their own public key — see
+    // `register_signing_key.rs`), but mdma cross-checks that
+    // `payload.issuer_identity == response.signer_public_key` byte-for-byte,
+    // so both MUST come from the same source of truth: the private key.
+    let private_key = PrivateKey::from(signing_key_bytes);
+    let signer_public_key = private_key.public_key();
+
     let payload = OwnershipClaimPayload {
         v: 1,
         audience,
         group_id: hex::encode(group_id.to_bytes()),
-        issuer_identity: node_identity.to_string(),
+        issuer_identity: signer_public_key.to_string(),
         context_id: bs58::encode(context_id.as_ref()).into_string(),
         subject,
         nonce,
@@ -104,12 +132,11 @@ pub(crate) fn build_ownership_proof(
     sign_input.extend_from_slice(OWNERSHIP_PROOF_DOMAIN);
     sign_input.extend_from_slice(&signed_payload);
 
-    let private_key = PrivateKey::from(signing_key_bytes);
     let signature = private_key.sign(&sign_input)?;
     let signature_bytes: [u8; 64] = signature.to_bytes();
 
     Ok(OwnershipProofBuildOutput {
-        signer_public_key: node_identity,
+        signer_public_key,
         signed_payload,
         signature: signature_bytes,
     })
@@ -185,6 +212,8 @@ mod tests {
             .expect("add admin");
         group_store::store_group_signing_key(&store, &group_id, &signing_pub, &signing_priv)
             .expect("store signing key");
+        group_store::register_context_in_group(&store, &group_id, &context_id)
+            .expect("register context");
 
         (store, group_id, context_id, signing_pub, signing_priv)
     }
@@ -264,9 +293,11 @@ mod tests {
         let context_id = ContextId::from([0xBB; 32]);
         let identity = PublicKey::from([0x44; 32]);
 
-        // Admin row exists but no signing key registered.
+        // Admin row exists and context is registered, but no signing key.
         group_store::add_group_member(&store, &group_id, &identity, GroupMemberRole::Admin)
             .expect("add admin");
+        group_store::register_context_in_group(&store, &group_id, &context_id)
+            .expect("register context");
 
         let err = build_ownership_proof(
             &store,
@@ -321,5 +352,143 @@ mod tests {
         )
         .expect_err("expires_at_ms == now must be rejected");
         assert!(err.to_string().contains("expires_at_ms"));
+    }
+
+    #[test]
+    fn context_in_subgroup_of_namespace_root_succeeds() {
+        let store = test_store();
+        // `root` is the namespace root the caller scopes the proof to;
+        // `child` is a descendant subgroup the context actually lives in.
+        let root = ContextGroupId::from([0xAA; 32]);
+        let child = ContextGroupId::from([0xCC; 32]);
+        let context_id = ContextId::from([0xBB; 32]);
+
+        let signing_priv = PrivateKey::from([0x33; 32]);
+        let signing_pub = signing_priv.public_key();
+
+        // Admin + signing key registered at the root (resolve_group_signing_key
+        // walks up from the requested group, so a root key is reachable).
+        group_store::add_group_member(&store, &root, &signing_pub, GroupMemberRole::Admin)
+            .expect("add admin");
+        group_store::store_group_signing_key(&store, &root, &signing_pub, &signing_priv)
+            .expect("store signing key");
+
+        // Context lives in `child`, which is nested under `root`.
+        group_store::nest_group(&store, &root, &child).expect("nest child under root");
+        group_store::register_context_in_group(&store, &child, &context_id)
+            .expect("register context in subgroup");
+
+        let out = build_ownership_proof(
+            &store,
+            signing_pub,
+            root,
+            context_id,
+            "mdma.cloud",
+            "subject-xyz",
+            "deadbeefcafebabe1122334455667788",
+            NOW_MS + 1_000,
+            NOW_MS,
+        )
+        .expect("context in subgroup of namespace root must succeed");
+
+        let mut sign_input =
+            Vec::with_capacity(OWNERSHIP_PROOF_DOMAIN.len() + out.signed_payload.len());
+        sign_input.extend_from_slice(OWNERSHIP_PROOF_DOMAIN);
+        sign_input.extend_from_slice(&out.signed_payload);
+        out.signer_public_key
+            .verify_raw_signature(&sign_input, &out.signature)
+            .expect("signature must verify");
+    }
+
+    #[test]
+    fn context_in_unrelated_group_bails() {
+        let (store, group_id, _ctx, signing_pub, _signing_priv) = setup_admin_with_signing_key();
+
+        // A context registered in a group that is neither `group_id` nor a
+        // descendant of it must not be claimable under `group_id`.
+        let unrelated = ContextGroupId::from([0xEE; 32]);
+        let foreign_ctx = ContextId::from([0xDD; 32]);
+        group_store::register_context_in_group(&store, &unrelated, &foreign_ctx)
+            .expect("register context in unrelated group");
+
+        let err = build_ownership_proof(
+            &store,
+            signing_pub,
+            group_id,
+            foreign_ctx,
+            "aud",
+            "sub",
+            "deadbeefcafebabe1122334455667788",
+            NOW_MS + 1_000,
+            NOW_MS,
+        )
+        .expect_err("context outside the namespace must bail");
+        assert!(err.to_string().contains("not within the namespace"));
+    }
+
+    #[test]
+    fn signer_public_key_is_derived_from_signing_key_not_node_identity() {
+        // In all states reachable via `register_signing_key.rs` the stored key
+        // is keyed by its own derived public key, so `node_identity` and the
+        // signer key coincide. This test deliberately constructs a divergent
+        // store state (signing key stored under a `node_identity` that does
+        // NOT equal `PrivateKey::from(bytes).public_key()`) to prove the
+        // handler derives `signer_public_key` from the key material itself —
+        // mdma cross-checks `payload.issuer_identity == signer_public_key`.
+        let store = test_store();
+        let group_id = ContextGroupId::from([0xAA; 32]);
+        let context_id = ContextId::from([0xBB; 32]);
+
+        // The real signing key the proof is produced with.
+        let real_priv = PrivateKey::from([0x33; 32]);
+        let real_pub = real_priv.public_key();
+
+        // A distinct admin identity used as `node_identity`; the signing key is
+        // stored *keyed by this identity* but with `real_priv`'s bytes, so the
+        // lookup succeeds yet the derived pubkey differs from node_identity.
+        let node_identity = PublicKey::from([0x77; 32]);
+        assert_ne!(
+            node_identity, real_pub,
+            "scenario requires node_identity != derived signing pubkey"
+        );
+
+        group_store::add_group_member(&store, &group_id, &node_identity, GroupMemberRole::Admin)
+            .expect("add admin");
+        group_store::store_group_signing_key(&store, &group_id, &node_identity, &real_priv)
+            .expect("store signing key keyed by node_identity");
+        group_store::register_context_in_group(&store, &group_id, &context_id)
+            .expect("register context");
+
+        let out = build_ownership_proof(
+            &store,
+            node_identity,
+            group_id,
+            context_id,
+            "mdma.cloud",
+            "subject-xyz",
+            "deadbeefcafebabe1122334455667788",
+            NOW_MS + 1_000,
+            NOW_MS,
+        )
+        .expect("happy path with divergent stored key");
+
+        // signer_public_key derives from the signing key, NOT node_identity.
+        assert_eq!(out.signer_public_key, real_pub);
+        assert_ne!(out.signer_public_key, node_identity);
+
+        // Signature verifies against the derived key.
+        let mut sign_input =
+            Vec::with_capacity(OWNERSHIP_PROOF_DOMAIN.len() + out.signed_payload.len());
+        sign_input.extend_from_slice(OWNERSHIP_PROOF_DOMAIN);
+        sign_input.extend_from_slice(&out.signed_payload);
+        out.signer_public_key
+            .verify_raw_signature(&sign_input, &out.signature)
+            .expect("signature must verify against derived signer key");
+
+        // payload.issuer_identity must equal response.signer_public_key.
+        let json: Value =
+            serde_json::from_slice(&out.signed_payload).expect("payload must be valid JSON");
+        assert_eq!(json["issuer_identity"], out.signer_public_key.to_string());
+        assert_eq!(json["issuer_identity"], real_pub.to_string());
     }
 }

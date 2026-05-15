@@ -2339,6 +2339,13 @@ impl Validate for IssueOwnershipProofApiRequest {
                 field: "nonce",
                 reason: "nonce must be valid hex".into(),
             });
+        } else if n % 2 != 0 {
+            // An odd-length hex string can't decode to whole bytes, which is
+            // inconsistent with the documented "16..=64 raw bytes" contract.
+            errors.push(ValidationError::InvalidFormat {
+                field: "nonce",
+                reason: "nonce hex string must have even length".into(),
+            });
         }
 
         // context_id and expires_at_ms are validated in the handler (the former
@@ -2614,6 +2621,40 @@ mod tests {
         let resp: CreateContextResponseData = serde_json::from_value(json).unwrap();
         assert!(resp.group_id.is_none());
         assert!(!resp.group_created);
+    }
+
+    fn ownership_req(nonce: &str) -> IssueOwnershipProofApiRequest {
+        IssueOwnershipProofApiRequest {
+            audience: "mdma.cloud".into(),
+            context_id: "11111111111111111111111111111111".into(),
+            subject: "subject-xyz".into(),
+            nonce: nonce.into(),
+            expires_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn ownership_proof_even_length_hex_nonce_passes() {
+        // 32 hex chars (16 bytes) — minimum valid, even length.
+        let errors = ownership_req("deadbeefcafebabe1122334455667788").validate();
+        assert!(
+            errors.is_empty(),
+            "even-length hex nonce must validate cleanly, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn ownership_proof_odd_length_hex_nonce_rejected() {
+        // 33 hex chars: in range, all hex digits, but odd length.
+        let errors = ownership_req("deadbeefcafebabe1122334455667788a").validate();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::InvalidFormat { field: "nonce", reason }
+                    if reason == "nonce hex string must have even length"
+            )),
+            "odd-length hex nonce must be rejected, got {errors:?}"
+        );
     }
 }
 
