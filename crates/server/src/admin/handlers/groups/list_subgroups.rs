@@ -42,7 +42,8 @@ pub async fn handler(
         Ok(None) => None,
         Err(err) => {
             warn!(?err, group_id=%group_id_str,
-                  "resolve_namespace_identity failed; falling back to unfiltered listing");
+                  "resolve_namespace_identity failed; falling back to conservative listing \
+                   (all Restricted subgroups hidden)");
             None
         }
     };
