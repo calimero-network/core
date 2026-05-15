@@ -34,19 +34,20 @@ pub async fn handler(
     // AuthenticatedKey extension). Using `resolve_namespace_identity`
     // matches what `list_group_members` already does to populate
     // `selfIdentity`.
-    let caller = match calimero_context::group_store::resolve_namespace_identity(
-        &state.store,
-        &group_id,
-    ) {
-        Ok(Some((pk, _, _))) => Some(pk),
-        Ok(None) => None,
-        Err(err) => {
-            warn!(?err, group_id=%group_id_str,
-                  "resolve_namespace_identity failed; falling back to conservative listing \
-                   (all Restricted subgroups hidden)");
-            None
-        }
-    };
+    let caller =
+        match calimero_context::group_store::resolve_namespace_identity(&state.store, &group_id) {
+            Ok(Some((pk, _, _))) => Some(pk),
+            Ok(None) => None,
+            Err(err) => {
+                warn!(
+                    ?err,
+                    group_id = %group_id_str,
+                    "resolve_namespace_identity failed; falling back to conservative listing \
+                     (all Restricted subgroups hidden)"
+                );
+                None
+            }
+        };
 
     let mut subgroups = Vec::with_capacity(children.len());
     for child in children {
@@ -63,27 +64,56 @@ pub async fn handler(
             match calimero_context::group_store::get_subgroup_visibility(&state.store, &child) {
                 Ok(v) => v,
                 Err(err) => {
-                    warn!(?err, group_id=%hex::encode(child.to_bytes()),
-                          "get_subgroup_visibility failed; skipping from list");
+                    warn!(
+                        ?err,
+                        group_id = %hex::encode(child.to_bytes()),
+                        "get_subgroup_visibility failed; skipping from list"
+                    );
                     continue;
                 }
             };
         if matches!(visibility, VisibilityMode::Restricted) {
-            let Some(ref caller_pk) = caller else { continue; };
-            let is_member = match calimero_context::group_store::check_group_membership(
+            let Some(ref caller_pk) = caller else {
+                continue;
+            };
+            // Admins of the parent group can enumerate all direct children
+            // even if those children are Restricted — they govern the space
+            // and need to know what subgroups exist. Non-admins must be an
+            // explicit member of the child to see it.
+            let is_parent_admin = match calimero_context::group_store::is_group_admin(
                 &state.store,
-                &child,
+                &group_id,
                 caller_pk,
             ) {
                 Ok(b) => b,
                 Err(err) => {
-                    warn!(?err, group_id=%hex::encode(child.to_bytes()),
-                          "check_group_membership failed; skipping from list");
+                    warn!(
+                        ?err,
+                        group_id = %group_id_str,
+                        "is_group_admin failed; skipping restricted subgroup from list"
+                    );
                     continue;
                 }
             };
-            if !is_member {
-                continue;
+            if !is_parent_admin {
+                let is_member = match calimero_context::group_store::check_group_membership(
+                    &state.store,
+                    &child,
+                    caller_pk,
+                ) {
+                    Ok(b) => b,
+                    Err(err) => {
+                        warn!(
+                            ?err,
+                            group_id = %hex::encode(child.to_bytes()),
+                            "check_group_membership failed; skipping from list"
+                        );
+                        continue;
+                    }
+                };
+                if !is_member {
+                    continue;
+                }
             }
         }
 
