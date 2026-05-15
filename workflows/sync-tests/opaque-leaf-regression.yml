@@ -235,3 +235,50 @@ steps:
       - "is_set({{node2_read}})"
       - 'contains({{node1_read}}, "from-node-2")'
       - 'contains({{node2_read}}, "from-node-1")'
+
+  # ── Phase 5: Cold-start second-context race (#2356) ─────────────────
+  # Phases 1-4 above exercise HashComparison reconciliation between two
+  # nodes that have both explicitly `join_context`'d the same context.
+  # Phase 5 exercises a different race: node-1 creates a *new* context
+  # inside the existing namespace, and the responder-side
+  # materialisation wait in `sync::manager` has to hold the inbound
+  # stream from node-1 until node-2 processes the corresponding
+  # `ContextRegistered` governance op.
+  #
+  # Pre-fix (this PR), the materialisation wait short-circuits when
+  # `get_group_for_context` returns `None` — i.e. when the namespace
+  # governance op hasn't propagated yet — and the inbound stream is
+  # closed as `inbound stream for unknown context, closing cleanly`.
+  # Sync recovers via exponential backoff (2→4→8→16 s) — slow enough
+  # to outlive realistic test deadlines (e.g. mero-drive PR #32 E2E).
+  #
+  # Post-fix, the wait covers both sub-races (group binding +
+  # context materialisation) within a single shared 10 s deadline, so
+  # the warn never fires and convergence is fast.
+  #
+  # The deterministic regression guard is in the GHA wrapper
+  # (`.github/workflows/sync-regression.yml`): it greps captured
+  # docker logs for the warn signature and fails the job if found.
+  # `wait_for_sync` timing on its own is too noisy to be the guard —
+  # in a stable 2-node mesh ContextRegistered propagation is fast and
+  # the race window can be sub-millisecond.
+  - name: Phase 5 — node-1 creates a second context (race window opens)
+    type: create_context
+    node: sync-regression-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{namespace_id}}"
+    outputs:
+      ctx2_id: contextId
+      node1_ctx2_key: memberPublicKey
+
+  - name: Phase 5 — sync second context (no wait between create + sync)
+    # No `wait` step here on purpose — the responder-side
+    # materialisation wait is what should keep node-1's early sync
+    # stream alive long enough for node-2 to catch up.
+    type: wait_for_sync
+    context_id: "{{ctx2_id}}"
+    nodes:
+      - sync-regression-node-1
+      - sync-regression-node-2
+    timeout: 30
+    check_interval: 1
