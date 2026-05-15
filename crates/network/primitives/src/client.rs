@@ -95,11 +95,7 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn publish(
-        &self,
-        topic: TopicHash,
-        data: Vec<u8>,
-    ) -> eyre::Result<Option<MessageId>> {
+    pub async fn publish(&self, topic: TopicHash, data: Vec<u8>) -> eyre::Result<MessageId> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager

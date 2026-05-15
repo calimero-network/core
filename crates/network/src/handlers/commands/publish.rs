@@ -1,6 +1,6 @@
 use actix::{Context, Handler, Message};
 use calimero_network_primitives::messages::Publish;
-use libp2p::gossipsub::PublishError;
+use libp2p::gossipsub::{MessageId, PublishError};
 
 use crate::NetworkManager;
 
@@ -21,10 +21,16 @@ impl Handler<Publish> for NetworkManager {
         // `gossipsub.publish` consumes `data` and can still return
         // `NoPeersSubscribedToTopic` *after* the consume (the
         // subscriber set is checked inside `publish`). We pre-clone to
-        // be able to enqueue the payload for retry on that path. A
-        // mesh-emptiness pre-check could skip the clone in the
-        // common case but is racy with gossipsub's internal state —
-        // accepting the one clone keeps the contract correct.
+        // be able to enqueue the payload for retry on that path.
+        //
+        // On the queued path we synthesise an empty `MessageId` so
+        // callers don't have to special-case `Ok(queued)`. This keeps
+        // the public publish contract identical to `master` —
+        // governance, ack, and state-delta callers already handle
+        // delivery as eventually-consistent at their own layers
+        // (`governance_broadcast::publish_and_await_ack_namespace`,
+        // `NodeClient::broadcast` + sync-pull) so an indistinguishable
+        // `Ok` is correct here.
         let outbox_copy = data.clone();
         match self
             .swarm
@@ -32,10 +38,10 @@ impl Handler<Publish> for NetworkManager {
             .gossipsub
             .publish(topic.clone(), data)
         {
-            Ok(id) => Ok(Some(id)),
+            Ok(id) => Ok(id),
             Err(PublishError::NoPeersSubscribedToTopic) => {
                 self.publish_outbox.enqueue(topic, outbox_copy);
-                Ok(None)
+                Ok(MessageId::new(&[]))
             }
             Err(e) => Err(e.into()),
         }

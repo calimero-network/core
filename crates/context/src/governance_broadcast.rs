@@ -356,32 +356,10 @@ impl BroadcastTransport for calimero_network_primitives::client::NetworkClient {
         Self::mesh_peer_count(self, topic).await
     }
     async fn publish(&self, topic: TopicHash, bytes: Vec<u8>) -> Result<(), BroadcastPublishError> {
-        // `NetworkClient::publish` now returns `Ok(Some(id))` for a
-        // direct gossipsub accept and `Ok(None)` when no peer was known
-        // to subscribe and the payload was queued in the network
-        // manager's outbox for replay on the next `Subscribed` event.
-        //
-        // For governance ops the existing protocol contract is that a
-        // queued-but-not-yet-delivered publish surfaces as
-        // `Err(NoPeersSubscribed)` so `publish_and_await_ack_namespace`
-        // can apply its `min_acks`-dependent semantics:
-        //   * `min_acks == 0` callers fall through to the
-        //     `Ok(DeliveryReport { acked_by: [] })` fast path
-        //     (eventual-consistency contract: outbox drain + receiver
-        //     heartbeat reconcile the actual delivery).
-        //   * `min_acks > 0` callers see `Err(NoAckReceived)` instead
-        //     of waiting the full `op_timeout` for acks that cannot
-        //     arrive until the queue drains — the original fast-fail
-        //     behaviour the rest of this module is documented against.
-        //
-        // (Cursor Bugbot on PR #2369 caught this dead-code regression
-        // when the handler-level interceptor was added in the previous
-        // commit.)
-        match Self::publish(self, topic, bytes).await {
-            Ok(Some(_msg_id)) => Ok(()),
-            Ok(None) => Err(BroadcastPublishError::NoPeersSubscribed),
-            Err(e) => Err(classify_network_publish_error(e)),
-        }
+        Self::publish(self, topic, bytes)
+            .await
+            .map(|_msg_id| ())
+            .map_err(classify_network_publish_error)
     }
 }
 

@@ -287,12 +287,14 @@ pub struct Publish {
 }
 
 impl actix::Message for Publish {
-    /// `Ok(Some(id))` means gossipsub accepted the message and assigned
-    /// a `MessageId`. `Ok(None)` means there were no known subscribers
-    /// at publish time and the payload has been queued in the network
-    /// manager's outbox; it will be re-published when a peer subscribes
-    /// to `topic` within the outbox TTL.
-    type Result = eyre::Result<Option<MessageId>>;
+    /// `Ok(id)` means either gossipsub accepted the message and
+    /// assigned a `MessageId`, or no peer was known to subscribe and
+    /// the payload was queued in the network manager's outbox for
+    /// replay on the next `Subscribed` event for `topic` (within
+    /// `OUTBOX_TTL`). The two cases are indistinguishable to the
+    /// caller — by design, since governance and ack/heartbeat senders
+    /// already treat the publish boundary as eventually-consistent.
+    type Result = eyre::Result<MessageId>;
 }
 
 /// Request to subscribe to a gossipsub topic.
