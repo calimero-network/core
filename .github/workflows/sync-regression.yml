@@ -162,6 +162,19 @@ jobs:
         # binding to materialise within the 10 s window, and the warn
         # never fires.
         #
+        # `if: always()` is on purpose — even when an earlier step
+        # already failed (e.g. `wait_for_sync` timeout), the warn
+        # signature in the captured docker logs is useful diagnostic
+        # context for triage.
+        #
+        # Fail-loud on absent logs: a merobox bootstrap that aborts
+        # *before* any node logs are captured (e.g. image pull failure)
+        # would otherwise produce a silent false negative — `grep` of an
+        # empty glob exits non-zero but `2>/dev/null` swallows that,
+        # and "no match" is then indistinguishable from a true clean
+        # run. The explicit file-existence check below fails the step
+        # in that case so the upstream failure surfaces clearly.
+        #
         # Hardcoded literals only; no `${{ ... }}` GitHub-context
         # interpolation in the shell body.
         if: always()
@@ -169,9 +182,16 @@ jobs:
           WARN_SIGNATURE: "inbound stream for unknown context, closing cleanly"
         run: |
           set +e
-          if grep -h -F "$WARN_SIGNATURE" docker-logs/sync-regression-node-*.log 2>/dev/null; then
+          shopt -s nullglob
+          log_files=(docker-logs/sync-regression-node-*.log)
+          if [ ${#log_files[@]} -eq 0 ]; then
+            echo "::error::No docker-logs/sync-regression-node-*.log found — cannot verify #2356 guard."
+            echo "  (merobox bootstrap likely aborted before any node log was captured)"
+            exit 1
+          fi
+          if grep -h -F "$WARN_SIGNATURE" "${log_files[@]}" 2>/dev/null; then
             echo "::error::Detected premature inbound-stream closure (#2356)"
             echo "See crates/node/src/sync/manager/mod.rs materialisation-wait loop."
             exit 1
           fi
-          echo "OK: no premature inbound-stream closures observed."
+          echo "OK: no premature inbound-stream closures observed across ${#log_files[@]} log file(s)."
