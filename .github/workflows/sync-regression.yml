@@ -150,3 +150,28 @@ jobs:
           path: docker-logs/
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: Verify no premature inbound-stream closure (#2356)
+        # Regression guard for the materialisation-wait short-circuit
+        # fixed in this PR. The Phase 5 cold-start race in
+        # `opaque-leaf-regression.yml` may or may not fire the
+        # underlying timing race on a given runner — gossipsub
+        # propagation in a stable 2-node mesh is fast — but when it
+        # does fire pre-fix, node-2's log carries the exact warn
+        # signature below. Post-fix, the responder waits for the group
+        # binding to materialise within the 10 s window, and the warn
+        # never fires.
+        #
+        # Hardcoded literals only; no `${{ ... }}` GitHub-context
+        # interpolation in the shell body.
+        if: always()
+        env:
+          WARN_SIGNATURE: "inbound stream for unknown context, closing cleanly"
+        run: |
+          set +e
+          if grep -h -F "$WARN_SIGNATURE" docker-logs/sync-regression-node-*.log 2>/dev/null; then
+            echo "::error::Detected premature inbound-stream closure (#2356)"
+            echo "See crates/node/src/sync/manager/mod.rs materialisation-wait loop."
+            exit 1
+          fi
+          echo "OK: no premature inbound-stream closures observed."
