@@ -18,22 +18,42 @@ mkdir -p "$PROFILING_OUTPUT_DIR"
 mkdir -p "${PROFILING_REPORTS_DIR:-/profiling/reports}"
 
 install_kernel_tools() {
-    echo "[Profiling] Detected kernel: $(uname -r)"
-    # Sanity-check perf works. The Dockerfile pre-symlinks the generic
-    # `linux-tools-generic` binary at /usr/local/bin/perf, which takes
-    # PATH precedence over Ubuntu's /usr/bin/perf wrapper — so this
-    # should succeed even on runners whose kernel-version-specific perf
-    # package isn't available. If it does fail, the most likely cause
-    # is missing CAP_PERFMON on the container.
-    local err
-    err=$(perf record -o /dev/null -- true 2>&1)
-    if [ $? -eq 0 ]; then
+    local kernel_version=$(uname -r)
+    echo "[Profiling] Detected kernel: $kernel_version"
+
+    perf_sanity_check() {
+        local err
+        err=$(perf record -o /dev/null -- true 2>&1)
+        if [ $? -eq 0 ]; then return 0; fi
+        echo "[Profiling] perf sanity check failed. First 5 lines of stderr:"
+        echo "$err" | head -5 | sed 's/^/[Profiling]   /'
+        return 1
+    }
+
+    # Happy path: the Dockerfile pre-symlinks the generic perf at
+    # /usr/local/bin/perf, which takes PATH precedence over Ubuntu's
+    # /usr/bin/perf wrapper. On most runners this succeeds with no
+    # runtime apt at all.
+    if perf_sanity_check; then
         echo "[Profiling] perf is working ($(command -v perf))"
         return 0
     fi
-    echo "[Profiling] WARNING: CPU profiling unavailable. perf record failed with:"
-    echo "$err" | head -5 | sed 's/^/[Profiling]   /'
-    echo "[Profiling]   If stderr above shows 'Operation not permitted', container is missing CAP_PERFMON."
+
+    # Fallback: install kernel-version-specific tools. Required on
+    # runners whose kernel is newer than the linux-tools-generic version
+    # baked into the image (e.g. Azure cloud kernels). Stderr captured
+    # to surface the actual apt failure if this fails too.
+    echo "[Profiling] Build-time perf not usable for this kernel. Trying apt fallback..."
+    local apt_log
+    apt_log=$(apt-get update -qq 2>&1; apt-get install -y -qq "linux-tools-${kernel_version}" 2>&1)
+    if perf_sanity_check; then
+        echo "[Profiling] perf is now working (linux-tools-${kernel_version})"
+        return 0
+    fi
+
+    echo "[Profiling] WARNING: CPU profiling unavailable. apt fallback failed; first 10 lines:"
+    echo "$apt_log" | head -10 | sed 's/^/[Profiling]   /'
+    echo "[Profiling]   If perf stderr shows 'Operation not permitted', container is missing CAP_PERFMON."
     return 1
 }
 

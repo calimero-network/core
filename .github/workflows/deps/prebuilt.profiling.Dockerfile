@@ -58,10 +58,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # fail and the entrypoint had to apt-install at boot — which raced and lost
 # on 3 of 4 nodes. This symlink makes perf work uniformly without runtime
 # apt.
-RUN GENERIC_PERF=$(find /usr/lib/linux-tools -name perf -type f | head -1) \
-    && [ -n "$GENERIC_PERF" ] \
-    && ln -sf "$GENERIC_PERF" /usr/local/bin/perf \
-    && /usr/local/bin/perf --version
+RUN set -e; \
+    GENERIC_PERF=""; \
+    for candidate in $(find /usr/lib/linux-tools /usr/libexec/linux-tools \
+                            -name perf -type f 2>/dev/null); do \
+        if [ -x "$candidate" ] && "$candidate" --version >/dev/null 2>&1; then \
+            GENERIC_PERF="$candidate"; break; \
+        fi; \
+    done; \
+    if [ -n "$GENERIC_PERF" ]; then \
+        ln -sf "$GENERIC_PERF" /usr/local/bin/perf; \
+        echo "[image] perf binary: $GENERIC_PERF -> /usr/local/bin/perf"; \
+        /usr/local/bin/perf --version; \
+    else \
+        echo "[image] WARN: no working perf binary under /usr/lib/linux-tools — inspect:"; \
+        ls -la /usr/lib/linux-tools/ 2>/dev/null || echo "  (dir does not exist)"; \
+        ls -la /usr/libexec/linux-tools/ 2>/dev/null || true; \
+        dpkg -L linux-tools-generic 2>/dev/null | grep -E 'perf|tools' | head -20 || true; \
+        echo "[image] runtime entrypoint will fall back to /usr/bin/perf wrapper"; \
+    fi
 
 # Enable Ubuntu's ddebs (debug-symbols) archive and install -dbgsym packages
 # for libgcc and libstdc++ — together with libc6-dbg below, this cuts the
@@ -115,7 +130,7 @@ RUN mkdir -p /profiling/data /profiling/reports /profiling/scripts
 # Uses RUN (not LABEL) — buildx with cache-from=type=gha folds LABELs into
 # image metadata without producing a layer-hash boundary, so a LABEL does
 # not actually invalidate the downstream COPY. RUN does.
-RUN echo "cache_bust=2026-05-15-3" > /tmp/.profiling-cache-bust
+RUN echo "cache_bust=2026-05-16-1" > /tmp/.profiling-cache-bust
 
 # Copy profiling scripts
 COPY scripts/profiling/ /profiling/scripts/
