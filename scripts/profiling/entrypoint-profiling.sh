@@ -220,17 +220,15 @@ stop_profiling() {
         if kill -0 "$perf_pid" 2>/dev/null; then
             kill -INT "$perf_pid" 2>/dev/null || true
             
-            # 60s to let perf flush its final buffer on SIGINT before SIGKILL.
-            # 15s was enough for Group Governance in run 25857842324 but not
-            # the other three suites — handlers / kv-store / scaffolding-e2e
-            # all left perf.data with `data size field is 0` because perf
-            # was SIGKILLed mid-finalize before the header could be updated.
-            # 60s still fits comfortably inside the 120s `docker stop
-            # --time=120` graceful-shutdown window set in cf4c2a92, and the
-            # loop exits as soon as perf actually exits, so successful runs
-            # see no additional latency.
+            # 180s to let perf flush its final buffer on SIGINT before SIGKILL.
+            # 60s was still SIGKILLing perf mid-finalize on the post-#2351
+            # merod binary — the new binary's DWARF / DSO structure makes
+            # perf's symbolization step much slower (~6x per MB) than the
+            # old binary that finalized 206 MB in <10s. The loop exits as
+            # soon as perf actually exits, so successful runs see no
+            # additional latency.
             local wait_count=0
-            while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 60 ]; do
+            while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 180 ]; do
                 sleep 1
                 wait_count=$((wait_count + 1))
             done

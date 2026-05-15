@@ -42,13 +42,15 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
                 if kill -0 "$PERF_PID" 2>/dev/null; then
                     echo "    Sending SIGINT to perf (PID $PERF_PID)..."
                     kill -INT "$PERF_PID" 2>/dev/null || true
-                    # 60s grace, matching entrypoint stop_profiling (b8f04ba2).
-                    # Was 10s and SIGKILLed perf mid-finalize for every suite
-                    # except Group Governance, leaving perf.data with `data
-                    # size field is 0`. This loop runs BEFORE merobox stops
-                    # the container, so it determines the actual grace window
-                    # in CI — the entrypoint trap never gets the chance to.
-                    for i in $(seq 1 60); do
+                    # 180s grace. 60s was still SIGKILLing perf mid-finalize
+                    # on the post-#2351 merod binary — run 25912294478's
+                    # perf-fuzzy-gov-node-1.log shows 890 wakeups + 237 MB
+                    # captured but no "Captured and wrote" finalize line.
+                    # The new binary's DWARF / DSO structure makes perf's
+                    # symbolization step much slower (~6x per MB) than the
+                    # old binary that finalized 206 MB in <10s. Still well
+                    # within the 240s docker stop --time=120 + harvest window.
+                    for i in $(seq 1 180); do
                         if ! kill -0 "$PERF_PID" 2>/dev/null; then
                             echo "    perf stopped successfully"
                             break

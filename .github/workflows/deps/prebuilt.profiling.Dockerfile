@@ -83,7 +83,7 @@ RUN mkdir -p /profiling/data /profiling/reports /profiling/scripts
 # Uses RUN (not LABEL) — buildx with cache-from=type=gha folds LABELs into
 # image metadata without producing a layer-hash boundary, so a LABEL does
 # not actually invalidate the downstream COPY. RUN does.
-RUN echo "cache_bust=2026-05-14-3" > /tmp/.profiling-cache-bust
+RUN echo "cache_bust=2026-05-15-1" > /tmp/.profiling-cache-bust
 
 # perf record forks addr2line during finalize even with `-N`. On merod's
 # DWARF, Ubuntu 24.04's addr2line errors with "could not read first record"
