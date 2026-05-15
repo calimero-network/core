@@ -458,10 +458,6 @@ impl NodeClient {
             "Sending state delta"
         );
 
-        if self.get_peers_count(Some(&context.id)).await == 0 {
-            return Ok(());
-        }
-
         let shared_key = SharedKey::from_sk(sender_key);
         let nonce = rand::thread_rng().gen();
 
@@ -498,10 +494,6 @@ impl NodeClient {
         root_hash: calimero_primitives::hash::Hash,
         dag_heads: Vec<[u8; 32]>,
     ) -> eyre::Result<()> {
-        if self.get_peers_count(Some(context_id)).await == 0 {
-            return Ok(());
-        }
-
         let payload = BroadcastMessage::HashHeartbeat {
             context_id: *context_id,
             root_hash,

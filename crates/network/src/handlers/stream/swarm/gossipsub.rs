@@ -25,12 +25,13 @@ impl EventHandler<Event> for NetworkManager {
                 }
             }
             Event::Subscribed { peer_id, topic } => {
-                if !self
-                    .event_dispatcher
-                    .dispatch(NetworkEvent::Subscribed { peer_id, topic })
-                {
+                if !self.event_dispatcher.dispatch(NetworkEvent::Subscribed {
+                    peer_id,
+                    topic: topic.clone(),
+                }) {
                     warn!("Failed to dispatch subscribed event");
                 }
+                self.drain_publish_outbox(&topic);
             }
             Event::Unsubscribed { peer_id, topic } => {
                 if !self

@@ -287,7 +287,12 @@ pub struct Publish {
 }
 
 impl actix::Message for Publish {
-    type Result = eyre::Result<MessageId>;
+    /// `Ok(Some(id))` means gossipsub accepted the message and assigned
+    /// a `MessageId`. `Ok(None)` means there were no known subscribers
+    /// at publish time and the payload has been queued in the network
+    /// manager's outbox; it will be re-published when a peer subscribes
+    /// to `topic` within the outbox TTL.
+    type Result = eyre::Result<Option<MessageId>>;
 }
 
 /// Request to subscribe to a gossipsub topic.

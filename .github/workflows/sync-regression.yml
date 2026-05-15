@@ -225,3 +225,35 @@ jobs:
             exit 1
           fi
           echo "OK: no creator-side owned-identity races observed across ${#log_files[@]} log file(s)."
+
+      - name: Verify no silent publisher-side governance drop
+        # Regression guard for the publisher-side cold-start drop.
+        # `governance_broadcast::publish_namespace_op_inner` logs this
+        # warn whenever a publish lands but no peer acks before the
+        # deadline — the load-bearing symptom is `min_acks=0` callers
+        # silently losing messages when the per-topic mesh hasn't
+        # formed yet. The network-level `PublishOutbox` (see
+        # `crates/network/src/publish_outbox.rs`) catches
+        # `NoPeersSubscribedToTopic`, queues the payload, and drains it
+        # on the next `gossipsub::Subscribed` event for the topic —
+        # eliminating the silent drop. If this signature re-appears, a
+        # publish path is bypassing the outbox or the drain trigger is
+        # broken. Same fail-loud-on-missing-logs semantics as above.
+        if: always()
+        env:
+          NO_ACKS_SIGNATURE: "governance op published but no acks collected before deadline"
+        run: |
+          set +e
+          shopt -s nullglob
+          log_files=(docker-logs/sync-regression-node-*.log)
+          if [ ${#log_files[@]} -eq 0 ]; then
+            echo "::error::No docker-logs/sync-regression-node-*.log found — cannot verify publisher-side guard."
+            exit 1
+          fi
+          if grep -h -F "$NO_ACKS_SIGNATURE" "${log_files[@]}" 2>/dev/null; then
+            echo "::error::Detected silent publisher-side governance drop"
+            echo "See crates/network/src/publish_outbox.rs — the per-topic outbox should"
+            echo "queue payloads on NoPeersSubscribedToTopic and drain on Subscribed."
+            exit 1
+          fi
+          echo "OK: no publisher-side governance drops observed across ${#log_files[@]} log file(s)."

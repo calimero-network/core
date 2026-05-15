@@ -258,25 +258,27 @@ steps:
   # Either resolves successfully, or the wait expires cleanly with a
   # DEBUG log — *not* the WARN signature.
   #
-  # Note: we deliberately do NOT `wait_for_sync` here. Full
-  # convergence of a freshly-created context across the 2-node mesh
-  # also depends on:
-  #   - publisher-side governance broadcast reliability (currently
-  #     best-effort; see #2237's mesh-ready gate + ack proposal —
-  #     `governance op published but no acks collected before
-  #     deadline` is logged at create_context time)
-  #   - node-1's own owned-identity registration order (the immediate
-  #     post-create sync attempt currently fails with `no owned
-  #     identities found` until the local identity stabilises)
-  # Both are separate issues from the responder-side wait this PR
-  # fixes. Phase 5 here verifies only the responder behaviour; the
-  # `wait` step gives the inbound stream's 10 s materialisation
-  # window enough time to play out plus a small slack.
+  # Phase 5 exercises *both* sides of the cold-start race for a
+  # freshly-created second context:
+  #   - Responder-side: node-2's inbound-stream materialisation wait
+  #     (#2356) — pre-fix it short-circuited as `inbound stream for
+  #     unknown context, closing cleanly` when the namespace
+  #     governance op hadn't propagated yet.
+  #   - Publisher-side: node-1's `ContextRegistered` governance op
+  #     used to silently drop when the per-context mesh hadn't formed
+  #     yet (the WARN `governance op published but no acks collected
+  #     before deadline`). The network-level `PublishOutbox` now
+  #     queues the payload and re-publishes on the next gossipsub
+  #     `Subscribed` event within `OUTBOX_TTL` (10 s).
   #
-  # The deterministic regression guard lives in the GHA wrapper
-  # (`.github/workflows/sync-regression.yml`): it greps captured
-  # docker logs for the pre-fix WARN signature `inbound stream for
-  # unknown context, closing cleanly` and fails the job if found.
+  # With both fixes in place, `wait_for_sync` on `ctx2_id` should
+  # converge: node-2 receives `ContextRegistered`, the responder-side
+  # wait holds the inbound stream long enough for group binding to
+  # materialise, and node-2 fetches the new context state.
+  #
+  # The deterministic regression guards live in the GHA wrapper
+  # (`.github/workflows/sync-regression.yml`): three log-grep guards
+  # assert absence of the pre-fix symptoms across all node logs.
   - name: Phase 5 — node-1 creates a second context (race window opens)
     type: create_context
     node: sync-regression-node-1
@@ -286,11 +288,22 @@ steps:
       ctx2_id: contextId
       node1_ctx2_key: memberPublicKey
 
-  - name: Phase 5 — let materialisation race play out (no wait_for_sync)
-    # 12 s = 10 s materialisation window + 2 s slack so the wait has
-    # a chance to either succeed (warn never emitted) or expire
-    # cleanly (DEBUG log only) before the workflow ends and node logs
-    # are captured. The grep guard then validates the responder
-    # didn't short-circuit.
-    type: wait
-    seconds: 12
+  - name: Phase 5 — node-2 joins the second context
+    type: join_context
+    node: sync-regression-node-2
+    context_id: "{{ctx2_id}}"
+    outputs:
+      node2_ctx2_key: memberPublicKey
+
+  - name: Phase 5 — wait for second-context sync (cold-start convergence)
+    # 30 s budget covers the 10 s outbox TTL + 10 s materialisation
+    # window + slack. Pre-fix (publisher silently drops, responder
+    # short-circuits) this times out; post-fix it converges in well
+    # under 20 s in steady-state.
+    type: wait_for_sync
+    context_id: "{{ctx2_id}}"
+    nodes:
+      - sync-regression-node-1
+      - sync-regression-node-2
+    timeout: 30
+    check_interval: 2

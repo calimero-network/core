@@ -16,6 +16,7 @@ use calimero_network_primitives::stream::{CALIMERO_BLOB_PROTOCOL, CALIMERO_STREA
 use calimero_utils_actix::actor;
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
+use libp2p::gossipsub::{PublishError, TopicHash};
 use libp2p::kad::QueryId;
 use libp2p::swarm::Swarm;
 use libp2p::PeerId;
@@ -24,7 +25,7 @@ use prometheus_client::registry::Registry;
 use tokio::sync::oneshot;
 use tokio::time::interval;
 use tokio_stream::wrappers::IntervalStream;
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::handlers::stream::incoming::FromIncoming;
 
@@ -32,11 +33,13 @@ pub use calimero_network_primitives::autonat_v2 as autonat;
 pub mod behaviour;
 mod discovery;
 mod handlers;
+pub mod publish_outbox;
 
 use behaviour::Behaviour;
 use discovery::Discovery;
 use handlers::stream::rendezvous::RendezvousTick;
 use handlers::stream::swarm::FromSwarm;
+use publish_outbox::PublishOutbox;
 
 #[expect(
     missing_debug_implementations,
@@ -49,6 +52,7 @@ pub struct NetworkManager {
     pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<()>>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<()>>>,
     pending_blob_queries: HashMap<QueryId, oneshot::Sender<eyre::Result<Vec<PeerId>>>>,
+    publish_outbox: PublishOutbox,
     metrics: Metrics,
 }
 
@@ -83,10 +87,43 @@ impl NetworkManager {
             pending_dial: HashMap::default(),
             pending_bootstrap: HashMap::default(),
             pending_blob_queries: HashMap::new(),
+            publish_outbox: PublishOutbox::new(),
             metrics: Metrics::new(prom_registry),
         };
 
         Ok(this)
+    }
+
+    /// Drain queued publishes for `topic`. Called from the gossipsub
+    /// `Subscribed` swarm event handler — when a remote peer subscribes
+    /// to a topic this node has previously tried to publish to with no
+    /// known subscribers, the queued payloads are re-published here.
+    /// Entries that still hit `NoPeersSubscribedToTopic` (the subscribe
+    /// just landed but the mesh hasn't grafted) are requeued for the
+    /// next event. TTL-expired entries are dropped silently.
+    pub(crate) fn drain_publish_outbox(&mut self, topic: &TopicHash) {
+        let drainable = self.publish_outbox.take_drainable(topic);
+        if drainable.is_empty() {
+            return;
+        }
+        let mut requeue = Vec::new();
+        for entry in drainable {
+            match self
+                .swarm
+                .behaviour_mut()
+                .gossipsub
+                .publish(topic.clone(), entry.data.clone())
+            {
+                Ok(_) => {}
+                Err(PublishError::NoPeersSubscribedToTopic) => {
+                    requeue.push(entry);
+                }
+                Err(e) => {
+                    debug!(%topic, error = %e, "drained outbox publish failed");
+                }
+            }
+        }
+        self.publish_outbox.requeue(topic.clone(), requeue);
     }
 }
 
