@@ -43,13 +43,12 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
                     echo "    Sending SIGINT to perf (PID $PERF_PID)..."
                     kill -INT "$PERF_PID" 2>/dev/null || true
                     # 180s grace. 60s was still SIGKILLing perf mid-finalize
-                    # on the post-#2351 merod binary — run 25912294478's
-                    # perf-fuzzy-gov-node-1.log shows 890 wakeups + 237 MB
-                    # captured but no "Captured and wrote" finalize line.
-                    # The new binary's DWARF / DSO structure makes perf's
-                    # symbolization step much slower (~6x per MB) than the
-                    # old binary that finalized 206 MB in <10s. Still well
-                    # within the 240s docker stop --time=120 + harvest window.
+                    # on the post-#2351 merod binary. The new binary has
+                    # DWARF / DSO structure that makes perf symbolization
+                    # ~6x slower per MB than the old binary which finalized
+                    # 206 MB in <10s. (Apostrophes intentionally absent
+                    # from this comment because the whole block runs inside
+                    # docker exec ... bash -c SINGLE_QUOTES.)
                     for i in $(seq 1 180); do
                         if ! kill -0 "$PERF_PID" 2>/dev/null; then
                             echo "    perf stopped successfully"
