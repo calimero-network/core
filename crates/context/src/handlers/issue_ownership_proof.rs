@@ -155,7 +155,8 @@ impl Handler<IssueOwnershipProofRequest> for ContextManager {
                 bail!("node has no group identity configured");
             };
 
-            let now_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+            let now_ms = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())
+                .map_err(|_| eyre::eyre!("system clock out of u64 millisecond range"))?;
 
             let built = build_ownership_proof(
                 &self.datastore,
