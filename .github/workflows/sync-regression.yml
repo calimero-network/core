@@ -195,3 +195,33 @@ jobs:
             exit 1
           fi
           echo "OK: no premature inbound-stream closures observed across ${#log_files[@]} log file(s)."
+
+      - name: Verify no creator-side owned-identity race (#2356 follow-up)
+        # Companion guard for the ContextIdentity write-ordering fix in
+        # `crates/context/src/handlers/create_context.rs`. Pre-fix the
+        # creator's auto-follow sync cascade — triggered synchronously by
+        # `sign_apply_and_publish(ContextRegistered)` — ran before
+        # ContextIdentity was written to the datastore, so the immediate
+        # sync attempt aborted with `no owned identities found for
+        # context: <id>` and entered exponential backoff. Post-fix,
+        # ContextIdentity is written first; the cascade finds the key and
+        # proceeds. Same fail-loud-on-missing-logs semantics as above.
+        if: always()
+        env:
+          OWNED_IDENT_SIGNATURE: "no owned identities found for context"
+        run: |
+          set +e
+          shopt -s nullglob
+          log_files=(docker-logs/sync-regression-node-*.log)
+          if [ ${#log_files[@]} -eq 0 ]; then
+            echo "::error::No docker-logs/sync-regression-node-*.log found — cannot verify creator-side guard."
+            exit 1
+          fi
+          if grep -h -F "$OWNED_IDENT_SIGNATURE" "${log_files[@]}" 2>/dev/null; then
+            echo "::error::Detected 'no owned identities found' race on the creator"
+            echo "See crates/context/src/handlers/create_context.rs — ContextIdentity must be"
+            echo "written BEFORE sign_apply_and_publish(ContextRegistered) so the auto-follow"
+            echo "cascade triggered by the local apply can find the key."
+            exit 1
+          fi
+          echo "OK: no creator-side owned-identity races observed across ${#log_files[@]} log file(s)."
