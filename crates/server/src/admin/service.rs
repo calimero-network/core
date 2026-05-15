@@ -233,6 +233,10 @@ pub(crate) fn setup(
             post(groups::register_signing_key::handler),
         )
         .route(
+            "/groups/:group_id/issue-ownership-proof",
+            post(groups::issue_ownership_proof::handler),
+        )
+        .route(
             "/groups/:group_id/sync",
             post(groups::sync_group::handler),
         )

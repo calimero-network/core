@@ -74,58 +74,74 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     }
                 }
 
-                // Short-circuit if the subgroup key is already local (e.g.
-                // a prior `join_context` ran the inheritance materialisation).
-                if group_store::load_current_group_key(&datastore, &group_id)?.is_some() {
+                let ns_id = group_store::resolve_namespace(&datastore, &group_id)?;
+                let signer_sk = PrivateKey::from(sk_bytes);
+
+                // Two side-effects must succeed for the endpoint to honour
+                // its deterministic contract: (1) local subgroup key
+                // populated, (2) `MemberJoinedOpen` op on the namespace
+                // DAG (so peers learn about the join and trigger their own
+                // KeyDelivery flows for any subgroup-encrypted ops the
+                // joiner authors next).
+                //
+                // Each side-effect is short-circuited independently — both
+                // operations are idempotent (key-store is a put under a
+                // stable key; namespace-op apply dedups on DAG delta-id at
+                // `namespace_governance.rs:145`). A prior call that landed
+                // (1) but failed (2) — e.g. transient publish error — must
+                // be safe to retry without re-fetching the key, and must
+                // still re-attempt the publish.
+                let key_already_local =
+                    group_store::load_current_group_key(&datastore, &group_id)?.is_some();
+                if !key_already_local {
+                    // Direct-stream key fetch: ask any peer holding the
+                    // subgroup key for it via the dedicated
+                    // `OpenSubgroupJoinRequest` protocol (#2357). Mirrors
+                    // `request_namespace_join` from #2270 Phase 9.1 — the
+                    // deterministic primary path for the inherited
+                    // self-join, instead of the gossip-only
+                    // `MemberJoinedOpen` → `KeyDelivery` round-trip that
+                    // can't reliably complete in small clusters where the
+                    // gossipsub mesh stays empty.
+                    let envelope_bytes = node_client
+                        .request_open_subgroup_join(
+                            ns_id.to_bytes(),
+                            group_id.to_bytes(),
+                            joiner_identity,
+                        )
+                        .await?;
+                    let envelope: KeyEnvelope = borsh::from_slice(&envelope_bytes)
+                        .map_err(|e| eyre::eyre!("decode KeyEnvelope from peer response: {e}"))?;
+                    let group_key = group_store::unwrap_group_key(&signer_sk, &envelope)?;
+                    let _key_id = group_store::store_group_key(&datastore, &group_id, &group_key)?;
+                } else {
                     info!(
                         ?group_id,
                         %joiner_identity,
                         "join_subgroup_inheritance: group key already local, skipping fetch"
                     );
-                    return Ok(JoinSubgroupInheritanceResponse {
-                        group_id,
-                        member_public_key: joiner_identity,
-                        was_inherited: true,
-                    });
                 }
 
-                let ns_id = group_store::resolve_namespace(&datastore, &group_id)?;
-
-                // Direct-stream key fetch: ask any peer holding the
-                // subgroup key for it via the dedicated
-                // `OpenSubgroupJoinRequest` protocol (#2357). Mirrors
-                // `request_namespace_join` from #2270 Phase 9.1 — the
-                // deterministic primary path for the inherited
-                // self-join, instead of the gossip-only
-                // `MemberJoinedOpen` → `KeyDelivery` round-trip that
-                // can't reliably complete in small clusters where the
-                // gossipsub mesh stays empty.
-                let envelope_bytes = node_client
-                    .request_open_subgroup_join(
-                        ns_id.to_bytes(),
-                        group_id.to_bytes(),
-                        joiner_identity,
-                    )
-                    .await?;
-                let envelope: KeyEnvelope = borsh::from_slice(&envelope_bytes)
-                    .map_err(|e| eyre::eyre!("decode KeyEnvelope from peer response: {e}"))?;
-                let signer_sk = PrivateKey::from(sk_bytes);
-                let group_key = group_store::unwrap_group_key(&signer_sk, &envelope)?;
-                let _key_id = group_store::store_group_key(&datastore, &group_id, &group_key)?;
-
-                // Publish `MemberJoinedOpen` so other peers (not just the
-                // responder) record our direct membership row and the
-                // governance DAG reflects the join. The publish is
-                // idempotent on apply (DAG delta-id dedup at
-                // `namespace_governance.rs:145`); on the unhappy path
-                // where gossip drops the op, this becomes a no-op for
-                // peers that don't see it — but our local key is already
-                // deterministic via the direct stream above.
+                // Always publish `MemberJoinedOpen` — even when the key
+                // was already local — so a prior call that succeeded in
+                // fetching the key but failed mid-publish (publish-failure
+                // race in unhappy-path retries) gets the membership op
+                // onto the namespace DAG on the next attempt. Apply-side
+                // dedups on DAG delta-id, so re-attempts on the happy
+                // path are free.
+                //
+                // Hard-fail on publish error: the contract is "after this
+                // returns success, both the key is local AND the
+                // membership op is on the DAG." Silently swallowing a
+                // publish failure would leave the joiner in a split state
+                // where they can author group ops but peers can't tell
+                // them apart from any other inherited member — caller
+                // wouldn't know to retry.
                 let op = NamespaceOp::Root(RootOp::MemberJoinedOpen {
                     member: joiner_identity,
                     group_id: group_id.to_bytes(),
                 });
-                if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
+                group_store::sign_apply_and_publish_namespace_op(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -134,15 +150,15 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     op,
                 )
                 .await
-                {
+                .map_err(|e| {
                     warn!(
                         ?group_id,
                         ?e,
-                        "MemberJoinedOpen publish failed after direct-stream key fetch \
-                         succeeded — subgroup key is local but other peers may not see \
-                         the membership row until the next gossip sweep"
+                        "MemberJoinedOpen publish failed; subgroup key is local but \
+                         peers may not see the membership op — caller should retry"
                     );
-                }
+                    e
+                })?;
 
                 Ok(JoinSubgroupInheritanceResponse {
                     group_id,

@@ -29,10 +29,11 @@ use crate::group::{
     GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
     GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
     GetMemberMetadataRequest, GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse,
-    GroupSummary, GroupUpgradeInfo, JoinContextRequest, JoinContextResponse, JoinGroupRequest,
-    JoinGroupResponse, JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse,
-    LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
-    LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
+    GroupSummary, GroupUpgradeInfo, IssueOwnershipProofRequest, IssueOwnershipProofResponse,
+    JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
+    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse, LeaveContextRequest,
+    LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest,
+    LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, NamespaceSummary, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
@@ -1290,6 +1291,12 @@ impl ContextClient {
         LeaveGroup,
         LeaveGroupRequest,
         eyre::Result<LeaveGroupResponse>
+    );
+    forward_to_actor!(
+        issue_ownership_proof,
+        IssueOwnershipProof,
+        IssueOwnershipProofRequest,
+        eyre::Result<IssueOwnershipProofResponse>
     );
     forward_to_actor!(
         leave_namespace,
