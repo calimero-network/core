@@ -16,6 +16,7 @@ use calimero_server_primitives::admin::GetMetadataApiResponse;
 use calimero_server_primitives::admin::GetTeeAdmissionPolicyApiResponse;
 use calimero_server_primitives::admin::GroupInfoApiResponse;
 use calimero_server_primitives::admin::JoinContextApiResponse;
+use calimero_server_primitives::admin::JoinSubgroupInheritanceApiResponse;
 use calimero_server_primitives::admin::LeaveContextApiResponse;
 use calimero_server_primitives::admin::LeaveGroupApiResponse;
 use calimero_server_primitives::admin::LeaveNamespaceApiResponse;
@@ -265,6 +266,20 @@ where
         let response = self
             .connection
             .post_no_body(&format!("admin-api/contexts/{context_id}/join"))
+            .await?;
+        Ok(response)
+    }
+
+    /// Materialise an inherited Open-subgroup membership directly,
+    /// without an admin-signed invitation and without joining a child
+    /// context first. See core PR #2357 for the endpoint contract.
+    pub async fn join_subgroup_inheritance(
+        &self,
+        group_id: &str,
+    ) -> Result<JoinSubgroupInheritanceApiResponse> {
+        let response = self
+            .connection
+            .post_no_body(&format!("admin-api/groups/{group_id}/join-via-inheritance"))
             .await?;
         Ok(response)
     }

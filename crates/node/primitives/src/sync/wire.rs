@@ -205,6 +205,25 @@ pub enum InitPayload {
         /// The joiner's public key for ECDH key wrapping
         joiner_public_key: PublicKey,
     },
+
+    /// Direct request to materialise inherited membership in an Open
+    /// subgroup (issue #2357). Lets the inherited self-join path skip
+    /// the gossip-only `MemberJoinedOpen` → `KeyDelivery` round-trip
+    /// that times out in small clusters where the gossipsub mesh stays
+    /// empty (#2293).
+    ///
+    /// Responder validates that `joiner_public_key` has
+    /// `MembershipPath::Inherited` to `subgroup_id` (proof of
+    /// Open-chain authorisation), then wraps the subgroup key via
+    /// ECDH and replies with `OpenSubgroupJoinResponse`. Mirrors
+    /// `NamespaceJoinRequest`'s direct-stream determinism for the
+    /// inherited case.
+    OpenSubgroupJoinRequest {
+        namespace_id: [u8; 32],
+        subgroup_id: [u8; 32],
+        /// The joiner's public key for ECDH key wrapping.
+        joiner_public_key: PublicKey,
+    },
 }
 
 // =============================================================================
@@ -338,6 +357,20 @@ pub enum MessagePayload<'a> {
 
     /// The responder rejected the join request.
     NamespaceJoinRejected { reason: String },
+
+    /// Response to `OpenSubgroupJoinRequest` (issue #2357). Carries the
+    /// ECDH-wrapped subgroup-key envelope; empty if the responder
+    /// doesn't hold the key (joiner should try another peer).
+    OpenSubgroupJoinResponse {
+        /// ECDH-wrapped subgroup-key envelope (borsh-serialized
+        /// `KeyEnvelope`).
+        key_envelope_bytes: Vec<u8>,
+    },
+
+    /// The responder rejected the open-subgroup-join request — e.g.,
+    /// joiner has no `MembershipPath::Inherited` to the subgroup, or
+    /// the subgroup doesn't belong to the named namespace.
+    OpenSubgroupJoinRejected { reason: String },
 }
 
 // =============================================================================

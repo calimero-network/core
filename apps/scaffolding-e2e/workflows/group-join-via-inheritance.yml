@@ -1,0 +1,250 @@
+name: E2E KV Store - Join Subgroup Via Inheritance Endpoint
+description: >
+  Acceptance test for issue #2357 (`feat(context): add
+  POST /admin-api/groups/:group_id/join-via-inheritance`).
+
+  The new endpoint lets a namespace member materialize their inherited
+  Open-subgroup membership without an admin-signed
+  `SignedGroupOpenInvitation` and without first knowing a child context
+  id. This workflow proves the endpoint:
+
+    1. Authorises an inherited member to receive the group key by
+       publishing `RootOp::MemberJoinedOpen` on their behalf, waiting
+       for the resulting `KeyDelivery` before returning 200.
+    2. Allows the subsequent `join_context` (or any later op) for any
+       context under the subgroup to author *and* decrypt traffic
+       successfully — i.e. the joiner's `sender_key` is populated and
+       bidirectional read/write converges.
+
+  Pre-#2357 the only way to materialize the inherited path was to
+  discover a child context id and call `join_context` against it
+  (which would in turn publish `MemberJoinedOpen` per #2351). This
+  workflow exercises the new top-level entry point instead.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: join-inherit-node
+
+steps:
+  # ── Phase 1: Bootstrap mesh, namespace, Open subgroup, context ────
+
+  - name: Install application on node-1
+    type: install_application
+    node: join-inherit-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: join-inherit-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: join-inherit-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+      node1_key: memberPublicKey
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: join-inherit-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      ns_invite: invitation
+
+  - name: Wait for namespace governance to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: join-inherit-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{ns_invite}}'
+    outputs:
+      node2_identity: memberIdentity
+
+  - name: Node-1 creates Open subgroup inside namespace
+    type: create_group_in_namespace
+    node: join-inherit-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: open-subgroup
+    outputs:
+      subgroup_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: join-inherit-node-1
+    group_id: '{{subgroup_id}}'
+    visibility: open
+
+  - name: Node-1 creates context inside Open subgroup
+    type: create_context
+    node: join-inherit-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for subgroup visibility + context-registered ops to propagate
+    # Same rationale as group-open-self-join-key-delivery.yml: node-2
+    # needs the Open-visibility row and the context-registered op
+    # before its inheritance check can succeed.
+    type: wait
+    seconds: 10
+
+  # ── Phase 2: node-2 calls the NEW endpoint (no join_context yet) ──
+  # This is the operation under test. node-2 has not called
+  # join_context for any context inside the subgroup; the new endpoint
+  # must (a) accept the call because their inherited membership path
+  # is valid, (b) fetch the subgroup key from a peer via the
+  # `OpenSubgroupJoinRequest` direct-stream protocol (mirroring
+  # `request_namespace_join`), (c) store the key locally + publish
+  # `MemberJoinedOpen` for peer convergence, and (d) return 200 with
+  # `was_inherited: true` deterministically.
+
+  - name: Node-2 calls join-via-inheritance endpoint
+    # Requires merobox >= 0.6.13 (PR adds the JoinSubgroupInheritanceStep)
+    # backed by calimero-client-py >= 0.6.11 (Python wrapper for the new
+    # core method). Both companion PRs ship in lockstep with this one.
+    type: join_subgroup_inheritance
+    node: join-inherit-node-2
+    group_id: '{{subgroup_id}}'
+    outputs:
+      inherit_member_pk: memberPublicKey
+      inherit_was_inherited: wasInherited
+
+  - name: Assert inheritance materialisation (member set)
+    type: assert
+    statements:
+      - "is_set({{inherit_member_pk}})"
+
+  - name: Assert was_inherited is true
+    # Use `json_assert` (not `assert`) so the literal `true` is parsed
+    # as a JSON boolean, matching the bool that flows out of
+    # `JoinSubgroupInheritanceStep._export_variables`. The `assert`
+    # step's `equal(...)` would compare bool `True` vs the unparsed
+    # string `'True'` and fail on the type mismatch.
+    type: json_assert
+    statements:
+      - 'json_equal({{inherit_was_inherited}}, true)'
+
+  # ── Phase 3: node-2 joins the context (key already delivered) ─────
+  # This call should now be cheap because the group key is already
+  # local — `join_context` will see the inherited path, find the key
+  # in store, and skip the MemberJoinedOpen+KeyDelivery wait.
+
+  - name: Node-2 joins context (post-inheritance materialisation)
+    type: join_context
+    node: join-inherit-node-2
+    context_id: '{{ctx_id}}'
+    outputs:
+      node2_key: memberPublicKey
+
+  - name: Assert bootstrap shape
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+      - "is_set({{subgroup_id}})"
+      - "is_set({{ctx_id}})"
+      - "is_set({{node1_key}})"
+      - "is_set({{node2_identity}})"
+      - "is_set({{node2_key}})"
+
+  - name: Initial sync to settle Root state
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - join-inherit-node-1
+      - join-inherit-node-2
+    timeout: 60
+    check_interval: 2
+
+  # ── Phase 4: Round 1 — node-1 writes, node-2 reads ────────────────
+
+  - name: Round 1 — node-1 writes
+    type: call
+    node: join-inherit-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "from_admin"
+      value: "node1_msg"
+    executor_public_key: '{{node1_key}}'
+
+  - name: Round 1 sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - join-inherit-node-1
+      - join-inherit-node-2
+    timeout: 30
+    check_interval: 2
+
+  - name: Node-2 reads node-1's write
+    type: call
+    node: join-inherit-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "from_admin"
+    executor_public_key: '{{node2_key}}'
+    outputs:
+      node2_read_admin: result
+
+  # ── Phase 5: Round 2 — node-2 writes, node-1 reads ────────────────
+  # The endpoint's contract: after it returns 200, the joiner can
+  # author ops with the group key. If KeyDelivery never landed
+  # (pre-#2357 bug or regression), node-2's write fails to sign with
+  # the group key and node-1's read returns null/empty.
+
+  - name: Round 2 — node-2 (inherited self-joiner) writes
+    type: call
+    node: join-inherit-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "from_joiner"
+      value: "node2_msg"
+    executor_public_key: '{{node2_key}}'
+
+  - name: Round 2 sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - join-inherit-node-1
+      - join-inherit-node-2
+    timeout: 30
+    check_interval: 2
+
+  - name: Node-1 reads node-2's write
+    type: call
+    node: join-inherit-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "from_joiner"
+    executor_public_key: '{{node1_key}}'
+    outputs:
+      node1_read_joiner: result
+
+  # ── Phase 6: Assertions ───────────────────────────────────────────
+
+  - name: Assert both directions converged
+    type: assert
+    statements:
+      - "is_set({{node2_read_admin}})"
+      - "is_set({{node1_read_joiner}})"
+      - 'contains({{node2_read_admin}}, "node1_msg")'
+      - 'contains({{node1_read_joiner}}, "node2_msg")'
+
+stop_all_nodes: false

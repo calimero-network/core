@@ -6,6 +6,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
 use calimero_primitives::metadata::MetadataRecord;
+use thiserror::Error as ThisError;
 
 use crate::messages::MigrationParams;
 
@@ -370,6 +371,46 @@ impl Message for JoinContextRequest {
 pub struct JoinContextResponse {
     pub context_id: ContextId,
     pub member_public_key: PublicKey,
+}
+
+/// Direct "join this Open subgroup as an inherited member" request — no
+/// admin-signed invitation, no child context id required.
+///
+/// The handler verifies the caller has an Inherited (or Direct) membership
+/// path to `group_id` via `check_group_membership_path`; if Inherited, it
+/// publishes a `RootOp::MemberJoinedOpen` so a peer holding the group key
+/// responds with `KeyDelivery`, then blocks on
+/// `config.key_delivery_fallback_wait` until the key arrives.
+#[derive(Copy, Clone, Debug)]
+pub struct JoinSubgroupInheritanceRequest {
+    pub group_id: ContextGroupId,
+}
+
+impl Message for JoinSubgroupInheritanceRequest {
+    type Result = eyre::Result<JoinSubgroupInheritanceResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct JoinSubgroupInheritanceResponse {
+    pub group_id: ContextGroupId,
+    pub member_public_key: PublicKey,
+    /// `true` if the caller had to publish a `MemberJoinedOpen` op to
+    /// materialise inherited membership; `false` if they were already a
+    /// direct member and the call was a no-op.
+    pub was_inherited: bool,
+}
+
+/// Typed failure cases for the join-via-inheritance flow. Carried inside
+/// the actor's `eyre::Report` so the HTTP layer can `downcast_ref`
+/// without depending on error-message wording.
+#[derive(Clone, Copy, Debug, ThisError)]
+pub enum JoinSubgroupInheritanceError {
+    #[error("group not found")]
+    GroupNotFound,
+    #[error("no namespace identity for this group; join the parent namespace first")]
+    NoNamespaceIdentity,
+    #[error("identity not eligible for inheritance-based join")]
+    NotEligible,
 }
 
 /// Request to leave a context locally on this node. Purely a node-local opt-out:
