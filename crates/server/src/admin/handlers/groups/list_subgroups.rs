@@ -53,32 +53,36 @@ pub async fn handler(
         // subgroups are always listed — their existence is public by
         // design (that's what CAN_JOIN_OPEN_SUBGROUPS at the namespace
         // root authorises against).
-        if let Some(ref caller_pk) = caller {
-            let visibility =
-                match calimero_context::group_store::get_subgroup_visibility(&state.store, &child) {
-                    Ok(v) => v,
-                    Err(err) => {
-                        warn!(?err, group_id=%hex::encode(child.to_bytes()),
-                              "get_subgroup_visibility failed; skipping from list");
-                        continue;
-                    }
-                };
-            if matches!(visibility, VisibilityMode::Restricted) {
-                let is_member = match calimero_context::group_store::check_group_membership(
-                    &state.store,
-                    &child,
-                    caller_pk,
-                ) {
-                    Ok(b) => b,
-                    Err(err) => {
-                        warn!(?err, group_id=%hex::encode(child.to_bytes()),
-                              "check_group_membership failed; skipping from list");
-                        continue;
-                    }
-                };
-                if !is_member {
+        //
+        // We always check visibility first. When caller is None (this node
+        // has no namespace identity for the parent group), Restricted
+        // subgroups are hidden — we can't verify membership so the
+        // conservative choice is to treat the caller as a non-member.
+        let visibility =
+            match calimero_context::group_store::get_subgroup_visibility(&state.store, &child) {
+                Ok(v) => v,
+                Err(err) => {
+                    warn!(?err, group_id=%hex::encode(child.to_bytes()),
+                          "get_subgroup_visibility failed; skipping from list");
                     continue;
                 }
+            };
+        if matches!(visibility, VisibilityMode::Restricted) {
+            let Some(ref caller_pk) = caller else { continue; };
+            let is_member = match calimero_context::group_store::check_group_membership(
+                &state.store,
+                &child,
+                caller_pk,
+            ) {
+                Ok(b) => b,
+                Err(err) => {
+                    warn!(?err, group_id=%hex::encode(child.to_bytes()),
+                          "check_group_membership failed; skipping from list");
+                    continue;
+                }
+            };
+            if !is_member {
+                continue;
             }
         }
 
