@@ -3911,6 +3911,214 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
 }
 
 #[test]
+fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_namespace() {
+    // The first integration test conflates `gid` as both group and
+    // namespace, which means `resolve_namespace(group_id)` returns
+    // `gid` itself (no parent walk) and the test does not exercise
+    // the subgroup case. This test sets up a real namespace+subgroup
+    // pair where the subgroup's resolved namespace is a different
+    // ContextGroupId — pinning that the namespace-identity lookup at
+    // the resolved namespace (not at `group_id`) correctly gates the
+    // restore. This is the variant that mirrors the e2e workflow
+    // shape (admin-add to a child subgroup, member rejoins after
+    // remove).
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+
+    // namespace (root) ── subgroup
+    let ns_gid = ContextGroupId::from([0xD0; 32]);
+    let subgroup = ContextGroupId::from([0xD1; 32]);
+    nest_group(&store, &ns_gid, &subgroup).unwrap();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    save_group_meta(&store, &subgroup, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &subgroup, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // Local rejoiner: namespace identity is stored under the NAMESPACE
+    // id (not the subgroup id). The MemberAdded apply for the subgroup
+    // must call `resolve_namespace(subgroup)` → `ns_gid` and then read
+    // the namespace identity from there.
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let member_sk_bytes: [u8; 32] = *member_sk;
+    store_namespace_identity(&store, &ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Pre-state: member was a direct subgroup member with a context
+    // identity, then admin removed them which cascade-deleted the row.
+    add_group_member(&store, &subgroup, &member_pk, GroupMemberRole::Member).unwrap();
+    let ctx = ContextId::from([0xE9; 32]);
+    register_context_in_group(&store, &subgroup, &ctx).unwrap();
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextIdentity::new(ctx, member_pk.into()),
+                &calimero_store::types::ContextIdentity {
+                    private_key: Some(member_sk_bytes),
+                    sender_key: Some([0x33; 32]),
+                },
+            )
+            .unwrap();
+    }
+    let removed = SignedGroupOp::sign(
+        &admin_sk,
+        subgroup.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        dummy_member_removed_op(member_pk),
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &removed).unwrap();
+    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    assert!(
+        !store.handle().has(&id_key).unwrap(),
+        "cascade must have deleted the ContextIdentity row before the rejoin test"
+    );
+
+    // Re-add via signed MemberAdded targeting the SUBGROUP. The apply
+    // arm must resolve the namespace from `subgroup` (yielding
+    // `ns_gid`), look up the namespace identity there, and find a
+    // match — only then does the restore run.
+    let readded = SignedGroupOp::sign(
+        &admin_sk,
+        subgroup.to_bytes(),
+        vec![],
+        [0u8; 32],
+        2,
+        GroupOp::MemberAdded {
+            member: member_pk,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &readded).unwrap();
+
+    let row = store
+        .handle()
+        .get(&id_key)
+        .unwrap()
+        .expect("ContextIdentity row must be restored when group_id ≠ namespace_id");
+    assert_eq!(row.private_key, Some(member_sk_bytes));
+    assert_eq!(row.sender_key, None);
+}
+
+#[test]
+fn member_joined_open_clears_deny_list_and_restores_context_identity() {
+    // The cursor[bot] HIGH-SEVERITY finding pinned by an integration
+    // test: when `MemberJoinedOpen` applies, it must (a) `clear_denied`
+    // for the rejoiner on the subgroup so peers stop dropping their
+    // state-deltas, and (b) restore the rejoiner's `ContextIdentity`
+    // row on the local rejoiner so they can author state-deltas at
+    // all. Pre-fix the apply arm did neither — the kick→inheritance-
+    // rejoin and leave→inheritance-rejoin e2e flows hung in
+    // post-rejoin sync because the rejoiner's writes were dropped at
+    // every peer's deny-list filter.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+
+    // Namespace + Open subgroup + context structure:
+    //   namespace (root) ── Open subgroup ── context
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let subgroup = ContextGroupId::from([0xA1u8; 32]);
+    let ctx = ContextId::from([0xC1u8; 32]);
+
+    // Admin is needed for the `is_group_admin_or_has_capability`
+    // membership-policy gates (CAN_INVITE etc.) even though this
+    // particular op only checks `MembershipPath::Inherited`.
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    save_group_meta(&store, &subgroup, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &subgroup, &admin_pk, GroupMemberRole::Admin).unwrap();
+    nest_group(&store, &ns_gid, &subgroup).unwrap();
+    set_subgroup_visibility(&store, &subgroup, VisibilityMode::Open).unwrap();
+    register_context_in_group(&store, &subgroup, &ctx).unwrap();
+
+    // Rejoiner: direct namespace member with CAN_JOIN_OPEN_SUBGROUPS,
+    // not a direct subgroup member (post-leave / post-kick state).
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let member_sk_bytes: [u8; 32] = *member_sk;
+    add_group_member(&store, &ns_gid, &member_pk, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &ns_gid,
+        &member_pk,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    // Pre-state from a prior MemberLeft cascade: deny-list stamped,
+    // ContextIdentity row deleted on the local rejoiner.
+    mark_denied(&store, &subgroup, &member_pk).unwrap();
+    assert!(is_denied(&store, &subgroup, &member_pk).unwrap());
+    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    assert!(!store.handle().has(&id_key).unwrap());
+
+    // The local node IS the rejoiner — its namespace identity matches
+    // `member_pk`. Without this gate the `restore_member_context_identities`
+    // call would no-op (correctly — peers don't own the rejoiner's sk).
+    store_namespace_identity(&store, &ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Sign + apply a fresh `MemberJoinedOpen` for the rejoiner.
+    let signed = SignedNamespaceOp::sign(
+        &member_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: member_pk,
+            group_id: subgroup.to_bytes(),
+        }),
+    )
+    .unwrap();
+    apply_signed_namespace_op(&store, &signed).unwrap();
+
+    // Assertion 1: deny-list cleared at the subgroup. This is
+    // critical for peers — without it they continue dropping the
+    // rejoiner's state-delta gossip at the receive filter.
+    assert!(
+        !is_denied(&store, &subgroup, &member_pk).unwrap(),
+        "MemberJoinedOpen apply MUST clear the per-subgroup deny-list \
+         entry so peers stop dropping the rejoiner's state-deltas"
+    );
+
+    // Assertion 2: ContextIdentity row restored with the rejoiner's
+    // namespace sk. Without this the local apply path cannot author
+    // state-DAG ops for any context under the subgroup.
+    let row = store
+        .handle()
+        .get(&id_key)
+        .unwrap()
+        .expect("ContextIdentity row must be restored on the local rejoiner");
+    assert_eq!(
+        row.private_key,
+        Some(member_sk_bytes),
+        "row must carry the rejoiner's namespace sk"
+    );
+    assert_eq!(
+        row.sender_key, None,
+        "sender_key starts None — populated later by KeyDelivery"
+    );
+}
+
+#[test]
 fn member_added_does_nothing_for_non_rejoiner_peers() {
     // On peers whose local namespace identity is NOT the rejoiner,
     // applying MemberAdded must NOT create a ContextIdentity row for

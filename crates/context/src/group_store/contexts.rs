@@ -60,14 +60,28 @@ pub fn cascade_remove_member_from_group_tree(
 /// shape `join_context` writes — so KeyDelivery can then populate
 /// `sender_key` exactly as it would on first-join.
 ///
-/// This is the *local* half of rejoin recovery. Other peers do not hold
-/// `ContextIdentity` rows for this rejoiner (only the rejoiner's own
-/// store does — that's the row the cascade deleted), so the apply path
-/// only needs to do anything on the rejoiner's own node. Callers must
-/// gate on `private_key.is_some()` (i.e., they must have access to the
-/// rejoiner's namespace identity bytes) before invoking — peers without
-/// the key cannot and should not write a row claiming to own a private
-/// key they don't have.
+/// **Caller responsibility — local-rejoiner gate.** This function
+/// unconditionally writes `private_key: Some(private_key)` to every
+/// row it touches. Writing a `Some(_)` row on a peer that does NOT
+/// own that private key would let that peer spoof state-DAG ops as
+/// the rejoiner. **Callers must invoke only on the local rejoiner's
+/// node**, identified by `get_namespace_identity(resolved_namespace)`
+/// returning the rejoiner's pk. The two apply-path call sites
+/// (`MemberAdded` in `mod.rs` and `MemberJoinedOpen` in
+/// `namespace_governance.rs`) already gate on this check.
+///
+/// **Why `enumerate_group_contexts(.., 0, usize::MAX)` is fine here.**
+/// The hot-path concern is unbounded reads. In this codebase the
+/// number of contexts directly registered under a single
+/// `ContextGroupId` is the count of contexts in one channel
+/// (subgroup), which is bounded by application-level use — typically
+/// 1, rarely more than a handful. The same unbounded-enumerate
+/// pattern is used by `cascade_remove_member_from_group_tree` /
+/// `ContextTreeService::cascade_remove_member` (see this file) and
+/// has not surfaced as a memory or latency hotspot. If a future use
+/// case starts pushing tens of contexts into a single subgroup, both
+/// paths should be paginated together — they share the same
+/// invariant.
 pub fn restore_member_context_identities(
     store: &Store,
     group_id: &ContextGroupId,

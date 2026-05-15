@@ -79,17 +79,10 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Capture node-1 namespace identity
-    # `create_namespace` only exports `namespaceId`; the namespace
-    # identity public key (which subsequent admin `executor_public_key`
-    # bindings need) is materialized lazily and surfaced via
-    # `get_namespace_identity`. Mirrors the pattern in
-    # `group-leave-member.yml:61-66`.
-    type: get_namespace_identity
-    node: kick-rejoin-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      node1_key: publicKey
+  # node-1's namespace identity not captured here — admin doesn't
+  # write to the context in this workflow (only members write +
+  # cross-peer reads), so the executor_public_key for admin would be
+  # unused. Removed to avoid dead output noise flagged in code review.
 
   - name: Invite node-2 to namespace
     type: create_namespace_invitation
@@ -160,11 +153,12 @@ steps:
   # ── Phase 2: node-2 inherits + self-joins, node-3 also joins ──────
 
   - name: Node-2 self-joins Open subgroup via inheritance endpoint (#2360)
+    # No `outputs` capture — `memberPublicKey` from this step is the
+    # same as the one captured by the subsequent `join_context` into
+    # `node2_key`. Holding only one binding avoids dead-output noise.
     type: join_subgroup_inheritance
     node: kick-rejoin-node-2
     group_id: '{{subgroup_id}}'
-    outputs:
-      node2_inherit_pk: memberPublicKey
 
   - name: Node-2 joins context (key already local from inheritance)
     type: join_context
@@ -174,11 +168,10 @@ steps:
       node2_key: memberPublicKey
 
   - name: Node-3 self-joins Open subgroup via inheritance endpoint (#2360)
+    # Same dead-output rationale as node-2's inheritance step above.
     type: join_subgroup_inheritance
     node: kick-rejoin-node-3
     group_id: '{{subgroup_id}}'
-    outputs:
-      node3_inherit_pk: memberPublicKey
 
   - name: Node-3 joins context (key already local from inheritance)
     type: join_context

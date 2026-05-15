@@ -76,12 +76,10 @@ steps:
     outputs:
       namespace_id: namespaceId
 
-  - name: Capture node-1 namespace identity
-    type: get_namespace_identity
-    node: leave-rejoin-node-1
-    namespace_id: '{{namespace_id}}'
-    outputs:
-      node1_key: publicKey
+  # node-1's namespace identity not captured here — admin doesn't
+  # write to the context in this workflow (only members write +
+  # cross-peer reads), so the executor_public_key for admin would be
+  # unused. Removed to avoid dead output noise flagged in code review.
 
   - name: Invite node-2 to namespace
     type: create_namespace_invitation
