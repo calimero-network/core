@@ -188,6 +188,9 @@ jobs:
           - workflow: group-open-self-join-key-delivery
             file: workflows/group-open-self-join-key-delivery.yml
             app: scaffolding-e2e
+          - workflow: group-join-via-inheritance
+            file: workflows/group-join-via-inheritance.yml
+            app: scaffolding-e2e
           - workflow: dm-subgroup-privacy
             file: workflows/dm-subgroup-privacy.yml
             app: scaffolding-e2e

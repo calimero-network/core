@@ -150,3 +150,78 @@ jobs:
           path: docker-logs/
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: Verify no premature inbound-stream closure (#2356)
+        # Regression guard for the materialisation-wait short-circuit
+        # fixed in this PR. The Phase 5 cold-start race in
+        # `opaque-leaf-regression.yml` may or may not fire the
+        # underlying timing race on a given runner — gossipsub
+        # propagation in a stable 2-node mesh is fast — but when it
+        # does fire pre-fix, node-2's log carries the exact warn
+        # signature below. Post-fix, the responder waits for the group
+        # binding to materialise within the 10 s window, and the warn
+        # never fires.
+        #
+        # `if: always()` is on purpose — even when an earlier step
+        # already failed (e.g. `wait_for_sync` timeout), the warn
+        # signature in the captured docker logs is useful diagnostic
+        # context for triage.
+        #
+        # Fail-loud on absent logs: a merobox bootstrap that aborts
+        # *before* any node logs are captured (e.g. image pull failure)
+        # would otherwise produce a silent false negative — `grep` of an
+        # empty glob exits non-zero but `2>/dev/null` swallows that,
+        # and "no match" is then indistinguishable from a true clean
+        # run. The explicit file-existence check below fails the step
+        # in that case so the upstream failure surfaces clearly.
+        #
+        # Hardcoded literals only; no `${{ ... }}` GitHub-context
+        # interpolation in the shell body.
+        if: always()
+        env:
+          WARN_SIGNATURE: "inbound stream for unknown context, closing cleanly"
+        run: |
+          set +e
+          shopt -s nullglob
+          log_files=(docker-logs/sync-regression-node-*.log)
+          if [ ${#log_files[@]} -eq 0 ]; then
+            echo "::error::No docker-logs/sync-regression-node-*.log found — cannot verify #2356 guard."
+            echo "  (merobox bootstrap likely aborted before any node log was captured)"
+            exit 1
+          fi
+          if grep -h -F "$WARN_SIGNATURE" "${log_files[@]}" 2>/dev/null; then
+            echo "::error::Detected premature inbound-stream closure (#2356)"
+            echo "See crates/node/src/sync/manager/mod.rs materialisation-wait loop."
+            exit 1
+          fi
+          echo "OK: no premature inbound-stream closures observed across ${#log_files[@]} log file(s)."
+
+      - name: Verify no creator-side owned-identity race (#2356 follow-up)
+        # Companion guard for the ContextIdentity write-ordering fix in
+        # `crates/context/src/handlers/create_context.rs`. Pre-fix the
+        # creator's auto-follow sync cascade — triggered synchronously by
+        # `sign_apply_and_publish(ContextRegistered)` — ran before
+        # ContextIdentity was written to the datastore, so the immediate
+        # sync attempt aborted with `no owned identities found for
+        # context: <id>` and entered exponential backoff. Post-fix,
+        # ContextIdentity is written first; the cascade finds the key and
+        # proceeds. Same fail-loud-on-missing-logs semantics as above.
+        if: always()
+        env:
+          OWNED_IDENT_SIGNATURE: "no owned identities found for context"
+        run: |
+          set +e
+          shopt -s nullglob
+          log_files=(docker-logs/sync-regression-node-*.log)
+          if [ ${#log_files[@]} -eq 0 ]; then
+            echo "::error::No docker-logs/sync-regression-node-*.log found — cannot verify creator-side guard."
+            exit 1
+          fi
+          if grep -h -F "$OWNED_IDENT_SIGNATURE" "${log_files[@]}" 2>/dev/null; then
+            echo "::error::Detected 'no owned identities found' race on the creator"
+            echo "See crates/context/src/handlers/create_context.rs — ContextIdentity must be"
+            echo "written BEFORE sign_apply_and_publish(ContextRegistered) so the auto-follow"
+            echo "cascade triggered by the local apply can find the key."
+            exit 1
+          fi
+          echo "OK: no creator-side owned-identity races observed across ${#log_files[@]} log file(s)."
