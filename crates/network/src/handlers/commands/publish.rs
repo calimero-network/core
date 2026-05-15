@@ -17,6 +17,14 @@ impl Handler<Publish> for NetworkManager {
         // message is otherwise lost. Queue it in the outbox and let
         // `drain_publish_outbox` re-publish on the next `Subscribed`
         // event for this topic (within `OUTBOX_TTL`).
+        //
+        // `gossipsub.publish` consumes `data` and can still return
+        // `NoPeersSubscribedToTopic` *after* the consume (the
+        // subscriber set is checked inside `publish`). We pre-clone to
+        // be able to enqueue the payload for retry on that path. A
+        // mesh-emptiness pre-check could skip the clone in the
+        // common case but is racy with gossipsub's internal state —
+        // accepting the one clone keeps the contract correct.
         let outbox_copy = data.clone();
         match self
             .swarm

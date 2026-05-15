@@ -4,7 +4,14 @@ use std::time::{Duration, Instant};
 use libp2p::gossipsub::TopicHash;
 use tracing::debug;
 
-pub const OUTBOX_TTL: Duration = Duration::from_secs(10);
+// 30 s covers the worst-case cold-start path: a fresh per-context
+// topic + gossipsub heartbeat-driven subscription propagation (~10 s
+// in a 2-node mesh) + receiver-side `MATERIALIZATION_WINDOW` (10 s)
+// + slack. Observed in run 25931680038: a queued ContextRegistered
+// expired by 28 ms before the `Subscribed` event arrived. Memory
+// envelope at the per-topic cap (32 × ~16 KB ≈ 0.5 MB) tolerates the
+// longer dwell window.
+pub const OUTBOX_TTL: Duration = Duration::from_secs(30);
 pub const OUTBOX_MAX_PER_TOPIC: usize = 32;
 
 #[derive(Debug)]

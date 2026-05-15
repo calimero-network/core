@@ -458,6 +458,23 @@ impl NodeClient {
             "Sending state delta"
         );
 
+        // State deltas have a sync-pull recovery path (HashComparison +
+        // delta_request via heartbeats), so the publisher boundary is
+        // intentionally fire-and-forget on cold-mesh: skip the work
+        // when no peer is around rather than enqueueing in the
+        // network outbox. A queued state delta carries a stale
+        // `governance_position` / `parent_ids` / `root_hash` snapshot;
+        // if it drains later than the receiver's own DAG advance, the
+        // storage layer rejects the application (e.g.
+        // `Cannot change StorageType`, observed regressing
+        // group-multi-service on PR #2369's first push). Governance
+        // ops do not share this recovery surface, so they remain on
+        // the outbox path (see `NetworkManager::handle<Publish>` and
+        // the BroadcastTransport contract in `governance_broadcast`).
+        if self.get_peers_count(Some(&context.id)).await == 0 {
+            return Ok(());
+        }
+
         let shared_key = SharedKey::from_sk(sender_key);
         let nonce = rand::thread_rng().gen();
 
@@ -494,6 +511,14 @@ impl NodeClient {
         root_hash: calimero_primitives::hash::Hash,
         dag_heads: Vec<[u8; 32]>,
     ) -> eyre::Result<()> {
+        // Heartbeats are periodic by construction — the next
+        // heartbeat (1-2 s cadence) re-announces current state, so
+        // there is nothing to recover by queueing a missed one. Same
+        // reasoning as `broadcast` above.
+        if self.get_peers_count(Some(context_id)).await == 0 {
+            return Ok(());
+        }
+
         let payload = BroadcastMessage::HashHeartbeat {
             context_id: *context_id,
             root_hash,
