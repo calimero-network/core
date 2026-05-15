@@ -18,13 +18,15 @@ use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::{
     add_group_member, apply_group_op_mutations, decrypt_group_op, get_local_gov_nonce,
-    get_namespace_identity_record, is_group_admin, is_group_admin_or_has_capability,
-    load_current_group_key_record, load_group_key_by_id, load_group_meta,
+    get_namespace_identity, get_namespace_identity_record, is_group_admin,
+    is_group_admin_or_has_capability, load_current_group_key_record, load_group_key_by_id,
+    load_group_meta,
     namespace_dag::{NamespaceDagService, NamespaceHead},
     namespace_membership::NamespaceMembershipService,
     namespace_op_log::NamespaceOpLogService,
     namespace_retry::NamespaceRetryService,
-    save_group_meta, set_local_gov_nonce, store_group_key, unwrap_group_key, PermissionChecker,
+    restore_member_context_identities, save_group_meta, set_local_gov_nonce, store_group_key,
+    unwrap_group_key, PermissionChecker,
 };
 
 /// Side effect returned by namespace-op application when an existing
@@ -293,6 +295,31 @@ impl<'a> NamespaceGovernance<'a> {
                                 group_id: group_id_typed.to_bytes(),
                                 joiner_pk: *member,
                             });
+                        }
+                        // Local rejoiner recovery: if THIS node IS the
+                        // joiner (its namespace identity matches `member`),
+                        // restore any per-context `ContextIdentity` rows
+                        // that a prior `MemberLeft` cascade deleted.
+                        // Mirrors the `MemberAdded` arm in `mod.rs`. On
+                        // peers where the local namespace identity differs
+                        // from `member`, this is a no-op. On first-time
+                        // inheritance joiners the row may not exist yet —
+                        // we write it so the joiner can author state-DAG
+                        // ops as soon as `KeyDelivery` populates
+                        // `sender_key`. Idempotent: an existing row from
+                        // a prior `join_context` is left untouched.
+                        let ns_gid = ContextGroupId::from(op.namespace_id);
+                        if let Some((local_pk, sk_bytes, _)) =
+                            get_namespace_identity(self.store, &ns_gid)?
+                        {
+                            if local_pk == *member {
+                                restore_member_context_identities(
+                                    self.store,
+                                    &group_id_typed,
+                                    member,
+                                    sk_bytes,
+                                )?;
+                            }
                         }
                     }
                     _ => {}

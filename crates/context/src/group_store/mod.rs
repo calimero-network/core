@@ -54,7 +54,8 @@ pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{
     cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identity,
-    get_group_for_context, register_context_in_group, unregister_context_from_group,
+    get_group_for_context, register_context_in_group, restore_member_context_identities,
+    unregister_context_from_group,
 };
 pub use self::deny_list::{
     clear_all_denied, clear_denied, is_author_denied_for_context, is_denied, mark_denied,
@@ -1213,6 +1214,21 @@ fn apply_group_op_mutations(
             // removed member transparently restores their network-level
             // access. Idempotent on a member who was never denied.
             clear_denied(store, group_id, member)?;
+            // Restore per-context `ContextIdentity` rows that
+            // `cascade_remove_member_from_group_tree` deleted on a prior
+            // `MemberRemoved`. Only the local rejoiner has access to the
+            // namespace identity bytes needed to write a usable row, so
+            // we gate on `get_namespace_identity` returning the
+            // rejoiner's pk. On peers (admin or other members applying
+            // this op), `local_pk != *member` and the call is a no-op.
+            // Idempotent on first-time adds: the joiner's later
+            // `join_context` sees an existing row and skips.
+            let ns_id = resolve_namespace(store, group_id)?;
+            if let Some((local_pk, sk_bytes, _)) = get_namespace_identity(store, &ns_id)? {
+                if local_pk == *member {
+                    restore_member_context_identities(store, group_id, member, sk_bytes)?;
+                }
+            }
             crate::op_events::notify(crate::op_events::OpEvent::MemberAdded {
                 group_id: group_id.to_bytes(),
                 member: *member,

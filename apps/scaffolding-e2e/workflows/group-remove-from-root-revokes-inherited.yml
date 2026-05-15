@@ -85,7 +85,13 @@ steps:
     application_id: '{{app_id}}'
     outputs:
       namespace_id: namespaceId
-      node1_key: memberPublicKey
+
+  - name: Capture node-1 namespace identity
+    type: get_namespace_identity
+    node: revoke-inherit-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      node1_key: publicKey
 
   - name: Invite node-2 to namespace
     type: create_namespace_invitation
@@ -337,6 +343,13 @@ steps:
       value: "this_must_not_appear"
     executor_public_key: '{{node2_key}}'
     expected_failure: true
+
+  # Drain in-flight gossip from a possible local-success before the
+  # cross-peer read. Without this, the read could race past any delta
+  # actually emitted by node-2's loose-failure mode and false-pass.
+  - name: Drain in-flight gossip before negative-control read
+    type: wait
+    seconds: 5
 
   # Even if the local write succeeded (loose invariant), the write
   # must NOT be visible on node-3.

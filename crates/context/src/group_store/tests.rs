@@ -3723,6 +3723,243 @@ fn recursive_remove_nonexistent_member_returns_empty() {
 }
 
 // -----------------------------------------------------------------------
+// restore_member_context_identities — local rejoiner ContextIdentity
+// recovery on `MemberAdded` / `MemberJoinedOpen` apply. The cascade
+// helper at `cascade_remove_member_from_group_tree` deletes per-context
+// `ContextIdentity` rows for the leaver/removed member; the rejoin
+// arms must invert that on the local rejoiner's node so the rejoiner
+// can author state-DAG ops again. Other peers don't hold a row for
+// the rejoiner (only the rejoiner's own store does), so this restore
+// is a no-op everywhere except on the local rejoiner.
+// -----------------------------------------------------------------------
+
+#[test]
+fn restore_member_context_identities_writes_missing_rows() {
+    let store = test_store();
+    let gid = test_group_id();
+    let member = PublicKey::from([0x21; 32]);
+    let sk_bytes = [0x99u8; 32];
+    let ctx_a = ContextId::from([0xC1; 32]);
+    let ctx_b = ContextId::from([0xC2; 32]);
+
+    register_context_in_group(&store, &gid, &ctx_a).unwrap();
+    register_context_in_group(&store, &gid, &ctx_b).unwrap();
+
+    restore_member_context_identities(&store, &gid, &member, sk_bytes).unwrap();
+
+    let handle = store.handle();
+    for ctx in [&ctx_a, &ctx_b] {
+        let key = calimero_store::key::ContextIdentity::new(*ctx, member.into());
+        let row = handle.get(&key).unwrap().expect("row should be created");
+        assert_eq!(
+            row.private_key,
+            Some(sk_bytes),
+            "private_key must be the local rejoiner's namespace sk"
+        );
+        assert_eq!(
+            row.sender_key, None,
+            "sender_key starts None; KeyDelivery populates it"
+        );
+    }
+}
+
+#[test]
+fn restore_member_context_identities_is_idempotent() {
+    let store = test_store();
+    let gid = test_group_id();
+    let member = PublicKey::from([0x22; 32]);
+    let original_sk = [0x11u8; 32];
+    let original_sender = [0x44u8; 32];
+    let ctx = ContextId::from([0xD1; 32]);
+    register_context_in_group(&store, &gid, &ctx).unwrap();
+
+    // Pre-existing row from a (notional) successful prior `join_context`
+    // — already populated with a real sender_key from a delivered
+    // KeyDelivery. The restore must NOT overwrite it.
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextIdentity::new(ctx, member.into()),
+                &calimero_store::types::ContextIdentity {
+                    private_key: Some(original_sk),
+                    sender_key: Some(original_sender),
+                },
+            )
+            .unwrap();
+    }
+
+    let bogus_sk = [0xFFu8; 32]; // restore would write this if it overwrote
+    restore_member_context_identities(&store, &gid, &member, bogus_sk).unwrap();
+
+    let handle = store.handle();
+    let row = handle
+        .get(&calimero_store::key::ContextIdentity::new(
+            ctx,
+            member.into(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.private_key,
+        Some(original_sk),
+        "existing private_key must be preserved (no overwrite)"
+    );
+    assert_eq!(
+        row.sender_key,
+        Some(original_sender),
+        "existing sender_key must be preserved (would clobber an already-delivered key otherwise)"
+    );
+}
+
+#[test]
+fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // The local rejoiner: their namespace identity is stored. Note
+    // `gid` here is treated as both the group and the namespace root —
+    // for a real subgroup the resolve_namespace walk would find the
+    // parent, but for this unit test gid IS the namespace.
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let member_sk_bytes = *member_sk;
+    store_namespace_identity(&store, &gid, &member_pk, &member_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Pre-state: member already added once + has ContextIdentity for
+    // the context, then admin removes them which cascades the row
+    // delete. Simulate by adding via add_group_member, registering the
+    // context, writing the ContextIdentity directly, then issuing
+    // MemberRemoved (which cascade-deletes).
+    add_group_member(&store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+    let ctx = ContextId::from([0xE7; 32]);
+    register_context_in_group(&store, &gid, &ctx).unwrap();
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextIdentity::new(ctx, member_pk.into()),
+                &calimero_store::types::ContextIdentity {
+                    private_key: Some(member_sk_bytes),
+                    sender_key: Some([0x77; 32]),
+                },
+            )
+            .unwrap();
+    }
+
+    let removed = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        1,
+        dummy_member_removed_op(member_pk),
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &removed).unwrap();
+
+    // Confirm cascade ran — row gone.
+    {
+        let handle = store.handle();
+        let key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+        assert!(
+            !handle.has(&key).unwrap(),
+            "cascade must have deleted the ContextIdentity row"
+        );
+    }
+
+    // Re-add via signed MemberAdded — the apply arm must invoke the
+    // restore on the local rejoiner.
+    let readded = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        2,
+        GroupOp::MemberAdded {
+            member: member_pk,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &readded).unwrap();
+
+    let handle = store.handle();
+    let key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    let row = handle
+        .get(&key)
+        .unwrap()
+        .expect("MemberAdded apply must restore ContextIdentity for local rejoiner");
+    assert_eq!(
+        row.private_key,
+        Some(member_sk_bytes),
+        "row must carry the rejoiner's namespace sk so they can sign again"
+    );
+    assert_eq!(
+        row.sender_key, None,
+        "sender_key starts None — KeyDelivery will populate"
+    );
+}
+
+#[test]
+fn member_added_does_nothing_for_non_rejoiner_peers() {
+    // On peers whose local namespace identity is NOT the rejoiner,
+    // applying MemberAdded must NOT create a ContextIdentity row for
+    // the rejoiner — those peers would write a row claiming to own a
+    // private key they don't have, which would let them spoof state-
+    // DAG ops as the rejoiner.
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // This node IS the admin — its namespace identity is admin_pk, not
+    // the rejoiner's pk.
+    let admin_sk_bytes = *admin_sk;
+    store_namespace_identity(&store, &gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    let rejoiner_pk = PrivateKey::random(&mut rng).public_key();
+    let ctx = ContextId::from([0xE8; 32]);
+    register_context_in_group(&store, &gid, &ctx).unwrap();
+
+    let added = SignedGroupOp::sign(
+        &admin_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberAdded {
+            member: rejoiner_pk,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &added).unwrap();
+
+    let handle = store.handle();
+    let key = calimero_store::key::ContextIdentity::new(ctx, rejoiner_pk.into());
+    assert!(
+        !handle.has(&key).unwrap(),
+        "non-rejoiner peers must NOT create a ContextIdentity row for someone else"
+    );
+}
+
+// -----------------------------------------------------------------------
 // create_recursive_invitations / collect_visible_descendant_groups —
 // recursive namespace invitations must not leak into (or even enumerate)
 // private subgroups the inviter cannot see.

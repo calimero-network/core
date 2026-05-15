@@ -78,7 +78,18 @@ steps:
     application_id: '{{app_id}}'
     outputs:
       namespace_id: namespaceId
-      node1_key: memberPublicKey
+
+  - name: Capture node-1 namespace identity
+    # `create_namespace` only exports `namespaceId`; the namespace
+    # identity public key (which subsequent admin `executor_public_key`
+    # bindings need) is materialized lazily and surfaced via
+    # `get_namespace_identity`. Mirrors the pattern in
+    # `group-leave-member.yml:61-66`.
+    type: get_namespace_identity
+    node: kick-rejoin-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      node1_key: publicKey
 
   - name: Invite node-2 to namespace
     type: create_namespace_invitation
@@ -262,6 +273,22 @@ steps:
     statements:
       - "not_contains({{members_after_kick}}, {{identity_node2}})"
 
+  # Cross-peer check: node-3 must also see node-2 gone after the kick.
+  # Catches a fan-out bug where MemberRemoved applied locally on the
+  # admin but didn't propagate to the rest of the cluster (mirrors the
+  # pattern in `group-leave-member.yml:122-133`).
+  - name: Cross-peer confirm node-3 also sees node-2 gone
+    type: list_group_members
+    node: kick-rejoin-node-3
+    group_id: '{{subgroup_id}}'
+    outputs:
+      members_after_kick_node3: members
+
+  - name: Assert cross-peer view agrees on the kick
+    type: assert
+    statements:
+      - "not_contains({{members_after_kick_node3}}, {{identity_node2}})"
+
   # ── Phase 5: Kicked node's write must NOT reach the cluster ───────
   # Two failure modes are acceptable signals here, both surface as
   # `expected_failure: true`:
@@ -269,8 +296,12 @@ steps:
   #       row was deleted (cascade ran on the local peer too), or
   #   (b) the write reaches peers but is silently dropped at the
   #       deny-list filter.
-  # If neither fires, node-3 would later read the value and the
-  # post-kick assert would fail — that's the regression signal.
+  # The follow-on cross-peer read on node-3 below is the strict
+  # negative-control: a silent local-success-then-gossip-drop must be
+  # caught HERE, not deferred to the end-of-workflow assertion. If we
+  # only checked at the end, a regression that lifted the deny-list
+  # AND retroactively delivered the buffered write during the rejoin
+  # could pass for the wrong reason.
 
   - name: Post-kick — node-2 attempts to write (must fail or be dropped)
     type: call
@@ -282,6 +313,32 @@ steps:
       value: "this_must_not_appear"
     executor_public_key: '{{node2_key}}'
     expected_failure: true
+
+  # Drain any in-flight gossip from a possible local-success before
+  # the negative-control read. Without this, a write that was rejected
+  # locally produces no traffic to wait on, but a write that succeeded
+  # locally and is racing the deny-list filter at peers would not have
+  # propagated yet — biasing the negative-control toward false-pass.
+  - name: Drain in-flight gossip before negative-control read
+    type: wait
+    seconds: 5
+
+  - name: Negative control — node-3 must NOT see the dropped write
+    type: call
+    node: kick-rejoin-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "post_kick_should_drop"
+    executor_public_key: '{{node3_key}}'
+    outputs:
+      post_kick_drop_check: result
+
+  - name: Assert dropped value is genuinely absent on node-3 BEFORE rejoin
+    # The KV app returns `{"output": null}` for missing keys.
+    type: json_assert
+    statements:
+      - 'json_equal({{post_kick_drop_check}}, {"output": null})'
 
   # ── Phase 6: node-2 self-rejoins via inheritance + verifies key ───
   # The path under test. node-2's CAN_JOIN_OPEN_SUBGROUPS cap at the
@@ -308,17 +365,26 @@ steps:
     timeout: 60
     check_interval: 2
 
-  - name: Confirm node-2 is back in subgroup membership
+  - name: Confirm subgroup direct-membership shape post-rejoin
     type: list_group_members
     node: kick-rejoin-node-1
     group_id: '{{subgroup_id}}'
     outputs:
       members_after_rejoin: members
 
-  - name: Assert node-2 present in subgroup after rejoin
+  # IMPORTANT: `MemberJoinedOpen` apply at
+  # `crates/context/src/group_store/namespace_governance.rs:1226-1245`
+  # accepts ONLY `MembershipPath::Inherited` and rejects `Direct`. So
+  # the inheritance rejoin does NOT create a direct membership row —
+  # node-2's authority comes from their inherited path
+  # (CAN_JOIN_OPEN_SUBGROUPS at the namespace + Open subgroup
+  # visibility), not a row in `list_group_members`. The original
+  # version of this workflow asserted `contains` here; that was wrong
+  # and matches the false-positive expectation `cursor[bot]` flagged.
+  - name: Assert direct-row list still excludes inherited rejoiner
     type: assert
     statements:
-      - "contains({{members_after_rejoin}}, {{identity_node2}})"
+      - "not_contains({{members_after_rejoin}}, {{identity_node2}})"
 
   # ── Phase 7: Post-rejoin write must reach node-3 ──────────────────
   # The end-to-end signal that:

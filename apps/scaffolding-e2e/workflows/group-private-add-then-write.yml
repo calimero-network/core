@@ -70,7 +70,13 @@ steps:
     application_id: '{{app_id}}'
     outputs:
       namespace_id: namespaceId
-      node1_key: memberPublicKey
+
+  - name: Capture node-1 namespace identity
+    type: get_namespace_identity
+    node: private-add-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      node1_key: publicKey
 
   - name: Invite node-2 to namespace
     type: create_namespace_invitation
@@ -163,6 +169,18 @@ steps:
   # flipped the default visibility to Open, node-3 (a namespace
   # member with default capabilities) would inherit access and this
   # call would unexpectedly succeed.
+  #
+  # Important: node-3 must have already received the
+  # `ContextRegistered` op before we make the negative-control call,
+  # otherwise `expected_failure: true` would pass for the wrong
+  # reason — node-3 simply hasn't seen the context yet, not because
+  # the subgroup is Restricted. Wait an additional fixed interval
+  # for namespace-DAG propagation to node-3 (which was excluded from
+  # the context-id-keyed sync above because it has no
+  # ContextIdentity for `ctx_id` yet).
+  - name: Wait for ContextRegistered to propagate to node-3
+    type: wait
+    seconds: 10
 
   - name: Negative control — node-3 (namespace-only) cannot join context
     type: join_context

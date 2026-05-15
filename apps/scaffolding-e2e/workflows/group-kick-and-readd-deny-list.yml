@@ -72,7 +72,13 @@ steps:
     application_id: '{{app_id}}'
     outputs:
       namespace_id: namespaceId
-      node1_key: memberPublicKey
+
+  - name: Capture node-1 namespace identity
+    type: get_namespace_identity
+    node: kick-readd-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      node1_key: publicKey
 
   - name: Invite node-2 to namespace
     type: create_namespace_invitation
@@ -234,6 +240,12 @@ steps:
       - "contains({{members_after_kick}}, {{identity_node3}})"
 
   # ── Phase 4: Kicked node's write must not reach node-3 ────────────
+  # The follow-on cross-peer read on node-3 is the strict negative
+  # control: a silent local-success-then-gossip-drop must be caught
+  # HERE, not deferred to the end-of-workflow assertion. If we only
+  # checked at the end, a regression that lifted the deny-list AND
+  # retroactively delivered the buffered write during the re-add
+  # could pass for the wrong reason.
 
   - name: Post-kick — node-2 attempts write (must fail or be dropped)
     type: call
@@ -245,6 +257,29 @@ steps:
       value: "this_must_not_appear"
     executor_public_key: '{{node2_key}}'
     expected_failure: true
+
+  # Drain in-flight gossip from a possible local-success before the
+  # negative-control read. A purely-local rejection produces no traffic
+  # to wait on, but a silent gossip race needs propagation time.
+  - name: Drain in-flight gossip before negative-control read
+    type: wait
+    seconds: 5
+
+  - name: Negative control — node-3 must NOT see the dropped write
+    type: call
+    node: kick-readd-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "while_kicked"
+    executor_public_key: '{{node3_key}}'
+    outputs:
+      while_kicked_pre_readd: result
+
+  - name: Assert dropped value is genuinely absent on node-3 BEFORE re-add
+    type: json_assert
+    statements:
+      - 'json_equal({{while_kicked_pre_readd}}, {"output": null})'
 
   # ── Phase 5: Admin re-adds node-2 ─────────────────────────────────
   # The MemberAdded apply arm clears node-2's deny-list entry on

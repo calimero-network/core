@@ -75,7 +75,13 @@ steps:
     application_id: '{{app_id}}'
     outputs:
       namespace_id: namespaceId
-      node1_key: memberPublicKey
+
+  - name: Capture node-1 namespace identity
+    type: get_namespace_identity
+    node: leave-rejoin-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      node1_key: publicKey
 
   - name: Invite node-2 to namespace
     type: create_namespace_invitation
@@ -246,6 +252,10 @@ steps:
       - "contains({{members_after_leave}}, {{identity_node3}})"
 
   # ── Phase 4: Departed node's write must NOT reach node-3 ──────────
+  # Same negative-control discipline as the kick-rejoin and
+  # kick-readd workflows: the cross-peer read on node-3 below catches
+  # silent local-success-then-gossip-drop before the rejoin, instead
+  # of deferring it to the end-of-workflow assertion.
 
   - name: Post-leave — node-2 attempts write (must fail or be dropped)
     type: call
@@ -257,6 +267,26 @@ steps:
       value: "this_must_not_appear"
     executor_public_key: '{{node2_key}}'
     expected_failure: true
+
+  - name: Drain in-flight gossip before negative-control read
+    type: wait
+    seconds: 5
+
+  - name: Negative control — node-3 must NOT see the dropped write
+    type: call
+    node: leave-rejoin-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "while_left"
+    executor_public_key: '{{node3_key}}'
+    outputs:
+      while_left_pre_rejoin: result
+
+  - name: Assert dropped value is genuinely absent on node-3 BEFORE rejoin
+    type: json_assert
+    statements:
+      - 'json_equal({{while_left_pre_rejoin}}, {"output": null})'
 
   # ── Phase 5: node-2 self-rejoins via inheritance endpoint ─────────
   # Inheritance is intact: node-2 still holds CAN_JOIN_OPEN_SUBGROUPS
@@ -352,6 +382,28 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{post_rejoin_read}}, {"output": "node2_msg_after_rejoin"})'
+
+  # Mirror of the kick-rejoin / kick-readd end-of-workflow check: the
+  # `while_left` write was dropped during the banned window, the
+  # rejoin must NOT retroactively replay it. A regression that
+  # buffered the dropped write and re-delivered on deny-list-clear
+  # would surface here as `while_left` being visible post-rejoin.
+
+  - name: Confirm dropped-during-leave write was NOT delivered post-rejoin
+    type: call
+    node: leave-rejoin-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "while_left"
+    executor_public_key: '{{node3_key}}'
+    outputs:
+      while_left_post_rejoin: result
+
+  - name: Assert dropped-during-leave value stays dropped after rejoin
+    type: json_assert
+    statements:
+      - 'json_equal({{while_left_post_rejoin}}, {"output": null})'
 
 stop_all_nodes: false
 restart: false
