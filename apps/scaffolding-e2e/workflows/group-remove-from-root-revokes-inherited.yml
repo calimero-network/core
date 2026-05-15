@@ -1,0 +1,374 @@
+name: E2E KV Store - Remove From Namespace Revokes Inherited Subgroup Access
+description: >
+  Wire-level coverage for the unit-test invariant
+  `recursive_remove_skips_inherited_only_members`
+  (group_store/tests.rs:3656), inverted: instead of asserting that
+  removal at a descendant subgroup is a no-op for inherited members,
+  this asserts that removal at the *anchor* (the namespace root)
+  properly cuts the inheritance chain so descendant Open-subgroup
+  access is revoked end-to-end.
+
+  Scenario (3 nodes, namespace + Open subgroup):
+
+    1. node-2 inherits Open-subgroup access via default
+       `CAN_JOIN_OPEN_SUBGROUPS` capability at the namespace root,
+       materializes the membership via `join_subgroup_inheritance`
+       (#2360), joins the subgroup's context, and writes a value
+       that node-3 reads.
+    2. Admin (node-1) removes node-2 from the *namespace root*
+       only — never touching the subgroup directly. node-2 still
+       has the local subgroup key cached and a populated
+       ContextIdentity for the subgroup context.
+    3. Asserts:
+       (a) node-2's namespace membership row is gone (cross-peer);
+       (b) node-2's next write to the subgroup context does NOT
+           reach node-3 (no inheritance anchor → permission to
+           publish governance/state-delta is gone, and on receiver
+           side the inheritance walk no longer finds an anchor);
+       (c) node-2 cannot re-`join_subgroup_inheritance` for the
+           subgroup — the handler's
+           `MembershipPath::None` arm at
+           `crates/context/src/handlers/join_subgroup_inheritance.rs:73`
+           must reject with `NotEligible`. This is the "is the
+           anchor *really* gone" smoke test.
+
+  What this test does NOT cover (different code paths):
+    * Removal of a *direct* member from a descendant subgroup —
+      that's `group-membership.yml`'s SCENARIO 6.
+    * Recursive removal of a member who has direct rows at every
+      level in the subtree — there is no admin-issued governance
+      op for that today (the `recursive_remove_member` helper at
+      `group_store/namespace.rs:343` is internal-only). Indirectly
+      exercised by `group-leave-namespace.yml` via `MemberLeft`
+      cascade at the namespace root.
+
+  Mero-chat user-visible failure mode this guards against: "an
+  admin removed a member from the workspace, but they could
+  still post in the public channels they had inherited access
+  to" — symptom of incomplete revocation when the anchor is the
+  namespace and the descendant access was purely inherited.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: revoke-inherit-node
+
+steps:
+  # ── Phase 1: Bootstrap namespace + Open subgroup + context ────────
+
+  - name: Install application on node-1
+    type: install_application
+    node: revoke-inherit-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: revoke-inherit-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Install application on node-3
+    type: install_application
+    node: revoke-inherit-node-3
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: revoke-inherit-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+      node1_key: memberPublicKey
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: revoke-inherit-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: revoke-inherit-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Wait for namespace governance to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: revoke-inherit-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: revoke-inherit-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node3}}'
+    outputs:
+      identity_node3: memberIdentity
+
+  - name: Node-1 creates Open subgroup
+    type: create_group_in_namespace
+    node: revoke-inherit-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: open-channel
+    outputs:
+      subgroup_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: revoke-inherit-node-1
+    group_id: '{{subgroup_id}}'
+    visibility: open
+
+  - name: Node-1 creates context inside Open subgroup
+    type: create_context
+    node: revoke-inherit-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for visibility + context-registered ops to propagate
+    type: wait
+    seconds: 10
+
+  # ── Phase 2: Both joiners materialize inherited access ────────────
+  # node-2 is the eventual revocation target; node-3 is the
+  # cross-peer reader, kept inherited the whole time so we can
+  # confirm Phase 5's "inherited members not targeted by the
+  # removal stay functional" invariant.
+
+  - name: Node-2 self-joins Open subgroup via inheritance
+    type: join_subgroup_inheritance
+    node: revoke-inherit-node-2
+    group_id: '{{subgroup_id}}'
+
+  - name: Node-2 joins context
+    type: join_context
+    node: revoke-inherit-node-2
+    context_id: '{{ctx_id}}'
+    outputs:
+      node2_key: memberPublicKey
+
+  - name: Node-3 self-joins Open subgroup via inheritance
+    type: join_subgroup_inheritance
+    node: revoke-inherit-node-3
+    group_id: '{{subgroup_id}}'
+
+  - name: Node-3 joins context
+    type: join_context
+    node: revoke-inherit-node-3
+    context_id: '{{ctx_id}}'
+    outputs:
+      node3_key: memberPublicKey
+
+  - name: Initial sync to settle Root state
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - revoke-inherit-node-1
+      - revoke-inherit-node-2
+      - revoke-inherit-node-3
+    timeout: 60
+    check_interval: 2
+
+  # ── Phase 3: Pre-revoke — node-2 writes, node-3 reads ─────────────
+
+  - name: Pre-revoke — node-2 writes
+    type: call
+    node: revoke-inherit-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "pre_revoke"
+      value: "node2_msg_before_revoke"
+    executor_public_key: '{{node2_key}}'
+
+  - name: Pre-revoke sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - revoke-inherit-node-1
+      - revoke-inherit-node-2
+      - revoke-inherit-node-3
+    timeout: 30
+    check_interval: 2
+
+  - name: Pre-revoke — node-3 reads node-2's write
+    type: call
+    node: revoke-inherit-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "pre_revoke"
+    executor_public_key: '{{node3_key}}'
+    outputs:
+      pre_revoke_read: result
+
+  - name: Assert pre-revoke converged
+    type: json_assert
+    statements:
+      - 'json_equal({{pre_revoke_read}}, {"output": "node2_msg_before_revoke"})'
+
+  # ── Phase 4: Admin removes node-2 from namespace ROOT only ────────
+  # Critical: the removal target is `{{namespace_id}}`, NOT
+  # `{{subgroup_id}}`. The subgroup is never touched by this op.
+  # The expected effect is that node-2 loses CAN_JOIN_OPEN_SUBGROUPS
+  # and their direct namespace row, which severs the inheritance
+  # chain to the subgroup on every honest peer.
+
+  - name: Admin removes node-2 from namespace root
+    type: remove_group_members
+    node: revoke-inherit-node-1
+    group_id: '{{namespace_id}}'
+    members:
+      - '{{identity_node2}}'
+
+  - name: Wait for MemberRemoved to propagate at namespace
+    type: wait_for_sync
+    group_id: '{{namespace_id}}'
+    nodes:
+      - revoke-inherit-node-1
+      - revoke-inherit-node-3
+    timeout: 30
+    check_interval: 2
+
+  - name: Confirm node-2 absent from namespace membership
+    type: list_group_members
+    node: revoke-inherit-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      ns_members_after: members
+
+  - name: Assert node-2 absent from namespace, node-3 present
+    type: assert
+    statements:
+      - "not_contains({{ns_members_after}}, {{identity_node2}})"
+      - "contains({{ns_members_after}}, {{identity_node3}})"
+
+  # Cross-peer check: node-3 also sees node-2 gone from the
+  # namespace. Catches a fan-out bug where the removal applied
+  # locally on the admin but didn't propagate.
+  - name: Cross-peer confirm node-3 sees node-2 gone from namespace
+    type: list_group_members
+    node: revoke-inherit-node-3
+    group_id: '{{namespace_id}}'
+    outputs:
+      ns_members_after_node3: members
+
+  - name: Assert cross-peer view agrees
+    type: assert
+    statements:
+      - "not_contains({{ns_members_after_node3}}, {{identity_node2}})"
+
+  # ── Phase 5: node-3 (untouched inherited member) still works ──────
+  # Negative-control complement to the Phase 6 / 7 revocation
+  # check: a removal targeting node-2 must NOT affect node-3.
+  # Catches a regression where the namespace-level removal
+  # accidentally fan-outs to descendant subgroup deny-lists for
+  # all inherited members instead of just the target.
+
+  - name: Untouched inherited member node-3 writes
+    type: call
+    node: revoke-inherit-node-3
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "node3_after_revoke"
+      value: "node3_still_works"
+    executor_public_key: '{{node3_key}}'
+
+  - name: Sync node-3's write
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - revoke-inherit-node-1
+      - revoke-inherit-node-3
+    timeout: 30
+    check_interval: 2
+
+  - name: Admin reads node-3's write
+    type: call
+    node: revoke-inherit-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "node3_after_revoke"
+    executor_public_key: '{{node1_key}}'
+    outputs:
+      admin_reads_node3: result
+
+  - name: Assert untouched inherited member's writes still flow
+    type: json_assert
+    statements:
+      - 'json_equal({{admin_reads_node3}}, {"output": "node3_still_works"})'
+
+  # ── Phase 6: Revoked node's write must NOT reach the cluster ──────
+  # The end-to-end revocation signal. Without an inheritance anchor
+  # node-2 has no membership path to the subgroup; their attempt to
+  # publish a state-delta should either fail at their local apply
+  # (no signing identity left) or be dropped at receivers (no path
+  # in the inheritance check). `expected_failure: true` accepts
+  # either local failure mode; the real assertion is the next read
+  # on node-3.
+
+  - name: Post-revoke — node-2 attempts write (must fail or be dropped)
+    type: call
+    node: revoke-inherit-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "post_revoke_should_drop"
+      value: "this_must_not_appear"
+    executor_public_key: '{{node2_key}}'
+    expected_failure: true
+
+  # Even if the local write succeeded (loose invariant), the write
+  # must NOT be visible on node-3.
+  - name: Confirm post-revoke write is NOT visible on node-3
+    type: call
+    node: revoke-inherit-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "post_revoke_should_drop"
+    executor_public_key: '{{node3_key}}'
+    outputs:
+      post_revoke_lookup: result
+
+  - name: Assert revoked write was indeed dropped
+    type: json_assert
+    statements:
+      - 'json_equal({{post_revoke_lookup}}, {"output": null})'
+
+  # ── Phase 7: Anchor-gone smoke test via inheritance endpoint ──────
+  # Confirms the inheritance chain is genuinely cut: with node-2's
+  # namespace membership gone, `join_subgroup_inheritance` must
+  # reject with `NotEligible`. If this succeeds, the anchor is
+  # not actually revoked at the namespace level on node-2 (or the
+  # path-check has a bug).
+
+  - name: Node-2 cannot re-join via inheritance (anchor gone)
+    type: join_subgroup_inheritance
+    node: revoke-inherit-node-2
+    group_id: '{{subgroup_id}}'
+    expected_failure: true
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

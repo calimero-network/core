@@ -1,0 +1,358 @@
+name: E2E KV Store - Voluntary Leave Then Rejoin Via Inheritance
+description: >
+  Tests the cycle: voluntary `leave_group` (publishes `MemberLeft`,
+  stamps deny-list at every peer) → self-rejoin via the new
+  `join_subgroup_inheritance` endpoint (#2360, publishes
+  `MemberJoinedOpen` and triggers `KeyDelivery`) → bidirectional
+  read/write resumes.
+
+  Pre-#2360 there was no straight-line wire path for the rejoiner:
+  admin-issued `add_group_members` was the only way back, so
+  `MemberLeft` → admin-readd was the only deny-list-cleared cycle
+  exercised at the wire level. With #2360 the joiner can rejoin
+  themselves; this test pins that the deny-list set during
+  `MemberLeft` apply is properly cleared by the rejoin path.
+
+  Direct-row prerequisite: the `leave_group` handler at
+  `crates/context/src/handlers/leave_group.rs` requires the leaver
+  to be a *direct* member of the subgroup (an inherited-only member
+  has no row to remove and the handler bails with "leave the
+  parent group where the membership anchor lives instead"). So the
+  test admin first adds node-2 via `add_group_members` to give them
+  a direct row; the inherited path remains available afterwards
+  because node-2 still holds `CAN_JOIN_OPEN_SUBGROUPS` at the
+  namespace and the subgroup is `Open`.
+
+  Distinct from siblings:
+    * `group-leave-context.yml` covers `leave_context` (local opt-out,
+      no DAG op) → `join_context` rejoin. No `MemberLeft`, no
+      deny-list, no inheritance.
+    * `group-kick-and-rejoin-keyshare.yml` covers `MemberRemoved`
+      (admin kick) → inheritance rejoin. Deny-list set by an
+      admin-signed op.
+    * This workflow covers the `MemberLeft` (self-published) →
+      inheritance rejoin path — the third corner of the cycle.
+
+  Mero-chat user-visible failure mode this guards against: "I left
+  a public channel manually, tried to rejoin, my messages don't
+  show up to anyone afterwards" — symptom of the deny-list entry
+  that `MemberLeft` apply stamps not being cleared on rejoin.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: leave-rejoin-node
+
+steps:
+  # ── Phase 1: Bootstrap namespace + Open subgroup + context ────────
+
+  - name: Install application on node-1
+    type: install_application
+    node: leave-rejoin-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: leave-rejoin-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Install application on node-3
+    type: install_application
+    node: leave-rejoin-node-3
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: leave-rejoin-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+      node1_key: memberPublicKey
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: leave-rejoin-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: leave-rejoin-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Wait for namespace governance to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: leave-rejoin-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: leave-rejoin-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node3}}'
+    outputs:
+      identity_node3: memberIdentity
+
+  - name: Node-1 creates Open subgroup
+    type: create_group_in_namespace
+    node: leave-rejoin-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: open-channel
+    outputs:
+      subgroup_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: leave-rejoin-node-1
+    group_id: '{{subgroup_id}}'
+    visibility: open
+
+  # Direct-row prerequisite: node-2 needs a direct membership row to
+  # call `leave_group`. node-3 is added direct as well so it can
+  # serve as the cross-peer reader and stays in the subgroup the
+  # whole time.
+  - name: Admin adds node-2 and node-3 to subgroup directly
+    type: add_group_members
+    node: leave-rejoin-node-1
+    group_id: '{{subgroup_id}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+      - identity: '{{identity_node3}}'
+        role: Member
+
+  - name: Node-1 creates context inside Open subgroup
+    type: create_context
+    node: leave-rejoin-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for MemberAdded + ContextRegistered to propagate
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins context
+    type: join_context
+    node: leave-rejoin-node-2
+    context_id: '{{ctx_id}}'
+    outputs:
+      node2_key: memberPublicKey
+
+  - name: Node-3 joins context
+    type: join_context
+    node: leave-rejoin-node-3
+    context_id: '{{ctx_id}}'
+    outputs:
+      node3_key: memberPublicKey
+
+  - name: Initial sync to settle Root state
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - leave-rejoin-node-1
+      - leave-rejoin-node-2
+      - leave-rejoin-node-3
+    timeout: 60
+    check_interval: 2
+
+  # ── Phase 2: Pre-leave — node-2 writes, node-3 reads ──────────────
+
+  - name: Pre-leave — node-2 writes
+    type: call
+    node: leave-rejoin-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "pre_leave"
+      value: "node2_msg_before_leave"
+    executor_public_key: '{{node2_key}}'
+
+  - name: Pre-leave sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - leave-rejoin-node-1
+      - leave-rejoin-node-2
+      - leave-rejoin-node-3
+    timeout: 30
+    check_interval: 2
+
+  - name: Pre-leave — node-3 reads node-2's write
+    type: call
+    node: leave-rejoin-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "pre_leave"
+    executor_public_key: '{{node3_key}}'
+    outputs:
+      pre_leave_read: result
+
+  - name: Assert pre-leave converged
+    type: json_assert
+    statements:
+      - 'json_equal({{pre_leave_read}}, {"output": "node2_msg_before_leave"})'
+
+  # ── Phase 3: node-2 voluntarily leaves the subgroup ───────────────
+  # Publishes `MemberLeft` against the subgroup. The apply arm at
+  # `group_store/mod.rs:1535` deletes node-2's direct row and stamps
+  # them on the per-subgroup deny-list (`mark_denied` at line 1627).
+
+  - name: Node-2 leaves subgroup voluntarily
+    type: leave_group
+    node: leave-rejoin-node-2
+    group_id: '{{subgroup_id}}'
+
+  - name: Wait for MemberLeft + deny-list to propagate
+    type: wait_for_sync
+    group_id: '{{subgroup_id}}'
+    nodes:
+      - leave-rejoin-node-1
+      - leave-rejoin-node-3
+    timeout: 30
+    check_interval: 2
+
+  - name: Confirm node-2 absent from subgroup membership
+    type: list_group_members
+    node: leave-rejoin-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      members_after_leave: members
+
+  - name: Assert node-2 absent after leave
+    type: assert
+    statements:
+      - "not_contains({{members_after_leave}}, {{identity_node2}})"
+      - "contains({{members_after_leave}}, {{identity_node3}})"
+
+  # ── Phase 4: Departed node's write must NOT reach node-3 ──────────
+
+  - name: Post-leave — node-2 attempts write (must fail or be dropped)
+    type: call
+    node: leave-rejoin-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "while_left"
+      value: "this_must_not_appear"
+    executor_public_key: '{{node2_key}}'
+    expected_failure: true
+
+  # ── Phase 5: node-2 self-rejoins via inheritance endpoint ─────────
+  # Inheritance is intact: node-2 still holds CAN_JOIN_OPEN_SUBGROUPS
+  # at the namespace and the subgroup is still Open. The endpoint
+  # publishes `MemberJoinedOpen` which (per the apply path at
+  # `namespace_governance.rs:281` + `:843` + `:1194`) validates the
+  # inherited path and queues a `PendingKeyDelivery` on every peer
+  # holding the subgroup key.
+  #
+  # KEY INVARIANT THIS TEST PINS: the deny-list entry stamped by
+  # the prior `MemberLeft` apply must be cleared on every peer
+  # before node-2's next state-delta op fires, otherwise Phase 7
+  # silently fails because node-3 drops the new write at the
+  # receive filter. If the apply path doesn't clear the deny-list
+  # on `MemberJoinedOpen` (only `MemberAdded` and
+  # `MemberJoinedViaTeeAttestation` call `clear_denied` today —
+  # see `group_store/mod.rs:1215` and `:1502`), this test will
+  # surface that as a Phase 7 read failure.
+
+  - name: Node-2 self-rejoins Open subgroup via inheritance endpoint
+    type: join_subgroup_inheritance
+    node: leave-rejoin-node-2
+    group_id: '{{subgroup_id}}'
+    outputs:
+      node2_rejoin_pk: memberPublicKey
+
+  - name: Wait for MemberJoinedOpen + KeyDelivery to propagate
+    type: wait_for_sync
+    group_id: '{{subgroup_id}}'
+    nodes:
+      - leave-rejoin-node-1
+      - leave-rejoin-node-2
+      - leave-rejoin-node-3
+    timeout: 60
+    check_interval: 2
+
+  # ── Phase 6: Membership row check ─────────────────────────────────
+  # Note: `MemberJoinedOpen` does NOT create a direct membership row —
+  # it only proves and propagates the inherited path + delivers the
+  # key. `list_group_members` returns direct rows only, so node-2
+  # will NOT appear here. This is intentional and distinguishes the
+  # inheritance rejoin from an admin-issued `add_group_members`.
+
+  - name: Confirm subgroup direct-membership shape post-rejoin
+    type: list_group_members
+    node: leave-rejoin-node-1
+    group_id: '{{subgroup_id}}'
+    outputs:
+      members_after_rejoin: members
+
+  - name: Assert direct-row list still excludes inherited rejoiner
+    type: assert
+    statements:
+      - "not_contains({{members_after_rejoin}}, {{identity_node2}})"
+      - "contains({{members_after_rejoin}}, {{identity_node3}})"
+
+  # ── Phase 7: Post-rejoin write must reach node-3 ──────────────────
+  # The end-to-end signal that the inheritance rejoin path properly
+  # cleared the per-peer deny-list and delivered a usable group key.
+
+  - name: Post-rejoin — node-2 writes
+    type: call
+    node: leave-rejoin-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "post_rejoin"
+      value: "node2_msg_after_rejoin"
+    executor_public_key: '{{node2_key}}'
+
+  - name: Post-rejoin sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - leave-rejoin-node-1
+      - leave-rejoin-node-2
+      - leave-rejoin-node-3
+    timeout: 60
+    check_interval: 2
+
+  - name: Post-rejoin — node-3 reads node-2's write
+    type: call
+    node: leave-rejoin-node-3
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "post_rejoin"
+    executor_public_key: '{{node3_key}}'
+    outputs:
+      post_rejoin_read: result
+
+  - name: Assert post-rejoin write reached node-3
+    type: json_assert
+    statements:
+      - 'json_equal({{post_rejoin_read}}, {"output": "node2_msg_after_rejoin"})'
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120
