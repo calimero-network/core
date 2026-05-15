@@ -441,6 +441,33 @@ async fn create_context(
         );
     }
 
+    // Write ContextIdentity so the sync key-share can find keys for this
+    // context. The creator is already a GroupMember (admin) with keys
+    // stored there.
+    //
+    // Ordering: written BEFORE `sign_apply_and_publish` below. Reason —
+    // `sign_apply_and_publish` calls `sign_apply_local_group_op_borsh`
+    // which applies the op locally and emits `OpEvent::ContextRegistered`
+    // *synchronously* via `op_events::notify`. That wakes the
+    // `auto_follow` handler task, which tries to sync the new context
+    // via `choose_owned_identity`. If we wrote `ContextIdentity` *after*
+    // the publish (as the original code did), that auto-follow sync
+    // would race ahead, find no key in the datastore, and bail with
+    // `no owned identities found for context: <id>` — visible in
+    // sync-regression run 25914871901's node-1 log at
+    // `11:21:34.587 ... 11:21:36.588`. Sync then enters exponential
+    // backoff (2 → 4 → 8 → 16 s) which can outlive realistic test
+    // deadlines. Writing the identity first closes the race; the
+    // identity is purely local state with no dependency on
+    // `ContextRegistered` being applied first.
+    handle.put(
+        &key::ContextIdentity::new(context.id, identity),
+        &types::ContextIdentity {
+            private_key: Some(*identity_secret),
+            sender_key: Some(*sender_key),
+        },
+    )?;
+
     drop(handle);
 
     // Register context in group BEFORE subscribing so that a registration
@@ -468,18 +495,6 @@ async fn create_context(
         .await?;
         report.observe("create_context", "ContextRegistered");
     }
-
-    // Write ContextIdentity so the sync key-share can find keys for this context.
-    // The creator is already a GroupMember (admin) with keys stored there.
-    let mut handle = datastore.handle();
-    handle.put(
-        &key::ContextIdentity::new(context.id, identity),
-        &types::ContextIdentity {
-            private_key: Some(*identity_secret),
-            sender_key: Some(*sender_key),
-        },
-    )?;
-    drop(handle);
 
     node_client.subscribe(&context.id).await?;
     node_client.subscribe_namespace(group_id.to_bytes()).await?;
