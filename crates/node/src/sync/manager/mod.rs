@@ -2770,28 +2770,83 @@ impl SyncManager {
                 // a cascade of namespace-topic subscription
                 // (`subscriptions.rs::handle_subscribed` → `sync_group` /
                 // `broadcast_group_local_state`) before this node's local
-                // `join_context` materialises the context entry. If the
-                // dialer is a member of the namespace this context belongs
-                // to, the inbound stream is legitimate — just early. Brief
-                // wait for materialisation, then proceed (or close if it
-                // really is an unknown context). Same race shape as the
-                // unknown-member catch-up below (#2237).
+                // state has caught up. Two distinct sub-races can leave
+                // `get_context` returning `None` for a legitimate inbound:
+                //
+                //   (1) Namespace governance op `ContextRegistered` has
+                //       not yet been processed locally —
+                //       `get_group_for_context` returns `None`. This is
+                //       the cold-start gossipsub-mesh case (#2122/#2236
+                //       residuals tracked in #2356): the namespace topic
+                //       takes one or more heartbeats to form a mesh, so
+                //       the governance op landing on `peer A` can lag the
+                //       context-level sync stream from `peer A` reaching
+                //       us by several seconds.
+                //   (2) `ContextRegistered` is applied — group binding
+                //       exists, dialer is a verified namespace member —
+                //       but `join_context` has not yet materialised the
+                //       context entry. The original race shape covered
+                //       by this branch.
+                //
+                // Both resolve once the namespace governance DAG settles
+                // and `join_context` runs to completion locally. Poll
+                // for both in a single shared-deadline loop instead of
+                // short-circuiting on (1).
                 let store = self.context_client.datastore();
-                let dialer_is_namespace_member =
-                    match calimero_context::group_store::get_group_for_context(store, &context_id)?
-                    {
-                        Some(group_id) => calimero_context::group_store::check_group_membership(
-                            store,
-                            &group_id,
-                            &their_identity,
-                        )?,
-                        None => false,
-                    };
 
-                if !dialer_is_namespace_member {
+                // Poll cadence matches `FALLBACK_POLL` in
+                // `handlers/join_context.rs`. The 10 s budget covers
+                // both the (~5 s) `join_context` materialisation gap
+                // observed in the `bdc61af` smoke-regression artefact
+                // and the additional (~5 s) cold-start namespace-mesh
+                // `ContextRegistered` propagation gap observed in
+                // mero-drive E2E run 25882151397 (logged in #2356).
+                // Streams that don't resolve within the window fall
+                // through to the same OpaqueError as before — the
+                // dialer retries on its next sync interval.
+                const MATERIALIZATION_WINDOW: time::Duration = time::Duration::from_secs(10);
+                const MATERIALIZATION_POLL: time::Duration = time::Duration::from_millis(200);
+
+                let deadline = Instant::now() + MATERIALIZATION_WINDOW;
+                let mut dialer_verified = false;
+                let mut materialised: Option<_> = None;
+
+                loop {
+                    if !dialer_verified {
+                        if let Some(group_id) =
+                            calimero_context::group_store::get_group_for_context(
+                                store,
+                                &context_id,
+                            )?
+                        {
+                            if calimero_context::group_store::check_group_membership(
+                                store,
+                                &group_id,
+                                &their_identity,
+                            )? {
+                                dialer_verified = true;
+                            }
+                        }
+                    }
+
+                    if dialer_verified {
+                        if let Some(ctx) = self.context_client.get_context(&context_id)? {
+                            materialised = Some(ctx);
+                            break;
+                        }
+                    }
+
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    time::sleep(MATERIALIZATION_POLL).await;
+                }
+
+                if !dialer_verified {
                     // Genuinely unknown context (or cross-namespace stream
-                    // leak per #2198). Close cleanly so unrelated sync
-                    // activity is unaffected.
+                    // leak per #2198), or namespace governance op never
+                    // landed within the window. Close cleanly so unrelated
+                    // sync activity is unaffected.
                     warn!(
                         %context_id,
                         ?their_identity,
@@ -2803,27 +2858,6 @@ impl SyncManager {
                     }
 
                     return Ok(None);
-                }
-
-                // Bounded wait for local `join_context` to materialise the
-                // context entry. Poll cadence matches `FALLBACK_POLL` in
-                // `handlers/join_context.rs`. The 5 s budget comfortably
-                // covers the ~5 s gap observed between namespace-membership
-                // application and local context materialisation in the
-                // `bdc61af` smoke-regression artefact; cold-start cases
-                // beyond that fall through to the same OpaqueError as
-                // before — the dialer retries on its next sync interval.
-                const MATERIALIZATION_WINDOW: time::Duration = time::Duration::from_secs(5);
-                const MATERIALIZATION_POLL: time::Duration = time::Duration::from_millis(200);
-
-                let deadline = Instant::now() + MATERIALIZATION_WINDOW;
-                let mut materialised = None;
-                while Instant::now() < deadline {
-                    time::sleep(MATERIALIZATION_POLL).await;
-                    if let Some(ctx) = self.context_client.get_context(&context_id)? {
-                        materialised = Some(ctx);
-                        break;
-                    }
                 }
 
                 match materialised {
