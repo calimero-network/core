@@ -31,8 +31,9 @@ use crate::group::{
     GetMemberMetadataRequest, GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse,
     GroupSummary, GroupUpgradeInfo, IssueOwnershipProofRequest, IssueOwnershipProofResponse,
     JoinContextRequest, JoinContextResponse, JoinGroupRequest, JoinGroupResponse,
-    LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
-    LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
+    JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse, LeaveContextRequest,
+    LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse, LeaveNamespaceRequest,
+    LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
     ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
     ListNamespacesRequest, NamespaceSummary, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
     SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
@@ -1272,6 +1273,12 @@ impl ContextClient {
         JoinContext,
         JoinContextRequest,
         eyre::Result<JoinContextResponse>
+    );
+    forward_to_actor!(
+        join_subgroup_inheritance,
+        JoinSubgroupInheritance,
+        JoinSubgroupInheritanceRequest,
+        eyre::Result<JoinSubgroupInheritanceResponse>
     );
     forward_to_actor!(
         leave_context,

@@ -71,8 +71,9 @@ async fn apply_signed_group_op_via_context_client() {
     let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(64);
     let (ns_sync_tx, ns_sync_rx) = mpsc::channel(16);
     let (ns_join_tx, ns_join_rx) = mpsc::channel(16);
+    let (open_subgroup_join_tx, open_subgroup_join_rx) = mpsc::channel(16);
 
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx);
+    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
 
     let node_client = NodeClient::new(
         store.clone(),
@@ -110,6 +111,7 @@ async fn apply_signed_group_op_via_context_client() {
         ctx_sync_rx,
         ns_sync_rx,
         ns_join_rx,
+        open_subgroup_join_rx,
     );
 
     let state_delta_arbiter = pool.get().await.expect("state-delta arbiter");

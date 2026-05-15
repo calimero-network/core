@@ -48,6 +48,18 @@ pub struct NamespaceJoinParams {
     pub joiner_public_key: PublicKey,
 }
 
+/// Parameters for a direct open-subgroup join request (issue #2357).
+/// Counterpart to [`NamespaceJoinParams`] for the inherited self-join
+/// path: joiner asks a peer holding the subgroup key for it directly,
+/// proving authority via their `MembershipPath::Inherited` membership
+/// (validated by the responder against the local store).
+#[derive(Debug)]
+pub struct OpenSubgroupJoinParams {
+    pub namespace_id: [u8; 32],
+    pub subgroup_id: [u8; 32],
+    pub joiner_public_key: PublicKey,
+}
+
 #[derive(Clone, Debug)]
 pub struct SyncClient {
     ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
@@ -55,6 +67,10 @@ pub struct SyncClient {
     ns_join_tx: mpsc::Sender<(
         NamespaceJoinParams,
         oneshot::Sender<eyre::Result<JoinBundle>>,
+    )>,
+    open_subgroup_join_tx: mpsc::Sender<(
+        OpenSubgroupJoinParams,
+        oneshot::Sender<eyre::Result<Vec<u8>>>,
     )>,
 }
 
@@ -67,11 +83,16 @@ impl SyncClient {
             NamespaceJoinParams,
             oneshot::Sender<eyre::Result<JoinBundle>>,
         )>,
+        open_subgroup_join_tx: mpsc::Sender<(
+            OpenSubgroupJoinParams,
+            oneshot::Sender<eyre::Result<Vec<u8>>>,
+        )>,
     ) -> Self {
         Self {
             ctx_sync_tx,
             ns_sync_tx,
             ns_join_tx,
+            open_subgroup_join_tx,
         }
     }
 
@@ -117,6 +138,30 @@ impl SyncClient {
             .map_err(|_| eyre::eyre!("namespace join channel closed"))?;
         rx.await
             .map_err(|_| eyre::eyre!("namespace join response channel dropped"))?
+    }
+
+    /// Send a direct open-subgroup join request to a mesh peer and await
+    /// the response. Returns the borsh-serialized `KeyEnvelope` bytes
+    /// the joiner unwraps locally with their namespace-identity SK.
+    /// The SyncManager handles peer selection + stream I/O.
+    pub async fn request_open_subgroup_join(
+        &self,
+        namespace_id: [u8; 32],
+        subgroup_id: [u8; 32],
+        joiner_public_key: PublicKey,
+    ) -> eyre::Result<Vec<u8>> {
+        let (tx, rx) = oneshot::channel();
+        let params = OpenSubgroupJoinParams {
+            namespace_id,
+            subgroup_id,
+            joiner_public_key,
+        };
+        self.open_subgroup_join_tx
+            .send((params, tx))
+            .await
+            .map_err(|_| eyre::eyre!("open subgroup join channel closed"))?;
+        rx.await
+            .map_err(|_| eyre::eyre!("open subgroup join response channel dropped"))?
     }
 }
 
@@ -670,6 +715,17 @@ impl NodeClient {
     ) -> eyre::Result<JoinBundle> {
         self.sync_client
             .request_namespace_join(namespace_id, invitation_bytes, joiner_public_key)
+            .await
+    }
+
+    pub async fn request_open_subgroup_join(
+        &self,
+        namespace_id: [u8; 32],
+        subgroup_id: [u8; 32],
+        joiner_public_key: PublicKey,
+    ) -> eyre::Result<Vec<u8>> {
+        self.sync_client
+            .request_open_subgroup_join(namespace_id, subgroup_id, joiner_public_key)
             .await
     }
 }
