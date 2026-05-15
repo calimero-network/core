@@ -353,61 +353,11 @@ jobs:
 
           exit $exit_code
 
-      - name: Collect profiling data from containers
+      - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/collect-from-containers.sh
-          ./scripts/profiling/collect-from-containers.sh \
-            "kv-store" \
-            "fuzzy-test-logs/kv-store" \
-            "profiling-data/kv-store" \
-            "profiling-reports/kv-store"
-
-      # merobox#233 (merged 2026-05-12): with `stop_all_nodes: false` in the
-      # fuzzy workflow YAML (already set), the merobox bootstrap process exits
-      # but leaves containers running. We then send each merod container an
-      # *explicit* `docker stop` with `--time=120`, giving the in-container
-      # SIGTERM trap (`entrypoint-profiling.sh`'s `cleanup`) up to 120s to
-      # finish `stop_profiling` (15s perf-flush) → merod-stop (10s) →
-      # `preserve_to_host_mount` (perf+memory flamegraph render → bind
-      # mount). Pre-#233 / pre-this-step, merobox's `atexit` handler stopped
-      # containers with Docker's default ~10s timeout — SIGKILL arrived
-      # before the trap finished and `reports/` never got created on any
-      # node. See the `profiling-data-group-governance-499-25799459525`
-      # artifact for evidence of the bug this fixes.
-      - name: Graceful merod container shutdown (let trap render flamegraphs)
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          mkdir -p fuzzy-test-logs/kv-store
-          # Filter to merobox-started merod containers, exclude short-lived
-          # `*-init` (already long gone, not useful for trap-driven preserve).
-          containers=$(docker ps --filter "label=calimero.node=true" \
-                                 --format '{{.Names}}' 2>/dev/null \
-                       | grep -v -- '-init$' || true)
-          if [ -z "$containers" ]; then
-            echo "No live merod containers — stop_all_nodes:false honored? merobox-version=$(merobox --version 2>/dev/null || echo '?')"
-            exit 0
-          fi
-          echo "Stopping $(echo "$containers" | wc -l | tr -d ' ') live container(s) with --time=120..."
-          echo "$containers" \
-            | xargs -r -n1 docker stop --time=120 2>&1 \
-            | tee fuzzy-test-logs/kv-store/docker-stop.log
-
-      - name: Collect profiling data from host-side bind mounts
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/harvest-host-profiling.sh
-          ./scripts/profiling/harvest-host-profiling.sh \
-            "data" \
-            "profiling-data/kv-store"
-
-      - name: Collect profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/lift-reports.sh
-          ./scripts/profiling/lift-reports.sh \
-            "profiling-data/kv-store" \
-            "profiling-reports/kv-store"
+        uses: ./.github/actions/collect-fuzzy-profiling
+        with:
+          suite: kv-store
 
       - name: Set test result
         id: set-result
@@ -448,24 +398,6 @@ jobs:
           retention-days: 30
           compression-level: 6
 
-      - name: Upload KV Store profiling data
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-data-kv-store-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-data/kv-store/
-          retention-days: 30
-          compression-level: 6
-
-      - name: Upload KV Store profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-reports-kv-store-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-reports/kv-store/
-          if-no-files-found: ignore
-          retention-days: 30
-          compression-level: 6
 
   fuzzy-test-handlers:
     name: Run KV Store with Handlers Fuzzy Test with Profiling
@@ -649,48 +581,12 @@ jobs:
 
           exit $exit_code
 
-      - name: Collect profiling data from containers
+      - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/collect-from-containers.sh
-          ./scripts/profiling/collect-from-containers.sh \
-            "kv-store-with-handlers" \
-            "fuzzy-test-logs/kv-store-with-handlers" \
-            "profiling-data/kv-store-with-handlers" \
-            "profiling-reports/kv-store-with-handlers"
-
-      # See kv-store job for rationale — same shape, different log subdir.
-      - name: Graceful merod container shutdown (let trap render flamegraphs)
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          mkdir -p fuzzy-test-logs/kv-store-with-handlers
-          containers=$(docker ps --filter "label=calimero.node=true" \
-                                 --format '{{.Names}}' 2>/dev/null \
-                       | grep -v -- '-init$' || true)
-          if [ -z "$containers" ]; then
-            echo "No live merod containers — stop_all_nodes:false honored? merobox-version=$(merobox --version 2>/dev/null || echo '?')"
-            exit 0
-          fi
-          echo "Stopping $(echo "$containers" | wc -l | tr -d ' ') live container(s) with --time=120..."
-          echo "$containers" \
-            | xargs -r -n1 docker stop --time=120 2>&1 \
-            | tee fuzzy-test-logs/kv-store-with-handlers/docker-stop.log
-
-      - name: Collect profiling data from host-side bind mounts
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/harvest-host-profiling.sh
-          ./scripts/profiling/harvest-host-profiling.sh \
-            "data" \
-            "profiling-data/kv-store-with-handlers"
-
-      - name: Collect profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/lift-reports.sh
-          ./scripts/profiling/lift-reports.sh \
-            "profiling-data/kv-store-with-handlers" \
-            "profiling-reports/kv-store-with-handlers"
+        uses: ./.github/actions/collect-fuzzy-profiling
+        with:
+          suite: kv-store-with-handlers
+          artifact-suffix: handlers
 
       - name: Set test result
         id: set-result-handlers
@@ -731,24 +627,6 @@ jobs:
           retention-days: 30
           compression-level: 6
 
-      - name: Upload Handlers profiling data
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-data-handlers-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-data/kv-store-with-handlers/
-          retention-days: 30
-          compression-level: 6
-
-      - name: Upload Handlers profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-reports-handlers-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-reports/kv-store-with-handlers/
-          if-no-files-found: ignore
-          retention-days: 30
-          compression-level: 6
 
   fuzzy-test-scaffolding-e2e:
     name: Run Scaffolding E2E Fuzzy Test with Profiling
@@ -925,48 +803,11 @@ jobs:
 
           exit $exit_code
 
-      - name: Collect profiling data from containers
+      - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/collect-from-containers.sh
-          ./scripts/profiling/collect-from-containers.sh \
-            "scaffolding-e2e" \
-            "fuzzy-test-logs/scaffolding-e2e" \
-            "profiling-data/scaffolding-e2e" \
-            "profiling-reports/scaffolding-e2e"
-
-      # See kv-store job for rationale — same shape, different log subdir.
-      - name: Graceful merod container shutdown (let trap render flamegraphs)
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          mkdir -p fuzzy-test-logs/scaffolding-e2e
-          containers=$(docker ps --filter "label=calimero.node=true" \
-                                 --format '{{.Names}}' 2>/dev/null \
-                       | grep -v -- '-init$' || true)
-          if [ -z "$containers" ]; then
-            echo "No live merod containers — stop_all_nodes:false honored? merobox-version=$(merobox --version 2>/dev/null || echo '?')"
-            exit 0
-          fi
-          echo "Stopping $(echo "$containers" | wc -l | tr -d ' ') live container(s) with --time=120..."
-          echo "$containers" \
-            | xargs -r -n1 docker stop --time=120 2>&1 \
-            | tee fuzzy-test-logs/scaffolding-e2e/docker-stop.log
-
-      - name: Collect profiling data from host-side bind mounts
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/harvest-host-profiling.sh
-          ./scripts/profiling/harvest-host-profiling.sh \
-            "data" \
-            "profiling-data/scaffolding-e2e"
-
-      - name: Collect profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/lift-reports.sh
-          ./scripts/profiling/lift-reports.sh \
-            "profiling-data/scaffolding-e2e" \
-            "profiling-reports/scaffolding-e2e"
+        uses: ./.github/actions/collect-fuzzy-profiling
+        with:
+          suite: scaffolding-e2e
 
       - name: Set test result
         id: set-result-e2e
@@ -1007,24 +848,6 @@ jobs:
           retention-days: 30
           compression-level: 6
 
-      - name: Upload Scaffolding E2E profiling data
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-data-scaffolding-e2e-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-data/scaffolding-e2e/
-          retention-days: 30
-          compression-level: 6
-
-      - name: Upload Scaffolding E2E profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-reports-scaffolding-e2e-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-reports/scaffolding-e2e/
-          if-no-files-found: ignore
-          retention-days: 30
-          compression-level: 6
 
   fuzzy-test-group-governance:
     name: Run Group Governance Fuzzy Test with Profiling
@@ -1201,48 +1024,11 @@ jobs:
 
           exit $exit_code
 
-      - name: Collect profiling data from containers
+      - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/collect-from-containers.sh
-          ./scripts/profiling/collect-from-containers.sh \
-            "group-governance" \
-            "fuzzy-test-logs/group-governance" \
-            "profiling-data/group-governance" \
-            "profiling-reports/group-governance"
-
-      # See kv-store job for rationale — same shape, different log subdir.
-      - name: Graceful merod container shutdown (let trap render flamegraphs)
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          mkdir -p fuzzy-test-logs/group-governance
-          containers=$(docker ps --filter "label=calimero.node=true" \
-                                 --format '{{.Names}}' 2>/dev/null \
-                       | grep -v -- '-init$' || true)
-          if [ -z "$containers" ]; then
-            echo "No live merod containers — stop_all_nodes:false honored? merobox-version=$(merobox --version 2>/dev/null || echo '?')"
-            exit 0
-          fi
-          echo "Stopping $(echo "$containers" | wc -l | tr -d ' ') live container(s) with --time=120..."
-          echo "$containers" \
-            | xargs -r -n1 docker stop --time=120 2>&1 \
-            | tee fuzzy-test-logs/group-governance/docker-stop.log
-
-      - name: Collect profiling data from host-side bind mounts
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/harvest-host-profiling.sh
-          ./scripts/profiling/harvest-host-profiling.sh \
-            "data" \
-            "profiling-data/group-governance"
-
-      - name: Collect profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/lift-reports.sh
-          ./scripts/profiling/lift-reports.sh \
-            "profiling-data/group-governance" \
-            "profiling-reports/group-governance"
+        uses: ./.github/actions/collect-fuzzy-profiling
+        with:
+          suite: group-governance
 
       - name: Set test result
         id: set-result-gov
@@ -1283,24 +1069,6 @@ jobs:
           retention-days: 30
           compression-level: 6
 
-      - name: Upload Group Governance profiling data
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-data-group-governance-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-data/group-governance/
-          retention-days: 30
-          compression-level: 6
-
-      - name: Upload Group Governance profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-reports-group-governance-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-reports/group-governance/
-          if-no-files-found: ignore
-          retention-days: 30
-          compression-level: 6
 
   test-summary:
     name: Test Summary

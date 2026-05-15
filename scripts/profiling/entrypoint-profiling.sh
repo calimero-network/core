@@ -18,64 +18,21 @@ mkdir -p "$PROFILING_OUTPUT_DIR"
 mkdir -p "${PROFILING_REPORTS_DIR:-/profiling/reports}"
 
 install_kernel_tools() {
-    local kernel_version=$(uname -r)
-    echo "[Profiling] Detected kernel: $kernel_version"
-
-    # Echo perf's own stderr on sanity-check failure so we can tell missing
-    # binary / ABI mismatch / EPERM (missing CAP_PERFMON) apart.
-    perf_sanity_check() {
-        local err
-        err=$(perf record -o /dev/null -- true 2>&1)
-        if [ $? -eq 0 ]; then
-            return 0
-        fi
-        echo "[Profiling] perf sanity check failed. First 5 lines of stderr:"
-        echo "$err" | head -5 | sed 's/^/[Profiling]   /'
-        return 1
-    }
-
-    if perf_sanity_check; then
-        echo "[Profiling] perf is compatible with current kernel"
+    echo "[Profiling] Detected kernel: $(uname -r)"
+    # Sanity-check perf works. The Dockerfile pre-symlinks the generic
+    # `linux-tools-generic` binary at /usr/local/bin/perf, which takes
+    # PATH precedence over Ubuntu's /usr/bin/perf wrapper — so this
+    # should succeed even on runners whose kernel-version-specific perf
+    # package isn't available. If it does fail, the most likely cause
+    # is missing CAP_PERFMON on the container.
+    local err
+    err=$(perf record -o /dev/null -- true 2>&1)
+    if [ $? -eq 0 ]; then
+        echo "[Profiling] perf is working ($(command -v perf))"
         return 0
     fi
-
-    echo "[Profiling] Installing kernel tools..."
-    apt-get update -qq 2>/dev/null || true
-
-    if apt-get install -y -qq "linux-tools-${kernel_version}" 2>/dev/null; then
-        if perf_sanity_check; then
-            echo "[Profiling] perf is now working (linux-tools-${kernel_version})"
-            return 0
-        fi
-    fi
-
-    # Fallback: linux-tools-generic (pre-installed in the profiling image;
-    # try apt again for non-profiling deployments). The Ubuntu /usr/bin/perf
-    # wrapper requires /usr/lib/linux-tools/$(uname -r)/perf, so symlink the
-    # generic binary into place.
-    echo "[Profiling] Trying linux-tools-generic fallback..."
-    apt-get install -y -qq linux-tools-generic 2>/dev/null || true
-    local generic_perf=""
-    for candidate in /usr/lib/linux-tools/*/perf; do
-        [ -f "$candidate" ] || continue
-        # basename compare avoids regex metacharacter traps in kernel_version.
-        [ "$(basename "$(dirname "$candidate")")" = "$kernel_version" ] && continue
-        generic_perf="$candidate"
-        break
-    done
-    if [ -n "$generic_perf" ]; then
-        local target_dir="/usr/lib/linux-tools/${kernel_version}"
-        if ! mkdir -p "$target_dir" 2>/dev/null; then
-            echo "[Profiling] WARNING: could not create $target_dir"
-        elif ! ln -sf "$generic_perf" "$target_dir/perf" 2>/dev/null; then
-            echo "[Profiling] WARNING: could not symlink $target_dir/perf -> $generic_perf"
-        elif perf_sanity_check; then
-            echo "[Profiling] perf working (linux-tools-generic via $generic_perf)"
-            return 0
-        fi
-    fi
-
-    echo "[Profiling] WARNING: CPU profiling unavailable."
+    echo "[Profiling] WARNING: CPU profiling unavailable. perf record failed with:"
+    echo "$err" | head -5 | sed 's/^/[Profiling]   /'
     echo "[Profiling]   If stderr above shows 'Operation not permitted', container is missing CAP_PERFMON."
     return 1
 }
@@ -227,9 +184,15 @@ stop_profiling() {
     fi
     
     # Preserve perf.map files for JIT code symbolization
-    # Wasmer writes perf.map files to /tmp/perf-<pid>.map for WASM function names
+    # Wasmer writes perf.map files to /tmp/perf-<pid>.map for WASM function names.
+    # Use the global MAIN_PID (set when we fork merod) instead of `pgrep -x merod`
+    # because stop_profiling typically runs in the mainline exit path AFTER merod
+    # already exited (`wait $MAIN_PID` returned), and pgrep would return nothing
+    # at that point — silently skipping the perf.map copy and leaving WASM JIT
+    # frames as [unknown] in the flamegraph. /tmp/perf-<pid>.map persists after
+    # process exit.
     if [ "$ENABLE_WASMER_PROFILING" = "true" ]; then
-        local merod_pid=$(pgrep -x merod 2>/dev/null | head -1)
+        local merod_pid="${MAIN_PID:-$(pgrep -x merod 2>/dev/null | head -1)}"
         if [ -n "$merod_pid" ]; then
             local perf_map="/tmp/perf-${merod_pid}.map"
             if [ -f "$perf_map" ]; then

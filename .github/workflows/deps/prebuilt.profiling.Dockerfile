@@ -17,11 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     linux-tools-common \
     # Generic perf binary — ships a version-agnostic perf that works for
-    # user-space sampling on most kernels. Pre-installing here avoids the
-    # entrypoint's runtime apt-get dance AND the apt-lock contention that
-    # starved 3/4 containers of perf when they all booted simultaneously.
-    # install_kernel_tools still tries the kernel-matched package at runtime
-    # and falls back to this generic perf via /usr/lib/linux-tools/*/perf.
+    # user-space sampling on most kernels. The post-install symlink below
+    # exposes it at /usr/local/bin/perf so the entrypoint never has to do
+    # runtime apt; that was the root cause of workers (nodes 2-4) missing
+    # CPU profiles — apt-lock contention starved their kernel-tools install.
     linux-tools-generic \
     # Memory profiling
     heaptrack \
@@ -49,6 +48,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Utilities
     gzip \
     tar \
+    && rm -rf /var/lib/apt/lists/*
+
+# Expose the generic perf binary at /usr/local/bin/perf so PATH lookup finds
+# it before Ubuntu's /usr/bin/perf wrapper (which requires a kernel-version-
+# matched binary under /usr/lib/linux-tools/$(uname -r)/perf and exits 2
+# with "perf not found for kernel X" otherwise). On runners with kernels
+# the image wasn't built for (e.g. azure-cloud kernels), the wrapper would
+# fail and the entrypoint had to apt-install at boot — which raced and lost
+# on 3 of 4 nodes. This symlink makes perf work uniformly without runtime
+# apt.
+RUN GENERIC_PERF=$(find /usr/lib/linux-tools -name perf -type f | head -1) \
+    && [ -n "$GENERIC_PERF" ] \
+    && ln -sf "$GENERIC_PERF" /usr/local/bin/perf \
+    && /usr/local/bin/perf --version
+
+# Enable Ubuntu's ddebs (debug-symbols) archive and install -dbgsym packages
+# for libgcc and libstdc++ — together with libc6-dbg below, this cuts the
+# [unknown] frame count in CPU flamegraphs at libc/libstdc++/libgcc
+# transitions. ubuntu-dbgsym-keyring provides the signing key file at
+# /usr/share/keyrings/ubuntu-dbgsym-keyring.gpg. Separate RUN because
+# adding an apt source requires its own apt-get update.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ubuntu-dbgsym-keyring \
+    && . /etc/os-release \
+    && printf '%s\n' \
+        "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME} main restricted universe multiverse" \
+        "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME}-updates main restricted universe multiverse" \
+        "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME}-proposed main restricted universe multiverse" \
+        > /etc/apt/sources.list.d/ddebs.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgcc-s1-dbgsym \
+        libstdc++6-dbgsym \
     && rm -rf /var/lib/apt/lists/*
 
 # Build jemalloc from source with libunwind support for proper stack unwinding
@@ -83,7 +115,7 @@ RUN mkdir -p /profiling/data /profiling/reports /profiling/scripts
 # Uses RUN (not LABEL) — buildx with cache-from=type=gha folds LABELs into
 # image metadata without producing a layer-hash boundary, so a LABEL does
 # not actually invalidate the downstream COPY. RUN does.
-RUN echo "cache_bust=2026-05-15-2" > /tmp/.profiling-cache-bust
+RUN echo "cache_bust=2026-05-15-3" > /tmp/.profiling-cache-bust
 
 # Copy profiling scripts
 COPY scripts/profiling/ /profiling/scripts/
