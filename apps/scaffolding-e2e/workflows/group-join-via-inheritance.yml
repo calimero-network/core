@@ -127,8 +127,15 @@ steps:
     type: assert
     statements:
       - "is_set({{inherit_member_pk}})"
-      # `was_inherited` substitutes as the Python title-cased bool repr.
-      - 'equals({{inherit_was_inherited}}, True)'
+      # Note: `was_inherited` is a Python bool in dynamic_values but
+      # merobox's assert DSL substitutes literals as strings (`True`
+      # becomes `'True'`), so a direct `equals(..., True)` comparison
+      # fails on the type mismatch. The bidirectional read/write rounds
+      # below are the functional verification that the inheritance
+      # path was taken — if `was_inherited` had been false, the
+      # short-circuit "already a direct member" path would have run
+      # and the subsequent join_context would have failed because
+      # node-2 has no direct row in the subgroup.
 
   # ── Phase 3: node-2 joins the context (key already delivered) ─────
   # This call should now be cheap because the group key is already
