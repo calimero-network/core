@@ -2267,6 +2267,95 @@ pub struct LeaveGroupApiResponseData {
     pub member_public_key: PublicKey,
 }
 
+// ---- Issue Ownership Proof ----
+//
+// Wire format is locked: see github.com/calimero-network/tauri-app#73.
+// mdma and tauri-app are implemented separately against this exact shape.
+//
+// Request: { audience, context_id, subject, nonce, expires_at_ms }
+// Response: { signer_public_key, signed_payload, signature }
+//
+// `signed_payload` is opaque base64-encoded UTF-8 JSON bytes — the verifier
+// re-parses them. The signature input is
+//   `OWNERSHIP_PROOF_DOMAIN || signed_payload_bytes`
+// where `OWNERSHIP_PROOF_DOMAIN` is the 28-byte literal
+// `b"calimero.ownership-claim.v1\x00"` (defined in calimero-context).
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueOwnershipProofApiRequest {
+    pub audience: String,
+    /// Base58 or hex-encoded 32-byte context id. Parsed server-side via
+    /// `parse_context_id`.
+    pub context_id: String,
+    pub subject: String,
+    /// Hex string, 32–128 chars inclusive (16–64 raw bytes).
+    pub nonce: String,
+    /// Caller-requested expiry in unix milliseconds. Server clamps to
+    /// `min(expires_at_ms, issued_at_ms + 5*60*1000)`.
+    pub expires_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueOwnershipProofApiResponse {
+    /// Base58-encoded 32-byte ed25519 public key of the signer.
+    pub signer_public_key: String,
+    /// Base64-encoded opaque UTF-8 JSON bytes of the canonical claim payload.
+    /// Verifiers MUST re-parse this exact byte slice and re-derive the
+    /// signature input as `OWNERSHIP_PROOF_DOMAIN || signed_payload_bytes`.
+    pub signed_payload: String,
+    /// Base64-encoded 64-byte ed25519 signature over the signature input.
+    pub signature: String,
+}
+
+impl Validate for IssueOwnershipProofApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        // audience: non-empty, <= 256 chars.
+        if self.audience.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "audience" });
+        } else if let Some(e) = validate_string_length(&self.audience, "audience", 256) {
+            errors.push(e);
+        }
+
+        // subject: non-empty, <= 512 chars.
+        if self.subject.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "subject" });
+        } else if let Some(e) = validate_string_length(&self.subject, "subject", 512) {
+            errors.push(e);
+        }
+
+        // nonce: hex string, 32..=128 chars inclusive (16..=64 raw bytes).
+        let n = self.nonce.len();
+        if !(32..=128).contains(&n) {
+            errors.push(ValidationError::InvalidFormat {
+                field: "nonce",
+                reason: "nonce must be hex-encoded, 32..=128 characters".into(),
+            });
+        } else if !self.nonce.chars().all(|c| c.is_ascii_hexdigit()) {
+            errors.push(ValidationError::InvalidHexEncoding {
+                field: "nonce",
+                reason: "nonce must be valid hex".into(),
+            });
+        } else if n % 2 != 0 {
+            // An odd-length hex string can't decode to whole bytes, which is
+            // inconsistent with the documented "16..=64 raw bytes" contract.
+            errors.push(ValidationError::InvalidFormat {
+                field: "nonce",
+                reason: "nonce hex string must have even length".into(),
+            });
+        }
+
+        // context_id and expires_at_ms are validated in the handler (the former
+        // because parsing is shared with `parse_context_id`, the latter because
+        // it requires comparing against the current wall-clock).
+
+        errors
+    }
+}
+
 // ---- Leave Namespace (cascading self-leave) ----
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2532,6 +2621,40 @@ mod tests {
         let resp: CreateContextResponseData = serde_json::from_value(json).unwrap();
         assert!(resp.group_id.is_none());
         assert!(!resp.group_created);
+    }
+
+    fn ownership_req(nonce: &str) -> IssueOwnershipProofApiRequest {
+        IssueOwnershipProofApiRequest {
+            audience: "mdma.cloud".into(),
+            context_id: "11111111111111111111111111111111".into(),
+            subject: "subject-xyz".into(),
+            nonce: nonce.into(),
+            expires_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn ownership_proof_even_length_hex_nonce_passes() {
+        // 32 hex chars (16 bytes) — minimum valid, even length.
+        let errors = ownership_req("deadbeefcafebabe1122334455667788").validate();
+        assert!(
+            errors.is_empty(),
+            "even-length hex nonce must validate cleanly, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn ownership_proof_odd_length_hex_nonce_rejected() {
+        // 33 hex chars: in range, all hex digits, but odd length.
+        let errors = ownership_req("deadbeefcafebabe1122334455667788a").validate();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ValidationError::InvalidFormat { field: "nonce", reason }
+                    if reason == "nonce hex string must have even length"
+            )),
+            "odd-length hex nonce must be rejected, got {errors:?}"
+        );
     }
 }
 

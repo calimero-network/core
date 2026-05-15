@@ -25,6 +25,7 @@ pub mod get_group_upgrade_status;
 pub mod get_member_capabilities;
 pub mod get_member_metadata;
 pub mod get_namespace_identity;
+pub mod issue_ownership_proof;
 pub mod join_context;
 pub mod join_group;
 pub mod leave_context;
@@ -228,6 +229,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::ListNamespacesForApplication { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::IssueOwnershipProof { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }
