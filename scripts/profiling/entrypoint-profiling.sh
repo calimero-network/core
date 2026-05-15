@@ -103,43 +103,11 @@ start_profiling() {
     local perf_output="$PROFILING_OUTPUT_DIR/perf-${node_name}.data"
     local perf_log="$PROFILING_OUTPUT_DIR/perf-${node_name}.log"
     
-    echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz, call-graph: dwarf)..."
-    # `--call-graph dwarf,16384` instead of `-g` (frame-pointer): even though
-    # merod is built with `-C force-frame-pointers=yes` under
-    # `[profile.profiling]` (debug=true, strip=false), `%rbp` chains break
-    # across libc / libstdc++ / jemalloc / kernel transitions, producing
-    # thousands of [unknown] frames in the rendered flamegraph (~2k in the
-    # group-governance run on PR #2342). DWARF unwinds via `.debug_frame` and
-    # stays intact across those boundaries.
-    #
-    # Prior comment here warned not to swap to DWARF without also: bumping
-    # `-m`, capping snapshot size, and verifying merod's `.debug_*` survives
-    # the release pipeline. Status:
-    #   - snapshot size capped to 16384 B per stack (the `,16384` suffix).
-    #   - `-m`: NOT bumped. The May 14 run (25850870046) tried `-m 16M` and
-    #     perf refused with "Permission error mapping pages, current value:
-    #     4096,0" because the container's `perf_event_mlock_kb` is 4 MB.
-    #     16 MB × 4 CPUs exceeds that, so perf wrote a 0-byte data file and
-    #     the entire CPU pipeline silently no-op'd. Using perf's default
-    #     (~2 MB total). If "Woken up N times" warnings show up in
-    #     perf-*.log, lower the dwarf snapshot size first; raising `-m`
-    #     requires kernel/host-side changes we can't make from a container.
-    #   - `.debug_*` is preserved by `[profile.profiling]` (debug=true,
-    #     strip=false) — same profile the prior author relied on for
-    #     frame-pointer chains; we're using the DWARF info that was already
-    #     being shipped.
-    #
-    # `-N` (--no-buildid): skip perf record's build-id collection step.
-    # Without `-N`, perf record walks every DSO in /proc/PID/maps at
-    # shutdown to extract its build-id, falling back to forking addr2line.
-    # On merod that produced a storm of "addr2line /usr/local/bin/merod:
-    # could not read first record" errors during finalize (run
-    # 25855359129) and left perf.data with a 0-valued `data size` header
-    # field, so perf script refused to read it. The May 12 revert thought
-    # this addr2line failure was perf script's fault (it isn't) — it's
-    # perf record's. `-N` bypasses build-id collection entirely; DWARF
-    # unwinding still works via `.debug_frame` at perf script time.
-    perf record -F "$PERF_SAMPLE_FREQ" --call-graph dwarf,16384 -N -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
+    echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz, call-graph: fp)..."
+    # Frame-pointer unwinding. merod is built with `-C force-frame-pointers=yes`
+    # under `[profile.profiling]` (debug=true, strip=false) so `%rbp` chains
+    # give correct deep stacks.
+    perf record -F "$PERF_SAMPLE_FREQ" -g -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
     PERF_PID=$!
     echo $PERF_PID > "$PROFILING_OUTPUT_DIR/perf.pid"
     
@@ -220,15 +188,10 @@ stop_profiling() {
         if kill -0 "$perf_pid" 2>/dev/null; then
             kill -INT "$perf_pid" 2>/dev/null || true
             
-            # 180s to let perf flush its final buffer on SIGINT before SIGKILL.
-            # 60s was still SIGKILLing perf mid-finalize on the post-#2351
-            # merod binary — the new binary's DWARF / DSO structure makes
-            # perf's symbolization step much slower (~6x per MB) than the
-            # old binary that finalized 206 MB in <10s. The loop exits as
-            # soon as perf actually exits, so successful runs see no
-            # additional latency.
+            # Wait up to 30s for perf to flush its final buffer before
+            # SIGKILL. Loop exits as soon as perf exits.
             local wait_count=0
-            while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 180 ]; do
+            while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 30 ]; do
                 sleep 1
                 wait_count=$((wait_count + 1))
             done

@@ -10,9 +10,8 @@
 #   --colors SCHEME     Color scheme (hot, mem, io, red, green, blue, etc.)
 
 set -e
-# pipefail so we actually surface `perf script` failures instead of letting
-# stackcollapse's zero exit code mask them (the May 14 DWARF run lost every
-# CPU SVG silently because the pipeline returned 0 on empty input).
+# pipefail so `perf script` failures aren't masked by stackcollapse's
+# zero exit code on empty input.
 set -o pipefail
 
 # Default values
@@ -128,31 +127,24 @@ if [ -d "$PERF_MAP_DIR" ]; then
 fi
 
 echo "Converting perf data to folded stacks..."
-# Keep perf script's stderr (don't redirect to /dev/null) so the failure mode
-# is visible next time. Persisted next to the output SVG.
+# Persist perf script's stderr next to the output SVG so failures are
+# diagnosable from the artifact alone. `--no-inline` skips addr2line
+# subprocess invocation — irrelevant for `-g` (no inline frames to
+# expand) and avoids historic failure modes on dwarf builds.
 PERF_SCRIPT_LOG="${OUTPUT%.svg}.perf-script.log"
-# `--no-inline` skips per-frame addr2line subprocess invocation. With
-# `--call-graph dwarf` perf script otherwise forks addr2line for every
-# inline-expanded frame, and the May 12 attempt failed with
-# `addr2line /usr/local/bin/merod: could not read first record` — which
-# was the actual reason CPU flamegraphs disappeared. Built-in libbfd
-# symbolization is still used; we just lose inline-function expansion
-# (an acceptable trade for the SVG actually rendering).
 set +e
 perf script --no-inline -i "$INPUT" 2>"$PERF_SCRIPT_LOG" | "$STACKCOLLAPSE" > "$FOLDED"
 PIPE_STATUS=("${PIPESTATUS[@]}")
 set -e
 if [ "${PIPE_STATUS[0]}" -ne 0 ] || [ "${PIPE_STATUS[1]}" -ne 0 ]; then
     echo "Warning: perf script/stackcollapse exited non-zero (perf=${PIPE_STATUS[0]}, stackcollapse=${PIPE_STATUS[1]})."
-    echo "First lines of $PERF_SCRIPT_LOG:"
     head -10 "$PERF_SCRIPT_LOG" 2>/dev/null | sed 's/^/  /'
 fi
 
 if [ ! -s "$FOLDED" ]; then
-    echo "Warning: No stack data captured. The perf data may be empty or corrupt."
-    echo "Creating placeholder flamegraph..."
-    # Encode the first stderr line into the placeholder so the rendered SVG
-    # tells the next reader *why* it's empty instead of just saying "no_data".
+    echo "Warning: No stack data captured. Creating placeholder flamegraph..."
+    # Encode the first stderr line into the placeholder so the rendered
+    # SVG tells the reader why it's empty.
     placeholder_msg=$(head -1 "$PERF_SCRIPT_LOG" 2>/dev/null | tr -c '[:alnum:]_ ' '_' | cut -c1-80)
     echo "no_data;${placeholder_msg:-empty_perf_script_output} 1" > "$FOLDED"
 fi

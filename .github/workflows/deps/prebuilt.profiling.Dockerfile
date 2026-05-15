@@ -83,21 +83,7 @@ RUN mkdir -p /profiling/data /profiling/reports /profiling/scripts
 # Uses RUN (not LABEL) — buildx with cache-from=type=gha folds LABELs into
 # image metadata without producing a layer-hash boundary, so a LABEL does
 # not actually invalidate the downstream COPY. RUN does.
-RUN echo "cache_bust=2026-05-15-1" > /tmp/.profiling-cache-bust
-
-# perf record forks addr2line during finalize even with `-N`. On merod's
-# DWARF, Ubuntu 24.04's addr2line errors with "could not read first record"
-# and the storm slows finalize past the SIGINT→SIGKILL grace window — leaving
-# perf.data with `data size field = 0` and no usable CPU flamegraph.
-# Compare runs 25857842324 (working: old merod, addr2line never invoked) and
-# 25884532475 (broken: new merod after #2351 merge, 55× addr2line errors,
-# finalize cut off). Replace the binary with a no-op stub: flamegraph.pl
-# uses ELF symtab via libbfd for function names, so the only thing we lose
-# is inline-function expansion in stacks — an acceptable trade for the SVG
-# rendering at all. Real binary preserved at addr2line.real for manual use.
-RUN mv /usr/bin/addr2line /usr/bin/addr2line.real \
-    && printf '#!/bin/sh\nexit 0\n' > /usr/bin/addr2line \
-    && chmod +x /usr/bin/addr2line
+RUN echo "cache_bust=2026-05-15-2" > /tmp/.profiling-cache-bust
 
 # Copy profiling scripts
 COPY scripts/profiling/ /profiling/scripts/

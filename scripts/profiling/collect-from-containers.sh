@@ -42,14 +42,10 @@ for container in $(docker ps -a --filter "label=calimero.node=true" --format "{{
                 if kill -0 "$PERF_PID" 2>/dev/null; then
                     echo "    Sending SIGINT to perf (PID $PERF_PID)..."
                     kill -INT "$PERF_PID" 2>/dev/null || true
-                    # 180s grace. 60s was still SIGKILLing perf mid-finalize
-                    # on the post-#2351 merod binary. The new binary has
-                    # DWARF / DSO structure that makes perf symbolization
-                    # ~6x slower per MB than the old binary which finalized
-                    # 206 MB in <10s. (Apostrophes intentionally absent
-                    # from this comment because the whole block runs inside
-                    # docker exec ... bash -c SINGLE_QUOTES.)
-                    for i in $(seq 1 180); do
+                    # Wait up to 30s for perf to flush its final buffer
+                    # before SIGKILL. Loop exits as soon as perf exits, so
+                    # successful runs see no additional latency.
+                    for i in $(seq 1 30); do
                         if ! kill -0 "$PERF_PID" 2>/dev/null; then
                             echo "    perf stopped successfully"
                             break
