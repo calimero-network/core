@@ -294,3 +294,28 @@ steps:
     # didn't short-circuit.
     type: wait
     seconds: 12
+
+  # ── Phase 6: receiver-side anti-entropy (#2367) ─────────────────────
+  # Pre-fix: node-2 missed node-1's `ContextRegistered` gossip for the
+  # second context on the cold per-namespace mesh and had no recovery
+  # trigger — its namespace governance DAG never learns ctx2 exists, so
+  # the steps below time out.
+  # Post-fix: node-1's periodic `ReadinessBeacon` advertises the new DAG
+  # head; node-2's beacon-divergence handler pulls the namespace
+  # governance DAG and applies `ContextRegistered`, so node-2 can join
+  # the second context and converge.
+  - name: Phase 6 — node-2 joins the second context
+    type: join_context
+    node: sync-regression-node-2
+    context_id: "{{ctx2_id}}"
+    outputs:
+      node2_ctx2_key: memberPublicKey
+
+  - name: Phase 6 — second context converges across both nodes
+    type: wait_for_sync
+    context_id: "{{ctx2_id}}"
+    nodes:
+      - sync-regression-node-1
+      - sync-regression-node-2
+    timeout: 40
+    check_interval: 2
