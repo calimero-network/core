@@ -31,14 +31,27 @@ use crate::NodeManager;
 /// this a behind-node would fire one sync per beacon per peer.
 const NS_BEACON_SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
 
-/// True if the beacon's advertised DAG head names a namespace governance
-/// op this node has not applied locally — i.e. the beaconing peer is
-/// ahead and we should pull the namespace governance DAG from it.
+/// True when a beacon shows the peer is ahead AND this node should act on
+/// it — i.e. trigger a namespace governance sync.
 ///
-/// A zero head (`[0u8; 32]`) means the peer has applied nothing yet;
-/// never sync towards an empty DAG.
-fn beacon_indicates_divergence(dag_head: [u8; 32], head_op_present_locally: bool) -> bool {
-    dag_head != [0u8; 32] && !head_op_present_locally
+/// - `local_has_state` — this node holds a non-empty local namespace
+///   governance DAG head. When false the node is still bootstrapping or
+///   mid-join: the join flow owns the initial governance sync, and firing
+///   one here races the join handshake — it pulls governance ops before
+///   the namespace key is delivered, leaving them as undecryptable opaque
+///   skeletons that the post-key join sync then skips as duplicates. An
+///   established member (the scenario this anti-entropy targets) always
+///   has a non-empty head.
+/// - `dag_head == [0u8; 32]` — the peer has applied nothing yet; never
+///   sync towards an empty DAG.
+/// - `head_op_present_locally` — the peer's advertised head op is already
+///   in our DAG; we are caught up (or ahead).
+fn beacon_indicates_divergence(
+    local_has_state: bool,
+    dag_head: [u8; 32],
+    head_op_present_locally: bool,
+) -> bool {
+    local_has_state && dag_head != [0u8; 32] && !head_op_present_locally
 }
 
 /// Per-namespace debounce gate. Returns `true` (and records `now`) when
@@ -106,24 +119,42 @@ pub(super) fn handle_readiness_beacon(
     let debounce = manager.ns_beacon_sync_debounce.clone();
     let _ignored = ctx.spawn(
         async move {
-            let head_op_present = {
-                let handle = datastore.handle();
-                let op_key = calimero_store::key::NamespaceGovOp::new(namespace_id, dag_head);
-                match handle.get(&op_key) {
-                    Ok(present) => present.is_some(),
+            let handle = datastore.handle();
+            // Local namespace governance state. An empty/absent head means
+            // we are still bootstrapping or mid-join — skip (see
+            // `beacon_indicates_divergence`): the join flow owns the
+            // initial sync, and firing here races the join handshake.
+            let local_has_state =
+                match handle.get(&calimero_store::key::NamespaceGovHead::new(namespace_id)) {
+                    Ok(Some(head)) => !head.dag_heads.is_empty(),
+                    Ok(None) => false,
                     Err(err) => {
-                        // Unknown local state — do NOT trigger a sync
-                        // on a failed read. The next beacon (~5s) retries.
                         debug!(
                             ?err,
                             namespace_id = %hex::encode(namespace_id),
-                            "beacon-divergence: local DAG read failed; skipping sync"
+                            "beacon-divergence: namespace head read failed; skipping sync"
                         );
                         return;
                     }
+                };
+            let head_op_present = match handle.get(&calimero_store::key::NamespaceGovOp::new(
+                namespace_id,
+                dag_head,
+            )) {
+                Ok(present) => present.is_some(),
+                Err(err) => {
+                    // Unknown local state — do NOT trigger a sync
+                    // on a failed read. The next beacon (~5s) retries.
+                    debug!(
+                        ?err,
+                        namespace_id = %hex::encode(namespace_id),
+                        "beacon-divergence: local DAG read failed; skipping sync"
+                    );
+                    return;
                 }
             };
-            if !beacon_indicates_divergence(dag_head, head_op_present) {
+            drop(handle);
+            if !beacon_indicates_divergence(local_has_state, dag_head, head_op_present) {
                 return;
             }
             // Divergence confirmed. Claim the debounce slot atomically;
@@ -186,19 +217,28 @@ mod tests {
 
     #[test]
     fn divergence_true_when_head_op_absent() {
-        assert!(beacon_indicates_divergence([7u8; 32], false));
+        // Established member (has local state), peer's head op missing.
+        assert!(beacon_indicates_divergence(true, [7u8; 32], false));
     }
 
     #[test]
     fn divergence_false_when_head_op_present() {
-        assert!(!beacon_indicates_divergence([7u8; 32], true));
+        assert!(!beacon_indicates_divergence(true, [7u8; 32], true));
     }
 
     #[test]
     fn divergence_false_for_zero_head() {
         // A peer that has applied nothing advertises a zero head; never
         // sync towards an empty DAG even though the op is "absent".
-        assert!(!beacon_indicates_divergence([0u8; 32], false));
+        assert!(!beacon_indicates_divergence(true, [0u8; 32], false));
+    }
+
+    #[test]
+    fn divergence_false_when_no_local_state() {
+        // No local namespace governance head: the node is still
+        // bootstrapping / mid-join. The join flow owns the initial sync;
+        // firing here races the join handshake. Never trigger.
+        assert!(!beacon_indicates_divergence(false, [7u8; 32], false));
     }
 
     #[test]
