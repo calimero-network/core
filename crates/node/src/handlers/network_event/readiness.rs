@@ -93,54 +93,68 @@ pub(super) fn handle_readiness_beacon(
     // have not applied, the peer is ahead and we pull the namespace DAG
     // from it via the real governance sync protocol (ops applied in DAG
     // order, side-effects run). A spurious sync is only wasted work,
-    // never wrong state. Debounced to one sync per namespace per beacon
-    // interval — see `NS_BEACON_SYNC_DEBOUNCE`.
+    // never wrong state.
+    //
+    // The debounce slot is stamped *inside* the spawned future, after
+    // the DAG read confirms divergence — never at receive time. A beacon
+    // from an already-caught-up peer must not burn the per-namespace
+    // budget and suppress a genuinely-divergent beacon from another peer
+    // for the next `NS_BEACON_SYNC_DEBOUNCE` window.
     let dag_head = beacon.dag_head;
-    if debounce_allows_sync(
-        &mut manager.ns_beacon_sync_debounce,
-        namespace_id,
-        Instant::now(),
-    ) {
-        let datastore = manager.datastore.clone();
-        let node_client = manager.clients.node.clone();
-        let _ignored = ctx.spawn(
-            async move {
-                let head_op_present = {
-                    let handle = datastore.handle();
-                    let op_key = calimero_store::key::NamespaceGovOp::new(namespace_id, dag_head);
-                    match handle.get(&op_key) {
-                        Ok(present) => present.is_some(),
-                        Err(err) => {
-                            // Unknown local state — do NOT trigger a sync
-                            // on a failed read. The next beacon (~5s) retries.
-                            debug!(
-                                ?err,
-                                namespace_id = %hex::encode(namespace_id),
-                                "beacon-divergence: local DAG read failed; skipping sync"
-                            );
-                            return;
-                        }
-                    }
-                };
-                if beacon_indicates_divergence(dag_head, head_op_present) {
-                    info!(
-                        namespace_id = %hex::encode(namespace_id),
-                        dag_head = %hex::encode(dag_head),
-                        "beacon advertises an unknown namespace DAG head; \
-                         triggering governance sync"
-                    );
-                    if let Err(err) = node_client.sync_namespace(namespace_id).await {
-                        warn!(
+    let datastore = manager.datastore.clone();
+    let node_client = manager.clients.node.clone();
+    let debounce = manager.ns_beacon_sync_debounce.clone();
+    let _ignored = ctx.spawn(
+        async move {
+            let head_op_present = {
+                let handle = datastore.handle();
+                let op_key = calimero_store::key::NamespaceGovOp::new(namespace_id, dag_head);
+                match handle.get(&op_key) {
+                    Ok(present) => present.is_some(),
+                    Err(err) => {
+                        // Unknown local state — do NOT trigger a sync
+                        // on a failed read. The next beacon (~5s) retries.
+                        debug!(
                             ?err,
                             namespace_id = %hex::encode(namespace_id),
-                            "beacon-triggered namespace governance sync failed"
+                            "beacon-divergence: local DAG read failed; skipping sync"
                         );
+                        return;
                     }
                 }
+            };
+            if !beacon_indicates_divergence(dag_head, head_op_present) {
+                return;
             }
-            .into_actor(manager),
-        );
-    }
+            // Divergence confirmed. Claim the debounce slot atomically;
+            // if another beacon already triggered a sync for this
+            // namespace within the window, skip. The guard is dropped
+            // before the `.await` below — the lock is never held across
+            // an await point.
+            {
+                let mut guard = debounce
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !debounce_allows_sync(&mut guard, namespace_id, Instant::now()) {
+                    return;
+                }
+            }
+            info!(
+                namespace_id = %hex::encode(namespace_id),
+                dag_head = %hex::encode(dag_head),
+                "beacon advertises an unknown namespace DAG head; \
+                 triggering governance sync"
+            );
+            if let Err(err) = node_client.sync_namespace(namespace_id).await {
+                warn!(
+                    ?err,
+                    namespace_id = %hex::encode(namespace_id),
+                    "beacon-triggered namespace governance sync failed"
+                );
+            }
+        }
+        .into_actor(manager),
+    );
 
     if let Some(addr) = &manager.readiness_addr {
         addr.do_send(ApplyBeaconLocal { namespace_id });
