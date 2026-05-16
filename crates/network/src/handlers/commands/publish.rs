@@ -12,26 +12,36 @@ impl Handler<Publish> for NetworkManager {
         Publish { topic, data }: Publish,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        // Cold-start: when no remote peer is yet known to subscribe to
-        // `topic`, libp2p returns `NoPeersSubscribedToTopic` and the
-        // message is otherwise lost. Queue it in the outbox and let
-        // `drain_publish_outbox` re-publish on the next `Subscribed`
-        // event for this topic (within `OUTBOX_TTL`).
+        // The cold-start outbox is scoped to **namespace governance
+        // topics** (`ns/<hex>`) and nothing else.
+        //
+        // Governance ops (ContextRegistered, MemberJoined, group
+        // metadata, ...) have no receiver-side pull-recovery path: a
+        // publish that lands on an unformed mesh is lost permanently
+        // until the next governance op happens to repair it. Queuing
+        // those for replay on the next `Subscribed` event is the fix
+        // PR #2369 exists for.
+        //
+        // Context topics (raw base58 context-id) carry state deltas
+        // and heartbeats. Those MUST NOT be queued: a state delta is a
+        // point-in-time `parent_ids` / `root_hash` /
+        // `governance_position` snapshot. Replaying it from the outbox
+        // after the receiver's own DAG has advanced makes the storage
+        // layer reject the stale application — `Cannot change
+        // StorageType`, WASM CRDT-merge divergence — which regressed
+        // the `group-multi-service` / `group-metadata` rust-apps e2e
+        // tests on PR #2369's earlier pushes. State deltas already
+        // have a real recovery path (HashComparison sync-pull driven
+        // by heartbeats), so a cold-mesh publish failure is safe to
+        // surface as `Err` exactly like `master` does.
         //
         // `gossipsub.publish` consumes `data` and can still return
-        // `NoPeersSubscribedToTopic` *after* the consume (the
-        // subscriber set is checked inside `publish`). We pre-clone to
-        // be able to enqueue the payload for retry on that path.
-        //
-        // On the queued path we synthesise an empty `MessageId` so
-        // callers don't have to special-case `Ok(queued)`. This keeps
-        // the public publish contract identical to `master` —
-        // governance, ack, and state-delta callers already handle
-        // delivery as eventually-consistent at their own layers
-        // (`governance_broadcast::publish_and_await_ack_namespace`,
-        // `NodeClient::broadcast` + sync-pull) so an indistinguishable
-        // `Ok` is correct here.
-        let outbox_copy = data.clone();
+        // `NoPeersSubscribedToTopic` *after* the consume, so the
+        // payload is pre-cloned — but only for queueable topics, which
+        // also keeps the common state-delta path allocation-free
+        // (addresses Cursor Bugbot #1 on PR #2369).
+        let queueable = topic.as_str().starts_with("ns/");
+        let outbox_copy = if queueable { data.clone() } else { Vec::new() };
         match self
             .swarm
             .behaviour_mut()
@@ -39,10 +49,17 @@ impl Handler<Publish> for NetworkManager {
             .publish(topic.clone(), data)
         {
             Ok(id) => Ok(id),
-            Err(PublishError::NoPeersSubscribedToTopic) => {
+            // Queueable topic, no subscribers yet: stash for replay on
+            // the next `Subscribed` event. Synthesise an empty
+            // `MessageId` so the queued path is indistinguishable to
+            // callers from a direct accept — every caller already
+            // treats publish as eventually-consistent.
+            Err(PublishError::NoPeersSubscribedToTopic) if queueable => {
                 self.publish_outbox.enqueue(topic, outbox_copy);
                 Ok(MessageId::new(&[]))
             }
+            // Non-queueable topic (state delta / heartbeat) or any
+            // other publish error: propagate exactly as `master` does.
             Err(e) => Err(e.into()),
         }
     }
