@@ -44,15 +44,23 @@ install_kernel_tools() {
     # baked into the image (e.g. Azure cloud kernels). Stderr captured
     # to surface the actual apt failure if this fails too.
     echo "[Profiling] Build-time perf not usable for this kernel. Trying apt fallback..."
-    local apt_log
-    apt_log=$(apt-get update -qq 2>&1; apt-get install -y -qq "linux-tools-${kernel_version}" 2>&1)
+    # Capture the two apt phases separately so the failure diagnostic can
+    # point at which one broke — a combined log made an `apt-get update`
+    # network failure indistinguishable from a missing
+    # `linux-tools-${kernel_version}` package.
+    local apt_update_log apt_install_log
+    apt_update_log=$(apt-get update -qq 2>&1) || true
+    apt_install_log=$(apt-get install -y -qq "linux-tools-${kernel_version}" 2>&1) || true
     if perf_sanity_check; then
         echo "[Profiling] perf is now working (linux-tools-${kernel_version})"
         return 0
     fi
 
-    echo "[Profiling] WARNING: CPU profiling unavailable. apt fallback failed; first 10 lines:"
-    echo "$apt_log" | head -10 | sed 's/^/[Profiling]   /'
+    echo "[Profiling] WARNING: CPU profiling unavailable. apt fallback failed."
+    echo "[Profiling]   apt-get update — first 5 lines:"
+    echo "$apt_update_log" | head -5 | sed 's/^/[Profiling]   /'
+    echo "[Profiling]   apt-get install linux-tools-${kernel_version} — first 10 lines:"
+    echo "$apt_install_log" | head -10 | sed 's/^/[Profiling]   /'
     echo "[Profiling]   If perf stderr shows 'Operation not permitted', container is missing CAP_PERFMON."
     return 1
 }

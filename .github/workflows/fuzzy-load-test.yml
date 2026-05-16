@@ -117,9 +117,6 @@ jobs:
           # Scheduled runs always save cache to keep it fresh
           save-if: "true"
 
-      - name: Download NEAR contracts
-        uses: ./.github/actions/download-contracts
-
       - name: Build kv-store app
         run: |
           cd apps/kv-store
@@ -159,7 +156,6 @@ jobs:
             apps/kv-store/res/*.wasm
             apps/kv-store-with-handlers/res/*.wasm
             apps/scaffolding-e2e/res/*.wasm
-            contracts/near
           retention-days: 1
 
   fuzzy-test-kv-store:
