@@ -181,6 +181,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: fuzzy-test-build-artifacts
+          # The artifact's least-common-ancestor is apps/ (it holds only
+          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
+          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
+          # layout the merobox fuzzy configs reference.
+          path: apps
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -418,6 +423,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: fuzzy-test-build-artifacts
+          # The artifact's least-common-ancestor is apps/ (it holds only
+          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
+          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
+          # layout the merobox fuzzy configs reference.
+          path: apps
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -643,6 +653,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: fuzzy-test-build-artifacts
+          # The artifact's least-common-ancestor is apps/ (it holds only
+          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
+          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
+          # layout the merobox fuzzy configs reference.
+          path: apps
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -864,6 +879,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: fuzzy-test-build-artifacts
+          # The artifact's least-common-ancestor is apps/ (it holds only
+          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
+          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
+          # layout the merobox fuzzy configs reference.
+          path: apps
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
