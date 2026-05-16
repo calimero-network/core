@@ -145,7 +145,10 @@ if [ ! -s "$FOLDED" ]; then
     echo "Warning: No stack data captured. Creating placeholder flamegraph..."
     # Encode the first stderr line into the placeholder so the rendered
     # SVG tells the reader why it's empty.
-    placeholder_msg=$(head -1 "$PERF_SCRIPT_LOG" 2>/dev/null | tr -c '[:alnum:]_ ' '_' | cut -c1-80)
+    # Drop spaces from the allowed set too — flamegraph.pl treats whitespace
+    # (and `;`) as structural in folded-stack lines, so the message must be a
+    # single bare token.
+    placeholder_msg=$(head -1 "$PERF_SCRIPT_LOG" 2>/dev/null | tr -c '[:alnum:]_' '_' | cut -c1-80)
     echo "no_data;${placeholder_msg:-empty_perf_script_output} 1" > "$FOLDED"
 fi
 

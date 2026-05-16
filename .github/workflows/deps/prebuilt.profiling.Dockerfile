@@ -84,18 +84,32 @@ RUN set -e; \
 # transitions. ubuntu-dbgsym-keyring provides the signing key file at
 # /usr/share/keyrings/ubuntu-dbgsym-keyring.gpg. Separate RUN because
 # adding an apt source requires its own apt-get update.
+#
+# The -dbgsym packages carry a strict `Depends: libgcc-s1 (= <exact-version>)`,
+# so they MUST be pinned to whatever version of the runtime library the base
+# image currently has — apt's unpinned candidate is the GA release
+# (14-20240412-0ubuntu1) which conflicts with the noble-updates runtime
+# (14.2.0-...) and fails the build. We read the installed version with
+# dpkg-query and pin to it. If ddebs hasn't mirrored the matching dbgsym yet,
+# the install is allowed to fail non-fatally (`|| echo`): libc6-dbg above
+# already covers the bulk of [unknown] frames, so a missing libgcc/libstdc++
+# dbgsym degrades flamegraph detail slightly rather than breaking the image.
+# Only the release + release-updates pockets are used — `proposed` is Ubuntu's
+# untested staging pocket and would let an unstable dbgsym slip in on rebuild.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ubuntu-dbgsym-keyring \
     && . /etc/os-release \
     && printf '%s\n' \
         "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME} main restricted universe multiverse" \
         "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME}-updates main restricted universe multiverse" \
-        "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME}-proposed main restricted universe multiverse" \
         > /etc/apt/sources.list.d/ddebs.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        libgcc-s1-dbgsym \
-        libstdc++6-dbgsym \
+    && GCC_VER="$(dpkg-query -W -f='${Version}' libgcc-s1)" \
+    && STDCPP_VER="$(dpkg-query -W -f='${Version}' libstdc++6)" \
+    && ( apt-get install -y --no-install-recommends \
+             "libgcc-s1-dbgsym=${GCC_VER}" \
+             "libstdc++6-dbgsym=${STDCPP_VER}" \
+         || echo "[image] WARN: libgcc/libstdc++ dbgsym (${GCC_VER}) not on ddebs yet — libc6-dbg still covers most [unknown] frames; continuing" ) \
     && rm -rf /var/lib/apt/lists/*
 
 # Build jemalloc from source with libunwind support for proper stack unwinding
@@ -130,7 +144,7 @@ RUN mkdir -p /profiling/data /profiling/reports /profiling/scripts
 # Uses RUN (not LABEL) — buildx with cache-from=type=gha folds LABELs into
 # image metadata without producing a layer-hash boundary, so a LABEL does
 # not actually invalidate the downstream COPY. RUN does.
-RUN echo "cache_bust=2026-05-16-1" > /tmp/.profiling-cache-bust
+RUN echo "cache_bust=2026-05-16-2" > /tmp/.profiling-cache-bust
 
 # Copy profiling scripts
 COPY scripts/profiling/ /profiling/scripts/

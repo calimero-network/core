@@ -50,7 +50,7 @@ if [ -d "$SRC" ]; then
     done < <(find "$SRC" -maxdepth 2 -type d -name reports 2>/dev/null)
 fi
 
-if [ -n "$(find "$DST" -type f 2>/dev/null)" ]; then
+if [ "$found" -gt 0 ]; then
     echo "Lifted rendered profiling reports from $found node(s) -> $DST:"
     find "$DST" -type f 2>/dev/null | sed 's/^/  /'
 else
