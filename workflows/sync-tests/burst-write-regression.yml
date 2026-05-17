@@ -1,0 +1,377 @@
+name: "Burst-write DAG-delta convergence regression"
+description: >
+  2-node bootstrap mirroring mero-drive's failing E2E (main) burst pattern:
+  install app, create a namespace + Registry-style context, the second node
+  joins both, then a burst of 20 mutations from a single node with NO
+  intermediate `wait_for_sync`, followed by one final convergence assertion.
+
+  Core's other sync workflows pace every mutation with `wait_for_sync`, which
+  structurally suppresses the burst-write condition real apps hit (apps fire
+  mutations as fast as the UI produces them — they do not sync between each
+  write). This workflow encodes that real pattern as a permanent regression
+  guard.
+
+  Pre-fix: a node that misses a contiguous suffix of the delta chain has no
+  DAG-delta recovery path. `select_protocol` reconciles only the entity
+  Merkle tree, and the `get_missing_parents` catch-up is invisible to a node
+  with nothing pending — so `dag_heads` stay stale and the final
+  `wait_for_sync` times out (only a restart recovers it).
+
+  Post-fix: the DAG-head divergence catch-up in `handle_dag_sync` notices the
+  peer advertises an unapplied head and pulls the missed deltas via
+  `request_dag_heads_and_sync` within a few interval-sync cycles, so the
+  final `wait_for_sync` converges.
+
+  Total runtime budget: ~4 min. Under regression the failure mode is the
+  final `wait_for_sync` timing out at 60s — fast and unambiguous.
+
+# Test configuration
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  # The GHA wrapper (`burst-write-regression.yml`) builds `merod:local` from
+  # the PR HEAD and loads it into docker before invoking merobox — that's
+  # the image tag this workflow expects. `--image merod:local` on the
+  # merobox CLI overrides this anyway, but specify it here so a local
+  # `merobox bootstrap run` works without the override.
+  image: merod:local
+  prefix: burst-write-node
+
+steps:
+  # ── Phase 1: Bootstrap mesh + namespace + context ───────────────────
+  - name: Install kv-store-with-handlers on node-1
+    type: install_application
+    node: burst-write-node-1
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install kv-store-with-handlers on node-2
+    type: install_application
+    node: burst-write-node-2
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: burst-write-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Node-1 creates Registry-style context inside namespace
+    type: create_context
+    node: burst-write-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{namespace_id}}"
+    outputs:
+      ctx_id: contextId
+      node1_key: memberPublicKey
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: burst-write-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      ns_invite: invitation
+
+  - name: Wait for namespace governance to gossip
+    # Namespace governance DAG needs to propagate to node-2 before the join
+    # op (otherwise `join_namespace` 404s on the invitation). 10s matches
+    # mero-drive's e2e and the opaque-leaf workflow.
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: burst-write-node-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{ns_invite}}"
+    outputs:
+      node2_identity: memberIdentity
+
+  - name: Node-2 joins context
+    type: join_context
+    node: burst-write-node-2
+    context_id: "{{ctx_id}}"
+    outputs:
+      node2_key: memberPublicKey
+
+  - name: Assert bootstrap shape
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+      - "is_set({{ctx_id}})"
+      - "is_set({{node1_key}})"
+      - "is_set({{node2_identity}})"
+      - "is_set({{node2_key}})"
+
+  # ── Phase 2: Baseline sync (empty Root state) ───────────────────────
+  # Single sanity baseline before the burst — both Roots are still empty,
+  # so a healthy mesh handles this trivially. This is the LAST
+  # `wait_for_sync` before the burst on purpose.
+  - name: Baseline sync after join
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - burst-write-node-1
+      - burst-write-node-2
+    timeout: 30
+    check_interval: 2
+
+  # ── Phase 3: Burst write — 20 mutations from node-1, NO intermediate sync ─
+  # This is the crux. Every mutation extends the Root<KvStore> delta chain
+  # on node-1. With no `wait_for_sync` between writes, node-2 must keep up
+  # purely via gossip + interval sync. If node-2 misses any contiguous run
+  # of these deltas, pre-fix it can never catch up (see the description).
+  - name: Burst 01 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_01"
+      value: "burst-value-01"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 02 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_02"
+      value: "burst-value-02"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 03 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_03"
+      value: "burst-value-03"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 04 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_04"
+      value: "burst-value-04"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 05 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_05"
+      value: "burst-value-05"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 06 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_06"
+      value: "burst-value-06"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 07 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_07"
+      value: "burst-value-07"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 08 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_08"
+      value: "burst-value-08"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 09 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_09"
+      value: "burst-value-09"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 10 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_10"
+      value: "burst-value-10"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 11 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_11"
+      value: "burst-value-11"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 12 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_12"
+      value: "burst-value-12"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 13 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_13"
+      value: "burst-value-13"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 14 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_14"
+      value: "burst-value-14"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 15 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_15"
+      value: "burst-value-15"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 16 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_16"
+      value: "burst-value-16"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 17 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_17"
+      value: "burst-value-17"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 18 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_18"
+      value: "burst-value-18"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 19 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_19"
+      value: "burst-value-19"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Burst 20 — node-1 writes
+    type: call
+    node: burst-write-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "burst_key_20"
+      value: "burst-value-20"
+    executor_public_key: "{{node1_key}}"
+
+  # ── Phase 4: Single convergence point ───────────────────────────────
+  # The ONLY sync after the burst. 60s / 6 interval-sync cycles gives the
+  # post-fix DAG-head divergence catch-up room to pull any missed run.
+  # Pre-fix, a node behind on a contiguous suffix never recovers and this
+  # times out.
+  - name: Final sync after burst
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - burst-write-node-1
+      - burst-write-node-2
+    timeout: 60
+    check_interval: 3
+
+  # ── Phase 5: Cross-node read assertion ──────────────────────────────
+  # node-2 reads keys only node-1 ever wrote. The first and last burst keys
+  # bracket the whole chain — if node-2 missed any contiguous run, at least
+  # one of these is absent.
+  - name: Node-2 reads first burst key
+    type: call
+    node: burst-write-node-2
+    context_id: "{{ctx_id}}"
+    method: get
+    args:
+      key: "burst_key_01"
+    executor_public_key: "{{node2_key}}"
+    outputs:
+      node2_read_first: result
+
+  - name: Node-2 reads last burst key
+    type: call
+    node: burst-write-node-2
+    context_id: "{{ctx_id}}"
+    method: get
+    args:
+      key: "burst_key_20"
+    executor_public_key: "{{node2_key}}"
+    outputs:
+      node2_read_last: result
+
+  - name: Assert node-2 converged on node-1's burst
+    type: assert
+    statements:
+      - "is_set({{node2_read_first}})"
+      - "is_set({{node2_read_last}})"
+      - 'contains({{node2_read_first}}, "burst-value-01")'
+      - 'contains({{node2_read_last}}, "burst-value-20")'
