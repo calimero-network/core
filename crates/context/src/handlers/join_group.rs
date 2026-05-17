@@ -167,6 +167,39 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     info!("received group key via direct join response");
                 }
 
+                // Issue #2256 / PR #2368: write the namespace's
+                // `default_capabilities` from the join bundle BEFORE
+                // applying the catch-up governance ops below.
+                //
+                // The catch-up batch contains the `MemberJoined` ops of
+                // OTHER members who joined before us. Each one runs
+                // `add_group_member` → `add_group_member_with_keys`,
+                // which materializes that member's per-member
+                // capability row by copying `default_capabilities` — but
+                // ONLY if `default_capabilities` is already set in the
+                // local store. If we set it afterwards (the previous
+                // ordering), every member applied during catch-up was
+                // recorded with NO per-member capability row, so a later
+                // `MemberJoinedOpen` from them failed
+                // `check_group_membership_path` with "no membership
+                // path" (their `CAN_JOIN_OPEN_SUBGROUPS` bit was never
+                // materialized on this node). Setting it first fixes
+                // that for the catch-up apply AND the `sync_namespace`
+                // pull below.
+                //
+                // A `DefaultCapabilitiesSet` op inside the catch-up
+                // batch still wins: it is applied after this write and
+                // overwrites the bundle value (authoritative-op-wins).
+                // The `is_none()` guard keeps this a no-op when a prior
+                // op already set the value.
+                if group_store::get_default_capabilities(&datastore, &group_id)?.is_none() {
+                    group_store::set_default_capabilities(
+                        &datastore,
+                        &group_id,
+                        join_result.default_capabilities,
+                    )?;
+                }
+
                 // Apply governance ops so the local DAG is up to date.
                 //
                 // Note on dropped divergence reports: the `divergence`
@@ -219,30 +252,11 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     );
                 }
 
-                // Issue #2256: write the namespace's `default_capabilities`
-                // from the bundle if no governance op set it. Governance
-                // ops are authoritative when present (they were applied
-                // above); the bundle's value is a fallback for the case
-                // where `create_group` populated defaults locally but
-                // never published a `DefaultCapabilitiesSet` op (today's
-                // codebase). Doing this *before* `add_group_member`
-                // ensures the joiner's individual capability inherits
-                // the right default — and reflects any admin-issued
-                // override that travelled in the bundle, closing the
-                // race where a stale joiner-side hard-coded constant
-                // could otherwise override admin intent.
-                if group_store::get_default_capabilities(&datastore, &group_id)?.is_none() {
-                    group_store::set_default_capabilities(
-                        &datastore,
-                        &group_id,
-                        join_result.default_capabilities,
-                    )?;
-                }
-
                 // Add the joiner as a direct member of the namespace. The
                 // call reads `default_capabilities` from the local store
-                // (just populated above) and assigns the bit set to the
-                // new member. Idempotent on the *direct*-row check — the
+                // (populated before the catch-up apply above) and assigns
+                // the bit set to the new member. Idempotent on the
+                // *direct*-row check — the
                 // inheritance-aware `check_group_membership` would
                 // wrongly skip the add when the joiner already inherits
                 // membership from a parent namespace, leaving them

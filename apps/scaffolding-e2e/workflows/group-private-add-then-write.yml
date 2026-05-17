@@ -1,0 +1,276 @@
+name: E2E KV Store - Restricted Subgroup Add Then Bidirectional Write
+description: >
+  Regression guard for the admin-issued add path on Restricted
+  subgroups. Today `group-membership.yml` adds → removes → asserts
+  revoked, but never asserts the post-add write actually authors
+  cleanly and decrypts on a third peer. That gap means a regression
+  in the `MemberAdded` → `KeyDelivery` chain for Restricted
+  subgroups could ship without an E2E catching it.
+
+  Distinguishes itself from sibling tests:
+    * `group-open-self-join-key-delivery.yml` — Open subgroup,
+      inheritance path. The joiner publishes `MemberJoinedOpen`,
+      not the admin.
+    * `group-join-via-inheritance.yml` — Open subgroup, new
+      inheritance endpoint. Same direction problem as above.
+    * `group-membership.yml` — adds then removes; doesn't
+      bidirectionally read after add.
+  This workflow exercises the admin-issued direct-add path
+  (`add_group_members`), which publishes a regular `MemberJoined`
+  governance op carrying the wrapped subgroup key. The receiver's
+  apply must (a) install node-2's direct row and (b) populate
+  `sender_key` so node-2 can author state-DAG ops that node-3 can
+  decrypt.
+
+  Default subgroup visibility is `Restricted`, so no
+  `set_subgroup_visibility` step is needed — relying on the default
+  also catches a future regression that flipped the default.
+
+  Mero-chat user-visible failure mode this guards against: "I
+  added someone to a private channel via Members → Add, they
+  appear in the member list, but their messages never show up
+  for the rest of us (and vice-versa)" — symptom of a regression
+  in the `MemberJoined` → `KeyDelivery` → `sender_key` populate
+  chain on the admin-add path.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: merod:local
+  prefix: private-add-node
+
+steps:
+  # ── Phase 1: Bootstrap namespace + Restricted subgroup ────────────
+
+  - name: Install application on node-1
+    type: install_application
+    node: private-add-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: private-add-node-2
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Install application on node-3
+    type: install_application
+    node: private-add-node-3
+    path: res/scaffolding_e2e.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: private-add-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture node-1 namespace identity
+    type: get_namespace_identity
+    node: private-add-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      node1_key: publicKey
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: private-add-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: private-add-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Wait for namespace governance to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: private-add-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: private-add-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node3}}'
+    outputs:
+      identity_node3: memberIdentity
+
+  # Default visibility is Restricted; intentional that this test
+  # does NOT call `set_subgroup_visibility`. A regression that
+  # flipped the default would surface as node-3 being able to read
+  # the subgroup context before being explicitly added — which the
+  # negative-control assertion below would catch.
+  - name: Node-1 creates Restricted subgroup
+    type: create_group_in_namespace
+    node: private-add-node-1
+    namespace_id: '{{namespace_id}}'
+    group_alias: private-channel
+    outputs:
+      subgroup_id: groupId
+
+  # Add ONLY node-2. node-3 stays a namespace member without
+  # subgroup access — used as a negative control to confirm the
+  # subgroup is genuinely Restricted (no inherited path leaks).
+  - name: Admin adds only node-2 to subgroup
+    type: add_group_members
+    node: private-add-node-1
+    group_id: '{{subgroup_id}}'
+    members:
+      - identity: '{{identity_node2}}'
+        role: Member
+
+  - name: Node-1 creates context inside Restricted subgroup
+    type: create_context
+    node: private-add-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{subgroup_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for MemberJoined + ContextRegistered to propagate
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins context
+    type: join_context
+    node: private-add-node-2
+    context_id: '{{ctx_id}}'
+    outputs:
+      node2_key: memberPublicKey
+
+  - name: Initial sync to settle Root state
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - private-add-node-1
+      - private-add-node-2
+    timeout: 60
+    check_interval: 2
+
+  # ── Phase 2: Negative control — node-3 must NOT have access ───────
+  # Confirms the subgroup is actually Restricted. If a regression
+  # flipped the default visibility to Open, node-3 (a namespace
+  # member with default capabilities) would inherit access and this
+  # call would unexpectedly succeed.
+  #
+  # Important: node-3 must have already received the
+  # `ContextRegistered` op before we make the negative-control call,
+  # otherwise `expected_failure: true` would pass for the wrong
+  # reason — node-3 simply hasn't seen the context yet, not because
+  # the subgroup is Restricted. Wait an additional fixed interval
+  # for namespace-DAG propagation to node-3 (which was excluded from
+  # the context-id-keyed sync above because it has no
+  # ContextIdentity for `ctx_id` yet).
+  - name: Wait for ContextRegistered to propagate to node-3
+    type: wait
+    seconds: 10
+
+  - name: Negative control — node-3 (namespace-only) cannot join context
+    type: join_context
+    node: private-add-node-3
+    context_id: '{{ctx_id}}'
+    expected_failure: true
+
+  # ── Phase 3: Round 1 — admin writes, node-2 reads ─────────────────
+  # Verifies the inbound direction: node-2's join_context populated
+  # whatever it needs to decrypt admin-authored ops.
+
+  - name: Round 1 — admin writes
+    type: call
+    node: private-add-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "from_admin"
+      value: "admin_msg"
+    executor_public_key: '{{node1_key}}'
+
+  - name: Round 1 sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - private-add-node-1
+      - private-add-node-2
+    timeout: 30
+    check_interval: 2
+
+  - name: Round 1 — node-2 reads admin's write
+    type: call
+    node: private-add-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "from_admin"
+    executor_public_key: '{{node2_key}}'
+    outputs:
+      node2_read_admin: result
+
+  - name: Assert inbound direction works
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_read_admin}}, {"output": "admin_msg"})'
+
+  # ── Phase 4: Round 2 — node-2 writes, admin reads ─────────────────
+  # The critical assertion. Pre-regression: `MemberJoined` apply
+  # populates node-2's `sender_key` via the wrapped `KeyDelivery`,
+  # so their next state-DAG op is signed/encrypted with the
+  # subgroup key and admin can decrypt it. A regression that broke
+  # the admin-add `KeyDelivery` chain (the symmetric counterpart
+  # to the #2351 inheritance-path bug) would surface as admin
+  # reading null/empty here.
+
+  - name: Round 2 — node-2 (admin-added member) writes
+    type: call
+    node: private-add-node-2
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "from_member"
+      value: "node2_msg"
+    executor_public_key: '{{node2_key}}'
+
+  - name: Round 2 sync
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - private-add-node-1
+      - private-add-node-2
+    timeout: 30
+    check_interval: 2
+
+  - name: Round 2 — admin reads node-2's write
+    type: call
+    node: private-add-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "from_member"
+    executor_public_key: '{{node1_key}}'
+    outputs:
+      admin_read_node2: result
+
+  - name: Assert outbound direction works (admin reads member's write)
+    type: json_assert
+    statements:
+      - 'json_equal({{admin_read_node2}}, {"output": "node2_msg"})'
+
+stop_all_nodes: false
+restart: false
+wait_timeout: 120

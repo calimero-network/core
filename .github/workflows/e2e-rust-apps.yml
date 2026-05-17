@@ -173,6 +173,21 @@ jobs:
           - workflow: group-leave-namespace
             file: workflows/group-leave-namespace.yml
             app: scaffolding-e2e
+          - workflow: group-kick-and-rejoin-keyshare
+            file: workflows/group-kick-and-rejoin-keyshare.yml
+            app: scaffolding-e2e
+          - workflow: group-kick-and-readd-deny-list
+            file: workflows/group-kick-and-readd-deny-list.yml
+            app: scaffolding-e2e
+          - workflow: group-leave-then-rejoin-via-inheritance
+            file: workflows/group-leave-then-rejoin-via-inheritance.yml
+            app: scaffolding-e2e
+          - workflow: group-private-add-then-write
+            file: workflows/group-private-add-then-write.yml
+            app: scaffolding-e2e
+          - workflow: group-remove-from-root-revokes-inherited
+            file: workflows/group-remove-from-root-revokes-inherited.yml
+            app: scaffolding-e2e
           - workflow: group-capabilities
             file: workflows/group-capabilities.yml
             app: scaffolding-e2e
