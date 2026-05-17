@@ -313,21 +313,33 @@ pub fn check_group_membership(
     ))
 }
 
-/// Returns the capability bitmask `identity` holds as a member of
-/// `group_id`, or `None` when they are not a member — the membership
-/// gate and capability lookup behind the `get_member_capabilities`
-/// admin-api handler.
-///
+/// Returns the capability bitmask `identity` holds as an *effective*
+/// member of `group_id` — direct or inherited — or `None` when they are
+/// not a member at all. This is the membership gate and capability
+/// lookup behind the `get_member_capabilities` admin-api handler:
 /// `None` tells the handler to reject the request; `Some(bits)` tells it
-/// to return `bits`. A member's bitmask is their stored per-member
-/// capability row (`0` when unset).
+/// to return `bits`.
+///
+/// A direct member's bitmask is their stored per-member capability row
+/// (`0` when unset). An inherited Open-subgroup member (issue #2371 /
+/// #2378) has no stored `GroupMember` row in `group_id` — the apply path
+/// `execute_member_joined_open` is validate-only — so their effective
+/// per-member bitmask is `0`: "member, no extra delegated bits." Their
+/// access derives from the Open-subgroup chain, not a stored grant.
+///
+/// Membership is decided by [`check_group_membership`] (direct row ∪
+/// inherited Open-subgroup membership), mirroring the union
+/// [`list_group_members`]'s handler performs (#2372) so the two
+/// membership endpoints agree. [`get_group_member_role`] is deliberately
+/// *not* changed: authz and key-distribution callers need the strict
+/// direct-only view, so the effective-aware check lives here, at the
+/// handler-facing helper.
 pub fn get_effective_member_capabilities(
     store: &Store,
     group_id: &ContextGroupId,
     identity: &PublicKey,
 ) -> EyreResult<Option<u32>> {
-    // Membership gate: only a direct `GroupMember` row counts here.
-    if get_group_member_role(store, group_id, identity)?.is_none() {
+    if !check_group_membership(store, group_id, identity)? {
         return Ok(None);
     }
     Ok(Some(
