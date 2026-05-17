@@ -550,7 +550,7 @@ pub fn subgroup_visible_to(
     child_group_id: &ContextGroupId,
     caller: Option<&PublicKey>,
 ) -> EyreResult<bool> {
-    if get_subgroup_visibility(store, child_group_id)? != VisibilityMode::Restricted {
+    if get_subgroup_visibility(store, child_group_id)? == VisibilityMode::Open {
         return Ok(true);
     }
     let Some(caller_pk) = caller else {
