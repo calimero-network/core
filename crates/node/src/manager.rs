@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use actix::{Actor, Addr};
 use calimero_blobstore::BlobManager as BlobStore;
@@ -81,8 +83,7 @@ pub struct NodeManager {
     /// genuinely-divergent one. The lock is never held across an await.
     /// Touched only by
     /// `handlers::network_event::readiness::handle_readiness_beacon`.
-    pub(crate) ns_beacon_sync_debounce:
-        Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], std::time::Instant>>>,
+    pub(crate) ns_beacon_sync_debounce: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
 }
 
 impl NodeManager {
@@ -115,9 +116,7 @@ impl NodeManager {
             state_delta_tx,
             sync_session_tx,
             divergence_detected,
-            ns_beacon_sync_debounce: Arc::new(std::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
+            ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

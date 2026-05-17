@@ -120,16 +120,18 @@ pub(super) fn handle_readiness_beacon(
     let _ignored = ctx.spawn(
         async move {
             let handle = datastore.handle();
-            // Local namespace governance state. An empty/absent head means
-            // we are still bootstrapping or mid-join — skip (see
-            // `beacon_indicates_divergence`): the join flow owns the
-            // initial sync, and firing here races the join handshake.
+            // Local namespace governance state — at least one non-zero
+            // DAG head. An empty/absent head (or only the `[0u8; 32]`
+            // sentinel) means we are still bootstrapping or mid-join —
+            // skip (see `beacon_indicates_divergence`): the join flow owns
+            // the initial sync, and firing here races the join handshake.
             let local_has_state =
                 match handle.get(&calimero_store::key::NamespaceGovHead::new(namespace_id)) {
-                    Ok(Some(head)) => !head.dag_heads.is_empty(),
+                    Ok(Some(head)) => head.dag_heads.iter().any(|h| *h != [0u8; 32]),
                     Ok(None) => false,
                     Err(err) => {
-                        debug!(
+                        // A failed read is datastore-level and unexpected.
+                        warn!(
                             ?err,
                             namespace_id = %hex::encode(namespace_id),
                             "beacon-divergence: namespace head read failed; skipping sync"
@@ -137,15 +139,20 @@ pub(super) fn handle_readiness_beacon(
                         return;
                     }
                 };
+            // `dag_head` is the beacon peer's namespace governance DAG
+            // head — an op `delta_id`, which is exactly the second
+            // component of the `NamespaceGovOp` store key. A point `get`
+            // therefore tests whether we have applied that op locally.
             let head_op_present = match handle.get(&calimero_store::key::NamespaceGovOp::new(
                 namespace_id,
                 dag_head,
             )) {
                 Ok(present) => present.is_some(),
                 Err(err) => {
-                    // Unknown local state — do NOT trigger a sync
-                    // on a failed read. The next beacon (~5s) retries.
-                    debug!(
+                    // A failed read is datastore-level and unexpected — do
+                    // NOT trigger a sync on unknown state. The next beacon
+                    // (~5s) retries.
+                    warn!(
                         ?err,
                         namespace_id = %hex::encode(namespace_id),
                         "beacon-divergence: local DAG read failed; skipping sync"
