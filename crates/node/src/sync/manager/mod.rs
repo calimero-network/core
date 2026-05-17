@@ -4123,58 +4123,125 @@ impl SyncManager {
             }
         }
 
-        let peer = peers.first().ok_or_else(|| {
-            eyre::eyre!(
+        if peers.is_empty() {
+            eyre::bail!(
                 "no mesh peers for namespace {} (open-subgroup join)",
                 hex::encode(params.namespace_id)
-            )
-        })?;
+            );
+        }
 
-        let mut stream = self
-            .network_client
-            .open_stream(*peer)
-            .await
-            .wrap_err("open stream for open-subgroup join")?;
+        // Try every mesh peer, not just the first. Only peers that
+        // already hold the subgroup key can serve the request — for an
+        // `Open` subgroup that is the creator plus anyone who has
+        // already inherited in. A freshly-joined namespace member
+        // (which is also on the `ns/<hex>` topic) replies with an empty
+        // envelope ("responder did not hold the subgroup key"); picking
+        // `peers.first()` would fail the whole join whenever that peer
+        // happened to be key-less. Walk the list: return on the first
+        // peer that yields a key, skip key-less peers, and remember the
+        // last authorization rejection so it surfaces if NO peer
+        // accepts (a rejection from one peer can be a stale cold-start
+        // view while another peer accepts).
+        let mut last_rejection: Option<String> = None;
+        let mut keyless_peers = 0usize;
+        let mut transport_errors = 0usize;
 
-        let msg = StreamMessage::Init {
-            context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
-            party_id: params.joiner_public_key,
-            payload: InitPayload::OpenSubgroupJoinRequest {
-                namespace_id: params.namespace_id,
-                subgroup_id: params.subgroup_id,
-                joiner_public_key: params.joiner_public_key,
-            },
-            next_nonce: rand::thread_rng().gen(),
-        };
-
-        super::stream::send(&mut stream, &msg, None).await?;
-
-        match super::stream::recv(&mut stream, None, self.sync_config.timeout).await? {
-            Some(StreamMessage::Message {
-                payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
-                ..
-            }) => {
-                if key_envelope_bytes.is_empty() {
-                    eyre::bail!(
-                        "responder did not hold the subgroup key for {}",
-                        hex::encode(params.subgroup_id)
+        for peer in &peers {
+            let mut stream = match self.network_client.open_stream(*peer).await {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!(
+                        peer = %peer,
+                        subgroup_id = %hex::encode(params.subgroup_id),
+                        error = %e,
+                        "open-subgroup join: failed to open stream, trying next peer"
                     );
+                    transport_errors += 1;
+                    continue;
                 }
-                Ok(key_envelope_bytes)
+            };
+
+            let msg = StreamMessage::Init {
+                context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+                party_id: params.joiner_public_key,
+                payload: InitPayload::OpenSubgroupJoinRequest {
+                    namespace_id: params.namespace_id,
+                    subgroup_id: params.subgroup_id,
+                    joiner_public_key: params.joiner_public_key,
+                },
+                next_nonce: rand::thread_rng().gen(),
+            };
+
+            if let Err(e) = super::stream::send(&mut stream, &msg, None).await {
+                debug!(
+                    peer = %peer,
+                    error = %e,
+                    "open-subgroup join: send failed, trying next peer"
+                );
+                transport_errors += 1;
+                continue;
             }
-            Some(StreamMessage::Message {
-                payload: MessagePayload::OpenSubgroupJoinRejected { reason },
-                ..
-            }) => {
-                eyre::bail!("open-subgroup join rejected: {}", reason)
-            }
-            other => {
-                eyre::bail!(
-                    "unexpected response to open-subgroup join request: {:?}",
-                    other.as_ref().map(|m| std::mem::discriminant(m))
-                )
+
+            match super::stream::recv(&mut stream, None, self.sync_config.timeout).await {
+                Ok(Some(StreamMessage::Message {
+                    payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
+                    ..
+                })) => {
+                    if key_envelope_bytes.is_empty() {
+                        // Peer is on the namespace topic but doesn't
+                        // hold the subgroup key — try the next one.
+                        keyless_peers += 1;
+                        continue;
+                    }
+                    return Ok(key_envelope_bytes);
+                }
+                Ok(Some(StreamMessage::Message {
+                    payload: MessagePayload::OpenSubgroupJoinRejected { reason },
+                    ..
+                })) => {
+                    // A rejection may be a stale cold-start view on this
+                    // peer; keep trying others before surfacing it.
+                    debug!(
+                        peer = %peer,
+                        reason = %reason,
+                        "open-subgroup join: peer rejected, trying next peer"
+                    );
+                    last_rejection = Some(reason);
+                    continue;
+                }
+                Ok(other) => {
+                    debug!(
+                        peer = %peer,
+                        "open-subgroup join: unexpected response {:?}, trying next peer",
+                        other.as_ref().map(std::mem::discriminant)
+                    );
+                    transport_errors += 1;
+                    continue;
+                }
+                Err(e) => {
+                    debug!(
+                        peer = %peer,
+                        error = %e,
+                        "open-subgroup join: recv failed, trying next peer"
+                    );
+                    transport_errors += 1;
+                    continue;
+                }
             }
         }
+
+        // No peer yielded the key. Surface the most informative cause.
+        if let Some(reason) = last_rejection {
+            eyre::bail!("open-subgroup join rejected by all peers: {}", reason);
+        }
+        eyre::bail!(
+            "no mesh peer held the subgroup key for {} \
+             ({} key-less peer(s), {} transport error(s) across {} peer(s))",
+            hex::encode(params.subgroup_id),
+            keyless_peers,
+            transport_errors,
+            peers.len()
+        );
     }
 
     /// Collect all governance ops for a namespace (reused by the join responder).
