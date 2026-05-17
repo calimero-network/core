@@ -164,19 +164,37 @@ shaves the cold-start case to ~1s.
 
 ## Testing
 
-1. **Rust unit test** — the divergence predicate: `beacon.dag_head ∉ local` →
-   trigger; `∈ local` → no trigger; `applied_through` comparison; the debounce window is
-   respected (second beacon within the window does not re-trigger).
-2. **merobox e2e** — graduate Phase 5 of `workflows/sync-tests/opaque-leaf-regression.yml`:
-   node-2 joins the namespace **first**, then node-1 creates a second context, then
-   `wait_for_sync` on the second context with a tight timeout (~15s — covers the ~5s
-   beacon interval plus sync). Pre-fix: node-2 never learns the second context. Post-fix:
-   the beacon-divergence trigger syncs it. This is the deterministic regression sentinel.
+1. **Rust unit tests** — the divergence predicate: peer-ahead (`dag_head ∉ local`) →
+   trigger; `∈ local` → no trigger; zero head → no trigger; **no local namespace state
+   (still bootstrapping / mid-join) → no trigger** (the join flow owns the initial sync;
+   firing here races the join handshake — see "join-race gate" below). Plus the debounce
+   window: a second beacon inside the window does not re-trigger, re-allowed after it,
+   per-namespace isolation.
+2. **`group-metadata` e2e** (existing `e2e-rust-apps` matrix) — exercises the
+   namespace-governance join + `GroupMetadataSet` path end-to-end. This is the e2e proof:
+   a draft of this change regressed it (the beacon-divergence sync raced the join
+   handshake, pulling governance ops before key delivery → opaque skeletons), and the
+   join-race gate turns it green again.
+   *Note:* an earlier draft added a Phase 6 to `opaque-leaf-regression.yml` as a
+   dedicated sentinel; that was dropped — the workflow's Round-2 interleaved-write step
+   is a pre-existing #2293 mesh-starvation flake, so coupling a sentinel behind it is
+   unreliable. This change does not touch the sync crate, so `sync-regression.yml` does
+   not apply to it.
 3. **PR #2368** — re-trigger its CI on top of this change; the `MemberJoined` /
    `MemberJoinedOpen` ordering scenario should pass without a #2368-specific patch.
 4. **mero-drive PR #32** — post-merge, once `merod:edge` rebuilds, re-trigger its
    `E2E (main)` workflow; the "Sync Registry after nested-folder registration" step
    should stop flaking.
+
+### Join-race gate
+
+`beacon_indicates_divergence` requires the node to already hold a non-empty local
+namespace governance DAG head before triggering a sync. A node still bootstrapping or
+mid-join has no head: the join flow owns the initial governance sync, and a
+beacon-triggered sync firing concurrently races the join handshake — it can pull
+governance ops before the namespace key is delivered, leaving them as undecryptable
+opaque skeletons that the post-key join sync then skips as duplicates. An established
+member (the scenario this anti-entropy targets) always has a non-empty head.
 
 ## Out of scope
 
