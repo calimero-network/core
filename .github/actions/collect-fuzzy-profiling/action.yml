@@ -1,0 +1,108 @@
+name: Collect fuzzy profiling
+description: >
+  End-of-test profiling collection for one fuzzy suite. Runs the same
+  six-step sequence (SIGINT perf in container, graceful docker stop,
+  harvest bind-mounted dumps, lift rendered SVGs, upload both
+  artifacts) that used to be copy-pasted across four jobs in
+  fuzzy-load-test.yml. See follow-up issue #2363.
+
+inputs:
+  suite:
+    description: "Suite slug — drives directory paths under fuzzy-test-logs/, profiling-data/, profiling-reports/."
+    required: true
+  artifact-suffix:
+    description: >
+      Artifact-name suffix. Defaults to the suite slug. Override for
+      kv-store-with-handlers (uses the shorter `handlers` suffix).
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Collect profiling data from containers
+      if: always()
+      shell: bash
+      run: |
+        chmod +x scripts/profiling/collect-from-containers.sh
+        ./scripts/profiling/collect-from-containers.sh \
+          "${{ inputs.suite }}" \
+          "fuzzy-test-logs/${{ inputs.suite }}" \
+          "profiling-data/${{ inputs.suite }}" \
+          "profiling-reports/${{ inputs.suite }}"
+
+    # merobox#233 (merged 2026-05-12): with `stop_all_nodes: false` in the
+    # fuzzy workflow YAML (already set), the merobox bootstrap process exits
+    # but leaves containers running. We send each merod container an explicit
+    # `docker stop --time=120`, giving the in-container SIGTERM trap up to
+    # 120s to finish `stop_profiling` → `preserve_to_host_mount` (perf+memory
+    # flamegraph render → bind mount). Pre-#233 / pre-this-step, merobox's
+    # `atexit` handler stopped containers with Docker's default ~10s timeout
+    # — SIGKILL arrived before the trap finished and `reports/` never got
+    # created on any node.
+    - name: Graceful merod container shutdown (let trap render flamegraphs)
+      if: always()
+      shell: bash
+      run: |
+        mkdir -p "fuzzy-test-logs/${{ inputs.suite }}"
+        # Filter to merobox-started merod containers, exclude short-lived
+        # `*-init` (already long gone, not useful for trap-driven preserve).
+        containers=$(docker ps --filter "label=calimero.node=true" \
+                               --format '{{.Names}}' 2>/dev/null \
+                     | grep -v -- '-init$' || true)
+        if [ -z "$containers" ]; then
+          echo "No live merod containers — stop_all_nodes:false honored? merobox-version=$(merobox --version 2>/dev/null || echo '?')"
+          exit 0
+        fi
+        echo "Stopping $(echo "$containers" | wc -l | tr -d ' ') live container(s) with --time=120..."
+        echo "$containers" \
+          | xargs -r -n1 docker stop --time=120 2>&1 \
+          | tee "fuzzy-test-logs/${{ inputs.suite }}/docker-stop.log"
+
+    - name: Collect profiling data from host-side bind mounts
+      if: always()
+      shell: bash
+      run: |
+        chmod +x scripts/profiling/harvest-host-profiling.sh
+        ./scripts/profiling/harvest-host-profiling.sh \
+          "data" \
+          "profiling-data/${{ inputs.suite }}"
+
+    - name: Collect profiling reports
+      if: always()
+      shell: bash
+      run: |
+        chmod +x scripts/profiling/lift-reports.sh
+        ./scripts/profiling/lift-reports.sh \
+          "profiling-data/${{ inputs.suite }}" \
+          "profiling-reports/${{ inputs.suite }}"
+
+    - name: Resolve artifact suffix
+      id: suffix
+      if: always()
+      shell: bash
+      run: |
+        SUFFIX="${{ inputs.artifact-suffix }}"
+        if [ -z "$SUFFIX" ]; then
+          SUFFIX="${{ inputs.suite }}"
+        fi
+        echo "value=$SUFFIX" >> "$GITHUB_OUTPUT"
+
+    - name: Upload profiling data
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: profiling-data-${{ steps.suffix.outputs.value }}-${{ github.run_number }}-${{ github.run_id }}
+        path: profiling-data/${{ inputs.suite }}/
+        retention-days: 30
+        compression-level: 6
+
+    - name: Upload profiling reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: profiling-reports-${{ steps.suffix.outputs.value }}-${{ github.run_number }}-${{ github.run_id }}
+        path: profiling-reports/${{ inputs.suite }}/
+        if-no-files-found: ignore
+        retention-days: 30
+        compression-level: 6
