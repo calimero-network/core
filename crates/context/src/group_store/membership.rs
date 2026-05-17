@@ -525,6 +525,43 @@ pub fn require_group_admin(
     Ok(())
 }
 
+/// Decide whether `child_group_id` — a direct subgroup of
+/// `parent_group_id` — should appear in a subgroup *listing* for
+/// `caller` (the `list_subgroups` admin endpoint).
+///
+/// `Open` subgroups are always visible: their existence is public by
+/// design — that is what `CAN_JOIN_OPEN_SUBGROUPS` at the namespace root
+/// authorises against. A `Restricted` subgroup is visible only when the
+/// caller can be identified (`caller` is `Some`) **and** is either an
+/// admin of the parent group (admins govern the space and must be able
+/// to enumerate every child) or an explicit member of the restricted
+/// child itself.
+///
+/// `caller` is `None` when the listing node has no namespace identity
+/// for the parent group; `Restricted` children are then hidden —
+/// membership cannot be verified, so the conservative choice is to treat
+/// the caller as a non-member. This keeps the existence and metadata of
+/// private subgroups (DMs, private channels) from leaking through
+/// enumeration, complementing the membership wall in
+/// [`check_group_membership`] that already blocks joining/calling them.
+pub fn subgroup_visible_to(
+    store: &Store,
+    parent_group_id: &ContextGroupId,
+    child_group_id: &ContextGroupId,
+    caller: Option<&PublicKey>,
+) -> EyreResult<bool> {
+    if get_subgroup_visibility(store, child_group_id)? == VisibilityMode::Open {
+        return Ok(true);
+    }
+    let Some(caller_pk) = caller else {
+        return Ok(false);
+    };
+    if is_inherited_admin(store, parent_group_id, caller_pk)? {
+        return Ok(true);
+    }
+    check_group_membership(store, child_group_id, caller_pk)
+}
+
 /// Returns `true` if `identity` is a group admin **or** holds the given capability bit.
 /// Admins always pass regardless of capability bits.
 pub fn is_group_admin_or_has_capability(

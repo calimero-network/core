@@ -209,6 +209,9 @@ jobs:
           - workflow: dm-subgroup-privacy
             file: workflows/dm-subgroup-privacy.yml
             app: scaffolding-e2e
+          - workflow: group-list-subgroups-restricted-hidden
+            file: workflows/group-list-subgroups-restricted-hidden.yml
+            app: scaffolding-e2e
           - workflow: member-removed-multi-context-convergence
             file: workflows/member-removed-multi-context-convergence.yml
             app: scaffolding-e2e

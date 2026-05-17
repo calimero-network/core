@@ -80,8 +80,8 @@ pub use self::membership::{
     has_direct_group_member, is_direct_group_admin, is_group_admin,
     is_group_admin_or_has_capability, is_inherited_admin, list_group_members,
     namespace_member_pubkeys, remove_group_member, require_group_admin,
-    require_group_admin_or_capability, set_member_auto_follow, trusted_anchors_for_group,
-    MembershipPath,
+    require_group_admin_or_capability, set_member_auto_follow, subgroup_visible_to,
+    trusted_anchors_for_group, MembershipPath,
 };
 pub use self::membership_policy::MembershipPolicy;
 pub use self::membership_status::{membership_status_at, MembershipStatus};

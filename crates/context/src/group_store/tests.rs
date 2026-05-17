@@ -7815,3 +7815,101 @@ fn apply_group_op_mutations_no_divergence_on_matching_hash() {
         "no divergence expected when hashes match, got {divergence:?}"
     );
 }
+
+// -----------------------------------------------------------------------
+// `subgroup_visible_to` — the visibility decision behind the
+// `list_subgroups` admin endpoint (PR #2361). `Open` children are
+// public; `Restricted` children are listed only for the parent-group
+// admin or a direct member of the child. These pin every cell of the
+// visibility matrix the handler relies on.
+// -----------------------------------------------------------------------
+
+#[test]
+fn subgroup_visible_to_open_child_is_public_to_everyone() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD0; 32]);
+    let child = ContextGroupId::from([0xD1; 32]);
+    let stranger = PublicKey::from([0x09; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+
+    // An `Open` subgroup's existence is public by design — it is listed
+    // even for a caller that cannot be identified and one that is a
+    // total non-member.
+    assert!(subgroup_visible_to(&store, &parent, &child, None).unwrap());
+    assert!(subgroup_visible_to(&store, &parent, &child, Some(&stranger)).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_hidden_from_non_member() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD2; 32]);
+    let child = ContextGroupId::from([0xD3; 32]);
+    let stranger = PublicKey::from([0x09; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // The caller is neither a parent admin nor a member of the
+    // restricted child — its existence must not leak through the list.
+    assert!(!subgroup_visible_to(&store, &parent, &child, Some(&stranger)).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_hidden_when_caller_unknown() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD4; 32]);
+    let child = ContextGroupId::from([0xD5; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // `caller == None` (node has no namespace identity for the parent):
+    // membership cannot be verified, so the conservative choice hides
+    // the restricted child.
+    assert!(!subgroup_visible_to(&store, &parent, &child, None).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_visible_to_parent_admin() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD6; 32]);
+    let child = ContextGroupId::from([0xD7; 32]);
+    let admin = PublicKey::from([0x0A; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // An admin of the parent group governs the space and must be able
+    // to enumerate every child — even restricted ones it is not itself
+    // a member of.
+    add_group_member(&store, &parent, &admin, GroupMemberRole::Admin).unwrap();
+    assert!(subgroup_visible_to(&store, &parent, &child, Some(&admin)).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_visible_to_its_member() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD8; 32]);
+    let child = ContextGroupId::from([0xD9; 32]);
+    let member = PublicKey::from([0x0B; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // A direct member of the restricted child sees it, even though it
+    // is not an admin of the parent group.
+    add_group_member(&store, &child, &member, GroupMemberRole::Member).unwrap();
+    assert!(subgroup_visible_to(&store, &parent, &child, Some(&member)).unwrap());
+}

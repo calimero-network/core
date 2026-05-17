@@ -1,0 +1,232 @@
+name: E2E Scaffolding - list_subgroups Restricted Visibility
+description: >
+  End-to-end coverage for PR #2361: the `list_subgroups` admin endpoint
+  must not leak `Restricted` subgroups to callers who are neither an
+  admin of the parent group nor a member of the restricted child.
+
+  Before #2361 `list_subgroups` returned *every* direct child of the
+  parent — including `Restricted` ones — to anyone. A plain namespace
+  member could therefore enumerate the existence (and metadata) of
+  private DMs / private channels it had no access to. The membership
+  wall in `check_group_membership` stopped non-members from *joining* or
+  *calling* such a subgroup, but the enumeration endpoint bypassed it.
+
+  Topology: a namespace with one `Restricted` and one `Open` subgroup,
+  both direct children of the namespace root.
+
+    * node-1 — the namespace owner/admin. Creates both subgroups.
+    * node-2 — a plain namespace member. NOT an admin of the namespace,
+      NOT a member of the Restricted subgroup.
+    * node-3 — a namespace member that node-1 adds to the Restricted
+      subgroup.
+
+  Headline assertions on `list_subgroups(namespace)`:
+
+    * node-2 (non-admin, non-member) sees ONLY the `Open` subgroup. The
+      `Restricted` subgroup is hidden — this is the leak #2361 closes.
+    * node-3 (member of the Restricted child) sees BOTH subgroups.
+    * node-1 (admin of the parent namespace) sees BOTH subgroups —
+      admins govern the space and must enumerate every child.
+
+  The per-decision logic is also pinned by the `calimero-context` unit
+  tests `subgroup_visible_to_*` in `group_store/tests.rs`.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup: app + namespace on node-1 (the namespace owner) ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  # --- node-2 and node-3 join the namespace as ordinary members ---
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node2}}'
+    outputs:
+      identity_node2: memberIdentity
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_node3: invitation
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_node3}}'
+    outputs:
+      identity_node3: memberIdentity
+
+  # --- node-1 creates the two subgroups directly under the namespace ---
+
+  - name: Node-1 creates a Restricted subgroup (private channel)
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_name: restricted-channel
+    outputs:
+      restricted_sub: groupId
+
+  - name: Assert Restricted subgroup created
+    type: assert
+    statements:
+      - "is_set({{restricted_sub}})"
+
+  # Freshly created subgroups default to Restricted; set it explicitly so
+  # the intent is unambiguous and the visibility op is on the namespace
+  # governance DAG for the other nodes to converge on.
+  - name: Node-1 marks the subgroup Restricted
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{restricted_sub}}'
+    visibility: restricted
+
+  - name: Node-1 creates an Open subgroup (public channel)
+    type: create_group_in_namespace
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    group_name: open-channel
+    outputs:
+      open_sub: groupId
+
+  - name: Assert Open subgroup created
+    type: assert
+    statements:
+      - "is_set({{open_sub}})"
+
+  - name: Node-1 marks the subgroup Open
+    type: set_subgroup_visibility
+    node: e2e-node-1
+    group_id: '{{open_sub}}'
+    visibility: open
+
+  # node-3 is added to the Restricted subgroup; node-2 is deliberately
+  # left out so it stays a pure non-member of that child.
+  - name: Node-1 adds node-3 to the Restricted subgroup
+    type: add_group_members
+    node: e2e-node-1
+    group_id: '{{restricted_sub}}'
+    members:
+      - identity: '{{identity_node3}}'
+        role: Member
+
+  # node-2 and node-3 must converge on the namespace governance DAG
+  # before they can enumerate its subgroups: `list_subgroups` /
+  # `get_subgroup_visibility` read the *local* store, so the
+  # GroupCreated, visibility and membership ops node-1 just published
+  # have to land first. Sized for a realistic two-hop propagation delay
+  # between locally-connected nodes — not padded to mask a slow path.
+  - name: Converge node-2 and node-3 on the namespace governance state
+    type: wait_for_sync
+    group_id: '{{namespace_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    trigger_sync: true
+
+  - name: Brief settle for namespace-DAG propagation
+    type: wait
+    seconds: 5
+
+  # --- HEADLINE: node-2 (non-admin, non-member) must see ONLY Open ---
+
+  - name: Node-2 lists the namespace subgroups
+    type: list_subgroups
+    node: e2e-node-2
+    group_id: '{{namespace_id}}'
+    outputs:
+      subgroups_node2: subgroups
+
+  - name: Assert node-2 sees the Open subgroup
+    type: assert
+    statements:
+      - "contains({{subgroups_node2}}, {{open_sub}})"
+
+  - name: Assert node-2 does NOT see the Restricted subgroup
+    type: assert
+    statements:
+      - "not_contains({{subgroups_node2}}, {{restricted_sub}})"
+
+  # --- node-3 (member of the Restricted child) must see BOTH ---
+
+  - name: Node-3 lists the namespace subgroups
+    type: list_subgroups
+    node: e2e-node-3
+    group_id: '{{namespace_id}}'
+    outputs:
+      subgroups_node3: subgroups
+
+  - name: Assert node-3 sees the Open subgroup
+    type: assert
+    statements:
+      - "contains({{subgroups_node3}}, {{open_sub}})"
+
+  - name: Assert node-3 (Restricted-subgroup member) sees the Restricted subgroup
+    type: assert
+    statements:
+      - "contains({{subgroups_node3}}, {{restricted_sub}})"
+
+  # --- node-1 (parent-namespace admin) must see BOTH ---
+
+  - name: Node-1 lists the namespace subgroups
+    type: list_subgroups
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    outputs:
+      subgroups_node1: subgroups
+
+  - name: Assert node-1 sees the Open subgroup
+    type: assert
+    statements:
+      - "contains({{subgroups_node1}}, {{open_sub}})"
+
+  - name: Assert node-1 (namespace admin) sees the Restricted subgroup
+    type: assert
+    statements:
+      - "contains({{subgroups_node1}}, {{restricted_sub}})"
+
+stop_all_nodes: false
