@@ -2435,6 +2435,59 @@ fn enumerate_inherited_members_includes_open_subgroup_joiner() {
 }
 
 #[test]
+fn enumerate_inherited_members_excludes_deny_listed_member() {
+    // A member kicked from an Open subgroup via `MemberRemoved` /
+    // `MemberLeft` is deny-listed on that subgroup. Because the kick
+    // cannot delete a row that does not exist (the member is there by
+    // namespace-level inheritance), the deny-list IS the removal.
+    // `enumerate_inherited_members` — and therefore `list_group_members`
+    // — must exclude the deny-listed member so an admin who kicks
+    // someone no longer sees them in the channel's member list.
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x38; 32]);
+    let reports = ContextGroupId::from([0x39; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    add_group_member(&store, &namespace, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &bob,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Open).unwrap();
+
+    // Pre-kick: Bob is an inherited member of `reports`.
+    let inherited = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        inherited.iter().any(|(pk, _)| *pk == bob),
+        "precondition: Bob inherits membership of the Open subgroup"
+    );
+
+    // Kick: deny-list Bob on `reports` (what `MemberRemoved` /
+    // `MemberLeft` apply does for a subgroup-level removal).
+    mark_denied(&store, &reports, &bob).unwrap();
+
+    let after_kick = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        after_kick.iter().all(|(pk, _)| *pk != bob),
+        "deny-listed (kicked) member must NOT appear as an inherited member, got {after_kick:?}"
+    );
+
+    // Rejoin clears the deny-list — Bob reappears.
+    clear_denied(&store, &reports, &bob).unwrap();
+    let after_rejoin = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        after_rejoin.iter().any(|(pk, _)| *pk == bob),
+        "after clear_denied (rejoin) Bob must reappear as an inherited member"
+    );
+}
+
+#[test]
 fn enumerate_inherited_members_reports_inherited_admin_role() {
     use calimero_context_config::VisibilityMode;
 
