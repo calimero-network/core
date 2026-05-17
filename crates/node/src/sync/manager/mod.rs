@@ -4230,17 +4230,28 @@ impl SyncManager {
             }
         }
 
-        // No peer yielded the key. Surface the most informative cause.
+        // No peer yielded the key. Surface the most informative cause,
+        // always including the full per-peer tally so a mixed failure
+        // (some peers key-less, one peer rejecting, some transport
+        // errors) is fully diagnosable from a single line.
+        let tally = format!(
+            "{} peer(s): {} key-less, {} transport error(s)",
+            peers.len(),
+            keyless_peers,
+            transport_errors
+        );
         if let Some(reason) = last_rejection {
-            eyre::bail!("open-subgroup join rejected by all peers: {}", reason);
+            eyre::bail!(
+                "open-subgroup join for {} served by no peer — last rejection: {} [{}]",
+                hex::encode(params.subgroup_id),
+                reason,
+                tally
+            );
         }
         eyre::bail!(
-            "no mesh peer held the subgroup key for {} \
-             ({} key-less peer(s), {} transport error(s) across {} peer(s))",
+            "no mesh peer held the subgroup key for {} [{}]",
             hex::encode(params.subgroup_id),
-            keyless_peers,
-            transport_errors,
-            peers.len()
+            tally
         );
     }
 
