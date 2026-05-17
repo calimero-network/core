@@ -1603,15 +1603,16 @@ impl SyncManager {
                     .await
                     .wrap_err("DAG-head divergence catch-up")?;
 
-                // `None` means the peer served no heads after all — but we
-                // only entered this branch because an earlier
-                // `query_peer_dag_state` saw non-empty heads, so this is a
-                // transient peer hiccup. Bail to try another peer rather
-                // than reuse the now-consumed stream for the entity-tree
-                // path (matches the sibling `request_dag_heads_and_sync`
-                // call sites above and in the `DeltaSync` arm below).
+                // `None` from `request_dag_heads_and_sync` means the peer
+                // served no usable DAG heads — either genuinely no data
+                // or an unexpected response. This path cannot distinguish
+                // the two, so the message stays cause-neutral. Either way,
+                // bail to try another peer rather than reuse the
+                // now-consumed stream for the entity-tree path (matches
+                // the sibling `request_dag_heads_and_sync` call sites
+                // above and in the `DeltaSync` arm below).
                 if matches!(result, SyncProtocol::None) {
-                    bail!("Peer has no data for this context");
+                    bail!("divergence catch-up yielded no DAG heads from peer; retrying");
                 }
                 return Ok(Some(result));
             }
