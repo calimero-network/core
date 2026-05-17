@@ -11,8 +11,8 @@ use eyre::{bail, Result as EyreResult};
 use super::namespace::{get_parent_group, MAX_NAMESPACE_DEPTH};
 use super::{
     collect_keys_with_prefix, collect_keys_with_prefix_paginated, count_keys_with_prefix,
-    delete_member_metadata, get_member_capability, get_subgroup_visibility, load_group_meta,
-    set_member_capability, GroupStoreError,
+    delete_member_metadata, get_member_capability, get_subgroup_visibility, is_denied,
+    load_group_meta, set_member_capability, GroupStoreError,
 };
 
 pub fn add_group_member(
@@ -382,6 +382,24 @@ pub fn enumerate_inherited_members(
             // (a direct member of `group_id`, or processed at a deeper
             // ancestor) — skip the redundant path check in that case.
             if !seen.insert(candidate) {
+                continue;
+            }
+            // A candidate deny-listed on `group_id` has been kicked
+            // from this subgroup (`MemberRemoved` / `MemberLeft` stamp
+            // the per-group deny-list). For an `Open` subgroup the
+            // kick cannot delete a direct row — the member is there by
+            // namespace-level inheritance — so the deny-list IS the
+            // removal: their state-delta traffic is dropped at the
+            // receive filter. `list_group_members` must reflect that;
+            // otherwise an admin who kicks a member still sees them in
+            // the list. The entry reappears once `MemberAdded` /
+            // `MemberJoinedOpen` clears the deny-list on rejoin. This
+            // filter is intentionally NOT applied in
+            // `check_group_membership_path`: that path is also run by
+            // `MemberJoinedOpen` apply, where the rejoiner is still
+            // deny-listed at check time (the same op clears it
+            // afterwards) — filtering there would reject every rejoin.
+            if is_denied(store, group_id, &candidate)? {
                 continue;
             }
             if let MembershipPath::Inherited { via_admin, .. } =
