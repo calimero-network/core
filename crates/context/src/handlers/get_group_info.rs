@@ -25,7 +25,22 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
                 bail!("node is not a member of group '{group_id:?}'");
             }
 
-            let member_count = group_store::count_group_members(&self.datastore, &group_id)? as u64;
+            // Effective member count = stored rows + inherited members,
+            // kept consistent with the `list_group_members` handler
+            // (#2371). `count_group_members` alone counts only stored
+            // `GroupMember` rows, so on an Open subgroup it would
+            // under-report and a client paginating `list_group_members`
+            // against this count would miss inherited members on the
+            // final page.
+            //
+            // Cost: inherited membership is derived state with no stored
+            // counter, so an accurate count requires resolving it — a
+            // chain walk bounded by `MAX_NAMESPACE_DEPTH`. This is minor
+            // next to `compute_group_state_hash` below, which already
+            // scans the full group state on every call.
+            let member_count = (group_store::count_group_members(&self.datastore, &group_id)?
+                + group_store::enumerate_inherited_members(&self.datastore, &group_id)?.len())
+                as u64;
 
             let context_count =
                 group_store::count_group_contexts(&self.datastore, &group_id)? as u64;
