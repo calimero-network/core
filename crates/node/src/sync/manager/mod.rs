@@ -1944,15 +1944,28 @@ impl SyncManager {
     /// locally — the trigger for DAG-head divergence catch-up in
     /// [`Self::handle_dag_sync`].
     ///
-    /// A missing delta store (no local DAG materialised for this context)
-    /// counts as behind: `request_dag_heads_and_sync` hydrates a fresh
-    /// store via its bootstrap path. Genesis heads (`[0u8; DIGEST_SIZE]`)
-    /// are skipped — they are never real deltas to fetch.
+    /// Genesis sentinels (`[0u8; DIGEST_SIZE]`) are never real deltas to
+    /// fetch: if every advertised head is genesis this returns `false`
+    /// regardless of local state, so the catch-up cannot fire a doomed
+    /// `DeltaRequest` for a genesis id. Otherwise a missing delta store
+    /// (no local DAG materialised for this context) counts as behind —
+    /// `request_dag_heads_and_sync` hydrates a fresh store via its
+    /// bootstrap path.
     async fn local_dag_behind_peer_heads(
         &self,
         context_id: ContextId,
         peer_dag_heads: &[[u8; DIGEST_SIZE]],
     ) -> bool {
+        // Nothing real to fetch if every advertised head is a genesis
+        // sentinel — skip before the delta-store lookup so the no-store
+        // branch below cannot trigger a catch-up for a genesis id.
+        if !peer_dag_heads
+            .iter()
+            .any(|head| *head != [0u8; DIGEST_SIZE])
+        {
+            return false;
+        }
+
         let Some(delta_store) = self
             .node_state
             .delta_stores
@@ -1962,16 +1975,9 @@ impl SyncManager {
             return true;
         };
 
-        // Resolve applied-ness for each non-genesis head up front, then
-        // apply the pure divergence rule. Heads lists are tiny (typically
-        // 1-2), so resolving all of them rather than short-circuiting on
-        // the first miss costs nothing.
-        let mut applied_heads = HashSet::new();
-        for head in peer_dag_heads {
-            if *head != [0u8; DIGEST_SIZE] && delta_store.is_applied(head).await {
-                let _ = applied_heads.insert(*head);
-            }
-        }
+        // Resolve applied-ness for every advertised head under a single
+        // DAG read lock, then apply the pure divergence rule.
+        let applied_heads = delta_store.dag_applied_subset(peer_dag_heads).await;
         Self::peer_heads_diverge(peer_dag_heads, &applied_heads)
     }
 

@@ -2098,6 +2098,19 @@ impl DeltaStore {
         dag.is_applied(delta_id)
     }
 
+    /// Of `delta_ids`, the subset already applied in the in-memory DAG.
+    /// Takes the DAG read lock once for the whole batch — cheaper than a
+    /// per-id `dag_has_delta_applied` loop when several ids are checked
+    /// together (e.g. the sync manager's DAG-head divergence catch-up).
+    pub async fn dag_applied_subset(&self, delta_ids: &[[u8; 32]]) -> HashSet<[u8; 32]> {
+        let dag = self.dag.read().await;
+        delta_ids
+            .iter()
+            .filter(|id| dag.is_applied(id))
+            .copied()
+            .collect()
+    }
+
     /// Get current DAG heads
     pub async fn get_heads(&self) -> Vec<[u8; 32]> {
         let dag = self.dag.read().await;
@@ -2129,15 +2142,6 @@ impl DeltaStore {
     pub async fn has_delta(&self, id: &[u8; 32]) -> bool {
         let dag = self.dag.read().await;
         dag.has_delta(id)
-    }
-
-    /// Check if a specific delta is applied in the in-memory DAG (not
-    /// merely present-but-pending). Used by the sync manager's DAG-head
-    /// divergence catch-up to decide whether a peer-advertised head has
-    /// actually been integrated into local state.
-    pub async fn is_applied(&self, id: &[u8; 32]) -> bool {
-        let dag = self.dag.read().await;
-        dag.is_applied(id)
     }
 
     /// Get a specific delta (for sending to peers)
