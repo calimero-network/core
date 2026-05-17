@@ -313,6 +313,28 @@ pub fn check_group_membership(
     ))
 }
 
+/// Returns the capability bitmask `identity` holds as a member of
+/// `group_id`, or `None` when they are not a member — the membership
+/// gate and capability lookup behind the `get_member_capabilities`
+/// admin-api handler.
+///
+/// `None` tells the handler to reject the request; `Some(bits)` tells it
+/// to return `bits`. A member's bitmask is their stored per-member
+/// capability row (`0` when unset).
+pub fn get_effective_member_capabilities(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+) -> EyreResult<Option<u32>> {
+    // Membership gate: only a direct `GroupMember` row counts here.
+    if get_group_member_role(store, group_id, identity)?.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(
+        get_member_capability(store, group_id, identity)?.unwrap_or(0),
+    ))
+}
+
 /// Enumerate the identities that are members of `group_id` purely by
 /// inheritance — i.e. those with a [`MembershipPath::Inherited`] path
 /// and no stored `GroupMember` row in `group_id` itself.
