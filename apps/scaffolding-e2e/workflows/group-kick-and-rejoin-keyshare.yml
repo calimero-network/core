@@ -358,26 +358,28 @@ steps:
     timeout: 60
     check_interval: 2
 
-  - name: Confirm subgroup direct-membership shape post-rejoin
+  - name: Confirm subgroup membership shape post-rejoin
     type: list_group_members
     node: kick-rejoin-node-1
     group_id: '{{subgroup_id}}'
     outputs:
       members_after_rejoin: members
 
-  # IMPORTANT: `MemberJoinedOpen` apply at
-  # `crates/context/src/group_store/namespace_governance.rs:1226-1245`
-  # accepts ONLY `MembershipPath::Inherited` and rejects `Direct`. So
-  # the inheritance rejoin does NOT create a direct membership row —
-  # node-2's authority comes from their inherited path
+  # `MemberJoinedOpen` apply does NOT create a direct membership row —
+  # node-2's authority comes from the inherited path
   # (CAN_JOIN_OPEN_SUBGROUPS at the namespace + Open subgroup
-  # visibility), not a row in `list_group_members`. The original
-  # version of this workflow asserted `contains` here; that was wrong
-  # and matches the false-positive expectation `cursor[bot]` flagged.
-  - name: Assert direct-row list still excludes inherited rejoiner
+  # visibility). But `list_group_members` since #2371/#2372 unions the
+  # stored direct rows with `enumerate_inherited_members`, so an
+  # inherited member DOES appear in the list. While node-2 was
+  # kicked it was deny-listed and the enumeration filter excluded it
+  # (asserted above); the rejoin's `MemberJoinedOpen` apply clears the
+  # deny-list, so node-2 reappears here as an inherited member. node-3
+  # — never kicked — stays listed throughout.
+  - name: Assert rejoiner is back in the (inherited) member list
     type: assert
     statements:
-      - "not_contains({{members_after_rejoin}}, {{identity_node2}})"
+      - "contains({{members_after_rejoin}}, {{identity_node2}})"
+      - "contains({{members_after_rejoin}}, {{identity_node3}})"
 
   # ── Phase 7: Post-rejoin write must reach node-3 ──────────────────
   # The end-to-end signal that:
