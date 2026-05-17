@@ -1,4 +1,4 @@
-name: E2E KV Store - list_subgroups Restricted Visibility
+name: E2E Scaffolding - list_subgroups Restricted Visibility
 description: >
   End-to-end coverage for PR #2361: the `list_subgroups` admin endpoint
   must not leak `Restricted` subgroups to callers who are neither an

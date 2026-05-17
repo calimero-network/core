@@ -68,7 +68,8 @@ pub async fn handler(
             Err(err) => {
                 warn!(
                     ?err,
-                    group_id = %hex::encode(child.to_bytes()),
+                    parent_group_id = %group_id_str,
+                    child_group_id = %hex::encode(child.to_bytes()),
                     "subgroup visibility check failed; hiding subgroup from list"
                 );
                 continue;

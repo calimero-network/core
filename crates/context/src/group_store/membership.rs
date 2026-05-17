@@ -556,7 +556,7 @@ pub fn subgroup_visible_to(
     let Some(caller_pk) = caller else {
         return Ok(false);
     };
-    if is_group_admin(store, parent_group_id, caller_pk)? {
+    if is_inherited_admin(store, parent_group_id, caller_pk)? {
         return Ok(true);
     }
     check_group_membership(store, child_group_id, caller_pk)
