@@ -3949,7 +3949,13 @@ fn restore_member_context_identities_writes_missing_rows() {
     register_context_in_group(&store, &gid, &ctx_a).unwrap();
     register_context_in_group(&store, &gid, &ctx_b).unwrap();
 
-    restore_member_context_identities(&store, &gid, &member, sk_bytes).unwrap();
+    // The internal anti-spoof gate reads THIS node's namespace identity
+    // (via `resolve_namespace(gid)` → `gid` itself, since the test gid
+    // has no parent). Storing it for `member` makes this node the
+    // local rejoiner; the function then derives `private_key` from it.
+    store_namespace_identity(&store, &gid, &member, &sk_bytes, &[0u8; 32]).unwrap();
+
+    restore_member_context_identities(&store, &gid, &member).unwrap();
 
     let handle = store.handle();
     for ctx in [&ctx_a, &ctx_b] {
@@ -3958,13 +3964,45 @@ fn restore_member_context_identities_writes_missing_rows() {
         assert_eq!(
             row.private_key,
             Some(sk_bytes),
-            "private_key must be the local rejoiner's namespace sk"
+            "private_key must be derived from the local rejoiner's namespace identity"
         );
         assert_eq!(
             row.sender_key, None,
             "sender_key starts None; KeyDelivery populates it"
         );
     }
+}
+
+#[test]
+fn restore_member_context_identities_no_op_when_not_local_rejoiner() {
+    // The internal anti-spoof gate: a node whose stored namespace
+    // identity is NOT `member` must not write a `private_key: Some(_)`
+    // row for `member` — that would let it spoof state-DAG ops as the
+    // rejoiner. With no namespace identity stored at all, the function
+    // is likewise a no-op.
+    let store = test_store();
+    let gid = test_group_id();
+    let member = PublicKey::from([0x21; 32]);
+    let someone_else = PublicKey::from([0x42; 32]);
+    let ctx = ContextId::from([0xC3; 32]);
+    register_context_in_group(&store, &gid, &ctx).unwrap();
+
+    // No namespace identity at all → no-op.
+    restore_member_context_identities(&store, &gid, &member).unwrap();
+    let key = calimero_store::key::ContextIdentity::new(ctx, member.into());
+    assert!(
+        !store.handle().has(&key).unwrap(),
+        "no namespace identity stored → must not write a row"
+    );
+
+    // Namespace identity belongs to a different pk → still a no-op for
+    // `member`.
+    store_namespace_identity(&store, &gid, &someone_else, &[0x55; 32], &[0u8; 32]).unwrap();
+    restore_member_context_identities(&store, &gid, &member).unwrap();
+    assert!(
+        !store.handle().has(&key).unwrap(),
+        "namespace identity ≠ member → must not write a row for member"
+    );
 }
 
 #[test]
@@ -3976,6 +4014,10 @@ fn restore_member_context_identities_is_idempotent() {
     let original_sender = [0x44u8; 32];
     let ctx = ContextId::from([0xD1; 32]);
     register_context_in_group(&store, &gid, &ctx).unwrap();
+
+    // This node is the local rejoiner — namespace identity stored for
+    // `member`. The function will derive `original_sk` from it.
+    store_namespace_identity(&store, &gid, &member, &original_sk, &[0u8; 32]).unwrap();
 
     // Pre-existing row from a (notional) successful prior `join_context`
     // — already populated with a real sender_key from a delivered
@@ -3993,8 +4035,7 @@ fn restore_member_context_identities_is_idempotent() {
             .unwrap();
     }
 
-    let bogus_sk = [0xFFu8; 32]; // restore would write this if it overwrote
-    restore_member_context_identities(&store, &gid, &member, bogus_sk).unwrap();
+    restore_member_context_identities(&store, &gid, &member).unwrap();
 
     let handle = store.handle();
     let row = handle

@@ -18,7 +18,7 @@ use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::{
     add_group_member, apply_group_op_mutations, clear_denied, decrypt_group_op,
-    get_local_gov_nonce, get_namespace_identity, get_namespace_identity_record, is_group_admin,
+    get_local_gov_nonce, get_namespace_identity_record, is_group_admin,
     is_group_admin_or_has_capability, load_current_group_key_record, load_group_key_by_id,
     load_group_meta,
     namespace_dag::{NamespaceDagService, NamespaceHead},
@@ -315,31 +315,23 @@ impl<'a> NamespaceGovernance<'a> {
                         // sync diverges in the kick/leave-rejoin e2e.
                         // Idempotent on a member who was never denied.
                         clear_denied(self.store, &group_id_typed, member)?;
-                        // Local rejoiner recovery: if THIS node IS the
-                        // joiner (its namespace identity matches `member`),
-                        // restore any per-context `ContextIdentity` rows
-                        // that a prior `MemberLeft` cascade deleted.
-                        // Mirrors the `MemberAdded` arm in `mod.rs`. On
-                        // peers where the local namespace identity differs
-                        // from `member`, this is a no-op. On first-time
-                        // inheritance joiners the row may not exist yet —
-                        // we write it so the joiner can author state-DAG
-                        // ops as soon as `KeyDelivery` populates
-                        // `sender_key`. Idempotent: an existing row from
-                        // a prior `join_context` is left untouched.
-                        let ns_gid = ContextGroupId::from(op.namespace_id);
-                        if let Some((local_pk, sk_bytes, _)) =
-                            get_namespace_identity(self.store, &ns_gid)?
-                        {
-                            if local_pk == *member {
-                                restore_member_context_identities(
-                                    self.store,
-                                    &group_id_typed,
-                                    member,
-                                    sk_bytes,
-                                )?;
-                            }
-                        }
+                        // Local rejoiner recovery: restore any per-context
+                        // `ContextIdentity` rows that a prior `MemberLeft`
+                        // cascade deleted. The local-rejoiner anti-spoof
+                        // gate is enforced inside
+                        // `restore_member_context_identities` — on peers
+                        // whose namespace identity differs from `member`
+                        // it is a no-op. On first-time inheritance joiners
+                        // the row may not exist yet — it is written so the
+                        // joiner can author state-DAG ops as soon as
+                        // `KeyDelivery` populates `sender_key`. Idempotent:
+                        // an existing row from a prior `join_context` is
+                        // left untouched.
+                        restore_member_context_identities(
+                            self.store,
+                            &group_id_typed,
+                            member,
+                        )?;
                     }
                     _ => {}
                 }

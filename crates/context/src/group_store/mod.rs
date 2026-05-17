@@ -1217,19 +1217,12 @@ fn apply_group_op_mutations(
             clear_denied(store, group_id, member)?;
             // Restore per-context `ContextIdentity` rows that
             // `cascade_remove_member_from_group_tree` deleted on a prior
-            // `MemberRemoved`. Only the local rejoiner has access to the
-            // namespace identity bytes needed to write a usable row, so
-            // we gate on `get_namespace_identity` returning the
-            // rejoiner's pk. On peers (admin or other members applying
-            // this op), `local_pk != *member` and the call is a no-op.
-            // Idempotent on first-time adds: the joiner's later
+            // `MemberRemoved`. The local-rejoiner anti-spoof gate is
+            // enforced inside `restore_member_context_identities` — on
+            // peers (admin or other members applying this op) it is a
+            // no-op. Idempotent on first-time adds: the joiner's later
             // `join_context` sees an existing row and skips.
-            let ns_id = resolve_namespace(store, group_id)?;
-            if let Some((local_pk, sk_bytes, _)) = get_namespace_identity(store, &ns_id)? {
-                if local_pk == *member {
-                    restore_member_context_identities(store, group_id, member, sk_bytes)?;
-                }
-            }
+            restore_member_context_identities(store, group_id, member)?;
             crate::op_events::notify(crate::op_events::OpEvent::MemberAdded {
                 group_id: group_id.to_bytes(),
                 member: *member,

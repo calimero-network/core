@@ -60,15 +60,27 @@ pub fn cascade_remove_member_from_group_tree(
 /// shape `join_context` writes — so KeyDelivery can then populate
 /// `sender_key` exactly as it would on first-join.
 ///
-/// **Caller responsibility — local-rejoiner gate.** This function
-/// unconditionally writes `private_key: Some(private_key)` to every
-/// row it touches. Writing a `Some(_)` row on a peer that does NOT
-/// own that private key would let that peer spoof state-DAG ops as
-/// the rejoiner. **Callers must invoke only on the local rejoiner's
-/// node**, identified by `get_namespace_identity(resolved_namespace)`
-/// returning the rejoiner's pk. The two apply-path call sites
-/// (`MemberAdded` in `mod.rs` and `MemberJoinedOpen` in
-/// `namespace_governance.rs`) already gate on this check.
+/// **Anti-spoof gate is enforced inside this function.** Writing a
+/// `private_key: Some(_)` row for `member` would let the writing node
+/// author state-DAG ops as `member`. The function therefore resolves
+/// the namespace for `group_id`, reads THIS node's namespace identity,
+/// and returns early (a no-op) unless the local identity *is*
+/// `member` — i.e. this node genuinely owns the private key. The
+/// private key is derived internally from that identity; callers
+/// cannot pass in an arbitrary key. Both apply-path call sites
+/// (`MemberAdded` in `mod.rs`, `MemberJoinedOpen` in
+/// `namespace_governance.rs`) invoke this unconditionally and rely on
+/// the internal gate — a future call site cannot accidentally omit it.
+///
+/// **Crash-consistency.** Rows are written one `put` at a time with
+/// no batch transaction, so a crash mid-loop leaves a partial restore
+/// (identity present for some contexts, absent for others). This is
+/// self-healing: the function is idempotent and the apply path that
+/// calls it re-runs on every receipt of the governance op (including
+/// catch-up sync re-application), so the next apply completes the
+/// remaining rows. The symmetric `cascade_remove_member` uses the
+/// same one-`handle`-loop pattern; if either is ever made
+/// transactional, both should be.
 ///
 /// **Why `enumerate_group_contexts(.., 0, usize::MAX)` is fine here.**
 /// The hot-path concern is unbounded reads. In this codebase the
@@ -86,8 +98,21 @@ pub fn restore_member_context_identities(
     store: &Store,
     group_id: &ContextGroupId,
     member: &PublicKey,
-    private_key: [u8; 32],
 ) -> EyreResult<()> {
+    // Internal anti-spoof gate (see doc comment). Only the local
+    // rejoiner's own node holds the namespace identity bytes for
+    // `member`; on every other peer this resolves to a different pk
+    // (or `None`) and the function is a no-op.
+    let namespace_id = super::resolve_namespace(store, group_id)?;
+    let Some((local_pk, private_key, _sender_key)) =
+        super::get_namespace_identity(store, &namespace_id)?
+    else {
+        return Ok(());
+    };
+    if local_pk != *member {
+        return Ok(());
+    }
+
     let contexts = enumerate_group_contexts(store, group_id, 0, usize::MAX)?;
     let mut handle = store.handle();
     for context_id in &contexts {

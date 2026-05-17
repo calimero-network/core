@@ -386,6 +386,14 @@ steps:
   #   * node-2's local stale-key short-circuit didn't latch the
   #     pre-kick key (otherwise node-3 can't decrypt).
 
+  # Use `node2_rejoin_pk` (captured from the `join_subgroup_inheritance`
+  # rejoin step) rather than the pre-kick `node2_key`. The two are in
+  # fact identical — a node's namespace-derived identity is stable
+  # across kick/rejoin, so `memberPublicKey` from `join_context` and
+  # from `join_subgroup_inheritance` resolve to the same key — but
+  # binding the post-rejoin write to the rejoin step's output makes
+  # the dataflow self-documenting and removes any doubt about a stale
+  # pre-kick key.
   - name: Post-rejoin — node-2 writes
     type: call
     node: kick-rejoin-node-2
@@ -394,7 +402,7 @@ steps:
     args:
       key: "post_rejoin"
       value: "node2_msg_after_rejoin"
-    executor_public_key: '{{node2_key}}'
+    executor_public_key: '{{node2_rejoin_pk}}'
 
   - name: Post-rejoin sync
     type: wait_for_sync
