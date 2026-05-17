@@ -2293,6 +2293,210 @@ fn check_membership_anchor_cap_check_uses_deepest_direct_membership() {
     assert!(!check_group_membership(&store, &leaf, &alice).unwrap());
 }
 
+// -----------------------------------------------------------------------
+// Effective membership for `Open` subgroups — issue #2371
+//
+// `join_subgroup_inheritance` returns 200 / `wasInherited: true` but
+// writes no `GroupMember` row — `execute_member_joined_open` is a
+// validate-only apply. `check_group_membership` correctly reports the
+// inherited joiner as a member, yet `list_group_members` (which only
+// reads stored rows) omits them, so an app keying "is the caller a
+// member?" off the member list sees `false`. `enumerate_inherited_members`
+// closes the gap: it recomputes inherited members from current ancestor
+// state so callers can union it with the stored rows to get the
+// effective member set the membership contract promises.
+// -----------------------------------------------------------------------
+
+#[test]
+fn enumerate_inherited_members_includes_open_subgroup_joiner() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // namespace (root) -> reports (Open subgroup).
+    // Alice is a direct Admin of `reports`; Bob is a namespace member
+    // who joined `reports` via inheritance — no direct row in `reports`.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x30; 32]);
+    let reports = ContextGroupId::from([0x31; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+
+    // Bob is a direct member of the namespace root with the join cap.
+    add_group_member(&store, &namespace, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &bob,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    // Alice is an explicit Admin of the Open `reports` subgroup.
+    add_group_member(&store, &reports, &alice, GroupMemberRole::Admin).unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Open).unwrap();
+
+    // Contract sanity: Bob *is* a member of `reports` by inheritance...
+    assert!(check_group_membership(&store, &reports, &bob).unwrap());
+    // ...but he has no stored row, so `list_group_members` omits him —
+    // this is the gap issue #2371 reports.
+    let stored = list_group_members(&store, &reports, 0, usize::MAX).unwrap();
+    assert!(
+        stored.iter().all(|(pk, _)| *pk != bob),
+        "precondition: inherited joiner has no stored GroupMember row"
+    );
+
+    // `enumerate_inherited_members` recovers Bob as an inherited member.
+    let inherited = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        inherited
+            .iter()
+            .any(|(pk, role)| *pk == bob && *role == GroupMemberRole::Member),
+        "expected inherited joiner Bob (Member) in enumerate_inherited_members, got {inherited:?}"
+    );
+    // Alice is a *direct* member of `reports` — she must not be
+    // double-reported as an inherited member.
+    assert!(
+        inherited.iter().all(|(pk, _)| *pk != alice),
+        "direct member Alice must not appear as an inherited member"
+    );
+}
+
+#[test]
+fn enumerate_inherited_members_reports_inherited_admin_role() {
+    use calimero_context_config::VisibilityMode;
+
+    // A namespace admin who never explicitly joined the Open subgroup
+    // still inherits admin authority into it (admin override). The
+    // enumerated entry must carry the `Admin` role, not `Member`.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x32; 32]);
+    let reports = ContextGroupId::from([0x33; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    add_group_member(&store, &namespace, &admin, GroupMemberRole::Admin).unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Open).unwrap();
+
+    let inherited = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        inherited
+            .iter()
+            .any(|(pk, role)| *pk == admin && *role == GroupMemberRole::Admin),
+        "inherited admin must be reported with the Admin role, got {inherited:?}"
+    );
+}
+
+#[test]
+fn enumerate_inherited_members_empty_for_restricted_subgroup() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // A `Restricted` subgroup is a wall: parent members are not
+    // inherited, so the enumeration is empty.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x34; 32]);
+    let reports = ContextGroupId::from([0x35; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    add_group_member(&store, &namespace, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &bob,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Restricted).unwrap();
+
+    let inherited = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        inherited.is_empty(),
+        "Restricted subgroup must inherit no members, got {inherited:?}"
+    );
+}
+
+#[test]
+fn enumerate_inherited_members_bails_on_depth_overflow() {
+    use calimero_context_config::VisibilityMode;
+
+    use super::namespace::MAX_NAMESPACE_DEPTH;
+
+    // A parent chain longer than MAX_NAMESPACE_DEPTH with no Restricted
+    // wall exhausts the walk bound. Like its sibling chain-walkers
+    // (`check_group_membership_path`, `is_inherited_admin`),
+    // `enumerate_inherited_members` must bail on a suspected cycle
+    // rather than silently return a partial member set.
+    let store = test_store();
+    let root = ContextGroupId::from([0x40; 32]);
+    let mut prev = root;
+    for i in 0..(MAX_NAMESPACE_DEPTH + 2) {
+        // Encode `i` across two bytes so distinct levels never alias,
+        // regardless of how large MAX_NAMESPACE_DEPTH grows — a single
+        // wrapping byte would collide past 255 and build a real cycle
+        // instead of a long chain, passing the test for the wrong reason.
+        let mut bytes = [0x41u8; 32];
+        bytes[..2].copy_from_slice(&(i as u16).to_le_bytes());
+        let next = ContextGroupId::from(bytes);
+        nest_for_test(&store, &prev, &next);
+        set_subgroup_visibility(&store, &next, VisibilityMode::Open).unwrap();
+        prev = next;
+    }
+
+    let res = enumerate_inherited_members(&store, &prev);
+    assert!(
+        res.is_err(),
+        "enumerate_inherited_members must bail on MAX_NAMESPACE_DEPTH overflow, got {res:?}"
+    );
+}
+
+#[test]
+fn enumerate_inherited_members_resolves_at_max_namespace_depth_boundary() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    use super::namespace::MAX_NAMESPACE_DEPTH;
+
+    // Refutes the claim that `enumerate_inherited_members` walks one
+    // ancestor short of `check_group_membership_path`. Build a fully
+    // Open chain of exactly MAX_NAMESPACE_DEPTH edges (ns -> g_1 -> ...
+    // -> leaf) with the sole member at the *deepest* ancestor (`ns`).
+    // If the walk fell an iteration short, `alice` would be missed; it
+    // must enumerate her, agreeing with `check_group_membership` (see
+    // `auth_and_crypto_walks_agree_at_max_namespace_depth_boundary`).
+    let store = test_store();
+    let ns = ContextGroupId::from([0x60; 32]);
+    let mut nodes = vec![ns];
+    for i in 1..=MAX_NAMESPACE_DEPTH {
+        let g = ContextGroupId::from([0x60u8.wrapping_add(i as u8); 32]);
+        nest_for_test(&store, nodes.last().unwrap(), &g);
+        set_subgroup_visibility(&store, &g, VisibilityMode::Open).unwrap();
+        nodes.push(g);
+    }
+    let leaf = *nodes.last().unwrap();
+
+    let alice = PublicKey::from([0x01; 32]);
+    add_group_member(&store, &ns, &alice, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &ns,
+        &alice,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    assert!(
+        check_group_membership(&store, &leaf, &alice).unwrap(),
+        "precondition: check_group_membership resolves at the boundary"
+    );
+
+    let inherited = enumerate_inherited_members(&store, &leaf).unwrap();
+    assert!(
+        inherited.iter().any(|(pk, _)| *pk == alice),
+        "enumerate_inherited_members must reach the deepest ancestor at \
+         MAX_NAMESPACE_DEPTH, matching check_group_membership; got {inherited:?}"
+    );
+}
+
 #[test]
 fn default_capabilities_include_can_join_open_subgroups() {
     use calimero_context_config::MemberCapabilities;
