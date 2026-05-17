@@ -10,6 +10,9 @@
 #   --colors SCHEME     Color scheme (hot, mem, io, red, green, blue, etc.)
 
 set -e
+# pipefail so `perf script` failures aren't masked by stackcollapse's
+# zero exit code on empty input.
+set -o pipefail
 
 # Default values
 INPUT=""
@@ -124,12 +127,29 @@ if [ -d "$PERF_MAP_DIR" ]; then
 fi
 
 echo "Converting perf data to folded stacks..."
-perf script -i "$INPUT" 2>/dev/null | "$STACKCOLLAPSE" > "$FOLDED"
+# Persist perf script's stderr next to the output SVG so failures are
+# diagnosable from the artifact alone. `--no-inline` skips addr2line
+# subprocess invocation — irrelevant for `-g` (no inline frames to
+# expand) and avoids historic failure modes on dwarf builds.
+PERF_SCRIPT_LOG="${OUTPUT%.svg}.perf-script.log"
+set +e
+perf script --no-inline -i "$INPUT" 2>"$PERF_SCRIPT_LOG" | "$STACKCOLLAPSE" > "$FOLDED"
+PIPE_STATUS=("${PIPESTATUS[@]}")
+set -e
+if [ "${PIPE_STATUS[0]}" -ne 0 ] || [ "${PIPE_STATUS[1]}" -ne 0 ]; then
+    echo "Warning: perf script/stackcollapse exited non-zero (perf=${PIPE_STATUS[0]}, stackcollapse=${PIPE_STATUS[1]})."
+    head -10 "$PERF_SCRIPT_LOG" 2>/dev/null | sed 's/^/  /'
+fi
 
 if [ ! -s "$FOLDED" ]; then
-    echo "Warning: No stack data captured. The perf data may be empty or corrupt."
-    echo "Creating placeholder flamegraph..."
-    echo "no_data 1" > "$FOLDED"
+    echo "Warning: No stack data captured. Creating placeholder flamegraph..."
+    # Encode the first stderr line into the placeholder so the rendered
+    # SVG tells the reader why it's empty.
+    # Drop spaces from the allowed set too — flamegraph.pl treats whitespace
+    # (and `;`) as structural in folded-stack lines, so the message must be a
+    # single bare token.
+    placeholder_msg=$(head -1 "$PERF_SCRIPT_LOG" 2>/dev/null | tr -c '[:alnum:]_' '_' | cut -c1-80)
+    echo "no_data;${placeholder_msg:-empty_perf_script_output} 1" > "$FOLDED"
 fi
 
 echo "Generating SVG flamegraph..."
