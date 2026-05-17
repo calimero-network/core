@@ -327,11 +327,7 @@ impl<'a> NamespaceGovernance<'a> {
                         // `KeyDelivery` populates `sender_key`. Idempotent:
                         // an existing row from a prior `join_context` is
                         // left untouched.
-                        restore_member_context_identities(
-                            self.store,
-                            &group_id_typed,
-                            member,
-                        )?;
+                        restore_member_context_identities(self.store, &group_id_typed, member)?;
                     }
                     _ => {}
                 }
