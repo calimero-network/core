@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use actix::{Actor, Addr};
 use calimero_blobstore::BlobManager as BlobStore;
@@ -68,6 +70,20 @@ pub struct NodeManager {
     /// alert on divergence rate without grepping logs; with the #2319
     /// determinism fixes this should stay near zero.
     pub(crate) divergence_detected: Counter,
+    /// Per-namespace timestamp of the last beacon-*triggered* governance
+    /// sync (#2367). Caps beacon-divergence syncs to one per namespace
+    /// per `NS_BEACON_SYNC_DEBOUNCE` window — beacons arrive every ~5s
+    /// from every Ready peer, so an un-debounced behind-node would fire
+    /// a sync per beacon per peer.
+    ///
+    /// Shared (`Arc<Mutex<_>>`) because the slot is stamped from inside
+    /// the spawned divergence-check future, *after* the async DAG read
+    /// confirms a sync is genuinely needed — a beacon from an
+    /// already-caught-up peer must not burn the budget for a
+    /// genuinely-divergent one. The lock is never held across an await.
+    /// Touched only by
+    /// `handlers::network_event::readiness::handle_readiness_beacon`.
+    pub(crate) ns_beacon_sync_debounce: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
 }
 
 impl NodeManager {
@@ -100,6 +116,7 @@ impl NodeManager {
             state_delta_tx,
             sync_session_tx,
             divergence_detected,
+            ns_beacon_sync_debounce: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

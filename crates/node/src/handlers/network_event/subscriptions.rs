@@ -62,6 +62,51 @@ pub(super) fn handle_subscribed(
         return;
     }
 
+    // #2367 — namespace governance topic. A peer just subscribed to
+    // `ns/<hex>`; emit an out-of-cycle readiness beacon so the new
+    // subscriber sees our namespace DAG head within ~1s instead of
+    // waiting up to a full ~5s periodic interval. The
+    // `EmitOutOfCycleBeacon` handler no-ops unless we are *Ready in
+    // this namespace and rate-limits per (peer, namespace), so this is
+    // safe even when the subscribing peer is in a namespace we don't
+    // belong to.
+    if let Some(hex) = topic_str.strip_prefix("ns/") {
+        let mut bytes = [0u8; 32];
+        if hex::decode_to_slice(hex, &mut bytes).is_err() {
+            debug!(
+                %peer_id,
+                topic = %topic_str,
+                "ns/ topic with malformed namespace id; ignoring subscription"
+            );
+            return;
+        }
+        match &manager.readiness_addr {
+            Some(addr) => {
+                info!(
+                    %peer_id,
+                    namespace_id = %hex,
+                    "Peer subscribed to namespace topic, emitting out-of-cycle beacon"
+                );
+                addr.do_send(crate::readiness::EmitOutOfCycleBeacon {
+                    namespace_id: bytes,
+                    requesting_peer: peer_id,
+                });
+            }
+            None => {
+                // Readiness actor not yet mounted (early-startup race).
+                // The ~5s periodic beacon still covers this subscriber;
+                // only the ~1s cold-start speedup is lost.
+                debug!(
+                    %peer_id,
+                    namespace_id = %hex,
+                    "ns/ subscription observed before readiness actor mounted; \
+                     out-of-cycle beacon skipped"
+                );
+            }
+        }
+        return;
+    }
+
     let Ok(context_id): Result<ContextId, _> = topic_str.parse() else {
         return;
     };
