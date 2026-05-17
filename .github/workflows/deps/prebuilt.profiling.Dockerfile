@@ -17,11 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     linux-tools-common \
     # Generic perf binary — ships a version-agnostic perf that works for
-    # user-space sampling on most kernels. Pre-installing here avoids the
-    # entrypoint's runtime apt-get dance AND the apt-lock contention that
-    # starved 3/4 containers of perf when they all booted simultaneously.
-    # install_kernel_tools still tries the kernel-matched package at runtime
-    # and falls back to this generic perf via /usr/lib/linux-tools/*/perf.
+    # user-space sampling on most kernels. The post-install symlink below
+    # exposes it at /usr/local/bin/perf so the entrypoint never has to do
+    # runtime apt; that was the root cause of workers (nodes 2-4) missing
+    # CPU profiles — apt-lock contention starved their kernel-tools install.
     linux-tools-generic \
     # Memory profiling
     heaptrack \
@@ -37,6 +36,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf \
     # libunwind for proper stack unwinding in jemalloc heap profiling
     libunwind-dev \
+    # glibc debug symbols so perf can resolve frames inside libc (e.g.
+    # malloc/free/pthread/syscall wrappers). Without this, every transition
+    # through libc shows up as [unknown] in the CPU flamegraph.
+    libc6-dbg \
     # binutils for addr2line (symbol resolution)
     binutils \
     # Python for additional processing
@@ -45,6 +48,68 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Utilities
     gzip \
     tar \
+    && rm -rf /var/lib/apt/lists/*
+
+# Expose the generic perf binary at /usr/local/bin/perf so PATH lookup finds
+# it before Ubuntu's /usr/bin/perf wrapper (which requires a kernel-version-
+# matched binary under /usr/lib/linux-tools/$(uname -r)/perf and exits 2
+# with "perf not found for kernel X" otherwise). On runners with kernels
+# the image wasn't built for (e.g. azure-cloud kernels), the wrapper would
+# fail and the entrypoint had to apt-install at boot — which raced and lost
+# on 3 of 4 nodes. This symlink makes perf work uniformly without runtime
+# apt.
+RUN set -e; \
+    GENERIC_PERF=""; \
+    for candidate in $(find /usr/lib/linux-tools /usr/libexec/linux-tools \
+                            -name perf -type f 2>/dev/null); do \
+        if [ -x "$candidate" ] && "$candidate" --version >/dev/null 2>&1; then \
+            GENERIC_PERF="$candidate"; break; \
+        fi; \
+    done; \
+    if [ -n "$GENERIC_PERF" ]; then \
+        ln -sf "$GENERIC_PERF" /usr/local/bin/perf; \
+        echo "[image] perf binary: $GENERIC_PERF -> /usr/local/bin/perf"; \
+        /usr/local/bin/perf --version; \
+    else \
+        echo "[image] WARN: no working perf binary under /usr/lib/linux-tools — inspect:"; \
+        ls -la /usr/lib/linux-tools/ 2>/dev/null || echo "  (dir does not exist)"; \
+        ls -la /usr/libexec/linux-tools/ 2>/dev/null || true; \
+        dpkg -L linux-tools-generic 2>/dev/null | grep -E 'perf|tools' | head -20 || true; \
+        echo "[image] runtime entrypoint will fall back to /usr/bin/perf wrapper"; \
+    fi
+
+# Enable Ubuntu's ddebs (debug-symbols) archive and install -dbgsym packages
+# for libgcc and libstdc++ — together with libc6-dbg below, this cuts the
+# [unknown] frame count in CPU flamegraphs at libc/libstdc++/libgcc
+# transitions. ubuntu-dbgsym-keyring provides the signing key file at
+# /usr/share/keyrings/ubuntu-dbgsym-keyring.gpg. Separate RUN because
+# adding an apt source requires its own apt-get update.
+#
+# The -dbgsym packages carry a strict `Depends: libgcc-s1 (= <exact-version>)`,
+# so they MUST be pinned to whatever version of the runtime library the base
+# image currently has — apt's unpinned candidate is the GA release
+# (14-20240412-0ubuntu1) which conflicts with the noble-updates runtime
+# (14.2.0-...) and fails the build. We read the installed version with
+# dpkg-query and pin to it. If ddebs hasn't mirrored the matching dbgsym yet,
+# the install is allowed to fail non-fatally (`|| echo`): libc6-dbg above
+# already covers the bulk of [unknown] frames, so a missing libgcc/libstdc++
+# dbgsym degrades flamegraph detail slightly rather than breaking the image.
+# Only the release + release-updates pockets are used — `proposed` is Ubuntu's
+# untested staging pocket and would let an unstable dbgsym slip in on rebuild.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ubuntu-dbgsym-keyring \
+    && . /etc/os-release \
+    && printf '%s\n' \
+        "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME} main restricted universe multiverse" \
+        "deb [signed-by=/usr/share/keyrings/ubuntu-dbgsym-keyring.gpg] http://ddebs.ubuntu.com ${VERSION_CODENAME}-updates main restricted universe multiverse" \
+        > /etc/apt/sources.list.d/ddebs.list \
+    && apt-get update \
+    && GCC_VER="$(dpkg-query -W -f='${Version}' libgcc-s1)" \
+    && STDCPP_VER="$(dpkg-query -W -f='${Version}' libstdc++6)" \
+    && ( apt-get install -y --no-install-recommends \
+             "libgcc-s1-dbgsym=${GCC_VER}" \
+             "libstdc++6-dbgsym=${STDCPP_VER}" \
+         || echo "[image] WARN: libgcc/libstdc++ dbgsym (${GCC_VER}) not on ddebs yet — libc6-dbg still covers most [unknown] frames; continuing" ) \
     && rm -rf /var/lib/apt/lists/*
 
 # Build jemalloc from source with libunwind support for proper stack unwinding
@@ -74,6 +139,12 @@ RUN ln -s /opt/FlameGraph/stackcollapse-perf.pl /usr/local/bin/stackcollapse-per
 
 # Create profiling directories
 RUN mkdir -p /profiling/data /profiling/reports /profiling/scripts
+
+# Bump the value to bust the GHA buildx cache from here onwards.
+# Uses RUN (not LABEL) — buildx with cache-from=type=gha folds LABELs into
+# image metadata without producing a layer-hash boundary, so a LABEL does
+# not actually invalidate the downstream COPY. RUN does.
+RUN echo "cache_bust=2026-05-16-2" > /tmp/.profiling-cache-bust
 
 # Copy profiling scripts
 COPY scripts/profiling/ /profiling/scripts/

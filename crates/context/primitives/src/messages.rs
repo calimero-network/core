@@ -15,8 +15,9 @@ use crate::group::{
     DetachContextFromGroupRequest, GetContextMetadataRequest, GetGroupForContextRequest,
     GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetNamespaceIdentityRequest,
-    JoinContextRequest, JoinGroupRequest, LeaveContextRequest, LeaveGroupRequest,
-    LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    IssueOwnershipProofRequest, JoinContextRequest, JoinGroupRequest,
+    JoinSubgroupInheritanceRequest, LeaveContextRequest, LeaveGroupRequest, LeaveNamespaceRequest,
+    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
     RetryGroupUpgradeRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
     SetGroupMetadataRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
@@ -149,16 +150,42 @@ impl Message for ApplySignedGroupOpRequest {
     type Result = eyre::Result<bool>;
 }
 
+/// Post-apply state-hash divergence detected by the cross-DAG
+/// convergence check (the signed-claims path on `MemberRemoved` /
+/// `MemberLeft`). The node-side handler routes this to the
+/// reconcile-via-anchor sync trigger so the receiver can pull
+/// canonical state from a trusted-anchor peer.
+///
+/// `hash_differs` carries the **signed expected** hash alongside
+/// each divergent `ContextId`. The reconcile path verifies the
+/// received state's root hash against this value before adopting —
+/// not against the anchor's claim, which could be lying.
+#[derive(Debug, Clone)]
+pub struct DivergenceReport {
+    pub group_id: ContextGroupId,
+    pub op_kind: &'static str,
+    pub group_hash_diverges: bool,
+    pub hash_differs: Vec<(ContextId, [u8; 32])>,
+    pub only_in_expected: Vec<ContextId>,
+    pub only_in_actual: Vec<ContextId>,
+}
+
 /// Outcome of applying a signed namespace governance op.
 ///
 /// Needed by callers that must distinguish "pending, please trigger backfill"
 /// from "duplicate, do nothing" — the underlying DAG used to collapse both
 /// into `Ok(false)`, causing every duplicate gossip op to open a redundant
 /// backfill stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum NamespaceApplyOutcome {
-    /// Op was applied immediately.
-    Applied,
+    /// Op was applied immediately. Carries the optional post-apply
+    /// state-hash divergence report — `Some` when the signed
+    /// `MemberRemoved` / `MemberLeft` claims didn't match local
+    /// post-apply state, `None` otherwise (and for op variants that
+    /// don't carry signed claims).
+    Applied {
+        divergence: Option<DivergenceReport>,
+    },
     /// Op was accepted but is waiting for missing parents; caller should
     /// proactively trigger a namespace backfill.
     Pending,
@@ -334,6 +361,10 @@ pub enum ContextMessage {
         request: JoinContextRequest,
         outcome: oneshot::Sender<<JoinContextRequest as Message>::Result>,
     },
+    JoinSubgroupInheritance {
+        request: JoinSubgroupInheritanceRequest,
+        outcome: oneshot::Sender<<JoinSubgroupInheritanceRequest as Message>::Result>,
+    },
     LeaveContext {
         request: LeaveContextRequest,
         outcome: oneshot::Sender<<LeaveContextRequest as Message>::Result>,
@@ -441,5 +472,9 @@ pub enum ContextMessage {
     ListNamespacesForApplication {
         request: ListNamespacesForApplicationRequest,
         outcome: oneshot::Sender<<ListNamespacesForApplicationRequest as Message>::Result>,
+    },
+    IssueOwnershipProof {
+        request: IssueOwnershipProofRequest,
+        outcome: oneshot::Sender<<IssueOwnershipProofRequest as Message>::Result>,
     },
 }

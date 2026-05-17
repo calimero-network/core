@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_context_config::types::{GovernancePosition, SignedGroupOpenInvitation};
+use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -33,7 +33,18 @@ pub use ack_router::AckRouter;
 
 /// Wire/schema version for [`SignedGroupOp`].
 ///
-/// v4: `MemberRemoved` and `MemberLeft` now carry the signed governance-DAG
+/// v5: Drop the `cut: GovernancePosition` field from `MemberRemoved` and
+/// `MemberLeft`. The field was added in v4 with the intent that B3's
+/// descend-from check would consult it; in the actually-shipped B3 the
+/// descend-from boundary comes from the **state delta's** governance
+/// position, and `cut.governance_dag_heads` was redundant with the
+/// signed `SignedNamespaceOp.parent_op_hashes` carrying the same data.
+/// The `expected_group_state_hash` and `expected_context_state_hashes`
+/// fields (the post-apply convergence claims that drive
+/// reconcile-on-mismatch) remain. Pre-1.0 wire break; old-shape ops are
+/// rejected outright.
+///
+/// v4: `MemberRemoved` and `MemberLeft` carry the signed governance-DAG
 /// cut, the expected post-apply group state hash, and the expected
 /// post-apply per-context CRDT state hashes. Receivers detect divergence by
 /// comparing their computed hashes against the signed values after apply.
@@ -48,7 +59,7 @@ pub use ack_router::AckRouter;
 ///
 /// v1 was internal to feature branch development and never deployed to any
 /// persistent network. No backward-compatible deserialization is needed.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 4;
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 5;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
@@ -69,14 +80,8 @@ pub enum GroupOp {
     },
     /// Remove a member.
     ///
-    /// Carries three signed claims for cross-DAG convergence:
-    ///
-    /// - `cut`: the namespace governance-DAG position the admin signed
-    ///   against. Receivers use this — not their own local heads — as
-    ///   the descend-from boundary for the apply-time cross-DAG
-    ///   membership check. Two peers at different governance positions
-    ///   evaluate the same answer for any in-flight delta from the
-    ///   removed member.
+    /// Carries two signed claims that drive cross-DAG convergence on
+    /// receive:
     ///
     /// - `expected_group_state_hash`: governance state hash
     ///   (`compute_group_state_hash`) AFTER the admin's local apply.
@@ -97,17 +102,14 @@ pub enum GroupOp {
     /// not roll back the apply; the canonical view is the admin's, and
     /// reconciliation against an anchor is the recovery path.
     ///
-    /// **Two different group-state hashes travel in this op, by
-    /// design:** `cut.group_state_hash` is the **pre-apply** snapshot
-    /// (the state the signer signed against — used by receivers as
-    /// the descend-from boundary for the membership walk), while
-    /// `expected_group_state_hash` is the **post-apply** simulation
-    /// (used by receivers as the convergence target after they apply
-    /// the op). They have different values, different roles, and
-    /// different consumers; do not collapse them.
+    /// **DAG ordering** is established by the enclosing signed envelope's
+    /// `parent_op_hashes` (which receivers consult via the namespace
+    /// governance DAG's `Pending` → backfill machinery). The B3 cross-DAG
+    /// descend-from check uses the **state delta's** governance position,
+    /// not a cut embedded here — every state delta carries its own
+    /// `governance_position` against which `membership_status_at` walks.
     MemberRemoved {
         member: PublicKey,
-        cut: GovernancePosition,
         expected_group_state_hash: [u8; 32],
         expected_context_state_hashes: Vec<(ContextId, [u8; 32])>,
     },
@@ -121,7 +123,7 @@ pub enum GroupOp {
     /// pair with admin-initiated `MemberRemoved`.
     /// See `architecture/membership-and-leave.html` § 5.
     ///
-    /// Carries the same three convergence claims as `MemberRemoved`,
+    /// Carries the same two convergence claims as `MemberRemoved`,
     /// signed by the leaver. The leaver is honest by definition for
     /// self-leave; a Byzantine leaver claiming false canonical hashes
     /// triggers a divergence warning on apply at each receiver but the
@@ -131,7 +133,6 @@ pub enum GroupOp {
     /// signed hashes are a detection signal, not an adoption gate.
     MemberLeft {
         member: PublicKey,
-        cut: GovernancePosition,
         expected_group_state_hash: [u8; 32],
         expected_context_state_hashes: Vec<(ContextId, [u8; 32])>,
     },
@@ -392,6 +393,36 @@ pub enum RootOp {
         group_id: [u8; 32],
         envelope: KeyEnvelope,
     },
+    /// A namespace member just self-joined an `Open` subgroup whose
+    /// `Open` visibility (+ their namespace-level
+    /// `CAN_JOIN_OPEN_SUBGROUPS` capability) is the authorisation —
+    /// there is no admin-signed invitation in this case.
+    ///
+    /// **Cleartext.** The outer `SignedNamespaceOp` MUST be signed by
+    /// the joining member (proves key ownership). On apply, peers
+    /// verify the joiner has an Inherited membership path to
+    /// `group_id` via `check_group_membership_path`; if so, any peer
+    /// that holds the group key publishes a
+    /// [`KeyDelivery`](RootOp::KeyDelivery) wrapping it for the
+    /// joiner. The peer that locally holds the key is the one whose
+    /// `pending_deliveries` accumulates this delivery on apply.
+    ///
+    /// This op closes the "self-join Open subgroup, can't decrypt
+    /// state-DAG messages" gap — `join_context` previously inserted
+    /// a `ContextIdentity` with `sender_key: None` for the inherited
+    /// case and never asked any holder of the group key to deliver
+    /// it. See `handlers/join_context.rs`.
+    ///
+    /// **Borsh ordering**: this variant is intentionally placed AFTER
+    /// `KeyDelivery` so that `KeyDelivery`'s discriminant is unchanged
+    /// from pre-fix releases — existing on-disk DAG ops continue to
+    /// deserialize correctly. Only the new `MemberJoinedOpen`
+    /// discriminant is added; older peers will fail to decode this
+    /// variant but won't mis-decode existing ones.
+    MemberJoinedOpen {
+        member: PublicKey,
+        group_id: [u8; 32],
+    },
 }
 
 impl NamespaceOp {
@@ -409,6 +440,7 @@ impl NamespaceOp {
             NamespaceOp::Root(RootOp::AdminChanged { .. }) => "admin_changed",
             NamespaceOp::Root(RootOp::PolicyUpdated { .. }) => "policy_updated",
             NamespaceOp::Root(RootOp::MemberJoined { .. }) => "member_joined",
+            NamespaceOp::Root(RootOp::MemberJoinedOpen { .. }) => "member_joined_open",
             NamespaceOp::Root(RootOp::KeyDelivery { .. }) => "key_delivery",
             NamespaceOp::Group { .. } => "group_op",
         }

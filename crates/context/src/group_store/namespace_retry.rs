@@ -64,6 +64,37 @@ impl<'a> NamespaceRetryService<'a> {
             });
         }
 
+        // Sort by (signer_bytes, nonce) ascending so the apply order
+        // matches publish order *per signer*. Without this sort,
+        // candidates come back in column-iteration order (sorted by
+        // `delta_id`, which is essentially a content hash) — when a
+        // higher-nonce op applies first, `apply_group_op_inner`
+        // advances the per-(group, signer) `last_nonce`, then
+        // incorrectly treats subsequent legitimate lower-nonce ops
+        // from the same signer as duplicates and skips them. That
+        // permanently loses earlier ops in the sequence (e.g. a
+        // `ContextRegistered` published before a later `MemberAdded`
+        // from the same admin), leaving a downstream
+        // `ContextMetadataSet` to bail at the "context not registered
+        // in this group" precondition.
+        //
+        // Note on multi-signer ordering: this sort groups ops by
+        // signer-public-key lexicographically, then by nonce within
+        // each signer. Cross-signer interleaving (signer A nonce 1 →
+        // signer B nonce 1 → signer A nonce 2) is NOT preserved — all
+        // of signer A's ops apply first, then all of signer B's. This
+        // is safe for correctness because `last_nonce` is tracked
+        // per-(group, signer), so each signer's nonce check is
+        // independent. Cross-signer causal ordering, where it
+        // matters, is enforced separately by `parent_op_hashes` on
+        // the namespace DAG at the time ops are received — the retry
+        // path here is just replaying ops that were already
+        // DAG-validated before being buffered awaiting `KeyDelivery`.
+        candidates.sort_by_key(|c| {
+            let signer_bytes: &[u8; 32] = c.signed_op.signer.as_ref();
+            (*signer_bytes, c.signed_op.nonce)
+        });
+
         Ok(candidates)
     }
 }

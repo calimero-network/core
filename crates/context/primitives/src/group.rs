@@ -6,6 +6,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
 use calimero_primitives::metadata::MetadataRecord;
+use thiserror::Error as ThisError;
 
 use crate::messages::MigrationParams;
 
@@ -372,6 +373,46 @@ pub struct JoinContextResponse {
     pub member_public_key: PublicKey,
 }
 
+/// Direct "join this Open subgroup as an inherited member" request — no
+/// admin-signed invitation, no child context id required.
+///
+/// The handler verifies the caller has an Inherited (or Direct) membership
+/// path to `group_id` via `check_group_membership_path`; if Inherited, it
+/// publishes a `RootOp::MemberJoinedOpen` so a peer holding the group key
+/// responds with `KeyDelivery`, then blocks on
+/// `config.key_delivery_fallback_wait` until the key arrives.
+#[derive(Copy, Clone, Debug)]
+pub struct JoinSubgroupInheritanceRequest {
+    pub group_id: ContextGroupId,
+}
+
+impl Message for JoinSubgroupInheritanceRequest {
+    type Result = eyre::Result<JoinSubgroupInheritanceResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct JoinSubgroupInheritanceResponse {
+    pub group_id: ContextGroupId,
+    pub member_public_key: PublicKey,
+    /// `true` if the caller had to publish a `MemberJoinedOpen` op to
+    /// materialise inherited membership; `false` if they were already a
+    /// direct member and the call was a no-op.
+    pub was_inherited: bool,
+}
+
+/// Typed failure cases for the join-via-inheritance flow. Carried inside
+/// the actor's `eyre::Report` so the HTTP layer can `downcast_ref`
+/// without depending on error-message wording.
+#[derive(Clone, Copy, Debug, ThisError)]
+pub enum JoinSubgroupInheritanceError {
+    #[error("group not found")]
+    GroupNotFound,
+    #[error("no namespace identity for this group; join the parent namespace first")]
+    NoNamespaceIdentity,
+    #[error("identity not eligible for inheritance-based join")]
+    NotEligible,
+}
+
 /// Request to leave a context locally on this node. Purely a node-local opt-out:
 /// no governance op is published, no key rotation is performed, peers never
 /// observe the leave. The handler:
@@ -478,6 +519,45 @@ pub struct GetContextMetadataRequest {
 
 impl Message for GetContextMetadataRequest {
     type Result = eyre::Result<Option<MetadataRecord>>;
+}
+
+/// Request issued by an admin client to obtain a signed ownership-claim
+/// payload for a calimero group.
+///
+/// The handler resolves the node's identity for the group's namespace,
+/// verifies it is a direct admin, looks up the group's signing key, and
+/// returns a base64-encoded canonical JSON payload + an ed25519 signature
+/// over `OWNERSHIP_PROOF_DOMAIN || signed_payload_bytes`. The verifier on
+/// the other side (mdma) re-parses the opaque payload bytes; field order
+/// in the payload is fixed by the struct definition order in the handler.
+///
+/// See the issue-ownership-proof handler for the locked wire format.
+#[derive(Debug)]
+pub struct IssueOwnershipProofRequest {
+    pub group_id: ContextGroupId,
+    pub context_id: ContextId,
+    pub audience: String,
+    pub subject: String,
+    /// Hex string, validated by the API layer to be 32..=128 chars.
+    pub nonce: String,
+    /// Caller-requested expiry in unix ms. Clamped server-side to
+    /// `min(expires_at_ms, issued_at_ms + 5*60*1000)`.
+    pub expires_at_ms: u64,
+}
+
+impl Message for IssueOwnershipProofRequest {
+    type Result = eyre::Result<IssueOwnershipProofResponse>;
+}
+
+#[derive(Clone, Debug)]
+pub struct IssueOwnershipProofResponse {
+    /// Ed25519 public key of the signer (the node's group signing identity).
+    pub signer_public_key: PublicKey,
+    /// Opaque UTF-8 JSON bytes of the canonical claim payload. The verifier
+    /// re-parses these bytes; the API layer base64-encodes them on the wire.
+    pub signed_payload: Vec<u8>,
+    /// Raw 64-byte ed25519 signature over `OWNERSHIP_PROOF_DOMAIN || signed_payload`.
+    pub signature: [u8; 64],
 }
 
 // ---- Group Permission Types ----

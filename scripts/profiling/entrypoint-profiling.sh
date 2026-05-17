@@ -21,62 +21,47 @@ install_kernel_tools() {
     local kernel_version=$(uname -r)
     echo "[Profiling] Detected kernel: $kernel_version"
 
-    # Echo perf's own stderr on sanity-check failure so we can tell missing
-    # binary / ABI mismatch / EPERM (missing CAP_PERFMON) apart.
     perf_sanity_check() {
         local err
         err=$(perf record -o /dev/null -- true 2>&1)
-        if [ $? -eq 0 ]; then
-            return 0
-        fi
+        if [ $? -eq 0 ]; then return 0; fi
         echo "[Profiling] perf sanity check failed. First 5 lines of stderr:"
         echo "$err" | head -5 | sed 's/^/[Profiling]   /'
         return 1
     }
 
+    # Happy path: the Dockerfile pre-symlinks the generic perf at
+    # /usr/local/bin/perf, which takes PATH precedence over Ubuntu's
+    # /usr/bin/perf wrapper. On most runners this succeeds with no
+    # runtime apt at all.
     if perf_sanity_check; then
-        echo "[Profiling] perf is compatible with current kernel"
+        echo "[Profiling] perf is working ($(command -v perf))"
         return 0
     fi
 
-    echo "[Profiling] Installing kernel tools..."
-    apt-get update -qq 2>/dev/null || true
-
-    if apt-get install -y -qq "linux-tools-${kernel_version}" 2>/dev/null; then
-        if perf_sanity_check; then
-            echo "[Profiling] perf is now working (linux-tools-${kernel_version})"
-            return 0
-        fi
+    # Fallback: install kernel-version-specific tools. Required on
+    # runners whose kernel is newer than the linux-tools-generic version
+    # baked into the image (e.g. Azure cloud kernels). Stderr captured
+    # to surface the actual apt failure if this fails too.
+    echo "[Profiling] Build-time perf not usable for this kernel. Trying apt fallback..."
+    # Capture the two apt phases separately so the failure diagnostic can
+    # point at which one broke — a combined log made an `apt-get update`
+    # network failure indistinguishable from a missing
+    # `linux-tools-${kernel_version}` package.
+    local apt_update_log apt_install_log
+    apt_update_log=$(apt-get update -qq 2>&1) || true
+    apt_install_log=$(apt-get install -y -qq "linux-tools-${kernel_version}" 2>&1) || true
+    if perf_sanity_check; then
+        echo "[Profiling] perf is now working (linux-tools-${kernel_version})"
+        return 0
     fi
 
-    # Fallback: linux-tools-generic (pre-installed in the profiling image;
-    # try apt again for non-profiling deployments). The Ubuntu /usr/bin/perf
-    # wrapper requires /usr/lib/linux-tools/$(uname -r)/perf, so symlink the
-    # generic binary into place.
-    echo "[Profiling] Trying linux-tools-generic fallback..."
-    apt-get install -y -qq linux-tools-generic 2>/dev/null || true
-    local generic_perf=""
-    for candidate in /usr/lib/linux-tools/*/perf; do
-        [ -f "$candidate" ] || continue
-        # basename compare avoids regex metacharacter traps in kernel_version.
-        [ "$(basename "$(dirname "$candidate")")" = "$kernel_version" ] && continue
-        generic_perf="$candidate"
-        break
-    done
-    if [ -n "$generic_perf" ]; then
-        local target_dir="/usr/lib/linux-tools/${kernel_version}"
-        if ! mkdir -p "$target_dir" 2>/dev/null; then
-            echo "[Profiling] WARNING: could not create $target_dir"
-        elif ! ln -sf "$generic_perf" "$target_dir/perf" 2>/dev/null; then
-            echo "[Profiling] WARNING: could not symlink $target_dir/perf -> $generic_perf"
-        elif perf_sanity_check; then
-            echo "[Profiling] perf working (linux-tools-generic via $generic_perf)"
-            return 0
-        fi
-    fi
-
-    echo "[Profiling] WARNING: CPU profiling unavailable."
-    echo "[Profiling]   If stderr above shows 'Operation not permitted', container is missing CAP_PERFMON."
+    echo "[Profiling] WARNING: CPU profiling unavailable. apt fallback failed."
+    echo "[Profiling]   apt-get update — first 5 lines:"
+    echo "$apt_update_log" | head -5 | sed 's/^/[Profiling]   /'
+    echo "[Profiling]   apt-get install linux-tools-${kernel_version} — first 10 lines:"
+    echo "$apt_install_log" | head -10 | sed 's/^/[Profiling]   /'
+    echo "[Profiling]   If perf stderr shows 'Operation not permitted', container is missing CAP_PERFMON."
     return 1
 }
 
@@ -103,7 +88,10 @@ start_profiling() {
     local perf_output="$PROFILING_OUTPUT_DIR/perf-${node_name}.data"
     local perf_log="$PROFILING_OUTPUT_DIR/perf-${node_name}.log"
     
-    echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz)..."
+    echo "[Profiling] Starting perf record (freq: $PERF_SAMPLE_FREQ Hz, call-graph: fp)..."
+    # Frame-pointer unwinding. merod is built with `-C force-frame-pointers=yes`
+    # under `[profile.profiling]` (debug=true, strip=false) so `%rbp` chains
+    # give correct deep stacks.
     perf record -F "$PERF_SAMPLE_FREQ" -g -p "$pid" -o "$perf_output" > "$perf_log" 2>&1 &
     PERF_PID=$!
     echo $PERF_PID > "$PROFILING_OUTPUT_DIR/perf.pid"
@@ -185,9 +173,10 @@ stop_profiling() {
         if kill -0 "$perf_pid" 2>/dev/null; then
             kill -INT "$perf_pid" 2>/dev/null || true
             
-            # 15s to let perf flush its final buffer on SIGINT before SIGKILL.
+            # Wait up to 30s for perf to flush its final buffer before
+            # SIGKILL. Loop exits as soon as perf exits.
             local wait_count=0
-            while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 15 ]; do
+            while kill -0 "$perf_pid" 2>/dev/null && [ $wait_count -lt 30 ]; do
                 sleep 1
                 wait_count=$((wait_count + 1))
             done
@@ -223,9 +212,15 @@ stop_profiling() {
     fi
     
     # Preserve perf.map files for JIT code symbolization
-    # Wasmer writes perf.map files to /tmp/perf-<pid>.map for WASM function names
+    # Wasmer writes perf.map files to /tmp/perf-<pid>.map for WASM function names.
+    # Use the global MAIN_PID (set when we fork merod) instead of `pgrep -x merod`
+    # because stop_profiling typically runs in the mainline exit path AFTER merod
+    # already exited (`wait $MAIN_PID` returned), and pgrep would return nothing
+    # at that point — silently skipping the perf.map copy and leaving WASM JIT
+    # frames as [unknown] in the flamegraph. /tmp/perf-<pid>.map persists after
+    # process exit.
     if [ "$ENABLE_WASMER_PROFILING" = "true" ]; then
-        local merod_pid=$(pgrep -x merod 2>/dev/null | head -1)
+        local merod_pid="${MAIN_PID:-$(pgrep -x merod 2>/dev/null | head -1)}"
         if [ -n "$merod_pid" ]; then
             local perf_map="/tmp/perf-${merod_pid}.map"
             if [ -f "$perf_map" ]; then
@@ -288,10 +283,15 @@ preserve_to_host_mount() {
             --input "$perf_data" \
             --output "$cpu_svg" \
             --title "CPU Flamegraph - ${node_name}" \
-            >/dev/null 2>"$err_file"; then
+            >"$err_file" 2>&1; then
             echo "[Profiling] ✓ CPU flamegraph -> $cpu_svg"
         else
-            echo "[Profiling] WARNING: CPU flamegraph failed: $(head -1 "$err_file" 2>/dev/null)"
+            # Log the full generator output, not just the first line — the
+            # May 14 DWARF run silently produced zero CPU SVGs because the
+            # actual failure (perf script / addr2line / pipefail) was
+            # truncated to one line and never reached the GHA log.
+            echo "[Profiling] WARNING: CPU flamegraph failed; generator output:"
+            sed 's/^/[Profiling]   /' "$err_file" 2>/dev/null | head -40
         fi
     fi
 

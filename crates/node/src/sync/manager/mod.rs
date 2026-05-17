@@ -11,7 +11,7 @@ use calimero_context_client::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::client::{NamespaceJoinParams, NodeClient};
+use calimero_node_primitives::client::{NamespaceJoinParams, NodeClient, OpenSubgroupJoinParams};
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::common::DIGEST_SIZE;
@@ -66,6 +66,12 @@ pub struct SyncManager {
             oneshot::Sender<eyre::Result<JoinBundle>>,
         )>,
     >,
+    pub(super) open_subgroup_join_rx: Option<
+        mpsc::Receiver<(
+            OpenSubgroupJoinParams,
+            oneshot::Sender<eyre::Result<Vec<u8>>>,
+        )>,
+    >,
 
     /// Dispatch handle for the dedicated `SyncSessionActor` (#2316).
     /// Set via [`SyncManager::set_session_handles`] after the actor is
@@ -111,6 +117,7 @@ impl Clone for SyncManager {
             ctx_sync_rx: None,
             ns_sync_rx: None,
             ns_join_rx: None,
+            open_subgroup_join_rx: None,
             // Cloned `SyncManager`s never drive the `start` loop, so
             // they don't need a session-dispatch handle or a results
             // receiver. The bridge holds its own clone of the
@@ -182,6 +189,10 @@ impl SyncManager {
             NamespaceJoinParams,
             oneshot::Sender<eyre::Result<JoinBundle>>,
         )>,
+        open_subgroup_join_rx: mpsc::Receiver<(
+            OpenSubgroupJoinParams,
+            oneshot::Sender<eyre::Result<Vec<u8>>>,
+        )>,
     ) -> Self {
         Self {
             sync_config,
@@ -192,6 +203,7 @@ impl SyncManager {
             ctx_sync_rx: Some(ctx_sync_rx),
             ns_sync_rx: Some(ns_sync_rx),
             ns_join_rx: Some(ns_join_rx),
+            open_subgroup_join_rx: Some(open_subgroup_join_rx),
             session_tx: None,
             session_result_rx: None,
             metrics: None,
@@ -378,6 +390,10 @@ impl SyncManager {
             let (_tx, rx) = mpsc::channel(1);
             rx
         });
+        let mut open_subgroup_join_rx = self.open_subgroup_join_rx.take().unwrap_or_else(|| {
+            let (_tx, rx) = mpsc::channel(1);
+            rx
+        });
         let Some(session_tx) = self.session_tx.clone() else {
             error!("SyncManager started without a SyncSessionActor handle (#2316)");
             return;
@@ -518,6 +534,16 @@ impl SyncManager {
                         "Processing namespace join request (initiator side)"
                     );
                     let result = self.initiate_namespace_join(params).await;
+                    let _ignored = reply_tx.send(result);
+                    continue;
+                }
+                Some((params, reply_tx)) = open_subgroup_join_rx.recv() => {
+                    info!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        subgroup_id = %hex::encode(params.subgroup_id),
+                        "Processing open-subgroup join request (initiator side)"
+                    );
+                    let result = self.initiate_open_subgroup_join(params).await;
                     let _ignored = reply_tx.send(result);
                     continue;
                 }
@@ -904,7 +930,21 @@ impl SyncManager {
         else {
             return std::collections::BTreeSet::new();
         };
-        calimero_context::group_store::trusted_anchors_for_group(&store, &group_id)
+        self.anchor_identities_for_group(&group_id)
+    }
+
+    /// Look up the trusted-anchor identity set for a group directly.
+    /// Preferred over [`Self::anchor_identities_for_context`] when the
+    /// caller already knows `group_id` — late-joiner nodes can have a
+    /// missing context→group mapping, which makes the context-keyed
+    /// lookup return an empty set even though the group's anchors are
+    /// well-defined on the local node.
+    fn anchor_identities_for_group(
+        &self,
+        group_id: &calimero_context_config::types::ContextGroupId,
+    ) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
+        let store = self.context_client.datastore_handle().into_inner();
+        calimero_context::group_store::trusted_anchors_for_group(&store, group_id)
             .unwrap_or_default()
     }
 
@@ -2706,24 +2746,147 @@ impl SyncManager {
             return Ok(Some(()));
         }
 
-        let Some(context) = self.context_client.get_context(&context_id)? else {
-            // An inbound stream for a context this node does not know about
-            // must not tear down unrelated in-flight sync activity. This
-            // happens during cold-start `join_context` when a subgroup /
-            // app-internal context leaks onto the sync channel before the
-            // joining node has materialised it. Close the stream cleanly
-            // and let the concurrent legitimate sync continue. (#2198)
-            warn!(
-                %context_id,
-                ?their_identity,
-                "inbound stream for unknown context, closing cleanly"
-            );
+        if let InitPayload::OpenSubgroupJoinRequest {
+            namespace_id,
+            subgroup_id,
+            joiner_public_key,
+        } = &payload
+        {
+            self.handle_open_subgroup_join_request(
+                *namespace_id,
+                *subgroup_id,
+                *joiner_public_key,
+                stream,
+                nonce,
+            )
+            .await?;
+            return Ok(Some(()));
+        }
 
-            if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
-                error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+        let context = match self.context_client.get_context(&context_id)? {
+            Some(ctx) => ctx,
+            None => {
+                // Race window: the dialer can trigger context-level sync as
+                // a cascade of namespace-topic subscription
+                // (`subscriptions.rs::handle_subscribed` → `sync_group` /
+                // `broadcast_group_local_state`) before this node's local
+                // state has caught up. Two distinct sub-races can leave
+                // `get_context` returning `None` for a legitimate inbound:
+                //
+                //   (1) Namespace governance op `ContextRegistered` has
+                //       not yet been processed locally —
+                //       `get_group_for_context` returns `None`. This is
+                //       the cold-start gossipsub-mesh case (#2122/#2236
+                //       residuals tracked in #2356): the namespace topic
+                //       takes one or more heartbeats to form a mesh, so
+                //       the governance op landing on `peer A` can lag the
+                //       context-level sync stream from `peer A` reaching
+                //       us by several seconds.
+                //   (2) `ContextRegistered` is applied — group binding
+                //       exists, dialer is a verified namespace member —
+                //       but `join_context` has not yet materialised the
+                //       context entry. The original race shape covered
+                //       by this branch.
+                //
+                // Both resolve once the namespace governance DAG settles
+                // and `join_context` runs to completion locally. Poll
+                // for both in a single shared-deadline loop instead of
+                // short-circuiting on (1).
+                let store = self.context_client.datastore();
+
+                // Poll cadence matches `FALLBACK_POLL` in
+                // `handlers/join_context.rs`. The 10 s budget covers
+                // both the (~5 s) `join_context` materialisation gap
+                // observed in the `bdc61af` smoke-regression artefact
+                // and the additional (~5 s) cold-start namespace-mesh
+                // `ContextRegistered` propagation gap observed in
+                // mero-drive E2E run 25882151397 (logged in #2356).
+                // Streams that don't resolve within the window fall
+                // through to the same OpaqueError as before — the
+                // dialer retries on its next sync interval.
+                const MATERIALIZATION_WINDOW: time::Duration = time::Duration::from_secs(10);
+                const MATERIALIZATION_POLL: time::Duration = time::Duration::from_millis(200);
+
+                let deadline = Instant::now() + MATERIALIZATION_WINDOW;
+                let mut dialer_verified = false;
+                let mut materialised: Option<_> = None;
+
+                loop {
+                    if !dialer_verified {
+                        if let Some(group_id) =
+                            calimero_context::group_store::get_group_for_context(
+                                store,
+                                &context_id,
+                            )?
+                        {
+                            if calimero_context::group_store::check_group_membership(
+                                store,
+                                &group_id,
+                                &their_identity,
+                            )? {
+                                dialer_verified = true;
+                            }
+                        }
+                    }
+
+                    if dialer_verified {
+                        if let Some(ctx) = self.context_client.get_context(&context_id)? {
+                            materialised = Some(ctx);
+                            break;
+                        }
+                    }
+
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    time::sleep(MATERIALIZATION_POLL).await;
+                }
+
+                if !dialer_verified {
+                    // Genuinely unknown context (or cross-namespace stream
+                    // leak per #2198), or namespace governance op never
+                    // landed within the window. Close cleanly so unrelated
+                    // sync activity is unaffected.
+                    warn!(
+                        %context_id,
+                        ?their_identity,
+                        "inbound stream for unknown context, closing cleanly"
+                    );
+
+                    if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
+                        error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+                    }
+
+                    return Ok(None);
+                }
+
+                match materialised {
+                    Some(ctx) => {
+                        debug!(
+                            %context_id,
+                            ?their_identity,
+                            "context materialised during join race window, proceeding with inbound sync"
+                        );
+                        ctx
+                    }
+                    None => {
+                        debug!(
+                            %context_id,
+                            ?their_identity,
+                            "context not materialised within join race window, closing stream"
+                        );
+                        if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await
+                        {
+                            error!(
+                                %err,
+                                %context_id,
+                                "failed to send OpaqueError for unknown context"
+                            );
+                        }
+                        return Ok(None);
+                    }
+                }
             }
-
-            return Ok(None);
         };
 
         let mut _updated = None;
@@ -2932,10 +3095,402 @@ impl SyncManager {
             InitPayload::NamespaceJoinRequest { .. } => {
                 unreachable!("handled by early return above")
             }
+            InitPayload::OpenSubgroupJoinRequest { .. } => {
+                unreachable!("handled by early return above")
+            }
         };
 
         Ok(Some(()))
     }
+
+    /// Schedule reconcile-via-anchor for every per-context hash
+    /// mismatch in `report`. Called by the namespace governance op
+    /// receive handler after `MemberRemoved` / `MemberLeft` apply
+    /// reports state-hash divergence from the signed claims.
+    ///
+    /// One sync attempt per divergent context (`hash_differs`):
+    /// pick a connected anchor peer (via the trusted-anchor set for
+    /// the op's group + the verified `peer_identities` cache),
+    /// initiate Snapshot sync against that peer, and after sync
+    /// completes compare the receiver's new root hash against the
+    /// signed expected. Mismatch on post-adoption verify is logged
+    /// loudly — a follow-up will tighten this into pre-adoption
+    /// rejection with rollback once the store has transactional
+    /// staging.
+    ///
+    /// `only_in_expected` and `only_in_actual` entries are NOT
+    /// reconciled here — those buckets reflect namespace-DAG
+    /// drift (a registration the receiver hasn't seen yet, or a
+    /// registration the signer hadn't seen). The cross-DAG
+    /// membership check on subsequent state deltas catches that
+    /// via `Unknown { needed }` → buffer; routing them through
+    /// anchor sync would burn bandwidth on cases the existing
+    /// catch-up path handles correctly.
+    pub async fn reconcile_after_divergence(
+        &self,
+        report: calimero_context_client::messages::DivergenceReport,
+    ) {
+        if report.hash_differs.is_empty() {
+            // Distinguish "no divergence at all" (debug-level
+            // bookkeeping) from "group-level divergence with no
+            // per-context mismatch" (operator-visible: a member row
+            // is missing or extra somewhere, but every context the
+            // op touched still hashes the same). The latter is rare
+            // enough that we want it surfaced, not buried at debug.
+            // Per-context reconcile doesn't apply — there's no
+            // signed canonical hash for the group-state alone to
+            // pull state against — so we log and return. Subsequent
+            // signed ops carry the corrected group-state hash and
+            // the namespace-DAG buffer + cross-DAG check on later
+            // state deltas closes the gap.
+            if report.group_hash_diverges {
+                tracing::warn!(
+                    group_id = %hex::encode(report.group_id.to_bytes()),
+                    op_kind = report.op_kind,
+                    only_in_expected_count = report.only_in_expected.len(),
+                    only_in_actual_count = report.only_in_actual.len(),
+                    "reconcile-after-divergence: group-state hash diverges from signed expected, \
+                     but no per-context hash mismatch is reconcilable here — convergence relies \
+                     on the cross-DAG check against subsequent signed ops"
+                );
+            } else {
+                tracing::debug!(
+                    group_id = %hex::encode(report.group_id.to_bytes()),
+                    op_kind = report.op_kind,
+                    only_in_expected_count = report.only_in_expected.len(),
+                    only_in_actual_count = report.only_in_actual.len(),
+                    "reconcile-after-divergence: no per-context hash mismatches to reconcile; \
+                     namespace-DAG drift (if any) is handled by the cross-DAG check on \
+                     subsequent state deltas"
+                );
+            }
+            return;
+        }
+
+        for (context_id, expected_root_hash) in &report.hash_differs {
+            self.reconcile_one_divergent_context(
+                report.group_id,
+                *context_id,
+                *expected_root_hash,
+                report.op_kind,
+            )
+            .await;
+        }
+    }
+
+    /// Reconcile a single divergent context against a trusted anchor.
+    ///
+    /// Returns silently after logging — there is no error to bubble
+    /// up to the caller because reconcile is best-effort: a future
+    /// arrival of another signed op, or a sync interval tick, will
+    /// re-attempt convergence. A hard error here would only inflate
+    /// noise; the warn logs are the operator signal.
+    ///
+    /// Backoff: prior failed attempts for the same context impose an
+    /// exponential cooldown (see [`reconcile_cooldown`]). Within that
+    /// window, this is a no-op — the next signed op or sync tick will
+    /// re-trigger once cooldown lapses. A successful post-adoption
+    /// verify clears the backoff state immediately.
+    ///
+    /// **Convergence is not guaranteed in one shot**: `initiate_sync`
+    /// negotiates the protocol via the standard handshake (typically
+    /// `HashComparison` or `DeltaSync` between two initialized peers).
+    /// Snapshot overwrite is gated by the `force=false` invariant in
+    /// `fallback_to_snapshot_sync` and won't run on an initialized
+    /// divergent node — that is by design, because snapshot adoption
+    /// after the fact requires transactional staging the store layer
+    /// doesn't yet provide. CRDT merge will sometimes converge two
+    /// divergent states to the signed expected hash and sometimes
+    /// won't (e.g. the partition-window case where the receiver holds
+    /// a write the signer's expected hash excludes). When it doesn't,
+    /// `verify_post_reconcile_root_hash` flags the mismatch and the
+    /// backoff records a failure — operator-investigation territory
+    /// until pre-adoption rejection + rollback lands.
+    async fn reconcile_one_divergent_context(
+        &self,
+        group_id: calimero_context_config::types::ContextGroupId,
+        context_id: ContextId,
+        expected_root_hash: [u8; 32],
+        op_kind: &'static str,
+    ) {
+        if let Some((remaining, failures)) =
+            reconcile_remaining_cooldown(&self.node_state.reconcile_attempts, &context_id)
+        {
+            tracing::debug!(
+                %context_id,
+                op_kind,
+                consecutive_failures = failures,
+                cooldown_remaining_secs = remaining.as_secs(),
+                "reconcile-after-divergence: skipping — prior attempts failed and the \
+                 per-context cooldown is still active; will re-attempt after backoff lapses"
+            );
+            return;
+        }
+
+        // Look up anchors by `group_id` directly (carried in the
+        // divergence report) rather than re-deriving the group from
+        // `context_id`. A late-joiner can have a missing
+        // context→group mapping locally even though the group's
+        // trusted-anchor set is well-defined; the report already
+        // names the group authoritatively so use it as the source of
+        // truth.
+        let anchors = self.anchor_identities_for_group(&group_id);
+        if anchors.is_empty() {
+            tracing::warn!(
+                %context_id,
+                group_id = %hex::encode(group_id.to_bytes()),
+                op_kind,
+                "reconcile-after-divergence: no trusted anchors defined for this group — \
+                 falling back to operator path (no automatic recovery)"
+            );
+            return;
+        }
+
+        // Pick an anchor from the gossipsub mesh on the context's
+        // topic. The mesh is a superset of "peers known to host this
+        // context" — same source the regular sync path uses.
+        //
+        // Randomise the order before filtering so that, when there
+        // are multiple connected anchors, we don't always pick the
+        // one gossipsub happens to list first. Matters for two
+        // reasons: (a) load distribution across honest anchors when
+        // one is slow; (b) a compromised anchor that consistently
+        // sorts first in libp2p's mesh order can't monopolise
+        // reconcile syncs without contention. Post-adoption hash
+        // verification against the signed expected still defends
+        // against any anchor serving non-canonical state.
+        let topic = TopicHash::from_raw(context_id);
+        let mut mesh_peers = self.network_client.mesh_peers(topic).await;
+        let mesh_peer_count = mesh_peers.len();
+        mesh_peers.shuffle(&mut rand::thread_rng());
+        // Walk mesh peers explicitly so cache-miss skips are visible
+        // to operators. A peer with no `peer_identities` entry has not
+        // yet been observed signing a verified message in this group;
+        // it is invisible to the anchor predicate even if it would be
+        // an anchor in practice. Counting and logging those skips
+        // distinguishes "no anchors reachable" from "anchors reachable
+        // but cache hasn't warmed yet" in the no-anchor warn below.
+        let mut peers_missing_cache_entry: usize = 0;
+        let mut peers_known_not_anchor: usize = 0;
+        let anchor_peer = mesh_peers.iter().copied().find(|peer| {
+            match self.node_state.peer_identities.get(peer) {
+                Some(ids) => {
+                    if ids.iter().any(|id| anchors.contains(id)) {
+                        true
+                    } else {
+                        peers_known_not_anchor += 1;
+                        false
+                    }
+                }
+                None => {
+                    peers_missing_cache_entry += 1;
+                    tracing::debug!(
+                        %context_id,
+                        %peer,
+                        op_kind,
+                        "reconcile-after-divergence: mesh peer skipped — no peer_identities \
+                         cache entry yet (peer has not been observed signing a verified \
+                         message); cache warms as the peer's signed traffic is processed"
+                    );
+                    false
+                }
+            }
+        });
+        let Some(anchor_peer) = anchor_peer else {
+            tracing::warn!(
+                %context_id,
+                op_kind,
+                anchor_count = anchors.len(),
+                connected_mesh_peers = mesh_peer_count,
+                peers_missing_cache_entry,
+                peers_known_not_anchor,
+                "reconcile-after-divergence: no connected mesh peer matches the anchor set — \
+                 falling back to operator path; reconcile will re-attempt on the next signed \
+                 op or sync tick"
+            );
+            return;
+        };
+
+        tracing::info!(
+            %context_id,
+            %anchor_peer,
+            op_kind,
+            expected_root_hash = %hex::encode(expected_root_hash),
+            "reconcile-after-divergence: pulling canonical state from trusted anchor"
+        );
+
+        match self.initiate_sync(context_id, anchor_peer).await {
+            Ok((peer_used, protocol)) => {
+                tracing::info!(
+                    %context_id,
+                    %peer_used,
+                    ?protocol,
+                    "reconcile-after-divergence: anchor sync completed; verifying post-adoption hash"
+                );
+                // Use `peer_used` (the peer the sync actually
+                // resolved against) for verify-time logs rather than
+                // the originally-picked `anchor_peer`. The two
+                // normally agree, but `initiate_sync` is the
+                // authoritative source.
+                let converged = self.verify_post_reconcile_root_hash(
+                    context_id,
+                    expected_root_hash,
+                    peer_used,
+                    op_kind,
+                );
+                if converged {
+                    record_reconcile_success(&self.node_state.reconcile_attempts, &context_id);
+                } else {
+                    let failures =
+                        record_reconcile_failure(&self.node_state.reconcile_attempts, context_id);
+                    tracing::warn!(
+                        %context_id,
+                        op_kind,
+                        consecutive_failures = failures,
+                        next_cooldown_secs = reconcile_cooldown(failures).as_secs(),
+                        "reconcile-after-divergence: recorded failure; subsequent reconcile \
+                         attempts for this context are gated by the backoff window"
+                    );
+                }
+            }
+            Err(err) => {
+                let failures =
+                    record_reconcile_failure(&self.node_state.reconcile_attempts, context_id);
+                tracing::warn!(
+                    %context_id,
+                    %anchor_peer,
+                    op_kind,
+                    %err,
+                    consecutive_failures = failures,
+                    next_cooldown_secs = reconcile_cooldown(failures).as_secs(),
+                    "reconcile-after-divergence: anchor sync failed; reconcile will re-attempt \
+                     after the backoff window lapses"
+                );
+            }
+        }
+    }
+
+    /// Compare the local context's `root_hash` against the signed
+    /// `expected_root_hash` from the triggering op. On match, log
+    /// at info level — the reconcile succeeded. On mismatch, log
+    /// loudly at warn: the anchor served state that does not match
+    /// the canonical expected, OR the local apply diverged again
+    /// after sync. Either is operator-investigation territory and
+    /// a follow-up will replace this post-adoption check with
+    /// pre-adoption rejection + rollback once the store layer has
+    /// transactional staging.
+    fn verify_post_reconcile_root_hash(
+        &self,
+        context_id: ContextId,
+        expected_root_hash: [u8; 32],
+        anchor_peer: PeerId,
+        op_kind: &'static str,
+    ) -> bool {
+        let Ok(Some(context)) = self.context_client.get_context(&context_id) else {
+            tracing::warn!(
+                %context_id,
+                %anchor_peer,
+                op_kind,
+                "reconcile-after-divergence: context not found locally after anchor sync — \
+                 cannot verify root hash"
+            );
+            return false;
+        };
+
+        let actual_root_hash: [u8; 32] = *AsRef::<[u8; 32]>::as_ref(&context.root_hash);
+        if actual_root_hash == expected_root_hash {
+            tracing::info!(
+                %context_id,
+                %anchor_peer,
+                op_kind,
+                root_hash = %hex::encode(actual_root_hash),
+                "reconcile-after-divergence: post-adoption hash matches signed expected — converged"
+            );
+            true
+        } else {
+            tracing::warn!(
+                %context_id,
+                %anchor_peer,
+                op_kind,
+                expected_root_hash = %hex::encode(expected_root_hash),
+                actual_root_hash = %hex::encode(actual_root_hash),
+                "reconcile-after-divergence: post-adoption hash does NOT match signed expected — \
+                 either the anchor served non-canonical state or local apply diverged again; \
+                 operator-investigation territory until pre-adoption rejection lands"
+            );
+            false
+        }
+    }
+}
+
+/// Exponential cooldown for the reconcile-after-divergence backoff,
+/// capped at 30 min. `consecutive_failures == 0` is illegal (the
+/// caller only invokes this when at least one failure has been
+/// recorded); we treat it the same as `1` to avoid an arithmetic
+/// surprise. Schedule:
+///
+/// - 1 failure → 30s
+/// - 2 failures → 60s
+/// - 3 failures → 2m
+/// - 4 failures → 4m
+/// - 5 failures → 8m
+/// - 6 failures → 16m
+/// - 7+ failures → 30m (cap)
+///
+/// Free function so backoff math can be unit-tested independently.
+fn reconcile_cooldown(consecutive_failures: u32) -> std::time::Duration {
+    const BASE_SECS: u64 = 30;
+    const MAX: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    let exp = consecutive_failures.saturating_sub(1).min(8);
+    let secs = BASE_SECS.saturating_mul(1u64 << u64::from(exp));
+    std::time::Duration::from_secs(secs).min(MAX)
+}
+
+/// If `context_id` has a recorded prior failure that is still within
+/// its cooldown window, return `Some((remaining_cooldown,
+/// consecutive_failures))`. Otherwise — no entry, or the cooldown has
+/// elapsed — return `None`.
+fn reconcile_remaining_cooldown(
+    attempts: &dashmap::DashMap<ContextId, crate::state::ReconcileAttempt>,
+    context_id: &ContextId,
+) -> Option<(std::time::Duration, u32)> {
+    let entry = attempts.get(context_id)?;
+    let cooldown = reconcile_cooldown(entry.consecutive_failures);
+    let elapsed = entry.last_attempt_at.elapsed();
+    let remaining = cooldown.checked_sub(elapsed)?;
+    if remaining.is_zero() {
+        None
+    } else {
+        Some((remaining, entry.consecutive_failures))
+    }
+}
+
+/// Record a reconcile failure for `context_id`: bump
+/// `consecutive_failures` and stamp `last_attempt_at = now`. Returns
+/// the new failure count so the caller can log the next cooldown
+/// directly.
+fn record_reconcile_failure(
+    attempts: &dashmap::DashMap<ContextId, crate::state::ReconcileAttempt>,
+    context_id: ContextId,
+) -> u32 {
+    let mut entry = attempts
+        .entry(context_id)
+        .or_insert_with(|| crate::state::ReconcileAttempt {
+            last_attempt_at: std::time::Instant::now(),
+            consecutive_failures: 0,
+        });
+    entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+    entry.last_attempt_at = std::time::Instant::now();
+    entry.consecutive_failures
+}
+
+/// Clear backoff state for `context_id` after a successful reconcile.
+/// Subsequent divergences are treated as fresh — no inherited cooldown.
+fn record_reconcile_success(
+    attempts: &dashmap::DashMap<ContextId, crate::state::ReconcileAttempt>,
+    context_id: &ContextId,
+) {
+    let _ = attempts.remove(context_id);
 }
 
 /// Stable-partition `peers` so peers with an observed trusted-anchor
@@ -3141,7 +3696,7 @@ impl SyncManager {
                 }
             };
             match self.context_client.apply_signed_namespace_op(op).await {
-                Ok(NamespaceApplyOutcome::Applied) => {
+                Ok(NamespaceApplyOutcome::Applied { .. }) => {
                     applied += 1;
                     newly_applied += 1;
                 }
@@ -3398,6 +3953,308 @@ impl SyncManager {
         Ok(())
     }
 
+    /// Handle an incoming `OpenSubgroupJoinRequest` (issue #2357) on the
+    /// responder side. Validates that the joiner has
+    /// `MembershipPath::Inherited` to the requested subgroup, wraps the
+    /// local subgroup key for the joiner via ECDH, and replies with the
+    /// envelope. Mirrors `handle_namespace_join_request` for the
+    /// inherited self-join path.
+    async fn handle_open_subgroup_join_request(
+        &self,
+        namespace_id: [u8; 32],
+        subgroup_id: [u8; 32],
+        joiner_public_key: PublicKey,
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_context::group_store::{
+            check_group_membership_path, load_current_group_key, load_group_meta,
+            resolve_namespace, resolve_namespace_identity_record, wrap_group_key_for_member,
+            MembershipPath,
+        };
+        use calimero_context_config::types::ContextGroupId;
+
+        let subgroup_gid = ContextGroupId::from(subgroup_id);
+        let store = self.context_client.datastore_handle().into_inner();
+
+        // Cross-namespace pin: the requested subgroup must belong to the
+        // namespace the joiner named, otherwise an attacker on namespace
+        // A could elicit a key for a subgroup of namespace B.
+        match resolve_namespace(&store, &subgroup_gid) {
+            Ok(ns) if ns.to_bytes() == namespace_id => {}
+            Ok(other_ns) => {
+                let msg = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload: MessagePayload::OpenSubgroupJoinRejected {
+                        reason: format!(
+                            "subgroup belongs to namespace {} not {}",
+                            hex::encode(other_ns.to_bytes()),
+                            hex::encode(namespace_id),
+                        ),
+                    },
+                    next_nonce: nonce,
+                };
+                super::stream::send(stream, &msg, None).await?;
+                return Ok(());
+            }
+            Err(err) => {
+                let msg = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload: MessagePayload::OpenSubgroupJoinRejected {
+                        reason: format!("resolve namespace: {err}"),
+                    },
+                    next_nonce: nonce,
+                };
+                super::stream::send(stream, &msg, None).await?;
+                return Ok(());
+            }
+        }
+
+        if load_group_meta(&store, &subgroup_gid)?.is_none() {
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::OpenSubgroupJoinRejected {
+                    reason: "subgroup not found locally".to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            super::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
+        // Authorisation check: the joiner must reach the subgroup via the
+        // Open-chain inheritance walk. `MembershipPath::Inherited`
+        // implies every intermediate ancestor was Open (see
+        // `membership.rs:267`), so this is the proof of authorisation.
+        match check_group_membership_path(&store, &subgroup_gid, &joiner_public_key)? {
+            MembershipPath::Inherited { .. } | MembershipPath::Direct => {}
+            MembershipPath::None => {
+                let msg = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload: MessagePayload::OpenSubgroupJoinRejected {
+                        reason: "joiner has no membership path to subgroup".to_owned(),
+                    },
+                    next_nonce: nonce,
+                };
+                super::stream::send(stream, &msg, None).await?;
+                return Ok(());
+            }
+        }
+
+        let key_envelope_bytes = match load_current_group_key(&store, &subgroup_gid)? {
+            Some((_key_id, group_key)) => {
+                let ns_gid = ContextGroupId::from(namespace_id);
+                match resolve_namespace_identity_record(&store, &ns_gid)? {
+                    Some(record) => {
+                        let sender_sk =
+                            calimero_primitives::identity::PrivateKey::from(record.private_key);
+                        match wrap_group_key_for_member(&sender_sk, &joiner_public_key, &group_key)
+                        {
+                            Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
+                            Err(err) => {
+                                warn!(
+                                    namespace_id = %hex::encode(namespace_id),
+                                    subgroup_id = %hex::encode(subgroup_id),
+                                    %err,
+                                    "failed to wrap subgroup key for joiner"
+                                );
+                                Vec::new()
+                            }
+                        }
+                    }
+                    None => {
+                        warn!(
+                            namespace_id = %hex::encode(namespace_id),
+                            "no namespace identity, cannot wrap subgroup key"
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+            None => Vec::new(),
+        };
+
+        debug!(
+            namespace_id = %hex::encode(namespace_id),
+            subgroup_id = %hex::encode(subgroup_id),
+            has_key = !key_envelope_bytes.is_empty(),
+            "Sending OpenSubgroupJoinResponse"
+        );
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
+            next_nonce: nonce,
+        };
+        super::stream::send(stream, &msg, None).await?;
+        Ok(())
+    }
+
+    /// Initiator side for `request_open_subgroup_join`. Picks a mesh peer
+    /// on the namespace topic, opens a stream, sends the request, and
+    /// returns the wrapped key envelope. Same peer-discovery retry loop
+    /// as `initiate_namespace_join`.
+    async fn initiate_open_subgroup_join(
+        &self,
+        params: OpenSubgroupJoinParams,
+    ) -> eyre::Result<Vec<u8>> {
+        let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
+            "ns/{}",
+            hex::encode(params.namespace_id)
+        ));
+
+        let mut peers = Vec::new();
+        for attempt in 1..=super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
+            peers = self.network_client.mesh_peers(topic.clone()).await;
+            if !peers.is_empty() {
+                break;
+            }
+            if attempt < super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
+                debug!(
+                    namespace_id = %hex::encode(params.namespace_id),
+                    subgroup_id = %hex::encode(params.subgroup_id),
+                    attempt,
+                    "No namespace mesh peers yet for open-subgroup join, retrying..."
+                );
+                time::sleep(std::time::Duration::from_millis(
+                    super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
+                ))
+                .await;
+            }
+        }
+
+        if peers.is_empty() {
+            eyre::bail!(
+                "no mesh peers for namespace {} (open-subgroup join)",
+                hex::encode(params.namespace_id)
+            );
+        }
+
+        // Try every mesh peer, not just the first. Only peers that
+        // already hold the subgroup key can serve the request — for an
+        // `Open` subgroup that is the creator plus anyone who has
+        // already inherited in. A freshly-joined namespace member
+        // (which is also on the `ns/<hex>` topic) replies with an empty
+        // envelope ("responder did not hold the subgroup key"); picking
+        // `peers.first()` would fail the whole join whenever that peer
+        // happened to be key-less. Walk the list: return on the first
+        // peer that yields a key, skip key-less peers, and remember the
+        // last authorization rejection so it surfaces if NO peer
+        // accepts (a rejection from one peer can be a stale cold-start
+        // view while another peer accepts).
+        let mut last_rejection: Option<String> = None;
+        let mut keyless_peers = 0usize;
+        let mut transport_errors = 0usize;
+
+        for peer in &peers {
+            let mut stream = match self.network_client.open_stream(*peer).await {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!(
+                        peer = %peer,
+                        subgroup_id = %hex::encode(params.subgroup_id),
+                        error = %e,
+                        "open-subgroup join: failed to open stream, trying next peer"
+                    );
+                    transport_errors += 1;
+                    continue;
+                }
+            };
+
+            let msg = StreamMessage::Init {
+                context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+                party_id: params.joiner_public_key,
+                payload: InitPayload::OpenSubgroupJoinRequest {
+                    namespace_id: params.namespace_id,
+                    subgroup_id: params.subgroup_id,
+                    joiner_public_key: params.joiner_public_key,
+                },
+                next_nonce: rand::thread_rng().gen(),
+            };
+
+            if let Err(e) = super::stream::send(&mut stream, &msg, None).await {
+                debug!(
+                    peer = %peer,
+                    error = %e,
+                    "open-subgroup join: send failed, trying next peer"
+                );
+                transport_errors += 1;
+                continue;
+            }
+
+            match super::stream::recv(&mut stream, None, self.sync_config.timeout).await {
+                Ok(Some(StreamMessage::Message {
+                    payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
+                    ..
+                })) => {
+                    if key_envelope_bytes.is_empty() {
+                        // Peer is on the namespace topic but doesn't
+                        // hold the subgroup key — try the next one.
+                        keyless_peers += 1;
+                        continue;
+                    }
+                    return Ok(key_envelope_bytes);
+                }
+                Ok(Some(StreamMessage::Message {
+                    payload: MessagePayload::OpenSubgroupJoinRejected { reason },
+                    ..
+                })) => {
+                    // A rejection may be a stale cold-start view on this
+                    // peer; keep trying others before surfacing it.
+                    debug!(
+                        peer = %peer,
+                        reason = %reason,
+                        "open-subgroup join: peer rejected, trying next peer"
+                    );
+                    last_rejection = Some(reason);
+                    continue;
+                }
+                Ok(other) => {
+                    debug!(
+                        peer = %peer,
+                        "open-subgroup join: unexpected response {:?}, trying next peer",
+                        other.as_ref().map(std::mem::discriminant)
+                    );
+                    transport_errors += 1;
+                    continue;
+                }
+                Err(e) => {
+                    debug!(
+                        peer = %peer,
+                        error = %e,
+                        "open-subgroup join: recv failed, trying next peer"
+                    );
+                    transport_errors += 1;
+                    continue;
+                }
+            }
+        }
+
+        // No peer yielded the key. Surface the most informative cause,
+        // always including the full per-peer tally so a mixed failure
+        // (some peers key-less, one peer rejecting, some transport
+        // errors) is fully diagnosable from a single line.
+        let tally = format!(
+            "{} peer(s): {} key-less, {} transport error(s)",
+            peers.len(),
+            keyless_peers,
+            transport_errors
+        );
+        if let Some(reason) = last_rejection {
+            eyre::bail!(
+                "open-subgroup join for {} served by no peer — last rejection: {} [{}]",
+                hex::encode(params.subgroup_id),
+                reason,
+                tally
+            );
+        }
+        eyre::bail!(
+            "no mesh peer held the subgroup key for {} [{}]",
+            hex::encode(params.subgroup_id),
+            tally
+        );
+    }
+
     /// Collect all governance ops for a namespace (reused by the join responder).
     ///
     /// Returns bare `SignedNamespaceOp` bytes (not `StoredNamespaceEntry` wrapped)
@@ -3578,6 +4435,20 @@ impl SyncManager {
                 );
                 use calimero_context_client::messages::NamespaceApplyOutcome;
                 let mut newly_applied = false;
+                // Collect divergence reports surfaced by `MemberRemoved` /
+                // `MemberLeft` ops arriving via the namespace-backfill
+                // path. Same reasoning as the gossip-receive path: once
+                // the DAG marks an op `Applied`, any later gossipsub
+                // arrival of the same op becomes `Duplicate` and the
+                // apply work — including the post-apply hash check —
+                // is skipped. If a `MemberRemoved` op arrives first via
+                // backfill and divergence is dropped here, no later
+                // path will re-surface it. Fire reconcile after the
+                // batch loop so we don't hold `&mut` borrows across an
+                // await on `self`.
+                let mut pending_divergences: Vec<
+                    calimero_context_client::messages::DivergenceReport,
+                > = Vec::new();
                 for (delta_id, op_bytes) in deltas {
                     match borsh::from_slice::<
                         calimero_context_client::local_governance::SignedNamespaceOp,
@@ -3615,27 +4486,29 @@ impl SyncManager {
                                         "failed to apply namespace governance op from backfill"
                                     );
                                 }
-                                Ok(outcome) => {
-                                    if matches!(outcome, NamespaceApplyOutcome::Applied) {
-                                        newly_applied = true;
-                                        // Only react to a *newly-applied*
-                                        // `MemberJoined`. On `Duplicate`
-                                        // (the common case — a backfill
-                                        // re-sends the whole DAG every
-                                        // round) re-publishing a fresh
-                                        // `KeyDelivery` each time would
-                                        // grow the namespace governance
-                                        // DAG without bound until it hits
-                                        // the backfill cap and never
-                                        // converges again (#2319).
-                                        crate::key_delivery::maybe_publish_key_delivery(
-                                            &self.context_client,
-                                            &self.node_client,
-                                            &op,
-                                        )
-                                        .await;
+                                Ok(NamespaceApplyOutcome::Applied { divergence }) => {
+                                    newly_applied = true;
+                                    if let Some(report) = divergence {
+                                        pending_divergences.push(report);
                                     }
+                                    // Only react to a *newly-applied*
+                                    // `MemberJoined`. On `Duplicate`
+                                    // (the common case — a backfill
+                                    // re-sends the whole DAG every
+                                    // round) re-publishing a fresh
+                                    // `KeyDelivery` each time would
+                                    // grow the namespace governance
+                                    // DAG without bound until it hits
+                                    // the backfill cap and never
+                                    // converges again (#2319).
+                                    crate::key_delivery::maybe_publish_key_delivery(
+                                        &self.context_client,
+                                        &self.node_client,
+                                        &op,
+                                    )
+                                    .await;
                                 }
+                                Ok(_) => {}
                             }
                         }
                         Err(err) => {
@@ -3655,6 +4528,18 @@ impl SyncManager {
                 // See the governance-catch-up notify above for rationale.
                 if newly_applied {
                     self.node_client.notify_namespace_op_applied(namespace_id);
+                }
+
+                // Route any divergence reports surfaced during the
+                // backfill apply loop to the reconcile-via-anchor path.
+                // Run sequentially after the batch finishes; we're
+                // already in an async method on `&self` so no spawn
+                // is needed here (the gossip-receive path uses
+                // `actix::spawn` because it runs inside an actor's
+                // mailbox slot; this method is invoked by the sync
+                // tick which has no such constraint).
+                for report in pending_divergences {
+                    self.reconcile_after_divergence(report).await;
                 }
             }
             _ => {

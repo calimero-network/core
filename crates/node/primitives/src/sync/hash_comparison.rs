@@ -596,6 +596,22 @@ mod tests {
     }
 
     #[test]
+    fn test_tree_node_opaque_leaf_is_valid() {
+        // An "opaque" Merkle leaf (no stored crdt_type) is carried on the wire as
+        // a leaf with a synthetic `LwwRegister { inner_type: "Opaque" }` type;
+        // such a node must be structurally valid so the receiving peer does not
+        // drop it as "Invalid TreeNode".
+        let metadata =
+            LeafMetadata::new(CrdtType::lww_register("Opaque"), 42, [0u8; 32]).with_created_at(7);
+        let leaf_data = TreeLeafData::new([118u8; 32], b"app-root-state".to_vec(), metadata);
+        let node = TreeNode::leaf([118u8; 32], [9u8; 32], leaf_data);
+
+        assert!(node.is_leaf());
+        assert!(!node.is_internal());
+        assert!(node.is_valid(), "opaque leaf node must be valid");
+    }
+
+    #[test]
     fn test_tree_node_roundtrip() {
         let metadata = LeafMetadata::new(CrdtType::unordered_map("String", "u64"), 999, [6; 32])
             .with_version(5)

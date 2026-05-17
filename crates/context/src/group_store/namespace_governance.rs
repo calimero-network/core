@@ -17,14 +17,16 @@ use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retr
 use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::{
-    add_group_member, apply_group_op_mutations, decrypt_group_op, get_local_gov_nonce,
-    get_namespace_identity_record, is_group_admin, is_group_admin_or_has_capability,
-    load_current_group_key_record, load_group_key_by_id, load_group_meta,
+    add_group_member, apply_group_op_mutations, clear_denied, decrypt_group_op,
+    get_local_gov_nonce, get_namespace_identity_record, is_group_admin,
+    is_group_admin_or_has_capability, load_current_group_key_record, load_group_key_by_id,
+    load_group_meta,
     namespace_dag::{NamespaceDagService, NamespaceHead},
     namespace_membership::NamespaceMembershipService,
     namespace_op_log::NamespaceOpLogService,
     namespace_retry::NamespaceRetryService,
-    save_group_meta, set_local_gov_nonce, store_group_key, unwrap_group_key, PermissionChecker,
+    restore_member_context_identities, save_group_meta, set_local_gov_nonce, store_group_key,
+    unwrap_group_key, PermissionChecker,
 };
 
 /// Side effect returned by namespace-op application when an existing
@@ -48,6 +50,13 @@ pub struct KeyUnwrapFailure {
 pub struct ApplyNamespaceOpResult {
     pub pending_deliveries: Vec<PendingKeyDelivery>,
     pub key_unwrap_failures: Vec<KeyUnwrapFailure>,
+    /// Post-apply hash divergence detected by the cross-DAG state-hash
+    /// check inside a `MemberRemoved` / `MemberLeft` apply. The node
+    /// handler routes this to the reconcile-via-anchor sync trigger.
+    /// `None` for ops that don't carry signed convergence claims, for
+    /// ops that match the receiver's view, and for ops that don't go
+    /// through the verify path at all.
+    pub divergence: Option<super::DivergenceReport>,
 }
 
 pub(crate) fn min_acks_after_local_mutation(
@@ -171,7 +180,7 @@ impl<'a> NamespaceGovernance<'a> {
                         // call. Without this, "Unexpected length of input"
                         // is ambiguous between the identity read, the key
                         // store, or the retry walk.
-                        let mut apply_kd = || -> EyreResult<()> {
+                        let mut apply_kd = || -> EyreResult<Option<super::DivergenceReport>> {
                             if let Some(identity) =
                                 get_namespace_identity_record(self.store, &ns_id).map_err(|e| {
                                     eyre::eyre!("get_namespace_identity_record: {e}")
@@ -207,13 +216,14 @@ impl<'a> NamespaceGovernance<'a> {
                                                 group_id: *group_id,
                                                 recipient: recipient_sk.public_key(),
                                             });
-                                            self.retry_encrypted_ops_for_group(*group_id).map_err(
-                                                |e| {
+                                            let retry_divergence = self
+                                                .retry_encrypted_ops_for_group(*group_id)
+                                                .map_err(|e| {
                                                     eyre::eyre!(
                                                         "retry_encrypted_ops_for_group: {e}"
                                                     )
-                                                },
-                                            )?;
+                                                })?;
+                                            return Ok(retry_divergence);
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -228,18 +238,32 @@ impl<'a> NamespaceGovernance<'a> {
                                     }
                                 }
                             }
-                            Ok(())
+                            Ok(None)
                         };
-                        if let Err(e) = apply_kd() {
-                            tracing::warn!(
-                                group_id = %hex::encode(group_id),
-                                error = %e,
-                                "KeyDelivery side-effect failed; DAG apply continues"
-                            );
-                            result.key_unwrap_failures.push(KeyUnwrapFailure {
-                                group_id: *group_id,
-                                reason: format!("KeyDelivery side-effect failed: {e}"),
-                            });
+                        match apply_kd() {
+                            Ok(retry_divergence) => {
+                                if retry_divergence.is_some() {
+                                    // KeyDelivery itself never produces a
+                                    // post-apply divergence — only the
+                                    // retried encrypted ops can. Merge
+                                    // their LWW report into the same
+                                    // outbox slot the fresh-arrival path
+                                    // uses so the node handler routes it
+                                    // to `reconcile_after_divergence`.
+                                    result.divergence = retry_divergence;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    group_id = %hex::encode(group_id),
+                                    error = %e,
+                                    "KeyDelivery side-effect failed; DAG apply continues"
+                                );
+                                result.key_unwrap_failures.push(KeyUnwrapFailure {
+                                    group_id: *group_id,
+                                    reason: format!("KeyDelivery side-effect failed: {e}"),
+                                });
+                            }
                         }
                     }
                     RootOp::MemberJoined {
@@ -255,6 +279,55 @@ impl<'a> NamespaceGovernance<'a> {
                                 joiner_pk: *member,
                             });
                         }
+                    }
+                    RootOp::MemberJoinedOpen { member, group_id } => {
+                        // Same delivery-trigger semantics as `MemberJoined` —
+                        // any peer that holds the group key publishes a
+                        // `KeyDelivery` wrapped for the joiner. Authority
+                        // for this op is validated in `execute_member_joined_open`
+                        // (we ran it via `apply_root_op` above before this
+                        // match), so by the time we get here the path is
+                        // confirmed Inherited.
+                        let group_id_typed = ContextGroupId::from(*group_id);
+                        if load_current_group_key_record(self.store, &group_id_typed)?.is_some() {
+                            result.pending_deliveries.push(PendingKeyDelivery {
+                                namespace_id: op.namespace_id,
+                                group_id: group_id_typed.to_bytes(),
+                                joiner_pk: *member,
+                            });
+                        }
+                        // Clear deny-list on EVERY peer, not just the
+                        // local rejoiner. A prior `MemberLeft` (or
+                        // `MemberRemoved` followed by inheritance rejoin)
+                        // stamped node-2 on each peer's per-subgroup
+                        // deny-list at `mod.rs:1248` / `:1627`; without
+                        // clearing it here, peers continue to drop
+                        // node-2's state-delta traffic at the receive
+                        // filter even after the rejoin completes. The
+                        // sibling `MemberAdded` arm at `mod.rs:1215`
+                        // already does this; `MemberJoinedViaTeeAttestation`
+                        // at `mod.rs:1502` does this; `MemberJoinedOpen`
+                        // was the missing third arm. Without it the
+                        // `kick → inheritance-rejoin → write` and
+                        // `leave → inheritance-rejoin → write` flows
+                        // converge on the rejoiner's local store but
+                        // never replicate to peers — symptom: post-rejoin
+                        // sync diverges in the kick/leave-rejoin e2e.
+                        // Idempotent on a member who was never denied.
+                        clear_denied(self.store, &group_id_typed, member)?;
+                        // Local rejoiner recovery: restore any per-context
+                        // `ContextIdentity` rows that a prior `MemberLeft`
+                        // cascade deleted. The local-rejoiner anti-spoof
+                        // gate is enforced inside
+                        // `restore_member_context_identities` — on peers
+                        // whose namespace identity differs from `member`
+                        // it is a no-op. On first-time inheritance joiners
+                        // the row may not exist yet — it is written so the
+                        // joiner can author state-DAG ops as soon as
+                        // `KeyDelivery` populates `sender_key`. Idempotent:
+                        // an existing row from a prior `join_context` is
+                        // left untouched.
+                        restore_member_context_identities(self.store, &group_id_typed, member)?;
                     }
                     _ => {}
                 }
@@ -287,7 +360,24 @@ impl<'a> NamespaceGovernance<'a> {
                 };
 
                 if let Some(group_key) = resolved_key {
-                    self.decrypt_and_apply_group_op(op, &group_id_typed, &group_key, encrypted)?;
+                    // Surface any post-apply hash divergence reported by
+                    // `MemberRemoved` / `MemberLeft` apply so the node
+                    // handler can route it to the reconcile-via-anchor
+                    // trigger. Multiple group ops can be applied per
+                    // namespace op in theory (e.g. retry path replays);
+                    // in practice each namespace op carries one
+                    // encrypted group op, so the assignment is a simple
+                    // overwrite. Any prior `None` is preserved if this
+                    // op reports `None`.
+                    let report = self.decrypt_and_apply_group_op(
+                        op,
+                        &group_id_typed,
+                        &group_key,
+                        encrypted,
+                    )?;
+                    if report.is_some() {
+                        result.divergence = report;
+                    }
                 }
 
                 if let Some(rotation) = key_rotation {
@@ -580,7 +670,10 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(report)
     }
 
-    fn retry_encrypted_ops_for_group(&self, group_id: [u8; 32]) -> EyreResult<()> {
+    fn retry_encrypted_ops_for_group(
+        &self,
+        group_id: [u8; 32],
+    ) -> EyreResult<Option<super::DivergenceReport>> {
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
         let retry_candidates = retry_service
@@ -590,6 +683,15 @@ impl<'a> NamespaceGovernance<'a> {
         if attempted > 0 {
             record_namespace_retry_event("collected");
         }
+
+        // Last-writer-wins across retry candidates that surface
+        // divergence. The outbox carrying this report to the node
+        // handler is a single slot (see `governance_dag.rs`), so
+        // collapsing here matches the fresh-arrival path's LWW
+        // semantics. In practice each retry batch unblocks a small
+        // number of ops and at most one is a `MemberRemoved` /
+        // `MemberLeft` that could report divergence.
+        let mut retry_divergence: Option<super::DivergenceReport> = None;
 
         for candidate in &retry_candidates {
             let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
@@ -601,12 +703,24 @@ impl<'a> NamespaceGovernance<'a> {
                 &candidate.group_key,
                 encrypted,
             ) {
-                Ok(()) => {
+                // Surface divergence from retry-path applies. Once a
+                // retry replay applies an op, the DAG marks any later
+                // fresh arrival of the same op as `Duplicate` and the
+                // apply work — including the post-apply hash check —
+                // is skipped. That makes the retry path the *only*
+                // opportunity to detect divergence on retried ops:
+                // dropping it here means the reconcile trigger never
+                // fires for `MemberRemoved` / `MemberLeft` ops that
+                // were buffered pending `KeyDelivery`.
+                Ok(divergence) => {
                     record_namespace_retry_event("applied");
                     tracing::info!(
                         group_id = %hex::encode(group_id),
                         "retried encrypted op after KeyDelivery"
                     );
+                    if divergence.is_some() {
+                        retry_divergence = divergence;
+                    }
                 }
                 Err(e) => {
                     record_namespace_retry_event("failed");
@@ -623,7 +737,7 @@ impl<'a> NamespaceGovernance<'a> {
             record_namespace_retry_event("none");
         }
 
-        Ok(())
+        Ok(retry_divergence)
     }
 
     fn decrypt_and_apply_group_op(
@@ -632,7 +746,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: &ContextGroupId,
         group_key: &[u8; 32],
         encrypted: &EncryptedGroupOp,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<Option<super::DivergenceReport>> {
         let inner_op = decrypt_group_op(group_key, encrypted)?;
 
         let signed_group_op = SignedGroupOp {
@@ -655,7 +769,7 @@ impl<'a> NamespaceGovernance<'a> {
         signer: &PublicKey,
         nonce: u64,
         op: &GroupOp,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<Option<super::DivergenceReport>> {
         let last = get_local_gov_nonce(self.store, group_id, signer)?.unwrap_or(0);
         if nonce <= last {
             tracing::debug!(
@@ -664,7 +778,7 @@ impl<'a> NamespaceGovernance<'a> {
                 signer = %signer,
                 "ignoring namespace group op with already-processed nonce"
             );
-            return Ok(());
+            return Ok(None);
         }
 
         if let GroupOp::ContextRegistered {
@@ -710,7 +824,7 @@ impl<'a> NamespaceGovernance<'a> {
             }
         }
 
-        let handled = apply_group_op_mutations(self.store, group_id, signer, op)?;
+        let (handled, divergence) = apply_group_op_mutations(self.store, group_id, signer, op)?;
         if !handled {
             tracing::debug!(
                 ?op,
@@ -719,7 +833,7 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         set_local_gov_nonce(self.store, group_id, signer, nonce)?;
-        Ok(())
+        Ok(divergence)
     }
 
     fn require_namespace_admin(&self, signer: &PublicKey) -> EyreResult<()> {
@@ -760,6 +874,9 @@ impl<'a> NamespaceGovernance<'a> {
                 member,
                 signed_invitation,
             } => self.execute_member_joined(op, member, signed_invitation),
+            RootOp::MemberJoinedOpen { member, group_id } => {
+                self.execute_member_joined_open(op, *member, *group_id)
+            }
             RootOp::KeyDelivery { .. } => Ok(()),
         }
     }
@@ -1097,6 +1214,69 @@ impl<'a> NamespaceGovernance<'a> {
             member,
             signed_invitation,
         )
+    }
+
+    /// Apply check for `RootOp::MemberJoinedOpen`. The op is cleartext,
+    /// the outer `SignedNamespaceOp.signer` MUST equal `member` (proves
+    /// key ownership), and `member` MUST have an Inherited membership
+    /// path to `group_id` — i.e. the subgroup is `Open` and they hold
+    /// `CAN_JOIN_OPEN_SUBGROUPS` at the namespace root (the same
+    /// check `join_context.rs` runs locally before letting the joiner
+    /// proceed). We don't mutate state here — the side-effect (pushing
+    /// a `PendingKeyDelivery` if we hold the key) happens in the outer
+    /// `apply_signed_op` match.
+    fn execute_member_joined_open(
+        &self,
+        op: &SignedNamespaceOp,
+        member: PublicKey,
+        group_id: [u8; 32],
+    ) -> EyreResult<()> {
+        if op.signer != member {
+            eyre::bail!(
+                "MemberJoinedOpen rejected: outer signer {} doesn't match member {}",
+                op.signer,
+                member
+            );
+        }
+        let gid = ContextGroupId::from(group_id);
+        // Cross-namespace forgery guard: without this check, an attacker
+        // on namespace A could publish a MemberJoinedOpen naming a
+        // `group_id` from namespace B; `check_group_membership_path`
+        // walks parents up to whichever namespace root owns `gid`, so
+        // the path check below could succeed against B's data when this
+        // op is being applied in namespace A. Pin `gid` to this
+        // namespace — matches the implicit assumption in the sibling
+        // `MemberJoined` apply path.
+        let resolved_ns = super::resolve_namespace(self.store, &gid)?;
+        if resolved_ns.to_bytes() != self.namespace_id {
+            eyre::bail!(
+                "MemberJoinedOpen rejected: group_id {:?} resolves to namespace {:?}, \
+                 not this namespace {:?}",
+                gid,
+                resolved_ns,
+                ContextGroupId::from(self.namespace_id)
+            );
+        }
+        match super::check_group_membership_path(self.store, &gid, &member)? {
+            super::MembershipPath::Inherited { .. } => Ok(()),
+            super::MembershipPath::Direct => {
+                // Direct members go through `MemberJoined` or `add_group_members`
+                // — they shouldn't be using this op.
+                eyre::bail!(
+                    "MemberJoinedOpen rejected: signer {} is a direct member of {:?}; \
+                     use MemberJoined or add_group_members instead",
+                    member,
+                    gid
+                );
+            }
+            super::MembershipPath::None => {
+                eyre::bail!(
+                    "MemberJoinedOpen rejected: signer {} has no membership path to {:?}",
+                    member,
+                    gid
+                );
+            }
+        }
     }
 }
 

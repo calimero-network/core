@@ -96,8 +96,12 @@ echo "Starting profiling for $NODE_NAME (PID: $PID) at $TIMESTAMP"
 # Start perf profiling
 if [ "$ENABLE_PERF" = true ]; then
     PERF_OUTPUT="$OUTPUT_DIR/perf-${NODE_NAME}-${TIMESTAMP}.data"
-    echo "Starting perf record (output: $PERF_OUTPUT, freq: $SAMPLE_FREQ Hz)..."
-    
+    echo "Starting perf record (output: $PERF_OUTPUT, freq: $SAMPLE_FREQ Hz, call-graph: fp)..."
+
+    # `-g` = frame-pointer unwinding. The profiling image builds merod with
+    # `-C force-frame-pointers=yes` so `%rbp` chains give correct deep stacks;
+    # cheap to capture, renders cleanly. See entrypoint-profiling.sh for the
+    # caveats before switching this to `--call-graph dwarf`.
     PERF_CMD="perf record -F $SAMPLE_FREQ -g -p $PID -o $PERF_OUTPUT"
     
     if [ "$DURATION" -gt 0 ]; then

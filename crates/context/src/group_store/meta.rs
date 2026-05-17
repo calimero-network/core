@@ -1,4 +1,4 @@
-use calimero_context_config::types::{ContextGroupId, GovernancePosition};
+use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{ContextMeta, GroupMeta, GroupMetaValue, GROUP_META_PREFIX};
@@ -6,10 +6,7 @@ use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
 use sha2::{Digest, Sha256};
 
-use super::{
-    collect_keys_with_prefix_paginated, enumerate_group_contexts, list_group_members,
-    resolve_namespace, NamespaceDagService,
-};
+use super::{collect_keys_with_prefix_paginated, enumerate_group_contexts, list_group_members};
 
 pub fn load_group_meta(
     store: &Store,
@@ -223,72 +220,4 @@ pub fn snapshot_context_state_hashes(
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(entries)
-}
-
-/// Build the current cross-DAG cut for `group_id` — pre-apply group
-/// state hash bundled with the namespace governance DAG heads at this
-/// moment. Used as the `cut` field in `MemberRemoved` / `MemberLeft`
-/// ops so receivers' apply-time membership check evaluates against the
-/// same descend-from boundary the signer signed against (not against
-/// each receiver's possibly-different local namespace heads).
-///
-/// The two store reads (DAG heads and group state hash) are NOT
-/// atomic. Callers must invoke this from a serializing context where
-/// no concurrent namespace governance op can land between the reads —
-/// in practice the `ContextManager` actor that owns all governance
-/// publishing.
-///
-/// Defense-in-depth: this function uses a **read-twice / bail on
-/// mismatch** pattern (mirrors `compute_governance_position_for_context`
-/// at `handlers/execute/mod.rs`) for **both** the namespace DAG
-/// heads and the group state hash. A concurrent namespace
-/// governance op would change the heads set; a concurrent
-/// group-level op (e.g. `MemberAdded` racing this read) would
-/// change the group state hash without touching the heads. Both
-/// are detected and produce a hard error rather than a malformed
-/// cut that would generate spurious divergence warnings on every
-/// honest receiver.
-///
-/// The price is one extra hash recompute + one extra heads read per
-/// `MemberRemoved` / `MemberLeft` sign — cold path, not a hot loop.
-///
-/// Once the cut is built it travels intact in the signed op — there's
-/// no second read by receivers, so the only race is on the signer's
-/// side and is now caught here.
-pub fn build_governance_cut(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<GovernancePosition> {
-    let namespace_id = resolve_namespace(store, group_id)?;
-    let dag = NamespaceDagService::new(store, namespace_id.to_bytes());
-    let heads_before = dag.read_head_record()?.parent_hashes;
-    let group_state_hash_before = compute_group_state_hash(store, group_id)?;
-    let group_state_hash_after = compute_group_state_hash(store, group_id)?;
-    let heads_after = dag.read_head_record()?.parent_hashes;
-    // Set-equality, not Vec-equality. Storage iteration order isn't
-    // guaranteed to be stable across reads, so a Vec compare would
-    // false-positive on every reorder. A concurrent op landing
-    // changes the SET of heads, which is what we want to catch.
-    let heads_changed = {
-        use std::collections::HashSet;
-        heads_before.len() != heads_after.len()
-            || heads_before.iter().collect::<HashSet<_>>()
-                != heads_after.iter().collect::<HashSet<_>>()
-    };
-    if heads_changed {
-        return Err(eyre!(
-            "build_governance_cut: namespace DAG heads changed mid-read for group {} — \
-             refusing to emit an internally-inconsistent cut",
-            hex::encode(group_id.to_bytes())
-        ));
-    }
-    if group_state_hash_before != group_state_hash_after {
-        return Err(eyre!(
-            "build_governance_cut: group state hash changed mid-read for group {} — \
-             a concurrent group-level op landed; refusing to emit a stale-hash cut",
-            hex::encode(group_id.to_bytes())
-        ));
-    }
-    GovernancePosition::new(*group_id, group_state_hash_before, heads_before)
-        .map_err(|e| eyre!("invalid governance position at sign time: {e}"))
 }

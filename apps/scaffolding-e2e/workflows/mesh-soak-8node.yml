@@ -1,0 +1,245 @@
+name: E2E KV Store - 8-Node Gossipsub Mesh Soak
+description: >
+  Verifies the gossipsub mesh-size knobs (mesh_n_low=2, mesh_n=4,
+  mesh_n_high=8) hold up at the upper end of Calimero's 2-20 peer target
+  range. Spins up 8 nodes, joins all of them to a single namespace and
+  context, executes writes from two different nodes to exercise the
+  bidirectional broadcast path, then idles long enough for two
+  `gossipsub mesh size` snapshots (interval 30s) to land in every node's
+  logs so the steady-state mesh size is captured in the artifact.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 8
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup on node-1 ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  # --- Nodes 2-8 join namespace + context ---
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_n2: invitation
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_n2}}'
+  - name: Node-2 joins context
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx_id}}'
+
+  - name: Invite node-3 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_n3: invitation
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_n3}}'
+  - name: Node-3 joins context
+    type: join_context
+    node: e2e-node-3
+    context_id: '{{ctx_id}}'
+
+  - name: Invite node-4 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_n4: invitation
+  - name: Node-4 joins namespace
+    type: join_namespace
+    node: e2e-node-4
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_n4}}'
+  - name: Node-4 joins context
+    type: join_context
+    node: e2e-node-4
+    context_id: '{{ctx_id}}'
+
+  - name: Invite node-5 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_n5: invitation
+  - name: Node-5 joins namespace
+    type: join_namespace
+    node: e2e-node-5
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_n5}}'
+  - name: Node-5 joins context
+    type: join_context
+    node: e2e-node-5
+    context_id: '{{ctx_id}}'
+
+  - name: Invite node-6 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_n6: invitation
+  - name: Node-6 joins namespace
+    type: join_namespace
+    node: e2e-node-6
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_n6}}'
+  - name: Node-6 joins context
+    type: join_context
+    node: e2e-node-6
+    context_id: '{{ctx_id}}'
+
+  - name: Invite node-7 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_n7: invitation
+  - name: Node-7 joins namespace
+    type: join_namespace
+    node: e2e-node-7
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_n7}}'
+  - name: Node-7 joins context
+    type: join_context
+    node: e2e-node-7
+    context_id: '{{ctx_id}}'
+
+  - name: Invite node-8 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invite_n8: invitation
+  - name: Node-8 joins namespace
+    type: join_namespace
+    node: e2e-node-8
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invite_n8}}'
+  - name: Node-8 joins context
+    type: join_context
+    node: e2e-node-8
+    context_id: '{{ctx_id}}'
+
+  # --- Broadcast path: write on node-1, verify all 8 converge ---
+
+  - name: Set k1 on node-1
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "soak_k1"
+      value: "soak_v1"
+
+  - name: Wait for k1 to sync to all 8 nodes
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+      - e2e-node-4
+      - e2e-node-5
+      - e2e-node-6
+      - e2e-node-7
+      - e2e-node-8
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read k1 on node-8 (far end)
+    type: call
+    node: e2e-node-8
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "soak_k1"
+    outputs:
+      n8_read_k1: result
+
+  - name: Assert k1 propagated to node-8
+    type: json_assert
+    statements:
+      - 'json_equal({{n8_read_k1}}, {"output": "soak_v1"})'
+
+  # --- Bidirectional path: write on node-5, verify all 8 converge ---
+
+  - name: Set k2 on node-5
+    type: call
+    node: e2e-node-5
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: "soak_k2"
+      value: "soak_v2"
+
+  - name: Wait for k2 to sync to all 8 nodes
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+      - e2e-node-4
+      - e2e-node-5
+      - e2e-node-6
+      - e2e-node-7
+      - e2e-node-8
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read k2 on node-1 (opposite end)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: "soak_k2"
+    outputs:
+      n1_read_k2: result
+
+  - name: Assert k2 propagated to node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{n1_read_k2}}, {"output": "soak_v2"})'
+
+  # --- Idle so two mesh-stats snapshots fire (interval = 30 s) ---
+
+  - name: Idle for mesh-stats snapshots
+    type: wait
+    seconds: 70
