@@ -3,7 +3,6 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context_config::VisibilityMode;
 use calimero_server_primitives::admin::{ListSubgroupsApiResponse, SubgroupEntryApiResponse};
 use tracing::{info, warn};
 
@@ -51,69 +50,28 @@ pub async fn handler(
 
     let mut subgroups = Vec::with_capacity(children.len());
     for child in children {
-        // Restricted subgroups stay hidden from non-members. Open
-        // subgroups are always listed — their existence is public by
-        // design (that's what CAN_JOIN_OPEN_SUBGROUPS at the namespace
-        // root authorises against).
-        //
-        // We always check visibility first. When caller is None (this node
-        // has no namespace identity for the parent group), Restricted
-        // subgroups are hidden — we can't verify membership so the
-        // conservative choice is to treat the caller as a non-member.
-        let visibility =
-            match calimero_context::group_store::get_subgroup_visibility(&state.store, &child) {
-                Ok(v) => v,
-                Err(err) => {
-                    warn!(
-                        ?err,
-                        group_id = %hex::encode(child.to_bytes()),
-                        "get_subgroup_visibility failed; skipping from list"
-                    );
-                    continue;
-                }
-            };
-        if matches!(visibility, VisibilityMode::Restricted) {
-            let Some(ref caller_pk) = caller else {
+        // `Open` subgroups are always listed; `Restricted` subgroups are
+        // listed only for the parent-group admin or a member of the
+        // child (see `subgroup_visible_to`). On any visibility/membership
+        // lookup error we skip the child — the conservative choice never
+        // leaks a private subgroup. A `caller` of `None` (this node has
+        // no namespace identity for the parent group) likewise hides all
+        // `Restricted` children.
+        match calimero_context::group_store::subgroup_visible_to(
+            &state.store,
+            &group_id,
+            &child,
+            caller.as_ref(),
+        ) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(err) => {
+                warn!(
+                    ?err,
+                    group_id = %hex::encode(child.to_bytes()),
+                    "subgroup visibility check failed; hiding subgroup from list"
+                );
                 continue;
-            };
-            // Admins of the parent group can enumerate all direct children
-            // even if those children are Restricted — they govern the space
-            // and need to know what subgroups exist. Non-admins must be an
-            // explicit member of the child to see it.
-            let is_parent_admin = match calimero_context::group_store::is_group_admin(
-                &state.store,
-                &group_id,
-                caller_pk,
-            ) {
-                Ok(b) => b,
-                Err(err) => {
-                    warn!(
-                        ?err,
-                        group_id = %group_id_str,
-                        "is_group_admin failed; skipping restricted subgroup from list"
-                    );
-                    continue;
-                }
-            };
-            if !is_parent_admin {
-                let is_member = match calimero_context::group_store::check_group_membership(
-                    &state.store,
-                    &child,
-                    caller_pk,
-                ) {
-                    Ok(b) => b,
-                    Err(err) => {
-                        warn!(
-                            ?err,
-                            group_id = %hex::encode(child.to_bytes()),
-                            "check_group_membership failed; skipping from list"
-                        );
-                        continue;
-                    }
-                };
-                if !is_member {
-                    continue;
-                }
             }
         }
 
