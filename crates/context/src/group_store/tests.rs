@@ -2117,6 +2117,78 @@ fn check_membership_open_subgroup_inherits_parent_with_default_cap() {
     assert!(check_group_membership(&store, &child, &alice).unwrap());
 }
 
+// -----------------------------------------------------------------------
+// Capability-materialization ordering (PR #2368 root cause for the
+// `MemberJoinedOpen rejected: no membership path` e2e failure).
+//
+// `add_group_member` materializes a non-admin member's per-member
+// capability row by copying the group's `default_capabilities` — but
+// ONLY if those defaults are already set in the store. A member added
+// BEFORE the namespace default caps land therefore has no
+// `CAN_JOIN_OPEN_SUBGROUPS` bit on this node, and a later
+// `MemberJoinedOpen` from them fails `check_group_membership_path`.
+// The `join_group` handler now sets `default_capabilities` before the
+// catch-up apply so every `MemberJoined` in the batch materializes its
+// caps correctly; these two tests pin the underlying invariant.
+// -----------------------------------------------------------------------
+
+#[test]
+fn check_membership_path_inherited_when_member_added_after_default_caps() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xB4; 32]);
+    let child = ContextGroupId::from([0xB5; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &ns, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+
+    // Correct ordering: default caps set FIRST, then the member is
+    // added — `add_group_member` copies the default into bob's
+    // per-member capability row.
+    set_default_capabilities(&store, &ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS).unwrap();
+    add_group_member(&store, &ns, &bob, GroupMemberRole::Member).unwrap();
+
+    let path = check_group_membership_path(&store, &child, &bob).unwrap();
+    assert!(
+        matches!(path, MembershipPath::Inherited { .. }),
+        "member added after default caps must inherit Open-subgroup membership, got {path:?}"
+    );
+}
+
+#[test]
+fn check_membership_path_none_when_member_added_before_default_caps() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xB6; 32]);
+    let child = ContextGroupId::from([0xB7; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &ns, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+
+    // Buggy ordering (what the pre-fix `join_group` catch-up did when a
+    // node caught up on an earlier member's `MemberJoined` before its
+    // own `set_default_capabilities` ran): member added while default
+    // caps are still unset → no per-member capability row is written.
+    add_group_member(&store, &ns, &bob, GroupMemberRole::Member).unwrap();
+    set_default_capabilities(&store, &ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS).unwrap();
+
+    // The later `set_default_capabilities` does NOT retroactively
+    // materialize bob's per-member cap, so the inheritance check still
+    // returns `None`. This is exactly the state that produced
+    // `MemberJoinedOpen rejected: no membership path` on the
+    // later-joining peer; the `join_group` handler fix prevents it by
+    // ordering `set_default_capabilities` before the catch-up apply.
+    let path = check_group_membership_path(&store, &child, &bob).unwrap();
+    assert!(
+        matches!(path, MembershipPath::None),
+        "member added before default caps has no per-member cap row → no inherited path, got {path:?}"
+    );
+}
+
 #[test]
 fn check_membership_restricted_subgroup_does_not_inherit() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
