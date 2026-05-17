@@ -77,12 +77,34 @@ pub fn cascade_remove_member_from_group_tree(
 /// **Crash-consistency.** Rows are written one `put` at a time with
 /// no batch transaction, so a crash mid-loop leaves a partial restore
 /// (identity present for some contexts, absent for others). This is
-/// self-healing: the function is idempotent and the apply path that
-/// calls it re-runs on every receipt of the governance op (including
-/// catch-up sync re-application), so the next apply completes the
-/// remaining rows. The symmetric `cascade_remove_member` uses the
-/// same one-`handle`-loop pattern; if either is ever made
-/// transactional, both should be.
+/// self-healing, and the reason is the *ordering* of the apply
+/// pipeline — not blind re-application. Both call sites run this
+/// function as part of the op mutation, and the governance nonce /
+/// DAG head only advances *after* the entire mutation returns:
+/// `apply_local_signed_group_op` calls `apply_group_op_mutations`
+/// (which contains this loop) and only then `persist_group_governance_progress`
+/// (which advances the nonce); the `MemberJoinedOpen` path advances
+/// the namespace-DAG head likewise after `apply_signed_op` completes.
+/// So a crash that left rows unwritten necessarily crashed *before*
+/// the nonce/head advanced — the op is therefore NOT yet
+/// nonce-deduplicated and is re-applied on the next receipt, and the
+/// idempotent loop here fills the remaining rows. (Conversely, once
+/// the nonce advances and re-receipt becomes a no-op, the loop had
+/// already completed — there is nothing left to heal.) Worst case if
+/// that reasoning is ever broken by a refactor: the member calls
+/// `join_context` for the affected context, which writes the row
+/// directly. The symmetric `cascade_remove_member` uses the same
+/// one-`handle`-loop pattern; if either is ever made transactional,
+/// both should be.
+///
+/// **No concurrent-registration gap.** The enumerate and the write
+/// loop use separate store handles, but a context cannot be
+/// registered between them: governance ops for a namespace apply
+/// sequentially through a single actor, so no `ContextRegistered`
+/// can interleave with this `MemberAdded` / `MemberJoinedOpen`
+/// apply. A context registered by a *later* governance op is a
+/// no-op for membership — the rejoiner's row already exists by then,
+/// and `register_context` does not touch `ContextIdentity`.
 ///
 /// **Why `enumerate_group_contexts(.., 0, usize::MAX)` is fine here.**
 /// The hot-path concern is unbounded reads. In this codebase the
