@@ -2131,6 +2131,15 @@ impl DeltaStore {
         dag.has_delta(id)
     }
 
+    /// Check if a specific delta is applied in the in-memory DAG (not
+    /// merely present-but-pending). Used by the sync manager's DAG-head
+    /// divergence catch-up to decide whether a peer-advertised head has
+    /// actually been integrated into local state.
+    pub async fn is_applied(&self, id: &[u8; 32]) -> bool {
+        let dag = self.dag.read().await;
+        dag.is_applied(id)
+    }
+
     /// Get a specific delta (for sending to peers)
     pub async fn get_delta(&self, id: &[u8; 32]) -> Option<CausalDelta<Vec<Action>>> {
         let dag = self.dag.read().await;

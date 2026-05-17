@@ -3,7 +3,7 @@
 //! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
 //! **Strategy**: Try delta sync first, fallback to state sync on failure.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::pin;
 use std::sync::Arc;
 
@@ -1567,6 +1567,55 @@ impl SyncManager {
             .await?;
 
         if let Some((peer_root_hash, peer_dag_heads)) = peer_state {
+            // DAG-head divergence catch-up.
+            //
+            // `select_protocol` below only reconciles the entity Merkle
+            // tree — it has no `DeltaSync` arm for two initialized peers,
+            // and the pending-set catch-up above (`get_missing_parents`)
+            // is invisible to a node that missed a *contiguous suffix* of
+            // the delta chain: nothing is pending, so nothing reports a
+            // missing parent. Such a node would never pull the missed
+            // deltas, and its `dag_heads` would stay stale forever (only a
+            // restart, via init-time `load_persisted_deltas`, recovers it).
+            //
+            // If the peer advertises a DAG head we have not applied
+            // locally, route to the recursive parent-pull
+            // (`request_dag_heads_and_sync`): it fetches the peer's heads,
+            // they go pending, `get_missing_parents` then walks the missed
+            // suffix back to a delta we already hold, and the cascade
+            // applies it — advancing `dag_heads` and `root_hash`. This is
+            // divergence-triggered (peer head absent locally) and bounded
+            // (`request_missing_deltas`' fetch limit); it adds no periodic
+            // rescan.
+            if !peer_dag_heads.is_empty()
+                && self
+                    .local_dag_behind_peer_heads(context_id, &peer_dag_heads)
+                    .await
+            {
+                info!(
+                    %context_id,
+                    %chosen_peer,
+                    peer_heads = peer_dag_heads.len(),
+                    "Peer advertises unapplied DAG heads, requesting delta catch-up"
+                );
+                let result = self
+                    .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
+                    .await
+                    .wrap_err("DAG-head divergence catch-up")?;
+
+                // `None` means the peer served no heads after all — but we
+                // only entered this branch because an earlier
+                // `query_peer_dag_state` saw non-empty heads, so this is a
+                // transient peer hiccup. Bail to try another peer rather
+                // than reuse the now-consumed stream for the entity-tree
+                // path (matches the sibling `request_dag_heads_and_sync`
+                // call sites above and in the `DeltaSync` arm below).
+                if matches!(result, SyncProtocol::None) {
+                    bail!("Peer has no data for this context");
+                }
+                return Ok(Some(result));
+            }
+
             // Build handshakes for protocol selection (CIP §2.3)
             // Uses shared functions from calimero_node_primitives::sync::state_machine
             let local_hs = self.build_local_handshake(context);
@@ -1873,6 +1922,57 @@ impl SyncManager {
                 Ok(None)
             }
         }
+    }
+
+    /// Pure divergence rule behind [`Self::local_dag_behind_peer_heads`].
+    ///
+    /// Returns `true` when `peer_dag_heads` contains a non-genesis head
+    /// absent from `applied_heads`. Genesis sentinels (`[0u8; DIGEST_SIZE]`)
+    /// are skipped — they are never real deltas to fetch. Kept static and
+    /// closure-free so the genesis-skip / any-unapplied logic is
+    /// unit-testable without constructing a `SyncManager`.
+    fn peer_heads_diverge(
+        peer_dag_heads: &[[u8; DIGEST_SIZE]],
+        applied_heads: &HashSet<[u8; DIGEST_SIZE]>,
+    ) -> bool {
+        peer_dag_heads
+            .iter()
+            .any(|head| *head != [0u8; DIGEST_SIZE] && !applied_heads.contains(head))
+    }
+
+    /// True when the peer advertises a DAG head this node has not applied
+    /// locally — the trigger for DAG-head divergence catch-up in
+    /// [`Self::handle_dag_sync`].
+    ///
+    /// A missing delta store (no local DAG materialised for this context)
+    /// counts as behind: `request_dag_heads_and_sync` hydrates a fresh
+    /// store via its bootstrap path. Genesis heads (`[0u8; DIGEST_SIZE]`)
+    /// are skipped — they are never real deltas to fetch.
+    async fn local_dag_behind_peer_heads(
+        &self,
+        context_id: ContextId,
+        peer_dag_heads: &[[u8; DIGEST_SIZE]],
+    ) -> bool {
+        let Some(delta_store) = self
+            .node_state
+            .delta_stores
+            .get(&context_id)
+            .map(|ds| ds.clone())
+        else {
+            return true;
+        };
+
+        // Resolve applied-ness for each non-genesis head up front, then
+        // apply the pure divergence rule. Heads lists are tiny (typically
+        // 1-2), so resolving all of them rather than short-circuiting on
+        // the first miss costs nothing.
+        let mut applied_heads = HashSet::new();
+        for head in peer_dag_heads {
+            if *head != [0u8; DIGEST_SIZE] && delta_store.is_applied(head).await {
+                let _ = applied_heads.insert(*head);
+            }
+        }
+        Self::peer_heads_diverge(peer_dag_heads, &applied_heads)
     }
 
     async fn initiate_sync_inner(

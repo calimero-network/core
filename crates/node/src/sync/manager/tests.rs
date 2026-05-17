@@ -178,6 +178,95 @@ fn test_max_depth_calculation() {
 }
 
 // =========================================================================
+// Tests for the DAG-head divergence rule (`SyncManager::peer_heads_diverge`)
+// backing the divergence catch-up in `handle_dag_sync`.
+//
+// `peer_heads_diverge` is the pure kernel of `local_dag_behind_peer_heads`:
+// the async wrapper resolves each non-genesis peer head against the local
+// DAG's *applied* set (a present-but-pending delta is NOT applied, so it is
+// absent from `applied_heads` and counts as divergent) and a missing delta
+// store short-circuits to "behind" before this rule runs.
+// =========================================================================
+
+#[cfg(test)]
+mod peer_heads_diverge_tests {
+    use std::collections::HashSet;
+
+    use super::SyncManager;
+
+    /// No heads advertised — nothing to catch up on.
+    #[test]
+    fn empty_heads_do_not_diverge() {
+        assert!(!SyncManager::peer_heads_diverge(&[], &HashSet::new()));
+    }
+
+    /// A genesis sentinel head is skipped — it is never a real delta.
+    #[test]
+    fn genesis_only_heads_do_not_diverge() {
+        assert!(!SyncManager::peer_heads_diverge(
+            &[[0u8; 32]],
+            &HashSet::new()
+        ));
+    }
+
+    /// Peer advertises a real head we have not applied — diverge.
+    #[test]
+    fn unapplied_head_diverges() {
+        assert!(SyncManager::peer_heads_diverge(
+            &[[1u8; 32]],
+            &HashSet::new()
+        ));
+    }
+
+    /// Peer's only head is already applied locally — no divergence.
+    #[test]
+    fn applied_head_does_not_diverge() {
+        assert!(!SyncManager::peer_heads_diverge(
+            &[[1u8; 32]],
+            &HashSet::from([[1u8; 32]])
+        ));
+    }
+
+    /// One unapplied head among applied ones still diverges.
+    #[test]
+    fn one_unapplied_among_applied_diverges() {
+        assert!(SyncManager::peer_heads_diverge(
+            &[[1u8; 32], [2u8; 32]],
+            &HashSet::from([[1u8; 32]])
+        ));
+    }
+
+    /// Every advertised head is applied locally — no divergence.
+    #[test]
+    fn all_heads_applied_do_not_diverge() {
+        assert!(!SyncManager::peer_heads_diverge(
+            &[[1u8; 32], [2u8; 32]],
+            &HashSet::from([[1u8; 32], [2u8; 32]])
+        ));
+    }
+
+    /// A genesis sentinel alongside an applied real head — genesis is
+    /// skipped, the real head is applied, so no divergence.
+    #[test]
+    fn genesis_alongside_applied_head_does_not_diverge() {
+        assert!(!SyncManager::peer_heads_diverge(
+            &[[0u8; 32], [1u8; 32]],
+            &HashSet::from([[1u8; 32]])
+        ));
+    }
+
+    /// A genesis sentinel alongside an unapplied real head — genesis is
+    /// skipped, the real head is missing, so it diverges.
+    #[test]
+    fn genesis_alongside_unapplied_head_diverges() {
+        assert!(SyncManager::peer_heads_diverge(
+            &[[0u8; 32], [1u8; 32]],
+            &HashSet::new()
+        ));
+    }
+}
+
+// =========================================================================
 // Tests for the #2319 dispatch-attempt backoff helper
 // =========================================================================
 
