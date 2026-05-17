@@ -85,6 +85,9 @@ env:
   RUST_BACKTRACE: 1
   RUST_LOG: info,calimero_=debug
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
+  # Give merobox enough time on container stop to let perf flush perf.data
+  # on worker nodes (merobox v0.6.13+, calimero-network/merobox#238).
+  MEROBOX_STOP_TIMEOUT: 120
 
 jobs:
   build:
@@ -113,9 +116,6 @@ jobs:
           shared-key: fuzzy-load-test
           # Scheduled runs always save cache to keep it fresh
           save-if: "true"
-
-      - name: Download NEAR contracts
-        uses: ./.github/actions/download-contracts
 
       - name: Build kv-store app
         run: |
@@ -156,7 +156,6 @@ jobs:
             apps/kv-store/res/*.wasm
             apps/kv-store-with-handlers/res/*.wasm
             apps/scaffolding-e2e/res/*.wasm
-            contracts/near
           retention-days: 1
 
   fuzzy-test-kv-store:
@@ -182,6 +181,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: fuzzy-test-build-artifacts
+          # The artifact's least-common-ancestor is apps/ (it holds only
+          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
+          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
+          # layout the merobox fuzzy configs reference.
+          path: apps
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -350,23 +354,11 @@ jobs:
 
           exit $exit_code
 
-      - name: Collect profiling data from containers
+      - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/collect-from-containers.sh
-          ./scripts/profiling/collect-from-containers.sh \
-            "kv-store" \
-            "fuzzy-test-logs/kv-store" \
-            "profiling-data/kv-store" \
-            "profiling-reports/kv-store"
-
-      - name: Collect profiling data from host-side bind mounts
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/harvest-host-profiling.sh
-          ./scripts/profiling/harvest-host-profiling.sh \
-            "workflows/fuzzy-tests/kv-store/data" \
-            "profiling-data/kv-store"
+        uses: ./.github/actions/collect-fuzzy-profiling
+        with:
+          suite: kv-store
 
       - name: Set test result
         id: set-result
@@ -407,23 +399,6 @@ jobs:
           retention-days: 30
           compression-level: 6
 
-      - name: Upload KV Store profiling data
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-data-kv-store-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-data/kv-store/
-          retention-days: 30
-          compression-level: 6
-
-      - name: Upload KV Store profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-reports-kv-store-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-reports/kv-store/
-          retention-days: 30
-          compression-level: 6
 
   fuzzy-test-handlers:
     name: Run KV Store with Handlers Fuzzy Test with Profiling
@@ -448,6 +423,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: fuzzy-test-build-artifacts
+          # The artifact's least-common-ancestor is apps/ (it holds only
+          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
+          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
+          # layout the merobox fuzzy configs reference.
+          path: apps
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -607,23 +587,12 @@ jobs:
 
           exit $exit_code
 
-      - name: Collect profiling data from containers
+      - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/collect-from-containers.sh
-          ./scripts/profiling/collect-from-containers.sh \
-            "kv-store-with-handlers" \
-            "fuzzy-test-logs/kv-store-with-handlers" \
-            "profiling-data/kv-store-with-handlers" \
-            "profiling-reports/kv-store-with-handlers"
-
-      - name: Collect profiling data from host-side bind mounts
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/harvest-host-profiling.sh
-          ./scripts/profiling/harvest-host-profiling.sh \
-            "workflows/fuzzy-tests/kv-store-with-handlers/data" \
-            "profiling-data/kv-store-with-handlers"
+        uses: ./.github/actions/collect-fuzzy-profiling
+        with:
+          suite: kv-store-with-handlers
+          artifact-suffix: handlers
 
       - name: Set test result
         id: set-result-handlers
@@ -664,23 +633,6 @@ jobs:
           retention-days: 30
           compression-level: 6
 
-      - name: Upload Handlers profiling data
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-data-handlers-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-data/kv-store-with-handlers/
-          retention-days: 30
-          compression-level: 6
-
-      - name: Upload Handlers profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-reports-handlers-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-reports/kv-store-with-handlers/
-          retention-days: 30
-          compression-level: 6
 
   fuzzy-test-scaffolding-e2e:
     name: Run Scaffolding E2E Fuzzy Test with Profiling
@@ -701,6 +653,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: fuzzy-test-build-artifacts
+          # The artifact's least-common-ancestor is apps/ (it holds only
+          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
+          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
+          # layout the merobox fuzzy configs reference.
+          path: apps
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -857,23 +814,11 @@ jobs:
 
           exit $exit_code
 
-      - name: Collect profiling data from containers
+      - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/collect-from-containers.sh
-          ./scripts/profiling/collect-from-containers.sh \
-            "scaffolding-e2e" \
-            "fuzzy-test-logs/scaffolding-e2e" \
-            "profiling-data/scaffolding-e2e" \
-            "profiling-reports/scaffolding-e2e"
-
-      - name: Collect profiling data from host-side bind mounts
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/harvest-host-profiling.sh
-          ./scripts/profiling/harvest-host-profiling.sh \
-            "workflows/fuzzy-tests/scaffolding-e2e/data" \
-            "profiling-data/scaffolding-e2e"
+        uses: ./.github/actions/collect-fuzzy-profiling
+        with:
+          suite: scaffolding-e2e
 
       - name: Set test result
         id: set-result-e2e
@@ -914,23 +859,6 @@ jobs:
           retention-days: 30
           compression-level: 6
 
-      - name: Upload Scaffolding E2E profiling data
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-data-scaffolding-e2e-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-data/scaffolding-e2e/
-          retention-days: 30
-          compression-level: 6
-
-      - name: Upload Scaffolding E2E profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-reports-scaffolding-e2e-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-reports/scaffolding-e2e/
-          retention-days: 30
-          compression-level: 6
 
   fuzzy-test-group-governance:
     name: Run Group Governance Fuzzy Test with Profiling
@@ -951,6 +879,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: fuzzy-test-build-artifacts
+          # The artifact's least-common-ancestor is apps/ (it holds only
+          # apps/*/res/*.wasm), so upload-artifact strips the apps/ prefix.
+          # Extract under apps/ to restore the apps/<name>/res/<name>.wasm
+          # layout the merobox fuzzy configs reference.
+          path: apps
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
@@ -1107,23 +1040,11 @@ jobs:
 
           exit $exit_code
 
-      - name: Collect profiling data from containers
+      - name: Collect fuzzy profiling
         if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/collect-from-containers.sh
-          ./scripts/profiling/collect-from-containers.sh \
-            "group-governance" \
-            "fuzzy-test-logs/group-governance" \
-            "profiling-data/group-governance" \
-            "profiling-reports/group-governance"
-
-      - name: Collect profiling data from host-side bind mounts
-        if: always() && steps.image.outputs.profiling == 'true'
-        run: |
-          chmod +x scripts/profiling/harvest-host-profiling.sh
-          ./scripts/profiling/harvest-host-profiling.sh \
-            "workflows/fuzzy-tests/group-governance/data" \
-            "profiling-data/group-governance"
+        uses: ./.github/actions/collect-fuzzy-profiling
+        with:
+          suite: group-governance
 
       - name: Set test result
         id: set-result-gov
@@ -1164,23 +1085,6 @@ jobs:
           retention-days: 30
           compression-level: 6
 
-      - name: Upload Group Governance profiling data
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-data-group-governance-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-data/group-governance/
-          retention-days: 30
-          compression-level: 6
-
-      - name: Upload Group Governance profiling reports
-        if: always() && steps.image.outputs.profiling == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: profiling-reports-group-governance-${{ github.run_number }}-${{ github.run_id }}
-          path: profiling-reports/group-governance/
-          retention-days: 30
-          compression-level: 6
 
   test-summary:
     name: Test Summary
@@ -1253,5 +1157,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Profiling Artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "- profiling-data-*: Raw profiling data" >> $GITHUB_STEP_SUMMARY
-          echo "- profiling-reports-*: Generated reports (flamegraphs, memory reports)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`profiling-data-<suite>-*\`: per-node \`perf-*.data\` (CPU, frame-pointer call-graphs — merod in this image is built with \`-C force-frame-pointers=yes\`), \`perf-*.map\` (WASM JIT symbols), jemalloc \`*.heap\` dumps, and (when rendering succeeds) \`<node>/reports/flamegraph-{cpu,memory}-*.svg\`. Harvested from the node host data dirs (\`./data/<node>/profiling-dump/\`)." >> $GITHUB_STEP_SUMMARY
+          echo "- \`profiling-reports-<suite>-*\`: just the rendered flamegraph SVGs (CPU + memory + icicle), lifted out of \`profiling-data-*\` into a small standalone artifact for quick browsing. Empty only when the in-container flamegraph render produced nothing for that run — in which case use the raw \`perf-*.data\` / \`*.heap\` in \`profiling-data-*\` directly." >> $GITHUB_STEP_SUMMARY

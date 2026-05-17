@@ -15,6 +15,13 @@ description: >
        context under the subgroup to author *and* decrypt traffic
        successfully — i.e. the joiner's `sender_key` is populated and
        bidirectional read/write converges.
+    3. Surfaces the inherited joiner in `list_group_members` on their
+       own node — the effective-membership contract from issue #2371.
+       `join_subgroup_inheritance` writes no `GroupMember` row (the
+       apply path `execute_member_joined_open` is validate-only), so
+       before the fix `GET /admin-api/groups/<id>/members` returned
+       only the explicit members and apps keying "is the caller a
+       member?" off that list saw `false` for any inherited joiner.
 
   Pre-#2357 the only way to materialize the inherited path was to
   discover a child context id and call `join_context` against it
@@ -137,6 +144,34 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{inherit_was_inherited}}, true)'
+
+  # ── Phase 2b: list_group_members reflects the inherited joiner ────
+  # Issue #2371 regression. node-2 just joined `subgroup` via
+  # inheritance and has NOT yet called `join_context` — so it holds no
+  # explicit `GroupMember` row anywhere in the subgroup. Listing the
+  # subgroup members on node-2's own node must still include node-2:
+  # the admin-api handler unions the stored rows with
+  # `enumerate_inherited_members`. Before the fix this assertion fails
+  # — node-2's identity appeared only in `selfIdentity`, never in
+  # `members[]`.
+
+  - name: 'Node-2 lists subgroup members (issue #2371)'
+    type: list_group_members
+    node: join-inherit-node-2
+    group_id: '{{subgroup_id}}'
+    outputs:
+      subgroup_members: members
+
+  - name: Assert inherited joiner appears in the member list
+    type: assert
+    statements:
+      # node-2 joined `subgroup` via inheritance and holds no explicit
+      # `GroupMember` row. Before the #2371 fix it was absent from
+      # `members[]` (surfaced only in `selfIdentity`); the admin-api
+      # handler now unions inherited members in, so node-2's identity
+      # (`inherit_member_pk`, exported by the join-via-inheritance step)
+      # must appear in the listed members.
+      - 'contains({{subgroup_members}}, {{inherit_member_pk}})'
 
   # ── Phase 3: node-2 joins the context (key already delivered) ─────
   # This call should now be cheap because the group key is already
