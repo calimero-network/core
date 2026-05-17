@@ -74,8 +74,9 @@ pub use self::local_state::{
 };
 pub use self::membership::{
     add_group_member, add_group_member_with_keys, check_group_membership,
-    check_group_membership_path, count_group_admins, count_group_members, get_group_member_role,
-    get_group_member_value, has_direct_group_member, is_direct_group_admin, is_group_admin,
+    check_group_membership_path, count_group_admins, count_group_members,
+    enumerate_inherited_members, get_group_member_role, get_group_member_value,
+    has_direct_group_member, is_direct_group_admin, is_group_admin,
     is_group_admin_or_has_capability, is_inherited_admin, list_group_members,
     namespace_member_pubkeys, remove_group_member, require_group_admin,
     require_group_admin_or_capability, set_member_auto_follow, trusted_anchors_for_group,

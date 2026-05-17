@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::{MemberCapabilities, VisibilityMode};
 use calimero_primitives::context::GroupMemberRole;
@@ -309,6 +311,100 @@ pub fn check_group_membership(
         check_group_membership_path(store, group_id, identity)?,
         MembershipPath::None,
     ))
+}
+
+/// Enumerate the identities that are members of `group_id` purely by
+/// inheritance — i.e. those with a [`MembershipPath::Inherited`] path
+/// and no stored `GroupMember` row in `group_id` itself.
+///
+/// This is the "list" dual of [`check_group_membership_path`]: rather
+/// than testing one identity, it walks the same `Open` parent-chain and
+/// collects every ancestor's direct members that resolve to `Inherited`
+/// for `group_id`. The role is `Admin` for an inherited-admin path
+/// (`via_admin`) and `Member` otherwise.
+///
+/// Callers union the result with [`list_group_members`] (the stored,
+/// explicit rows) to obtain the *effective* member set — the contract
+/// `check_group_membership` already honours. Membership is recomputed
+/// from current ancestor state on every call, so it never goes stale
+/// when an ancestor's visibility flips or a cap is revoked (issue
+/// #2371).
+pub fn enumerate_inherited_members(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
+    // Direct members of `group_id` are explicit, not inherited — seed
+    // `seen` with them so they are never reported here. `seen` doubles
+    // as the dedup set across ancestor levels. `BTreeSet` (not
+    // `HashSet`) because `PublicKey` derives `Ord` but not `Hash`;
+    // O(log n) lookups are ample for governance-scale membership.
+    let mut seen: BTreeSet<PublicKey> = list_group_members(store, group_id, 0, usize::MAX)?
+        .into_iter()
+        .map(|(pk, _)| pk)
+        .collect();
+    let mut result = Vec::new();
+
+    // Walk the `Open` parent-chain, mirroring `check_group_membership_path`'s
+    // termination (first `Restricted` ancestor or namespace root, bounded
+    // by `MAX_NAMESPACE_DEPTH`). At each ancestor, every direct member —
+    // plus the `GroupMeta` admin, who may have no direct row of their own
+    // — is a candidate. `check_group_membership_path` then decides, from
+    // `group_id`, whether the candidate actually inherits and via which
+    // path. Reusing it verbatim keeps enumeration and the single-identity
+    // check from ever diverging on the anchor-cap / admin-override rules.
+    let mut current = *group_id;
+    // `terminated` distinguishes a legitimate exit (hit a `Restricted`
+    // wall or the namespace root) from loop-bound exhaustion. If the
+    // bound is hit without terminating, the parent chain has a cycle —
+    // bail rather than silently return a partial set, matching
+    // `check_group_membership_path` / `is_inherited_admin`.
+    let mut terminated = false;
+    for _ in 0..=MAX_NAMESPACE_DEPTH {
+        if get_subgroup_visibility(store, &current)? != VisibilityMode::Open {
+            terminated = true;
+            break;
+        }
+        let Some(parent) = get_parent_group(store, &current)? else {
+            terminated = true;
+            break;
+        };
+
+        let mut candidates: Vec<PublicKey> = list_group_members(store, &parent, 0, usize::MAX)?
+            .into_iter()
+            .map(|(pk, _)| pk)
+            .collect();
+        if let Some(meta) = load_group_meta(store, &parent)? {
+            candidates.push(meta.admin_identity);
+        }
+
+        for candidate in candidates {
+            // `insert` returns false when `candidate` was already seen
+            // (a direct member of `group_id`, or processed at a deeper
+            // ancestor) — skip the redundant path check in that case.
+            if !seen.insert(candidate) {
+                continue;
+            }
+            if let MembershipPath::Inherited { via_admin, .. } =
+                check_group_membership_path(store, group_id, &candidate)?
+            {
+                let role = if via_admin {
+                    GroupMemberRole::Admin
+                } else {
+                    GroupMemberRole::Member
+                };
+                result.push((candidate, role));
+            }
+        }
+
+        current = parent;
+    }
+    if !terminated {
+        bail!(
+            "enumerate_inherited_members exceeded MAX_NAMESPACE_DEPTH \
+             ({MAX_NAMESPACE_DEPTH}); possible cycle in store"
+        );
+    }
+    Ok(result)
 }
 
 /// Returns `true` if `identity` is a direct admin of this specific group
