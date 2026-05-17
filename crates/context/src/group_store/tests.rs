@@ -4058,6 +4058,58 @@ fn restore_member_context_identities_is_idempotent() {
 }
 
 #[test]
+fn restore_member_context_identities_repairs_keyless_row() {
+    // A pre-existing row with `private_key: None` leaves the rejoiner
+    // unable to sign. The restore must REPAIR it (fill `private_key`)
+    // rather than skip it on the `has` check — while preserving any
+    // `sender_key` already delivered onto that row.
+    let store = test_store();
+    let gid = test_group_id();
+    let member = PublicKey::from([0x23; 32]);
+    let sk_bytes = [0x66u8; 32];
+    let delivered_sender = [0x77u8; 32];
+    let ctx = ContextId::from([0xD2; 32]);
+    register_context_in_group(&store, &gid, &ctx).unwrap();
+    store_namespace_identity(&store, &gid, &member, &sk_bytes, &[0u8; 32]).unwrap();
+
+    // Keyless row with a delivered sender_key — the shape a restore
+    // must repair without clobbering the sender_key.
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextIdentity::new(ctx, member.into()),
+                &calimero_store::types::ContextIdentity {
+                    private_key: None,
+                    sender_key: Some(delivered_sender),
+                },
+            )
+            .unwrap();
+    }
+
+    restore_member_context_identities(&store, &gid, &member).unwrap();
+
+    let row = store
+        .handle()
+        .get(&calimero_store::key::ContextIdentity::new(
+            ctx,
+            member.into(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.private_key,
+        Some(sk_bytes),
+        "keyless row must be repaired with the rejoiner's namespace sk"
+    );
+    assert_eq!(
+        row.sender_key,
+        Some(delivered_sender),
+        "an already-delivered sender_key must survive the repair"
+    );
+}
+
+#[test]
 fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
@@ -4074,7 +4126,17 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     // The local rejoiner: their namespace identity is stored. Note
     // `gid` here is treated as both the group and the namespace root —
     // for a real subgroup the resolve_namespace walk would find the
-    // parent, but for this unit test gid IS the namespace.
+    // parent, but for this unit test gid IS the namespace. The
+    // subgroup-with-real-namespace variant is covered separately by
+    // `member_added_after_remove_restores_context_identity_for_subgroup_with_real_namespace`.
+    // Pin the flat-namespace assumption explicitly so a future change
+    // to `resolve_namespace` that breaks the no-parent case is caught
+    // here rather than silently passing.
+    assert_eq!(
+        resolve_namespace(&store, &gid).unwrap(),
+        gid,
+        "flat-namespace test precondition: gid must resolve to itself"
+    );
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
     let member_sk_bytes = *member_sk;

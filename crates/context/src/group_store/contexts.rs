@@ -52,13 +52,15 @@ pub fn cascade_remove_member_from_group_tree(
 /// `ContextIdentity` rows for the rejoiner under every context registered
 /// directly beneath `group_id`.
 ///
-/// Idempotent on rows that already exist (e.g., first-time join via the
-/// `join_context` handler beats the apply-path call to here). A rejoiner
-/// who never had a `ContextIdentity` row for a given context (because the
-/// context was registered after they were removed) gets a freshly-written
-/// row with `private_key: Some(_)` and `sender_key: None` — the same
-/// shape `join_context` writes — so KeyDelivery can then populate
-/// `sender_key` exactly as it would on first-join.
+/// Idempotent on rows that already carry a usable `private_key: Some(_)`
+/// (e.g., a first-time join via the `join_context` handler beat the
+/// apply-path call to here). A rejoiner who never had a `ContextIdentity`
+/// row for a given context gets a freshly-written row with
+/// `private_key: Some(_)` and `sender_key: None` — the same shape
+/// `join_context` writes — so KeyDelivery can then populate `sender_key`.
+/// A pre-existing row with `private_key: None` is repaired in place
+/// (`private_key` filled, `sender_key` preserved) rather than skipped,
+/// since a keyless row would leave the rejoiner unable to sign.
 ///
 /// **Anti-spoof gate is enforced inside this function.** Writing a
 /// `private_key: Some(_)` row for `member` would let the writing node
@@ -117,12 +119,31 @@ pub fn restore_member_context_identities(
     let mut handle = store.handle();
     for context_id in &contexts {
         let identity_key = calimero_store::key::ContextIdentity::new(*context_id, (*member).into());
-        if !handle.has(&identity_key)? {
+        // Three cases:
+        //   * No row              → write a fresh `Some(private_key)` row.
+        //   * Row, private_key None → repair it: the rejoiner can't sign
+        //     with a `None` key. Overwrite `private_key` but PRESERVE
+        //     `sender_key` so an already-delivered key isn't clobbered.
+        //   * Row, private_key Some → leave untouched (idempotent — a
+        //     prior `join_context` already wrote a usable row).
+        // The `None` case shouldn't arise on the local rejoiner's own
+        // store today (the cascade deletes the whole row, and the
+        // anti-spoof gate above means peers never write a `None` row
+        // for a member they don't own), but repairing it rather than
+        // skipping keeps the restore robust against any future path
+        // that leaves a keyless row behind.
+        let existing = handle.get(&identity_key)?;
+        let needs_write = match &existing {
+            None => true,
+            Some(row) => row.private_key.is_none(),
+        };
+        if needs_write {
+            let sender_key = existing.and_then(|row| row.sender_key);
             handle.put(
                 &identity_key,
                 &calimero_store::types::ContextIdentity {
                     private_key: Some(private_key),
-                    sender_key: None,
+                    sender_key,
                 },
             )?;
             tracing::info!(
