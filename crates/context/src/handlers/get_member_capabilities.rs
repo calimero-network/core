@@ -18,13 +18,14 @@ impl Handler<GetMemberCapabilitiesRequest> for ContextManager {
                 bail!("group '{group_id:?}' not found");
             }
 
-            if group_store::get_group_member_role(&self.datastore, &group_id, &member)?.is_none() {
+            let Some(capabilities) = group_store::get_effective_member_capabilities(
+                &self.datastore,
+                &group_id,
+                &member,
+            )?
+            else {
                 bail!("identity is not a member of group '{group_id:?}'");
-            }
-
-            let capabilities =
-                group_store::get_member_capability(&self.datastore, &group_id, &member)?
-                    .unwrap_or(0);
+            };
 
             Ok(GetMemberCapabilitiesResponse { capabilities })
         })();
