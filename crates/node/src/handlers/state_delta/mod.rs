@@ -374,7 +374,18 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                     "governance-pending drain: rejecting pending delta — buffered without \
                      governance_position on a group context (defensive — should be unreachable)"
                 );
-                crate::node_metrics::record_governance_drain_outcome("no_governance_position");
+                // Distinct label from the earlier `no_governance_position`
+                // early-continue: that case is "buffer entry had no
+                // position at all" (which is well-defined and routine);
+                // this case is "buffer entry had a position but the
+                // helper reports `GroupContextNoPosition`," which is
+                // structurally impossible today. Surfacing it via its
+                // own label means a non-zero counter here is an
+                // operator signal that the buffer-shape invariant
+                // changed somewhere upstream.
+                crate::node_metrics::record_governance_drain_outcome(
+                    "buffer_shape_invariant_violation",
+                );
                 continue;
             }
             GroupIdCheck::LookupError(err) => {
@@ -2301,100 +2312,77 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // this, every delta arriving inside the sync window bypasses cross-DAG
     // authorization.
     //
-    // Anti-bypass: a missing position is only legitimate for non-group
-    // contexts. Mirror the check in `handle_state_delta`: if the local
-    // record says this is a group context, refuse to apply a delta with
-    // no position.
-    if buffered.governance_position.is_none() {
-        let store = context_client.datastore();
-        match calimero_context::group_store::get_group_for_context(store, &context_id) {
-            Ok(None) => {
-                // Genuine non-group context — fall through.
-            }
-            Ok(Some(gid)) => {
-                warn!(
-                    %context_id,
-                    author = %buffered.author_id,
-                    group_id = ?gid,
-                    delta_id = ?delta_id,
-                    "cross-DAG check (replay): rejecting buffered delta — group context but no \
-                     governance_position (likely a malicious bypass attempt)"
-                );
-                return Ok(false);
-            }
-            Err(err) => {
-                warn!(
-                    %context_id,
-                    author = %buffered.author_id,
-                    %err,
-                    "cross-DAG check (replay): get_group_for_context failed; rejecting buffered \
-                     delta to avoid silent bypass"
-                );
-                return Ok(false);
-            }
+    // Anti-bypass: see [`GroupIdCheck`] for the two bypasses this match
+    // closes (mismatched group_id on a signed position, and lying about
+    // being a non-group context). Single store lookup covers both
+    // position-present and position-absent cases — same shape as
+    // `handle_state_delta`.
+    //
+    // INVARIANT: `ContextManager` serializes governance ops, so
+    // no concurrent group reassignment can interleave between this
+    // check and the `membership_status_at` call below — see the
+    // TOCTOU note on `verify_position_group_id_matches_context`.
+    let datastore = context_client.datastore();
+    match verify_position_group_id_matches_context(
+        datastore,
+        &context_id,
+        buffered.governance_position.as_ref().map(|p| p.group_id),
+    ) {
+        GroupIdCheck::NonGroupOk => {
+            // Legacy non-group context with no claimed group. Fall through.
+        }
+        GroupIdCheck::Match => {
+            // Position's group matches the context's owning group. Fall
+            // through to the membership-status check below.
+        }
+        GroupIdCheck::GroupContextNoPosition { owning } => {
+            warn!(
+                %context_id,
+                author = %buffered.author_id,
+                owning_group = ?owning,
+                delta_id = ?delta_id,
+                "cross-DAG check (replay): rejecting buffered delta — group context but no \
+                 governance_position (likely a malicious bypass attempt)"
+            );
+            return Ok(false);
+        }
+        GroupIdCheck::NonGroupContextWithPosition { claimed } => {
+            warn!(
+                %context_id,
+                author = %buffered.author_id,
+                claimed_group = ?claimed,
+                delta_id = ?delta_id,
+                "cross-DAG check (replay): rejecting buffered delta — governance_position \
+                 present but context is not part of any group"
+            );
+            return Ok(false);
+        }
+        GroupIdCheck::Mismatch { owning, claimed } => {
+            warn!(
+                %context_id,
+                author = %buffered.author_id,
+                owning_group = ?owning,
+                claimed_group = ?claimed,
+                delta_id = ?delta_id,
+                "cross-DAG check (replay): rejecting buffered delta — governance_position \
+                 references a different group than the context's owning group"
+            );
+            return Ok(false);
+        }
+        GroupIdCheck::LookupError(err) => {
+            warn!(
+                %context_id,
+                author = %buffered.author_id,
+                %err,
+                "cross-DAG check (replay): get_group_for_context failed; rejecting buffered \
+                 delta to avoid silent bypass"
+            );
+            return Ok(false);
         }
     }
 
     if let Some(pos) = buffered.governance_position.as_ref() {
         let datastore = context_client.datastore();
-        // Anti-bypass: see `GroupIdCheck` for the bypasses this match
-        // closes. The replay path only sees `Some` positions; the
-        // `NonGroupOk` / `GroupContextNoPosition` variants are
-        // unreachable here, kept for exhaustive-match safety.
-        //
-        // INVARIANT: `ContextManager` serializes governance ops, so
-        // no concurrent group reassignment can interleave between
-        // this check and the `membership_status_at` call below — see
-        // the TOCTOU note on `verify_position_group_id_matches_context`.
-        match verify_position_group_id_matches_context(datastore, &context_id, Some(pos.group_id)) {
-            GroupIdCheck::Match | GroupIdCheck::NonGroupOk => {}
-            GroupIdCheck::Mismatch { owning, claimed } => {
-                warn!(
-                    %context_id,
-                    author = %buffered.author_id,
-                    owning_group = ?owning,
-                    claimed_group = ?claimed,
-                    "cross-DAG check (replay): rejecting buffered delta — governance_position \
-                     references a different group than the context's owning group"
-                );
-                return Ok(false);
-            }
-            GroupIdCheck::NonGroupContextWithPosition { claimed } => {
-                warn!(
-                    %context_id,
-                    author = %buffered.author_id,
-                    claimed_group = ?claimed,
-                    "cross-DAG check (replay): rejecting buffered delta — governance_position \
-                     present but context is not part of any group"
-                );
-                return Ok(false);
-            }
-            GroupIdCheck::GroupContextNoPosition { owning } => {
-                // Replay only sees `Some` positions today (the buffer
-                // shape requires a position). Reject explicitly rather
-                // than fall through so that any future change to the
-                // buffer acceptance criteria can't silently bypass the
-                // group-id check at this site.
-                warn!(
-                    %context_id,
-                    author = %buffered.author_id,
-                    owning_group = ?owning,
-                    "cross-DAG check (replay): rejecting buffered delta — buffered without \
-                     governance_position on a group context (defensive — should be unreachable)"
-                );
-                return Ok(false);
-            }
-            GroupIdCheck::LookupError(err) => {
-                warn!(
-                    %context_id,
-                    author = %buffered.author_id,
-                    %err,
-                    "cross-DAG check (replay): get_group_for_context failed; rejecting buffered \
-                     delta to avoid silent bypass"
-                );
-                return Ok(false);
-            }
-        }
         // Forward-only invariant — same contract as the gossip-receive
         // and drain sites. Snapshot-sync establishes a context-state
         // baseline that may be at-or-ahead of the buffered delta's
