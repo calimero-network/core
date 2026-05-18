@@ -158,7 +158,17 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
             existing.metadata.storage_type,
             StorageType::Shared { .. } | StorageType::User { .. }
         ) {
-            tracing::debug!(
+            // `info` (not `debug`) so operators have a signal when this
+            // fires. In the common case (both peers carrying an unsigned
+            // bootstrap `SharedStorage` field that no one has written
+            // yet) it fires once per entity per sync session — bounded
+            // by the number of bootstrap fields on `#[app::state]`. If
+            // the count grows unboundedly across many sync sessions for
+            // the same entity, the delta path is not delivering signed
+            // state — the operator-visible signal here is what surfaces
+            // that. A counter would be sharper than a log; left as
+            // a follow-up to keep this commit focused.
+            tracing::info!(
                 %entity_id,
                 existing_type = ?existing.metadata.storage_type,
                 "Skipping sync apply for Shared/User entity with no wire \

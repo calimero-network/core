@@ -1159,6 +1159,15 @@ mod minimal_struct_layout_compat {
 /// Tests for `verify_ancestor_integrity`: the explicit unsigned check
 /// that replaces the v1 signed tree-state binding. Exercised through
 /// the public `apply_action` API rather than the private helper.
+///
+/// **`MockedStorage` scope allocation**: this module uses scopes
+/// **3001–3004** (one per test). The `MockedStorage<N>` const generic
+/// gives each scope an isolated in-memory store so concurrent tests
+/// don't see each other's writes. New tests in this module should pick
+/// the next free scope in this range. The wider codebase uses
+/// disjoint ranges (e.g. p3 dag-causal tests use 6400+; pick a range
+/// that doesn't overlap with any other test module if you add new
+/// `MockedStorage<…>` scopes elsewhere).
 #[cfg(test)]
 mod verify_ancestor_integrity_tests {
     use crate::address::Id;

@@ -396,8 +396,8 @@ impl LeafMetadata {
     /// `Public` / `Frozen` the wire field must stay `None` (the receiver
     /// has no signature to verify on those, and applying a wire-supplied
     /// `Public` here would open a storage-type-downgrade path on the
-    /// receiver). Wrong-type calls panic in debug, are silently ignored
-    /// in release — callers should go through
+    /// receiver). Wrong-type calls panic in debug, log a `warn!` and
+    /// leave `authorization` unset in release — callers should go through
     /// `crate::sync::helpers::wire_authorization_for` in `calimero-node`
     /// rather than build this directly.
     #[must_use]
@@ -406,21 +406,31 @@ impl LeafMetadata {
         authorization: calimero_storage::entities::StorageType,
     ) -> Self {
         use calimero_storage::entities::StorageType;
+        let is_auth_type = matches!(
+            authorization,
+            StorageType::Shared { .. } | StorageType::User { .. }
+        );
         debug_assert!(
-            matches!(
-                authorization,
-                StorageType::Shared { .. } | StorageType::User { .. }
-            ),
+            is_auth_type,
             "with_authorization called with non-Shared/User storage type \
              ({:?}); only Shared/User carry wire authorization. See field \
              doc on `authorization`.",
             authorization,
         );
-        if matches!(
-            authorization,
-            StorageType::Shared { .. } | StorageType::User { .. }
-        ) {
+        if is_auth_type {
             self.authorization = Some(authorization);
+        } else {
+            // Visibility for release builds — the debug_assert above
+            // catches this in test/dev, but a release build silently
+            // ignoring the call would mask a real caller bug. Operators
+            // can filter on this message to catch wrong-type call sites
+            // in production telemetry.
+            tracing::warn!(
+                bad_type = ?authorization,
+                "with_authorization called with non-Shared/User storage type — \
+                 ignoring; this is a programming error and the resulting \
+                 LeafMetadata will ship without wire authorization",
+            );
         }
         self
     }

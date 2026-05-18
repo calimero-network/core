@@ -1868,13 +1868,30 @@ impl<S: StorageAdaptor> Interface<S> {
         unimplemented!()
     }
 
-    /// Helper to verify a new `Update` action.
+    /// Helper to verify an upsert (`Add` or `Update`) action against the
+    /// receiver's currently-stored entity.
+    ///
+    /// Both upsert variants share the same storage-type-match invariant:
+    /// once an entity exists locally with a given `StorageType`, no remote
+    /// action can change that type. `Update` is the path you'd expect to
+    /// see for an existing entity, but `Add` for an entity that already
+    /// exists locally must also be gated — otherwise a forged
+    /// `Action::Add { storage_type: Public }` for an entity stored as
+    /// `Shared`/`User` would land in the `Public` arm of `apply_action`
+    /// (which intentionally skips signature verification, see the
+    /// `hash_authorization_for_payload` doc), reach `save_internal`, and
+    /// silently downgrade the entity to `Public` — the storage-type
+    /// downgrade attack the bot review on PR #2386 flagged.
     fn verify_action_update(action: &Action) -> Result<(), StorageError> {
         let (metadata, _data, id) = match action {
-            Action::Update {
+            Action::Add {
+                metadata, data, id, ..
+            }
+            | Action::Update {
                 metadata, data, id, ..
             } => (metadata, data, *id),
-            // Should not happen
+            // DeleteRef has its own type-match check in the main
+            // `apply_action`; Compare doesn't mutate.
             _ => return Ok(()),
         };
 
