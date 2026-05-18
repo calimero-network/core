@@ -8094,6 +8094,30 @@ fn get_effective_member_capabilities_returns_stored_bits_for_direct_member() {
 }
 
 #[test]
+fn get_effective_member_capabilities_some_zero_for_direct_member_without_cap_row() {
+    // Regression guard for the `unwrap_or(0)` branch via the *direct*
+    // path: a member added with `add_group_member` and no explicit
+    // `set_member_capability` grant holds no per-member capability row.
+    // They are still a member, so the gate must resolve them to
+    // `Some(0)` ("member, no delegated bits") — not `None`. The
+    // inherited-member tests above also reach `unwrap_or(0)`, but only
+    // through the inherited-path resolution; this pins the direct-row
+    // case, the common shape for a plain member.
+    let store = test_store();
+    let group = ContextGroupId::from([0x58; 32]);
+    let dave = PublicKey::from([0x05; 32]);
+
+    add_group_member(&store, &group, &dave, GroupMemberRole::Member).unwrap();
+    // No `set_member_capability` call — no capability row is stored.
+
+    assert_eq!(
+        get_effective_member_capabilities(&store, &group, &dave).unwrap(),
+        Some(0),
+        "direct member with no capability row must resolve to Some(0)"
+    );
+}
+
+#[test]
 fn get_effective_member_capabilities_none_for_non_member() {
     // Regression guard: a true non-member still resolves to `None` so the
     // handler keeps rejecting them.
