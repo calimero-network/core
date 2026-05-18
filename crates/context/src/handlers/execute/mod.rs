@@ -1216,6 +1216,47 @@ async fn internal_execute(
         && crate::group_store::is_read_only_for_context(&datastore, &context.id, &executor)
             .unwrap_or(false);
 
+    // B3 user-storage extension: a state op authored by a non-member of
+    // the context's owning group is dropped after WASM execution, mirroring
+    // the ReadOnly handling below. The receive-path cross-DAG check
+    // (`membership_status_at`) already rejects deltas from non-members on
+    // peers; without this companion check at the local-execute path, a
+    // removed member's WASM would still mutate local state (including
+    // their own User-storage entries). Those mutations never propagate —
+    // peers reject them — but they accumulate as silent divergence from
+    // the canonical view until a sync round repairs the local state.
+    // Discarding the outcome here closes that gap.
+    //
+    // Read-only calls (`is_state_op == false`) are unaffected — reads of
+    // a context's state are allowed for anyone with local access; if the
+    // method genuinely mutates storage despite being read-typed, the
+    // ReadOnly discard below clears it on the same path.
+    //
+    // Live-state check vs. the receive path's forward-only check: at
+    // execute time there is no signed governance cut to evaluate
+    // membership against, so this consults current membership. The two
+    // checks complement each other rather than duplicate — receive-path
+    // governs whether a remote delta is accepted; this governs whether
+    // local WASM may produce one.
+    // Fail-closed on store error: an authorization gate that fails open
+    // on transient store errors silently grants permission exactly when
+    // the check is most needed (storage degradation). The non-group-
+    // context happy-path already returns `Ok(true)` inside the helper,
+    // so this fail-closed only affects genuine error cases — and there
+    // the safer answer is "drop the state op." Asymmetry with the
+    // `is_read_only_for_context` call above (`.unwrap_or(false)` reads
+    // as fail-open for that check because `false` means "not
+    // read-only" → allow) is deliberate: the ReadOnly check is a
+    // defense-in-depth post-discard, while this is a primary
+    // authorization gate.
+    let executor_not_authorized_for_state_op = is_state_op
+        && !crate::group_store::is_authorized_for_context_state_op(
+            &datastore,
+            &context.id,
+            &executor,
+        )
+        .unwrap_or(false);
+
     let storage = ContextStorage::from(datastore.clone(), context.id);
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
     let (mut outcome, storage, private_storage) = execute(
@@ -1278,6 +1319,19 @@ async fn internal_execute(
             %executor,
             method = %method,
             "ReadOnly member attempted state mutation — discarding changes"
+        );
+        outcome.root_hash = None;
+        outcome.artifact.clear();
+        outcome.xcalls.clear();
+        return Ok((outcome, None));
+    }
+
+    if executor_not_authorized_for_state_op && outcome.root_hash.is_some() {
+        info!(
+            context_id = %context.id,
+            %executor,
+            method = %method,
+            "Non-member attempted state mutation — discarding changes (B3 user-storage extension)"
         );
         outcome.root_hash = None;
         outcome.artifact.clear();
