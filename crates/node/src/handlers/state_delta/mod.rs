@@ -197,6 +197,48 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
             continue;
         };
         let datastore = input.node_clients.context.datastore();
+        // Anti-bypass: verify the position's `group_id` matches the
+        // group that actually owns this context. See the gossip-
+        // receive site in `apply_authorized_state_delta` for prose.
+        match calimero_context::group_store::get_group_for_context(datastore, context_id) {
+            Ok(Some(owning_gid)) if owning_gid == pos.group_id => {}
+            Ok(Some(owning_gid)) => {
+                warn!(
+                    %context_id,
+                    delta_id = ?buffered.id,
+                    author = %buffered.author_id,
+                    owning_group = ?owning_gid,
+                    claimed_group = ?pos.group_id,
+                    "governance-pending drain: rejecting pending delta — governance_position \
+                     references a different group than the context's owning group"
+                );
+                crate::node_metrics::record_governance_drain_outcome("group_mismatch");
+                continue;
+            }
+            Ok(None) => {
+                warn!(
+                    %context_id,
+                    delta_id = ?buffered.id,
+                    author = %buffered.author_id,
+                    claimed_group = ?pos.group_id,
+                    "governance-pending drain: rejecting pending delta — governance_position \
+                     present but context is not part of any group"
+                );
+                crate::node_metrics::record_governance_drain_outcome("group_mismatch");
+                continue;
+            }
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    delta_id = ?buffered.id,
+                    author = %buffered.author_id,
+                    %err,
+                    "governance-pending drain: get_group_for_context failed; dropping delta to avoid silent bypass"
+                );
+                crate::node_metrics::record_governance_drain_outcome("group_lookup_failed");
+                continue;
+            }
+        }
         // Forward-only invariant — see the gossip-receive site in
         // `apply_authorized_state_delta` for the full contract. The
         // governance-pending drain MUST use the buffered delta's
@@ -1010,6 +1052,48 @@ pub async fn handle_state_delta(
 
     if let Some(pos) = governance_position.as_ref() {
         let datastore = node_clients.context.datastore();
+        // Anti-bypass: verify the position's `group_id` matches the
+        // group that actually owns this context. Without this check,
+        // a delta for context X (owned by group A) could carry a
+        // position with `group_id = B` (a group the sender IS a
+        // member of), the membership_status_at call would succeed
+        // against group B, and the write would land in context X
+        // without ever checking the author's membership in group A.
+        // The position is signed, so the sender chose the group_id
+        // deliberately — a mismatch is bypass-shaped, not corruption.
+        match calimero_context::group_store::get_group_for_context(datastore, &context_id) {
+            Ok(Some(owning_gid)) if owning_gid == pos.group_id => {}
+            Ok(Some(owning_gid)) => {
+                warn!(
+                    %context_id,
+                    %author_id,
+                    owning_group = ?owning_gid,
+                    claimed_group = ?pos.group_id,
+                    "cross-DAG check: rejecting state delta — governance_position references \
+                     a different group than the context's owning group"
+                );
+                return Ok(());
+            }
+            Ok(None) => {
+                warn!(
+                    %context_id,
+                    %author_id,
+                    claimed_group = ?pos.group_id,
+                    "cross-DAG check: rejecting state delta — governance_position present \
+                     but context is not part of any group"
+                );
+                return Ok(());
+            }
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    %author_id,
+                    %err,
+                    "cross-DAG check: get_group_for_context failed; rejecting delta to avoid silent bypass"
+                );
+                return Ok(());
+            }
+        }
         // Forward-only invariant — load-bearing. The argument passed
         // to `membership_status_at` is the delta's *signed* governance
         // position (carried inside the delta envelope by the author at
@@ -1990,6 +2074,43 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
 
     if let Some(pos) = buffered.governance_position.as_ref() {
         let datastore = context_client.datastore();
+        // Anti-bypass: verify the position's `group_id` matches the
+        // group that actually owns this context. See the gossip-
+        // receive site in `apply_authorized_state_delta` for prose.
+        match calimero_context::group_store::get_group_for_context(datastore, &context_id) {
+            Ok(Some(owning_gid)) if owning_gid == pos.group_id => {}
+            Ok(Some(owning_gid)) => {
+                warn!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    owning_group = ?owning_gid,
+                    claimed_group = ?pos.group_id,
+                    "cross-DAG check (replay): rejecting buffered delta — governance_position \
+                     references a different group than the context's owning group"
+                );
+                return Ok(false);
+            }
+            Ok(None) => {
+                warn!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    claimed_group = ?pos.group_id,
+                    "cross-DAG check (replay): rejecting buffered delta — governance_position \
+                     present but context is not part of any group"
+                );
+                return Ok(false);
+            }
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    author = %buffered.author_id,
+                    %err,
+                    "cross-DAG check (replay): get_group_for_context failed; rejecting buffered \
+                     delta to avoid silent bypass"
+                );
+                return Ok(false);
+            }
+        }
         // Forward-only invariant — same contract as the gossip-receive
         // and drain sites. Snapshot-sync establishes a context-state
         // baseline that may be at-or-ahead of the buffered delta's
