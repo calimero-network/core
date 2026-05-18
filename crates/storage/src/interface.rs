@@ -497,7 +497,37 @@ impl<S: StorageAdaptor> Interface<S> {
                             stored_writers.clone(),
                         )?;
                     }
-                    StorageType::Public => { /* No special checks */ }
+                    StorageType::Public => {
+                        // No signature verification for Public.
+                        //
+                        // `Action::payload_for_signing` produces a minimal
+                        // payload for `Public` (type tag only) — see the doc
+                        // on `hash_authorization_for_payload`. That payload
+                        // is NOT load-bearing because this arm never runs an
+                        // `ed25519_verify`; it just falls through to the
+                        // upsert below.
+                        //
+                        // Storage-type-downgrade prevention:
+                        // - `Update` of an entity with a different stored
+                        //   storage type is rejected by
+                        //   `verify_action_update` above.
+                        // - `Add` of `Public` for an entity that already
+                        //   exists locally as `Shared`/`User` is not
+                        //   synthesized by the sync apply path
+                        //   (`apply_leaf_with_crdt_merge` produces
+                        //   `Action::Update` whenever the entity exists),
+                        //   and a forged `Action::Add` from the gossipsub
+                        //   delta path requires forging a signed
+                        //   `CausalDelta` (ed25519 over the artifact).
+                        //
+                        // If a future refactor of `apply_action` ever adds
+                        // a code path that lets a Public action reach
+                        // `save_internal` for an entity stored as
+                        // `Shared`/`User`, the downgrade protection breaks
+                        // silently — add an explicit storage-type-match
+                        // check here instead of relying on the upstream
+                        // guards.
+                    }
                 }
             }
             Action::DeleteRef { id, metadata, .. } => {
