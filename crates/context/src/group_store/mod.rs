@@ -125,7 +125,9 @@ pub use self::signing_keys::{
     delete_all_group_signing_keys, delete_group_signing_key, get_group_signing_key,
     require_group_signing_key, resolve_group_signing_key, store_group_signing_key,
 };
-pub use self::tee::{is_quote_hash_used, read_tee_admission_policy, TeeAdmissionPolicy};
+pub use self::tee::{
+    is_quote_hash_used, is_tee_admitted_identity, read_tee_admission_policy, TeeAdmissionPolicy,
+};
 pub use self::upgrades::{
     delete_group_upgrade, enumerate_in_progress_upgrades, load_group_upgrade, save_group_upgrade,
 };

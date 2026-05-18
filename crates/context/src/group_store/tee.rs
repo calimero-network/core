@@ -1,5 +1,6 @@
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
@@ -78,6 +79,30 @@ pub fn is_quote_hash_used(
             } = op.op
             {
                 if existing_hash == quote_hash {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+/// True if `identity` joined `group_id` via a `MemberJoinedViaTeeAttestation`
+/// op. TEE nodes have no separate roster — admission is recorded only by
+/// that op in the governance log, so this scans the same op log as
+/// [`is_quote_hash_used`] and matches on the joined member's identity.
+pub fn is_tee_admitted_identity(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+) -> EyreResult<bool> {
+    let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
+
+    for (_seq, bytes) in &entries {
+        if let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) {
+            if let GroupOp::MemberJoinedViaTeeAttestation { member, .. } = op.op {
+                if member == *identity {
                     return Ok(true);
                 }
             }

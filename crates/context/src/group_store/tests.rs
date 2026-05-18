@@ -8082,3 +8082,42 @@ fn subgroup_visible_to_restricted_child_visible_to_its_member() {
     add_group_member(&store, &child, &member, GroupMemberRole::Member).unwrap();
     assert!(subgroup_visible_to(&store, &parent, &child, Some(&member)).unwrap());
 }
+
+// ---------------------------------------------------------------------
+// is_tee_admitted_identity
+// ---------------------------------------------------------------------
+
+#[test]
+fn is_tee_admitted_identity_matches_tee_joined_member() {
+    let store = test_store();
+    let mut rng = rand::thread_rng();
+    let namespace_id = [0xAA; 32];
+    let gid = ContextGroupId::from(namespace_id);
+    let tee_node = PublicKey::from([0x42; 32]);
+    let ordinary = PublicKey::from([0x43; 32]);
+
+    let signer_sk = PrivateKey::random(&mut rng);
+    let tee_op = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberJoinedViaTeeAttestation {
+            member: tee_node,
+            quote_hash: [0x01; 32],
+            mrtd: "m1".to_owned(),
+            rtmr0: "r0".to_owned(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(&store, &gid, 1, &borsh::to_vec(&tee_op).unwrap()).unwrap();
+
+    assert!(is_tee_admitted_identity(&store, &gid, &tee_node).unwrap());
+    assert!(!is_tee_admitted_identity(&store, &gid, &ordinary).unwrap());
+}
