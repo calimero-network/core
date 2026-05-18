@@ -1,5 +1,6 @@
 use calimero_context_client::local_governance::{
-    AckRouter, EncryptedGroupOp, GroupOp, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
+    hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, NamespaceOp, RootOp,
+    SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
@@ -482,9 +483,14 @@ impl<'a> NamespaceGovernance<'a> {
             head.next_nonce,
             op,
         )?;
-        let op_hash = signed
-            .content_hash()
-            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        // Topic-scoped hash — the same identifier
+        // `publish_and_await_ack_namespace` records in a *successful*
+        // `DeliveryReport`. Computing it the same way here keeps the
+        // `op_hash` on the synthesized best-effort report (below)
+        // consistent with the success path, so log correlation works
+        // regardless of whether the publish confirmed.
+        let op_hash = hash_scoped_namespace(topic.as_str().as_bytes(), &signed)
+            .map_err(|e| eyre::eyre!("hash_scoped_namespace: {e}"))?;
 
         self.apply_signed_op(&signed)?;
 
@@ -656,6 +662,12 @@ impl<'a> NamespaceGovernance<'a> {
         let delta_id = signed
             .content_hash()
             .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        // Topic-scoped hash for the `DeliveryReport` — matches the
+        // `op_hash` that `publish_and_await_ack_namespace` records on a
+        // successful report (`delta_id` above is the DAG content hash,
+        // a different value). Used by the best-effort error arm below.
+        let scoped_op_hash = hash_scoped_namespace(topic.as_str().as_bytes(), &signed)
+            .map_err(|e| eyre::eyre!("hash_scoped_namespace: {e}"))?;
         let parent_ids = signed.parent_op_hashes.clone();
 
         // Advance the head first, then write the op to the log — same order as
@@ -723,7 +735,7 @@ impl<'a> NamespaceGovernance<'a> {
                      confirm (best-effort) — will propagate via sync"
                 );
                 DeliveryReport {
-                    op_hash: delta_id,
+                    op_hash: scoped_op_hash,
                     acked_by: Vec::new(),
                     elapsed_ms: 0,
                     readiness: PublishReadiness::Degraded,
