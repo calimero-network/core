@@ -325,11 +325,13 @@ pub fn classify_publish_readiness(
 /// identical so log-aggregation queries don't have to special-case the
 /// per-endpoint format.
 ///
-/// `acked_by.is_empty()` is logged at `warn!` to highlight cold-start
-/// or GRAFT-window publishes that landed on the wire but didn't gather
-/// confirmation in time. The local DAG advance is durable in either
-/// case — the warn is a hint that downstream peers may need
-/// reconciliation, not a failure indication.
+/// The log level follows `report.readiness`: `Degraded` (applied locally
+/// but no authoritative ack) is `warn!` to highlight cold-start or
+/// GRAFT-window publishes that landed on the wire but didn't gather
+/// confirmation; `Ready` is `info!`; `Solo` (no remote subscribers) is
+/// `debug!` since a node alone publishing governance ops is expected.
+/// The local DAG advance is durable in every case — a `warn` is a hint
+/// that peers will reconcile via sync, not a failure indication.
 pub fn observe_handler_delivery(handler: &str, op_kind: &str, report: &DeliveryReport) {
     crate::metrics::record_governance_handler_delivery(
         handler,
