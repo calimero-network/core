@@ -1,0 +1,114 @@
+name: E2E KV Store - Governance Late Joiner Catch-Up
+description: >
+  Node-1 alone sets default capabilities on a namespace before any peer
+  exists — this governance op must apply locally (best-effort publish).
+  Node-2 then joins late and must inherit the capability value via sync,
+  proving "applied locally + propagated via sync".
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Assert namespace created
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  # --- Governance op while node-1 is the only node ---
+  # Before the best-effort-readiness fix this could be rejected before it
+  # applied. It must now apply locally regardless of mesh state.
+
+  - name: Node-1 sets default capabilities while solo
+    type: set_default_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    capabilities: 0
+
+  # --- Node-2 joins after the governance op ---
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{namespace_invitation}}'
+    outputs:
+      member_identity_node2: memberIdentity
+
+  - name: Wait for node-2 to catch up
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 90
+    trigger_sync: true
+
+  # --- Verify the solo governance op reached the late joiner ---
+
+  - name: Get node-2 capabilities as seen by node-2
+    type: get_member_capabilities
+    node: e2e-node-2
+    group_id: '{{namespace_id}}'
+    member_id: '{{member_identity_node2}}'
+    outputs:
+      node2_caps: capabilities
+
+  - name: Assert node-2 inherited the solo-set default (caps=0)
+    type: json_assert
+    statements:
+      - "json_equal({{node2_caps}}, 0)"
+
+  - name: Get node-2 capabilities as seen by node-1
+    type: get_member_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    member_id: '{{member_identity_node2}}'
+    outputs:
+      node2_caps_view_node1: capabilities
+
+  - name: Assert both nodes agree on node-2 capabilities
+    type: json_assert
+    statements:
+      - "json_equal({{node2_caps_view_node1}}, 0)"
+
+stop_all_nodes: false
