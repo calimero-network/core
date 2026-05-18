@@ -137,7 +137,12 @@ async fn lookup_group_key_with_wait(
 ///
 /// Each call site translates the outcome to its local error handling
 /// (warn-message wording, return-value shape, metric labels).
-pub(crate) enum GroupIdCheck {
+///
+/// Module-private: every consumer lives in this same file. Keeping the
+/// surface narrow means any future caller has to come through the same
+/// module that owns the TOCTOU and forward-only invariants; reducing
+/// the blast radius for accidental misuse.
+enum GroupIdCheck {
     /// Non-group context with no claimed group on the position. Legacy
     /// path: no enforcement applies. Fall through to apply.
     NonGroupOk,
@@ -166,6 +171,30 @@ pub(crate) enum GroupIdCheck {
     LookupError(eyre::Error),
 }
 
+// Hand-written `Debug` (rather than `#[derive(Debug)]`) because the
+// `LookupError` variant wraps an `eyre::Error`, which we want to render
+// via its own `Debug` impl rather than expose the full backtrace.
+// Available in production code (not just tests) so call sites can
+// debug-print outcomes in tracing spans.
+impl std::fmt::Debug for GroupIdCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GroupIdCheck::NonGroupOk => write!(f, "NonGroupOk"),
+            GroupIdCheck::Match => write!(f, "Match"),
+            GroupIdCheck::GroupContextNoPosition { owning } => {
+                write!(f, "GroupContextNoPosition {{ owning: {owning:?} }}")
+            }
+            GroupIdCheck::NonGroupContextWithPosition { claimed } => {
+                write!(f, "NonGroupContextWithPosition {{ claimed: {claimed:?} }}")
+            }
+            GroupIdCheck::Mismatch { owning, claimed } => {
+                write!(f, "Mismatch {{ owning: {owning:?}, claimed: {claimed:?} }}")
+            }
+            GroupIdCheck::LookupError(err) => write!(f, "LookupError({err:?})"),
+        }
+    }
+}
+
 /// Anti-bypass check for the apply-path consumers of a state delta's
 /// `governance_position`. The `claimed_group_id` argument is the
 /// `group_id` from `Some(pos)` (the sender's signed claim), or `None`
@@ -185,7 +214,7 @@ pub(crate) enum GroupIdCheck {
 /// invariant that mitigates the TOCTOU window; if that ever changes,
 /// the check needs to be promoted to a snapshot read across both
 /// lookups.
-pub(crate) fn verify_position_group_id_matches_context(
+fn verify_position_group_id_matches_context(
     store: &calimero_store::Store,
     context_id: &ContextId,
     claimed_group_id: Option<calimero_context_config::types::ContextGroupId>,
@@ -1790,25 +1819,6 @@ mod tests {
                     assert_eq!(c, claimed);
                 }
                 other => panic!("expected Mismatch, got {other:?}"),
-            }
-        }
-
-        impl std::fmt::Debug for GroupIdCheck {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                match self {
-                    GroupIdCheck::NonGroupOk => write!(f, "NonGroupOk"),
-                    GroupIdCheck::Match => write!(f, "Match"),
-                    GroupIdCheck::GroupContextNoPosition { owning } => {
-                        write!(f, "GroupContextNoPosition {{ owning: {owning:?} }}")
-                    }
-                    GroupIdCheck::NonGroupContextWithPosition { claimed } => {
-                        write!(f, "NonGroupContextWithPosition {{ claimed: {claimed:?} }}")
-                    }
-                    GroupIdCheck::Mismatch { owning, claimed } => {
-                        write!(f, "Mismatch {{ owning: {owning:?}, claimed: {claimed:?} }}")
-                    }
-                    GroupIdCheck::LookupError(err) => write!(f, "LookupError({err:?})"),
-                }
             }
         }
     }
