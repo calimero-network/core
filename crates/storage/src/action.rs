@@ -215,8 +215,29 @@ impl Action {
 ///
 /// **What it doesn't commit to**: anything tied to tree state. The
 /// signature is transferable across receive paths; tree-shape
-/// integrity is enforced by [`AncestorIntegrity::verify`] at apply
-/// time, separately.
+/// integrity is enforced by
+/// [`Interface::verify_ancestor_integrity`](crate::interface::Interface)
+/// at apply time, separately.
+///
+/// **Domain separation**:
+/// * Variable-length sets (writers) are prefixed with a `u32` count so
+///   that 1 writer + signer hint cannot align byte-for-byte with 2
+///   writers + no hint (both used to be 64 + 32 + 1 = 97 bytes after
+///   the type tag with the old length-free encoding).
+/// * `signature_data` presence is tagged (`[1u8]` / `[0u8]`) BEFORE its
+///   payload bytes — so the no-sig-data case can't alias with a
+///   nonce-zero signed case. Without this, e.g. a Shared action with
+///   `signature_data: None` would hash identically to one with
+///   `signature_data: Some { nonce: 0, signer: None }` (both append
+///   nothing distinguishable past the writers list).
+///
+/// **Public / Frozen** intentionally commit to nothing beyond the type
+/// tag — neither is signature-verified in `Interface::apply_action`,
+/// so a payload hash for these types is not load-bearing. The verifier
+/// MUST check the storage type matches the stored entity's type
+/// before treating any signature as authoritative; otherwise a forged
+/// `Public` upsert with the same id + data as a `Shared` upsert would
+/// produce a trivially-collidable payload.
 fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
     match &metadata.storage_type {
         StorageType::Public => {
@@ -233,8 +254,21 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
         } => {
             hasher.update([2u8]); // type tag
             hasher.update(owner.as_ref() as &[u8; 32]);
+            // sig-data presence tag — see "Domain separation" in the
+            // function doc.
             if let Some(sig_data) = signature_data.as_ref() {
+                hasher.update([1u8]);
                 hasher.update(sig_data.nonce.to_le_bytes());
+                // `User` deliberately does NOT commit to
+                // `sig_data.signer`: there is exactly one owner, the
+                // verifier always uses `owner` directly, and the hint
+                // is unused on this path (only `Shared` uses it for
+                // O(1) writer-set lookup). Keeping the User payload
+                // shape independent of the optional hint avoids a
+                // class of "signer field set to a different value but
+                // still passes verify" footguns at zero cost.
+            } else {
+                hasher.update([0u8]);
             }
         }
         StorageType::Shared {
@@ -242,12 +276,21 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
             signature_data,
         } => {
             hasher.update([3u8]); // type tag
-                                  // Writers serialized deterministically: BTreeSet iteration
-                                  // is sorted, so this is stable across signer / verifier.
+                                  // Count prefix gives the writers list explicit length
+                                  // separation — see "Domain separation" in the function
+                                  // doc. `u32` is plenty (a writer set in the hundreds is
+                                  // already an outlier; we never need 2^32 writers).
+            let writers_count = u32::try_from(writers.len()).unwrap_or(u32::MAX);
+            hasher.update(writers_count.to_le_bytes());
+            // Writers serialized deterministically: BTreeSet iteration
+            // is sorted, so this is stable across signer / verifier.
             for writer in writers {
                 hasher.update(writer.as_ref() as &[u8; 32]);
             }
+            // sig-data presence tag — see "Domain separation" in the
+            // function doc.
             if let Some(sig_data) = signature_data.as_ref() {
+                hasher.update([1u8]);
                 hasher.update(sig_data.nonce.to_le_bytes());
                 if let Some(signer_hint) = sig_data.signer {
                     hasher.update([1u8]); // hint-present tag
@@ -255,6 +298,8 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
                 } else {
                     hasher.update([0u8]); // hint-absent tag
                 }
+            } else {
+                hasher.update([0u8]);
             }
         }
     }
@@ -483,6 +528,109 @@ mod tests {
             upsert_action.payload_for_signing(),
             delete_action.payload_for_signing(),
             "delete payload uses the v2_delete prefix; must not collide with v2_upsert"
+        );
+    }
+
+    #[test]
+    fn shared_writer_count_prefix_separates_aligned_writer_sets() {
+        // Regression guard for the pre-fix encoding that lacked a
+        // writer-count prefix. Pre-fix, two writers + no signer hint
+        // (2 * 32 + 1 + 8 + 1 = 74 bytes after the type tag) hashed
+        // identically to one writer + signer hint at the same length
+        // (32 + 1 + 8 + 1 + 32 = 74 bytes). With the `u32` count
+        // prefix the two layouts now differ in the first four bytes
+        // after the type tag.
+        let id = Id::new([0xAA; 32]);
+        let data = b"v".to_vec();
+        let a_writer = PublicKey::from([0xA0; 32]);
+        let b_writer = PublicKey::from([0xB0; 32]);
+
+        let two_writers_no_hint = {
+            let mut writers = BTreeSet::new();
+            writers.insert(a_writer);
+            writers.insert(b_writer);
+            meta_shared(writers, 7)
+        };
+        let one_writer_with_hint = {
+            let mut writers = BTreeSet::new();
+            writers.insert(a_writer);
+            let mut m = meta_shared(writers, 7);
+            if let StorageType::Shared {
+                signature_data: Some(ref mut sd),
+                ..
+            } = m.storage_type
+            {
+                sd.signer = Some(b_writer);
+            }
+            m
+        };
+
+        let a = upsert(id, data.clone(), vec![], two_writers_no_hint);
+        let b = upsert(id, data, vec![], one_writer_with_hint);
+        assert_ne!(
+            a.payload_for_signing(),
+            b.payload_for_signing(),
+            "aligned writer-set layouts must not collide post writer-count prefix"
+        );
+    }
+
+    #[test]
+    fn shared_unsigned_differs_from_signed_nonce_zero() {
+        // Regression guard for the pre-fix presence-untagged sig_data.
+        // Pre-fix, `Shared { signature_data: None }` and `Shared
+        // { signature_data: Some(SignatureData { nonce: 0, signer:
+        // None, .. }) }` hashed identically because the nonce + hint
+        // bytes for the latter were all zero, and the former emitted
+        // no bytes at all. The presence tag (`[1u8]` vs `[0u8]`)
+        // before the sig-data block separates them.
+        let id = Id::new([0xAA; 32]);
+        let writer = PublicKey::from([0xA0; 32]);
+        let mut writers = BTreeSet::new();
+        writers.insert(writer);
+
+        let mut unsigned = meta_shared(writers.clone(), 0);
+        if let StorageType::Shared {
+            ref mut signature_data,
+            ..
+        } = unsigned.storage_type
+        {
+            *signature_data = None;
+        }
+        let signed_zero = meta_shared(writers, 0);
+
+        let a = upsert(id, b"v".to_vec(), vec![], unsigned);
+        let b = upsert(id, b"v".to_vec(), vec![], signed_zero);
+        assert_ne!(
+            a.payload_for_signing(),
+            b.payload_for_signing(),
+            "unsigned and signed-with-nonce-zero must produce distinct payloads"
+        );
+    }
+
+    #[test]
+    fn user_unsigned_differs_from_signed_nonce_zero() {
+        // Same property as `shared_unsigned_differs_from_signed_nonce_zero`,
+        // but for the User branch. Both branches now have the same
+        // sig-data presence-tag shape.
+        let id = Id::new([0xAA; 32]);
+        let owner = PublicKey::from([0x10; 32]);
+
+        let mut unsigned = meta_user(owner, 0);
+        if let StorageType::User {
+            ref mut signature_data,
+            ..
+        } = unsigned.storage_type
+        {
+            *signature_data = None;
+        }
+        let signed_zero = meta_user(owner, 0);
+
+        let a = upsert(id, b"v".to_vec(), vec![], unsigned);
+        let b = upsert(id, b"v".to_vec(), vec![], signed_zero);
+        assert_ne!(
+            a.payload_for_signing(),
+            b.payload_for_signing(),
+            "unsigned and signed-with-nonce-zero must produce distinct payloads"
         );
     }
 }

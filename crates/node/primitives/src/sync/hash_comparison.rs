@@ -391,12 +391,37 @@ impl LeafMetadata {
     /// Set the storage-type authorization triple for `Shared` / `User`
     /// entities so the receiver can verify the writer's signature.
     /// See the field doc on `authorization`.
+    ///
+    /// Only `Shared` and `User` storage types carry authorization; for
+    /// `Public` / `Frozen` the wire field must stay `None` (the receiver
+    /// has no signature to verify on those, and applying a wire-supplied
+    /// `Public` here would open a storage-type-downgrade path on the
+    /// receiver). Wrong-type calls panic in debug, are silently ignored
+    /// in release — callers should go through
+    /// `crate::sync::helpers::wire_authorization_for` in `calimero-node`
+    /// rather than build this directly.
     #[must_use]
     pub fn with_authorization(
         mut self,
         authorization: calimero_storage::entities::StorageType,
     ) -> Self {
-        self.authorization = Some(authorization);
+        use calimero_storage::entities::StorageType;
+        debug_assert!(
+            matches!(
+                authorization,
+                StorageType::Shared { .. } | StorageType::User { .. }
+            ),
+            "with_authorization called with non-Shared/User storage type \
+             ({:?}); only Shared/User carry wire authorization. See field \
+             doc on `authorization`.",
+            authorization,
+        );
+        if matches!(
+            authorization,
+            StorageType::Shared { .. } | StorageType::User { .. }
+        ) {
+            self.authorization = Some(authorization);
+        }
         self
     }
 

@@ -136,12 +136,36 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     //    Avoids the v1 silent storage-type-flip bug where every sync
     //    apply downgraded entities to `Public` via `Metadata::default()`.
     //
-    // 3. New entity, no wire authorization — default to `Public`.
+    // 3. Existing entity is Shared/User but no wire authorization — skip
+    //    the apply entirely (return `Ok(())`). Preserving the existing
+    //    `storage_type` and constructing an `Action::Update` would
+    //    splice the existing entity's signature data onto NEW value
+    //    bytes; the apply-path verifier would then reject with
+    //    `InvalidSignature` (the existing sig signed the OLD value).
+    //    That's still safe — the rejection prevents a downgrade — but
+    //    it's a doomed code path that wastes a verify and a log line
+    //    per leaf. The delta-path repair will deliver the entity
+    //    properly signed; we just hold off on it from sync.
+    //
+    // 4. New entity, no wire authorization — default to `Public`.
     //    Non-Public new entities require creation-time invariants
     //    (writer-set, owner) that arrive via the delta path.
+    use calimero_storage::entities::StorageType;
     if let Some(wire_auth) = leaf.metadata.authorization.as_ref() {
         metadata.storage_type = wire_auth.clone();
     } else if let Some(ref existing) = existing_index {
+        if matches!(
+            existing.metadata.storage_type,
+            StorageType::Shared { .. } | StorageType::User { .. }
+        ) {
+            tracing::debug!(
+                %entity_id,
+                existing_type = ?existing.metadata.storage_type,
+                "Skipping sync apply for Shared/User entity with no wire \
+                 authorization — delta path will repair"
+            );
+            return Ok(());
+        }
         metadata.storage_type = existing.metadata.storage_type.clone();
     }
 

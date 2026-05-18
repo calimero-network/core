@@ -57,9 +57,11 @@ pub enum StorageError {
     InvalidSignature,
 
     /// The action's claimed ancestor merkle hash does not match the receiver's
-    /// local state. Surfaced by [`AncestorIntegrity::verify`] on the
-    /// delta-replay path; the signature itself verified, but the tree shape
-    /// the signer asserted doesn't line up with the receiver's local tree.
+    /// local state. Surfaced by
+    /// [`Interface::verify_ancestor_integrity`](crate::interface::Interface)
+    /// on the delta-replay path; the signature itself verified, but the tree
+    /// shape the signer asserted doesn't line up with the receiver's local
+    /// tree.
     ///
     /// This is distinct from [`Self::InvalidSignature`] (cryptographic
     /// rejection) and lets operators tell "the writer's authorization is
