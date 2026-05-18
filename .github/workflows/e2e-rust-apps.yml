@@ -173,17 +173,44 @@ jobs:
           - workflow: group-leave-namespace
             file: workflows/group-leave-namespace.yml
             app: scaffolding-e2e
+          - workflow: group-kick-and-rejoin-keyshare
+            file: workflows/group-kick-and-rejoin-keyshare.yml
+            app: scaffolding-e2e
+          - workflow: group-kick-and-readd-deny-list
+            file: workflows/group-kick-and-readd-deny-list.yml
+            app: scaffolding-e2e
+          - workflow: group-leave-then-rejoin-via-inheritance
+            file: workflows/group-leave-then-rejoin-via-inheritance.yml
+            app: scaffolding-e2e
+          - workflow: group-private-add-then-write
+            file: workflows/group-private-add-then-write.yml
+            app: scaffolding-e2e
+          - workflow: group-remove-from-root-revokes-inherited
+            file: workflows/group-remove-from-root-revokes-inherited.yml
+            app: scaffolding-e2e
           - workflow: group-capabilities
             file: workflows/group-capabilities.yml
             app: scaffolding-e2e
           - workflow: group-member-channel-lifecycle
             file: workflows/group-member-channel-lifecycle.yml
             app: scaffolding-e2e
+          - workflow: group-metadata
+            file: workflows/group-metadata.yml
+            app: scaffolding-e2e
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
             app: scaffolding-e2e
+          - workflow: group-open-self-join-key-delivery
+            file: workflows/group-open-self-join-key-delivery.yml
+            app: scaffolding-e2e
+          - workflow: group-join-via-inheritance
+            file: workflows/group-join-via-inheritance.yml
+            app: scaffolding-e2e
           - workflow: dm-subgroup-privacy
             file: workflows/dm-subgroup-privacy.yml
+            app: scaffolding-e2e
+          - workflow: group-list-subgroups-restricted-hidden
+            file: workflows/group-list-subgroups-restricted-hidden.yml
             app: scaffolding-e2e
           - workflow: member-removed-multi-context-convergence
             file: workflows/member-removed-multi-context-convergence.yml
@@ -227,6 +254,9 @@ jobs:
             app: kv-store-with-shared-storage
           - workflow: kv-store-joiner-cold
             file: workflows/kv-store-joiner-cold.yml
+            app: scaffolding-e2e
+          - workflow: mesh-soak-8node
+            file: workflows/mesh-soak-8node.yml
             app: scaffolding-e2e
     steps:
       - name: Checkout code

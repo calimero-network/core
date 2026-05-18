@@ -233,8 +233,16 @@ pub(crate) fn setup(
             post(groups::register_signing_key::handler),
         )
         .route(
+            "/groups/:group_id/issue-ownership-proof",
+            post(groups::issue_ownership_proof::handler),
+        )
+        .route(
             "/groups/:group_id/sync",
             post(groups::sync_group::handler),
+        )
+        .route(
+            "/groups/:group_id/join-via-inheritance",
+            post(groups::join_subgroup_inheritance::handler),
         )
         .route(
             "/contexts/:context_id/join",

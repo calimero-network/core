@@ -56,7 +56,8 @@ async fn add_local_applied_delta_prunes_non_head_ancestors() {
     let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(1);
     let (ns_sync_tx, _ns_sync_rx) = mpsc::channel(1);
     let (ns_join_tx, _ns_join_rx) = mpsc::channel(1);
-    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx);
+    let (open_subgroup_join_tx, _open_subgroup_join_rx) = mpsc::channel(1);
+    let sync_client = SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
 
     let node_client = NodeClient::new(
         store.clone(),

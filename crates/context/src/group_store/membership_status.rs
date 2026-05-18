@@ -195,14 +195,48 @@ pub fn membership_status_at(
                 hex::encode(local_state_hash),
             );
         }
-        // See function-level doc for the `Removed` vs `NeverMember`
-        // conflation caveat — the prefix walk recovers the distinction.
-        return Ok(
-            match super::membership::get_group_member_role(store, &group_id, signer)? {
-                Some(role) => MembershipStatus::Member(role),
-                None => MembershipStatus::NeverMember,
-            },
-        );
+        // Direct membership (GroupMember row at the named group) — the
+        // common case for Restricted subgroups and for explicit-add flows.
+        if let Some(role) = super::membership::get_group_member_role(store, &group_id, signer)? {
+            return Ok(MembershipStatus::Member(role));
+        }
+        // Inherited membership — the signer doesn't have a `GroupMember`
+        // row on this subgroup, but reaches it via the Open-subgroup
+        // parent-walk with `CAN_JOIN_OPEN_SUBGROUPS` at the anchor. Open
+        // subgroups don't require an admin-issued `MemberAdded`, so
+        // inherited members produce state deltas with no corresponding
+        // direct-membership row — and without this branch every such
+        // delta was hard-rejected at the cross-DAG check, even though
+        // the same member was authorized to JOIN the context.
+        //
+        // We fold Inherited → Member(Member). The actor's effective role
+        // in this subgroup is the inherited one from `check_group_*`;
+        // we don't have a more precise role at the cross-DAG layer.
+        return match super::membership::check_group_membership_path(store, &group_id, signer)? {
+            super::membership::MembershipPath::Direct => {
+                // Practically unreachable: `check_group_membership_path`
+                // returns `Direct` iff `has_direct_member` returned
+                // `true`, which reads the same store row that
+                // `get_group_member_role` reads above. The only way to
+                // arrive here is a write-race where a concurrent
+                // `MemberAdded` applied between the two reads. In that
+                // case the signer just became a direct member with the
+                // default `Member` role — return that rather than the
+                // misleading `NeverMember` an earlier revision used.
+                Ok(MembershipStatus::Member(
+                    calimero_primitives::context::GroupMemberRole::Member,
+                ))
+            }
+            super::membership::MembershipPath::Inherited { .. } => Ok(MembershipStatus::Member(
+                calimero_primitives::context::GroupMemberRole::Member,
+            )),
+            super::membership::MembershipPath::None => {
+                // See function-level doc for the `Removed` vs
+                // `NeverMember` conflation caveat — the prefix walk
+                // recovers the distinction.
+                Ok(MembershipStatus::NeverMember)
+            }
+        };
     }
 
     // Branch 2 — collect every referenced head that is not present in our
@@ -388,6 +422,27 @@ fn prefix_walk_membership(
                     continue;
                 }
                 let role = role_from_invited_role(signed_invitation.invitation.invited_role);
+                current_role = Some(role.clone());
+                last_known_role = Some(role);
+            }
+            // Open-subgroup self-join via `CAN_JOIN_OPEN_SUBGROUPS`
+            // parent-walk. The op is the joiner's proof of membership in
+            // an Open subgroup; without recognising it here, the
+            // cross-DAG check returns `NeverMember` for inherited
+            // joiners and their state deltas get rejected — defeating
+            // the fix's intent on any peer whose heads don't match the
+            // writer's heads (i.e. any non-fast-path resolution). The
+            // op carries no role information — Open-subgroup inheritance
+            // grants `Member` role, matching the fold in
+            // `membership_status_at`'s Branch 1.
+            NamespaceOp::Root(RootOp::MemberJoinedOpen {
+                member,
+                group_id: op_gid,
+            }) => {
+                if member != signer || *op_gid != group_id.to_bytes() {
+                    continue;
+                }
+                let role = GroupMemberRole::Member;
                 current_role = Some(role.clone());
                 last_known_role = Some(role);
             }

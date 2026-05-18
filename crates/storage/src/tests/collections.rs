@@ -3,7 +3,59 @@
 //! Tests all collection types (UnorderedMap, Vector, UnorderedSet)
 //! Moved from inline tests in collections modules for better organization
 
-use crate::collections::{Root, UnorderedMap, UnorderedSet, Vector};
+use crate::collections::{CrdtType, Root, UnorderedMap, UnorderedSet, Vector};
+use crate::env;
+use crate::index::Index;
+use crate::store::MainStorage;
+use serial_test::serial;
+
+// ============================================================
+// Root Tests
+// ============================================================
+
+/// `Root<T>`'s single entry (`Id::new([118; 32])` == `Root::<T>::entry_id()`)
+/// must be created with an LWW `crdt_type` so HashComparison sync treats it as
+/// a normal CRDT leaf rather than an "opaque" (`crdt_type: None`) leaf.
+#[test]
+#[serial]
+fn test_root_entry_gets_lww_register_crdt_type() {
+    // Other tests in this binary also touch `MainStorage` (a global,
+    // process-wide store) at the same entry id. Reset so we observe a
+    // fresh `Root::new` rather than stale state from a prior test.
+    env::reset_for_testing();
+
+    let _root = Root::new(|| UnorderedMap::<String, String>::new());
+
+    // Cross-reference the entry's id by calling `Root::entry_id()` directly
+    // instead of hardcoding `[118; 32]`, so this test moves in lock-step with
+    // the constructor if that ever changes.
+    let entry_id = Root::<UnorderedMap<String, String>>::entry_id();
+    let index = <Index<MainStorage>>::get_index(entry_id)
+        .expect("get_index should not error")
+        .expect("Root entry index should exist");
+
+    // Use `type_name::<T>()` to match the convention used by `Root::new_internal`
+    // and the rest of the codebase (cf. `LwwRegister<T>` in `crdt_impls.rs`),
+    // not a hand-written label.
+    assert_eq!(
+        index.metadata.crdt_type,
+        Some(CrdtType::lww_register(std::any::type_name::<
+            UnorderedMap<String, String>,
+        >())),
+        "Root<T> entry must carry an LwwRegister crdt_type matching type_name::<T>(), got {:?}",
+        index.metadata.crdt_type
+    );
+
+    // `field_name = "root"` is part of the constructor contract — if it
+    // regresses, a peer's `compare_tree_nodes` could route the leaf
+    // differently. Assert it explicitly so the regression is caught here.
+    assert_eq!(
+        index.metadata.field_name,
+        Some("root".to_string()),
+        "Root<T> entry must carry field_name 'root', got {:?}",
+        index.metadata.field_name
+    );
+}
 
 // ============================================================
 // UnorderedMap Tests (from collections/unordered_map.rs)

@@ -54,7 +54,8 @@ pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{
     cascade_remove_member_from_group_tree, enumerate_group_contexts, find_local_signing_identity,
-    get_group_for_context, register_context_in_group, unregister_context_from_group,
+    get_group_for_context, register_context_in_group, restore_member_context_identities,
+    unregister_context_from_group,
 };
 pub use self::deny_list::{
     clear_all_denied, clear_denied, is_author_denied_for_context, is_denied, mark_denied,
@@ -74,12 +75,13 @@ pub use self::local_state::{
 };
 pub use self::membership::{
     add_group_member, add_group_member_with_keys, check_group_membership,
-    check_group_membership_path, count_group_admins, count_group_members, get_group_member_role,
-    get_group_member_value, has_direct_group_member, is_direct_group_admin, is_group_admin,
+    check_group_membership_path, count_group_admins, count_group_members,
+    enumerate_inherited_members, get_group_member_role, get_group_member_value,
+    has_direct_group_member, is_direct_group_admin, is_group_admin,
     is_group_admin_or_has_capability, is_inherited_admin, list_group_members,
     namespace_member_pubkeys, remove_group_member, require_group_admin,
-    require_group_admin_or_capability, set_member_auto_follow, trusted_anchors_for_group,
-    MembershipPath,
+    require_group_admin_or_capability, set_member_auto_follow, subgroup_visible_to,
+    trusted_anchors_for_group, MembershipPath,
 };
 pub use self::membership_policy::MembershipPolicy;
 pub use self::membership_status::{membership_status_at, MembershipStatus};
@@ -98,13 +100,13 @@ pub use self::metadata::{
 pub use self::migrations::{
     delete_all_context_last_migrations, get_context_last_migration, set_context_last_migration,
 };
+pub(crate) use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
     collect_descendant_groups, collect_subtree_for_cascade, collect_visible_descendant_groups,
-    compute_namespace_governance_epoch, create_recursive_invitations, get_namespace_identity,
-    get_namespace_identity_record, get_or_create_namespace_identity,
-    get_or_create_namespace_identity_bundle, get_parent_group, is_descendant_of,
-    is_read_only_for_context, list_child_groups, nest_group, recursive_remove_member,
-    reparent_group, resolve_namespace, resolve_namespace_identity,
+    create_recursive_invitations, get_namespace_identity, get_namespace_identity_record,
+    get_or_create_namespace_identity, get_or_create_namespace_identity_bundle, get_parent_group,
+    is_descendant_of, is_read_only_for_context, list_child_groups, nest_group,
+    recursive_remove_member, reparent_group, resolve_namespace, resolve_namespace_identity,
     resolve_namespace_identity_record, store_namespace_identity, unnest_group, CascadePayload,
     NamespaceIdentityRecord, ReparentOutcome, ResolvedNamespaceIdentity,
 };
@@ -1213,6 +1215,14 @@ fn apply_group_op_mutations(
             // removed member transparently restores their network-level
             // access. Idempotent on a member who was never denied.
             clear_denied(store, group_id, member)?;
+            // Restore per-context `ContextIdentity` rows that
+            // `cascade_remove_member_from_group_tree` deleted on a prior
+            // `MemberRemoved`. The local-rejoiner anti-spoof gate is
+            // enforced inside `restore_member_context_identities` — on
+            // peers (admin or other members applying this op) it is a
+            // no-op. Idempotent on first-time adds: the joiner's later
+            // `join_context` sees an existing row and skips.
+            restore_member_context_identities(store, group_id, member)?;
             crate::op_events::notify(crate::op_events::OpEvent::MemberAdded {
                 group_id: group_id.to_bytes(),
                 member: *member,

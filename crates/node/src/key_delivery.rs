@@ -1,25 +1,29 @@
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use tracing::{info, warn};
 
-/// After applying a namespace governance op, check if it was a `MemberJoined`
-/// and we hold the group key. If so, publish a `KeyDelivery` wrapping the
-/// group key for the joiner via ECDH.
+/// After applying a namespace governance op, check if it was a member-join
+/// op (`MemberJoined` for the admin-invited path, or `MemberJoinedOpen` for
+/// the inherited Open-subgroup path #2351) and we hold the group key. If
+/// so, publish a `KeyDelivery` wrapping the group key for the joiner via
+/// ECDH.
 pub async fn maybe_publish_key_delivery(
     context_client: &calimero_context_client::client::ContextClient,
     node_client: &calimero_node_primitives::client::NodeClient,
     op: &SignedNamespaceOp,
 ) {
-    let NamespaceOp::Root(RootOp::MemberJoined {
-        member,
-        ref signed_invitation,
-    }) = op.op
-    else {
-        return;
+    let (member, group_id) = match op.op {
+        NamespaceOp::Root(RootOp::MemberJoined {
+            member,
+            ref signed_invitation,
+        }) => (member, signed_invitation.invitation.group_id),
+        NamespaceOp::Root(RootOp::MemberJoinedOpen { member, group_id }) => (
+            member,
+            calimero_context_config::types::ContextGroupId::from(group_id),
+        ),
+        _ => return,
     };
 
     let namespace_id = op.namespace_id;
-    let group_id_bytes = signed_invitation.invitation.group_id;
-    let group_id = group_id_bytes;
     let ns_id = calimero_context_config::types::ContextGroupId::from(namespace_id);
 
     let store = context_client.datastore_handle().into_inner();

@@ -11,7 +11,7 @@ use calimero_context_client::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::stream::Stream;
-use calimero_node_primitives::client::{NamespaceJoinParams, NodeClient};
+use calimero_node_primitives::client::{NamespaceJoinParams, NodeClient, OpenSubgroupJoinParams};
 use calimero_node_primitives::join_bundle::JoinBundle;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::common::DIGEST_SIZE;
@@ -66,6 +66,12 @@ pub struct SyncManager {
             oneshot::Sender<eyre::Result<JoinBundle>>,
         )>,
     >,
+    pub(super) open_subgroup_join_rx: Option<
+        mpsc::Receiver<(
+            OpenSubgroupJoinParams,
+            oneshot::Sender<eyre::Result<Vec<u8>>>,
+        )>,
+    >,
 
     /// Dispatch handle for the dedicated `SyncSessionActor` (#2316).
     /// Set via [`SyncManager::set_session_handles`] after the actor is
@@ -111,6 +117,7 @@ impl Clone for SyncManager {
             ctx_sync_rx: None,
             ns_sync_rx: None,
             ns_join_rx: None,
+            open_subgroup_join_rx: None,
             // Cloned `SyncManager`s never drive the `start` loop, so
             // they don't need a session-dispatch handle or a results
             // receiver. The bridge holds its own clone of the
@@ -182,6 +189,10 @@ impl SyncManager {
             NamespaceJoinParams,
             oneshot::Sender<eyre::Result<JoinBundle>>,
         )>,
+        open_subgroup_join_rx: mpsc::Receiver<(
+            OpenSubgroupJoinParams,
+            oneshot::Sender<eyre::Result<Vec<u8>>>,
+        )>,
     ) -> Self {
         Self {
             sync_config,
@@ -192,6 +203,7 @@ impl SyncManager {
             ctx_sync_rx: Some(ctx_sync_rx),
             ns_sync_rx: Some(ns_sync_rx),
             ns_join_rx: Some(ns_join_rx),
+            open_subgroup_join_rx: Some(open_subgroup_join_rx),
             session_tx: None,
             session_result_rx: None,
             metrics: None,
@@ -378,6 +390,10 @@ impl SyncManager {
             let (_tx, rx) = mpsc::channel(1);
             rx
         });
+        let mut open_subgroup_join_rx = self.open_subgroup_join_rx.take().unwrap_or_else(|| {
+            let (_tx, rx) = mpsc::channel(1);
+            rx
+        });
         let Some(session_tx) = self.session_tx.clone() else {
             error!("SyncManager started without a SyncSessionActor handle (#2316)");
             return;
@@ -518,6 +534,16 @@ impl SyncManager {
                         "Processing namespace join request (initiator side)"
                     );
                     let result = self.initiate_namespace_join(params).await;
+                    let _ignored = reply_tx.send(result);
+                    continue;
+                }
+                Some((params, reply_tx)) = open_subgroup_join_rx.recv() => {
+                    info!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        subgroup_id = %hex::encode(params.subgroup_id),
+                        "Processing open-subgroup join request (initiator side)"
+                    );
+                    let result = self.initiate_open_subgroup_join(params).await;
                     let _ignored = reply_tx.send(result);
                     continue;
                 }
@@ -2720,24 +2746,147 @@ impl SyncManager {
             return Ok(Some(()));
         }
 
-        let Some(context) = self.context_client.get_context(&context_id)? else {
-            // An inbound stream for a context this node does not know about
-            // must not tear down unrelated in-flight sync activity. This
-            // happens during cold-start `join_context` when a subgroup /
-            // app-internal context leaks onto the sync channel before the
-            // joining node has materialised it. Close the stream cleanly
-            // and let the concurrent legitimate sync continue. (#2198)
-            warn!(
-                %context_id,
-                ?their_identity,
-                "inbound stream for unknown context, closing cleanly"
-            );
+        if let InitPayload::OpenSubgroupJoinRequest {
+            namespace_id,
+            subgroup_id,
+            joiner_public_key,
+        } = &payload
+        {
+            self.handle_open_subgroup_join_request(
+                *namespace_id,
+                *subgroup_id,
+                *joiner_public_key,
+                stream,
+                nonce,
+            )
+            .await?;
+            return Ok(Some(()));
+        }
 
-            if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
-                error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+        let context = match self.context_client.get_context(&context_id)? {
+            Some(ctx) => ctx,
+            None => {
+                // Race window: the dialer can trigger context-level sync as
+                // a cascade of namespace-topic subscription
+                // (`subscriptions.rs::handle_subscribed` → `sync_group` /
+                // `broadcast_group_local_state`) before this node's local
+                // state has caught up. Two distinct sub-races can leave
+                // `get_context` returning `None` for a legitimate inbound:
+                //
+                //   (1) Namespace governance op `ContextRegistered` has
+                //       not yet been processed locally —
+                //       `get_group_for_context` returns `None`. This is
+                //       the cold-start gossipsub-mesh case (#2122/#2236
+                //       residuals tracked in #2356): the namespace topic
+                //       takes one or more heartbeats to form a mesh, so
+                //       the governance op landing on `peer A` can lag the
+                //       context-level sync stream from `peer A` reaching
+                //       us by several seconds.
+                //   (2) `ContextRegistered` is applied — group binding
+                //       exists, dialer is a verified namespace member —
+                //       but `join_context` has not yet materialised the
+                //       context entry. The original race shape covered
+                //       by this branch.
+                //
+                // Both resolve once the namespace governance DAG settles
+                // and `join_context` runs to completion locally. Poll
+                // for both in a single shared-deadline loop instead of
+                // short-circuiting on (1).
+                let store = self.context_client.datastore();
+
+                // Poll cadence matches `FALLBACK_POLL` in
+                // `handlers/join_context.rs`. The 10 s budget covers
+                // both the (~5 s) `join_context` materialisation gap
+                // observed in the `bdc61af` smoke-regression artefact
+                // and the additional (~5 s) cold-start namespace-mesh
+                // `ContextRegistered` propagation gap observed in
+                // mero-drive E2E run 25882151397 (logged in #2356).
+                // Streams that don't resolve within the window fall
+                // through to the same OpaqueError as before — the
+                // dialer retries on its next sync interval.
+                const MATERIALIZATION_WINDOW: time::Duration = time::Duration::from_secs(10);
+                const MATERIALIZATION_POLL: time::Duration = time::Duration::from_millis(200);
+
+                let deadline = Instant::now() + MATERIALIZATION_WINDOW;
+                let mut dialer_verified = false;
+                let mut materialised: Option<_> = None;
+
+                loop {
+                    if !dialer_verified {
+                        if let Some(group_id) =
+                            calimero_context::group_store::get_group_for_context(
+                                store,
+                                &context_id,
+                            )?
+                        {
+                            if calimero_context::group_store::check_group_membership(
+                                store,
+                                &group_id,
+                                &their_identity,
+                            )? {
+                                dialer_verified = true;
+                            }
+                        }
+                    }
+
+                    if dialer_verified {
+                        if let Some(ctx) = self.context_client.get_context(&context_id)? {
+                            materialised = Some(ctx);
+                            break;
+                        }
+                    }
+
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    time::sleep(MATERIALIZATION_POLL).await;
+                }
+
+                if !dialer_verified {
+                    // Genuinely unknown context (or cross-namespace stream
+                    // leak per #2198), or namespace governance op never
+                    // landed within the window. Close cleanly so unrelated
+                    // sync activity is unaffected.
+                    warn!(
+                        %context_id,
+                        ?their_identity,
+                        "inbound stream for unknown context, closing cleanly"
+                    );
+
+                    if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await {
+                        error!(%err, %context_id, "failed to send OpaqueError for unknown context");
+                    }
+
+                    return Ok(None);
+                }
+
+                match materialised {
+                    Some(ctx) => {
+                        debug!(
+                            %context_id,
+                            ?their_identity,
+                            "context materialised during join race window, proceeding with inbound sync"
+                        );
+                        ctx
+                    }
+                    None => {
+                        debug!(
+                            %context_id,
+                            ?their_identity,
+                            "context not materialised within join race window, closing stream"
+                        );
+                        if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await
+                        {
+                            error!(
+                                %err,
+                                %context_id,
+                                "failed to send OpaqueError for unknown context"
+                            );
+                        }
+                        return Ok(None);
+                    }
+                }
             }
-
-            return Ok(None);
         };
 
         let mut _updated = None;
@@ -2944,6 +3093,9 @@ impl SyncManager {
                 unreachable!("handled by early return above")
             }
             InitPayload::NamespaceJoinRequest { .. } => {
+                unreachable!("handled by early return above")
+            }
+            InitPayload::OpenSubgroupJoinRequest { .. } => {
                 unreachable!("handled by early return above")
             }
         };
@@ -3799,6 +3951,308 @@ impl SyncManager {
         };
         super::stream::send(stream, &msg, None).await?;
         Ok(())
+    }
+
+    /// Handle an incoming `OpenSubgroupJoinRequest` (issue #2357) on the
+    /// responder side. Validates that the joiner has
+    /// `MembershipPath::Inherited` to the requested subgroup, wraps the
+    /// local subgroup key for the joiner via ECDH, and replies with the
+    /// envelope. Mirrors `handle_namespace_join_request` for the
+    /// inherited self-join path.
+    async fn handle_open_subgroup_join_request(
+        &self,
+        namespace_id: [u8; 32],
+        subgroup_id: [u8; 32],
+        joiner_public_key: PublicKey,
+        stream: &mut Stream,
+        nonce: Nonce,
+    ) -> eyre::Result<()> {
+        use calimero_context::group_store::{
+            check_group_membership_path, load_current_group_key, load_group_meta,
+            resolve_namespace, resolve_namespace_identity_record, wrap_group_key_for_member,
+            MembershipPath,
+        };
+        use calimero_context_config::types::ContextGroupId;
+
+        let subgroup_gid = ContextGroupId::from(subgroup_id);
+        let store = self.context_client.datastore_handle().into_inner();
+
+        // Cross-namespace pin: the requested subgroup must belong to the
+        // namespace the joiner named, otherwise an attacker on namespace
+        // A could elicit a key for a subgroup of namespace B.
+        match resolve_namespace(&store, &subgroup_gid) {
+            Ok(ns) if ns.to_bytes() == namespace_id => {}
+            Ok(other_ns) => {
+                let msg = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload: MessagePayload::OpenSubgroupJoinRejected {
+                        reason: format!(
+                            "subgroup belongs to namespace {} not {}",
+                            hex::encode(other_ns.to_bytes()),
+                            hex::encode(namespace_id),
+                        ),
+                    },
+                    next_nonce: nonce,
+                };
+                super::stream::send(stream, &msg, None).await?;
+                return Ok(());
+            }
+            Err(err) => {
+                let msg = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload: MessagePayload::OpenSubgroupJoinRejected {
+                        reason: format!("resolve namespace: {err}"),
+                    },
+                    next_nonce: nonce,
+                };
+                super::stream::send(stream, &msg, None).await?;
+                return Ok(());
+            }
+        }
+
+        if load_group_meta(&store, &subgroup_gid)?.is_none() {
+            let msg = StreamMessage::Message {
+                sequence_id: 0,
+                payload: MessagePayload::OpenSubgroupJoinRejected {
+                    reason: "subgroup not found locally".to_owned(),
+                },
+                next_nonce: nonce,
+            };
+            super::stream::send(stream, &msg, None).await?;
+            return Ok(());
+        }
+
+        // Authorisation check: the joiner must reach the subgroup via the
+        // Open-chain inheritance walk. `MembershipPath::Inherited`
+        // implies every intermediate ancestor was Open (see
+        // `membership.rs:267`), so this is the proof of authorisation.
+        match check_group_membership_path(&store, &subgroup_gid, &joiner_public_key)? {
+            MembershipPath::Inherited { .. } | MembershipPath::Direct => {}
+            MembershipPath::None => {
+                let msg = StreamMessage::Message {
+                    sequence_id: 0,
+                    payload: MessagePayload::OpenSubgroupJoinRejected {
+                        reason: "joiner has no membership path to subgroup".to_owned(),
+                    },
+                    next_nonce: nonce,
+                };
+                super::stream::send(stream, &msg, None).await?;
+                return Ok(());
+            }
+        }
+
+        let key_envelope_bytes = match load_current_group_key(&store, &subgroup_gid)? {
+            Some((_key_id, group_key)) => {
+                let ns_gid = ContextGroupId::from(namespace_id);
+                match resolve_namespace_identity_record(&store, &ns_gid)? {
+                    Some(record) => {
+                        let sender_sk =
+                            calimero_primitives::identity::PrivateKey::from(record.private_key);
+                        match wrap_group_key_for_member(&sender_sk, &joiner_public_key, &group_key)
+                        {
+                            Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
+                            Err(err) => {
+                                warn!(
+                                    namespace_id = %hex::encode(namespace_id),
+                                    subgroup_id = %hex::encode(subgroup_id),
+                                    %err,
+                                    "failed to wrap subgroup key for joiner"
+                                );
+                                Vec::new()
+                            }
+                        }
+                    }
+                    None => {
+                        warn!(
+                            namespace_id = %hex::encode(namespace_id),
+                            "no namespace identity, cannot wrap subgroup key"
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+            None => Vec::new(),
+        };
+
+        debug!(
+            namespace_id = %hex::encode(namespace_id),
+            subgroup_id = %hex::encode(subgroup_id),
+            has_key = !key_envelope_bytes.is_empty(),
+            "Sending OpenSubgroupJoinResponse"
+        );
+
+        let msg = StreamMessage::Message {
+            sequence_id: 0,
+            payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
+            next_nonce: nonce,
+        };
+        super::stream::send(stream, &msg, None).await?;
+        Ok(())
+    }
+
+    /// Initiator side for `request_open_subgroup_join`. Picks a mesh peer
+    /// on the namespace topic, opens a stream, sends the request, and
+    /// returns the wrapped key envelope. Same peer-discovery retry loop
+    /// as `initiate_namespace_join`.
+    async fn initiate_open_subgroup_join(
+        &self,
+        params: OpenSubgroupJoinParams,
+    ) -> eyre::Result<Vec<u8>> {
+        let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
+            "ns/{}",
+            hex::encode(params.namespace_id)
+        ));
+
+        let mut peers = Vec::new();
+        for attempt in 1..=super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
+            peers = self.network_client.mesh_peers(topic.clone()).await;
+            if !peers.is_empty() {
+                break;
+            }
+            if attempt < super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
+                debug!(
+                    namespace_id = %hex::encode(params.namespace_id),
+                    subgroup_id = %hex::encode(params.subgroup_id),
+                    attempt,
+                    "No namespace mesh peers yet for open-subgroup join, retrying..."
+                );
+                time::sleep(std::time::Duration::from_millis(
+                    super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
+                ))
+                .await;
+            }
+        }
+
+        if peers.is_empty() {
+            eyre::bail!(
+                "no mesh peers for namespace {} (open-subgroup join)",
+                hex::encode(params.namespace_id)
+            );
+        }
+
+        // Try every mesh peer, not just the first. Only peers that
+        // already hold the subgroup key can serve the request — for an
+        // `Open` subgroup that is the creator plus anyone who has
+        // already inherited in. A freshly-joined namespace member
+        // (which is also on the `ns/<hex>` topic) replies with an empty
+        // envelope ("responder did not hold the subgroup key"); picking
+        // `peers.first()` would fail the whole join whenever that peer
+        // happened to be key-less. Walk the list: return on the first
+        // peer that yields a key, skip key-less peers, and remember the
+        // last authorization rejection so it surfaces if NO peer
+        // accepts (a rejection from one peer can be a stale cold-start
+        // view while another peer accepts).
+        let mut last_rejection: Option<String> = None;
+        let mut keyless_peers = 0usize;
+        let mut transport_errors = 0usize;
+
+        for peer in &peers {
+            let mut stream = match self.network_client.open_stream(*peer).await {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!(
+                        peer = %peer,
+                        subgroup_id = %hex::encode(params.subgroup_id),
+                        error = %e,
+                        "open-subgroup join: failed to open stream, trying next peer"
+                    );
+                    transport_errors += 1;
+                    continue;
+                }
+            };
+
+            let msg = StreamMessage::Init {
+                context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+                party_id: params.joiner_public_key,
+                payload: InitPayload::OpenSubgroupJoinRequest {
+                    namespace_id: params.namespace_id,
+                    subgroup_id: params.subgroup_id,
+                    joiner_public_key: params.joiner_public_key,
+                },
+                next_nonce: rand::thread_rng().gen(),
+            };
+
+            if let Err(e) = super::stream::send(&mut stream, &msg, None).await {
+                debug!(
+                    peer = %peer,
+                    error = %e,
+                    "open-subgroup join: send failed, trying next peer"
+                );
+                transport_errors += 1;
+                continue;
+            }
+
+            match super::stream::recv(&mut stream, None, self.sync_config.timeout).await {
+                Ok(Some(StreamMessage::Message {
+                    payload: MessagePayload::OpenSubgroupJoinResponse { key_envelope_bytes },
+                    ..
+                })) => {
+                    if key_envelope_bytes.is_empty() {
+                        // Peer is on the namespace topic but doesn't
+                        // hold the subgroup key — try the next one.
+                        keyless_peers += 1;
+                        continue;
+                    }
+                    return Ok(key_envelope_bytes);
+                }
+                Ok(Some(StreamMessage::Message {
+                    payload: MessagePayload::OpenSubgroupJoinRejected { reason },
+                    ..
+                })) => {
+                    // A rejection may be a stale cold-start view on this
+                    // peer; keep trying others before surfacing it.
+                    debug!(
+                        peer = %peer,
+                        reason = %reason,
+                        "open-subgroup join: peer rejected, trying next peer"
+                    );
+                    last_rejection = Some(reason);
+                    continue;
+                }
+                Ok(other) => {
+                    debug!(
+                        peer = %peer,
+                        "open-subgroup join: unexpected response {:?}, trying next peer",
+                        other.as_ref().map(std::mem::discriminant)
+                    );
+                    transport_errors += 1;
+                    continue;
+                }
+                Err(e) => {
+                    debug!(
+                        peer = %peer,
+                        error = %e,
+                        "open-subgroup join: recv failed, trying next peer"
+                    );
+                    transport_errors += 1;
+                    continue;
+                }
+            }
+        }
+
+        // No peer yielded the key. Surface the most informative cause,
+        // always including the full per-peer tally so a mixed failure
+        // (some peers key-less, one peer rejecting, some transport
+        // errors) is fully diagnosable from a single line.
+        let tally = format!(
+            "{} peer(s): {} key-less, {} transport error(s)",
+            peers.len(),
+            keyless_peers,
+            transport_errors
+        );
+        if let Some(reason) = last_rejection {
+            eyre::bail!(
+                "open-subgroup join for {} served by no peer — last rejection: {} [{}]",
+                hex::encode(params.subgroup_id),
+                reason,
+                tally
+            );
+        }
+        eyre::bail!(
+            "no mesh peer held the subgroup key for {} [{}]",
+            hex::encode(params.subgroup_id),
+            tally
+        );
     }
 
     /// Collect all governance ops for a namespace (reused by the join responder).

@@ -1,0 +1,296 @@
+name: "Opaque-leaf HashComparison regression (smoke)"
+description: >
+  2-node bootstrap that mirrors mero-drive's failing E2E (main) pattern:
+  install app, create namespace, create context, second node joins, then a
+  short interleaved write loop with `wait_for_sync` between rounds. Exists
+  to give the opaque-leaf HashComparison fix (#2344) end-to-end smoke
+  coverage on every PR.
+
+  This is *smoke coverage*, not the deterministic regression guard. The
+  deterministic guard is the Rust sim tests:
+    crates/node/tests/sync_sim/protocol.rs::
+      test_opaque_leaf_converges_via_hash_comparison
+      test_opaque_leaf_on_responder_converges_via_hash_comparison
+  which construct the divergent-Root state directly, exercise the production
+  protocol via SimStream, and fail pre-fix in <1s. This e2e adds end-to-end
+  defense in depth — gross regressions in HashComparison's bootstrap path
+  (e.g. invalid TreeNode emission, EntityPush apply, RuntimeEnv plumbing)
+  fail here.
+
+  Total runtime budget: ~3 min. If this exceeds 5 min the GHA wrapper
+  cancels the job — the failure mode under regression is `wait_for_sync`
+  timing out, which is fast.
+
+# Test configuration
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  # The GHA wrapper (`sync-regression.yml`) builds `merod:local` from the
+  # PR HEAD and loads it into docker before invoking merobox — that's the
+  # image tag this workflow expects. We need to test against the PR's
+  # build, not a published image, so the opaque-leaf fix is actually under
+  # test. `--image merod:local` on the merobox CLI overrides this anyway,
+  # but specify it here so a local `merobox bootstrap run` works without
+  # the override.
+  #
+  # NB: no `use_image_entrypoint` / `chain_id` here, on purpose — those
+  # are the *profiling* fuzzy-workflow shape, used with the
+  # `merod:edge-profiling` image that wraps the binary in `perf record`.
+  # For the plain `merod:edge`/`merod:local` images (no profiling
+  # wrapper), merobox invokes the merod CLI directly — same shape as
+  # every working e2e workflow under `apps/*/workflows/*.yml`.
+  image: merod:local
+  prefix: sync-regression-node
+
+steps:
+  # ── Phase 1: Bootstrap mesh + namespace + context ───────────────────
+  # Mirrors mero-drive E2E (main)'s Phase A — the exact pattern that
+  # fails on the bug pre-fix.
+  - name: Install kv-store-with-handlers on node-1
+    type: install_application
+    node: sync-regression-node-1
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install kv-store-with-handlers on node-2
+    type: install_application
+    node: sync-regression-node-2
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: sync-regression-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Node-1 creates Registry-style context inside namespace
+    type: create_context
+    node: sync-regression-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{namespace_id}}"
+    outputs:
+      ctx_id: contextId
+      node1_key: memberPublicKey
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: sync-regression-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      ns_invite: invitation
+
+  - name: Wait for namespace governance to gossip
+    # Namespace governance DAG needs to propagate to node-2 before the
+    # join op (otherwise `join_namespace` 404s on the invitation). 10s
+    # matches mero-drive's e2e and is enough for *invitation visibility*
+    # specifically. The longer membership-state-propagation race that
+    # bit `bdc61af` (node-2 rejecting node-1's sync streams as
+    # "inbound stream for unknown context") is now handled inside the
+    # responder via a bounded materialisation wait in
+    # `sync::manager::internal_handle_opened_stream` — no workflow-level
+    # guard needed.
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: sync-regression-node-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{ns_invite}}"
+    outputs:
+      node2_identity: memberIdentity
+
+  - name: Node-2 joins context
+    type: join_context
+    node: sync-regression-node-2
+    context_id: "{{ctx_id}}"
+    outputs:
+      node2_key: memberPublicKey
+
+  - name: Assert bootstrap shape
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+      - "is_set({{ctx_id}})"
+      - "is_set({{node1_key}})"
+      - "is_set({{node2_identity}})"
+      - "is_set({{node2_key}})"
+
+  # ── Phase 2: Initial sync ───────────────────────────────────────────
+  # First `wait_for_sync` *after writes start* — at this point both Roots
+  # are still empty; in a healthy mesh delta sync handles it. The earlier
+  # `wait_for_sync` after `join_context` (above) already covered the
+  # membership-propagation race, so this is just a sanity baseline before
+  # the cross-node-write rounds.
+  - name: Initial sync (empty Root state)
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - sync-regression-node-1
+      - sync-regression-node-2
+    timeout: 30
+    check_interval: 2
+
+  # ── Phase 3: Interleaved write loop ─────────────────────────────────
+  # Writes from both nodes between sync points. Each round mutates the
+  # Root<KvStore> on whichever node fires the write, forcing the next
+  # `wait_for_sync` to reconcile divergent Root hashes — which is where
+  # HashComparison's opaque-leaf code path runs in production. Pre-fix,
+  # HashComparison cannot reconcile a divergent Root<T> (`crdt_type:
+  # None`), so this round eventually times out.
+  - name: Round 1 — node-1 writes
+    type: call
+    node: sync-regression-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "alpha"
+      value: "from-node-1"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Round 1 — node-2 writes
+    type: call
+    node: sync-regression-node-2
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "beta"
+      value: "from-node-2"
+    executor_public_key: "{{node2_key}}"
+
+  - name: Round 1 sync
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - sync-regression-node-1
+      - sync-regression-node-2
+    timeout: 30
+    check_interval: 2
+
+  - name: Round 2 — node-1 writes
+    type: call
+    node: sync-regression-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "gamma"
+      value: "from-node-1-r2"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Round 2 — node-2 writes
+    type: call
+    node: sync-regression-node-2
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "delta"
+      value: "from-node-2-r2"
+    executor_public_key: "{{node2_key}}"
+
+  - name: Round 2 sync
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - sync-regression-node-1
+      - sync-regression-node-2
+    timeout: 30
+    check_interval: 2
+
+  # ── Phase 4: Cross-node read assertions ─────────────────────────────
+  # Each node reads a value the *other* node wrote, asserting end-to-end
+  # convergence (Root<KvStore> on both nodes carries both writers' state).
+  - name: Node-1 reads what node-2 wrote
+    type: call
+    node: sync-regression-node-1
+    context_id: "{{ctx_id}}"
+    method: get
+    args:
+      key: "beta"
+    executor_public_key: "{{node1_key}}"
+    outputs:
+      node1_read: result
+
+  - name: Node-2 reads what node-1 wrote
+    type: call
+    node: sync-regression-node-2
+    context_id: "{{ctx_id}}"
+    method: get
+    args:
+      key: "alpha"
+    executor_public_key: "{{node2_key}}"
+    outputs:
+      node2_read: result
+
+  - name: Assert cross-node convergence
+    type: assert
+    statements:
+      - "is_set({{node1_read}})"
+      - "is_set({{node2_read}})"
+      - 'contains({{node1_read}}, "from-node-2")'
+      - 'contains({{node2_read}}, "from-node-1")'
+
+  # ── Phase 5: Cold-start second-context responder race (#2356) ──────
+  # Phases 1-4 above exercise HashComparison reconciliation between
+  # two nodes that have both explicitly `join_context`'d the same
+  # context. Phase 5 fires a different race: node-1 creates a *new*
+  # context inside the existing namespace, and node-1 immediately
+  # opens an inbound sync stream to node-2 for it. The responder-side
+  # materialisation wait in `sync::manager::handle_opened_stream` has
+  # to hold that inbound stream long enough for either (a) node-2 to
+  # process the corresponding `ContextRegistered` governance op or
+  # (b) the bounded wait window to expire cleanly.
+  #
+  # Pre-fix (this PR), the materialisation wait short-circuits when
+  # `get_group_for_context` returns `None` — i.e. when the namespace
+  # governance op hasn't propagated yet — and the inbound stream is
+  # closed as the WARN `inbound stream for unknown context, closing
+  # cleanly` (#2122/#2236 residuals tracked in #2356).
+  #
+  # Post-fix, the wait covers both sub-races (group binding +
+  # context materialisation) within a single shared 10 s deadline.
+  # Either resolves successfully, or the wait expires cleanly with a
+  # DEBUG log — *not* the WARN signature.
+  #
+  # Note: we deliberately do NOT `wait_for_sync` here. Full
+  # convergence of a freshly-created context across the 2-node mesh
+  # also depends on:
+  #   - publisher-side governance broadcast reliability (currently
+  #     best-effort; see #2237's mesh-ready gate + ack proposal —
+  #     `governance op published but no acks collected before
+  #     deadline` is logged at create_context time)
+  #   - node-1's own owned-identity registration order (the immediate
+  #     post-create sync attempt currently fails with `no owned
+  #     identities found` until the local identity stabilises)
+  # Both are separate issues from the responder-side wait this PR
+  # fixes. Phase 5 here verifies only the responder behaviour; the
+  # `wait` step gives the inbound stream's 10 s materialisation
+  # window enough time to play out plus a small slack.
+  #
+  # The deterministic regression guard lives in the GHA wrapper
+  # (`.github/workflows/sync-regression.yml`): it greps captured
+  # docker logs for the pre-fix WARN signature `inbound stream for
+  # unknown context, closing cleanly` and fails the job if found.
+  - name: Phase 5 — node-1 creates a second context (race window opens)
+    type: create_context
+    node: sync-regression-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{namespace_id}}"
+    outputs:
+      ctx2_id: contextId
+      node1_ctx2_key: memberPublicKey
+
+  - name: Phase 5 — let materialisation race play out (no wait_for_sync)
+    # 12 s = 10 s materialisation window + 2 s slack so the wait has
+    # a chance to either succeed (warn never emitted) or expire
+    # cleanly (DEBUG log only) before the workflow ends and node logs
+    # are captured. The grep guard then validates the responder
+    # didn't short-circuit.
+    type: wait
+    seconds: 12

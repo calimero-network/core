@@ -17,14 +17,16 @@ use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retr
 use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::{
-    add_group_member, apply_group_op_mutations, decrypt_group_op, get_local_gov_nonce,
-    get_namespace_identity_record, is_group_admin, is_group_admin_or_has_capability,
-    load_current_group_key_record, load_group_key_by_id, load_group_meta,
+    add_group_member, apply_group_op_mutations, clear_denied, decrypt_group_op,
+    get_local_gov_nonce, get_namespace_identity_record, is_group_admin,
+    is_group_admin_or_has_capability, load_current_group_key_record, load_group_key_by_id,
+    load_group_meta,
     namespace_dag::{NamespaceDagService, NamespaceHead},
     namespace_membership::NamespaceMembershipService,
     namespace_op_log::NamespaceOpLogService,
     namespace_retry::NamespaceRetryService,
-    save_group_meta, set_local_gov_nonce, store_group_key, unwrap_group_key, PermissionChecker,
+    restore_member_context_identities, save_group_meta, set_local_gov_nonce, store_group_key,
+    unwrap_group_key, PermissionChecker,
 };
 
 /// Side effect returned by namespace-op application when an existing
@@ -277,6 +279,55 @@ impl<'a> NamespaceGovernance<'a> {
                                 joiner_pk: *member,
                             });
                         }
+                    }
+                    RootOp::MemberJoinedOpen { member, group_id } => {
+                        // Same delivery-trigger semantics as `MemberJoined` —
+                        // any peer that holds the group key publishes a
+                        // `KeyDelivery` wrapped for the joiner. Authority
+                        // for this op is validated in `execute_member_joined_open`
+                        // (we ran it via `apply_root_op` above before this
+                        // match), so by the time we get here the path is
+                        // confirmed Inherited.
+                        let group_id_typed = ContextGroupId::from(*group_id);
+                        if load_current_group_key_record(self.store, &group_id_typed)?.is_some() {
+                            result.pending_deliveries.push(PendingKeyDelivery {
+                                namespace_id: op.namespace_id,
+                                group_id: group_id_typed.to_bytes(),
+                                joiner_pk: *member,
+                            });
+                        }
+                        // Clear deny-list on EVERY peer, not just the
+                        // local rejoiner. A prior `MemberLeft` (or
+                        // `MemberRemoved` followed by inheritance rejoin)
+                        // stamped node-2 on each peer's per-subgroup
+                        // deny-list at `mod.rs:1248` / `:1627`; without
+                        // clearing it here, peers continue to drop
+                        // node-2's state-delta traffic at the receive
+                        // filter even after the rejoin completes. The
+                        // sibling `MemberAdded` arm at `mod.rs:1215`
+                        // already does this; `MemberJoinedViaTeeAttestation`
+                        // at `mod.rs:1502` does this; `MemberJoinedOpen`
+                        // was the missing third arm. Without it the
+                        // `kick → inheritance-rejoin → write` and
+                        // `leave → inheritance-rejoin → write` flows
+                        // converge on the rejoiner's local store but
+                        // never replicate to peers — symptom: post-rejoin
+                        // sync diverges in the kick/leave-rejoin e2e.
+                        // Idempotent on a member who was never denied.
+                        clear_denied(self.store, &group_id_typed, member)?;
+                        // Local rejoiner recovery: restore any per-context
+                        // `ContextIdentity` rows that a prior `MemberLeft`
+                        // cascade deleted. The local-rejoiner anti-spoof
+                        // gate is enforced inside
+                        // `restore_member_context_identities` — on peers
+                        // whose namespace identity differs from `member`
+                        // it is a no-op. On first-time inheritance joiners
+                        // the row may not exist yet — it is written so the
+                        // joiner can author state-DAG ops as soon as
+                        // `KeyDelivery` populates `sender_key`. Idempotent:
+                        // an existing row from a prior `join_context` is
+                        // left untouched.
+                        restore_member_context_identities(self.store, &group_id_typed, member)?;
                     }
                     _ => {}
                 }
@@ -823,6 +874,9 @@ impl<'a> NamespaceGovernance<'a> {
                 member,
                 signed_invitation,
             } => self.execute_member_joined(op, member, signed_invitation),
+            RootOp::MemberJoinedOpen { member, group_id } => {
+                self.execute_member_joined_open(op, *member, *group_id)
+            }
             RootOp::KeyDelivery { .. } => Ok(()),
         }
     }
@@ -1160,6 +1214,69 @@ impl<'a> NamespaceGovernance<'a> {
             member,
             signed_invitation,
         )
+    }
+
+    /// Apply check for `RootOp::MemberJoinedOpen`. The op is cleartext,
+    /// the outer `SignedNamespaceOp.signer` MUST equal `member` (proves
+    /// key ownership), and `member` MUST have an Inherited membership
+    /// path to `group_id` — i.e. the subgroup is `Open` and they hold
+    /// `CAN_JOIN_OPEN_SUBGROUPS` at the namespace root (the same
+    /// check `join_context.rs` runs locally before letting the joiner
+    /// proceed). We don't mutate state here — the side-effect (pushing
+    /// a `PendingKeyDelivery` if we hold the key) happens in the outer
+    /// `apply_signed_op` match.
+    fn execute_member_joined_open(
+        &self,
+        op: &SignedNamespaceOp,
+        member: PublicKey,
+        group_id: [u8; 32],
+    ) -> EyreResult<()> {
+        if op.signer != member {
+            eyre::bail!(
+                "MemberJoinedOpen rejected: outer signer {} doesn't match member {}",
+                op.signer,
+                member
+            );
+        }
+        let gid = ContextGroupId::from(group_id);
+        // Cross-namespace forgery guard: without this check, an attacker
+        // on namespace A could publish a MemberJoinedOpen naming a
+        // `group_id` from namespace B; `check_group_membership_path`
+        // walks parents up to whichever namespace root owns `gid`, so
+        // the path check below could succeed against B's data when this
+        // op is being applied in namespace A. Pin `gid` to this
+        // namespace — matches the implicit assumption in the sibling
+        // `MemberJoined` apply path.
+        let resolved_ns = super::resolve_namespace(self.store, &gid)?;
+        if resolved_ns.to_bytes() != self.namespace_id {
+            eyre::bail!(
+                "MemberJoinedOpen rejected: group_id {:?} resolves to namespace {:?}, \
+                 not this namespace {:?}",
+                gid,
+                resolved_ns,
+                ContextGroupId::from(self.namespace_id)
+            );
+        }
+        match super::check_group_membership_path(self.store, &gid, &member)? {
+            super::MembershipPath::Inherited { .. } => Ok(()),
+            super::MembershipPath::Direct => {
+                // Direct members go through `MemberJoined` or `add_group_members`
+                // — they shouldn't be using this op.
+                eyre::bail!(
+                    "MemberJoinedOpen rejected: signer {} is a direct member of {:?}; \
+                     use MemberJoined or add_group_members instead",
+                    member,
+                    gid
+                );
+            }
+            super::MembershipPath::None => {
+                eyre::bail!(
+                    "MemberJoinedOpen rejected: signer {} has no membership path to {:?}",
+                    member,
+                    gid
+                );
+            }
+        }
     }
 }
 

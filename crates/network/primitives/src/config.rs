@@ -9,6 +9,53 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub const DEFAULT_PORT: u16 = 2428; // CHAT in T9
 
+/// Gossipsub mesh sizing for Calimero's typical 2–20 peer clusters.
+///
+/// libp2p's defaults (`mesh_n_low=5`, `mesh_n=6`, `mesh_n_high=12`,
+/// `mesh_outbound_min=2`) assume larger swarms. In a 3-node cluster, the
+/// default `mesh_n_low=5` is permanently unreachable — every heartbeat
+/// logs `Mesh low. Topic contains: 2 needs: 6` and re-runs
+/// `get_random_peers` for no candidates. Matching the water marks to the
+/// expected cluster size makes the mesh sit at steady state and the
+/// `Mesh low` path quiet.
+///
+/// These are also read by the governance Phase-1 readiness gate
+/// (`assert_transport_ready` in `crates/context/src/governance_broadcast`)
+/// as the upper bound for `required = min(GOSSIPSUB_MESH_N_LOW,
+/// known_subscribers)`. A mismatch between this constant and the value
+/// passed to `gossipsub::ConfigBuilder::mesh_n_low` in
+/// `crates/network/src/behaviour.rs` would either reject healthy
+/// publishes (gate too high — the mesh never reaches the required size)
+/// or admit publishes on an unhealthy mesh (gate too low). Keep them
+/// in sync via this single source of truth.
+pub const GOSSIPSUB_MESH_N_LOW: usize = 2;
+
+/// Target mesh size per topic (gossipsub `mesh_n`). Heartbeat backfill
+/// adds peers until the mesh reaches this size.
+pub const GOSSIPSUB_MESH_N: usize = 4;
+
+/// Upper bound before gossipsub prunes mesh peers (gossipsub `mesh_n_high`).
+/// At 8 we leave headroom for clusters up to 9 (8 peers + self) without
+/// pruning churn; the 8-node soak in `apps/scaffolding-e2e/workflows/
+/// mesh-soak-8node.yml` empirically reaches max 7 per topic (7 other
+/// peers in an 8-node cluster), staying below this cap.
+pub const GOSSIPSUB_MESH_N_HIGH: usize = 8;
+
+/// Minimum outbound mesh peers per topic. libp2p enforces the invariant
+/// `mesh_outbound_min ≤ mesh_n_low / 2`, so with `mesh_n_low = 2` this
+/// must be 1.
+///
+/// Security note: in larger public swarms, `mesh_outbound_min = 2` is
+/// the conventional defence against an inbound-only Sybil cluster
+/// monopolising a node's mesh. Calimero topics are namespace-gated by
+/// signed governance membership (a non-member's gossipsub subscription
+/// is accepted at the transport but their messages are rejected at the
+/// governance/cryptographic layer in `state_delta` handling), so the
+/// Sybil-via-subscription vector that motivates the default isn't load-
+/// bearing here. The trade-off is explicit and bounded by the
+/// `mesh_n_low/2` invariant rather than a free choice.
+pub const GOSSIPSUB_MESH_OUTBOUND_MIN: usize = 1;
+
 // https://github.com/ipfs/kubo/blob/efdef7fdcfeeb30e2f1ce3dbf65b6460b58afaaf/config/bootstrap_peers.go#L17-L24
 pub const IPFS_BOOT_NODES: &[&str] = &[
     "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",

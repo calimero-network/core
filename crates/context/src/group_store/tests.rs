@@ -1046,6 +1046,137 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
 }
 
 #[test]
+fn namespace_retry_service_orders_candidates_by_signer_nonce() {
+    // Regression test for #2349: when a peer buffers several
+    // `NamespaceOp::Group` ops from the same signer pending
+    // `KeyDelivery`, the retry walk must apply them in nonce-ascending
+    // order. Otherwise `apply_group_op_inner`'s
+    // `if nonce <= last { skip duplicate }` check turns out-of-order
+    // application into permanent data loss: a later op applies first,
+    // bumps `last_nonce`, and every earlier op from the same signer
+    // gets dropped on the floor. This regression manifested in the
+    // group-metadata e2e as `ContextRegistered` (nonce N) being lost
+    // when `MemberAdded` (nonce N+5, lower content-hash) retried
+    // first, then `ContextMetadataSet` permanently bailing at the
+    // "context not registered in this group" check.
+    //
+    // Test rigor: this test searches for a `signer_sk` whose 4 signed
+    // ops' content-hash ordering differs from nonce ordering, so the
+    // pre-sort iteration order is provably NOT [1,2,3,4]. That way,
+    // the post-sort `assert_eq!(nonces, vec![1,2,3,4])` is a real
+    // signal of the fix doing work — without the sort, the assertion
+    // fails. (The previous version of this test could have passed by
+    // coincidence if the random key happened to produce content
+    // hashes in nonce order.)
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let namespace_id = [0x84; 32];
+    let group = ContextGroupId::from([0x85; 32]);
+
+    let group_key = [0x95; 32];
+    let key_id = store_group_key(&store, &group, &group_key).unwrap();
+
+    // Search the random-key space for a signer whose 4 signed ops
+    // produce a content-hash iteration order DIFFERENT from nonce
+    // order. P(success per attempt) ≥ 23/24 ≈ 96 % (any non-identity
+    // permutation works), so 64 attempts have a silent-pass
+    // probability of (1/24)^64 ≈ 10^-88. The explicit `found` flag
+    // and the post-loop `assert!(found, …)` make that path loud
+    // rather than silently succeeding with in-order ops.
+    let max_attempts = 64;
+    let mut found = false;
+    let mut raw_nonces: Vec<u64> = Vec::new();
+    for _ in 0..max_attempts {
+        let signer_sk = PrivateKey::random(&mut rng);
+        let signed_ops: Vec<SignedNamespaceOp> = (1u64..=4)
+            .map(|nonce| {
+                SignedNamespaceOp::sign(
+                    &signer_sk,
+                    namespace_id,
+                    vec![],
+                    [0u8; 32],
+                    nonce,
+                    NamespaceOp::Group {
+                        group_id: group.to_bytes(),
+                        key_id,
+                        encrypted: encrypt_group_op(&group_key, &GroupOp::Noop).unwrap(),
+                        key_rotation: None,
+                    },
+                )
+                .unwrap()
+            })
+            .collect();
+
+        // Predict the content-hash iteration order these ops would
+        // produce in the store column (keyed by `(namespace_id,
+        // content_hash)`), without actually persisting them yet.
+        let mut by_hash: Vec<([u8; 32], u64)> = signed_ops
+            .iter()
+            .map(|op| (op.content_hash().unwrap(), op.nonce))
+            .collect();
+        by_hash.sort_by_key(|(h, _)| *h);
+        let predicted_nonces: Vec<u64> = by_hash.iter().map(|(_, n)| *n).collect();
+        if predicted_nonces == vec![1u64, 2, 3, 4] {
+            // This signer happens to produce in-nonce-order content
+            // hashes — wouldn't exercise the sort fix. Try again.
+            continue;
+        }
+
+        // Good signer found. Persist via the same path used by the
+        // sibling test (`NamespaceGovernance::store_operation`), then
+        // confirm the raw op-log iteration actually came back in the
+        // predicted not-nonce-order — i.e. the bug path is reachable.
+        let governance = NamespaceGovernance::new(&store, namespace_id);
+        for op in &signed_ops {
+            governance.store_operation(op).unwrap();
+        }
+        raw_nonces = NamespaceOpLogService::new(&store, namespace_id)
+            .collect_signed_group_ops_for_group(group.to_bytes())
+            .unwrap()
+            .iter()
+            .map(|e| e.signed_op.nonce)
+            .collect();
+        assert_ne!(
+            raw_nonces,
+            vec![1u64, 2, 3, 4],
+            "test setup broken: raw op-log iteration is in nonce order, so the sort fix would be unreachable"
+        );
+        found = true;
+        break;
+    }
+    assert!(
+        found,
+        "after {max_attempts} random signers, none produced content hashes out of nonce order — \
+         either a vanishingly improbable coincidence or `content_hash`/op encoding changed. \
+         Without an out-of-order raw iteration, the assertion below cannot distinguish a working \
+         sort from a missing sort, so this test would silently pass on a regression."
+    );
+
+    let retry = NamespaceRetryService::new(&store, namespace_id);
+    let candidates = retry
+        .collect_retry_candidates_for_group(group.to_bytes())
+        .unwrap();
+
+    assert_eq!(candidates.len(), 4, "expected 4 retry candidates");
+
+    // The fix's contract: candidates are sorted by (signer_bytes, nonce)
+    // ascending. With a single signer, that's strict nonce order —
+    // even though we just proved the raw op-log iteration was NOT in
+    // nonce order. Without the sort fix in `NamespaceRetryService`,
+    // this assertion would fail.
+    let nonces: Vec<u64> = candidates.iter().map(|c| c.signed_op.nonce).collect();
+    assert_eq!(
+        nonces,
+        vec![1, 2, 3, 4],
+        "retry candidates must apply in nonce order, not content-hash order"
+    );
+}
+
+#[test]
 fn apply_local_signed_group_op_nonce_and_admin() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
     use calimero_primitives::identity::PrivateKey;
@@ -1986,6 +2117,78 @@ fn check_membership_open_subgroup_inherits_parent_with_default_cap() {
     assert!(check_group_membership(&store, &child, &alice).unwrap());
 }
 
+// -----------------------------------------------------------------------
+// Capability-materialization ordering (PR #2368 root cause for the
+// `MemberJoinedOpen rejected: no membership path` e2e failure).
+//
+// `add_group_member` materializes a non-admin member's per-member
+// capability row by copying the group's `default_capabilities` — but
+// ONLY if those defaults are already set in the store. A member added
+// BEFORE the namespace default caps land therefore has no
+// `CAN_JOIN_OPEN_SUBGROUPS` bit on this node, and a later
+// `MemberJoinedOpen` from them fails `check_group_membership_path`.
+// The `join_group` handler now sets `default_capabilities` before the
+// catch-up apply so every `MemberJoined` in the batch materializes its
+// caps correctly; these two tests pin the underlying invariant.
+// -----------------------------------------------------------------------
+
+#[test]
+fn check_membership_path_inherited_when_member_added_after_default_caps() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xB4; 32]);
+    let child = ContextGroupId::from([0xB5; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &ns, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+
+    // Correct ordering: default caps set FIRST, then the member is
+    // added — `add_group_member` copies the default into bob's
+    // per-member capability row.
+    set_default_capabilities(&store, &ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS).unwrap();
+    add_group_member(&store, &ns, &bob, GroupMemberRole::Member).unwrap();
+
+    let path = check_group_membership_path(&store, &child, &bob).unwrap();
+    assert!(
+        matches!(path, MembershipPath::Inherited { .. }),
+        "member added after default caps must inherit Open-subgroup membership, got {path:?}"
+    );
+}
+
+#[test]
+fn check_membership_path_none_when_member_added_before_default_caps() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let ns = ContextGroupId::from([0xB6; 32]);
+    let child = ContextGroupId::from([0xB7; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &ns, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+
+    // Buggy ordering (what the pre-fix `join_group` catch-up did when a
+    // node caught up on an earlier member's `MemberJoined` before its
+    // own `set_default_capabilities` ran): member added while default
+    // caps are still unset → no per-member capability row is written.
+    add_group_member(&store, &ns, &bob, GroupMemberRole::Member).unwrap();
+    set_default_capabilities(&store, &ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS).unwrap();
+
+    // The later `set_default_capabilities` does NOT retroactively
+    // materialize bob's per-member cap, so the inheritance check still
+    // returns `None`. This is exactly the state that produced
+    // `MemberJoinedOpen rejected: no membership path` on the
+    // later-joining peer; the `join_group` handler fix prevents it by
+    // ordering `set_default_capabilities` before the catch-up apply.
+    let path = check_group_membership_path(&store, &child, &bob).unwrap();
+    assert!(
+        matches!(path, MembershipPath::None),
+        "member added before default caps has no per-member cap row → no inherited path, got {path:?}"
+    );
+}
+
 #[test]
 fn check_membership_restricted_subgroup_does_not_inherit() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
@@ -2160,6 +2363,263 @@ fn check_membership_anchor_cap_check_uses_deepest_direct_membership() {
     set_subgroup_visibility(&store, &leaf, VisibilityMode::Open).unwrap();
 
     assert!(!check_group_membership(&store, &leaf, &alice).unwrap());
+}
+
+// -----------------------------------------------------------------------
+// Effective membership for `Open` subgroups — issue #2371
+//
+// `join_subgroup_inheritance` returns 200 / `wasInherited: true` but
+// writes no `GroupMember` row — `execute_member_joined_open` is a
+// validate-only apply. `check_group_membership` correctly reports the
+// inherited joiner as a member, yet `list_group_members` (which only
+// reads stored rows) omits them, so an app keying "is the caller a
+// member?" off the member list sees `false`. `enumerate_inherited_members`
+// closes the gap: it recomputes inherited members from current ancestor
+// state so callers can union it with the stored rows to get the
+// effective member set the membership contract promises.
+// -----------------------------------------------------------------------
+
+#[test]
+fn enumerate_inherited_members_includes_open_subgroup_joiner() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // namespace (root) -> reports (Open subgroup).
+    // Alice is a direct Admin of `reports`; Bob is a namespace member
+    // who joined `reports` via inheritance — no direct row in `reports`.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x30; 32]);
+    let reports = ContextGroupId::from([0x31; 32]);
+    let alice = PublicKey::from([0x01; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+
+    // Bob is a direct member of the namespace root with the join cap.
+    add_group_member(&store, &namespace, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &bob,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    // Alice is an explicit Admin of the Open `reports` subgroup.
+    add_group_member(&store, &reports, &alice, GroupMemberRole::Admin).unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Open).unwrap();
+
+    // Contract sanity: Bob *is* a member of `reports` by inheritance...
+    assert!(check_group_membership(&store, &reports, &bob).unwrap());
+    // ...but he has no stored row, so `list_group_members` omits him —
+    // this is the gap issue #2371 reports.
+    let stored = list_group_members(&store, &reports, 0, usize::MAX).unwrap();
+    assert!(
+        stored.iter().all(|(pk, _)| *pk != bob),
+        "precondition: inherited joiner has no stored GroupMember row"
+    );
+
+    // `enumerate_inherited_members` recovers Bob as an inherited member.
+    let inherited = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        inherited
+            .iter()
+            .any(|(pk, role)| *pk == bob && *role == GroupMemberRole::Member),
+        "expected inherited joiner Bob (Member) in enumerate_inherited_members, got {inherited:?}"
+    );
+    // Alice is a *direct* member of `reports` — she must not be
+    // double-reported as an inherited member.
+    assert!(
+        inherited.iter().all(|(pk, _)| *pk != alice),
+        "direct member Alice must not appear as an inherited member"
+    );
+}
+
+#[test]
+fn enumerate_inherited_members_excludes_deny_listed_member() {
+    // A member kicked from an Open subgroup via `MemberRemoved` /
+    // `MemberLeft` is deny-listed on that subgroup. Because the kick
+    // cannot delete a row that does not exist (the member is there by
+    // namespace-level inheritance), the deny-list IS the removal.
+    // `enumerate_inherited_members` — and therefore `list_group_members`
+    // — must exclude the deny-listed member so an admin who kicks
+    // someone no longer sees them in the channel's member list.
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x38; 32]);
+    let reports = ContextGroupId::from([0x39; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    add_group_member(&store, &namespace, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &bob,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Open).unwrap();
+
+    // Pre-kick: Bob is an inherited member of `reports`.
+    let inherited = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        inherited.iter().any(|(pk, _)| *pk == bob),
+        "precondition: Bob inherits membership of the Open subgroup"
+    );
+
+    // Kick: deny-list Bob on `reports` (what `MemberRemoved` /
+    // `MemberLeft` apply does for a subgroup-level removal).
+    mark_denied(&store, &reports, &bob).unwrap();
+
+    let after_kick = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        after_kick.iter().all(|(pk, _)| *pk != bob),
+        "deny-listed (kicked) member must NOT appear as an inherited member, got {after_kick:?}"
+    );
+
+    // Rejoin clears the deny-list — Bob reappears.
+    clear_denied(&store, &reports, &bob).unwrap();
+    let after_rejoin = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        after_rejoin.iter().any(|(pk, _)| *pk == bob),
+        "after clear_denied (rejoin) Bob must reappear as an inherited member"
+    );
+}
+
+#[test]
+fn enumerate_inherited_members_reports_inherited_admin_role() {
+    use calimero_context_config::VisibilityMode;
+
+    // A namespace admin who never explicitly joined the Open subgroup
+    // still inherits admin authority into it (admin override). The
+    // enumerated entry must carry the `Admin` role, not `Member`.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x32; 32]);
+    let reports = ContextGroupId::from([0x33; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    add_group_member(&store, &namespace, &admin, GroupMemberRole::Admin).unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Open).unwrap();
+
+    let inherited = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        inherited
+            .iter()
+            .any(|(pk, role)| *pk == admin && *role == GroupMemberRole::Admin),
+        "inherited admin must be reported with the Admin role, got {inherited:?}"
+    );
+}
+
+#[test]
+fn enumerate_inherited_members_empty_for_restricted_subgroup() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // A `Restricted` subgroup is a wall: parent members are not
+    // inherited, so the enumeration is empty.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x34; 32]);
+    let reports = ContextGroupId::from([0x35; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    add_group_member(&store, &namespace, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &bob,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Restricted).unwrap();
+
+    let inherited = enumerate_inherited_members(&store, &reports).unwrap();
+    assert!(
+        inherited.is_empty(),
+        "Restricted subgroup must inherit no members, got {inherited:?}"
+    );
+}
+
+#[test]
+fn enumerate_inherited_members_bails_on_depth_overflow() {
+    use calimero_context_config::VisibilityMode;
+
+    use super::namespace::MAX_NAMESPACE_DEPTH;
+
+    // A parent chain longer than MAX_NAMESPACE_DEPTH with no Restricted
+    // wall exhausts the walk bound. Like its sibling chain-walkers
+    // (`check_group_membership_path`, `is_inherited_admin`),
+    // `enumerate_inherited_members` must bail on a suspected cycle
+    // rather than silently return a partial member set.
+    let store = test_store();
+    let root = ContextGroupId::from([0x40; 32]);
+    let mut prev = root;
+    for i in 0..(MAX_NAMESPACE_DEPTH + 2) {
+        // Encode `i` across two bytes so distinct levels never alias,
+        // regardless of how large MAX_NAMESPACE_DEPTH grows — a single
+        // wrapping byte would collide past 255 and build a real cycle
+        // instead of a long chain, passing the test for the wrong reason.
+        let mut bytes = [0x41u8; 32];
+        bytes[..2].copy_from_slice(&(i as u16).to_le_bytes());
+        let next = ContextGroupId::from(bytes);
+        nest_for_test(&store, &prev, &next);
+        set_subgroup_visibility(&store, &next, VisibilityMode::Open).unwrap();
+        prev = next;
+    }
+
+    let res = enumerate_inherited_members(&store, &prev);
+    assert!(
+        res.is_err(),
+        "enumerate_inherited_members must bail on MAX_NAMESPACE_DEPTH overflow, got {res:?}"
+    );
+}
+
+#[test]
+fn enumerate_inherited_members_resolves_at_max_namespace_depth_boundary() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    use super::namespace::MAX_NAMESPACE_DEPTH;
+
+    // Refutes the claim that `enumerate_inherited_members` walks one
+    // ancestor short of `check_group_membership_path`. Build a fully
+    // Open chain of exactly MAX_NAMESPACE_DEPTH edges (ns -> g_1 -> ...
+    // -> leaf) with the sole member at the *deepest* ancestor (`ns`).
+    // If the walk fell an iteration short, `alice` would be missed; it
+    // must enumerate her, agreeing with `check_group_membership` (see
+    // `auth_and_crypto_walks_agree_at_max_namespace_depth_boundary`).
+    let store = test_store();
+    let ns = ContextGroupId::from([0x60; 32]);
+    let mut nodes = vec![ns];
+    for i in 1..=MAX_NAMESPACE_DEPTH {
+        let g = ContextGroupId::from([0x60u8.wrapping_add(i as u8); 32]);
+        nest_for_test(&store, nodes.last().unwrap(), &g);
+        set_subgroup_visibility(&store, &g, VisibilityMode::Open).unwrap();
+        nodes.push(g);
+    }
+    let leaf = *nodes.last().unwrap();
+
+    let alice = PublicKey::from([0x01; 32]);
+    add_group_member(&store, &ns, &alice, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &ns,
+        &alice,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    assert!(
+        check_group_membership(&store, &leaf, &alice).unwrap(),
+        "precondition: check_group_membership resolves at the boundary"
+    );
+
+    let inherited = enumerate_inherited_members(&store, &leaf).unwrap();
+    assert!(
+        inherited.iter().any(|(pk, _)| *pk == alice),
+        "enumerate_inherited_members must reach the deepest ancestor at \
+         MAX_NAMESPACE_DEPTH, matching check_group_membership; got {inherited:?}"
+    );
 }
 
 #[test]
@@ -3589,6 +4049,554 @@ fn recursive_remove_nonexistent_member_returns_empty() {
 
     let removed_from = recursive_remove_member(&store, &root, &stranger).unwrap();
     assert!(removed_from.is_empty(), "nothing to remove");
+}
+
+// -----------------------------------------------------------------------
+// restore_member_context_identities — local rejoiner ContextIdentity
+// recovery on `MemberAdded` / `MemberJoinedOpen` apply. The cascade
+// helper at `cascade_remove_member_from_group_tree` deletes per-context
+// `ContextIdentity` rows for the leaver/removed member; the rejoin
+// arms must invert that on the local rejoiner's node so the rejoiner
+// can author state-DAG ops again. Other peers don't hold a row for
+// the rejoiner (only the rejoiner's own store does), so this restore
+// is a no-op everywhere except on the local rejoiner.
+// -----------------------------------------------------------------------
+
+#[test]
+fn restore_member_context_identities_writes_missing_rows() {
+    let store = test_store();
+    let gid = test_group_id();
+    let member = PublicKey::from([0x21; 32]);
+    let sk_bytes = [0x99u8; 32];
+    let ctx_a = ContextId::from([0xC1; 32]);
+    let ctx_b = ContextId::from([0xC2; 32]);
+
+    register_context_in_group(&store, &gid, &ctx_a).unwrap();
+    register_context_in_group(&store, &gid, &ctx_b).unwrap();
+
+    // The internal anti-spoof gate reads THIS node's namespace identity
+    // (via `resolve_namespace(gid)` → `gid` itself, since the test gid
+    // has no parent). Storing it for `member` makes this node the
+    // local rejoiner; the function then derives `private_key` from it.
+    store_namespace_identity(&store, &gid, &member, &sk_bytes, &[0u8; 32]).unwrap();
+
+    restore_member_context_identities(&store, &gid, &member).unwrap();
+
+    let handle = store.handle();
+    for ctx in [&ctx_a, &ctx_b] {
+        let key = calimero_store::key::ContextIdentity::new(*ctx, member.into());
+        let row = handle.get(&key).unwrap().expect("row should be created");
+        assert_eq!(
+            row.private_key,
+            Some(sk_bytes),
+            "private_key must be derived from the local rejoiner's namespace identity"
+        );
+        assert_eq!(
+            row.sender_key, None,
+            "sender_key starts None; KeyDelivery populates it"
+        );
+    }
+}
+
+#[test]
+fn restore_member_context_identities_no_op_when_not_local_rejoiner() {
+    // The internal anti-spoof gate: a node whose stored namespace
+    // identity is NOT `member` must not write a `private_key: Some(_)`
+    // row for `member` — that would let it spoof state-DAG ops as the
+    // rejoiner. With no namespace identity stored at all, the function
+    // is likewise a no-op.
+    let store = test_store();
+    let gid = test_group_id();
+    let member = PublicKey::from([0x21; 32]);
+    let someone_else = PublicKey::from([0x42; 32]);
+    let ctx = ContextId::from([0xC3; 32]);
+    register_context_in_group(&store, &gid, &ctx).unwrap();
+
+    // No namespace identity at all → no-op.
+    restore_member_context_identities(&store, &gid, &member).unwrap();
+    let key = calimero_store::key::ContextIdentity::new(ctx, member.into());
+    assert!(
+        !store.handle().has(&key).unwrap(),
+        "no namespace identity stored → must not write a row"
+    );
+
+    // Namespace identity belongs to a different pk → still a no-op for
+    // `member`.
+    store_namespace_identity(&store, &gid, &someone_else, &[0x55; 32], &[0u8; 32]).unwrap();
+    restore_member_context_identities(&store, &gid, &member).unwrap();
+    assert!(
+        !store.handle().has(&key).unwrap(),
+        "namespace identity ≠ member → must not write a row for member"
+    );
+}
+
+#[test]
+fn restore_member_context_identities_is_idempotent() {
+    let store = test_store();
+    let gid = test_group_id();
+    let member = PublicKey::from([0x22; 32]);
+    let original_sk = [0x11u8; 32];
+    let original_sender = [0x44u8; 32];
+    let ctx = ContextId::from([0xD1; 32]);
+    register_context_in_group(&store, &gid, &ctx).unwrap();
+
+    // This node is the local rejoiner — namespace identity stored for
+    // `member`. The function will derive `original_sk` from it.
+    store_namespace_identity(&store, &gid, &member, &original_sk, &[0u8; 32]).unwrap();
+
+    // Pre-existing row from a (notional) successful prior `join_context`
+    // — already populated with a real sender_key from a delivered
+    // KeyDelivery. The restore must NOT overwrite it.
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextIdentity::new(ctx, member.into()),
+                &calimero_store::types::ContextIdentity {
+                    private_key: Some(original_sk),
+                    sender_key: Some(original_sender),
+                },
+            )
+            .unwrap();
+    }
+
+    restore_member_context_identities(&store, &gid, &member).unwrap();
+
+    let handle = store.handle();
+    let row = handle
+        .get(&calimero_store::key::ContextIdentity::new(
+            ctx,
+            member.into(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.private_key,
+        Some(original_sk),
+        "existing private_key must be preserved (no overwrite)"
+    );
+    assert_eq!(
+        row.sender_key,
+        Some(original_sender),
+        "existing sender_key must be preserved (would clobber an already-delivered key otherwise)"
+    );
+}
+
+#[test]
+fn restore_member_context_identities_repairs_keyless_row() {
+    // A pre-existing row with `private_key: None` leaves the rejoiner
+    // unable to sign. The restore must REPAIR it (fill `private_key`)
+    // rather than skip it on the `has` check — while preserving any
+    // `sender_key` already delivered onto that row.
+    let store = test_store();
+    let gid = test_group_id();
+    let member = PublicKey::from([0x23; 32]);
+    let sk_bytes = [0x66u8; 32];
+    let delivered_sender = [0x77u8; 32];
+    let ctx = ContextId::from([0xD2; 32]);
+    register_context_in_group(&store, &gid, &ctx).unwrap();
+    store_namespace_identity(&store, &gid, &member, &sk_bytes, &[0u8; 32]).unwrap();
+
+    // Keyless row with a delivered sender_key — the shape a restore
+    // must repair without clobbering the sender_key.
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextIdentity::new(ctx, member.into()),
+                &calimero_store::types::ContextIdentity {
+                    private_key: None,
+                    sender_key: Some(delivered_sender),
+                },
+            )
+            .unwrap();
+    }
+
+    restore_member_context_identities(&store, &gid, &member).unwrap();
+
+    let row = store
+        .handle()
+        .get(&calimero_store::key::ContextIdentity::new(
+            ctx,
+            member.into(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.private_key,
+        Some(sk_bytes),
+        "keyless row must be repaired with the rejoiner's namespace sk"
+    );
+    assert_eq!(
+        row.sender_key,
+        Some(delivered_sender),
+        "an already-delivered sender_key must survive the repair"
+    );
+}
+
+#[test]
+fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // The local rejoiner: their namespace identity is stored. Note
+    // `gid` here is treated as both the group and the namespace root —
+    // for a real subgroup the resolve_namespace walk would find the
+    // parent, but for this unit test gid IS the namespace. The
+    // subgroup-with-real-namespace variant is covered separately by
+    // `member_added_after_remove_restores_context_identity_for_subgroup_with_real_namespace`.
+    // Pin the flat-namespace assumption explicitly so a future change
+    // to `resolve_namespace` that breaks the no-parent case is caught
+    // here rather than silently passing.
+    assert_eq!(
+        resolve_namespace(&store, &gid).unwrap(),
+        gid,
+        "flat-namespace test precondition: gid must resolve to itself"
+    );
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let member_sk_bytes = *member_sk;
+    store_namespace_identity(&store, &gid, &member_pk, &member_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Pre-state: member already added once + has ContextIdentity for
+    // the context, then admin removes them which cascades the row
+    // delete. Simulate by adding via add_group_member, registering the
+    // context, writing the ContextIdentity directly, then issuing
+    // MemberRemoved (which cascade-deletes).
+    add_group_member(&store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+    let ctx = ContextId::from([0xE7; 32]);
+    register_context_in_group(&store, &gid, &ctx).unwrap();
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextIdentity::new(ctx, member_pk.into()),
+                &calimero_store::types::ContextIdentity {
+                    private_key: Some(member_sk_bytes),
+                    sender_key: Some([0x77; 32]),
+                },
+            )
+            .unwrap();
+    }
+
+    let removed = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        1,
+        dummy_member_removed_op(member_pk),
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &removed).unwrap();
+
+    // Confirm cascade ran — row gone.
+    {
+        let handle = store.handle();
+        let key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+        assert!(
+            !handle.has(&key).unwrap(),
+            "cascade must have deleted the ContextIdentity row"
+        );
+    }
+
+    // Re-add via signed MemberAdded — the apply arm must invoke the
+    // restore on the local rejoiner.
+    let readded = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        2,
+        GroupOp::MemberAdded {
+            member: member_pk,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &readded).unwrap();
+
+    let handle = store.handle();
+    let key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    let row = handle
+        .get(&key)
+        .unwrap()
+        .expect("MemberAdded apply must restore ContextIdentity for local rejoiner");
+    assert_eq!(
+        row.private_key,
+        Some(member_sk_bytes),
+        "row must carry the rejoiner's namespace sk so they can sign again"
+    );
+    assert_eq!(
+        row.sender_key, None,
+        "sender_key starts None — KeyDelivery will populate"
+    );
+}
+
+#[test]
+fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_namespace() {
+    // The first integration test conflates `gid` as both group and
+    // namespace, which means `resolve_namespace(group_id)` returns
+    // `gid` itself (no parent walk) and the test does not exercise
+    // the subgroup case. This test sets up a real namespace+subgroup
+    // pair where the subgroup's resolved namespace is a different
+    // ContextGroupId — pinning that the namespace-identity lookup at
+    // the resolved namespace (not at `group_id`) correctly gates the
+    // restore. This is the variant that mirrors the e2e workflow
+    // shape (admin-add to a child subgroup, member rejoins after
+    // remove).
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+
+    // namespace (root) ── subgroup
+    let ns_gid = ContextGroupId::from([0xD0; 32]);
+    let subgroup = ContextGroupId::from([0xD1; 32]);
+    nest_group(&store, &ns_gid, &subgroup).unwrap();
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    save_group_meta(&store, &subgroup, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &subgroup, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // Local rejoiner: namespace identity is stored under the NAMESPACE
+    // id (not the subgroup id). The MemberAdded apply for the subgroup
+    // must call `resolve_namespace(subgroup)` → `ns_gid` and then read
+    // the namespace identity from there.
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let member_sk_bytes: [u8; 32] = *member_sk;
+    store_namespace_identity(&store, &ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Pre-state: member was a direct subgroup member with a context
+    // identity, then admin removed them which cascade-deleted the row.
+    add_group_member(&store, &subgroup, &member_pk, GroupMemberRole::Member).unwrap();
+    let ctx = ContextId::from([0xE9; 32]);
+    register_context_in_group(&store, &subgroup, &ctx).unwrap();
+    {
+        let mut handle = store.handle();
+        handle
+            .put(
+                &calimero_store::key::ContextIdentity::new(ctx, member_pk.into()),
+                &calimero_store::types::ContextIdentity {
+                    private_key: Some(member_sk_bytes),
+                    sender_key: Some([0x33; 32]),
+                },
+            )
+            .unwrap();
+    }
+    let removed = SignedGroupOp::sign(
+        &admin_sk,
+        subgroup.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        dummy_member_removed_op(member_pk),
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &removed).unwrap();
+    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    assert!(
+        !store.handle().has(&id_key).unwrap(),
+        "cascade must have deleted the ContextIdentity row before the rejoin test"
+    );
+
+    // Re-add via signed MemberAdded targeting the SUBGROUP. The apply
+    // arm must resolve the namespace from `subgroup` (yielding
+    // `ns_gid`), look up the namespace identity there, and find a
+    // match — only then does the restore run.
+    let readded = SignedGroupOp::sign(
+        &admin_sk,
+        subgroup.to_bytes(),
+        vec![],
+        [0u8; 32],
+        2,
+        GroupOp::MemberAdded {
+            member: member_pk,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &readded).unwrap();
+
+    let row = store
+        .handle()
+        .get(&id_key)
+        .unwrap()
+        .expect("ContextIdentity row must be restored when group_id ≠ namespace_id");
+    assert_eq!(row.private_key, Some(member_sk_bytes));
+    assert_eq!(row.sender_key, None);
+}
+
+#[test]
+fn member_joined_open_clears_deny_list_and_restores_context_identity() {
+    // The cursor[bot] HIGH-SEVERITY finding pinned by an integration
+    // test: when `MemberJoinedOpen` applies, it must (a) `clear_denied`
+    // for the rejoiner on the subgroup so peers stop dropping their
+    // state-deltas, and (b) restore the rejoiner's `ContextIdentity`
+    // row on the local rejoiner so they can author state-deltas at
+    // all. Pre-fix the apply arm did neither — the kick→inheritance-
+    // rejoin and leave→inheritance-rejoin e2e flows hung in
+    // post-rejoin sync because the rejoiner's writes were dropped at
+    // every peer's deny-list filter.
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+
+    // Namespace + Open subgroup + context structure:
+    //   namespace (root) ── Open subgroup ── context
+    let ns_id = [0xA0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+    let subgroup = ContextGroupId::from([0xA1u8; 32]);
+    let ctx = ContextId::from([0xC1u8; 32]);
+
+    // Admin is needed for the `is_group_admin_or_has_capability`
+    // membership-policy gates (CAN_INVITE etc.) even though this
+    // particular op only checks `MembershipPath::Inherited`.
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    save_group_meta(&store, &subgroup, &sample_meta_with_admin(admin_pk)).unwrap();
+    add_group_member(&store, &subgroup, &admin_pk, GroupMemberRole::Admin).unwrap();
+    nest_group(&store, &ns_gid, &subgroup).unwrap();
+    set_subgroup_visibility(&store, &subgroup, VisibilityMode::Open).unwrap();
+    register_context_in_group(&store, &subgroup, &ctx).unwrap();
+
+    // Rejoiner: direct namespace member with CAN_JOIN_OPEN_SUBGROUPS,
+    // not a direct subgroup member (post-leave / post-kick state).
+    let member_sk = PrivateKey::random(&mut rng);
+    let member_pk = member_sk.public_key();
+    let member_sk_bytes: [u8; 32] = *member_sk;
+    add_group_member(&store, &ns_gid, &member_pk, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &ns_gid,
+        &member_pk,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    // Pre-state from a prior MemberLeft cascade: deny-list stamped,
+    // ContextIdentity row deleted on the local rejoiner.
+    mark_denied(&store, &subgroup, &member_pk).unwrap();
+    assert!(is_denied(&store, &subgroup, &member_pk).unwrap());
+    let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
+    assert!(!store.handle().has(&id_key).unwrap());
+
+    // The local node IS the rejoiner — its namespace identity matches
+    // `member_pk`. Without this gate the `restore_member_context_identities`
+    // call would no-op (correctly — peers don't own the rejoiner's sk).
+    store_namespace_identity(&store, &ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32]).unwrap();
+
+    // Sign + apply a fresh `MemberJoinedOpen` for the rejoiner.
+    let signed = SignedNamespaceOp::sign(
+        &member_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::MemberJoinedOpen {
+            member: member_pk,
+            group_id: subgroup.to_bytes(),
+        }),
+    )
+    .unwrap();
+    apply_signed_namespace_op(&store, &signed).unwrap();
+
+    // Assertion 1: deny-list cleared at the subgroup. This is
+    // critical for peers — without it they continue dropping the
+    // rejoiner's state-delta gossip at the receive filter.
+    assert!(
+        !is_denied(&store, &subgroup, &member_pk).unwrap(),
+        "MemberJoinedOpen apply MUST clear the per-subgroup deny-list \
+         entry so peers stop dropping the rejoiner's state-deltas"
+    );
+
+    // Assertion 2: ContextIdentity row restored with the rejoiner's
+    // namespace sk. Without this the local apply path cannot author
+    // state-DAG ops for any context under the subgroup.
+    let row = store
+        .handle()
+        .get(&id_key)
+        .unwrap()
+        .expect("ContextIdentity row must be restored on the local rejoiner");
+    assert_eq!(
+        row.private_key,
+        Some(member_sk_bytes),
+        "row must carry the rejoiner's namespace sk"
+    );
+    assert_eq!(
+        row.sender_key, None,
+        "sender_key starts None — populated later by KeyDelivery"
+    );
+}
+
+#[test]
+fn member_added_does_nothing_for_non_rejoiner_peers() {
+    // On peers whose local namespace identity is NOT the rejoiner,
+    // applying MemberAdded must NOT create a ContextIdentity row for
+    // the rejoiner — those peers would write a row claiming to own a
+    // private key they don't have, which would let them spoof state-
+    // DAG ops as the rejoiner.
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+
+    // This node IS the admin — its namespace identity is admin_pk, not
+    // the rejoiner's pk.
+    let admin_sk_bytes = *admin_sk;
+    store_namespace_identity(&store, &gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+
+    let rejoiner_pk = PrivateKey::random(&mut rng).public_key();
+    let ctx = ContextId::from([0xE8; 32]);
+    register_context_in_group(&store, &gid, &ctx).unwrap();
+
+    let added = SignedGroupOp::sign(
+        &admin_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberAdded {
+            member: rejoiner_pk,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &added).unwrap();
+
+    let handle = store.handle();
+    let key = calimero_store::key::ContextIdentity::new(ctx, rejoiner_pk.into());
+    assert!(
+        !handle.has(&key).unwrap(),
+        "non-rejoiner peers must NOT create a ContextIdentity row for someone else"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -6806,4 +7814,102 @@ fn apply_group_op_mutations_no_divergence_on_matching_hash() {
         divergence.is_none(),
         "no divergence expected when hashes match, got {divergence:?}"
     );
+}
+
+// -----------------------------------------------------------------------
+// `subgroup_visible_to` — the visibility decision behind the
+// `list_subgroups` admin endpoint (PR #2361). `Open` children are
+// public; `Restricted` children are listed only for the parent-group
+// admin or a direct member of the child. These pin every cell of the
+// visibility matrix the handler relies on.
+// -----------------------------------------------------------------------
+
+#[test]
+fn subgroup_visible_to_open_child_is_public_to_everyone() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD0; 32]);
+    let child = ContextGroupId::from([0xD1; 32]);
+    let stranger = PublicKey::from([0x09; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+
+    // An `Open` subgroup's existence is public by design — it is listed
+    // even for a caller that cannot be identified and one that is a
+    // total non-member.
+    assert!(subgroup_visible_to(&store, &parent, &child, None).unwrap());
+    assert!(subgroup_visible_to(&store, &parent, &child, Some(&stranger)).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_hidden_from_non_member() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD2; 32]);
+    let child = ContextGroupId::from([0xD3; 32]);
+    let stranger = PublicKey::from([0x09; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // The caller is neither a parent admin nor a member of the
+    // restricted child — its existence must not leak through the list.
+    assert!(!subgroup_visible_to(&store, &parent, &child, Some(&stranger)).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_hidden_when_caller_unknown() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD4; 32]);
+    let child = ContextGroupId::from([0xD5; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // `caller == None` (node has no namespace identity for the parent):
+    // membership cannot be verified, so the conservative choice hides
+    // the restricted child.
+    assert!(!subgroup_visible_to(&store, &parent, &child, None).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_visible_to_parent_admin() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD6; 32]);
+    let child = ContextGroupId::from([0xD7; 32]);
+    let admin = PublicKey::from([0x0A; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // An admin of the parent group governs the space and must be able
+    // to enumerate every child — even restricted ones it is not itself
+    // a member of.
+    add_group_member(&store, &parent, &admin, GroupMemberRole::Admin).unwrap();
+    assert!(subgroup_visible_to(&store, &parent, &child, Some(&admin)).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_visible_to_its_member() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD8; 32]);
+    let child = ContextGroupId::from([0xD9; 32]);
+    let member = PublicKey::from([0x0B; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // A direct member of the restricted child sees it, even though it
+    // is not an admin of the parent group.
+    add_group_member(&store, &child, &member, GroupMemberRole::Member).unwrap();
+    assert!(subgroup_visible_to(&store, &parent, &child, Some(&member)).unwrap());
 }

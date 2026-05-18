@@ -15,8 +15,9 @@ use crate::group::{
     DetachContextFromGroupRequest, GetContextMetadataRequest, GetGroupForContextRequest,
     GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetNamespaceIdentityRequest,
-    JoinContextRequest, JoinGroupRequest, LeaveContextRequest, LeaveGroupRequest,
-    LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    IssueOwnershipProofRequest, JoinContextRequest, JoinGroupRequest,
+    JoinSubgroupInheritanceRequest, LeaveContextRequest, LeaveGroupRequest, LeaveNamespaceRequest,
+    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
     RetryGroupUpgradeRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
     SetGroupMetadataRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
@@ -360,6 +361,10 @@ pub enum ContextMessage {
         request: JoinContextRequest,
         outcome: oneshot::Sender<<JoinContextRequest as Message>::Result>,
     },
+    JoinSubgroupInheritance {
+        request: JoinSubgroupInheritanceRequest,
+        outcome: oneshot::Sender<<JoinSubgroupInheritanceRequest as Message>::Result>,
+    },
     LeaveContext {
         request: LeaveContextRequest,
         outcome: oneshot::Sender<<LeaveContextRequest as Message>::Result>,
@@ -467,5 +472,9 @@ pub enum ContextMessage {
     ListNamespacesForApplication {
         request: ListNamespacesForApplicationRequest,
         outcome: oneshot::Sender<<ListNamespacesForApplicationRequest as Message>::Result>,
+    },
+    IssueOwnershipProof {
+        request: IssueOwnershipProofRequest,
+        outcome: oneshot::Sender<<IssueOwnershipProofRequest as Message>::Result>,
     },
 }
