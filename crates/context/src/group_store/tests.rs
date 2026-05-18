@@ -7986,6 +7986,230 @@ fn apply_group_op_mutations_no_divergence_on_matching_hash() {
 }
 
 // -----------------------------------------------------------------------
+// Effective capabilities for `Open` subgroups — issue #2378
+//
+// Sibling of #2371/#2372. `get_member_capabilities` (admin-api) gates on
+// `get_effective_member_capabilities`. An inherited Open-subgroup joiner
+// has no stored `GroupMember` row (`execute_member_joined_open` is
+// validate-only), yet `check_group_membership` reports them as a member —
+// the same effective-membership contract `list_group_members` honours
+// post-#2372. The gate must therefore recognise inherited members and
+// report their effective per-member bitmask as `0` ("member, no extra
+// delegated bits"). It must NOT change direct-member or non-member
+// answers, and a `Restricted` subgroup must remain a wall.
+// -----------------------------------------------------------------------
+
+#[test]
+fn get_effective_member_capabilities_includes_inherited_open_subgroup_joiner() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // namespace (root) -> reports (Open subgroup). Bob is a namespace
+    // member with the join cap; he joined `reports` via inheritance and
+    // holds no direct row there.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x50; 32]);
+    let reports = ContextGroupId::from([0x51; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    add_group_member(&store, &namespace, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &bob,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Open).unwrap();
+
+    // Contract sanity: Bob *is* an effective member of `reports` by
+    // inheritance, but he has no stored row there.
+    assert!(check_group_membership(&store, &reports, &bob).unwrap());
+    assert!(
+        get_group_member_role(&store, &reports, &bob)
+            .unwrap()
+            .is_none(),
+        "precondition: inherited joiner has no direct GroupMember row"
+    );
+
+    // The gate behind `get_member_capabilities` must surface Bob as a
+    // member with an effective bitmask of 0 — before the #2378 fix it
+    // returned `None` and the handler bailed "identity is not a member".
+    assert_eq!(
+        get_effective_member_capabilities(&store, &reports, &bob).unwrap(),
+        Some(0),
+        "inherited Open-subgroup joiner must resolve to Some(0), not None"
+    );
+}
+
+#[test]
+fn get_effective_member_capabilities_reports_inherited_admin() {
+    use calimero_context_config::VisibilityMode;
+
+    // A namespace admin who never explicitly joined the Open subgroup
+    // still inherits admin authority into it. The gate must accept them
+    // (Some, not None); inherited members hold no explicit per-member
+    // bitmask in the subgroup, so the value is 0.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x52; 32]);
+    let reports = ContextGroupId::from([0x53; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    add_group_member(&store, &namespace, &admin, GroupMemberRole::Admin).unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Open).unwrap();
+
+    assert!(check_group_membership(&store, &reports, &admin).unwrap());
+    assert_eq!(
+        get_effective_member_capabilities(&store, &reports, &admin).unwrap(),
+        Some(0),
+        "inherited admin must resolve to Some(0), not None"
+    );
+}
+
+#[test]
+fn get_effective_member_capabilities_returns_stored_bits_for_direct_member() {
+    use calimero_context_config::MemberCapabilities;
+
+    // Regression guard: a direct member's stored per-member capability
+    // row must still flow through unchanged.
+    let store = test_store();
+    let group = ContextGroupId::from([0x54; 32]);
+    let carol = PublicKey::from([0x03; 32]);
+
+    add_group_member(&store, &group, &carol, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &group,
+        &carol,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+
+    assert_eq!(
+        get_effective_member_capabilities(&store, &group, &carol).unwrap(),
+        Some(MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS),
+        "direct member's stored capability bitmask must be returned verbatim"
+    );
+}
+
+#[test]
+fn get_effective_member_capabilities_some_zero_for_direct_member_without_cap_row() {
+    // Regression guard for the `unwrap_or(0)` branch via the *direct*
+    // path: a member added with `add_group_member` and no explicit
+    // `set_member_capability` grant holds no per-member capability row.
+    // They are still a member, so the gate must resolve them to
+    // `Some(0)` ("member, no delegated bits") — not `None`. The
+    // inherited-member tests above also reach `unwrap_or(0)`, but only
+    // through the inherited-path resolution; this pins the direct-row
+    // case, the common shape for a plain member.
+    let store = test_store();
+    let group = ContextGroupId::from([0x58; 32]);
+    let dave = PublicKey::from([0x05; 32]);
+
+    add_group_member(&store, &group, &dave, GroupMemberRole::Member).unwrap();
+    // No `set_member_capability` call — no capability row is stored.
+
+    assert_eq!(
+        get_effective_member_capabilities(&store, &group, &dave).unwrap(),
+        Some(0),
+        "direct member with no capability row must resolve to Some(0)"
+    );
+}
+
+#[test]
+fn get_effective_member_capabilities_none_for_non_member() {
+    // Regression guard: a true non-member still resolves to `None` so the
+    // handler keeps rejecting them.
+    let store = test_store();
+    let group = ContextGroupId::from([0x55; 32]);
+    let stranger = PublicKey::from([0x04; 32]);
+
+    assert_eq!(
+        get_effective_member_capabilities(&store, &group, &stranger).unwrap(),
+        None,
+        "non-member must resolve to None"
+    );
+}
+
+#[test]
+fn get_effective_member_capabilities_none_for_restricted_wall() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // A `Restricted` subgroup is a wall: a parent member is NOT an
+    // effective member of it, so the gate must return `None`. Guards the
+    // fix against over-reaching past the inheritance boundary.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x56; 32]);
+    let reports = ContextGroupId::from([0x57; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    add_group_member(&store, &namespace, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &bob,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Restricted).unwrap();
+
+    assert!(!check_group_membership(&store, &reports, &bob).unwrap());
+    assert_eq!(
+        get_effective_member_capabilities(&store, &reports, &bob).unwrap(),
+        None,
+        "Restricted subgroup is a wall — parent member must resolve to None"
+    );
+}
+
+#[test]
+fn get_effective_member_capabilities_none_for_denied_inherited_member() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // A member kicked from an Open subgroup keeps their namespace-level
+    // inheritance but is deny-listed on the subgroup — the deny-list IS
+    // the removal (#2371), since the kick has no direct row to delete.
+    // `enumerate_inherited_members` filters them, so `list_group_members`
+    // omits them; the gate behind `get_member_capabilities` must agree
+    // and resolve them to `None`, not `Some(0)`. Sibling of
+    // `enumerate_inherited_members_excludes_deny_listed_member`.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x59; 32]);
+    let reports = ContextGroupId::from([0x5A; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    add_group_member(&store, &namespace, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &bob,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Open).unwrap();
+
+    // Pre-kick: Bob inherits membership and the gate accepts him.
+    assert_eq!(
+        get_effective_member_capabilities(&store, &reports, &bob).unwrap(),
+        Some(0),
+        "precondition: inherited joiner resolves to Some(0) before the kick"
+    );
+
+    // Kick: deny-list Bob on `reports` (what `MemberRemoved` / `MemberLeft`
+    // apply does for a subgroup-level removal).
+    mark_denied(&store, &reports, &bob).unwrap();
+
+    assert_eq!(
+        get_effective_member_capabilities(&store, &reports, &bob).unwrap(),
+        None,
+        "deny-listed (kicked) inherited member must resolve to None — \
+         consistent with their absence from list_group_members"
+    );
+}
+
+// -----------------------------------------------------------------------
 // `subgroup_visible_to` — the visibility decision behind the
 // `list_subgroups` admin endpoint (PR #2361). `Open` children are
 // public; `Restricted` children are listed only for the parent-group

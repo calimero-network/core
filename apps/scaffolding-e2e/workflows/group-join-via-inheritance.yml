@@ -22,6 +22,11 @@ description: >
        before the fix `GET /admin-api/groups/<id>/members` returned
        only the explicit members and apps keying "is the caller a
        member?" off that list saw `false` for any inherited joiner.
+    4. Resolves the inherited joiner through `get_member_capabilities`
+       — the sibling membership endpoint, issue #2378. Before that fix
+       it gated on a direct-row lookup only and bailed "identity is not
+       a member" for the very joiner `list_group_members` reported in
+       point 3, leaving the two endpoints contradictory.
 
   Pre-#2357 the only way to materialize the inherited path was to
   discover a child context id and call `join_context` against it
@@ -172,6 +177,36 @@ steps:
       # (`inherit_member_pk`, exported by the join-via-inheritance step)
       # must appear in the listed members.
       - 'contains({{subgroup_members}}, {{inherit_member_pk}})'
+
+  # ── Phase 2c: get_member_capabilities accepts the inherited joiner ─
+  # Issue #2378 regression. `list_group_members` (Phase 2b) now reports
+  # node-2 as an effective member of `subgroup`; the sibling endpoint
+  # `GET /admin-api/groups/<id>/members/<member>/capabilities` must
+  # agree. node-2 holds no explicit `GroupMember` row, so before the
+  # #2378 fix this call bailed with "identity is not a member of
+  # group ..." — the handler gated on a direct-row lookup only and the
+  # two membership endpoints contradicted each other. After the fix the
+  # call succeeds and returns `0`: an inherited member holds no explicit
+  # per-member bitmask in the subgroup (their access derives from the
+  # Open-subgroup chain), so `0` correctly means "member, no extra
+  # delegated bits."
+
+  - name: 'Node-2 reads its own capabilities (issue #2378)'
+    type: get_member_capabilities
+    node: join-inherit-node-2
+    group_id: '{{subgroup_id}}'
+    member_id: '{{inherit_member_pk}}'
+    outputs:
+      inherit_member_caps: capabilities
+
+  - name: Assert inherited joiner resolves to a 0 capability bitmask
+    # `json_assert` so the literal `0` is parsed as a JSON number rather
+    # than the string `'0'`. The decisive signal is that the step above
+    # succeeds at all — pre-#2378 it errored before returning any value,
+    # failing the workflow outright.
+    type: json_assert
+    statements:
+      - 'json_equal({{inherit_member_caps}}, 0)'
 
   # ── Phase 3: node-2 joins the context (key already delivered) ─────
   # This call should now be cheap because the group key is already

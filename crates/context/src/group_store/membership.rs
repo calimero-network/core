@@ -313,6 +313,69 @@ pub fn check_group_membership(
     ))
 }
 
+/// Returns the capability bitmask `identity` holds as an *effective*
+/// member of `group_id` — direct or inherited — or `None` when they are
+/// not a member at all. This is the membership gate and capability
+/// lookup behind the `get_member_capabilities` admin-api handler:
+/// `None` tells the handler to reject the request; `Some(bits)` tells it
+/// to return `bits`.
+///
+/// A direct member's bitmask is their stored per-member capability row
+/// (`0` when unset). An inherited Open-subgroup member (issue #2371 /
+/// #2378) has no stored `GroupMember` row in `group_id` — the apply path
+/// `execute_member_joined_open` is validate-only — so their effective
+/// per-member bitmask is `0`: "member, no extra delegated bits." Their
+/// access derives from the Open-subgroup chain, not a stored grant.
+///
+/// Membership is decided by [`check_group_membership_path`] (direct row ∪
+/// inherited Open-subgroup membership), mirroring the union
+/// [`list_group_members`]'s handler performs (#2372) so the two
+/// membership endpoints agree. [`get_group_member_role`] is deliberately
+/// *not* changed: authz and key-distribution callers need the strict
+/// direct-only view, so the effective-aware check lives here, at the
+/// handler-facing helper.
+///
+/// The two match arms mirror, cell-for-cell, the effective member set
+/// the `list_group_members` admin handler builds —
+/// `list_group_members` (raw stored rows) ∪ [`enumerate_inherited_members`].
+/// Whether the per-group **deny list** is consulted is dictated by which
+/// half of that union the arm corresponds to; the asymmetry is the
+/// faithful mirror of the handler, *not* an assumption about which kick
+/// paths touch the deny list:
+///
+/// * **`Inherited`** — the deny list **is** re-applied, exactly as
+///   [`enumerate_inherited_members`] does (#2371). A member kicked from
+///   an Open subgroup keeps their namespace-level inheritance but is
+///   deny-listed on the subgroup, and that deny-list *is* the removal
+///   (the kick has no direct row to delete). [`check_group_membership_path`]
+///   deliberately skips the deny list — it is also run by
+///   `MemberJoinedOpen` apply mid-rejoin, where the rejoiner is still
+///   deny-listed — so a kicked inherited member would otherwise resolve
+///   to `Some(0)` here while `list_group_members` omits them, reopening
+///   the very endpoint contradiction this helper exists to close.
+/// * **`Direct`** — the deny list is deliberately **not** consulted,
+///   because raw `list_group_members` does not filter stored rows
+///   either. This is a correctness requirement, not an optimisation:
+///   were a stored row to ever coexist with a deny-list entry, the list
+///   handler would still surface that row, so filtering it out here
+///   would make `get_member_capabilities` *reject* a member the list
+///   endpoint still *shows* — reopening the same contradiction in the
+///   opposite direction. Applying the check uniformly to both arms would
+///   therefore be a bug, not defense-in-depth.
+pub fn get_effective_member_capabilities(
+    store: &Store,
+    group_id: &ContextGroupId,
+    identity: &PublicKey,
+) -> EyreResult<Option<u32>> {
+    match check_group_membership_path(store, group_id, identity)? {
+        MembershipPath::None => Ok(None),
+        MembershipPath::Inherited { .. } if is_denied(store, group_id, identity)? => Ok(None),
+        MembershipPath::Direct | MembershipPath::Inherited { .. } => Ok(Some(
+            get_member_capability(store, group_id, identity)?.unwrap_or(0),
+        )),
+    }
+}
+
 /// Enumerate the identities that are members of `group_id` purely by
 /// inheritance — i.e. those with a [`MembershipPath::Inherited`] path
 /// and no stored `GroupMember` row in `group_id` itself.
