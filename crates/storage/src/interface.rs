@@ -238,6 +238,43 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(true)
     }
 
+    /// Verify the action's claimed ancestors against the receiver's local
+    /// tree state.
+    ///
+    /// Replaces the cryptographic commitment to `ancestor.merkle_hash` that
+    /// the v1 signed payload carried. The check is explicit + unsigned:
+    /// for each ancestor in the action, look up the local entity's full
+    /// merkle hash and compare. Mismatch → [`StorageError::TreeStateMismatch`].
+    /// Ancestors that don't exist locally are skipped (auto-vivification
+    /// happens during apply); the v1 signed binding didn't provide any
+    /// stronger check on this case either — the receiver had no local
+    /// merkle hash to compare against.
+    ///
+    /// **Skip on sync-reconcile.** The HashComparison apply path constructs
+    /// actions with `ancestors: vec![]`, which makes this check a no-op
+    /// (correctly — sync runs precisely when tree shapes have drifted;
+    /// asserting they haven't would reject every legitimate divergence
+    /// repair). The delta-replay path carries the signer's ancestor list
+    /// in the envelope; that's where this check actually fires.
+    ///
+    /// Single responsibility: tree-shape integrity only. Does not touch
+    /// signature verification, nonce checking, or mutation. Composable.
+    fn verify_ancestor_integrity(ancestors: &[ChildInfo]) -> Result<(), StorageError> {
+        for ancestor in ancestors {
+            let Some((local_hash, _)) = <Index<S>>::get_hashes_for(ancestor.id())? else {
+                // Ancestor doesn't exist locally yet. Apply will
+                // auto-vivify it from the action's claimed hash. The v1
+                // signed binding had no local hash to verify against
+                // here either; nothing to enforce.
+                continue;
+            };
+            if local_hash != ancestor.merkle_hash() {
+                return Err(StorageError::TreeStateMismatch(ancestor.id()));
+            }
+        }
+        Ok(())
+    }
+
     /// Applies a synchronization action from a remote node.
     ///
     /// Handles Add/Update/Delete actions, creating missing ancestors if needed.
@@ -640,6 +677,14 @@ impl<S: StorageAdaptor> Interface<S> {
                     data_len = data.len(),
                     "Interface::apply_action preparing to upsert entity"
                 );
+                // Tree-shape integrity check. Replaces the v1 signed
+                // commitment to ancestor merkle hashes — same coverage,
+                // separate concern (signature checks authorization;
+                // this checks tree-state agreement). HashComparison
+                // sync supplies `ancestors: vec![]`, which makes this a
+                // no-op there (correct — sync runs precisely when tree
+                // shapes have drifted).
+                Self::verify_ancestor_integrity(&ancestors)?;
                 let mut parent = None;
                 for this in ancestors.iter().rev() {
                     let parent = parent.replace(this);

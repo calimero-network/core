@@ -166,7 +166,8 @@ fn setup_root<S: StorageAdaptor>() -> ChildInfo {
     let root_id = Id::root();
     let root_meta = Metadata::default();
     Index::<S>::add_root(ChildInfo::new(root_id, [0; 32], root_meta.clone())).unwrap();
-    ChildInfo::new(root_id, [0; 32], root_meta)
+    let (full_hash, _) = Index::<S>::get_hashes_for(root_id).unwrap().unwrap();
+    ChildInfo::new(root_id, full_hash, root_meta)
 }
 
 fn one_sec(n: u64) -> u64 {

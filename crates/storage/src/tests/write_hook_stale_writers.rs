@@ -48,7 +48,12 @@ fn setup_root<S: StorageAdaptor>() -> ChildInfo {
     let root_id = Id::root();
     let root_meta = Metadata::default();
     Index::<S>::add_root(ChildInfo::new(root_id, [0; 32], root_meta.clone())).unwrap();
-    ChildInfo::new(root_id, [0; 32], root_meta)
+    // Fetch the post-`add_root` full_hash so the returned `ChildInfo`'s
+    // merkle_hash matches what the apply path's `verify_ancestor_integrity`
+    // will read from the index. Without this, every test using `setup_root`
+    // as an ancestor would fail with `TreeStateMismatch`.
+    let (full_hash, _) = Index::<S>::get_hashes_for(root_id).unwrap().unwrap();
+    ChildInfo::new(root_id, full_hash, root_meta)
 }
 
 fn entity_id(seed: u8) -> Id {

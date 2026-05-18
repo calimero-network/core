@@ -6,7 +6,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
-use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+use crate::entities::{ChildInfo, Metadata, StorageType};
 
 /// Actions to be taken during synchronisation.
 ///
@@ -138,50 +138,56 @@ impl Action {
         }
     }
 
-    /// Helper function to create a verifiable payload
-    /// Hashes the content-addressable parts of an action for signature verification.
+    /// Hash the bytes a writer commits to when signing this action.
+    ///
+    /// Scoped to assertions that are **transferable across tree-state
+    /// boundaries**: id, data, nonce, signer, and storage-type access
+    /// control. Tree-shape commitments (ancestor merkle hashes, full
+    /// metadata) are deliberately omitted — they were redundant
+    /// cryptographic packaging for what the apply layer already
+    /// enforces structurally via [`AncestorIntegrity::verify`].
+    ///
+    /// Subtractive vs the v1 payload:
+    /// * **Out**: `ancestors` (ids + merkle hashes), `created_at`,
+    ///   `updated_at` outside the nonce.
+    /// * **In**: prefix, id, data, nonce, storage-type access-control
+    ///   triple (type tag + writer-set or owner).
+    ///
+    /// This restores signature portability across the receive paths
+    /// (delta-replay and sync-reconcile) — both can reconstruct these
+    /// bytes from what travels on the wire / what's stored locally,
+    /// regardless of how much tree state has drifted.
+    ///
+    /// Wire-format break: v2 prefix bytes (`v2_upsert` / `v2_delete`)
+    /// so a v1-signed action against v2 verifier (or vice versa) fails
+    /// loudly rather than silently mis-verifying.
     pub fn payload_for_signing(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         match self {
             Action::Add {
-                id,
-                data,
-                ancestors,
-                metadata,
+                id, data, metadata, ..
             }
             | Action::Update {
-                id,
-                data,
-                ancestors,
-                metadata,
+                id, data, metadata, ..
             } => {
-                // Add version prefix
-                hasher.update(b"v1_upsert");
+                hasher.update(b"v2_upsert");
                 hasher.update(id.as_bytes());
                 hasher.update(data);
-
-                for child in ancestors {
-                    hasher.update(child.id().as_bytes());
-                    hasher.update(child.merkle_hash());
-                }
-
-                hash_metadata_for_payload(&mut hasher, metadata);
+                hash_authorization_for_payload(&mut hasher, metadata);
             }
             Action::DeleteRef {
                 id,
                 deleted_at,
                 metadata,
             } => {
-                // Add version prefix
-                hasher.update(b"v1_delete");
+                hasher.update(b"v2_delete");
                 hasher.update(id.as_bytes());
                 hasher.update(deleted_at.to_le_bytes());
-
-                hash_metadata_for_payload(&mut hasher, metadata);
+                hash_authorization_for_payload(&mut hasher, metadata);
             }
             Action::Compare { id } => {
-                // Compare actions are not signed
-                hasher.update(b"v1_compare");
+                // Compare actions are not signed.
+                hasher.update(b"v2_compare");
                 hasher.update(id.as_bytes());
             }
         }
@@ -189,47 +195,67 @@ impl Action {
     }
 }
 
-/// This is the single, correct way to hash metadata for both signing and ID computation.
-fn hash_metadata_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
-    hasher.update(borsh::to_vec(&metadata.created_at).unwrap_or_default());
-    hasher.update(borsh::to_vec(&metadata.updated_at).unwrap_or_default());
-
+/// Hash the access-control + nonce triple the signature commits to.
+///
+/// Single responsibility: produce a deterministic byte sequence that
+/// commits to "who can write this entity at what nonce." Replaces the
+/// old `hash_metadata_for_payload` which mixed in tree-shape-dependent
+/// fields (created_at, updated_at outside its nonce role) on top of
+/// the access-control commitment.
+///
+/// **What this commits to**:
+/// * Storage-type tag (`Public` / `Frozen` / `User` / `Shared`) — so a
+///   signed User action can't be re-purposed as a Shared one.
+/// * Owner pubkey (User) or writers set (Shared) — the access-control
+///   list the signer authorized against.
+/// * Nonce — replay protection within an entity.
+/// * Signer pubkey hint (Shared) — when present, locks the signature
+///   to a specific writer rather than letting any writer-set member
+///   pose as the signer.
+///
+/// **What it doesn't commit to**: anything tied to tree state. The
+/// signature is transferable across receive paths; tree-shape
+/// integrity is enforced by [`AncestorIntegrity::verify`] at apply
+/// time, separately.
+fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
     match &metadata.storage_type {
         StorageType::Public => {
-            hasher.update(borsh::to_vec(&StorageType::Public).unwrap_or_default());
+            hasher.update([0u8]); // type tag
+                                  // Public has no access-control commitment beyond the tag.
         }
         StorageType::Frozen => {
-            hasher.update(borsh::to_vec(&StorageType::Frozen).unwrap_or_default());
+            hasher.update([1u8]); // type tag
+                                  // Frozen is content-addressed; no signing in practice.
         }
         StorageType::User {
             owner,
             signature_data,
         } => {
-            // Hash the User variant without the signature
-            let partial_type = StorageType::User {
-                owner: *owner,
-                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
-                    nonce: sig_data.nonce,
-                    signature: [0; 64], // Use placeholder for hash
-                    signer: sig_data.signer,
-                }),
-            };
-            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
+            hasher.update([2u8]); // type tag
+            hasher.update(owner.as_ref() as &[u8; 32]);
+            if let Some(sig_data) = signature_data.as_ref() {
+                hasher.update(sig_data.nonce.to_le_bytes());
+            }
         }
         StorageType::Shared {
             writers,
             signature_data,
         } => {
-            // Hash the Shared variant without the signature
-            let partial_type = StorageType::Shared {
-                writers: writers.clone(),
-                signature_data: signature_data.as_ref().map(|sig_data| SignatureData {
-                    nonce: sig_data.nonce,
-                    signature: [0; 64], // Use placeholder for hash
-                    signer: sig_data.signer,
-                }),
-            };
-            hasher.update(borsh::to_vec(&partial_type).unwrap_or_default());
+            hasher.update([3u8]); // type tag
+                                  // Writers serialized deterministically: BTreeSet iteration
+                                  // is sorted, so this is stable across signer / verifier.
+            for writer in writers {
+                hasher.update(writer.as_ref() as &[u8; 32]);
+            }
+            if let Some(sig_data) = signature_data.as_ref() {
+                hasher.update(sig_data.nonce.to_le_bytes());
+                if let Some(signer_hint) = sig_data.signer {
+                    hasher.update([1u8]); // hint-present tag
+                    hasher.update(signer_hint.as_ref() as &[u8; 32]);
+                } else {
+                    hasher.update([0u8]); // hint-absent tag
+                }
+            }
         }
     }
 }

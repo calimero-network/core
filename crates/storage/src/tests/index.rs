@@ -97,13 +97,46 @@ mod index__public_methods {
 
         // --------------------------------------------------------------
         // applying a1, and then a2, what do we find?
+        //
+        // a2's `ancestors` carry a stale-by-construction root merkle
+        // hash (`[37; 32]`). Under the v1 signed payload, that
+        // mismatch was implicit in the failed signature reconstruction
+        // for signed types; for Public actions (this test's type) the
+        // apply path silently accepted the mismatched value. The v2
+        // explicit `verify_ancestor_integrity` check now rejects it
+        // explicitly. To preserve the scenario's intent (a1 + a2
+        // applied in order both succeed), rebuild a2 with the actual
+        // root merkle hash after a1 applies.
         // --------------------------------------------------------------
         assert!(
             <Interface<MockedStorage<2>>>::apply_action(a1.clone(), &ApplyContext::empty()).is_ok()
         );
-        assert!(
-            <Interface<MockedStorage<2>>>::apply_action(a2.clone(), &ApplyContext::empty()).is_ok()
-        );
+        let (root_full_hash_after_a1, _) = <Index<MockedStorage<2>>>::get_hashes_for(root_id)
+            .unwrap()
+            .unwrap();
+        let a2_with_real_ancestor = match a2.clone() {
+            Action::Update {
+                id,
+                data,
+                ancestors: _,
+                metadata,
+            } => Action::Update {
+                id,
+                data,
+                ancestors: vec![ChildInfo::new(
+                    root_id,
+                    root_full_hash_after_a1,
+                    Metadata::default(),
+                )],
+                metadata,
+            },
+            other => other,
+        };
+        assert!(<Interface<MockedStorage<2>>>::apply_action(
+            a2_with_real_ancestor,
+            &ApplyContext::empty()
+        )
+        .is_ok());
 
         let e1 = <Index<MockedStorage<2>>>::get_index(root_id).unwrap();
         let e2 = <Index<MockedStorage<2>>>::get_index(p1_id).unwrap();

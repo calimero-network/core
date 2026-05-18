@@ -102,11 +102,17 @@ fn hlc_at(step: u64) -> u64 {
 
 /// Pre-create the root index entry so non-root child entities can be
 /// added/updated by `apply_action` without tripping `IndexNotFound`.
+///
+/// Returns a `ChildInfo` whose `merkle_hash` matches what's actually
+/// stored after `add_root` (post-`calculate_full_hash_for_children`),
+/// so callers can use the returned value as an ancestor without
+/// tripping the v2 `verify_ancestor_integrity` check.
 fn setup_root<S: StorageAdaptor>() -> ChildInfo {
     let root_id = Id::root();
     let root_meta = Metadata::default();
     Index::<S>::add_root(ChildInfo::new(root_id, [0; 32], root_meta.clone())).unwrap();
-    ChildInfo::new(root_id, [0; 32], root_meta)
+    let (full_hash, _) = Index::<S>::get_hashes_for(root_id).unwrap().unwrap();
+    ChildInfo::new(root_id, full_hash, root_meta)
 }
 
 fn entity_id(seed: u8) -> Id {
