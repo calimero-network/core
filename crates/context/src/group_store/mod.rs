@@ -79,8 +79,7 @@ pub use self::membership::{
     enumerate_inherited_members, get_effective_member_capabilities, get_group_member_role,
     get_group_member_value, has_direct_group_member, is_authoritative_namespace_identity,
     is_direct_group_admin, is_group_admin, is_group_admin_or_has_capability, is_inherited_admin,
-    list_group_members,
-    namespace_member_pubkeys, remove_group_member, require_group_admin,
+    list_group_members, namespace_member_pubkeys, remove_group_member, require_group_admin,
     require_group_admin_or_capability, set_member_auto_follow, subgroup_visible_to,
     trusted_anchors_for_group, MembershipPath,
 };

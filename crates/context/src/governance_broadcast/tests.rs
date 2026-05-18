@@ -580,22 +580,37 @@ async fn verify_readiness_beacon_rejects_bad_signature() {
 
 #[test]
 fn classify_publish_readiness_ready_on_authoritative_ack() {
-    assert_eq!(classify_publish_readiness(true, 1, 3), PublishReadiness::Ready);
+    assert_eq!(
+        classify_publish_readiness(true, 1, 3),
+        PublishReadiness::Ready
+    );
     // An authoritative ack wins even with no known subscribers recorded.
-    assert_eq!(classify_publish_readiness(true, 2, 0), PublishReadiness::Ready);
+    assert_eq!(
+        classify_publish_readiness(true, 2, 0),
+        PublishReadiness::Ready
+    );
 }
 
 #[test]
 fn classify_publish_readiness_degraded_on_ordinary_ack_only() {
-    assert_eq!(classify_publish_readiness(false, 1, 3), PublishReadiness::Degraded);
+    assert_eq!(
+        classify_publish_readiness(false, 1, 3),
+        PublishReadiness::Degraded
+    );
 }
 
 #[test]
 fn classify_publish_readiness_solo_when_no_acks_no_subscribers() {
-    assert_eq!(classify_publish_readiness(false, 0, 0), PublishReadiness::Solo);
+    assert_eq!(
+        classify_publish_readiness(false, 0, 0),
+        PublishReadiness::Solo
+    );
 }
 
 #[test]
 fn classify_publish_readiness_degraded_when_subscribers_but_no_acks() {
-    assert_eq!(classify_publish_readiness(false, 0, 2), PublishReadiness::Degraded);
+    assert_eq!(
+        classify_publish_readiness(false, 0, 2),
+        PublishReadiness::Degraded
+    );
 }
