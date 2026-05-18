@@ -327,24 +327,39 @@ pub fn check_group_membership(
 /// per-member bitmask is `0`: "member, no extra delegated bits." Their
 /// access derives from the Open-subgroup chain, not a stored grant.
 ///
-/// Membership is decided by [`check_group_membership`] (direct row ∪
+/// Membership is decided by [`check_group_membership_path`] (direct row ∪
 /// inherited Open-subgroup membership), mirroring the union
 /// [`list_group_members`]'s handler performs (#2372) so the two
 /// membership endpoints agree. [`get_group_member_role`] is deliberately
 /// *not* changed: authz and key-distribution callers need the strict
 /// direct-only view, so the effective-aware check lives here, at the
 /// handler-facing helper.
+///
+/// For an inherited member the per-group **deny list** is re-applied —
+/// exactly as [`enumerate_inherited_members`] does (#2371). A member
+/// kicked from an Open subgroup keeps their namespace-level inheritance
+/// but is deny-listed on the subgroup, and that deny-list *is* the
+/// removal (the kick has no direct row to delete). `check_group_membership_path`
+/// deliberately skips the deny list — it is also run by
+/// `MemberJoinedOpen` apply mid-rejoin, where the rejoiner is still
+/// deny-listed — so a kicked inherited member would otherwise resolve to
+/// `Some(0)` here while `list_group_members` omits them, reopening the
+/// very endpoint contradiction this helper exists to close. The filter
+/// is *not* applied to a `Direct` member: a kick from a `Restricted`
+/// subgroup deletes their row outright, so a stored row that is also
+/// deny-listed is not a kicked state `list_group_members` would hide.
 pub fn get_effective_member_capabilities(
     store: &Store,
     group_id: &ContextGroupId,
     identity: &PublicKey,
 ) -> EyreResult<Option<u32>> {
-    if !check_group_membership(store, group_id, identity)? {
-        return Ok(None);
+    match check_group_membership_path(store, group_id, identity)? {
+        MembershipPath::None => Ok(None),
+        MembershipPath::Inherited { .. } if is_denied(store, group_id, identity)? => Ok(None),
+        MembershipPath::Direct | MembershipPath::Inherited { .. } => Ok(Some(
+            get_member_capability(store, group_id, identity)?.unwrap_or(0),
+        )),
     }
-    Ok(Some(
-        get_member_capability(store, group_id, identity)?.unwrap_or(0),
-    ))
 }
 
 /// Enumerate the identities that are members of `group_id` purely by

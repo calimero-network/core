@@ -8163,6 +8163,52 @@ fn get_effective_member_capabilities_none_for_restricted_wall() {
     );
 }
 
+#[test]
+fn get_effective_member_capabilities_none_for_denied_inherited_member() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    // A member kicked from an Open subgroup keeps their namespace-level
+    // inheritance but is deny-listed on the subgroup — the deny-list IS
+    // the removal (#2371), since the kick has no direct row to delete.
+    // `enumerate_inherited_members` filters them, so `list_group_members`
+    // omits them; the gate behind `get_member_capabilities` must agree
+    // and resolve them to `None`, not `Some(0)`. Sibling of
+    // `enumerate_inherited_members_excludes_deny_listed_member`.
+    let store = test_store();
+    let namespace = ContextGroupId::from([0x59; 32]);
+    let reports = ContextGroupId::from([0x5A; 32]);
+    let bob = PublicKey::from([0x02; 32]);
+
+    nest_for_test(&store, &namespace, &reports);
+    add_group_member(&store, &namespace, &bob, GroupMemberRole::Member).unwrap();
+    set_member_capability(
+        &store,
+        &namespace,
+        &bob,
+        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+    )
+    .unwrap();
+    set_subgroup_visibility(&store, &reports, VisibilityMode::Open).unwrap();
+
+    // Pre-kick: Bob inherits membership and the gate accepts him.
+    assert_eq!(
+        get_effective_member_capabilities(&store, &reports, &bob).unwrap(),
+        Some(0),
+        "precondition: inherited joiner resolves to Some(0) before the kick"
+    );
+
+    // Kick: deny-list Bob on `reports` (what `MemberRemoved` / `MemberLeft`
+    // apply does for a subgroup-level removal).
+    mark_denied(&store, &reports, &bob).unwrap();
+
+    assert_eq!(
+        get_effective_member_capabilities(&store, &reports, &bob).unwrap(),
+        None,
+        "deny-listed (kicked) inherited member must resolve to None — \
+         consistent with their absence from list_group_members"
+    );
+}
+
 // -----------------------------------------------------------------------
 // `subgroup_visible_to` — the visibility decision behind the
 // `list_subgroups` admin endpoint (PR #2361). `Open` children are
