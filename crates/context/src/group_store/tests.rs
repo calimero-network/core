@@ -3285,6 +3285,175 @@ fn namespace_nesting_resolve_and_read_only_checks() {
 }
 
 #[test]
+fn authorized_for_state_op_admits_admin_and_member_only() {
+    use super::is_authorized_for_context_state_op;
+
+    let store = test_store();
+    let gid = ContextGroupId::from([0xC0; 32]);
+    let context = ContextId::from([0xC1; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let member = PublicKey::from([0x02; 32]);
+    let ro = PublicKey::from([0x03; 32]);
+    let ro_tee = PublicKey::from([0x04; 32]);
+    let outsider = PublicKey::from([0x05; 32]);
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    register_context_in_group(&store, &gid, &context).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+    add_group_member(&store, &gid, &ro, GroupMemberRole::ReadOnly).unwrap();
+    add_group_member(&store, &gid, &ro_tee, GroupMemberRole::ReadOnlyTee).unwrap();
+
+    assert!(
+        is_authorized_for_context_state_op(&store, &context, &admin).unwrap(),
+        "Admin must be authorized to author state ops"
+    );
+    assert!(
+        is_authorized_for_context_state_op(&store, &context, &member).unwrap(),
+        "Member must be authorized to author state ops"
+    );
+    assert!(
+        !is_authorized_for_context_state_op(&store, &context, &ro).unwrap(),
+        "ReadOnly must NOT be authorized to author state ops"
+    );
+    assert!(
+        !is_authorized_for_context_state_op(&store, &context, &ro_tee).unwrap(),
+        "ReadOnlyTee must NOT be authorized to author state ops"
+    );
+    assert!(
+        !is_authorized_for_context_state_op(&store, &context, &outsider).unwrap(),
+        "Non-member must NOT be authorized to author state ops"
+    );
+}
+
+#[test]
+fn authorized_for_state_op_rejects_removed_member() {
+    use super::is_authorized_for_context_state_op;
+
+    let store = test_store();
+    let gid = ContextGroupId::from([0xD0; 32]);
+    let context = ContextId::from([0xD1; 32]);
+    let admin = PublicKey::from([0x01; 32]);
+    let target = PublicKey::from([0xDD; 32]);
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    register_context_in_group(&store, &gid, &context).unwrap();
+    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
+
+    // Member is authorized while in the group.
+    assert!(is_authorized_for_context_state_op(&store, &context, &target).unwrap());
+
+    // After removal: the GroupMember row is gone (apply path deletes it),
+    // and the deny-list flags the identity as denied — both ways the
+    // check must return `false`. The B3 receive path rejects deltas
+    // from this identity at the cut; this check rejects local state ops
+    // by the same identity at the WASM-execute path.
+    remove_group_member(&store, &gid, &target).unwrap();
+
+    assert!(
+        !is_authorized_for_context_state_op(&store, &context, &target).unwrap(),
+        "Removed member must NOT be authorized to author state ops locally"
+    );
+}
+
+#[test]
+fn authorized_for_state_op_recognises_namespace_creator() {
+    use super::is_authorized_for_context_state_op;
+
+    // Namespace creator does not have a `GroupMember` row at namespace
+    // genesis — their admin authority lives in `GroupMeta::admin_identity`.
+    // The check must use the same `is_group_admin` carve-out as the
+    // receive-side `membership_status_at`, or the creator's local state
+    // ops on a fresh namespace would be wrongly rejected.
+    let store = test_store();
+    let gid = ContextGroupId::from([0xE0; 32]);
+    let context = ContextId::from([0xE1; 32]);
+    let creator = PublicKey::from([0xEE; 32]);
+
+    let mut meta = test_meta();
+    meta.admin_identity = creator;
+    meta.owner_identity = creator;
+    save_group_meta(&store, &gid, &meta).unwrap();
+    register_context_in_group(&store, &gid, &context).unwrap();
+    // No `GroupMember` row for the creator — relies on the
+    // `is_group_admin` carve-out.
+
+    assert!(
+        is_authorized_for_context_state_op(&store, &context, &creator).unwrap(),
+        "Namespace creator must be authorized via the admin-identity carve-out"
+    );
+}
+
+#[test]
+fn authorized_for_state_op_allows_non_group_context() {
+    use super::is_authorized_for_context_state_op;
+
+    // A context that isn't registered under any group has no
+    // group-membership concept to enforce. The check returns `true`
+    // (no enforcement) so legacy / non-group contexts keep working.
+    let store = test_store();
+    let context = ContextId::from([0xF1; 32]);
+    let executor = PublicKey::from([0xF2; 32]);
+
+    assert!(
+        is_authorized_for_context_state_op(&store, &context, &executor).unwrap(),
+        "Non-group context must allow any executor (nothing to enforce)"
+    );
+}
+
+#[test]
+fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    use super::is_authorized_for_context_state_op;
+
+    // Members of an Open subgroup don't necessarily have a stored
+    // `GroupMember` row at the subgroup level — they reach the subgroup
+    // via the parent-walk with `CAN_JOIN_OPEN_SUBGROUPS` at the anchor.
+    // The receive-side `membership_status_at` folds Inherited →
+    // Member(Member); this check has to agree or the two checks
+    // disagree on the same identity (receive accepts their deltas
+    // while local-execute drops their state ops). That divergence
+    // broke `group-subgroup-visibility-inheritance` and adjacent
+    // workflows on an earlier draft of this PR.
+    let store = test_store();
+    let ns = ContextGroupId::from([0xC0; 32]);
+    let child = ContextGroupId::from([0xC1; 32]);
+    let context = ContextId::from([0xC2; 32]);
+    let admin = PublicKey::from([0xC3; 32]);
+    let inherited = PublicKey::from([0xC4; 32]);
+
+    nest_for_test(&store, &ns, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    save_group_meta(&store, &ns, &meta).unwrap();
+    save_group_meta(&store, &child, &meta).unwrap();
+
+    set_default_capabilities(&store, &ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS).unwrap();
+    add_group_member(&store, &ns, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &ns, &inherited, GroupMemberRole::Member).unwrap();
+
+    // Register the context under the (Open) child — `inherited` has
+    // no row in `child`, only in `ns`.
+    register_context_in_group(&store, &child, &context).unwrap();
+
+    assert!(
+        is_authorized_for_context_state_op(&store, &context, &inherited).unwrap(),
+        "Inherited member of an Open subgroup must be authorized to author state ops"
+    );
+}
+
+#[test]
 fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     let store = test_store();
     let gid = ContextGroupId::from([0xC1; 32]);
@@ -7968,4 +8137,102 @@ fn get_effective_member_capabilities_none_for_restricted_wall() {
         None,
         "Restricted subgroup is a wall — parent member must resolve to None"
     );
+}
+
+// -----------------------------------------------------------------------
+// `subgroup_visible_to` — the visibility decision behind the
+// `list_subgroups` admin endpoint (PR #2361). `Open` children are
+// public; `Restricted` children are listed only for the parent-group
+// admin or a direct member of the child. These pin every cell of the
+// visibility matrix the handler relies on.
+// -----------------------------------------------------------------------
+
+#[test]
+fn subgroup_visible_to_open_child_is_public_to_everyone() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD0; 32]);
+    let child = ContextGroupId::from([0xD1; 32]);
+    let stranger = PublicKey::from([0x09; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+
+    // An `Open` subgroup's existence is public by design — it is listed
+    // even for a caller that cannot be identified and one that is a
+    // total non-member.
+    assert!(subgroup_visible_to(&store, &parent, &child, None).unwrap());
+    assert!(subgroup_visible_to(&store, &parent, &child, Some(&stranger)).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_hidden_from_non_member() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD2; 32]);
+    let child = ContextGroupId::from([0xD3; 32]);
+    let stranger = PublicKey::from([0x09; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // The caller is neither a parent admin nor a member of the
+    // restricted child — its existence must not leak through the list.
+    assert!(!subgroup_visible_to(&store, &parent, &child, Some(&stranger)).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_hidden_when_caller_unknown() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD4; 32]);
+    let child = ContextGroupId::from([0xD5; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // `caller == None` (node has no namespace identity for the parent):
+    // membership cannot be verified, so the conservative choice hides
+    // the restricted child.
+    assert!(!subgroup_visible_to(&store, &parent, &child, None).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_visible_to_parent_admin() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD6; 32]);
+    let child = ContextGroupId::from([0xD7; 32]);
+    let admin = PublicKey::from([0x0A; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // An admin of the parent group governs the space and must be able
+    // to enumerate every child — even restricted ones it is not itself
+    // a member of.
+    add_group_member(&store, &parent, &admin, GroupMemberRole::Admin).unwrap();
+    assert!(subgroup_visible_to(&store, &parent, &child, Some(&admin)).unwrap());
+}
+
+#[test]
+fn subgroup_visible_to_restricted_child_visible_to_its_member() {
+    use calimero_context_config::VisibilityMode;
+
+    let store = test_store();
+    let parent = ContextGroupId::from([0xD8; 32]);
+    let child = ContextGroupId::from([0xD9; 32]);
+    let member = PublicKey::from([0x0B; 32]);
+
+    nest_for_test(&store, &parent, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Restricted).unwrap();
+
+    // A direct member of the restricted child sees it, even though it
+    // is not an admin of the parent group.
+    add_group_member(&store, &child, &member, GroupMemberRole::Member).unwrap();
+    assert!(subgroup_visible_to(&store, &parent, &child, Some(&member)).unwrap());
 }
