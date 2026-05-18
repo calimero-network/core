@@ -52,6 +52,67 @@ pub fn is_read_only_for_context(
     }
 }
 
+/// Returns `true` if `executor` is currently authorized to author state
+/// mutations on `context_id` — i.e., is a current Admin or Member of the
+/// context's owning group.
+///
+/// Returns `false` for:
+/// * Read-only roles (`ReadOnly`, `ReadOnlyTee`) — they can read but not write.
+/// * Members that have been removed from the group.
+/// * Identities that were never a member of the group.
+///
+/// Returns `true` for contexts that aren't owned by any group — there's no
+/// group membership concept to enforce.
+///
+/// **Live-state check, not historical.** The receive path's cross-DAG check
+/// (`membership_status_at`) is forward-only at the delta's *signed* governance
+/// cut, which is the right semantic for replicated authoring: a pre-removal
+/// delta stays valid forever. This function is the local-execute mirror, and
+/// uses **current** membership because at execute time there is no signed
+/// cut — the WASM call happens "now," not against any historical snapshot.
+/// The two checks complement each other: the receive-path check decides
+/// whether a delta from a peer is honored; this one decides whether the
+/// local WASM may produce a delta in the first place. Without this check, a
+/// removed member's WASM could still mutate local state (including User-
+/// storage entries) — the mutation would never propagate (peers reject via
+/// the receive-path check), but would accumulate as silent divergence from
+/// the canonical view until the next sync round repaired it.
+///
+/// The namespace creator / root admin is recognised via
+/// [`super::membership::is_group_admin`] (their membership lives in
+/// `GroupMeta::admin_identity`, not in a `GroupMember` row).
+pub fn is_authorized_for_context_state_op(
+    store: &Store,
+    context_id: &ContextId,
+    executor: &PublicKey,
+) -> EyreResult<bool> {
+    let Some(group_id) = get_group_for_context(store, context_id)? else {
+        // Non-group context — no membership concept to enforce.
+        return Ok(true);
+    };
+
+    // Namespace creator / root admin carve-out — they don't emit a self-
+    // `MemberJoined` op at genesis, so their membership is stored in
+    // `GroupMeta::admin_identity` and `get_group_member_role` returns
+    // `None`. Mirror the same carve-out `membership_status_at` and
+    // `namespace_member_pubkeys` apply, so admin authority is consistent
+    // across the receive-side and local-execute-side authorization
+    // checks.
+    if super::membership::is_group_admin(store, &group_id, executor)? {
+        return Ok(true);
+    }
+
+    match get_group_member_role(store, &group_id, executor)? {
+        Some(
+            calimero_primitives::context::GroupMemberRole::Admin
+            | calimero_primitives::context::GroupMemberRole::Member,
+        ) => Ok(true),
+        // ReadOnly / ReadOnlyTee → readable but not writeable. Removed /
+        // never-member → no authorization at all. Both fall through here.
+        Some(_) | None => Ok(false),
+    }
+}
+
 /// Read the parent group for a given group (legacy, used by `resolve_namespace`).
 pub fn get_parent_group(
     store: &Store,

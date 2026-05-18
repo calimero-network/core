@@ -105,10 +105,11 @@ pub use self::namespace::{
     collect_descendant_groups, collect_subtree_for_cascade, collect_visible_descendant_groups,
     create_recursive_invitations, get_namespace_identity, get_namespace_identity_record,
     get_or_create_namespace_identity, get_or_create_namespace_identity_bundle, get_parent_group,
-    is_descendant_of, is_read_only_for_context, list_child_groups, nest_group,
-    recursive_remove_member, reparent_group, resolve_namespace, resolve_namespace_identity,
-    resolve_namespace_identity_record, store_namespace_identity, unnest_group, CascadePayload,
-    NamespaceIdentityRecord, ReparentOutcome, ResolvedNamespaceIdentity,
+    is_authorized_for_context_state_op, is_descendant_of, is_read_only_for_context,
+    list_child_groups, nest_group, recursive_remove_member, reparent_group, resolve_namespace,
+    resolve_namespace_identity, resolve_namespace_identity_record, store_namespace_identity,
+    unnest_group, CascadePayload, NamespaceIdentityRecord, ReparentOutcome,
+    ResolvedNamespaceIdentity,
 };
 pub use self::namespace_dag::{NamespaceDagService, NamespaceHead};
 pub use self::namespace_governance::{
