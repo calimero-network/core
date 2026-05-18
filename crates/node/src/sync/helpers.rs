@@ -79,30 +79,6 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     metadata.updated_at = leaf.metadata.hlc_timestamp.into();
     metadata.created_at = leaf.metadata.created_at;
 
-    // Preserve the existing entity's `storage_type` on Update. The wire
-    // format (`LeafMetadata`) does not carry `storage_type` — historically
-    // the receiver constructed actions with `Metadata::default()`, which
-    // returns `StorageType::Public`. When the existing entity is `Shared`,
-    // `User`, or `Frozen`, the storage validator rejects the action with
-    // "Cannot change StorageType (e.g., User->Public/User->Frozen/etc)"
-    // and HashComparison retries the same malformed action forever,
-    // never converging. CRDT merge changes value, not storage type, so
-    // copying the existing entity's `storage_type` onto the action is
-    // both correct and required to make the validator accept it.
-    //
-    // For new entities (Add path below), the wire format gives us no
-    // way to recover the originator's `storage_type`; we keep
-    // `Public` as the default. Non-`Public` entities (`Shared` /
-    // `User` / `Frozen`) carry creation-time invariants the sync
-    // leaf-push path can't satisfy on its own (writer-set signature
-    // for `Shared`, owner identity for `User`, content-addressing for
-    // `Frozen`), so they should arrive via signed actions on the delta
-    // path. Sync leaf push is for closing CRDT value drift on entities
-    // both peers already have.
-    if let Some(ref existing) = existing_index {
-        metadata.storage_type = existing.metadata.storage_type.clone();
-    }
-
     let action = if existing_index.is_some() {
         // Update existing entity - storage layer handles CRDT merge
         Action::Update {
