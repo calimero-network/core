@@ -328,7 +328,24 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
         // this check and the `membership_status_at` call below — see
         // the TOCTOU note on `verify_position_group_id_matches_context`.
         match verify_position_group_id_matches_context(datastore, context_id, Some(pos.group_id)) {
-            GroupIdCheck::Match | GroupIdCheck::NonGroupOk => {}
+            GroupIdCheck::Match => {}
+            // `NonGroupOk` and `GroupContextNoPosition` both require
+            // `claimed_group_id == None` per the helper's match table.
+            // The drain always passes `Some(pos.group_id)` here (we
+            // bound `pos` via let-else above), so both variants are
+            // structurally unreachable from this call site. Spelling
+            // them out as `unreachable!` makes the invariant machine-
+            // checked rather than comment-only: a future refactor
+            // that breaks the call-site contract (e.g. swapping to
+            // pass `None`) would panic in test before reaching prod.
+            GroupIdCheck::NonGroupOk => unreachable!(
+                "GroupIdCheck::NonGroupOk requires claimed_group_id=None, \
+                 but drain always passes Some(pos.group_id)"
+            ),
+            GroupIdCheck::GroupContextNoPosition { .. } => unreachable!(
+                "GroupIdCheck::GroupContextNoPosition requires claimed_group_id=None, \
+                 but drain always passes Some(pos.group_id)"
+            ),
             GroupIdCheck::Mismatch { owning, claimed } => {
                 warn!(
                     %context_id,
@@ -358,34 +375,6 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
                      present but context is not part of any group (group disappeared since buffering?)"
                 );
                 crate::node_metrics::record_governance_drain_outcome("group_disappeared");
-                continue;
-            }
-            GroupIdCheck::GroupContextNoPosition { owning } => {
-                // Drain only sees `Some` positions today (the buffer
-                // shape requires a position). Reject explicitly rather
-                // than fall through so that any future change to the
-                // buffer acceptance criteria can't silently bypass the
-                // group-id check at this site.
-                warn!(
-                    %context_id,
-                    delta_id = ?buffered.id,
-                    author = %buffered.author_id,
-                    owning_group = ?owning,
-                    "governance-pending drain: rejecting pending delta — buffered without \
-                     governance_position on a group context (defensive — should be unreachable)"
-                );
-                // Distinct label from the earlier `no_governance_position`
-                // early-continue: that case is "buffer entry had no
-                // position at all" (which is well-defined and routine);
-                // this case is "buffer entry had a position but the
-                // helper reports `GroupContextNoPosition`," which is
-                // structurally impossible today. Surfacing it via its
-                // own label means a non-zero counter here is an
-                // operator signal that the buffer-shape invariant
-                // changed somewhere upstream.
-                crate::node_metrics::record_governance_drain_outcome(
-                    "buffer_shape_invariant_violation",
-                );
                 continue;
             }
             GroupIdCheck::LookupError(err) => {
