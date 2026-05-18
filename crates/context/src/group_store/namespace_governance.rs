@@ -10,8 +10,8 @@ use eyre::{bail, Result as EyreResult};
 use libp2p::gossipsub::TopicHash;
 
 use crate::governance_broadcast::{
-    self, assert_transport_ready, ns_topic, publish_and_await_ack_namespace,
-    timeout_for_namespace_op, DeliveryReport,
+    self, assert_transport_ready, classify_publish_readiness, ns_topic,
+    publish_and_await_ack_namespace, timeout_for_namespace_op, DeliveryReport, PublishReadiness,
 };
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
 use crate::op_events::{notify as notify_op_event, OpEvent};
@@ -68,6 +68,22 @@ pub(crate) fn min_acks_after_local_mutation(
     } else {
         governance_broadcast::DEFAULT_MIN_ACKS
     }
+}
+
+/// Classify a best-effort governance publish from the role of its ack
+/// signers. Shared by `NamespaceGovernance::sign_apply_and_publish` and
+/// `GroupGovernancePublisher` (a sibling module — hence `pub(crate)`).
+pub(crate) fn classify_report_readiness(
+    store: &Store,
+    namespace_id: [u8; 32],
+    report: &DeliveryReport,
+    known_subscribers: usize,
+) -> PublishReadiness {
+    let authoritative_ack = report.acked_by.iter().any(|pk| {
+        super::membership::is_authoritative_namespace_identity(store, namespace_id, pk)
+            .unwrap_or(false)
+    });
+    classify_publish_readiness(authoritative_ack, report.acked_by.len(), known_subscribers)
 }
 
 /// Domain API for namespace DAG and governance operation lifecycle.
@@ -441,19 +457,17 @@ impl<'a> NamespaceGovernance<'a> {
         op: NamespaceOp,
     ) -> EyreResult<DeliveryReport> {
         let topic = ns_topic(self.namespace_id);
-        // Phase-1 readiness gate runs FIRST — before any signing or local
-        // DAG mutation. Apply-before-readiness leaks orphan ops on retry:
-        // a rejected op stays in the local DAG, the retry signs a *new*
-        // op (different op_hash), and we accumulate duplicate writes on
-        // every attempt. Checking readiness up front makes the rejection
-        // side-effect-free and cleanly retryable.
-        let mesh = node_client
-            .mesh_peer_count_for_namespace(self.namespace_id)
-            .await;
-        let known_at_gate = node_client.known_subscribers(&topic);
-        assert_transport_ready(mesh, known_at_gate, node_client.gossipsub_mesh_n_low())
-            .map_err(|e| eyre::eyre!(e))?;
 
+        // Apply-FIRST: governance ops are locally authoritative. The local
+        // DAG mutation must not be gated on transport state — a node alone
+        // or with an unformed mesh still applies its own op and relies on
+        // sync to carry it to peers. (Previously a `NamespaceNotReady` gate
+        // ran here first and dropped the op entirely.) The publish below is
+        // best-effort: a transport failure downgrades the readiness
+        // classification, it never fails the call. See the
+        // best-effort-readiness design doc. The orphan-op-on-retry concern
+        // the old gate guarded against no longer applies: there is no
+        // rejection and no caller retry, so the op applies exactly once.
         let head = self.read_head_record()?;
         // Group ops are observed in `GroupGovernancePublisher` with the
         // cleartext `GroupOp` label; observing them here too would double-count.
@@ -468,6 +482,9 @@ impl<'a> NamespaceGovernance<'a> {
             head.next_nonce,
             op,
         )?;
+        let op_hash = signed
+            .content_hash()
+            .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
 
         self.apply_signed_op(&signed)?;
 
@@ -479,18 +496,19 @@ impl<'a> NamespaceGovernance<'a> {
         // `notify_namespace_op_applied` for the cross-crate plumbing.
         node_client.notify_namespace_op_applied(self.namespace_id);
 
+        let mesh = node_client
+            .mesh_peer_count_for_namespace(self.namespace_id)
+            .await;
+        let known = node_client.known_subscribers(&topic);
         if observe_mesh {
             record_governance_publish_mesh_peers(op_kind, mesh);
         }
+        let min_acks = min_acks_after_local_mutation(known, known);
 
-        // Refresh after `apply_signed_op`: if all peers departed since
-        // the readiness gate, using the stale gate snapshot would turn
-        // `NoPeersSubscribedToTopic` into `NoAckReceived` after the local
-        // DAG has already advanced.
-        let known_at_publish = node_client.known_subscribers(&topic);
-        let min_acks = min_acks_after_local_mutation(known_at_gate, known_at_publish);
-
-        let report = publish_and_await_ack_namespace(
+        // Best-effort publish: the op is already committed locally, so a
+        // `NoAckReceived` / `Publish` failure is NOT fatal — synthesize an
+        // empty report and let the readiness classification record it.
+        let mut report = match publish_and_await_ack_namespace(
             self.store,
             node_client.network_client(),
             ack_router,
@@ -502,11 +520,32 @@ impl<'a> NamespaceGovernance<'a> {
             None,
         )
         .await
-        .map_err(|e| eyre::eyre!(e))?;
+        {
+            Ok(report) => report,
+            Err(e) => {
+                tracing::debug!(
+                    op_kind,
+                    namespace_id = %hex::encode(self.namespace_id),
+                    error = %e,
+                    "namespace governance op applied locally; publish did not \
+                     confirm (best-effort) — will propagate via sync"
+                );
+                DeliveryReport {
+                    op_hash,
+                    acked_by: Vec::new(),
+                    elapsed_ms: 0,
+                    readiness: PublishReadiness::Degraded,
+                }
+            }
+        };
+
+        report.readiness =
+            classify_report_readiness(self.store, self.namespace_id, &report, known);
         tracing::debug!(
             op_kind,
             namespace_id = %hex::encode(self.namespace_id),
             acks = report.acked_by.len(),
+            readiness = report.readiness.label(),
             elapsed_ms = report.elapsed_ms,
             op_hash = %hex::encode(report.op_hash),
             "namespace governance op published"
