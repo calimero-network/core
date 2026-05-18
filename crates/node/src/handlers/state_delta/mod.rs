@@ -322,6 +322,11 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
         // `NonGroupOk` / `GroupContextNoPosition` variants are
         // unreachable here; we still spell them out for exhaustive-
         // match safety against future buffer shape changes.
+        //
+        // INVARIANT: `ContextManager` serializes governance ops, so
+        // no concurrent group reassignment can interleave between
+        // this check and the `membership_status_at` call below — see
+        // the TOCTOU note on `verify_position_group_id_matches_context`.
         match verify_position_group_id_matches_context(datastore, context_id, Some(pos.group_id)) {
             GroupIdCheck::Match | GroupIdCheck::NonGroupOk => {}
             GroupIdCheck::Mismatch { owning, claimed } => {
@@ -1164,6 +1169,11 @@ pub async fn handle_state_delta(
     // closes (mismatched group_id on a signed position, and lying about
     // being a non-group context). Single store lookup covers both
     // position-present and position-absent cases.
+    //
+    // INVARIANT: `ContextManager` serializes governance ops, so
+    // no concurrent group reassignment can interleave between this
+    // check and the `membership_status_at` call below — see the
+    // TOCTOU note on `verify_position_group_id_matches_context`.
     let datastore = node_clients.context.datastore();
     match verify_position_group_id_matches_context(
         datastore,
@@ -2331,6 +2341,11 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
         // closes. The replay path only sees `Some` positions; the
         // `NonGroupOk` / `GroupContextNoPosition` variants are
         // unreachable here, kept for exhaustive-match safety.
+        //
+        // INVARIANT: `ContextManager` serializes governance ops, so
+        // no concurrent group reassignment can interleave between
+        // this check and the `membership_status_at` call below — see
+        // the TOCTOU note on `verify_position_group_id_matches_context`.
         match verify_position_group_id_matches_context(datastore, &context_id, Some(pos.group_id)) {
             GroupIdCheck::Match | GroupIdCheck::NonGroupOk => {}
             GroupIdCheck::Mismatch { owning, claimed } => {
