@@ -166,20 +166,32 @@ pub fn membership_status_at(
     // here keeps the semantics aligned: any signer that
     // `is_group_admin` accepts must also pass the cross-DAG check.
     //
-    // **Trade-off — over-permissive on `TransferOwnership`.**
+    // **Trade-off — under-permissive on `AdminChanged`.**
     // `is_group_admin` consults the *current* `GroupMeta::admin_identity`,
-    // not the value at `position`. Concretely: if Alice was the admin
-    // at the cut a delta references, then `TransferOwnership` moves
-    // admin to Bob, then Alice's pre-transfer delta arrives — the
-    // carve-out fires against the *current* admin (Bob) and returns
-    // `Member(Admin)` for Alice anyway. This is over-permissive
-    // relative to a strictly position-aware check, but matches the
-    // forward-only invariant elsewhere: a pre-transfer write authored
-    // by the then-admin should stay valid. The proper position-aware
-    // resolution would walk the governance DAG for a historical
-    // `admin_identity` at `position`; deferred — accepted as a known
-    // trade-off because the over-permissive direction is consistent
-    // with forward-only semantics.
+    // not the value at `position`. After an `AdminChanged` namespace
+    // op moves admin authority from Alice to Bob:
+    //
+    // * Bob signing a delta: `admin_identity == Bob` → carve-out
+    //   fires → `Member(Admin)`. Accepted. ✓
+    // * Alice signing a *pre-change* delta (legitimate at sign time):
+    //   `admin_identity == Bob != Alice` → carve-out does NOT fire.
+    //   If Alice has no `GroupMember` row (the original creator never
+    //   emits a self-`MemberJoined`), the fast path and prefix walk
+    //   both return `NeverMember` → REJECTED.
+    // * Alice signing a *post-change* delta (stale credentials):
+    //   same path, REJECTED. ✓
+    //
+    // The cost is the second bullet: forward-only would honor Alice's
+    // pre-change writes, but this check has no access to historical
+    // `admin_identity` values, so it can't tell "legitimate former
+    // admin" from "currently no authority." It errs on the side of
+    // rejection — safe, not exploitable, but slightly stricter than
+    // pure forward-only. The proper position-aware resolution would
+    // walk the governance DAG to recover historical `admin_identity`
+    // at `position`; deferred. Note that `AdminChanged` is the op
+    // that mutates `admin_identity`; `TransferOwnership` is a
+    // separate op that touches `owner_identity` and does not affect
+    // this carve-out.
     if super::membership::is_group_admin(store, &group_id, signer)? {
         return Ok(MembershipStatus::Member(
             calimero_primitives::context::GroupMemberRole::Admin,
