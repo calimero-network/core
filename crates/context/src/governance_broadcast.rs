@@ -254,6 +254,57 @@ pub struct DeliveryReport {
     pub elapsed_ms: u64,
 }
 
+/// Outcome classification for a best-effort governance publish.
+///
+/// `Ready` means an owner/admin/TEE node provably received the op (a
+/// signed ack arrived from one). `Degraded` and `Solo` both mean the op
+/// applied locally and will reach peers via sync; they differ only in
+/// whether any remote subscriber was known. None of the three is a
+/// failure — the apply already happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishReadiness {
+    /// No remote subscribers were known — the node is effectively solo.
+    Solo,
+    /// At least one owner / admin / TEE node acked the op.
+    Ready,
+    /// Applied locally, but no authoritative node acked.
+    Degraded,
+}
+
+impl PublishReadiness {
+    /// Stable label for metrics and log lines.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            PublishReadiness::Solo => "solo",
+            PublishReadiness::Ready => "ready",
+            PublishReadiness::Degraded => "degraded",
+        }
+    }
+}
+
+/// Classify a best-effort publish outcome. Pure policy function.
+///
+/// `authoritative_ack` is true when at least one ack came from an
+/// owner / admin / TEE identity (see
+/// `group_store::membership::is_authoritative_namespace_identity`).
+#[must_use]
+pub fn classify_publish_readiness(
+    authoritative_ack: bool,
+    ack_count: usize,
+    known_subscribers: usize,
+) -> PublishReadiness {
+    if authoritative_ack {
+        PublishReadiness::Ready
+    } else if ack_count > 0 {
+        PublishReadiness::Degraded
+    } else if known_subscribers == 0 {
+        PublishReadiness::Solo
+    } else {
+        PublishReadiness::Degraded
+    }
+}
+
 /// Per-handler delivery observability log.
 ///
 /// The publish-boundary helpers
