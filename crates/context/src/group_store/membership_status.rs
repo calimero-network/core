@@ -102,7 +102,6 @@ pub enum MembershipStatus {
 ///
 /// # Three branches
 ///
-///
 /// 1. **Fast path** — `position.governance_dag_heads` equals current local
 ///    heads. Consults the materialized member set for an immediate
 ///    `Member` / `NeverMember` answer. Verifies

@@ -191,9 +191,10 @@ Two classes of change would silently re-introduce the divergence described above
   that doesn't pass <code>delta.governance_position</code> verbatim.</li>
   <li><b>Changing the prefix walk to visit descendants.</b> A "performance optimization" that
   has the BFS catch up to local heads after visiting the signed heads would observe ops the
-  signer hadn't signed against, including later <code>MemberRemoved</code> ops. The function
-  doc on <code>prefix_walk_membership</code> and its regression tests (<code>prefix_walk_forward_only_*</code>)
-  pin this boundary.</li>
+  signer hadn't signed against, including later <code>MemberRemoved</code> ops. The forward-only
+  contract is documented on the public <code>membership_status_at</code> function; the
+  internal BFS in <code>prefix_walk_membership</code> implements it, and the
+  <code>prefix_walk_forward_only_*</code> regression tests pin the boundary.</li>
 </ul>
 
 <h3>Scope</h3>
