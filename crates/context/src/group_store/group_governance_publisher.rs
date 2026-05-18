@@ -256,24 +256,21 @@ impl<'a> GroupGovernancePublisher<'a> {
         // `GroupOp` variant as the label* before the inner namespace publish
         // hides it inside an encrypted envelope. `NamespaceGovernance::sign_*`
         // skips emission for `NamespaceOp::Group { .. }` so this is the
-        // single source of truth for group-op observations. Reuse the value
-        // captured by the readiness gate at the top of the function — issuing
-        // a second `mesh_peer_count_for_namespace` round-trip here would burn
-        // an actor-mailbox hop per publish without observable benefit.
+        // single source of truth for group-op observations. Reuse the
+        // `mesh` value sampled at the top of the function — issuing a
+        // second `mesh_peer_count_for_namespace` round-trip here would
+        // burn an actor-mailbox hop per publish without observable benefit.
         record_governance_publish_mesh_peers(op.op_kind_label(), mesh);
 
         let namespace_sk = PrivateKey::from(namespace_identity.private_key);
         let op_kind = op.op_kind_label();
-        // Reuse the (mesh, known) snapshot captured by the outer gate
-        // and call `sign_and_publish_post_gate` so the inner publisher
-        // does NOT re-run `assert_transport_ready`. Re-running the gate
-        // here would create a TOCTOU window: the local store mutation
-        // from `sign_apply_local_group_op_borsh` (above) is already
-        // committed, so a re-gated `NamespaceNotReady` rejection would
-        // leave nonce N applied locally but never published — the
-        // caller's retry signs nonce N+1, remote peers only see N+1,
-        // and we'd have a permanent local/remote divergence on member-
-        // change ops.
+        // Publish best-effort (`best_effort = true`): the local store
+        // mutation from `sign_apply_local_group_op_borsh` (above) is
+        // already committed, so a publish that gathers no acks is NOT a
+        // failure — it is reported as `Degraded` and the op reaches peers
+        // via sync. `sign_and_publish_post_gate` takes the `mesh` / `known`
+        // snapshot directly and never runs `assert_transport_ready`, so
+        // there is no gate that could reject after the local apply.
         let mut report = NamespaceGovernance::new(self.store, namespace_bytes)
             .sign_and_publish_post_gate(
                 self.node_client,

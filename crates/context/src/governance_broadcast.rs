@@ -256,7 +256,8 @@ pub struct DeliveryReport {
     /// this to `Degraded` as a conservative default; the apply-and-publish
     /// boundary (`NamespaceGovernance::sign_apply_and_publish`,
     /// `GroupGovernancePublisher`) overwrites it with the role-aware
-    /// classification once acks are in.
+    /// classification once the publish attempt completes — whether acks
+    /// arrived or the publish failed and a zero-ack report was synthesized.
     pub readiness: PublishReadiness,
 }
 

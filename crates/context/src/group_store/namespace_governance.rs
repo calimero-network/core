@@ -680,18 +680,19 @@ impl<'a> NamespaceGovernance<'a> {
 
         // Refresh `known` here, AFTER all the local-mutation /
         // encryption / key-rotation / store_operation work above and
-        // immediately before deciding `min_acks`. The gate-time
-        // snapshot (`known_at_gate`) was taken many awaits ago; in
-        // group-publish flows it predates `sign_apply_local_group_op_borsh`
-        // and the per-removal key mint. If a peer unsubscribed in the
-        // meantime, sticking with the stale count would leave
-        // `min_acks = 1` against an empty subscriber set and force
-        // `NoAckReceived` after the local DAG has already advanced —
-        // exactly the orphan-op-on-retry pattern the readiness gate
-        // exists to prevent. `known_subscribers` is a cheap synchronous
-        // DashMap lookup on `NodeClient` (no actor mailbox round-trip),
-        // so re-sampling here costs effectively nothing while making
-        // the solo-namespace fast-path responsive to live state.
+        // immediately before deciding `min_acks`. The caller's snapshot
+        // (`known_at_gate`) was taken many awaits ago; in group-publish
+        // flows it predates `sign_apply_local_group_op_borsh` and the
+        // per-removal key mint. If a peer unsubscribed in the meantime,
+        // sticking with the stale count would leave `min_acks = 1`
+        // against an empty subscriber set and force `NoAckReceived`
+        // after the local DAG has already advanced. For `best_effort`
+        // callers that `NoAckReceived` is swallowed into a `Degraded`
+        // report; for quorum callers it is the genuine failure they
+        // expect. `known_subscribers` is a cheap synchronous DashMap
+        // lookup on `NodeClient` (no actor mailbox round-trip), so
+        // re-sampling here costs effectively nothing while making the
+        // solo-namespace fast-path responsive to live state.
         let known_at_publish = node_client.known_subscribers(&topic);
         let min_acks = min_acks_after_local_mutation(known_at_gate, known_at_publish);
 
