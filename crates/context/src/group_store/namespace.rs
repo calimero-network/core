@@ -54,12 +54,15 @@ pub fn is_read_only_for_context(
 
 /// Returns `true` if `executor` is currently authorized to author state
 /// mutations on `context_id` — i.e., is a current Admin or Member of the
-/// context's owning group.
+/// context's owning group, either by direct row or by Open-subgroup
+/// inheritance.
 ///
 /// Returns `false` for:
-/// * Read-only roles (`ReadOnly`, `ReadOnlyTee`) — they can read but not write.
+/// * Direct members with read-only roles (`ReadOnly`, `ReadOnlyTee`) — they
+///   can read but not write.
 /// * Members that have been removed from the group.
-/// * Identities that were never a member of the group.
+/// * Identities that were never a member of the group and don't reach it
+///   via Open-subgroup inheritance.
 ///
 /// Returns `true` for contexts that aren't owned by any group — there's no
 /// group membership concept to enforce.
@@ -78,9 +81,29 @@ pub fn is_read_only_for_context(
 /// the receive-path check), but would accumulate as silent divergence from
 /// the canonical view until the next sync round repaired it.
 ///
+/// **Inherited membership.** Members of an Open subgroup may not have a
+/// stored `GroupMember` row at the subgroup level — they reach it via the
+/// parent-walk with `CAN_JOIN_OPEN_SUBGROUPS` at the anchor (see
+/// [`super::membership::check_group_membership_path`]). The receive-side
+/// `membership_status_at` folds `Inherited → Member(Member)`; this function
+/// does the same so the two checks agree on inherited members. Without
+/// this, a perfectly legitimate inherited member's local state ops would be
+/// dropped by this check, but the receive-side would accept their deltas —
+/// internally inconsistent and breaks Open-subgroup workflows.
+///
 /// The namespace creator / root admin is recognised via
 /// [`super::membership::is_group_admin`] (their membership lives in
 /// `GroupMeta::admin_identity`, not in a `GroupMember` row).
+///
+/// **Deny-list is a separate layer.** This function checks live membership
+/// state only. The receive path layers an additional `is_author_denied_for_context`
+/// pre-filter that runs in front of the cross-DAG check (an O(1) fast-
+/// rejection for identities the local node explicitly denied). The local-
+/// execute path doesn't need that fast-path: removed identities are caught
+/// here by the absence of a `GroupMember` row (admin removal also clears
+/// the row), and there is no high-volume traffic to short-circuit. If a
+/// future kick path ever marks an identity denied *without* removing its
+/// `GroupMember` row, add an `is_denied` consultation here.
 pub fn is_authorized_for_context_state_op(
     store: &Store,
     context_id: &ContextId,
@@ -102,14 +125,32 @@ pub fn is_authorized_for_context_state_op(
         return Ok(true);
     }
 
-    match get_group_member_role(store, &group_id, executor)? {
-        Some(
+    // Direct membership: check the stored `GroupMember` row's role.
+    if let Some(role) = get_group_member_role(store, &group_id, executor)? {
+        return Ok(matches!(
+            role,
             calimero_primitives::context::GroupMemberRole::Admin
-            | calimero_primitives::context::GroupMemberRole::Member,
-        ) => Ok(true),
-        // ReadOnly / ReadOnlyTee → readable but not writeable. Removed /
-        // never-member → no authorization at all. Both fall through here.
-        Some(_) | None => Ok(false),
+                | calimero_primitives::context::GroupMemberRole::Member,
+        ));
+    }
+
+    // No direct row — fall through to the inherited-membership walk.
+    // `check_group_membership_path` returns `Inherited { .. }` when the
+    // executor reaches this group through an Open-subgroup chain anchored
+    // at an ancestor where they hold a row (and `CAN_JOIN_OPEN_SUBGROUPS`,
+    // for non-admin anchors). Mirrors what the receive-side
+    // `membership_status_at` does, so the two checks agree on who is
+    // authorized to author state ops.
+    match super::membership::check_group_membership_path(store, &group_id, executor)? {
+        super::membership::MembershipPath::Direct => {
+            // Practically unreachable: the direct lookup above already
+            // returned `Some(role)` if a row existed. Treat a race here
+            // (concurrent `MemberAdded`) as `Member` — same fallback the
+            // receive-side check uses at the equivalent boundary.
+            Ok(true)
+        }
+        super::membership::MembershipPath::Inherited { .. } => Ok(true),
+        super::membership::MembershipPath::None => Ok(false),
     }
 }
 

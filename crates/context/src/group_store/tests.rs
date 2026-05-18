@@ -3409,6 +3409,51 @@ fn authorized_for_state_op_allows_non_group_context() {
 }
 
 #[test]
+fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
+    use calimero_context_config::{MemberCapabilities, VisibilityMode};
+
+    use super::is_authorized_for_context_state_op;
+
+    // Members of an Open subgroup don't necessarily have a stored
+    // `GroupMember` row at the subgroup level — they reach the subgroup
+    // via the parent-walk with `CAN_JOIN_OPEN_SUBGROUPS` at the anchor.
+    // The receive-side `membership_status_at` folds Inherited →
+    // Member(Member); this check has to agree or the two checks
+    // disagree on the same identity (receive accepts their deltas
+    // while local-execute drops their state ops). That divergence
+    // broke `group-subgroup-visibility-inheritance` and adjacent
+    // workflows on an earlier draft of this PR.
+    let store = test_store();
+    let ns = ContextGroupId::from([0xC0; 32]);
+    let child = ContextGroupId::from([0xC1; 32]);
+    let context = ContextId::from([0xC2; 32]);
+    let admin = PublicKey::from([0xC3; 32]);
+    let inherited = PublicKey::from([0xC4; 32]);
+
+    nest_for_test(&store, &ns, &child);
+    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+
+    let mut meta = test_meta();
+    meta.admin_identity = admin;
+    meta.owner_identity = admin;
+    save_group_meta(&store, &ns, &meta).unwrap();
+    save_group_meta(&store, &child, &meta).unwrap();
+
+    set_default_capabilities(&store, &ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS).unwrap();
+    add_group_member(&store, &ns, &admin, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &ns, &inherited, GroupMemberRole::Member).unwrap();
+
+    // Register the context under the (Open) child — `inherited` has
+    // no row in `child`, only in `ns`.
+    register_context_in_group(&store, &child, &context).unwrap();
+
+    assert!(
+        is_authorized_for_context_state_op(&store, &context, &inherited).unwrap(),
+        "Inherited member of an Open subgroup must be authorized to author state ops"
+    );
+}
+
+#[test]
 fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     let store = test_store();
     let gid = ContextGroupId::from([0xC1; 32]);

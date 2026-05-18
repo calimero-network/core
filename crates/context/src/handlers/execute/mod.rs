@@ -1238,13 +1238,24 @@ async fn internal_execute(
     // checks complement each other rather than duplicate — receive-path
     // governs whether a remote delta is accepted; this governs whether
     // local WASM may produce one.
+    // Fail-closed on store error: an authorization gate that fails open
+    // on transient store errors silently grants permission exactly when
+    // the check is most needed (storage degradation). The non-group-
+    // context happy-path already returns `Ok(true)` inside the helper,
+    // so this fail-closed only affects genuine error cases — and there
+    // the safer answer is "drop the state op." Asymmetry with the
+    // `is_read_only_for_context` call above (`.unwrap_or(false)` reads
+    // as fail-open for that check because `false` means "not
+    // read-only" → allow) is deliberate: the ReadOnly check is a
+    // defense-in-depth post-discard, while this is a primary
+    // authorization gate.
     let executor_not_authorized_for_state_op = is_state_op
         && !crate::group_store::is_authorized_for_context_state_op(
             &datastore,
             &context.id,
             &executor,
         )
-        .unwrap_or(true);
+        .unwrap_or(false);
 
     let storage = ContextStorage::from(datastore.clone(), context.id);
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
