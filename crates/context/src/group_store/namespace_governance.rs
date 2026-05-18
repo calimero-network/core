@@ -569,6 +569,9 @@ impl<'a> NamespaceGovernance<'a> {
         assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
             .map_err(|e| eyre::eyre!(e))?;
 
+        // Quorum / no-local-apply path: a publish that never reaches a
+        // quorum is a genuine failure — nothing was applied locally to
+        // fall back on. `best_effort = false` keeps the hard error.
         self.publish_post_gate(
             node_client,
             ack_router,
@@ -578,6 +581,7 @@ impl<'a> NamespaceGovernance<'a> {
             mesh,
             known,
             required_signers,
+            false,
         )
         .await
     }
@@ -598,6 +602,7 @@ impl<'a> NamespaceGovernance<'a> {
         op: NamespaceOp,
         mesh: usize,
         known: usize,
+        best_effort: bool,
     ) -> EyreResult<DeliveryReport> {
         let topic = ns_topic(self.namespace_id);
         self.publish_post_gate(
@@ -609,6 +614,7 @@ impl<'a> NamespaceGovernance<'a> {
             mesh,
             known,
             None,
+            best_effort,
         )
         .await
     }
@@ -630,6 +636,7 @@ impl<'a> NamespaceGovernance<'a> {
         mesh: usize,
         known_at_gate: usize,
         required_signers: Option<Vec<PublicKey>>,
+        best_effort: bool,
     ) -> EyreResult<DeliveryReport> {
         let head = self.read_head_record()?;
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
@@ -685,7 +692,7 @@ impl<'a> NamespaceGovernance<'a> {
         let known_at_publish = node_client.known_subscribers(&topic);
         let min_acks = min_acks_after_local_mutation(known_at_gate, known_at_publish);
 
-        let report = publish_and_await_ack_namespace(
+        let report = match publish_and_await_ack_namespace(
             self.store,
             node_client.network_client(),
             ack_router,
@@ -697,7 +704,29 @@ impl<'a> NamespaceGovernance<'a> {
             required_signers,
         )
         .await
-        .map_err(|e| eyre::eyre!(e))?;
+        {
+            Ok(report) => report,
+            // Best-effort callers (the group-op apply-and-publish path) have
+            // already committed the local mutation; a publish failure is
+            // non-fatal and propagation falls to sync. Quorum callers pass
+            // `best_effort = false` and still get the hard error.
+            Err(e) if best_effort => {
+                tracing::debug!(
+                    op_kind,
+                    namespace_id = %hex::encode(self.namespace_id),
+                    error = %e,
+                    "namespace governance op applied locally; publish did not \
+                     confirm (best-effort) — will propagate via sync"
+                );
+                DeliveryReport {
+                    op_hash: delta_id,
+                    acked_by: Vec::new(),
+                    elapsed_ms: 0,
+                    readiness: PublishReadiness::Degraded,
+                }
+            }
+            Err(e) => return Err(eyre::eyre!(e)),
+        };
         tracing::debug!(
             op_kind,
             namespace_id = %hex::encode(self.namespace_id),
