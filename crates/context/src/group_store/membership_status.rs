@@ -165,6 +165,21 @@ pub fn membership_status_at(
     // `membership.rs::namespace_member_pubkeys`). Using the same path
     // here keeps the semantics aligned: any signer that
     // `is_group_admin` accepts must also pass the cross-DAG check.
+    //
+    // **Trade-off — over-permissive on `TransferOwnership`.**
+    // `is_group_admin` consults the *current* `GroupMeta::admin_identity`,
+    // not the value at `position`. Concretely: if Alice was the admin
+    // at the cut a delta references, then `TransferOwnership` moves
+    // admin to Bob, then Alice's pre-transfer delta arrives — the
+    // carve-out fires against the *current* admin (Bob) and returns
+    // `Member(Admin)` for Alice anyway. This is over-permissive
+    // relative to a strictly position-aware check, but matches the
+    // forward-only invariant elsewhere: a pre-transfer write authored
+    // by the then-admin should stay valid. The proper position-aware
+    // resolution would walk the governance DAG for a historical
+    // `admin_identity` at `position`; deferred — accepted as a known
+    // trade-off because the over-permissive direction is consistent
+    // with forward-only semantics.
     if super::membership::is_group_admin(store, &group_id, signer)? {
         return Ok(MembershipStatus::Member(
             calimero_primitives::context::GroupMemberRole::Admin,
