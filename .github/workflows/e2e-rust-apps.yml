@@ -197,6 +197,9 @@ jobs:
           - workflow: group-metadata
             file: workflows/group-metadata.yml
             app: scaffolding-e2e
+          - workflow: hashcomparison-shared-user-reconcile
+            file: workflows/hashcomparison-shared-user-reconcile.yml
+            app: scaffolding-e2e
           - workflow: group-subgroup-visibility-inheritance
             file: workflows/group-subgroup-visibility-inheritance.yml
             app: scaffolding-e2e

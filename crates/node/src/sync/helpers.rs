@@ -39,6 +39,20 @@ pub fn generate_nonce() -> calimero_crypto::Nonce {
 /// state. `Public` / `Frozen` entities don't need it (no signature
 /// required).
 ///
+/// Returns `None` for `Shared` / `User` entities whose stored
+/// `signature_data` is `None` — bootstrap state (e.g. an empty
+/// `SharedStorage::new` field on `#[app::state]` before any signed
+/// write). Shipping such an entity with `authorization = Some(...)` on
+/// the wire would land on the receiver as `Action::Add/Update` with
+/// `StorageType::Shared { signature_data: None }`, and the apply path
+/// rejects that with `"Remote Shared action must be signed"`. Returning
+/// `None` here lets the receiver fall back to its existing storage_type
+/// (preserving signed entities) or default to `Public` for new entities,
+/// matching the wire-format contract documented on
+/// [`LeafMetadata::authorization`]. The bootstrap entity gets re-typed
+/// correctly on the receiver as soon as the first signed write arrives
+/// via the delta path.
+///
 /// Single source of truth — all `TreeLeafData` construction sites in
 /// the sync senders go through this helper rather than open-coding the
 /// match arm, so a future addition (e.g. a new storage type that needs
@@ -49,6 +63,14 @@ pub fn wire_authorization_for(
     use calimero_storage::entities::StorageType;
     match &metadata.storage_type {
         StorageType::Public | StorageType::Frozen => None,
+        StorageType::Shared {
+            signature_data: None,
+            ..
+        }
+        | StorageType::User {
+            signature_data: None,
+            ..
+        } => None,
         StorageType::Shared { .. } | StorageType::User { .. } => {
             Some(metadata.storage_type.clone())
         }
