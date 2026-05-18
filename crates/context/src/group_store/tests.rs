@@ -8121,3 +8121,62 @@ fn is_tee_admitted_identity_matches_tee_joined_member() {
     assert!(is_tee_admitted_identity(&store, &gid, &tee_node).unwrap());
     assert!(!is_tee_admitted_identity(&store, &gid, &ordinary).unwrap());
 }
+
+// ---------------------------------------------------------------------
+// is_authoritative_namespace_identity
+// ---------------------------------------------------------------------
+
+#[test]
+fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
+    let store = test_store();
+    let mut rng = rand::thread_rng();
+    let namespace_id = [0xAA; 32];
+    let gid = ContextGroupId::from(namespace_id);
+    let owner = PublicKey::from([0x01; 32]);
+    let admin_member = PublicKey::from([0x02; 32]);
+    let tee_node = PublicKey::from([0x03; 32]);
+    let ordinary = PublicKey::from([0x04; 32]);
+    let stranger = PublicKey::from([0x05; 32]);
+
+    let meta = GroupMetaValue {
+        app_key: [0xBB; 32],
+        target_application_id: ApplicationId::from([0xCC; 32]),
+        upgrade_policy: UpgradePolicy::Automatic,
+        created_at: 1_700_000_000,
+        admin_identity: owner,
+        owner_identity: owner,
+        migration: None,
+        auto_join: true,
+    };
+    save_group_meta(&store, &gid, &meta).unwrap();
+    add_group_member(&store, &gid, &admin_member, GroupMemberRole::Admin).unwrap();
+    add_group_member(&store, &gid, &ordinary, GroupMemberRole::Member).unwrap();
+
+    let signer_sk = PrivateKey::random(&mut rng);
+    let tee_op = SignedGroupOp::sign(
+        &signer_sk,
+        gid.to_bytes(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberJoinedViaTeeAttestation {
+            member: tee_node,
+            quote_hash: [0x09; 32],
+            mrtd: "m".to_owned(),
+            rtmr0: "0".to_owned(),
+            rtmr1: "1".to_owned(),
+            rtmr2: "2".to_owned(),
+            rtmr3: "3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    append_op_log_entry(&store, &gid, 1, &borsh::to_vec(&tee_op).unwrap()).unwrap();
+
+    assert!(is_authoritative_namespace_identity(&store, namespace_id, &owner).unwrap());
+    assert!(is_authoritative_namespace_identity(&store, namespace_id, &admin_member).unwrap());
+    assert!(is_authoritative_namespace_identity(&store, namespace_id, &tee_node).unwrap());
+    assert!(!is_authoritative_namespace_identity(&store, namespace_id, &ordinary).unwrap());
+    assert!(!is_authoritative_namespace_identity(&store, namespace_id, &stranger).unwrap());
+}
