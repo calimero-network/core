@@ -5,12 +5,12 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use rand::{rngs::OsRng, Rng};
 
+use super::namespace_governance::classify_report_readiness;
 use super::{
     build_key_rotation, encrypt_group_op, get_namespace_identity_record, get_parent_group,
     is_open_chain_to_namespace, load_current_group_key_record, resolve_namespace,
     sign_apply_local_group_op_borsh, store_group_key, NamespaceGovernance,
 };
-use super::namespace_governance::classify_report_readiness;
 use crate::governance_broadcast::{ns_topic, DeliveryReport};
 use crate::metrics::record_governance_publish_mesh_peers;
 
@@ -285,8 +285,7 @@ impl<'a> GroupGovernancePublisher<'a> {
                 true,
             )
             .await?;
-        report.readiness =
-            classify_report_readiness(self.store, namespace_bytes, &report, known);
+        report.readiness = classify_report_readiness(self.store, namespace_bytes, &report, known);
         tracing::debug!(
             op_kind,
             group_id = %hex::encode(self.group_id.to_bytes()),

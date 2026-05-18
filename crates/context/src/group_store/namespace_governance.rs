@@ -539,8 +539,7 @@ impl<'a> NamespaceGovernance<'a> {
             }
         };
 
-        report.readiness =
-            classify_report_readiness(self.store, self.namespace_id, &report, known);
+        report.readiness = classify_report_readiness(self.store, self.namespace_id, &report, known);
         tracing::debug!(
             op_kind,
             namespace_id = %hex::encode(self.namespace_id),
