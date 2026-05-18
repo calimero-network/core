@@ -333,19 +333,33 @@ async fn drain_governance_pending(input: &StateDeltaContext, context_id: &Contex
             // `claimed_group_id == None` per the helper's match table.
             // The drain always passes `Some(pos.group_id)` here (we
             // bound `pos` via let-else above), so both variants are
-            // structurally unreachable from this call site. Spelling
-            // them out as `unreachable!` makes the invariant machine-
-            // checked rather than comment-only: a future refactor
-            // that breaks the call-site contract (e.g. swapping to
-            // pass `None`) would panic in test before reaching prod.
-            GroupIdCheck::NonGroupOk => unreachable!(
-                "GroupIdCheck::NonGroupOk requires claimed_group_id=None, \
-                 but drain always passes Some(pos.group_id)"
-            ),
-            GroupIdCheck::GroupContextNoPosition { .. } => unreachable!(
-                "GroupIdCheck::GroupContextNoPosition requires claimed_group_id=None, \
-                 but drain always passes Some(pos.group_id)"
-            ),
+            // structurally unreachable from this call site.
+            //
+            // `debug_assert!` catches a future refactor that breaks
+            // the call-site contract (e.g. swapping to pass `None`)
+            // in test/dev builds. Release builds fall through to a
+            // defensive `continue` rather than panic — a single
+            // anomalous delta shouldn't crash the actor; the metric
+            // counter is the operator signal.
+            GroupIdCheck::NonGroupOk | GroupIdCheck::GroupContextNoPosition { .. } => {
+                debug_assert!(
+                    false,
+                    "GroupIdCheck::{{NonGroupOk, GroupContextNoPosition}} require \
+                     claimed_group_id=None, but drain always passes Some(pos.group_id) — \
+                     the call-site contract has been broken"
+                );
+                warn!(
+                    %context_id,
+                    delta_id = ?buffered.id,
+                    author = %buffered.author_id,
+                    "governance-pending drain: dropping pending delta — \
+                     verify_position_group_id_matches_context returned an outcome that \
+                     requires claimed_group_id=None despite drain passing Some \
+                     (call-site contract violated; investigate)"
+                );
+                crate::node_metrics::record_governance_drain_outcome("helper_contract_violation");
+                continue;
+            }
             GroupIdCheck::Mismatch { owning, claimed } => {
                 warn!(
                     %context_id,
