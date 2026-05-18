@@ -805,6 +805,11 @@ fn get_nodes_at_level(
                     if let Some(parent_id) = child_index.parent_id() {
                         metadata = metadata.with_parent(*parent_id.as_bytes());
                     }
+                    if let Some(auth) =
+                        crate::sync::helpers::wire_authorization_for(&child_index.metadata)
+                    {
+                        metadata = metadata.with_authorization(auth);
+                    }
                     let leaf_data =
                         TreeLeafData::new(*child_storage_id.as_bytes(), entry_data, metadata);
 

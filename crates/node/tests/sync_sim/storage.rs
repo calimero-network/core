@@ -427,11 +427,18 @@ impl SimStorage {
                         Interface::<MainStorage>::apply_action(root_action, &ApplyContext::empty());
                 }
 
-                // Add new entity under root
+                // Add new entity under root. Look up the post-`add_root`
+                // full_hash so the ancestor entry passes the v2
+                // `verify_ancestor_integrity` check at apply time.
+                let root_hash = Index::<MainStorage>::get_hashes_for(root_id)
+                    .ok()
+                    .flatten()
+                    .map(|(full, _)| full)
+                    .unwrap_or([0; 32]);
                 let action = Action::Add {
                     id,
                     data: data.to_vec(),
-                    ancestors: vec![ChildInfo::new(root_id, [0; 32], Metadata::default())],
+                    ancestors: vec![ChildInfo::new(root_id, root_hash, Metadata::default())],
                     metadata: Metadata::default(),
                 };
                 let _ = Interface::<MainStorage>::apply_action(action, &ApplyContext::empty());

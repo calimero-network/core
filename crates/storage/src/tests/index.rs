@@ -1155,3 +1155,130 @@ mod minimal_struct_layout_compat {
         assert_round_trip(&index);
     }
 }
+
+/// Tests for `verify_ancestor_integrity`: the explicit unsigned check
+/// that replaces the v1 signed tree-state binding. Exercised through
+/// the public `apply_action` API rather than the private helper.
+#[cfg(test)]
+mod verify_ancestor_integrity_tests {
+    use crate::address::Id;
+    use crate::entities::{ChildInfo, Metadata, StorageType};
+    use crate::error::StorageError;
+    use crate::interface::{Action, ApplyContext, Interface};
+    use crate::store::MockedStorage;
+
+    fn meta() -> Metadata {
+        Metadata {
+            created_at: 1,
+            updated_at: 1.into(),
+            storage_type: StorageType::Public,
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    fn root_action() -> Action {
+        Action::Update {
+            id: Id::root(),
+            data: vec![],
+            ancestors: vec![],
+            metadata: meta(),
+        }
+    }
+
+    #[test]
+    fn passes_when_ancestor_matches_local_state() {
+        let root_id = Id::root();
+        let p1_id = Id::new([0x11; 32]);
+
+        assert!(<Interface<MockedStorage<3001>>>::apply_action(
+            root_action(),
+            &ApplyContext::empty()
+        )
+        .is_ok());
+
+        let (root_full_hash, _) =
+            <crate::index::Index<MockedStorage<3001>>>::get_hashes_for(root_id)
+                .unwrap()
+                .unwrap();
+
+        let child = Action::Update {
+            id: p1_id,
+            data: vec![1, 2, 3],
+            ancestors: vec![ChildInfo::new(root_id, root_full_hash, Metadata::default())],
+            metadata: meta(),
+        };
+        assert!(
+            <Interface<MockedStorage<3001>>>::apply_action(child, &ApplyContext::empty()).is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_with_tree_state_mismatch_when_ancestor_hash_wrong() {
+        let root_id = Id::root();
+        let p1_id = Id::new([0x12; 32]);
+
+        assert!(<Interface<MockedStorage<3002>>>::apply_action(
+            root_action(),
+            &ApplyContext::empty()
+        )
+        .is_ok());
+
+        let child = Action::Update {
+            id: p1_id,
+            data: vec![1, 2, 3],
+            ancestors: vec![ChildInfo::new(root_id, [0xFF; 32], Metadata::default())],
+            metadata: meta(),
+        };
+
+        let result = <Interface<MockedStorage<3002>>>::apply_action(child, &ApplyContext::empty());
+        match result {
+            Err(StorageError::TreeStateMismatch(id)) => {
+                assert_eq!(id, root_id, "mismatched ancestor's id should be reported");
+            }
+            other => panic!("expected TreeStateMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skips_ancestors_not_present_locally() {
+        let absent_parent = Id::new([0xCA; 32]);
+        let p1_id = Id::new([0x13; 32]);
+
+        let child = Action::Add {
+            id: p1_id,
+            data: vec![],
+            ancestors: vec![ChildInfo::new(
+                absent_parent,
+                [0xBB; 32],
+                Metadata::default(),
+            )],
+            metadata: meta(),
+        };
+
+        let result = <Interface<MockedStorage<3003>>>::apply_action(child, &ApplyContext::empty());
+        assert!(
+            !matches!(result, Err(StorageError::TreeStateMismatch(_))),
+            "absent ancestor should skip the check, not reject; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn empty_ancestors_list_passes_unconditionally() {
+        // HashComparison sync supplies `ancestors: vec![]` — must not
+        // be rejected for tree-state reasons (the entire scenario sync
+        // is built for is diverged tree state).
+        let p1_id = Id::new([0x14; 32]);
+        let action = Action::Update {
+            id: p1_id,
+            data: vec![9, 9, 9],
+            ancestors: vec![],
+            metadata: meta(),
+        };
+        let result = <Interface<MockedStorage<3004>>>::apply_action(action, &ApplyContext::empty());
+        assert!(
+            !matches!(result, Err(StorageError::TreeStateMismatch(_))),
+            "empty ancestors must skip the check; got {result:?}"
+        );
+    }
+}

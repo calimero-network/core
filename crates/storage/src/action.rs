@@ -259,3 +259,230 @@ fn hash_authorization_for_payload(hasher: &mut Sha256, metadata: &Metadata) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Pin the core property of v2 `payload_for_signing`: the hash
+    //! commits to **authorization** (id, data, nonce, access control)
+    //! and is **independent of tree state** (no ancestors, no
+    //! `created_at`). The signature can be verified by any peer
+    //! holding the action's components, regardless of how their tree
+    //! has drifted from the signer's.
+    //!
+    //! Tests are pure-function tests on `payload_for_signing`; no
+    //! store / runtime needed.
+
+    use std::collections::BTreeSet;
+
+    use calimero_primitives::identity::PublicKey;
+
+    use super::*;
+    use crate::address::Id;
+    use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
+
+    fn meta_public() -> Metadata {
+        Metadata {
+            created_at: 100,
+            updated_at: 100.into(),
+            storage_type: StorageType::Public,
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    fn meta_user(owner: PublicKey, nonce: u64) -> Metadata {
+        Metadata {
+            created_at: 100,
+            updated_at: nonce.into(),
+            storage_type: StorageType::User {
+                owner,
+                signature_data: Some(SignatureData {
+                    nonce,
+                    signature: [0; 64],
+                    signer: None,
+                }),
+            },
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    fn meta_shared(writers: BTreeSet<PublicKey>, nonce: u64) -> Metadata {
+        Metadata {
+            created_at: 100,
+            updated_at: nonce.into(),
+            storage_type: StorageType::Shared {
+                writers,
+                signature_data: Some(SignatureData {
+                    nonce,
+                    signature: [0; 64],
+                    signer: None,
+                }),
+            },
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    fn upsert(id: Id, data: Vec<u8>, ancestors: Vec<ChildInfo>, metadata: Metadata) -> Action {
+        Action::Update {
+            id,
+            data,
+            ancestors,
+            metadata,
+        }
+    }
+
+    #[test]
+    fn payload_is_deterministic() {
+        let id = Id::new([0xAA; 32]);
+        let a = upsert(id, b"v1".to_vec(), vec![], meta_public());
+        let b = upsert(id, b"v1".to_vec(), vec![], meta_public());
+        assert_eq!(a.payload_for_signing(), b.payload_for_signing());
+    }
+
+    #[test]
+    fn payload_differs_on_data_change() {
+        let id = Id::new([0xAA; 32]);
+        let a = upsert(id, b"v1".to_vec(), vec![], meta_public());
+        let b = upsert(id, b"v2".to_vec(), vec![], meta_public());
+        assert_ne!(a.payload_for_signing(), b.payload_for_signing());
+    }
+
+    #[test]
+    fn payload_differs_on_id_change() {
+        let m = meta_public();
+        let a = upsert(Id::new([0xAA; 32]), b"v".to_vec(), vec![], m.clone());
+        let b = upsert(Id::new([0xBB; 32]), b"v".to_vec(), vec![], m);
+        assert_ne!(a.payload_for_signing(), b.payload_for_signing());
+    }
+
+    #[test]
+    fn payload_differs_on_nonce_change() {
+        let owner = PublicKey::from([0x10; 32]);
+        let id = Id::new([0xAA; 32]);
+        let a = upsert(id, b"v".to_vec(), vec![], meta_user(owner, 1));
+        let b = upsert(id, b"v".to_vec(), vec![], meta_user(owner, 2));
+        assert_ne!(
+            a.payload_for_signing(),
+            b.payload_for_signing(),
+            "nonce is in the access-control commitment; same writer + same value at different \
+             nonces must produce different signed payloads, or replay protection breaks"
+        );
+    }
+
+    #[test]
+    fn payload_is_independent_of_ancestors() {
+        // The whole point of v2 — tree state shouldn't influence the
+        // signed bytes. Two actions identical except for ancestor
+        // merkle hashes must hash the same.
+        let id = Id::new([0xAA; 32]);
+        let m = meta_public();
+        let parent = Id::new([0xCC; 32]);
+        let ancestor_a = ChildInfo::new(parent, [0xDD; 32], Metadata::default());
+        let ancestor_b = ChildInfo::new(parent, [0xEE; 32], Metadata::default());
+
+        let a = upsert(id, b"v".to_vec(), vec![ancestor_a], m.clone());
+        let b = upsert(id, b"v".to_vec(), vec![ancestor_b], m);
+        assert_eq!(
+            a.payload_for_signing(),
+            b.payload_for_signing(),
+            "tree-state-bound fields (ancestor merkle hashes) must not affect the signed payload"
+        );
+    }
+
+    #[test]
+    fn payload_is_independent_of_created_at() {
+        // `created_at` is metadata for child-sort ordering; it
+        // shouldn't be in the signed payload (only nonce / updated_at
+        // is, as the replay counter).
+        let id = Id::new([0xAA; 32]);
+        let mut m1 = meta_public();
+        let mut m2 = meta_public();
+        m1.created_at = 1;
+        m2.created_at = 99;
+        let a = upsert(id, b"v".to_vec(), vec![], m1);
+        let b = upsert(id, b"v".to_vec(), vec![], m2);
+        assert_eq!(a.payload_for_signing(), b.payload_for_signing());
+    }
+
+    #[test]
+    fn payload_differs_across_storage_types() {
+        // Public / User / Shared all hash a distinct type tag so a
+        // signed User action can't be re-purposed as a Shared one
+        // (or vice versa) at apply time.
+        let id = Id::new([0xAA; 32]);
+        let data = b"v".to_vec();
+        let owner = PublicKey::from([0x10; 32]);
+
+        let a = upsert(id, data.clone(), vec![], meta_public());
+        let b = upsert(id, data.clone(), vec![], meta_user(owner, 1));
+        let writers: BTreeSet<PublicKey> = std::iter::once(owner).collect();
+        let c = upsert(id, data, vec![], meta_shared(writers, 1));
+
+        assert_ne!(a.payload_for_signing(), b.payload_for_signing());
+        assert_ne!(b.payload_for_signing(), c.payload_for_signing());
+        assert_ne!(a.payload_for_signing(), c.payload_for_signing());
+    }
+
+    #[test]
+    fn payload_differs_on_shared_writer_set_change() {
+        // The writer set IS part of the signed payload — a signature
+        // for "Alice authored against writers={Alice,Bob}" must NOT
+        // verify against "writers={Alice}" (otherwise removing Bob
+        // wouldn't invalidate Alice's pre-removal signed actions if
+        // someone replayed them with a new writer-set claim).
+        let id = Id::new([0xAA; 32]);
+        let data = b"v".to_vec();
+        let alice = PublicKey::from([0x10; 32]);
+        let bob = PublicKey::from([0x20; 32]);
+
+        let w1: BTreeSet<PublicKey> = std::iter::once(alice).collect();
+        let w2: BTreeSet<PublicKey> = [alice, bob].into_iter().collect();
+        let a = upsert(id, data.clone(), vec![], meta_shared(w1, 1));
+        let b = upsert(id, data, vec![], meta_shared(w2, 1));
+        assert_ne!(a.payload_for_signing(), b.payload_for_signing());
+    }
+
+    #[test]
+    fn add_and_update_produce_same_payload() {
+        // v2 Add and Update share the upsert prefix and hash the same
+        // fields — they represent the same logical operation on the
+        // entity (set value to X at nonce N). A receiver applying via
+        // Add vs Update can verify a signature produced under either
+        // variant against either reconstruction.
+        let id = Id::new([0xAA; 32]);
+        let data = b"v".to_vec();
+        let m = meta_public();
+        let add = Action::Add {
+            id,
+            data: data.clone(),
+            ancestors: vec![],
+            metadata: m.clone(),
+        };
+        let upd = Action::Update {
+            id,
+            data,
+            ancestors: vec![],
+            metadata: m,
+        };
+        assert_eq!(add.payload_for_signing(), upd.payload_for_signing());
+    }
+
+    #[test]
+    fn delete_payload_differs_from_upsert() {
+        let id = Id::new([0xAA; 32]);
+        let m = meta_public();
+        let upsert_action = upsert(id, vec![], vec![], m.clone());
+        let delete_action = Action::DeleteRef {
+            id,
+            deleted_at: 100,
+            metadata: m,
+        };
+        assert_ne!(
+            upsert_action.payload_for_signing(),
+            delete_action.payload_for_signing(),
+            "delete payload uses the v2_delete prefix; must not collide with v2_upsert"
+        );
+    }
+}

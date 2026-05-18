@@ -32,6 +32,29 @@ pub fn generate_nonce() -> calimero_crypto::Nonce {
     rand::thread_rng().gen()
 }
 
+/// Extract the authorization triple to put on the HashComparison wire
+/// for an entity, if any. `Shared` / `User` entities need the writer's
+/// signature data + access-control list on the wire so the receiver
+/// can verify the signature without consulting the originator's tree
+/// state. `Public` / `Frozen` entities don't need it (no signature
+/// required).
+///
+/// Single source of truth — all `TreeLeafData` construction sites in
+/// the sync senders go through this helper rather than open-coding the
+/// match arm, so a future addition (e.g. a new storage type that needs
+/// authorization) only has to be added in one place.
+pub fn wire_authorization_for(
+    metadata: &Metadata,
+) -> Option<calimero_storage::entities::StorageType> {
+    use calimero_storage::entities::StorageType;
+    match &metadata.storage_type {
+        StorageType::Public | StorageType::Frozen => None,
+        StorageType::Shared { .. } | StorageType::User { .. } => {
+            Some(metadata.storage_type.clone())
+        }
+    }
+}
+
 /// Apply leaf data using CRDT merge (Invariant I5: No Silent Data Loss).
 ///
 /// This function must be called within a `with_runtime_env` scope.
@@ -78,6 +101,27 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     metadata.crdt_type = Some(leaf.metadata.crdt_type.clone());
     metadata.updated_at = leaf.metadata.hlc_timestamp.into();
     metadata.created_at = leaf.metadata.created_at;
+
+    // Storage-type provenance:
+    //
+    // 1. Wire-carried authorization (Shared/User) — use it verbatim.
+    //    The apply path's signature verifier will check the sig_data
+    //    inside this `StorageType` against the new (tree-state-free)
+    //    `payload_for_signing`, which the receiver reconstructs from
+    //    the action's components (id, data, this storage_type).
+    //
+    // 2. Existing entity (any non-Shared/User type) — preserve it.
+    //    Avoids the v1 silent storage-type-flip bug where every sync
+    //    apply downgraded entities to `Public` via `Metadata::default()`.
+    //
+    // 3. New entity, no wire authorization — default to `Public`.
+    //    Non-Public new entities require creation-time invariants
+    //    (writer-set, owner) that arrive via the delta path.
+    if let Some(wire_auth) = leaf.metadata.authorization.as_ref() {
+        metadata.storage_type = wire_auth.clone();
+    } else if let Some(ref existing) = existing_index {
+        metadata.storage_type = existing.metadata.storage_type.clone();
+    }
 
     let action = if existing_index.is_some() {
         // Update existing entity - storage layer handles CRDT merge
