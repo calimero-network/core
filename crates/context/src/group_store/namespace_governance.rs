@@ -586,14 +586,14 @@ impl<'a> NamespaceGovernance<'a> {
         .await
     }
 
-    /// Caller-gated variant of [`sign_and_publish_without_apply`]: assumes
-    /// the caller already ran `assert_transport_ready` and is providing
-    /// the `mesh` / `known_subscribers` snapshot it observed at gate-time.
+    /// Post-gate variant of [`sign_and_publish_without_apply`]: takes the
+    /// `mesh` / `known_subscribers` snapshot the caller already observed,
+    /// so this never re-samples or re-runs `assert_transport_ready`.
     /// Used by [`GroupGovernancePublisher::sign_apply_and_publish_inner`]
-    /// to avoid re-running the readiness gate after the local store has
-    /// already been mutated — a second gate that flips between "Ready"
-    /// at the outer call and "NotReady" here would leave the local op
-    /// applied and the remote peers unaware (state divergence on retry).
+    /// after the local group store has already been mutated. That caller
+    /// passes `best_effort = true`: it has no gate of its own (the local
+    /// apply is unconditional), so a publish failure here is non-fatal and
+    /// the op propagates via sync rather than diverging on a retry.
     pub(crate) async fn sign_and_publish_post_gate(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
@@ -620,12 +620,16 @@ impl<'a> NamespaceGovernance<'a> {
     }
 
     /// Shared body of [`sign_and_publish_without_apply`] and
-    /// [`sign_and_publish_post_gate`]. Assumes the readiness gate has
-    /// already been run by the caller; takes the gate-time `mesh`
-    /// snapshot to feed the metric. The subscriber count is
-    /// re-sampled at publish time (see below) so transient peer
-    /// departures between the gate and the publish don't cause an
-    /// `Err(NoAckReceived)` after the local store has already mutated.
+    /// [`sign_and_publish_post_gate`]. Takes the caller's `mesh` snapshot
+    /// to feed the metric; the subscriber count is re-sampled at publish
+    /// time (see below) so transient peer departures don't skew `min_acks`.
+    ///
+    /// `best_effort` selects the failure mode of the publish:
+    /// * `false` (quorum / no-local-apply path) — a publish that gathers
+    ///   no acks is a genuine `Err`; nothing was applied locally.
+    /// * `true` (group-op apply-and-publish path) — the local mutation is
+    ///   already committed, so a publish failure is swallowed into a
+    ///   `Degraded` [`DeliveryReport`] and propagation falls to sync.
     async fn publish_post_gate(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
