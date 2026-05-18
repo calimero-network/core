@@ -252,6 +252,12 @@ pub struct DeliveryReport {
     pub op_hash: [u8; 32],
     pub acked_by: Vec<PublicKey>,
     pub elapsed_ms: u64,
+    /// Best-effort publish classification. Low-level publish helpers set
+    /// this to `Degraded` as a conservative default; the apply-and-publish
+    /// boundary (`NamespaceGovernance::sign_apply_and_publish`,
+    /// `GroupGovernancePublisher`) overwrites it with the role-aware
+    /// classification once acks are in.
+    pub readiness: PublishReadiness,
 }
 
 /// Outcome classification for a best-effort governance publish.
@@ -325,36 +331,37 @@ pub fn classify_publish_readiness(
 /// case — the warn is a hint that downstream peers may need
 /// reconciliation, not a failure indication.
 pub fn observe_handler_delivery(handler: &str, op_kind: &str, report: &DeliveryReport) {
-    let outcome = if report.acked_by.is_empty() {
-        "empty"
-    } else {
-        "acked"
-    };
     crate::metrics::record_governance_handler_delivery(
         handler,
         op_kind,
-        outcome,
+        report.readiness.label(),
         report.elapsed_ms,
     );
-    if report.acked_by.is_empty() {
-        tracing::warn!(
-            handler,
-            op_kind,
-            elapsed_ms = report.elapsed_ms,
-            op_hash = %hex::encode(report.op_hash),
-            "governance op published but no acks collected before deadline \
-             (publisher boundary deemed delivery best-effort; receivers will \
-             reconcile via heartbeat)"
-        );
-    } else {
-        tracing::info!(
+    match report.readiness {
+        PublishReadiness::Degraded => tracing::warn!(
             handler,
             op_kind,
             acks = report.acked_by.len(),
             elapsed_ms = report.elapsed_ms,
             op_hash = %hex::encode(report.op_hash),
-            "governance op delivered"
-        );
+            "governance op applied locally but not confirmed by an authoritative \
+             node; it will propagate to peers via sync"
+        ),
+        PublishReadiness::Ready => tracing::info!(
+            handler,
+            op_kind,
+            acks = report.acked_by.len(),
+            elapsed_ms = report.elapsed_ms,
+            op_hash = %hex::encode(report.op_hash),
+            "governance op delivered to an authoritative node"
+        ),
+        PublishReadiness::Solo => tracing::debug!(
+            handler,
+            op_kind,
+            elapsed_ms = report.elapsed_ms,
+            op_hash = %hex::encode(report.op_hash),
+            "governance op applied locally (solo namespace)"
+        ),
     }
 }
 
@@ -576,6 +583,7 @@ pub async fn publish_and_await_ack_namespace(
                     op_hash,
                     acked_by: Vec::new(),
                     elapsed_ms: start.elapsed().as_millis() as u64,
+                    readiness: PublishReadiness::Degraded,
                 });
             }
             return Err(GovernanceBroadcastError::NoAckReceived {
@@ -608,6 +616,7 @@ pub async fn publish_and_await_ack_namespace(
             op_hash,
             acked_by: Vec::new(),
             elapsed_ms: start.elapsed().as_millis() as u64,
+            readiness: PublishReadiness::Degraded,
         });
     }
 
@@ -626,6 +635,7 @@ pub async fn publish_and_await_ack_namespace(
         op_hash,
         acked_by,
         elapsed_ms: start.elapsed().as_millis() as u64,
+        readiness: PublishReadiness::Degraded,
     };
     loop {
         // saturating_duration_since returns ZERO past the deadline (no
