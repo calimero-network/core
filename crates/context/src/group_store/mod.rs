@@ -77,9 +77,9 @@ pub use self::membership::{
     add_group_member, add_group_member_with_keys, check_group_membership,
     check_group_membership_path, count_group_admins, count_group_members,
     enumerate_inherited_members, get_effective_member_capabilities, get_group_member_role,
-    get_group_member_value, has_direct_group_member, is_direct_group_admin, is_group_admin,
-    is_group_admin_or_has_capability, is_inherited_admin, list_group_members,
-    namespace_member_pubkeys, remove_group_member, require_group_admin,
+    get_group_member_value, has_direct_group_member, is_authoritative_namespace_identity,
+    is_direct_group_admin, is_group_admin, is_group_admin_or_has_capability, is_inherited_admin,
+    list_group_members, namespace_member_pubkeys, remove_group_member, require_group_admin,
     require_group_admin_or_capability, set_member_auto_follow, subgroup_visible_to,
     trusted_anchors_for_group, MembershipPath,
 };
@@ -125,7 +125,9 @@ pub use self::signing_keys::{
     delete_all_group_signing_keys, delete_group_signing_key, get_group_signing_key,
     require_group_signing_key, resolve_group_signing_key, store_group_signing_key,
 };
-pub use self::tee::{is_quote_hash_used, read_tee_admission_policy, TeeAdmissionPolicy};
+pub use self::tee::{
+    is_quote_hash_used, is_tee_admitted_identity, read_tee_admission_policy, TeeAdmissionPolicy,
+};
 pub use self::upgrades::{
     delete_group_upgrade, enumerate_in_progress_upgrades, load_group_upgrade, save_group_upgrade,
 };

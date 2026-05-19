@@ -1,0 +1,138 @@
+name: E2E KV Store - Governance Best-Effort With Peer Down
+description: >
+  Node-2 joins a namespace, then is stopped. Node-1 runs a governance op
+  while node-2 is unreachable — the publish is best-effort and must not
+  fail the workflow. Node-2 is restarted and node-3 joins after the
+  governance op; both must converge on the new capability value via sync.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Assert application installed
+    type: assert
+    statements:
+      - "is_set({{app_id}})"
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{ctx_id}})"
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_node2: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_node2}}'
+
+  # --- Stop node-2: it is now a known-but-unreachable subscriber ---
+
+  - name: Stop node-2
+    type: stop_node
+    nodes: e2e-node-2
+
+  # --- Governance op with a peer down: best-effort, must not fail ---
+
+  - name: Node-1 sets default capabilities with node-2 down
+    type: set_default_capabilities
+    node: e2e-node-1
+    group_id: '{{namespace_id}}'
+    capabilities: 0
+
+  # --- Node-3 joins AFTER the governance op and must inherit caps=0 ---
+
+  - name: Create namespace invitation for node-3
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_node3: invitation
+
+  - name: Node-3 joins namespace
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_node3}}'
+    outputs:
+      member_identity_node3: memberIdentity
+
+  - name: Get node-3 capabilities (inherited the default set while node-2 was down)
+    type: get_member_capabilities
+    node: e2e-node-3
+    group_id: '{{namespace_id}}'
+    member_id: '{{member_identity_node3}}'
+    outputs:
+      node3_caps: capabilities
+
+  - name: Assert node-3 capabilities are 0
+    type: json_assert
+    statements:
+      - "json_equal({{node3_caps}}, 0)"
+
+  # --- Restart node-2 and verify it syncs the governance op it missed ---
+
+  - name: Start node-2
+    type: start_node
+    nodes: e2e-node-2
+    wait_for_ready: true
+    wait_timeout: 60
+
+  - name: Wait for node-2 to catch up
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 120
+    trigger_sync: true
+
+  - name: Get node-3 capabilities as seen by the restarted node-2
+    type: get_member_capabilities
+    node: e2e-node-2
+    group_id: '{{namespace_id}}'
+    member_id: '{{member_identity_node3}}'
+    outputs:
+      node3_caps_view_node2: capabilities
+
+  - name: Assert restarted node-2 synced the governance op
+    type: json_assert
+    statements:
+      - "json_equal({{node3_caps_view_node2}}, 0)"
+
+stop_all_nodes: false

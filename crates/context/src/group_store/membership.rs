@@ -778,6 +778,34 @@ pub fn trusted_anchors_for_group(
     Ok(anchors)
 }
 
+/// True if `identity` is the namespace owner, an admin, or an admitted
+/// TEE node for `namespace_id`.
+///
+/// Used to classify whether a best-effort governance publish reached an
+/// authoritative node (see `governance_broadcast::classify_publish_readiness`).
+/// "Admin" via [`is_group_admin`] covers both the meta-recorded creator/root
+/// admin and any member-row admin; "TEE" is resolved via
+/// [`super::tee::is_tee_admitted_identity`].
+pub fn is_authoritative_namespace_identity(
+    store: &Store,
+    namespace_id: [u8; 32],
+    identity: &PublicKey,
+) -> EyreResult<bool> {
+    let gid = ContextGroupId::from(namespace_id);
+
+    if let Some(meta) = load_group_meta(store, &gid)? {
+        if *identity == meta.owner_identity {
+            return Ok(true);
+        }
+    }
+
+    if is_group_admin(store, &gid, identity)? {
+        return Ok(true);
+    }
+
+    super::tee::is_tee_admitted_identity(store, &gid, identity)
+}
+
 pub fn count_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
     let gid = group_id.to_bytes();
     count_keys_with_prefix(
