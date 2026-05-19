@@ -743,13 +743,20 @@ impl<'a> NamespaceGovernance<'a> {
             }
             Err(e) => return Err(eyre::eyre!(e)),
         };
+        // `best_effort` distinguishes the two callers: the quorum path
+        // (`sign_and_publish_without_apply`, `best_effort = false`) does no
+        // local apply, while the group-op path (`sign_and_publish_post_gate`,
+        // `best_effort = true`) reaches here *after* `GroupGovernancePublisher`
+        // already committed the local mutation. Logging it as a field keeps
+        // the message accurate for both.
         tracing::debug!(
             op_kind,
             namespace_id = %hex::encode(self.namespace_id),
             acks = report.acked_by.len(),
             elapsed_ms = report.elapsed_ms,
             op_hash = %hex::encode(report.op_hash),
-            "namespace governance op published (no local apply)"
+            best_effort,
+            "namespace governance op published"
         );
         Ok(report)
     }

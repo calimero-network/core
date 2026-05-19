@@ -42,6 +42,11 @@ steps:
     outputs:
       ctx_id: contextId
 
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{ctx_id}})"
+
   - name: Create namespace invitation for node-2
     type: create_namespace_invitation
     node: e2e-node-1

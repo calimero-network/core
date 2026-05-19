@@ -614,3 +614,17 @@ fn classify_publish_readiness_degraded_when_subscribers_but_no_acks() {
         PublishReadiness::Degraded
     );
 }
+
+#[test]
+fn classify_publish_readiness_not_ready_without_acks() {
+    // Contradictory input: authoritative_ack=true but ack_count=0. The
+    // guard treats it as "no acks" rather than reporting Ready.
+    assert_eq!(
+        classify_publish_readiness(true, 0, 0),
+        PublishReadiness::Solo
+    );
+    assert_eq!(
+        classify_publish_readiness(true, 0, 3),
+        PublishReadiness::Degraded
+    );
+}

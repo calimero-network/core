@@ -47,6 +47,11 @@ steps:
     outputs:
       ctx_id: contextId
 
+  - name: Assert context created
+    type: assert
+    statements:
+      - "is_set({{ctx_id}})"
+
   # --- Governance op while node-1 is the only node ---
   # Before the best-effort-readiness fix this could be rejected before it
   # applied. It must now apply locally regardless of mesh state.
