@@ -294,7 +294,9 @@ pub fn setup_root_for_main() -> ChildInfo {
     let root_id = Id::root();
     let root_meta = Metadata::default();
     Index::<MainStorage>::add_root(ChildInfo::new(root_id, [0; 32], root_meta.clone())).unwrap();
-    let (full_hash, _) = Index::<MainStorage>::get_hashes_for(root_id).unwrap().unwrap();
+    let (full_hash, _) = Index::<MainStorage>::get_hashes_for(root_id)
+        .unwrap()
+        .unwrap();
     ChildInfo::new(root_id, full_hash, root_meta)
 }
 
