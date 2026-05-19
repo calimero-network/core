@@ -306,14 +306,6 @@ impl<S: StorageAdaptor> Interface<S> {
         }
     }
 
-    /// Adds a child entity to a parent's collection.
-    ///
-    /// Updates Merkle hashes and generates sync actions automatically.
-    ///
-    /// # Errors
-    /// - `SerializationError` if child can't be encoded
-    /// - `IndexNotFound` if parent doesn't exist
-    ///
     /// Persist the signed `signature_data` produced by the runtime's
     /// `sign_authorized_actions` step back to the local index entry.
     ///

@@ -1661,7 +1661,7 @@ fn substitute_aliases_in_payload(
 
 /// Helper function to sign authorized actions (User and Shared storage).
 /// Iterates over actions and signs any that are local and unsigned.
-fn sign_authorized_actions(
+pub(crate) fn sign_authorized_actions(
     actions: &mut [Action],
     identity_private_key: &PrivateKey,
 ) -> eyre::Result<()> {
@@ -1797,7 +1797,7 @@ fn sign_authorized_actions(
 /// reads + writes the entity's `EntityIndex` blob through this runtime
 /// env, which routes via `create_storage_callbacks` to the same
 /// RocksDB keys that `storage.commit()` just wrote.
-fn persist_signed_signatures(
+pub(crate) fn persist_signed_signatures(
     store: &Store,
     context: &Context,
     identity_private_key: &PrivateKey,
