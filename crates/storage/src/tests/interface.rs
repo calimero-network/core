@@ -1061,6 +1061,55 @@ mod user_storage_replay_protection {
     }
 
     #[test]
+    fn stale_upsert_with_invalid_signature_still_rejects() {
+        // Security invariant: silent-skip on stale nonce applies
+        // ONLY after the signature verifies. A stale upsert signed
+        // by the wrong key must still reject as
+        // `InvalidSignature` — without this, a future refactor that
+        // moves the signature check after the nonce check would
+        // silently accept unauthenticated stale traffic.
+        env::reset_for_testing();
+
+        let (signing_key, owner) = create_test_keypair();
+        let (wrong_signing_key, _) = create_test_keypair();
+
+        let mut element = Element::root();
+        element.set_user_domain(owner);
+        let page = Page::new_from_element("Page", element);
+        let serialized = to_vec(&page).unwrap();
+
+        let nonce1 = env::time_now();
+        let action1 = create_signed_user_add_action(
+            &signing_key,
+            owner,
+            page.id(),
+            serialized.clone(),
+            nonce1,
+        );
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+
+        sleep(Duration::from_millis(2));
+
+        // Stale nonce + signed by WRONG key → InvalidSignature, not
+        // silent-skip.
+        let nonce2 = nonce1 - 1000;
+        let action2 = create_signed_user_update_action(
+            &wrong_signing_key,
+            owner,
+            page.id(),
+            serialized,
+            nonce2,
+            page.element().created_at(),
+        );
+
+        let result = MainInterface::apply_action(action2, &ApplyContext::empty());
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "stale upsert with invalid signature must reject as InvalidSignature, got {result:?}"
+        );
+    }
+
+    #[test]
     fn sequential_updates_with_increasing_nonces_succeed() {
         crate::tests::common::register_test_merge_functions();
         env::reset_for_testing();
@@ -1106,7 +1155,7 @@ mod user_storage_replay_protection {
     }
 
     #[test]
-    fn out_of_order_nonces_are_rejected() {
+    fn out_of_order_nonces_are_silently_skipped_for_upsert() {
         env::reset_for_testing();
 
         let (signing_key, owner) = create_test_keypair();

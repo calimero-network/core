@@ -686,6 +686,7 @@ impl<S: StorageAdaptor> Interface<S> {
                         let last_nonce = <Index<S>>::get_metadata(*id)?
                             .map(|m| *m.updated_at)
                             .unwrap_or(0);
+                        let skip_nonce = nonce_check_disabled_for_testing();
 
                         // Verify signature FIRST, before deciding whether
                         // to skip. We need to know the action is
@@ -716,7 +717,12 @@ impl<S: StorageAdaptor> Interface<S> {
                         // through `Root::sync().expect("fatal: sync
                         // failed")` and aborts the whole sync batch,
                         // blocking convergence.
-                        if new_nonce <= last_nonce {
+                        //
+                        // Gated by the same `nonce_check_disabled_for_testing`
+                        // bypass as the Shared arm so DAG-causal P5 tests
+                        // exercising out-of-order delivery see consistent
+                        // behaviour across User/Shared entities.
+                        if !skip_nonce && new_nonce <= last_nonce {
                             debug!(
                                 %id,
                                 new_nonce,

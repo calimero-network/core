@@ -141,16 +141,14 @@ where
 
     /// Commits the root collection without an instance of the root state.
     pub fn commit_headless() {
-        if let Err(e) = <Interface<S>>::commit_root::<Collection<T>>(None) {
+        <Interface<S>>::commit_root::<Collection<T>>(None).unwrap_or_else(|e| {
             tracing::error!(
                 target: "storage::root",
                 error = %e,
-                debug_error = ?e,
-                "commit_headless: Interface::commit_root returned Err — about to panic via unwrap"
+                "commit_headless: Interface::commit_root failed — panicking"
             );
-            #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
-            Err::<(), _>(e).unwrap();
-        }
+            panic!("commit_headless: fatal: {e}");
+        });
     }
 
     /// Syncs the root collection.
@@ -176,53 +174,48 @@ where
             StorageDelta::Comparisons(_) => "Comparisons",
         };
 
-        let result: Result<(), StorageError> = (|| {
-            match artifact {
-                StorageDelta::Actions(actions) => {
-                    Self::apply_actions(actions, |_| ctx.clone())?;
+        // `match` is an expression — assign directly. `inspect_err` then
+        // logs without rewriting the Result; `?` propagates the Err to
+        // the caller (the SDK macro's `.expect("fatal: sync failed")`).
+        // Without this trace, a `Result::Err` from apply_actions surfaces
+        // as a bare WASM `unreachable` trap with no clue what failed.
+        match artifact {
+            StorageDelta::Actions(actions) => Self::apply_actions(actions, |_| ctx.clone()),
+            StorageDelta::CausalActions {
+                actions,
+                delta_id,
+                delta_hlc,
+                effective_writers,
+            } => Self::apply_actions(actions, |action| crate::interface::ApplyContext {
+                effective_writers: effective_writers.get(&action.id()).cloned(),
+                delta_id: Some(delta_id),
+                delta_hlc: Some(delta_hlc),
+            }),
+            StorageDelta::Comparisons(comparisons) => {
+                if comparisons.is_empty() {
+                    push_comparison(Comparison {
+                        data: <Interface<S>>::find_by_id_raw(Id::root()),
+                        comparison_data: <Interface<S>>::generate_comparison_data(None)?,
+                    });
                 }
-                StorageDelta::CausalActions {
-                    actions,
-                    delta_id,
-                    delta_hlc,
-                    effective_writers,
-                } => {
-                    Self::apply_actions(actions, |action| crate::interface::ApplyContext {
-                        effective_writers: effective_writers.get(&action.id()).cloned(),
-                        delta_id: Some(delta_id),
-                        delta_hlc: Some(delta_hlc),
-                    })?;
+                for Comparison {
+                    data,
+                    comparison_data,
+                } in comparisons
+                {
+                    <Interface<S>>::compare_affective(data, comparison_data, ctx)?;
                 }
-                StorageDelta::Comparisons(comparisons) => {
-                    if comparisons.is_empty() {
-                        push_comparison(Comparison {
-                            data: <Interface<S>>::find_by_id_raw(Id::root()),
-                            comparison_data: <Interface<S>>::generate_comparison_data(None)?,
-                        });
-                    }
-
-                    for Comparison {
-                        data,
-                        comparison_data,
-                    } in comparisons
-                    {
-                        <Interface<S>>::compare_affective(data, comparison_data, ctx)?;
-                    }
-                }
+                Ok(())
             }
-            Ok(())
-        })();
-
-        if let Err(ref e) = result {
+        }
+        .inspect_err(|e| {
             tracing::error!(
                 target: "storage::root",
                 variant,
                 error = %e,
-                debug_error = ?e,
-                "Root::sync apply_actions/branch returned Err — about to bubble up to __calimero_sync_next's .expect()"
+                "Root::sync returned Err — will bubble up to __calimero_sync_next's .expect()"
             );
-            return result;
-        }
+        })?;
 
         info!(
             target: "storage::root",
