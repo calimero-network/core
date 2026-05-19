@@ -1,5 +1,6 @@
 use calimero_context_client::local_governance::{
-    AckRouter, EncryptedGroupOp, GroupOp, NamespaceOp, RootOp, SignedGroupOp, SignedNamespaceOp,
+    hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, NamespaceOp, RootOp,
+    SignedGroupOp, SignedNamespaceOp,
 };
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
@@ -10,8 +11,8 @@ use eyre::{bail, Result as EyreResult};
 use libp2p::gossipsub::TopicHash;
 
 use crate::governance_broadcast::{
-    self, assert_transport_ready, ns_topic, publish_and_await_ack_namespace,
-    timeout_for_namespace_op, DeliveryReport,
+    self, assert_transport_ready, classify_publish_readiness, ns_topic,
+    publish_and_await_ack_namespace, timeout_for_namespace_op, DeliveryReport, PublishReadiness,
 };
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
 use crate::op_events::{notify as notify_op_event, OpEvent};
@@ -68,6 +69,22 @@ pub(crate) fn min_acks_after_local_mutation(
     } else {
         governance_broadcast::DEFAULT_MIN_ACKS
     }
+}
+
+/// Classify a best-effort governance publish from the role of its ack
+/// signers. Shared by `NamespaceGovernance::sign_apply_and_publish` and
+/// `GroupGovernancePublisher` (a sibling module — hence `pub(crate)`).
+pub(crate) fn classify_report_readiness(
+    store: &Store,
+    namespace_id: [u8; 32],
+    report: &DeliveryReport,
+    known_subscribers: usize,
+) -> PublishReadiness {
+    let authoritative_ack = report.acked_by.iter().any(|pk| {
+        super::membership::is_authoritative_namespace_identity(store, namespace_id, pk)
+            .unwrap_or(false)
+    });
+    classify_publish_readiness(authoritative_ack, report.acked_by.len(), known_subscribers)
 }
 
 /// Domain API for namespace DAG and governance operation lifecycle.
@@ -441,19 +458,17 @@ impl<'a> NamespaceGovernance<'a> {
         op: NamespaceOp,
     ) -> EyreResult<DeliveryReport> {
         let topic = ns_topic(self.namespace_id);
-        // Phase-1 readiness gate runs FIRST — before any signing or local
-        // DAG mutation. Apply-before-readiness leaks orphan ops on retry:
-        // a rejected op stays in the local DAG, the retry signs a *new*
-        // op (different op_hash), and we accumulate duplicate writes on
-        // every attempt. Checking readiness up front makes the rejection
-        // side-effect-free and cleanly retryable.
-        let mesh = node_client
-            .mesh_peer_count_for_namespace(self.namespace_id)
-            .await;
-        let known_at_gate = node_client.known_subscribers(&topic);
-        assert_transport_ready(mesh, known_at_gate, node_client.gossipsub_mesh_n_low())
-            .map_err(|e| eyre::eyre!(e))?;
 
+        // Apply-FIRST: governance ops are locally authoritative. The local
+        // DAG mutation must not be gated on transport state — a node alone
+        // or with an unformed mesh still applies its own op and relies on
+        // sync to carry it to peers. (Previously a `NamespaceNotReady` gate
+        // ran here first and dropped the op entirely.) The publish below is
+        // best-effort: a transport failure downgrades the readiness
+        // classification, it never fails the call. See the
+        // best-effort-readiness design doc. The orphan-op-on-retry concern
+        // the old gate guarded against no longer applies: there is no
+        // rejection and no caller retry, so the op applies exactly once.
         let head = self.read_head_record()?;
         // Group ops are observed in `GroupGovernancePublisher` with the
         // cleartext `GroupOp` label; observing them here too would double-count.
@@ -468,6 +483,14 @@ impl<'a> NamespaceGovernance<'a> {
             head.next_nonce,
             op,
         )?;
+        // Topic-scoped hash — the same identifier
+        // `publish_and_await_ack_namespace` records in a *successful*
+        // `DeliveryReport`. Computing it the same way here keeps the
+        // `op_hash` on the synthesized best-effort report (below)
+        // consistent with the success path, so log correlation works
+        // regardless of whether the publish confirmed.
+        let op_hash = hash_scoped_namespace(topic.as_str().as_bytes(), &signed)
+            .map_err(|e| eyre::eyre!("hash_scoped_namespace: {e}"))?;
 
         self.apply_signed_op(&signed)?;
 
@@ -479,18 +502,19 @@ impl<'a> NamespaceGovernance<'a> {
         // `notify_namespace_op_applied` for the cross-crate plumbing.
         node_client.notify_namespace_op_applied(self.namespace_id);
 
+        let mesh = node_client
+            .mesh_peer_count_for_namespace(self.namespace_id)
+            .await;
+        let known = node_client.known_subscribers(&topic);
         if observe_mesh {
             record_governance_publish_mesh_peers(op_kind, mesh);
         }
+        let min_acks = min_acks_after_local_mutation(known, known);
 
-        // Refresh after `apply_signed_op`: if all peers departed since
-        // the readiness gate, using the stale gate snapshot would turn
-        // `NoPeersSubscribedToTopic` into `NoAckReceived` after the local
-        // DAG has already advanced.
-        let known_at_publish = node_client.known_subscribers(&topic);
-        let min_acks = min_acks_after_local_mutation(known_at_gate, known_at_publish);
-
-        let report = publish_and_await_ack_namespace(
+        // Best-effort publish: the op is already committed locally, so a
+        // `NoAckReceived` / `Publish` failure is NOT fatal — synthesize an
+        // empty report and let the readiness classification record it.
+        let mut report = match publish_and_await_ack_namespace(
             self.store,
             node_client.network_client(),
             ack_router,
@@ -502,11 +526,31 @@ impl<'a> NamespaceGovernance<'a> {
             None,
         )
         .await
-        .map_err(|e| eyre::eyre!(e))?;
+        {
+            Ok(report) => report,
+            Err(e) => {
+                tracing::debug!(
+                    op_kind,
+                    namespace_id = %hex::encode(self.namespace_id),
+                    error = %e,
+                    "namespace governance op applied locally; publish did not \
+                     confirm (best-effort) — will propagate via sync"
+                );
+                DeliveryReport {
+                    op_hash,
+                    acked_by: Vec::new(),
+                    elapsed_ms: 0,
+                    readiness: PublishReadiness::Degraded,
+                }
+            }
+        };
+
+        report.readiness = classify_report_readiness(self.store, self.namespace_id, &report, known);
         tracing::debug!(
             op_kind,
             namespace_id = %hex::encode(self.namespace_id),
             acks = report.acked_by.len(),
+            readiness = report.readiness.label(),
             elapsed_ms = report.elapsed_ms,
             op_hash = %hex::encode(report.op_hash),
             "namespace governance op published"
@@ -530,6 +574,9 @@ impl<'a> NamespaceGovernance<'a> {
         assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
             .map_err(|e| eyre::eyre!(e))?;
 
+        // Quorum / no-local-apply path: a publish that never reaches a
+        // quorum is a genuine failure — nothing was applied locally to
+        // fall back on. `best_effort = false` keeps the hard error.
         self.publish_post_gate(
             node_client,
             ack_router,
@@ -539,18 +586,19 @@ impl<'a> NamespaceGovernance<'a> {
             mesh,
             known,
             required_signers,
+            false,
         )
         .await
     }
 
-    /// Caller-gated variant of [`sign_and_publish_without_apply`]: assumes
-    /// the caller already ran `assert_transport_ready` and is providing
-    /// the `mesh` / `known_subscribers` snapshot it observed at gate-time.
+    /// Post-gate variant of [`sign_and_publish_without_apply`]: takes the
+    /// `mesh` / `known_subscribers` snapshot the caller already observed,
+    /// so this never re-samples or re-runs `assert_transport_ready`.
     /// Used by [`GroupGovernancePublisher::sign_apply_and_publish_inner`]
-    /// to avoid re-running the readiness gate after the local store has
-    /// already been mutated — a second gate that flips between "Ready"
-    /// at the outer call and "NotReady" here would leave the local op
-    /// applied and the remote peers unaware (state divergence on retry).
+    /// after the local group store has already been mutated. That caller
+    /// passes `best_effort = true`: it has no gate of its own (the local
+    /// apply is unconditional), so a publish failure here is non-fatal and
+    /// the op propagates via sync rather than diverging on a retry.
     pub(crate) async fn sign_and_publish_post_gate(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
@@ -559,6 +607,7 @@ impl<'a> NamespaceGovernance<'a> {
         op: NamespaceOp,
         mesh: usize,
         known: usize,
+        best_effort: bool,
     ) -> EyreResult<DeliveryReport> {
         let topic = ns_topic(self.namespace_id);
         self.publish_post_gate(
@@ -570,17 +619,22 @@ impl<'a> NamespaceGovernance<'a> {
             mesh,
             known,
             None,
+            best_effort,
         )
         .await
     }
 
     /// Shared body of [`sign_and_publish_without_apply`] and
-    /// [`sign_and_publish_post_gate`]. Assumes the readiness gate has
-    /// already been run by the caller; takes the gate-time `mesh`
-    /// snapshot to feed the metric. The subscriber count is
-    /// re-sampled at publish time (see below) so transient peer
-    /// departures between the gate and the publish don't cause an
-    /// `Err(NoAckReceived)` after the local store has already mutated.
+    /// [`sign_and_publish_post_gate`]. Takes the caller's `mesh` snapshot
+    /// to feed the metric; the subscriber count is re-sampled at publish
+    /// time (see below) so transient peer departures don't skew `min_acks`.
+    ///
+    /// `best_effort` selects the failure mode of the publish:
+    /// * `false` (quorum / no-local-apply path) — a publish that gathers
+    ///   no acks is a genuine `Err`; nothing was applied locally.
+    /// * `true` (group-op apply-and-publish path) — the local mutation is
+    ///   already committed, so a publish failure is swallowed into a
+    ///   `Degraded` [`DeliveryReport`] and propagation falls to sync.
     async fn publish_post_gate(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
@@ -591,6 +645,7 @@ impl<'a> NamespaceGovernance<'a> {
         mesh: usize,
         known_at_gate: usize,
         required_signers: Option<Vec<PublicKey>>,
+        best_effort: bool,
     ) -> EyreResult<DeliveryReport> {
         let head = self.read_head_record()?;
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
@@ -607,6 +662,12 @@ impl<'a> NamespaceGovernance<'a> {
         let delta_id = signed
             .content_hash()
             .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+        // Topic-scoped hash for the `DeliveryReport` — matches the
+        // `op_hash` that `publish_and_await_ack_namespace` records on a
+        // successful report (`delta_id` above is the DAG content hash,
+        // a different value). Used by the best-effort error arm below.
+        let scoped_op_hash = hash_scoped_namespace(topic.as_str().as_bytes(), &signed)
+            .map_err(|e| eyre::eyre!("hash_scoped_namespace: {e}"))?;
         let parent_ids = signed.parent_op_hashes.clone();
 
         // Advance the head first, then write the op to the log — same order as
@@ -631,22 +692,23 @@ impl<'a> NamespaceGovernance<'a> {
 
         // Refresh `known` here, AFTER all the local-mutation /
         // encryption / key-rotation / store_operation work above and
-        // immediately before deciding `min_acks`. The gate-time
-        // snapshot (`known_at_gate`) was taken many awaits ago; in
-        // group-publish flows it predates `sign_apply_local_group_op_borsh`
-        // and the per-removal key mint. If a peer unsubscribed in the
-        // meantime, sticking with the stale count would leave
-        // `min_acks = 1` against an empty subscriber set and force
-        // `NoAckReceived` after the local DAG has already advanced —
-        // exactly the orphan-op-on-retry pattern the readiness gate
-        // exists to prevent. `known_subscribers` is a cheap synchronous
-        // DashMap lookup on `NodeClient` (no actor mailbox round-trip),
-        // so re-sampling here costs effectively nothing while making
-        // the solo-namespace fast-path responsive to live state.
+        // immediately before deciding `min_acks`. The caller's snapshot
+        // (`known_at_gate`) was taken many awaits ago; in group-publish
+        // flows it predates `sign_apply_local_group_op_borsh` and the
+        // per-removal key mint. If a peer unsubscribed in the meantime,
+        // sticking with the stale count would leave `min_acks = 1`
+        // against an empty subscriber set and force `NoAckReceived`
+        // after the local DAG has already advanced. For `best_effort`
+        // callers that `NoAckReceived` is swallowed into a `Degraded`
+        // report; for quorum callers it is the genuine failure they
+        // expect. `known_subscribers` is a cheap synchronous DashMap
+        // lookup on `NodeClient` (no actor mailbox round-trip), so
+        // re-sampling here costs effectively nothing while making the
+        // solo-namespace fast-path responsive to live state.
         let known_at_publish = node_client.known_subscribers(&topic);
         let min_acks = min_acks_after_local_mutation(known_at_gate, known_at_publish);
 
-        let report = publish_and_await_ack_namespace(
+        let report = match publish_and_await_ack_namespace(
             self.store,
             node_client.network_client(),
             ack_router,
@@ -658,14 +720,43 @@ impl<'a> NamespaceGovernance<'a> {
             required_signers,
         )
         .await
-        .map_err(|e| eyre::eyre!(e))?;
+        {
+            Ok(report) => report,
+            // Best-effort callers (the group-op apply-and-publish path) have
+            // already committed the local mutation; a publish failure is
+            // non-fatal and propagation falls to sync. Quorum callers pass
+            // `best_effort = false` and still get the hard error.
+            Err(e) if best_effort => {
+                tracing::debug!(
+                    op_kind,
+                    namespace_id = %hex::encode(self.namespace_id),
+                    error = %e,
+                    "namespace governance op applied locally; publish did not \
+                     confirm (best-effort) — will propagate via sync"
+                );
+                DeliveryReport {
+                    op_hash: scoped_op_hash,
+                    acked_by: Vec::new(),
+                    elapsed_ms: 0,
+                    readiness: PublishReadiness::Degraded,
+                }
+            }
+            Err(e) => return Err(eyre::eyre!(e)),
+        };
+        // `best_effort` distinguishes the two callers: the quorum path
+        // (`sign_and_publish_without_apply`, `best_effort = false`) does no
+        // local apply, while the group-op path (`sign_and_publish_post_gate`,
+        // `best_effort = true`) reaches here *after* `GroupGovernancePublisher`
+        // already committed the local mutation. Logging it as a field keeps
+        // the message accurate for both.
         tracing::debug!(
             op_kind,
             namespace_id = %hex::encode(self.namespace_id),
             acks = report.acked_by.len(),
             elapsed_ms = report.elapsed_ms,
             op_hash = %hex::encode(report.op_hash),
-            "namespace governance op published (no local apply)"
+            best_effort,
+            "namespace governance op published"
         );
         Ok(report)
     }

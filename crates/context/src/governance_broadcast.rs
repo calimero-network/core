@@ -252,6 +252,72 @@ pub struct DeliveryReport {
     pub op_hash: [u8; 32],
     pub acked_by: Vec<PublicKey>,
     pub elapsed_ms: u64,
+    /// Best-effort publish classification. Low-level publish helpers set
+    /// this to `Degraded` as a conservative default; the apply-and-publish
+    /// boundary (`NamespaceGovernance::sign_apply_and_publish`,
+    /// `GroupGovernancePublisher`) overwrites it with the role-aware
+    /// classification once the publish attempt completes — whether acks
+    /// arrived or the publish failed and a zero-ack report was synthesized.
+    pub readiness: PublishReadiness,
+}
+
+/// Outcome classification for a best-effort governance publish.
+///
+/// `Ready` means an owner/admin/TEE node provably received the op (a
+/// signed ack arrived from one). `Degraded` and `Solo` both mean the op
+/// applied locally and will reach peers via sync; they differ only in
+/// whether any remote subscriber was known. None of the three is a
+/// failure — the apply already happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishReadiness {
+    /// No remote subscribers were known — the node is effectively solo.
+    Solo,
+    /// At least one owner / admin / TEE node acked the op.
+    Ready,
+    /// Applied locally, but no authoritative node acked.
+    Degraded,
+}
+
+impl PublishReadiness {
+    /// Stable label for metrics and log lines.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            PublishReadiness::Solo => "solo",
+            PublishReadiness::Ready => "ready",
+            PublishReadiness::Degraded => "degraded",
+        }
+    }
+}
+
+/// Classify a best-effort publish outcome. Pure policy function.
+///
+/// `authoritative_ack` is true when at least one ack came from an
+/// owner / admin / TEE identity (see
+/// `group_store::membership::is_authoritative_namespace_identity`).
+///
+/// `Ready` requires `authoritative_ack && ack_count > 0` — an
+/// authoritative ack cannot exist without an ack, so `authoritative_ack`
+/// with `ack_count == 0` is a contradictory input; it is treated as
+/// "no acks" rather than reported as `Ready`.
+#[must_use]
+pub fn classify_publish_readiness(
+    authoritative_ack: bool,
+    ack_count: usize,
+    known_subscribers: usize,
+) -> PublishReadiness {
+    if ack_count == 0 {
+        return if known_subscribers == 0 {
+            PublishReadiness::Solo
+        } else {
+            PublishReadiness::Degraded
+        };
+    }
+    if authoritative_ack {
+        PublishReadiness::Ready
+    } else {
+        PublishReadiness::Degraded
+    }
 }
 
 /// Per-handler delivery observability log.
@@ -268,42 +334,45 @@ pub struct DeliveryReport {
 /// identical so log-aggregation queries don't have to special-case the
 /// per-endpoint format.
 ///
-/// `acked_by.is_empty()` is logged at `warn!` to highlight cold-start
-/// or GRAFT-window publishes that landed on the wire but didn't gather
-/// confirmation in time. The local DAG advance is durable in either
-/// case — the warn is a hint that downstream peers may need
-/// reconciliation, not a failure indication.
+/// The log level follows `report.readiness`: `Degraded` (applied locally
+/// but no authoritative ack) is `warn!` to highlight cold-start or
+/// GRAFT-window publishes that landed on the wire but didn't gather
+/// confirmation; `Ready` is `info!`; `Solo` (no remote subscribers) is
+/// `debug!` since a node alone publishing governance ops is expected.
+/// The local DAG advance is durable in every case — a `warn` is a hint
+/// that peers will reconcile via sync, not a failure indication.
 pub fn observe_handler_delivery(handler: &str, op_kind: &str, report: &DeliveryReport) {
-    let outcome = if report.acked_by.is_empty() {
-        "empty"
-    } else {
-        "acked"
-    };
     crate::metrics::record_governance_handler_delivery(
         handler,
         op_kind,
-        outcome,
+        report.readiness.label(),
         report.elapsed_ms,
     );
-    if report.acked_by.is_empty() {
-        tracing::warn!(
-            handler,
-            op_kind,
-            elapsed_ms = report.elapsed_ms,
-            op_hash = %hex::encode(report.op_hash),
-            "governance op published but no acks collected before deadline \
-             (publisher boundary deemed delivery best-effort; receivers will \
-             reconcile via heartbeat)"
-        );
-    } else {
-        tracing::info!(
+    match report.readiness {
+        PublishReadiness::Degraded => tracing::warn!(
             handler,
             op_kind,
             acks = report.acked_by.len(),
             elapsed_ms = report.elapsed_ms,
             op_hash = %hex::encode(report.op_hash),
-            "governance op delivered"
-        );
+            "governance op applied locally but not confirmed by an authoritative \
+             node; it will propagate to peers via sync"
+        ),
+        PublishReadiness::Ready => tracing::info!(
+            handler,
+            op_kind,
+            acks = report.acked_by.len(),
+            elapsed_ms = report.elapsed_ms,
+            op_hash = %hex::encode(report.op_hash),
+            "governance op delivered to an authoritative node"
+        ),
+        PublishReadiness::Solo => tracing::debug!(
+            handler,
+            op_kind,
+            elapsed_ms = report.elapsed_ms,
+            op_hash = %hex::encode(report.op_hash),
+            "governance op applied locally (solo namespace)"
+        ),
     }
 }
 
@@ -525,6 +594,7 @@ pub async fn publish_and_await_ack_namespace(
                     op_hash,
                     acked_by: Vec::new(),
                     elapsed_ms: start.elapsed().as_millis() as u64,
+                    readiness: PublishReadiness::Degraded,
                 });
             }
             return Err(GovernanceBroadcastError::NoAckReceived {
@@ -557,6 +627,7 @@ pub async fn publish_and_await_ack_namespace(
             op_hash,
             acked_by: Vec::new(),
             elapsed_ms: start.elapsed().as_millis() as u64,
+            readiness: PublishReadiness::Degraded,
         });
     }
 
@@ -575,6 +646,7 @@ pub async fn publish_and_await_ack_namespace(
         op_hash,
         acked_by,
         elapsed_ms: start.elapsed().as_millis() as u64,
+        readiness: PublishReadiness::Degraded,
     };
     loop {
         // saturating_duration_since returns ZERO past the deadline (no

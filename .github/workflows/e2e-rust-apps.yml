@@ -152,6 +152,12 @@ jobs:
           - workflow: group-late-joiner
             file: workflows/group-late-joiner.yml
             app: scaffolding-e2e
+          - workflow: group-governance-late-joiner
+            file: workflows/group-governance-late-joiner.yml
+            app: scaffolding-e2e
+          - workflow: group-governance-peer-down
+            file: workflows/group-governance-peer-down.yml
+            app: scaffolding-e2e
           - workflow: group-subgroup
             file: workflows/group-subgroup.yml
             app: scaffolding-e2e

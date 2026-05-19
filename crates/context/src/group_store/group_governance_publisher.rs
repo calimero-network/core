@@ -5,12 +5,13 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use rand::{rngs::OsRng, Rng};
 
+use super::namespace_governance::classify_report_readiness;
 use super::{
     build_key_rotation, encrypt_group_op, get_namespace_identity_record, get_parent_group,
     is_open_chain_to_namespace, load_current_group_key_record, resolve_namespace,
     sign_apply_local_group_op_borsh, store_group_key, NamespaceGovernance,
 };
-use crate::governance_broadcast::{assert_transport_ready, ns_topic, DeliveryReport};
+use crate::governance_broadcast::{ns_topic, DeliveryReport};
 use crate::metrics::record_governance_publish_mesh_peers;
 
 /// Orchestrates local apply + encrypted namespace publish for group governance ops.
@@ -90,15 +91,14 @@ impl<'a> GroupGovernancePublisher<'a> {
         op: GroupOp,
         removed_member: Option<&PublicKey>,
     ) -> EyreResult<Option<DeliveryReport>> {
-        // Phase-1 readiness gate runs FIRST — before
-        // `sign_apply_local_group_op_borsh` (which mutates the local group
-        // store) and before the per-removal key-mint+store below. The
-        // namespace-level helper invoked at the bottom of this function
-        // ALSO runs the gate, but a `NamespaceNotReady` rejection there
-        // would arrive *after* local mutation, leaving an orphan group-row
-        // and (for member-removal) a freshly-minted-but-unused key on
-        // every retry. Gating up front keeps the rejection side-effect-free
-        // and cleanly retryable, mirroring `NamespaceGovernance::sign_apply_and_publish`.
+        // Apply-FIRST, publish best-effort. `sign_apply_local_group_op_borsh`
+        // below commits the local group-store mutation unconditionally; the
+        // namespace publish at the end is best-effort (`best_effort = true`)
+        // so an unformed mesh downgrades readiness instead of failing the
+        // call. The op propagates to peers via sync. See the
+        // best-effort-readiness design doc. `mesh` / `known` are still
+        // sampled here — `mesh` feeds the cleartext-labelled metric below
+        // and both are handed to `sign_and_publish_post_gate`.
         let namespace_id = resolve_namespace(self.store, &self.group_id)?;
         let namespace_bytes = namespace_id.to_bytes();
         let topic = ns_topic(namespace_bytes);
@@ -107,8 +107,6 @@ impl<'a> GroupGovernancePublisher<'a> {
             .mesh_peer_count_for_namespace(namespace_bytes)
             .await;
         let known = self.node_client.known_subscribers(&topic);
-        assert_transport_ready(mesh, known, self.node_client.gossipsub_mesh_n_low())
-            .map_err(|e| eyre::eyre!(e))?;
 
         let _output =
             sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op.clone())?;
@@ -258,25 +256,22 @@ impl<'a> GroupGovernancePublisher<'a> {
         // `GroupOp` variant as the label* before the inner namespace publish
         // hides it inside an encrypted envelope. `NamespaceGovernance::sign_*`
         // skips emission for `NamespaceOp::Group { .. }` so this is the
-        // single source of truth for group-op observations. Reuse the value
-        // captured by the readiness gate at the top of the function — issuing
-        // a second `mesh_peer_count_for_namespace` round-trip here would burn
-        // an actor-mailbox hop per publish without observable benefit.
+        // single source of truth for group-op observations. Reuse the
+        // `mesh` value sampled at the top of the function — issuing a
+        // second `mesh_peer_count_for_namespace` round-trip here would
+        // burn an actor-mailbox hop per publish without observable benefit.
         record_governance_publish_mesh_peers(op.op_kind_label(), mesh);
 
         let namespace_sk = PrivateKey::from(namespace_identity.private_key);
         let op_kind = op.op_kind_label();
-        // Reuse the (mesh, known) snapshot captured by the outer gate
-        // and call `sign_and_publish_post_gate` so the inner publisher
-        // does NOT re-run `assert_transport_ready`. Re-running the gate
-        // here would create a TOCTOU window: the local store mutation
-        // from `sign_apply_local_group_op_borsh` (above) is already
-        // committed, so a re-gated `NamespaceNotReady` rejection would
-        // leave nonce N applied locally but never published — the
-        // caller's retry signs nonce N+1, remote peers only see N+1,
-        // and we'd have a permanent local/remote divergence on member-
-        // change ops.
-        let report = NamespaceGovernance::new(self.store, namespace_bytes)
+        // Publish best-effort (`best_effort = true`): the local store
+        // mutation from `sign_apply_local_group_op_borsh` (above) is
+        // already committed, so a publish that gathers no acks is NOT a
+        // failure — it is reported as `Degraded` and the op reaches peers
+        // via sync. `sign_and_publish_post_gate` takes the `mesh` / `known`
+        // snapshot directly and never runs `assert_transport_ready`, so
+        // there is no gate that could reject after the local apply.
+        let mut report = NamespaceGovernance::new(self.store, namespace_bytes)
             .sign_and_publish_post_gate(
                 self.node_client,
                 ack_router,
@@ -284,12 +279,15 @@ impl<'a> GroupGovernancePublisher<'a> {
                 namespace_op,
                 mesh,
                 known,
+                true,
             )
             .await?;
+        report.readiness = classify_report_readiness(self.store, namespace_bytes, &report, known);
         tracing::debug!(
             op_kind,
             group_id = %hex::encode(self.group_id.to_bytes()),
             acks = report.acked_by.len(),
+            readiness = report.readiness.label(),
             elapsed_ms = report.elapsed_ms,
             op_hash = %hex::encode(report.op_hash),
             "group governance op published"
