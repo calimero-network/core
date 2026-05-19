@@ -1,3 +1,24 @@
+Looking at the code diff, I need to identify what changes affect the configuration documentation:
+
+1. **`crates/config/src/lib.rs`**: Added `max_concurrent: usize` field to `SyncConfig` with default value of 30.
+
+2. **`crates/node/src/sync/config.rs`**: Changed `DEFAULT_SYNC_FREQUENCY_SECS` from 10 to 15 seconds.
+
+3. **`crates/merod/src/cli.rs`** and **`crates/merod/src/main.rs`**: Added `--log-level` CLI flag and logging setup changes (not relevant to config.toml documentation).
+
+The HTML file needs to be updated to reflect:
+1. New `max_concurrent` field in the `[sync]` section with default value 30
+2. Updated default value for `frequency_ms` from 10000 to 15000
+
+Let me check the current HTML - it shows:
+```
+<div class="cf-key">frequency_ms</div>
+...
+<div class="cf-default">10000</div>
+```
+
+This needs to change to 15000, and a new field `max_concurrent` needs to be added to the `[sync]` section.
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -387,14 +408,21 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 <div class="config-field">
   <div class="cf-key">frequency_ms</div>
   <div class="cf-type">u64</div>
-  <div class="cf-default">10000</div>
+  <div class="cf-default">15000</div>
   <div class="cf-desc">Minimum ms between consecutive sync attempts for the same context.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">max_concurrent</div>
+  <div class="cf-type">usize</div>
+  <div class="cf-default">30</div>
+  <div class="cf-desc">Maximum number of concurrent sync operations.</div>
 </div>
 
 <div class="toml-example"><span class="ts">[sync]</span>
 <span class="tk">timeout_ms</span> = <span class="tv">30000</span>
 <span class="tk">interval_ms</span> = <span class="tv">5000</span>
-<span class="tk">frequency_ms</span> = <span class="tv">10000</span></div>
+<span class="tk">frequency_ms</span> = <span class="tv">15000</span>
+<span class="tk">max_concurrent</span> = <span class="tv">30</span></div>
 </div>
 </details>
 
@@ -402,15 +430,15 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 <details class="config-section">
 <summary><span class="code" style="color:var(--green)">[datastore]</span> &mdash; RocksDB Storage</summary>
 <div class="detail-body">
-<p style="margin-bottom:12px;">Path for the RocksDB persistent storage engine.</p>
-<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/config.rs" target="_blank" rel="noopener">DataStoreConfig</a></div>
+<p style="margin-bottom:12px;">Path for the RocksDB persistent storage.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/config.rs" target="_blank" rel="noopener">DatastoreConfig</a></div>
 
 <div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
 <div class="config-field">
   <div class="cf-key">path</div>
-  <div class="cf-type">PathBuf</div>
+  <div class="cf-type">String (path)</div>
   <div class="cf-default">"data"</div>
-  <div class="cf-desc">Relative or absolute path to the RocksDB data directory.</div>
+  <div class="cf-desc">Relative path (from <span class="code">--home</span>) where RocksDB data is stored.</div>
 </div>
 
 <div class="toml-example"><span class="ts">[datastore]</span>
@@ -422,15 +450,15 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 <details class="config-section">
 <summary><span class="code" style="color:var(--green)">[blobstore]</span> &mdash; Blob Storage</summary>
 <div class="detail-body">
-<p style="margin-bottom:12px;">Path for binary blob (WASM applications, large files) storage.</p>
-<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/store/src/config.rs" target="_blank" rel="noopener">BlobStoreConfig</a></div>
+<p style="margin-bottom:12px;">Path for blob (binary object) storage.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/config.rs" target="_blank" rel="noopener">BlobStoreConfig</a></div>
 
 <div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
 <div class="config-field">
   <div class="cf-key">path</div>
-  <div class="cf-type">PathBuf</div>
+  <div class="cf-type">String (path)</div>
   <div class="cf-default">"blobs"</div>
-  <div class="cf-desc">Relative or absolute path to the blob storage directory.</div>
+  <div class="cf-desc">Relative path (from <span class="code">--home</span>) for blob storage.</div>
 </div>
 
 <div class="toml-example"><span class="ts">[blobstore]</span>
@@ -442,156 +470,5 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 <details class="config-section">
 <summary><span class="code" style="color:var(--green)">[context]</span> &mdash; Context Client</summary>
 <div class="detail-body">
-<p style="margin-bottom:12px;">Configuration for the context management subsystem.</p>
-<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/context/src/config.rs" target="_blank" rel="noopener">ContextConfig</a></div>
-
-<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
-<div class="config-field">
-  <div class="cf-key">client</div>
-  <div class="cf-type">ContextClientConfig</div>
-  <div class="cf-default">(default)</div>
-  <div class="cf-desc">Context client connection and retry settings.</div>
-</div>
-
-<div class="toml-example"><span class="ts">[context]</span>
-<span class="tc"># Uses defaults — typically no manual configuration needed</span></div>
-</div>
-</details>
-
-<!-- ── [tee] ── -->
-<details class="config-section">
-<summary><span class="code" style="color:var(--green)">[tee]</span> &mdash; TEE / KMS</summary>
-<div class="detail-body">
-<p style="margin-bottom:12px;">Optional Trusted Execution Environment and Key Management Service configuration. Only relevant for nodes running in secure enclaves.</p>
-<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/config.rs" target="_blank" rel="noopener">TeeConfig</a></div>
-
-<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
-<div class="config-field">
-  <div class="cf-key">enabled</div>
-  <div class="cf-type">bool</div>
-  <div class="cf-default">false</div>
-  <div class="cf-desc">Enable TEE attestation and sealed storage.</div>
-</div>
-<div class="config-field">
-  <div class="cf-key">kms_url</div>
-  <div class="cf-type">Option&lt;String&gt;</div>
-  <div class="cf-default">None</div>
-  <div class="cf-desc">URL of the Key Management Service for key provisioning.</div>
-</div>
-
-<div class="toml-example"><span class="ts">[tee]</span>
-<span class="tk">enabled</span> = <span class="tv">false</span>
-<span class="tc"># kms_url = "https://kms.example.com"</span></div>
-</div>
-</details>
-
-<!-- ── [specialized_node] ── -->
-<details class="config-section">
-<summary><span class="code" style="color:var(--green)">[specialized_node]</span> &mdash; Specialized Node</summary>
-<div class="detail-body">
-<p style="margin-bottom:12px;">Settings for specialized node roles (e.g., TEE nodes that handle key shares).</p>
-<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/node/src/config.rs" target="_blank" rel="noopener">SpecializedNodeConfig</a></div>
-
-<div class="config-header"><span>Field</span><span>Type</span><span>Default</span><span>Description</span></div>
-<div class="config-field">
-  <div class="cf-key">invite_topic</div>
-  <div class="cf-type">String</div>
-  <div class="cf-default">"mero_specialized_node_invites"</div>
-  <div class="cf-desc">Gossipsub topic for receiving specialized node invitations.</div>
-</div>
-<div class="config-field">
-  <div class="cf-key">accept_mock_tee</div>
-  <div class="cf-type">bool</div>
-  <div class="cf-default">false</div>
-  <div class="cf-desc">Accept mock TEE attestations (for development/testing only).</div>
-</div>
-
-<div class="toml-example"><span class="ts">[specialized_node]</span>
-<span class="tk">invite_topic</span> = <span class="tv">"mero_specialized_node_invites"</span>
-<span class="tk">accept_mock_tee</span> = <span class="tv">false</span></div>
-</div>
-</details>
-
-<!-- ═══════════════════════════════════════════════════════════════════
-     Full example
-     ═══════════════════════════════════════════════════════════════════ -->
-<div class="card gc" style="margin-top:36px;">
-<h2>Complete Example</h2>
-<p style="margin-bottom:14px;">A typical production <span class="code">config.toml</span> with commonly customized fields:</p>
-<div class="toml-example"><span class="ts">[identity]</span>
-<span class="tk">mode</span> = <span class="tv">"Standard"</span>
-
-<span class="ts">[swarm]</span>
-<span class="tk">listen</span> = [
-  <span class="tv">"/ip4/0.0.0.0/tcp/2428"</span>,
-  <span class="tv">"/ip4/0.0.0.0/udp/2428/quic-v1"</span>
-]
-
-<span class="ts">[bootstrap]</span>
-<span class="tk">nodes</span> = []
-
-<span class="ts">[discovery]</span>
-<span class="tk">mdns</span> = <span class="tv">true</span>
-<span class="tk">advertise_address</span> = <span class="tv">false</span>
-
-<span class="ts">[discovery.rendezvous]</span>
-<span class="tk">namespace</span> = <span class="tv">"/calimero/devnet/global"</span>
-<span class="tk">registrations_limit</span> = <span class="tv">3</span>
-
-<span class="ts">[discovery.relay]</span>
-<span class="tk">registrations_limit</span> = <span class="tv">3</span>
-
-<span class="ts">[discovery.autonat]</span>
-<span class="tk">probe_interval</span> = <span class="tv">"10s"</span>
-<span class="tk">max_candidates</span> = <span class="tv">5</span>
-
-<span class="ts">[server]</span>
-<span class="tk">listen</span> = [<span class="tv">"/ip4/127.0.0.1/tcp/2528"</span>]
-<span class="tk">auth_mode</span> = <span class="tv">"Proxy"</span>
-
-<span class="ts">[sync]</span>
-<span class="tk">timeout_ms</span> = <span class="tv">30000</span>
-<span class="tk">interval_ms</span> = <span class="tv">5000</span>
-<span class="tk">frequency_ms</span> = <span class="tv">10000</span>
-
-<span class="ts">[datastore]</span>
-<span class="tk">path</span> = <span class="tv">"data"</span>
-
-<span class="ts">[blobstore]</span>
-<span class="tk">path</span> = <span class="tv">"blobs"</span>
-
-<span class="ts">[specialized_node]</span>
-<span class="tk">invite_topic</span> = <span class="tv">"mero_specialized_node_invites"</span>
-<span class="tk">accept_mock_tee</span> = <span class="tv">false</span></div>
-</div>
-
-<h2 id="governance-migration">Governance Migration</h2>
-<p>Guide for migrating between group governance modes.</p>
-
-<div class="card ga">
-<h3>Default Configuration</h3>
-<div class="typedef">
-merod init --group-governance local
-</div>
-<p>Local governance is the default (and only) governance mode. Group operations are signed locally and propagated via gossip.</p>
-</div>
-
-<div class="card gb">
-<h3>Backup</h3>
-<p>Back up the node data directory (RocksDB store path in <span class="code">config.toml</span>) regularly. The <span class="code">group_store</span> contains all governance state and can be rebuilt from the persistent op log, but a backup provides faster recovery.</p>
-</div>
-
-</div>
-</div>
-
-<script src="nav.js"></script>
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-  arch.buildBreadcrumb([
-    { label: 'Home', href: 'index.html' },
-    { label: 'Config Reference' }
-  ]);
-});
-</script>
-</body>
-</html>
+<p style="margin-bottom:12px;">Configuration for the client that talks to root node context servers.</p>
+<div class="section-source">Rust type: <a href="https://github.com/calimero-network/core/blob/master/crates/context-client/src/config.rs"
