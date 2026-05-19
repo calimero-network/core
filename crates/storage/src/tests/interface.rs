@@ -905,7 +905,21 @@ mod user_storage_replay_protection {
     };
 
     #[test]
-    fn replay_with_same_nonce_fails() {
+    fn replay_same_signed_action_is_idempotent() {
+        // Semantic relaxed in the commit addressing
+        // HashComparison's recurse-into-common-children re-delivery:
+        // same nonce + valid signature = byte-identical action (the
+        // signature commits to `(id, data, nonce, storage_type)`,
+        // so equal nonce + valid signature ⇒ equal payload).
+        // Re-applying the SAME signed action is idempotent (a
+        // bytewise no-op at `save_internal`), not a replay attack.
+        // The pre-fix strict `<=` rejected this and blocked
+        // post-divergence sync convergence.
+        //
+        // Strict rejection semantics remain for STRICTLY-LOWER
+        // nonces (see `replay_with_lower_nonce_fails` below) and
+        // for `DeleteRef` (where same-nonce delete is destructive
+        // and shouldn't occur in legitimate flows).
         env::reset_for_testing();
 
         let (signing_key, owner) = create_test_keypair();
@@ -917,34 +931,21 @@ mod user_storage_replay_protection {
 
         let nonce = env::time_now();
 
-        // First action succeeds
-        let action1 = create_signed_user_add_action(
-            &signing_key,
-            owner,
-            page.id(),
-            serialized.clone(),
-            nonce,
-        );
-        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+        let action =
+            create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce);
+
+        // First apply succeeds.
+        assert!(MainInterface::apply_action(action.clone(), &ApplyContext::empty()).is_ok());
 
         sleep(Duration::from_millis(2));
 
-        // Second action with SAME nonce should fail (replay attack)
-        let action2 = create_signed_user_update_action(
-            &signing_key,
-            owner,
-            page.id(),
-            serialized,
-            nonce, // Same nonce!
-            page.element().created_at(),
+        // Re-applying the exact same signed action must be
+        // idempotent — not a NonceReplay rejection.
+        let result = MainInterface::apply_action(action, &ApplyContext::empty());
+        assert!(
+            result.is_ok(),
+            "re-applying same signed action must be idempotent, got {result:?}"
         );
-
-        let result = MainInterface::apply_action(action2, &ApplyContext::empty());
-        assert!(result.is_err());
-        match result {
-            Err(StorageError::NonceReplay(_)) => {}
-            other => panic!("Expected NonceReplay error, got {:?}", other),
-        }
     }
 
     #[test]

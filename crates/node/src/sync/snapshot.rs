@@ -1085,6 +1085,17 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
 
     // Serialize bundles into pages atomically. Cursor records the
     // last entity id whose bundle was fully committed to a page.
+    //
+    // **Invariant**: `last_id` is `Some` whenever the early-return
+    // path inside the loop fires. The early-return is gated on
+    // `pages.len() >= page_limit`, which only increases after a
+    // `pages.push(current_page)`; that push requires
+    // `current_page` to be non-empty, which only happens after a
+    // prior bundle's `current_page.extend(bundle_bytes)` — and
+    // that extend sets `last_id = Some(bundle_id)`. So the cursor
+    // emitted on early-return always references a real, fully-
+    // committed entity id; we never accidentally signal completion
+    // (cursor = None) when more bundles remain.
     let mut pages: Vec<Vec<u8>> = Vec::new();
     let mut current_page: Vec<u8> = Vec::new();
     let mut last_id: Option<[u8; 32]> = None;

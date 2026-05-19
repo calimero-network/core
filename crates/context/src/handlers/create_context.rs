@@ -377,6 +377,24 @@ async fn create_context(
         // below so peers receive verifiable state, and the local
         // index entries are patched so subsequent HashComparison /
         // Snapshot responses ship verifiable state too.
+        // Partial-commit caveat: `storage.commit()` above already
+        // wrote the bootstrap entities to RocksDB (with placeholder
+        // signatures from `save_raw`). If signing or
+        // signature-persist fails below and we `bail!` out, those
+        // entities remain in the store as orphans — no
+        // `ContextConfig` / `ContextMeta` keys point to them, and
+        // no init delta references them, but the data is on disk.
+        // The user can retry context creation with the same group;
+        // a new context_id is generated each time, so the orphans
+        // don't conflict with the retry.
+        //
+        // Bailing is the right call here even with that cost: if
+        // we silently continued, the broadcast `CausalDelta` would
+        // carry placeholder-signed actions, peers would reject
+        // them, and the context would exist but be unusable. A
+        // proper fix (transactional commit or post-failure
+        // cleanup pass that walks `ContextStateKey` for this
+        // context_id and deletes orphan entries) is a follow-up.
         if !actions.is_empty() {
             if let Err(e) = sign_authorized_actions(&mut actions, &identity_secret) {
                 error!(?e, %context.id, "Failed to sign init actions");

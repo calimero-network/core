@@ -599,13 +599,35 @@ impl<S: StorageAdaptor> Interface<S> {
 
                         let payload = action.payload_for_signing();
 
-                        // Replay protection check
+                        // Replay protection check.
+                        //
+                        // * `new_nonce < last_nonce` — stale action,
+                        //   reject as `NonceReplay`.
+                        // * `new_nonce == last_nonce` — byte-identical
+                        //   re-apply. The signature commits to
+                        //   `(id, data, nonce, storage_type)`, so
+                        //   equal nonce + valid signature ⇒ equal
+                        //   payload. We verify the signature (to
+                        //   confirm the action is genuine, not just
+                        //   reusing a stored nonce) and then short-
+                        //   circuit with `Ok(())` — skipping
+                        //   `save_internal` avoids hitting the
+                        //   "equal updated_at" branch which would
+                        //   call into CRDT merge and fail for
+                        //   non-CRDT entities. This is critical for
+                        //   the HashComparison
+                        //   "recurse-into-common-children" path
+                        //   that can re-deliver leaves which already
+                        //   match locally (when the parent's
+                        //   `full_hash` differs e.g. via
+                        //   post-divergence CRDT merge).
+                        // * `new_nonce > last_nonce` — normal apply.
                         let new_nonce = sig_data.nonce;
                         let last_nonce = <Index<S>>::get_metadata(*id)?
                             .map(|m| *m.updated_at)
                             .unwrap_or(0);
 
-                        if new_nonce <= last_nonce {
+                        if new_nonce < last_nonce {
                             return Err(StorageError::NonceReplay(Box::new((*owner, new_nonce))));
                         }
 
@@ -617,6 +639,17 @@ impl<S: StorageAdaptor> Interface<S> {
 
                         if !verification_result {
                             return Err(StorageError::InvalidSignature);
+                        }
+
+                        if new_nonce == last_nonce {
+                            // Idempotent re-apply — no-op.
+                            debug!(
+                                %id,
+                                nonce = new_nonce,
+                                "User upsert: idempotent re-apply (same nonce, signature \
+                                 verified) — skipping save_internal"
+                            );
+                            return Ok(());
                         }
                     }
                     StorageType::Frozen => {
@@ -688,7 +721,16 @@ impl<S: StorageAdaptor> Interface<S> {
                         let last_nonce =
                             stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
                         let skip_nonce = nonce_check_disabled_for_testing();
-                        if !skip_nonce && new_nonce <= last_nonce {
+                        // Strict-less-than: equal nonce + valid
+                        // signature is byte-identical re-apply (see
+                        // the User arm above for the full
+                        // rationale). HashComparison can deliver
+                        // common-children leaves redundantly when
+                        // parent hashes diverge — accepting
+                        // idempotent re-apply prevents a hard
+                        // NonceReplay rejection from blocking
+                        // post-divergence convergence.
+                        if !skip_nonce && new_nonce < last_nonce {
                             // Use the first authoritative writer as a placeholder identity
                             // for the error since the signer hasn't been identified yet.
                             let placeholder = authoritative_writers
@@ -730,6 +772,24 @@ impl<S: StorageAdaptor> Interface<S> {
                         };
                         if !verified {
                             return Err(StorageError::InvalidSignature);
+                        }
+
+                        if !skip_nonce && new_nonce == last_nonce {
+                            // Idempotent re-apply (same nonce + valid
+                            // signature ⇒ same payload). Skip the
+                            // save_internal path which would hit the
+                            // equal-updated_at CRDT-merge branch
+                            // (would fail for non-CRDT Shared
+                            // entities). Mirrors the User upsert
+                            // arm above; see that comment for the
+                            // full HashComparison-induced rationale.
+                            debug!(
+                                %id,
+                                nonce = new_nonce,
+                                "Shared upsert: idempotent re-apply (same nonce, signature \
+                                 verified) — skipping save_internal"
+                            );
+                            return Ok(());
                         }
 
                         // P3 of #2233: rotation-log write hook.
