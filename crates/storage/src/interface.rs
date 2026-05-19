@@ -721,10 +721,26 @@ impl<S: StorageAdaptor> Interface<S> {
                         // Gated by the same `nonce_check_disabled_for_testing`
                         // bypass as the Shared arm so DAG-causal P5 tests
                         // exercising out-of-order delivery see consistent
-                        // behaviour across User/Shared entities.
+                        // behaviour across User/Shared entities. When the
+                        // bypass is active (`skip_nonce = true`), the stale
+                        // action falls through to `save_internal`, which
+                        // has its own LWW-by-HLC guard
+                        // (`last_metadata.updated_at > metadata.updated_at`
+                        // ⇒ returns `Ok(None)`, no write). Storage state
+                        // is never downgraded regardless of which path
+                        // executes.
+                        //
+                        // Logged at WARN, not DEBUG: silent-skip on a
+                        // signature-verified-but-stale action is an
+                        // audit-relevant event (could be a captured-
+                        // signature replay attempt, or just a benign
+                        // sync redelivery). Surface enough information
+                        // for downstream monitoring to distinguish the
+                        // two.
                         if !skip_nonce && new_nonce <= last_nonce {
-                            debug!(
+                            tracing::warn!(
                                 %id,
+                                %owner,
                                 new_nonce,
                                 last_nonce,
                                 "User upsert: stale-or-equal nonce, signature verified \
@@ -853,7 +869,10 @@ impl<S: StorageAdaptor> Interface<S> {
                             // a HashComparison or DAG-catchup delivers
                             // a stale-but-authentic leaf whose newer
                             // twin already landed via gossipsub.
-                            debug!(
+                            //
+                            // Logged at WARN — same audit rationale
+                            // as the User arm.
+                            tracing::warn!(
                                 %id,
                                 new_nonce,
                                 last_nonce,
@@ -865,14 +884,20 @@ impl<S: StorageAdaptor> Interface<S> {
 
                         // P3 of #2233: rotation-log write hook.
                         //
-                        // Fires here — right after signature verification, BEFORE
-                        // the apply branch — so the log captures every
-                        // signature-verified Shared rotation regardless of
-                        // whether `save_internal` later chooses to skip the
-                        // write under v2's LWW-by-HLC. Cross-node convergence
-                        // (P5) depends on this: the rotation log must reflect
-                        // *received causal facts*, not the local node's
-                        // storage-merge decisions.
+                        // Fires here — right after signature verification AND
+                        // after the stale-nonce silent-skip guard above — so
+                        // the log captures every fresh signature-verified
+                        // Shared rotation that will reach the apply branch.
+                        // Stale-but-authentic actions short-circuit before
+                        // this point (silent-skip Ok), so they do NOT append
+                        // a rotation entry — that's the right call: the log
+                        // tracks rotations that influence storage state, and
+                        // a stale rotation is a no-op (its newer counterpart
+                        // already landed and was logged on its own apply).
+                        //
+                        // Cross-node convergence (P5) still works because
+                        // peers see the same set of *causally-newer*
+                        // rotations, just possibly in different orders.
                         //
                         // Idempotent: `rotation_log::append` dedups on
                         // `delta_id`, so a replayed delta produces no extra
