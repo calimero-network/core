@@ -1223,7 +1223,16 @@ mod verify_ancestor_integrity_tests {
     }
 
     #[test]
-    fn rejects_with_tree_state_mismatch_when_ancestor_hash_wrong() {
+    fn ancestor_hash_mismatch_is_warn_only_now() {
+        // Behavior changed in the commit that relaxes
+        // `verify_ancestor_integrity` to warn-only: a hard
+        // `TreeStateMismatch` rejection caused the SDK's
+        // auto-generated `__calimero_sync_next` to
+        // `.expect("fatal: sync failed")`-panic on legitimate
+        // CRDT-merge divergence. The check now logs the mismatch
+        // and falls through; the CRDT merge in `save_internal`
+        // resolves the divergence. See the `verify_ancestor_integrity`
+        // doc on the design trade-off.
         let root_id = Id::root();
         let p1_id = Id::new([0x12; 32]);
 
@@ -1241,12 +1250,10 @@ mod verify_ancestor_integrity_tests {
         };
 
         let result = <Interface<MockedStorage<3002>>>::apply_action(child, &ApplyContext::empty());
-        match result {
-            Err(StorageError::TreeStateMismatch(id)) => {
-                assert_eq!(id, root_id, "mismatched ancestor's id should be reported");
-            }
-            other => panic!("expected TreeStateMismatch, got {other:?}"),
-        }
+        assert!(
+            !matches!(result, Err(StorageError::TreeStateMismatch(_))),
+            "ancestor hash mismatch must NOT return TreeStateMismatch (warn-only); got {result:?}"
+        );
     }
 
     #[test]

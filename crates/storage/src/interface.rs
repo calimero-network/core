@@ -503,6 +503,21 @@ impl<S: StorageAdaptor> Interface<S> {
     /// repair). The delta-replay path carries the signer's ancestor list
     /// in the envelope; that's where this check actually fires.
     ///
+    /// **Warn-only on mismatch.** The delta-replay path runs inside the
+    /// SDK's auto-generated `__calimero_sync_next` (see
+    /// `crates/sdk/macros/src/logic/method.rs::method` — line 189), which
+    /// `.expect("fatal: sync failed")`s any `Err` from `Root::sync`. A
+    /// hard `TreeStateMismatch` rejection there turns into a WASM
+    /// "unreachable" trap that aborts the entire merge — wiping out the
+    /// receiver's ability to converge any in-flight delta from a peer
+    /// whose tree has legitimately drifted (which is precisely when CRDT
+    /// merge is supposed to be doing its job). Until the SDK macro
+    /// surfaces sync errors instead of panicking — or we thread a
+    /// "this is a merge" flag through `ApplyContext` so the check can
+    /// fire only on truly-sequential deltas — log the mismatch and
+    /// accept. The CRDT merge logic at `save_internal` resolves the
+    /// divergence regardless of ancestor-hash agreement.
+    ///
     /// Single responsibility: tree-shape integrity only. Does not touch
     /// signature verification, nonce checking, or mutation. Composable.
     fn verify_ancestor_integrity(ancestors: &[ChildInfo]) -> Result<(), StorageError> {
@@ -525,7 +540,12 @@ impl<S: StorageAdaptor> Interface<S> {
                 continue;
             };
             if local_hash != ancestor.merkle_hash() {
-                return Err(StorageError::TreeStateMismatch(ancestor.id()));
+                tracing::debug!(
+                    ancestor_id = %ancestor.id(),
+                    "ancestor merkle hash mismatch — receiver state diverged from signer's \
+                     view (accepting; CRDT merge resolves divergence). See \
+                     `verify_ancestor_integrity` doc."
+                );
             }
         }
         Ok(())
