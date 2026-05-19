@@ -687,10 +687,12 @@ impl<S: StorageAdaptor> Interface<S> {
                             .map(|m| *m.updated_at)
                             .unwrap_or(0);
 
-                        if new_nonce < last_nonce {
-                            return Err(StorageError::NonceReplay(Box::new((*owner, new_nonce))));
-                        }
-
+                        // Verify signature FIRST, before deciding whether
+                        // to skip. We need to know the action is
+                        // authentic before we drop it as stale — an
+                        // unauthenticated stale action should still
+                        // reject as `InvalidSignature`, not silently
+                        // disappear.
                         let verification_result = crate::env::ed25519_verify(
                             &sig_data.signature,
                             owner.digest(),
@@ -701,13 +703,26 @@ impl<S: StorageAdaptor> Interface<S> {
                             return Err(StorageError::InvalidSignature);
                         }
 
-                        if new_nonce == last_nonce {
-                            // Idempotent re-apply — no-op.
+                        // Stale-or-equal: signature verified, but our
+                        // local state is already at or ahead of this
+                        // nonce. Drop silently — the action is
+                        // authentic, just older than what we already
+                        // have, which is the normal post-divergence
+                        // sync case (HashComparison can re-deliver
+                        // leaves whose newer twin already landed via
+                        // gossipsub; DAG-causal catchup can hand us an
+                        // older delta after a newer one). Treating
+                        // this as a hard `NonceReplay` Err propagates
+                        // through `Root::sync().expect("fatal: sync
+                        // failed")` and aborts the whole sync batch,
+                        // blocking convergence.
+                        if new_nonce <= last_nonce {
                             debug!(
                                 %id,
-                                nonce = new_nonce,
-                                "User upsert: idempotent re-apply (same nonce, signature \
-                                 verified) — skipping save_internal"
+                                new_nonce,
+                                last_nonce,
+                                "User upsert: stale-or-equal nonce, signature verified \
+                                 — skipping save_internal (authentic but no-op)"
                             );
                             return Ok(());
                         }
@@ -781,38 +796,25 @@ impl<S: StorageAdaptor> Interface<S> {
                         let last_nonce =
                             stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
                         let skip_nonce = nonce_check_disabled_for_testing();
-                        // Strict-less-than: equal nonce + valid
-                        // signature is byte-identical re-apply (see
-                        // the User arm above for the full
-                        // rationale). HashComparison can deliver
-                        // common-children leaves redundantly when
-                        // parent hashes diverge — accepting
-                        // idempotent re-apply prevents a hard
-                        // NonceReplay rejection from blocking
-                        // post-divergence convergence.
-                        if !skip_nonce && new_nonce < last_nonce {
-                            // Use the first authoritative writer as a placeholder identity
-                            // for the error since the signer hasn't been identified yet.
-                            let placeholder = authoritative_writers
-                                .iter()
-                                .copied()
-                                .next()
-                                .unwrap_or_else(|| [0u8; 32].into());
-                            return Err(StorageError::NonceReplay(Box::new((
-                                placeholder,
-                                new_nonce,
-                            ))));
-                        }
 
-                        // Identify the signer.
-                        // Fast path: if the action carries a `signer` hint and that
-                        // signer is in the authoritative set, do exactly one verify.
-                        // Slow path (no hint): linear scan over authoritative writers.
+                        // Verify signature first — see the User arm
+                        // above for the full "verify-before-skip"
+                        // rationale: an authentic stale action is a
+                        // no-op; an unauthenticated stale action must
+                        // still reject as InvalidSignature.
                         //
-                        // Per the #2233 epic compatibility rule, the signer hint is
-                        // validated against the *causal* writer set above, not stored —
-                        // that's already how it works here since `authoritative_writers`
-                        // is now the DAG-causal answer when available.
+                        // Identify the signer. Fast path: if the
+                        // action carries a `signer` hint and that
+                        // signer is in the authoritative set, do
+                        // exactly one verify. Slow path (no hint):
+                        // linear scan over authoritative writers.
+                        //
+                        // Per the #2233 epic compatibility rule, the
+                        // signer hint is validated against the
+                        // *causal* writer set above, not stored —
+                        // that's already how it works here since
+                        // `authoritative_writers` is now the
+                        // DAG-causal answer when available.
                         let payload = action.payload_for_signing();
                         let verified = match sig_data.signer {
                             Some(hint) if authoritative_writers.contains(&hint) => {
@@ -834,20 +836,23 @@ impl<S: StorageAdaptor> Interface<S> {
                             return Err(StorageError::InvalidSignature);
                         }
 
-                        if !skip_nonce && new_nonce == last_nonce {
-                            // Idempotent re-apply (same nonce + valid
-                            // signature ⇒ same payload). Skip the
-                            // save_internal path which would hit the
-                            // equal-updated_at CRDT-merge branch
-                            // (would fail for non-CRDT Shared
-                            // entities). Mirrors the User upsert
-                            // arm above; see that comment for the
-                            // full HashComparison-induced rationale.
+                        if !skip_nonce && new_nonce <= last_nonce {
+                            // Stale-or-equal: signature verified, but
+                            // our local state is already at or ahead
+                            // of this nonce. Drop silently. See the
+                            // User arm above for full rationale —
+                            // hard NonceReplay propagates through
+                            // `Root::sync().expect()` and aborts the
+                            // sync batch, blocking convergence after
+                            // a HashComparison or DAG-catchup delivers
+                            // a stale-but-authentic leaf whose newer
+                            // twin already landed via gossipsub.
                             debug!(
                                 %id,
-                                nonce = new_nonce,
-                                "Shared upsert: idempotent re-apply (same nonce, signature \
-                                 verified) — skipping save_internal"
+                                new_nonce,
+                                last_nonce,
+                                "Shared upsert: stale-or-equal nonce, signature verified \
+                                 — skipping save_internal (authentic but no-op)"
                             );
                             return Ok(());
                         }

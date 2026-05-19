@@ -998,7 +998,29 @@ mod user_storage_replay_protection {
     }
 
     #[test]
-    fn replay_with_lower_nonce_fails() {
+    fn replay_with_lower_nonce_is_silent_noop_for_upsert() {
+        // Upsert (Add/Update) used to reject lower-nonce actions as
+        // `NonceReplay`. That rejection bubbles through
+        // `Root::sync().expect("fatal: sync failed")` in the SDK
+        // macro and aborts the entire WASM sync batch, which blocks
+        // post-divergence convergence: a HashComparison or DAG
+        // catchup that re-delivers a now-stale-but-authentic leaf
+        // (the newer twin already arrived via gossipsub) would kill
+        // the whole sync.
+        //
+        // The new contract: verify the signature first (an
+        // unauthenticated stale action still rejects as
+        // `InvalidSignature`), then on `new_nonce <= last_nonce`
+        // silently skip with Ok(()). The state isn't downgraded —
+        // we just no-op on the stale action, leaving the newer
+        // local state intact. The owner-signature-replay test
+        // below (`replay_signature_with_different_data_rejected`)
+        // covers the security property: forged data can't slip
+        // through because the signature commits to `(id, data,
+        // nonce)` and verify still runs.
+        //
+        // The DeleteRef path keeps the strict `Err(NonceReplay)` on
+        // `<=` — see `tombstone_replay_with_lower_nonce_fails`.
         env::reset_for_testing();
 
         let (signing_key, owner) = create_test_keypair();
@@ -1021,23 +1043,21 @@ mod user_storage_replay_protection {
 
         sleep(Duration::from_millis(2));
 
-        // Action with LOWER nonce should fail
         let nonce2 = nonce1 - 1000;
         let action2 = create_signed_user_update_action(
             &signing_key,
             owner,
             page.id(),
             serialized,
-            nonce2, // Lower nonce!
+            nonce2, // Lower nonce
             page.element().created_at(),
         );
 
         let result = MainInterface::apply_action(action2, &ApplyContext::empty());
-        assert!(result.is_err());
-        match result {
-            Err(StorageError::NonceReplay(_)) => {}
-            other => panic!("Expected NonceReplay error, got {:?}", other),
-        }
+        assert!(
+            result.is_ok(),
+            "stale-but-signed upsert must be silently skipped, got {result:?}"
+        );
     }
 
     #[test]
@@ -1109,8 +1129,13 @@ mod user_storage_replay_protection {
 
         sleep(Duration::from_millis(10));
 
-        // Try action with nonce OLDER than stored updated_at - should fail
-        // The replay protection compares nonce against stored updated_at
+        // Try action with nonce OLDER than stored updated_at — upsert
+        // now silently skips (returns Ok(())) rather than rejecting
+        // with `NonceReplay`. See the rationale on
+        // `replay_with_lower_nonce_is_silent_noop_for_upsert` above
+        // and the apply_action User arm comment. State must NOT be
+        // downgraded — the stale action is dropped without
+        // overwriting the newer stored value.
         let old_nonce = first_nonce - 1_000_000_000; // 1 second before first action
         let action_old = create_signed_user_update_action(
             &signing_key,
@@ -1122,11 +1147,28 @@ mod user_storage_replay_protection {
         );
 
         let result = MainInterface::apply_action(action_old, &ApplyContext::empty());
-        assert!(result.is_err());
-        match result {
-            Err(StorageError::NonceReplay(_)) => {}
-            other => panic!("Expected NonceReplay error, got {:?}", other),
-        }
+        assert!(
+            result.is_ok(),
+            "stale-but-signed upsert must be silently skipped, got {result:?}"
+        );
+
+        // Confirm the stored state was NOT downgraded by the stale
+        // upsert. Stored nonce should still be at or above the
+        // first action's nonce, not the stale `old_nonce`.
+        let stored_nonce = <Index<MainStorage>>::get_metadata(page.id())
+            .unwrap()
+            .map(|m| *m.updated_at)
+            .unwrap_or(0);
+        assert!(
+            stored_nonce >= first_nonce,
+            "stale upsert must not downgrade stored nonce; stored={stored_nonce} \
+             first={first_nonce} stale_attempt={old_nonce}"
+        );
+        assert!(
+            stored_nonce > old_nonce,
+            "stale upsert must not downgrade stored nonce; stored={stored_nonce} \
+             stale_attempt={old_nonce}"
+        );
     }
 }
 
