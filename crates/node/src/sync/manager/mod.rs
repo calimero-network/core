@@ -4311,8 +4311,7 @@ impl SyncManager {
         // peer instead of waiting for connection death (~4s observed on
         // CI). Use the uninitialized retry window (10 × 1 s) to stay
         // reliable in slower environments (CI, Docker, mDNS cold-start).
-        let open_timeout =
-            std::time::Duration::from_millis(super::config::DEFAULT_OPEN_STREAM_TIMEOUT_MS);
+        let open_timeout = self.sync_config.open_stream_timeout;
         let mut stream = None;
         'connect: for attempt in 1..=super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
             let peers = self.network_client.mesh_peers(topic.clone()).await;

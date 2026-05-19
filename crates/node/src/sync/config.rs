@@ -165,6 +165,13 @@ pub struct SyncConfig {
     /// Wall-clock budget for the cross-peer missing-parent fetch loop.
     /// See [`DEFAULT_PARENT_PULL_BUDGET_MS`].
     pub parent_pull_budget: time::Duration,
+
+    /// Per-attempt timeout for opening a stream to a mesh peer during
+    /// namespace-join discovery. See [`DEFAULT_OPEN_STREAM_TIMEOUT_MS`]
+    /// for the rationale (stale-connection idle-die backoff). Deployment-
+    /// sensitive: shorter for low-latency LANs with aggressive QUIC idle
+    /// timeouts, longer for high-latency WAN.
+    pub open_stream_timeout: time::Duration,
 }
 
 impl Default for SyncConfig {
@@ -180,6 +187,7 @@ impl Default for SyncConfig {
             peer_state_probe_concurrency: DEFAULT_PEER_STATE_PROBE_CONCURRENCY,
             parent_pull_additional_peers: DEFAULT_PARENT_PULL_ADDITIONAL_PEERS,
             parent_pull_budget: time::Duration::from_millis(DEFAULT_PARENT_PULL_BUDGET_MS),
+            open_stream_timeout: time::Duration::from_millis(DEFAULT_OPEN_STREAM_TIMEOUT_MS),
         }
     }
 }
