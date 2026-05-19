@@ -450,7 +450,18 @@ impl SyncManager {
         };
         debug!(%context_id, existing_count = existing_keys.len(), "Collected existing state keys");
 
-        // Track keys received from the snapshot (to know what to keep)
+        // Track keys received from the snapshot (to know what to keep).
+        // Includes Entry + Index keys for every `SnapshotRecord::Entity`
+        // we accept after signature verification. We *also* insert the
+        // entity's `RotationLog` state_key here even though snapshot
+        // doesn't ship rotation logs (intentional, per the #2387
+        // security trade-off — see the receiver's Auxiliary reject
+        // path). Without that, any rotation history the receiver
+        // built up from verified delta replay would be wiped by
+        // `cleanup_stale_keys` at the end of the snapshot, since the
+        // RotationLog state_key sits in `existing_keys` but never in
+        // `received_keys`. Preserving it lets `writers_at(causal_point)`
+        // lookups keep working on post-snapshot delta applies.
         let mut received_keys: HashSet<[u8; 32]> = HashSet::new();
         let mut total_applied = 0;
         let mut resume_cursor: Option<Vec<u8>> = None;
@@ -509,6 +520,28 @@ impl SyncManager {
                         let mut handle = self.context_client.datastore_handle();
                         let mut applied = 0usize;
                         let mut rejected = 0usize;
+                        // Note: each `SnapshotRecord::Entity` is
+                        // written here via raw `handle.put` after
+                        // `verify_snapshot_entity_signature` passes —
+                        // we deliberately do NOT route through
+                        // `Interface::apply_action` (and therefore
+                        // skip nonce-replay protection / CRDT merge
+                        // on the snapshot apply path). Safety
+                        // invariant: `request_snapshot_sync` rejects
+                        // snapshots when the local context is
+                        // already initialized (Invariant I5 — see
+                        // the `check_snapshot_safety` gate at the
+                        // top of `request_snapshot_sync`). The only
+                        // bypass is `force = true` which is reserved
+                        // for crash recovery, where the marker file
+                        // confirms we were already mid-snapshot and
+                        // the local state is known-incomplete.
+                        // Under either gate, the receiver doesn't
+                        // hold "newer state" that an older-nonce
+                        // snapshot could clobber. If that invariant
+                        // ever loosens, this path needs the nonce
+                        // / CRDT-merge logic that
+                        // `apply_leaf_with_crdt_merge` provides.
                         for record in &records {
                             match record {
                                 SnapshotRecord::Entity { id, entry, index } => {
@@ -575,6 +608,15 @@ impl SyncManager {
                                         .put(&index_key, &ContextStateValue::from(index_slice))?;
                                     let _ = received_keys.insert(entry_state_key);
                                     let _ = received_keys.insert(index_state_key);
+                                    // Preserve any local RotationLog
+                                    // history for this entity from
+                                    // the upcoming `cleanup_stale_keys`
+                                    // pass — snapshot doesn't ship
+                                    // rotation logs but the receiver
+                                    // may have built one up via
+                                    // verified delta replay.
+                                    let _ = received_keys
+                                        .insert(StorageKey::RotationLog(id_obj).to_bytes());
                                     applied += 1;
                                 }
                                 SnapshotRecord::Auxiliary { kind, id, .. } => {
@@ -1019,7 +1061,27 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         );
     }
 
-    let total_entries: u64 = bundles.iter().map(|(_, b)| b.len() as u64).sum();
+    // Count of records that would be emitted in a fresh (no-cursor)
+    // run — counts every entity's bundle, regardless of whether
+    // we're cursor-skipping it on this call. Stable across paginated
+    // calls so operators can monitor snapshot progress reliably
+    // (this value flows into the "Streaming snapshot" info log; the
+    // bot review pointed out that the old per-page-bundles count
+    // shrank with each paginated call, making the log misleading).
+    let total_entries: u64 = {
+        let mut count: u64 = 0;
+        for id in &entity_ids {
+            let index_key = StorageKey::Index(*id).to_bytes();
+            let entry_key = StorageKey::Entry(*id).to_bytes();
+            // An entity contributes 1 record (Entity bundling Entry +
+            // Index) — RotationLog Auxiliary isn't shipped per the
+            // #2387 security trade-off, so it doesn't contribute.
+            if all_records.contains_key(&index_key) && all_records.contains_key(&entry_key) {
+                count += 1;
+            }
+        }
+        count
+    };
 
     // Serialize bundles into pages atomically. Cursor records the
     // last entity id whose bundle was fully committed to a page.

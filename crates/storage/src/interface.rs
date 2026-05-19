@@ -507,6 +507,16 @@ impl<S: StorageAdaptor> Interface<S> {
     /// signature verification, nonce checking, or mutation. Composable.
     fn verify_ancestor_integrity(ancestors: &[ChildInfo]) -> Result<(), StorageError> {
         for ancestor in ancestors {
+            // `get_hashes_for` returns `(full_hash, own_hash)`. We
+            // bind the first element (`full_hash`) and compare it
+            // against `ancestor.merkle_hash()` — which despite the
+            // name returns the FULL subtree hash (entity + all
+            // descendants), not the data-only `own_hash`. Both sides
+            // are the "subtree merkle root for this entity", so the
+            // comparison is correct. If a future addition needs to
+            // compare data-only hashes, use `own_hash` (the second
+            // element of `get_hashes_for`) and `ChildInfo::own_hash`
+            // — don't conflate `merkle_hash` with "data hash".
             let Some((local_hash, _)) = <Index<S>>::get_hashes_for(ancestor.id())? else {
                 // Ancestor doesn't exist locally yet. Apply will
                 // auto-vivify it from the action's claimed hash. The v1

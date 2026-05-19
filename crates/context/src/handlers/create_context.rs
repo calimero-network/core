@@ -382,7 +382,12 @@ async fn create_context(
                 error!(?e, %context.id, "Failed to sign init actions");
                 bail!("Failed to sign init actions: {:?}", e);
             }
-            persist_signed_signatures(&datastore, &context, &identity_secret, &actions);
+            if let Err(e) =
+                persist_signed_signatures(&datastore, &context, &identity_secret, &actions)
+            {
+                error!(?e, %context.id, "Failed to persist signed init signatures");
+                bail!("Failed to persist signed init signatures: {:?}", e);
+            }
         }
 
         // Always create a genesis delta. The parent should be `[0; 32]` (genesis).

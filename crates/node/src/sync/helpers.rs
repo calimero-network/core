@@ -209,6 +209,20 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
 
         let ancestor = ChildInfo::new(parent_id, parent_hash, parent_metadata);
 
+        // Tree-shape integrity NOT cryptographically asserted here:
+        // `ancestor.merkle_hash` is fetched live from the local
+        // index, so `Interface::apply_action`'s
+        // `verify_ancestor_integrity` always passes on this path
+        // (the hash matches what's locally stored). This is the
+        // documented design trade-off: HashComparison sync runs
+        // precisely because tree shapes have drifted between
+        // peers, so asserting "the signer observed the same
+        // parent hash" would reject every legitimate divergence
+        // repair. Authorization (the signature inside
+        // `metadata.storage_type`) still verifies — what we
+        // forgo is sender-vs-receiver agreement on the parent's
+        // subtree hash. The delta-replay path carries the
+        // signer's ancestor list and does check it.
         Action::Add {
             id: entity_id,
             data: leaf.value.clone(),

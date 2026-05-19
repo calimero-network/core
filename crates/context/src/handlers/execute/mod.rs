@@ -1411,7 +1411,8 @@ async fn internal_execute(
                 // change (variant flip, writer-set or owner change),
                 // so the merkle hash and the entity's
                 // access-control triple stay invariant.
-                persist_signed_signatures(&store, &context, identity_private_key, &actions);
+                persist_signed_signatures(&store, &context, identity_private_key, &actions)
+                    .wrap_err("Failed to persist signed signature_data after execute")?;
 
                 // Re-serialize the *signed* actions into a new artifact
                 let new_artifact = borsh::to_vec(&StorageDelta::Actions(actions.clone()))?;
@@ -1802,7 +1803,7 @@ pub(crate) fn persist_signed_signatures(
     context: &Context,
     identity_private_key: &PrivateKey,
     actions: &[Action],
-) {
+) -> eyre::Result<()> {
     let callbacks = create_storage_callbacks(store, context.id);
     let context_id_bytes: [u8; 32] = *context.id.as_ref();
     let executor_id_bytes: [u8; 32] = *identity_private_key.public_key().as_ref();
@@ -1814,7 +1815,19 @@ pub(crate) fn persist_signed_signatures(
         executor_id_bytes,
     );
 
-    with_runtime_env(env, || {
+    // Collect failures inside the env scope and propagate after.
+    // Returning Result lets the caller (`execute_method` or
+    // `create_context`) decide whether to abort the transaction:
+    // a failed persist leaves the locally stored entity with the
+    // `[0; 64]` placeholder signature, so subsequent HashComparison
+    // sync would ship the placeholder to peers and trip the
+    // receiver's signature verifier. The signed broadcast artifact
+    // still carries the real signature for delta-replay receivers,
+    // but the local node would be permanently stuck shipping
+    // unverifiable HashComparison responses until the next signed
+    // write to that entity. Aborting and surfacing the error gives
+    // the user a chance to retry.
+    let result: eyre::Result<()> = with_runtime_env(env, || {
         for action in actions {
             let (id, storage_type) = match action {
                 Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
@@ -1863,17 +1876,28 @@ pub(crate) fn persist_signed_signatures(
                     );
                 }
                 Err(e) => {
-                    warn!(
+                    // Fail loud + propagate. The alternatives
+                    // (silent log, metric, ignore) leave the local
+                    // entity with a placeholder forever — see the
+                    // function-level comment.
+                    error!(
                         %id,
                         error = ?e,
-                        "failed to persist signed signature_data; local entity will \
-                         retain placeholder signature and may fail HashComparison \
-                         verification on peers until next signed write"
+                        "failed to persist signed signature_data; local entity would \
+                         retain placeholder signature and fail HashComparison \
+                         verification on peers — aborting transaction so the user \
+                         can retry"
                     );
+                    return Err(eyre::eyre!(
+                        "persist_signed_signatures: update_signature_in_place failed \
+                         for entity {id}: {e:?}"
+                    ));
                 }
             }
         }
+        Ok(())
     });
+    result
 }
 
 /// Checks if a context belongs to a group with LazyOnAccess policy and
