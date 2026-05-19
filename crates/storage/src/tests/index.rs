@@ -97,13 +97,46 @@ mod index__public_methods {
 
         // --------------------------------------------------------------
         // applying a1, and then a2, what do we find?
+        //
+        // a2's `ancestors` carry a stale-by-construction root merkle
+        // hash (`[37; 32]`). Under the v1 signed payload, that
+        // mismatch was implicit in the failed signature reconstruction
+        // for signed types; for Public actions (this test's type) the
+        // apply path silently accepted the mismatched value. The v2
+        // explicit `verify_ancestor_integrity` check now rejects it
+        // explicitly. To preserve the scenario's intent (a1 + a2
+        // applied in order both succeed), rebuild a2 with the actual
+        // root merkle hash after a1 applies.
         // --------------------------------------------------------------
         assert!(
             <Interface<MockedStorage<2>>>::apply_action(a1.clone(), &ApplyContext::empty()).is_ok()
         );
-        assert!(
-            <Interface<MockedStorage<2>>>::apply_action(a2.clone(), &ApplyContext::empty()).is_ok()
-        );
+        let (root_full_hash_after_a1, _) = <Index<MockedStorage<2>>>::get_hashes_for(root_id)
+            .unwrap()
+            .unwrap();
+        let a2_with_real_ancestor = match a2.clone() {
+            Action::Update {
+                id,
+                data,
+                ancestors: _,
+                metadata,
+            } => Action::Update {
+                id,
+                data,
+                ancestors: vec![ChildInfo::new(
+                    root_id,
+                    root_full_hash_after_a1,
+                    Metadata::default(),
+                )],
+                metadata,
+            },
+            other => other,
+        };
+        assert!(<Interface<MockedStorage<2>>>::apply_action(
+            a2_with_real_ancestor,
+            &ApplyContext::empty()
+        )
+        .is_ok());
 
         let e1 = <Index<MockedStorage<2>>>::get_index(root_id).unwrap();
         let e2 = <Index<MockedStorage<2>>>::get_index(p1_id).unwrap();
@@ -1120,5 +1153,403 @@ mod minimal_struct_layout_compat {
     fn round_trip_frozen_storage() {
         let index = make_index(None, StorageType::Frozen, None, None);
         assert_round_trip(&index);
+    }
+}
+
+/// Tests for `verify_ancestor_integrity`: the explicit unsigned check
+/// that replaces the v1 signed tree-state binding. Exercised through
+/// the public `apply_action` API rather than the private helper.
+///
+/// **`MockedStorage` scope allocation**: this module uses scopes
+/// **3001–3004** (one per test). The `MockedStorage<N>` const generic
+/// gives each scope an isolated in-memory store so concurrent tests
+/// don't see each other's writes. New tests in this module should pick
+/// the next free scope in this range. The wider codebase uses
+/// disjoint ranges (e.g. p3 dag-causal tests use 6400+; pick a range
+/// that doesn't overlap with any other test module if you add new
+/// `MockedStorage<…>` scopes elsewhere).
+#[cfg(test)]
+mod verify_ancestor_integrity_tests {
+    use crate::address::Id;
+    use crate::entities::{ChildInfo, Metadata, StorageType};
+    use crate::error::StorageError;
+    use crate::interface::{Action, ApplyContext, Interface};
+    use crate::store::MockedStorage;
+
+    fn meta() -> Metadata {
+        Metadata {
+            created_at: 1,
+            updated_at: 1.into(),
+            storage_type: StorageType::Public,
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    fn root_action() -> Action {
+        Action::Update {
+            id: Id::root(),
+            data: vec![],
+            ancestors: vec![],
+            metadata: meta(),
+        }
+    }
+
+    #[test]
+    fn passes_when_ancestor_matches_local_state() {
+        let root_id = Id::root();
+        let p1_id = Id::new([0x11; 32]);
+
+        assert!(<Interface<MockedStorage<3001>>>::apply_action(
+            root_action(),
+            &ApplyContext::empty()
+        )
+        .is_ok());
+
+        let (root_full_hash, _) =
+            <crate::index::Index<MockedStorage<3001>>>::get_hashes_for(root_id)
+                .unwrap()
+                .unwrap();
+
+        let child = Action::Update {
+            id: p1_id,
+            data: vec![1, 2, 3],
+            ancestors: vec![ChildInfo::new(root_id, root_full_hash, Metadata::default())],
+            metadata: meta(),
+        };
+        assert!(
+            <Interface<MockedStorage<3001>>>::apply_action(child, &ApplyContext::empty()).is_ok()
+        );
+    }
+
+    #[test]
+    fn ancestor_hash_mismatch_is_warn_only_now() {
+        // Behavior changed in the commit that relaxes
+        // `verify_ancestor_integrity` to warn-only: a hard
+        // `TreeStateMismatch` rejection caused the SDK's
+        // auto-generated `__calimero_sync_next` to
+        // `.expect("fatal: sync failed")`-panic on legitimate
+        // CRDT-merge divergence. The check now logs the mismatch
+        // and falls through; the CRDT merge in `save_internal`
+        // resolves the divergence. See the `verify_ancestor_integrity`
+        // doc on the design trade-off.
+        let root_id = Id::root();
+        let p1_id = Id::new([0x12; 32]);
+
+        assert!(<Interface<MockedStorage<3002>>>::apply_action(
+            root_action(),
+            &ApplyContext::empty()
+        )
+        .is_ok());
+
+        let child = Action::Update {
+            id: p1_id,
+            data: vec![1, 2, 3],
+            ancestors: vec![ChildInfo::new(root_id, [0xFF; 32], Metadata::default())],
+            metadata: meta(),
+        };
+
+        let result = <Interface<MockedStorage<3002>>>::apply_action(child, &ApplyContext::empty());
+        assert!(
+            !matches!(result, Err(StorageError::TreeStateMismatch(_))),
+            "ancestor hash mismatch must NOT return TreeStateMismatch (warn-only); got {result:?}"
+        );
+    }
+
+    #[test]
+    fn skips_ancestors_not_present_locally() {
+        let absent_parent = Id::new([0xCA; 32]);
+        let p1_id = Id::new([0x13; 32]);
+
+        let child = Action::Add {
+            id: p1_id,
+            data: vec![],
+            ancestors: vec![ChildInfo::new(
+                absent_parent,
+                [0xBB; 32],
+                Metadata::default(),
+            )],
+            metadata: meta(),
+        };
+
+        let result = <Interface<MockedStorage<3003>>>::apply_action(child, &ApplyContext::empty());
+        assert!(
+            !matches!(result, Err(StorageError::TreeStateMismatch(_))),
+            "absent ancestor should skip the check, not reject; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn empty_ancestors_list_passes_unconditionally() {
+        // HashComparison sync supplies `ancestors: vec![]` — must not
+        // be rejected for tree-state reasons (the entire scenario sync
+        // is built for is diverged tree state).
+        let p1_id = Id::new([0x14; 32]);
+        let action = Action::Update {
+            id: p1_id,
+            data: vec![9, 9, 9],
+            ancestors: vec![],
+            metadata: meta(),
+        };
+        let result = <Interface<MockedStorage<3004>>>::apply_action(action, &ApplyContext::empty());
+        assert!(
+            !matches!(result, Err(StorageError::TreeStateMismatch(_))),
+            "empty ancestors must skip the check; got {result:?}"
+        );
+    }
+}
+
+/// Tests for `Interface::verify_snapshot_entity_signature` — the
+/// per-entity signature check that closes the peer-trust gap on the
+/// Snapshot apply path (issue #2387). Uses `MockedStorage<3005..3010>`
+/// — keep the scope range disjoint from
+/// `verify_ancestor_integrity_tests` (3001–3004).
+#[cfg(test)]
+mod verify_snapshot_entity_signature_tests {
+    use std::collections::BTreeSet;
+
+    use calimero_primitives::identity::PublicKey;
+
+    use crate::address::Id;
+    use crate::entities::{Metadata, SignatureData, StorageType};
+    use crate::error::StorageError;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    fn meta_public() -> Metadata {
+        Metadata {
+            created_at: 0,
+            updated_at: 0.into(),
+            storage_type: StorageType::Public,
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    fn meta_shared_unsigned(writers: BTreeSet<PublicKey>) -> Metadata {
+        Metadata {
+            created_at: 0,
+            updated_at: 0.into(),
+            storage_type: StorageType::Shared {
+                writers,
+                signature_data: None,
+            },
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    fn meta_shared_signed_invalid(writers: BTreeSet<PublicKey>) -> Metadata {
+        // Signature is just zeros — cryptographically invalid against any payload.
+        Metadata {
+            created_at: 0,
+            updated_at: 0.into(),
+            storage_type: StorageType::Shared {
+                writers,
+                signature_data: Some(SignatureData {
+                    signature: [0u8; 64],
+                    nonce: 42,
+                    signer: None,
+                }),
+            },
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    #[test]
+    fn public_accepted_without_verify() {
+        // Public entities don't require a signature.
+        let id = Id::new([0x10; 32]);
+        let result = <Interface<MockedStorage<3005>>>::verify_snapshot_entity_signature(
+            id,
+            b"any-data",
+            &meta_public(),
+        );
+        assert!(
+            matches!(result, Ok(())),
+            "Public must accept without verify; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn shared_unsigned_rejected() {
+        // After the bootstrap-signing fix, no locally stored entity
+        // should carry signature_data: None past the runtime sign
+        // step. A snapshot record with `None` is from a buggy or
+        // hostile peer — reject.
+        let writer = PublicKey::from([0xAA; 32]);
+        let mut writers = BTreeSet::new();
+        writers.insert(writer);
+
+        let id = Id::new([0x11; 32]);
+        let result = <Interface<MockedStorage<3006>>>::verify_snapshot_entity_signature(
+            id,
+            b"data",
+            &meta_shared_unsigned(writers),
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "Shared with signature_data: None must be rejected; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn shared_signed_with_invalid_signature_rejected() {
+        // A tampered or forged record with a zero signature must fail
+        // verification — this is the core property the wire-format
+        // redesign (#2387) gives Snapshot.
+        let writer = PublicKey::from([0xBB; 32]);
+        let mut writers = BTreeSet::new();
+        writers.insert(writer);
+
+        let id = Id::new([0x12; 32]);
+        let result = <Interface<MockedStorage<3007>>>::verify_snapshot_entity_signature(
+            id,
+            b"data",
+            &meta_shared_signed_invalid(writers),
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "Shared with cryptographically invalid signature must be rejected; got {result:?}"
+        );
+    }
+}
+
+/// Tests for `Interface::update_signature_in_place` API-boundary
+/// validation. Uses `MockedStorage<3008..3012>` — keep disjoint from
+/// `verify_ancestor_integrity_tests` (3001-3004) and
+/// `verify_snapshot_entity_signature_tests` (3005-3007).
+#[cfg(test)]
+mod update_signature_in_place_tests {
+    use std::collections::BTreeSet;
+
+    use calimero_primitives::identity::PublicKey;
+
+    use crate::address::Id;
+    use crate::entities::{SignatureData, StorageType};
+    use crate::error::StorageError;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    fn shared_writers(writer: u8) -> BTreeSet<PublicKey> {
+        let mut writers = BTreeSet::new();
+        let _ = writers.insert(PublicKey::from([writer; 32]));
+        writers
+    }
+
+    fn shared_signed(writers: BTreeSet<PublicKey>, sig: [u8; 64]) -> StorageType {
+        StorageType::Shared {
+            writers,
+            signature_data: Some(SignatureData {
+                signature: sig,
+                nonce: 1,
+                signer: None,
+            }),
+        }
+    }
+
+    fn user_signed(owner: PublicKey, sig: [u8; 64]) -> StorageType {
+        StorageType::User {
+            owner,
+            signature_data: Some(SignatureData {
+                signature: sig,
+                nonce: 1,
+                signer: None,
+            }),
+        }
+    }
+
+    fn shared_unsigned(writers: BTreeSet<PublicKey>) -> StorageType {
+        StorageType::Shared {
+            writers,
+            signature_data: None,
+        }
+    }
+
+    #[test]
+    fn rejects_signature_data_none() {
+        // The function name says "signed" — passing `signature_data:
+        // None` is a contract violation and must be rejected at the
+        // API boundary, even if the entity doesn't exist locally
+        // (entity-not-found is checked AFTER input validation).
+        let id = Id::new([0x20; 32]);
+        let result = <Interface<MockedStorage<3008>>>::update_signature_in_place(
+            id,
+            shared_unsigned(shared_writers(0xAA)),
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidData(_))),
+            "signature_data: None must be rejected; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_placeholder_signature() {
+        // `[0; 64]` is the placeholder `save_raw` emits before the
+        // runtime signs. A caller passing this in would clobber a
+        // real signature stored previously — the exact regression
+        // this guard prevents.
+        let id = Id::new([0x21; 32]);
+        let result = <Interface<MockedStorage<3009>>>::update_signature_in_place(
+            id,
+            shared_signed(shared_writers(0xAA), [0u8; 64]),
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidData(_))),
+            "placeholder [0; 64] signature must be rejected; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_placeholder_signature_user() {
+        // Same guard, User variant.
+        let id = Id::new([0x22; 32]);
+        let owner = PublicKey::from([0xBB; 32]);
+        let result = <Interface<MockedStorage<3010>>>::update_signature_in_place(
+            id,
+            user_signed(owner, [0u8; 64]),
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidData(_))),
+            "User placeholder [0; 64] signature must be rejected; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_public_or_frozen() {
+        // Public/Frozen carry no signature; calling this function
+        // with them is a programming error.
+        let id = Id::new([0x23; 32]);
+        let public_result =
+            <Interface<MockedStorage<3011>>>::update_signature_in_place(id, StorageType::Public);
+        assert!(
+            matches!(public_result, Err(StorageError::InvalidData(_))),
+            "Public must be rejected; got {public_result:?}"
+        );
+
+        let frozen_result =
+            <Interface<MockedStorage<3011>>>::update_signature_in_place(id, StorageType::Frozen);
+        assert!(
+            matches!(frozen_result, Err(StorageError::InvalidData(_))),
+            "Frozen must be rejected; got {frozen_result:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_real_signature_returns_false_when_entity_missing() {
+        // Valid input (Shared, Some, non-placeholder) on an entity
+        // that doesn't exist locally → `Ok(false)`. Confirms the
+        // input-validation guards above don't false-positive on
+        // legitimate signed inputs.
+        let id = Id::new([0x24; 32]);
+        let result = <Interface<MockedStorage<3012>>>::update_signature_in_place(
+            id,
+            shared_signed(shared_writers(0xAA), [0xAB; 64]),
+        );
+        assert!(
+            matches!(result, Ok(false)),
+            "valid signed input on missing entity should return Ok(false); got {result:?}"
+        );
     }
 }

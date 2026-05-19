@@ -686,6 +686,9 @@ fn collect_leaves_recursive(
             if let Some(parent_id) = index.parent_id() {
                 metadata = metadata.with_parent(*parent_id.as_bytes());
             }
+            if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
+                metadata = metadata.with_authorization(auth);
+            }
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
             if leaf_data.value.len() > MAX_LEAF_VALUE_SIZE {
                 warn!(
@@ -836,6 +839,9 @@ fn get_local_tree_node(
                 .with_created_at(index.metadata.created_at());
             if let Some(parent_id) = index.parent_id() {
                 metadata = metadata.with_parent(*parent_id.as_bytes());
+            }
+            if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
+                metadata = metadata.with_authorization(auth);
             }
             let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
             Ok(Some(TreeNode::leaf(

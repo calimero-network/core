@@ -347,6 +347,26 @@ pub struct LeafMetadata {
 
     /// Optional parent entity ID (for nested structures).
     pub parent_id: Option<[u8; 32]>,
+
+    /// Authorization triple for `Shared` / `User` storage entities —
+    /// the access-control list + signature data the receiver needs to
+    /// verify the writer's authorization without consulting the
+    /// originator's tree state.
+    ///
+    /// The signed payload (see `Action::payload_for_signing`) commits
+    /// to exactly the access-control triple carried here:
+    /// type tag + writers/owner + nonce + (optional) signer hint.
+    /// All values are reconstructible from this struct + the entity's
+    /// `key` and `value` already on the wire, so the receiver verifies
+    /// the signature without any tree-state context.
+    ///
+    /// `None` for `Public` / `Frozen` entities (no signature required),
+    /// or for legacy entities written before sync-signature wire
+    /// support. Receivers seeing `None` for an entity their local
+    /// state holds as `Shared` / `User` must skip the sync apply for
+    /// that entity (let the delta-path repair instead) rather than
+    /// trying to construct an action without authorization data.
+    pub authorization: Option<calimero_storage::entities::StorageType>,
 }
 
 impl LeafMetadata {
@@ -364,7 +384,48 @@ impl LeafMetadata {
             version: 0,
             collection_id,
             parent_id: None,
+            authorization: None,
         }
+    }
+
+    /// Set the storage-type authorization triple for `Shared` / `User`
+    /// entities so the receiver can verify the writer's signature.
+    /// See the field doc on `authorization`.
+    ///
+    /// Only `Shared` and `User` storage types carry authorization; for
+    /// `Public` / `Frozen` the wire field must stay `None` (the receiver
+    /// has no signature to verify on those, and applying a wire-supplied
+    /// `Public` here would open a storage-type-downgrade path on the
+    /// receiver). Wrong-type calls log a `warn!` and leave
+    /// `authorization` unset in both debug and release — uniform
+    /// behavior. Callers should go through
+    /// `crate::sync::helpers::wire_authorization_for` in `calimero-node`
+    /// rather than building this directly; the helper is the single
+    /// source of truth for which storage types carry wire authorization.
+    /// This guard is defense-in-depth in case a future caller bypasses
+    /// the helper.
+    #[must_use]
+    pub fn with_authorization(
+        mut self,
+        authorization: calimero_storage::entities::StorageType,
+    ) -> Self {
+        use calimero_storage::entities::StorageType;
+        let is_auth_type = matches!(
+            authorization,
+            StorageType::Shared { .. } | StorageType::User { .. }
+        );
+        if is_auth_type {
+            self.authorization = Some(authorization);
+        } else {
+            tracing::warn!(
+                bad_type = ?authorization,
+                "with_authorization called with non-Shared/User storage type — \
+                 ignoring; this is a programming error. Callers should use \
+                 `calimero_node::sync::helpers::wire_authorization_for` which \
+                 only returns Shared/User."
+            );
+        }
+        self
     }
 
     /// Set the entity creation timestamp (`Metadata::created_at`).

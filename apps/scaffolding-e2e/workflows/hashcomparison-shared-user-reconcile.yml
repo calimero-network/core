@@ -1,0 +1,367 @@
+name: E2E KV Store - Sync Reconciles Shared & User Entities
+description: >
+  Regression guard for the redesigned signature commitment that
+  decouples the signed payload from tree-state ancestry. Before
+  this change, cross-peer reconciliation of Shared (writer-set)
+  and User (owner-signed) entities was broken: the stored
+  signature committed to ancestor merkle hashes at sign time,
+  so on a receiver whose tree state diverges (which is the whole
+  point of a sync run) the signature failed to verify and the
+  leaf was either skipped or silently flipped to Public via the
+  default-metadata fallback. The new payload commits only to
+  authorization (id, data, nonce, signer hint, storage-type
+  access control); tree-state integrity is verified separately
+  at apply time. The sync wire now carries the full
+  `StorageType` for Shared/User leaves so the receiver can
+  verify the signature against authorization rules, not its own
+  tree.
+
+  Scenario (partition node-2, write Shared+User on node-1, heal):
+    1. Two nodes join a namespace + context. Both write a
+       baseline value so each has `has_state = true`. This is
+       what forces the initialized-node protocol selection path
+       (`select_protocol` Rule 2a / Snapshot is gated on a fresh
+       local node, which is not the situation we want to test).
+    2. Partition node-2 off the Docker bridge. node-1's writes
+       in the next phase will NOT reach node-2 via gossipsub.
+    3. node-1 writes context-state entities that the redesign
+       directly affects:
+         - `set_user_simple` → UserStorage → StorageType::User
+           (owner-signed; the User wire path)
+         - `shared_set` → SharedStorage → StorageType::Shared
+           (writer-set governed; the Shared wire path)
+         - `authored_insert` → AuthoredMap → per-entry owner
+           (a second User-typed wire path with a different
+           collection shape)
+       Each write is REPEATED once so the stored SignatureData
+       carries an incremented nonce — pre-redesign this was a
+       second source of payload-vs-stored drift on the sync path.
+    4. Heal the partition. node-2's tree state and node-1's now
+       differ on the three entities above; gossipsub catch-up and
+       the scheduled state-sync fire. With both peers initialized
+       and divergence localized, the default-rule selection in
+       `select_protocol` (crates/node/primitives/src/sync/protocol.rs)
+       lands on `HashComparison` or one of its sibling protocols
+       (`LevelWise`, `SubtreePrefetch`). All three drive the same
+       `apply_leaf_with_crdt_merge` apply path with the new wire
+       authorization helpers in `crates/node/src/sync/helpers.rs`.
+    5. node-2 reads each entity back. Pre-redesign: the writes
+       either never land (signature rejected against node-2's
+       tree) or land with provenance downgraded to Public via
+       `Metadata::default()`. Post-redesign: name + data fields
+       match exactly.
+
+  Why this is partition-based, not the simpler "node-1 writes,
+  node-2 reads" pattern: under normal gossipsub propagation the
+  apply path runs on the receiver well before any state-sync
+  tick, so HashComparison never sees a divergent root and the
+  test would pass vacuously even with the redesign reverted.
+  Partitioning while node-1 writes is what forces sync — not
+  gossipsub — to be the path that delivers the entities to
+  node-2.
+
+  Why this partition pattern IS deterministic, where the
+  member-removed-partition-window-reconcile workflow is not:
+  that workflow needs admin to *sign* during the partition
+  against a stale view, which races the TCP-buffer drain after
+  reconnect. This workflow only needs node-1's writes to be
+  invisible to node-2 during the partition window; after heal,
+  either gossipsub catch-up or a sync tick lands the entities,
+  and the assertions only depend on final convergence.
+
+force_pull_image: false
+near_devnet: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: e2e-node
+
+steps:
+  # --- Phase 1: bootstrap; both nodes join the namespace + context
+  #     and write a baseline value so both end up with
+  #     `has_state = true`. This is the precondition for the
+  #     initialized-node sync rules to fire (rather than fresh-node
+  #     Snapshot). ---
+
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      ns: namespaceId
+
+  - name: Create context on node-1
+    type: create_context
+    node: e2e-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{ns}}'
+    outputs:
+      ctx: contextId
+
+  - name: Invite node-2 to namespace
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      invitation: invitation
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: e2e-node-2
+    namespace_id: '{{ns}}'
+    invitation: '{{invitation}}'
+    outputs:
+      node2_id: memberIdentity
+
+  - name: Node-2 joins context
+    type: join_context
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+
+  # Each side writes a baseline value via the public KV path. After
+  # these two writes node-1 and node-2 both have `has_state = true`
+  # and their root hashes match (modulo gossipsub timing — the
+  # `wait_for_sync` below catches us up).
+  - name: Node-1 writes baseline
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: "baseline-1"
+      value: "from-node-1"
+
+  - name: Node-2 writes baseline
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: set
+    args:
+      key: "baseline-2"
+      value: "from-node-2"
+
+  - name: Wait for baseline convergence
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after baseline convergence
+    type: wait
+    seconds: 3
+
+  # --- Phase 2: partition node-2 off the bridge. From here until the
+  #     reconnect step, anything node-1 writes is invisible to
+  #     node-2 over libp2p. ---
+
+  - name: Partition node-2 from the bridge
+    type: script
+    script: scripts/disconnect-node-from-bridge.sh
+    target: local
+    args:
+      - e2e-node-2
+
+  - name: Brief settle so libp2p notices the partition
+    type: wait
+    seconds: 3
+
+  # --- Phase 3: node-1 writes the Shared + User + Authored entities
+  #     while node-2 is partitioned away. Each is written twice so
+  #     the stored SignatureData carries a non-initial nonce. ---
+
+  # UserStorage (StorageType::User, owner-signed). Signer is
+  # node-1's executor identity; the entity is owned by the writer.
+  - name: Node-1 sets simple user value (User entity, initial)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: set_user_simple
+    args:
+      value: "node-1-profile-initial"
+
+  - name: Node-1 sets simple user value (User entity, updated — fresh nonce)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: set_user_simple
+    args:
+      value: "node-1-profile-final"
+
+  # SharedStorage (StorageType::Shared, writer-set governed). The
+  # init caller (node-1) is the sole initial writer per
+  # `apps/scaffolding-e2e/src/lib.rs::E2eKvStore::init`.
+  - name: Node-1 sets shared value (Shared entity, initial)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: shared_set
+    args:
+      value: "shared-initial"
+
+  - name: Node-1 sets shared value (Shared entity, updated — fresh nonce)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: shared_set
+    args:
+      value: "shared-final"
+
+  # AuthoredMap (per-entry User-owned). Insert + update on the same
+  # key both go through the User-signed path because node-1 owns it.
+  - name: Node-1 inserts authored entry (User entity, initial)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: authored_insert
+    args:
+      key: "profile-bio"
+      value: "bio-initial"
+
+  - name: Node-1 updates authored entry (User entity, fresh nonce)
+    type: call
+    node: e2e-node-1
+    context_id: '{{ctx}}'
+    method: authored_update
+    args:
+      key: "profile-bio"
+      value: "bio-final"
+
+  # --- Phase 4: heal the partition. node-2's tree state and node-1's
+  #     now diverge on the three entities written above. With both
+  #     peers `has_state = true` and divergence local, the
+  #     initialized-node rules in `select_protocol` route this to
+  #     `HashComparison` or a sibling (`LevelWise` /
+  #     `SubtreePrefetch`) — all three drive the same wire
+  #     authorization apply path that this PR redesigns. ---
+
+  - name: Heal node-2's partition
+    type: script
+    script: scripts/connect-node-to-bridge.sh
+    target: local
+    args:
+      - e2e-node-2
+
+  - name: Wait for libp2p mesh reformation
+    type: wait
+    seconds: 8
+
+  - name: Wait for context reconciliation
+    type: wait_for_sync
+    context_id: '{{ctx}}'
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+    timeout: 90
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Settle after reconciliation
+    type: wait
+    seconds: 5
+
+  # --- Phase 5: read each entity back from node-2 and assert it
+  #     reconciled to the final (post-update) value. Pre-redesign,
+  #     each of these would either come back null (signature
+  #     verification failed and the apply was rejected) or come
+  #     back with downgraded provenance. Post-redesign, name + data
+  #     match the LWW winner of the two writes node-1 issued. ---
+
+  - name: Node-1 reports its identity (used to read its User entity)
+    type: get_namespace_identity
+    node: e2e-node-1
+    namespace_id: '{{ns}}'
+    outputs:
+      node1_id: publicKey
+
+  - name: Read node-1's User entity from node-2
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: get_user_simple_for
+    args:
+      user_key: '{{node1_id}}'
+    outputs:
+      user_read_from_node2: result
+
+  - name: Assert User entity reconciled to node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{user_read_from_node2}}, {"output": "node-1-profile-final"})'
+
+  - name: Read Shared entity from node-2
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: shared_get
+    outputs:
+      shared_read_from_node2: result
+
+  - name: Assert Shared entity reconciled to node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{shared_read_from_node2}}, {"output": "shared-final"})'
+
+  - name: Read AuthoredMap entry from node-2
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: authored_get
+    args:
+      key: "profile-bio"
+    outputs:
+      authored_read_from_node2: result
+
+  - name: Assert AuthoredMap entry reconciled to node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{authored_read_from_node2}}, {"output": "bio-final"})'
+
+  # AuthoredMap exposes the owner of each entry — confirm it is
+  # node-1's identity, not the default-Public fallback that the
+  # v1 silent storage-type-flip bug would have produced.
+  - name: Read AuthoredMap entry owner from node-2
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: authored_get_owner
+    args:
+      key: "profile-bio"
+    outputs:
+      authored_owner_from_node2: result
+
+  - name: Assert AuthoredMap entry owner is node-1
+    type: json_assert
+    statements:
+      - 'json_equal({{authored_owner_from_node2}}, {"output": "{{node1_id}}"})'
+
+  # And the pre-partition baseline state is still present on
+  # node-2 — reconcile must not have wiped pre-divergence writes.
+  - name: Read baseline KV from node-2
+    type: call
+    node: e2e-node-2
+    context_id: '{{ctx}}'
+    method: get
+    args:
+      key: "baseline-1"
+    outputs:
+      baseline_read_from_node2: result
+
+  - name: Assert baseline state preserved
+    type: json_assert
+    statements:
+      - 'json_equal({{baseline_read_from_node2}}, {"output": "from-node-1"})'
+
+stop_all_nodes: false

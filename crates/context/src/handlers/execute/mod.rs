@@ -27,6 +27,9 @@ use calimero_storage::{
     action::Action,
     delta::{CausalDelta, StorageDelta},
     entities::StorageType,
+    env::{with_runtime_env, RuntimeEnv},
+    interface::Interface,
+    store::MainStorage,
 };
 use calimero_store::{key, types, Store};
 use calimero_utils_actix::global_runtime;
@@ -40,7 +43,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::ContextError;
 use crate::handlers::update_application::{
-    update_application_id, update_application_with_migration,
+    create_storage_callbacks, update_application_id, update_application_with_migration,
 };
 use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
@@ -1387,6 +1390,30 @@ async fn internal_execute(
                 sign_authorized_actions(&mut actions, identity_private_key)
                     .wrap_err("Failed to sign user actions")?;
 
+                // Persist the signed `signature_data` back to local
+                // storage for each upsert action. `save_raw` runs
+                // inside the WASM host call and has no access to the
+                // identity private key, so it stamps the metadata
+                // with a placeholder signature (`[0; 64]`) and the
+                // locally stored entity retains it. Without this
+                // step, HashComparison sync would ship the
+                // placeholder to peers and signature verification on
+                // receivers would fail — exactly the cascade that
+                // broke the e2e on this branch when the wire format
+                // started carrying authorization verbatim.
+                //
+                // We construct a temporary `RuntimeEnv` over the
+                // calimero-store handle so `Interface::<MainStorage>`
+                // can read/write the index entries directly. Only the
+                // `signature_data` portion of an existing entity's
+                // `storage_type` is updated;
+                // `update_signature_in_place` rejects any structural
+                // change (variant flip, writer-set or owner change),
+                // so the merkle hash and the entity's
+                // access-control triple stay invariant.
+                persist_signed_signatures(&store, &context, identity_private_key, &actions)
+                    .wrap_err("Failed to persist signed signature_data after execute")?;
+
                 // Re-serialize the *signed* actions into a new artifact
                 let new_artifact = borsh::to_vec(&StorageDelta::Actions(actions.clone()))?;
                 outcome.artifact = new_artifact;
@@ -1635,7 +1662,7 @@ fn substitute_aliases_in_payload(
 
 /// Helper function to sign authorized actions (User and Shared storage).
 /// Iterates over actions and signs any that are local and unsigned.
-fn sign_authorized_actions(
+pub(crate) fn sign_authorized_actions(
     actions: &mut [Action],
     identity_private_key: &PrivateKey,
 ) -> eyre::Result<()> {
@@ -1755,6 +1782,122 @@ fn sign_authorized_actions(
         }
     }
     Ok(())
+}
+
+/// Persist the signed `signature_data` from `sign_authorized_actions`
+/// back to the local index entry for each upsert action.
+///
+/// Best-effort: structural mismatches and missing entities are logged
+/// and skipped rather than failing the whole execute call. The Action
+/// in the broadcast artifact carries the real signature; this function
+/// keeps the locally stored entity's metadata in sync so HashComparison
+/// (and any other receiver-verifying sync path) ships verifiable state.
+///
+/// Runs inside a `with_runtime_env` scope built over the post-commit
+/// `Store` handle — `Interface::<MainStorage>::update_signature_in_place`
+/// reads + writes the entity's `EntityIndex` blob through this runtime
+/// env, which routes via `create_storage_callbacks` to the same
+/// RocksDB keys that `storage.commit()` just wrote.
+pub(crate) fn persist_signed_signatures(
+    store: &Store,
+    context: &Context,
+    identity_private_key: &PrivateKey,
+    actions: &[Action],
+) -> eyre::Result<()> {
+    let callbacks = create_storage_callbacks(store, context.id);
+    let context_id_bytes: [u8; 32] = *context.id.as_ref();
+    let executor_id_bytes: [u8; 32] = *identity_private_key.public_key().as_ref();
+    let env = RuntimeEnv::new(
+        callbacks.read,
+        callbacks.write,
+        callbacks.remove,
+        context_id_bytes,
+        executor_id_bytes,
+    );
+
+    // Collect failures inside the env scope and propagate after.
+    // Returning Result lets the caller (`execute_method` or
+    // `create_context`) decide whether to abort the transaction:
+    // a failed persist leaves the locally stored entity with the
+    // `[0; 64]` placeholder signature, so subsequent HashComparison
+    // sync would ship the placeholder to peers and trip the
+    // receiver's signature verifier. The signed broadcast artifact
+    // still carries the real signature for delta-replay receivers,
+    // but the local node would be permanently stuck shipping
+    // unverifiable HashComparison responses until the next signed
+    // write to that entity. Aborting and surfacing the error gives
+    // the user a chance to retry.
+    let result: eyre::Result<()> = with_runtime_env(env, || {
+        for action in actions {
+            let (id, storage_type) = match action {
+                Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
+                    (*id, metadata.storage_type.clone())
+                }
+                Action::DeleteRef { .. } | Action::Compare { .. } => continue,
+            };
+            // Only Shared/User with a REAL signature need the
+            // re-persist. Public/Frozen don't carry signatures.
+            //
+            // Three skip conditions:
+            // 1. `signature_data: None` — unsigned bootstrap action;
+            //    `sign_authorized_actions` doesn't touch these.
+            // 2. `signature_data: Some(SignatureData { signature: [0;
+            //    64], .. })` — placeholder that
+            //    `sign_authorized_actions` declined to sign (e.g. a
+            //    `User` action whose owner ≠ executor, or a `Shared`
+            //    action where the executor isn't in the writer set).
+            //    Persisting the placeholder here would overwrite the
+            //    real signature already stored for that entity.
+            // 3. Anything else falls through to
+            //    `update_signature_in_place`.
+            let signed_with_real_sig = match &storage_type {
+                StorageType::Shared {
+                    signature_data: Some(sig),
+                    ..
+                }
+                | StorageType::User {
+                    signature_data: Some(sig),
+                    ..
+                } if sig.signature != [0u8; 64] => true,
+                _ => false,
+            };
+            if !signed_with_real_sig {
+                continue;
+            }
+            match Interface::<MainStorage>::update_signature_in_place(id, storage_type) {
+                Ok(true) => {
+                    debug!(%id, "persisted signed signature_data to local index");
+                }
+                Ok(false) => {
+                    debug!(
+                        %id,
+                        "skipped signature persist — entity missing from local index \
+                         (raced a delete?)"
+                    );
+                }
+                Err(e) => {
+                    // Fail loud + propagate. The alternatives
+                    // (silent log, metric, ignore) leave the local
+                    // entity with a placeholder forever — see the
+                    // function-level comment.
+                    error!(
+                        %id,
+                        error = ?e,
+                        "failed to persist signed signature_data; local entity would \
+                         retain placeholder signature and fail HashComparison \
+                         verification on peers — aborting transaction so the user \
+                         can retry"
+                    );
+                    return Err(eyre::eyre!(
+                        "persist_signed_signatures: update_signature_in_place failed \
+                         for entity {id}: {e:?}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    });
+    result
 }
 
 /// Checks if a context belongs to a group with LazyOnAccess policy and

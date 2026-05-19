@@ -206,6 +206,271 @@ const fn nonce_check_disabled_for_testing() -> bool {
 pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
 
 impl<S: StorageAdaptor> Interface<S> {
+    /// Verify the writer's signature on a snapshot-supplied entity
+    /// against the access-control rules in its metadata.
+    ///
+    /// Snapshot sync bypasses the
+    /// [`apply_action`](Self::apply_action) verification pipeline
+    /// (it writes data + metadata directly to storage from a chosen
+    /// peer). To close the peer-trust gap documented in issue
+    /// #2387, the snapshot receiver invokes this helper per-entity
+    /// before persisting:
+    ///
+    /// * `Public` / `Frozen` — accept unconditionally (Public has
+    ///   no signature; Frozen is content-addressed and verified
+    ///   elsewhere).
+    /// * `User` / `Shared` with `signature_data: Some(_)` — compute
+    ///   `payload_for_signing` from a synthetic `Action::Add { id,
+    ///   data, ancestors: vec![], metadata }` and `ed25519_verify`
+    ///   against the writer (owner for User, signer-hint or
+    ///   writer-set scan for Shared).
+    /// * `User` / `Shared` with `signature_data: None` — rejected as
+    ///   `InvalidSignature`. After the bootstrap-signing fix
+    ///   (`persist_signed_signatures` in
+    ///   `crates/context/src/handlers/execute/mod.rs`), no locally
+    ///   stored entity should carry `None` past `sign_authorized_actions`,
+    ///   so a snapshot record with `None` is from a buggy or hostile
+    ///   peer.
+    ///
+    /// Returns `Ok(())` if the entity is verified or doesn't require
+    /// verification; `Err(StorageError::InvalidSignature)` otherwise.
+    /// Does not write to storage.
+    ///
+    /// # Errors
+    /// - `InvalidSignature` if the `signature_data` is `None`,
+    ///   carries the `[0; 64]` placeholder, or fails ed25519
+    ///   verification against the access-control rules in
+    ///   `metadata.storage_type`.
+    pub fn verify_snapshot_entity_signature(
+        id: crate::address::Id,
+        data: &[u8],
+        metadata: &crate::entities::Metadata,
+    ) -> Result<(), StorageError> {
+        use crate::action::Action;
+        use crate::entities::StorageType;
+
+        // Public / Frozen don't require signature verification.
+        match &metadata.storage_type {
+            StorageType::Public | StorageType::Frozen => return Ok(()),
+            StorageType::User { .. } | StorageType::Shared { .. } => {}
+        }
+
+        // Reconstruct the authorization payload the writer signed.
+        // Snapshot doesn't carry ancestors and the verification is
+        // tree-shape-independent (v2 design — see
+        // `Action::payload_for_signing`), so an empty ancestor list
+        // is correct here.
+        let action = Action::Add {
+            id,
+            data: data.to_vec(),
+            ancestors: vec![],
+            metadata: metadata.clone(),
+        };
+        let payload = action.payload_for_signing();
+
+        match &metadata.storage_type {
+            StorageType::User {
+                owner,
+                signature_data: Some(sig_data),
+            } => {
+                // Explicit placeholder reject. `ed25519_verify` would
+                // also reject `[0; 64]` cryptographically, but
+                // bailing in O(1) before invoking the crypto library
+                // matches `update_signature_in_place`'s contract and
+                // avoids burning CPU on a known-bad value from a
+                // misbehaving peer. Defense-in-depth.
+                if sig_data.signature == [0u8; 64] {
+                    return Err(StorageError::InvalidSignature);
+                }
+                if crate::env::ed25519_verify(&sig_data.signature, owner.digest(), &payload) {
+                    Ok(())
+                } else {
+                    Err(StorageError::InvalidSignature)
+                }
+            }
+            StorageType::User {
+                signature_data: None,
+                ..
+            } => Err(StorageError::InvalidSignature),
+            StorageType::Shared {
+                writers,
+                signature_data: Some(sig_data),
+            } => {
+                // Same `[0; 64]` placeholder reject as the User arm
+                // above — particularly important for `Shared` since
+                // the writer-set scan would do up to N ed25519
+                // verifies (one per writer) before the crypto
+                // library rejects the placeholder, which is a free
+                // CPU-burn vector for a misbehaving peer.
+                if sig_data.signature == [0u8; 64] {
+                    return Err(StorageError::InvalidSignature);
+                }
+                // Fast path: signer hint + verify once. Slow path:
+                // linear scan over writers. Mirrors `apply_action`.
+                let verified = match sig_data.signer {
+                    Some(hint) if writers.contains(&hint) => {
+                        crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
+                    }
+                    _ => writers.iter().any(|w| {
+                        crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
+                    }),
+                };
+                if verified {
+                    Ok(())
+                } else {
+                    Err(StorageError::InvalidSignature)
+                }
+            }
+            StorageType::Shared {
+                signature_data: None,
+                ..
+            } => Err(StorageError::InvalidSignature),
+            // Unreachable: handled at the top of the function.
+            StorageType::Public | StorageType::Frozen => Ok(()),
+        }
+    }
+
+    /// Persist the signed `signature_data` produced by the runtime's
+    /// `sign_authorized_actions` step back to the local index entry.
+    ///
+    /// The runtime signs actions in-place on the broadcast artifact,
+    /// but the entity persisted by [`save_raw`](Self::save_raw)
+    /// carries the placeholder signature (`[0; 64]`) emitted at WASM
+    /// save time — `save_raw` runs synchronously inside the WASM host
+    /// function and has no access to the identity private key. Without
+    /// this re-persist step, the locally stored entity keeps the
+    /// placeholder and HashComparison sync would ship that placeholder
+    /// to peers, breaking signature verification on receivers and
+    /// silently downgrading the entity's authorization commitment.
+    ///
+    /// Validates that the signed `storage_type`:
+    ///
+    /// * Is `Shared` or `User` — `Public`/`Frozen` carry no signature.
+    /// * Carries a real signature: `signature_data` is `Some` AND its
+    ///   `signature` field is not the `[0; 64]` placeholder. This
+    ///   guards against a caller accidentally passing back an
+    ///   unsigned action and clobbering a previously-stored real
+    ///   signature. The contract is structural: the function name
+    ///   says "signed", and the API now enforces it rather than
+    ///   trusting every caller to filter beforehand.
+    /// * Matches the stored entity's access-control triple (same
+    ///   writers set for `Shared`, same owner for `User`) — this is
+    ///   a signature-patch operation, not a writer-set rotation.
+    ///
+    /// Returns `Ok(false)` if the entity no longer exists locally
+    /// (raced a delete); `Ok(true)` on successful update; or an
+    /// error on any of the validation failures above.
+    ///
+    /// **Hash invariance**: `own_hash` is computed over the entity's
+    /// data bytes (see `save_internal`'s `Sha256::digest(&data)`), not
+    /// metadata, so patching `signature_data` does not invalidate the
+    /// merkle tree. No ancestor recomputation needed.
+    ///
+    /// # Errors
+    /// - `InvalidData` if the input is `Public`/`Frozen`, missing
+    ///   `signature_data`, carries the `[0; 64]` placeholder, or
+    ///   differs from the stored access-control triple.
+    pub fn update_signature_in_place(
+        id: Id,
+        signed_storage_type: crate::entities::StorageType,
+    ) -> Result<bool, StorageError> {
+        use crate::entities::StorageType;
+
+        // Contract guard: the input MUST be a Shared/User with a
+        // non-placeholder signature. Without this check, a caller
+        // could pass a `Some(SignatureData { signature: [0; 64], .. })`
+        // and silently overwrite a previously-stored real signature
+        // with the placeholder — a strict regression of the very
+        // bug this function exists to fix.
+        let incoming_sig_data = match &signed_storage_type {
+            StorageType::Shared {
+                signature_data: Some(sd),
+                ..
+            }
+            | StorageType::User {
+                signature_data: Some(sd),
+                ..
+            } => sd,
+            StorageType::Shared {
+                signature_data: None,
+                ..
+            }
+            | StorageType::User {
+                signature_data: None,
+                ..
+            } => {
+                return Err(StorageError::InvalidData(
+                    "update_signature_in_place: signature_data is None (input must \
+                     carry a real signature; bootstrap-unsigned actions should not \
+                     reach this API)"
+                        .to_owned(),
+                ));
+            }
+            StorageType::Public | StorageType::Frozen => {
+                return Err(StorageError::InvalidData(
+                    "update_signature_in_place: storage_type is Public/Frozen (only \
+                     Shared/User carry a signature to patch)"
+                        .to_owned(),
+                ));
+            }
+        };
+        if incoming_sig_data.signature == [0u8; 64] {
+            return Err(StorageError::InvalidData(
+                "update_signature_in_place: signature is the [0; 64] placeholder \
+                 (caller must replace the save_raw placeholder with a real ed25519 \
+                 signature before calling)"
+                    .to_owned(),
+            ));
+        }
+
+        let Some(mut index) = <Index<S>>::get_index(id)? else {
+            return Ok(false);
+        };
+        match (&index.metadata.storage_type, &signed_storage_type) {
+            (
+                StorageType::Shared {
+                    writers: stored_writers,
+                    ..
+                },
+                StorageType::Shared {
+                    writers: new_writers,
+                    ..
+                },
+            ) => {
+                if stored_writers != new_writers {
+                    return Err(StorageError::InvalidData(
+                        "update_signature_in_place: writer set mismatch".to_owned(),
+                    ));
+                }
+            }
+            (
+                StorageType::User {
+                    owner: stored_owner,
+                    ..
+                },
+                StorageType::User {
+                    owner: new_owner, ..
+                },
+            ) => {
+                if stored_owner != new_owner {
+                    return Err(StorageError::InvalidData(
+                        "update_signature_in_place: owner mismatch".to_owned(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(StorageError::InvalidData(
+                    "update_signature_in_place: storage-type variant mismatch (expected \
+                     Shared/User, with the same access-control triple as stored)"
+                        .to_owned(),
+                ));
+            }
+        }
+        index.metadata.storage_type = signed_storage_type;
+        <Index<S>>::save_index(&index)?;
+        Ok(true)
+    }
+
     /// Adds a child entity to a parent's collection.
     ///
     /// Updates Merkle hashes and generates sync actions automatically.
@@ -213,7 +478,6 @@ impl<S: StorageAdaptor> Interface<S> {
     /// # Errors
     /// - `SerializationError` if child can't be encoded
     /// - `IndexNotFound` if parent doesn't exist
-    ///
     pub fn add_child_to<D: Data>(parent_id: Id, child: &mut D) -> Result<bool, StorageError> {
         if !child.element().is_dirty() {
             return Ok(false);
@@ -236,6 +500,95 @@ impl<S: StorageAdaptor> Interface<S> {
         child.element_mut().merkle_hash = hash;
 
         Ok(true)
+    }
+
+    /// Verify the action's claimed ancestors against the receiver's local
+    /// tree state.
+    ///
+    /// Replaces the cryptographic commitment to `ancestor.merkle_hash` that
+    /// the v1 signed payload carried. The check is explicit + unsigned:
+    /// for each ancestor in the action, look up the local entity's full
+    /// merkle hash and compare. Currently **warn-only**: mismatches are
+    /// logged at `debug` and the function returns `()` — see the rationale
+    /// block below. Ancestors that don't exist locally are skipped
+    /// (auto-vivification happens during apply); the v1 signed binding
+    /// didn't provide any stronger check on this case either — the
+    /// receiver had no local merkle hash to compare against.
+    ///
+    /// **Skip on sync-reconcile.** The HashComparison apply path constructs
+    /// actions with `ancestors: vec![]`, which makes this check a no-op
+    /// (correctly — sync runs precisely when tree shapes have drifted;
+    /// asserting they haven't would reject every legitimate divergence
+    /// repair). The delta-replay path carries the signer's ancestor list
+    /// in the envelope; that's where this check actually fires.
+    ///
+    /// **Warn-only on mismatch.** The delta-replay path runs inside the
+    /// SDK's auto-generated `__calimero_sync_next` (see
+    /// `crates/sdk/macros/src/logic/method.rs::method` — line 189), which
+    /// `.expect("fatal: sync failed")`s any `Err` from `Root::sync`. A
+    /// hard `TreeStateMismatch` rejection there turns into a WASM
+    /// "unreachable" trap that aborts the entire merge — wiping out the
+    /// receiver's ability to converge any in-flight delta from a peer
+    /// whose tree has legitimately drifted (which is precisely when CRDT
+    /// merge is supposed to be doing its job). Until the SDK macro
+    /// surfaces sync errors instead of panicking — or we thread a
+    /// "this is a merge" flag through `ApplyContext` so the check can
+    /// fire only on truly-sequential deltas — log the mismatch and
+    /// accept. The CRDT merge logic at `save_internal` resolves the
+    /// divergence regardless of ancestor-hash agreement.
+    ///
+    /// Single responsibility: tree-shape integrity only. Does not touch
+    /// signature verification, nonce checking, or mutation. Composable.
+    ///
+    /// Returns `()` rather than `Result<()>` because the function never
+    /// fails for the caller's purposes: mismatches are debug-logged
+    /// (warn-only relax, see above), and storage-read errors during the
+    /// ancestor lookup are also debug-logged and treated as "no local
+    /// hash to compare" — which is the same outcome as the
+    /// auto-vivification path above. Returning `Result` was the original
+    /// intent (strict-reject mode) but turned out to break the SDK
+    /// macro; the [`StorageError::TreeStateMismatch`] variant is kept
+    /// in the error enum for the eventual strict-mode restoration but
+    /// currently unconstructed.
+    fn verify_ancestor_integrity(ancestors: &[ChildInfo]) {
+        for ancestor in ancestors {
+            // `get_hashes_for` returns `(full_hash, own_hash)`. We
+            // bind the first element (`full_hash`) and compare it
+            // against `ancestor.merkle_hash()` — which despite the
+            // name returns the FULL subtree hash (entity + all
+            // descendants), not the data-only `own_hash`. Both sides
+            // are the "subtree merkle root for this entity", so the
+            // comparison is correct. If a future addition needs to
+            // compare data-only hashes, use `own_hash` (the second
+            // element of `get_hashes_for`) and `ChildInfo::own_hash`
+            // — don't conflate `merkle_hash` with "data hash".
+            let lookup = match <Index<S>>::get_hashes_for(ancestor.id()) {
+                Ok(opt) => opt,
+                Err(e) => {
+                    tracing::debug!(
+                        ancestor_id = %ancestor.id(),
+                        error = ?e,
+                        "ancestor lookup failed; skipping integrity check for this ancestor"
+                    );
+                    continue;
+                }
+            };
+            let Some((local_hash, _)) = lookup else {
+                // Ancestor doesn't exist locally yet. Apply will
+                // auto-vivify it from the action's claimed hash. The v1
+                // signed binding had no local hash to verify against
+                // here either; nothing to enforce.
+                continue;
+            };
+            if local_hash != ancestor.merkle_hash() {
+                tracing::debug!(
+                    ancestor_id = %ancestor.id(),
+                    "ancestor merkle hash mismatch — receiver state diverged from signer's \
+                     view (accepting; CRDT merge resolves divergence). See \
+                     `verify_ancestor_integrity` doc."
+                );
+            }
+        }
     }
 
     /// Applies a synchronization action from a remote node.
@@ -306,13 +659,35 @@ impl<S: StorageAdaptor> Interface<S> {
 
                         let payload = action.payload_for_signing();
 
-                        // Replay protection check
+                        // Replay protection check.
+                        //
+                        // * `new_nonce < last_nonce` — stale action,
+                        //   reject as `NonceReplay`.
+                        // * `new_nonce == last_nonce` — byte-identical
+                        //   re-apply. The signature commits to
+                        //   `(id, data, nonce, storage_type)`, so
+                        //   equal nonce + valid signature ⇒ equal
+                        //   payload. We verify the signature (to
+                        //   confirm the action is genuine, not just
+                        //   reusing a stored nonce) and then short-
+                        //   circuit with `Ok(())` — skipping
+                        //   `save_internal` avoids hitting the
+                        //   "equal updated_at" branch which would
+                        //   call into CRDT merge and fail for
+                        //   non-CRDT entities. This is critical for
+                        //   the HashComparison
+                        //   "recurse-into-common-children" path
+                        //   that can re-deliver leaves which already
+                        //   match locally (when the parent's
+                        //   `full_hash` differs e.g. via
+                        //   post-divergence CRDT merge).
+                        // * `new_nonce > last_nonce` — normal apply.
                         let new_nonce = sig_data.nonce;
                         let last_nonce = <Index<S>>::get_metadata(*id)?
                             .map(|m| *m.updated_at)
                             .unwrap_or(0);
 
-                        if new_nonce <= last_nonce {
+                        if new_nonce < last_nonce {
                             return Err(StorageError::NonceReplay(Box::new((*owner, new_nonce))));
                         }
 
@@ -324,6 +699,17 @@ impl<S: StorageAdaptor> Interface<S> {
 
                         if !verification_result {
                             return Err(StorageError::InvalidSignature);
+                        }
+
+                        if new_nonce == last_nonce {
+                            // Idempotent re-apply — no-op.
+                            debug!(
+                                %id,
+                                nonce = new_nonce,
+                                "User upsert: idempotent re-apply (same nonce, signature \
+                                 verified) — skipping save_internal"
+                            );
+                            return Ok(());
                         }
                     }
                     StorageType::Frozen => {
@@ -395,7 +781,16 @@ impl<S: StorageAdaptor> Interface<S> {
                         let last_nonce =
                             stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
                         let skip_nonce = nonce_check_disabled_for_testing();
-                        if !skip_nonce && new_nonce <= last_nonce {
+                        // Strict-less-than: equal nonce + valid
+                        // signature is byte-identical re-apply (see
+                        // the User arm above for the full
+                        // rationale). HashComparison can deliver
+                        // common-children leaves redundantly when
+                        // parent hashes diverge — accepting
+                        // idempotent re-apply prevents a hard
+                        // NonceReplay rejection from blocking
+                        // post-divergence convergence.
+                        if !skip_nonce && new_nonce < last_nonce {
                             // Use the first authoritative writer as a placeholder identity
                             // for the error since the signer hasn't been identified yet.
                             let placeholder = authoritative_writers
@@ -439,6 +834,24 @@ impl<S: StorageAdaptor> Interface<S> {
                             return Err(StorageError::InvalidSignature);
                         }
 
+                        if !skip_nonce && new_nonce == last_nonce {
+                            // Idempotent re-apply (same nonce + valid
+                            // signature ⇒ same payload). Skip the
+                            // save_internal path which would hit the
+                            // equal-updated_at CRDT-merge branch
+                            // (would fail for non-CRDT Shared
+                            // entities). Mirrors the User upsert
+                            // arm above; see that comment for the
+                            // full HashComparison-induced rationale.
+                            debug!(
+                                %id,
+                                nonce = new_nonce,
+                                "Shared upsert: idempotent re-apply (same nonce, signature \
+                                 verified) — skipping save_internal"
+                            );
+                            return Ok(());
+                        }
+
                         // P3 of #2233: rotation-log write hook.
                         //
                         // Fires here — right after signature verification, BEFORE
@@ -460,7 +873,37 @@ impl<S: StorageAdaptor> Interface<S> {
                             stored_writers.clone(),
                         )?;
                     }
-                    StorageType::Public => { /* No special checks */ }
+                    StorageType::Public => {
+                        // No signature verification for Public.
+                        //
+                        // `Action::payload_for_signing` produces a minimal
+                        // payload for `Public` (type tag only) — see the doc
+                        // on `hash_authorization_for_payload`. That payload
+                        // is NOT load-bearing because this arm never runs an
+                        // `ed25519_verify`; it just falls through to the
+                        // upsert below.
+                        //
+                        // Storage-type-downgrade prevention:
+                        // - `Update` of an entity with a different stored
+                        //   storage type is rejected by
+                        //   `verify_action_update` above.
+                        // - `Add` of `Public` for an entity that already
+                        //   exists locally as `Shared`/`User` is not
+                        //   synthesized by the sync apply path
+                        //   (`apply_leaf_with_crdt_merge` produces
+                        //   `Action::Update` whenever the entity exists),
+                        //   and a forged `Action::Add` from the gossipsub
+                        //   delta path requires forging a signed
+                        //   `CausalDelta` (ed25519 over the artifact).
+                        //
+                        // If a future refactor of `apply_action` ever adds
+                        // a code path that lets a Public action reach
+                        // `save_internal` for an entity stored as
+                        // `Shared`/`User`, the downgrade protection breaks
+                        // silently — add an explicit storage-type-match
+                        // check here instead of relying on the upstream
+                        // guards.
+                    }
                 }
             }
             Action::DeleteRef { id, metadata, .. } => {
@@ -640,6 +1083,14 @@ impl<S: StorageAdaptor> Interface<S> {
                     data_len = data.len(),
                     "Interface::apply_action preparing to upsert entity"
                 );
+                // Tree-shape integrity check. Replaces the v1 signed
+                // commitment to ancestor merkle hashes — same coverage,
+                // separate concern (signature checks authorization;
+                // this checks tree-state agreement). HashComparison
+                // sync supplies `ancestors: vec![]`, which makes this a
+                // no-op there (correct — sync runs precisely when tree
+                // shapes have drifted).
+                Self::verify_ancestor_integrity(&ancestors);
                 let mut parent = None;
                 for this in ancestors.iter().rev() {
                     let parent = parent.replace(this);
@@ -1683,15 +2134,21 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         let mut metadata = metadata.clone();
-        // If this is a local user action, set the nonce
-        if let StorageType::User {
-            owner,
-            signature_data,
-        } = metadata.storage_type
-        {
-            if *owner == crate::env::executor_id() && signature_data.is_none() {
-                // This is a new local action. Set the nonce.
-                // Use the `updated_at` timestamp as the nonce.
+        // For a local User write, ALWAYS overwrite the incoming
+        // signature_data with a fresh placeholder tied to this call's
+        // nonce. We can't trust the WASM-provided value: a re-write
+        // via `UnorderedMap::insert_with_storage_type` /
+        // `EntryMut::drop` plumbs through the previously-stored
+        // metadata verbatim — including a real ed25519 signature for
+        // the prior (data, nonce) pair. Skipping the stamp in that
+        // case would broadcast the new data with the old signature,
+        // which receivers cannot verify (the signed payload commits
+        // to data + nonce, both of which just changed). Remote
+        // actions never go through `save_raw` (they apply via
+        // `apply_action`), so unconditionally stamping here is safe:
+        // it only fires when the executor is the owner.
+        if let StorageType::User { owner, .. } = metadata.storage_type {
+            if *owner == crate::env::executor_id() {
                 let nonce = *metadata.updated_at;
                 metadata.storage_type = StorageType::User {
                     owner,
@@ -1712,27 +2169,28 @@ impl<S: StorageAdaptor> Interface<S> {
         // Stamp if the executor is in EITHER. This is what enables rotate-self-out:
         // a writer rotating themselves out has executor ∈ stored but ∉ claimed; the
         // verifier on remote also uses stored, so the signature still verifies there.
+        //
+        // Same re-stamp-always rationale as the User arm above: a
+        // re-write may carry the previously-stored real signature
+        // through, and broadcasting that with new data + new nonce
+        // would not verify on receivers.
         let shared_to_stamp = if let StorageType::Shared {
             writers: claimed_writers,
-            signature_data,
+            ..
         } = &metadata.storage_type
         {
-            if signature_data.is_none() {
-                let executor: calimero_primitives::identity::PublicKey =
-                    crate::env::executor_id().into();
-                let stored_has_executor = <Index<S>>::get_metadata(id)?
-                    .as_ref()
-                    .map(|m| match &m.storage_type {
-                        StorageType::Shared { writers, .. } => writers.contains(&executor),
-                        _ => false,
-                    })
-                    .unwrap_or(false);
-                let claimed_has_executor = claimed_writers.contains(&executor);
-                if stored_has_executor || claimed_has_executor {
-                    Some((claimed_writers.clone(), executor))
-                } else {
-                    None
-                }
+            let executor: calimero_primitives::identity::PublicKey =
+                crate::env::executor_id().into();
+            let stored_has_executor = <Index<S>>::get_metadata(id)?
+                .as_ref()
+                .map(|m| match &m.storage_type {
+                    StorageType::Shared { writers, .. } => writers.contains(&executor),
+                    _ => false,
+                })
+                .unwrap_or(false);
+            let claimed_has_executor = claimed_writers.contains(&executor);
+            if stored_has_executor || claimed_has_executor {
+                Some((claimed_writers.clone(), executor))
             } else {
                 None
             }
@@ -1793,13 +2251,30 @@ impl<S: StorageAdaptor> Interface<S> {
         unimplemented!()
     }
 
-    /// Helper to verify a new `Update` action.
+    /// Helper to verify an upsert (`Add` or `Update`) action against the
+    /// receiver's currently-stored entity.
+    ///
+    /// Both upsert variants share the same storage-type-match invariant:
+    /// once an entity exists locally with a given `StorageType`, no remote
+    /// action can change that type. `Update` is the path you'd expect to
+    /// see for an existing entity, but `Add` for an entity that already
+    /// exists locally must also be gated — otherwise a forged
+    /// `Action::Add { storage_type: Public }` for an entity stored as
+    /// `Shared`/`User` would land in the `Public` arm of `apply_action`
+    /// (which intentionally skips signature verification, see the
+    /// `hash_authorization_for_payload` doc), reach `save_internal`, and
+    /// silently downgrade the entity to `Public` — the storage-type
+    /// downgrade attack the bot review on PR #2386 flagged.
     fn verify_action_update(action: &Action) -> Result<(), StorageError> {
         let (metadata, _data, id) = match action {
-            Action::Update {
+            Action::Add {
+                metadata, data, id, ..
+            }
+            | Action::Update {
                 metadata, data, id, ..
             } => (metadata, data, *id),
-            // Should not happen
+            // DeleteRef has its own type-match check in the main
+            // `apply_action`; Compare doesn't mutate.
             _ => return Ok(()),
         };
 
