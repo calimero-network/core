@@ -283,6 +283,23 @@ pub fn pubkey_of(sk: &SigningKey) -> PublicKey {
     PublicKey::from(*sk.verifying_key().as_bytes())
 }
 
+/// Register the root node in `MainStorage` and return a `ChildInfo`
+/// referencing it. Mirrors `setup_root::<MockedStorage<N>>` from
+/// `write_hook_stale_writers.rs` for tests that use the `MainInterface`
+/// alias.
+pub fn setup_root_for_main() -> ChildInfo {
+    use crate::index::Index;
+    use crate::store::MainStorage;
+
+    let root_id = Id::root();
+    let root_meta = Metadata::default();
+    Index::<MainStorage>::add_root(ChildInfo::new(root_id, [0; 32], root_meta.clone())).unwrap();
+    let (full_hash, _) = Index::<MainStorage>::get_hashes_for(root_id)
+        .unwrap()
+        .unwrap();
+    ChildInfo::new(root_id, full_hash, root_meta)
+}
+
 /// Build a signed `Shared` storage action (Add or Update).
 ///
 /// `hlc_ns` populates BOTH the action's `updated_at` and the signature's
