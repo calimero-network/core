@@ -898,6 +898,8 @@ mod user_storage_signature_verification {
 /// preventing replay attacks where an attacker resends old signed messages.
 #[cfg(test)]
 mod user_storage_replay_protection {
+    use ed25519_dalek::Signer;
+
     use super::*;
     use crate::env;
     use crate::tests::common::{
@@ -920,6 +922,17 @@ mod user_storage_replay_protection {
         // nonces (see `replay_with_lower_nonce_fails` below) and
         // for `DeleteRef` (where same-nonce delete is destructive
         // and shouldn't occur in legitimate flows).
+        //
+        // **Why this test constructs the action manually** instead
+        // of using `create_signed_user_add_action`: that helper
+        // sets `metadata.updated_at = time_now()` but takes
+        // `sig_data.nonce` as a separate parameter — so the two
+        // can diverge in tests. In production, `save_raw` sets
+        // both from the same HLC value, so they're always equal.
+        // The idempotent re-apply path keys off
+        // `sig_data.nonce == stored.metadata.updated_at`, so the
+        // production invariant has to hold for the test to
+        // exercise the right code path.
         env::reset_for_testing();
 
         let (signing_key, owner) = create_test_keypair();
@@ -929,10 +942,46 @@ mod user_storage_replay_protection {
         let page = Page::new_from_element("Page", element);
         let serialized = to_vec(&page).unwrap();
 
-        let nonce = env::time_now();
-
-        let action =
-            create_signed_user_add_action(&signing_key, owner, page.id(), serialized, nonce);
+        // Manually construct the action with `sig_data.nonce ==
+        // metadata.updated_at`, mirroring `save_raw`'s production
+        // invariant.
+        let hlc = env::time_now();
+        let mut metadata = Metadata {
+            created_at: hlc,
+            updated_at: hlc.into(),
+            storage_type: StorageType::User {
+                owner,
+                signature_data: Some(SignatureData {
+                    signature: [0u8; 64], // placeholder, set below
+                    nonce: hlc,
+                    signer: None,
+                }),
+            },
+            crdt_type: None,
+            field_name: None,
+        };
+        let mut action = Action::Add {
+            id: page.id(),
+            data: serialized,
+            ancestors: vec![],
+            metadata: metadata.clone(),
+        };
+        let payload = action.payload_for_signing();
+        let signature = signing_key.sign(&payload).to_bytes();
+        if let StorageType::User {
+            signature_data: Some(ref mut sd),
+            ..
+        } = metadata.storage_type
+        {
+            sd.signature = signature;
+        }
+        if let Action::Add {
+            metadata: ref mut m,
+            ..
+        } = action
+        {
+            *m = metadata;
+        }
 
         // First apply succeeds.
         assert!(MainInterface::apply_action(action.clone(), &ApplyContext::empty()).is_ok());
