@@ -4306,15 +4306,54 @@ impl SyncManager {
         // both. The gossipsub mesh may still be forming when this runs
         // (mDNS + GRAFT exchange can take several seconds), and a peer can
         // be in the mesh while its transport connection is stale — so each
-        // round we try *every* known peer, and the open is bounded by an
-        // explicit timeout so a stalled negotiation fails over to the next
-        // peer instead of waiting for connection death (~4s observed on
-        // CI). Use the uninitialized retry window (10 × 1 s) to stay
-        // reliable in slower environments (CI, Docker, mDNS cold-start).
+        // round we try every known peer (in randomized order so a
+        // consistently-stale peer doesn't get tried first every round and
+        // burn the per-peer timeout budget before falling over to a
+        // healthy one — matches `perform_interval_sync`'s shuffle). The
+        // open is bounded by an explicit timeout so a stalled negotiation
+        // fails over to the next peer instead of waiting for connection
+        // death (~4s observed on CI). Use the uninitialized retry window
+        // (10 × 1 s) to stay reliable in slower environments (CI, Docker,
+        // mDNS cold-start).
+        //
+        // The whole discovery+open loop is bounded by an outer deadline
+        // so a worst-case `retries × peers × open_timeout` blow-up
+        // (3-peer mesh + default 3 s open + 10 retries ≈ 100 s) can't
+        // outlast the caller's own timeout and leave the join in an
+        // ambiguous state. The deadline is generous enough to cover a
+        // legitimate cold-start mesh formation
+        // (`mesh_retries × (mesh_retry_delay + open_timeout)`) but caps
+        // pathological cases.
         let open_timeout = self.sync_config.open_stream_timeout;
+        let mesh_retries = super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED;
+        let mesh_retry_delay = std::time::Duration::from_millis(
+            super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
+        );
+        let connect_deadline = mesh_retry_delay
+            .saturating_add(open_timeout)
+            .saturating_mul(mesh_retries);
+        let connect_started = std::time::Instant::now();
+
         let mut stream = None;
-        'connect: for attempt in 1..=super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
-            let peers = self.network_client.mesh_peers(topic.clone()).await;
+        'connect: for attempt in 1..=mesh_retries {
+            if connect_started.elapsed() >= connect_deadline {
+                debug!(
+                    namespace_id = %hex::encode(params.namespace_id),
+                    attempt,
+                    elapsed_ms = connect_started.elapsed().as_millis() as u64,
+                    "namespace-join connect-loop deadline exceeded, giving up"
+                );
+                break;
+            }
+            let mut peers = self.network_client.mesh_peers(topic.clone()).await;
+            // Randomize peer order so a consistently-stale peer doesn't
+            // get tried first every round. `choose_multiple` of all
+            // peers is the same shuffle pattern used in
+            // `perform_interval_sync`.
+            peers = peers
+                .choose_multiple(&mut rand::thread_rng(), peers.len())
+                .copied()
+                .collect();
 
             for peer in &peers {
                 match time::timeout(open_timeout, self.network_client.open_stream(*peer)).await {
@@ -4342,24 +4381,23 @@ impl SyncManager {
                 }
             }
 
-            if attempt < super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
+            if attempt < mesh_retries {
                 debug!(
                     namespace_id = %hex::encode(params.namespace_id),
                     attempt,
                     peer_count = peers.len(),
                     "No reachable namespace mesh peer yet, retrying..."
                 );
-                time::sleep(std::time::Duration::from_millis(
-                    super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
-                ))
-                .await;
+                time::sleep(mesh_retry_delay).await;
             }
         }
 
         let mut stream = stream.ok_or_else(|| {
             eyre::eyre!(
-                "could not open a namespace-join stream to any mesh peer for namespace {}",
-                hex::encode(params.namespace_id)
+                "could not open a namespace-join stream to any mesh peer for namespace {} \
+                 (deadline {}ms)",
+                hex::encode(params.namespace_id),
+                connect_deadline.as_millis()
             )
         })?;
 
