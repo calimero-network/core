@@ -1822,26 +1822,33 @@ fn persist_signed_signatures(
                 }
                 Action::DeleteRef { .. } | Action::Compare { .. } => continue,
             };
-            // Only Shared/User with a real signature need the
+            // Only Shared/User with a REAL signature need the
             // re-persist. Public/Frozen don't carry signatures.
-            // Shared/User with `signature_data: None` are unsigned
-            // bootstrap actions that `sign_authorized_actions`
-            // didn't touch (the placeholder match `signature == [0;
-            // 64]` is gated on `signature_data: Some(_)` —
-            // bootstrap actions stay None) — skip them so we don't
-            // accidentally overwrite a freshly-signed entity with
-            // an older unsigned one in the same batch.
-            let has_real_signature = matches!(
-                &storage_type,
+            //
+            // Three skip conditions:
+            // 1. `signature_data: None` — unsigned bootstrap action;
+            //    `sign_authorized_actions` doesn't touch these.
+            // 2. `signature_data: Some(SignatureData { signature: [0;
+            //    64], .. })` — placeholder that
+            //    `sign_authorized_actions` declined to sign (e.g. a
+            //    `User` action whose owner ≠ executor, or a `Shared`
+            //    action where the executor isn't in the writer set).
+            //    Persisting the placeholder here would overwrite the
+            //    real signature already stored for that entity.
+            // 3. Anything else falls through to
+            //    `update_signature_in_place`.
+            let signed_with_real_sig = match &storage_type {
                 StorageType::Shared {
-                    signature_data: Some(_),
-                    ..
-                } | StorageType::User {
-                    signature_data: Some(_),
+                    signature_data: Some(sig),
                     ..
                 }
-            );
-            if !has_real_signature {
+                | StorageType::User {
+                    signature_data: Some(sig),
+                    ..
+                } if sig.signature != [0u8; 64] => true,
+                _ => false,
+            };
+            if !signed_with_real_sig {
                 continue;
             }
             match Interface::<MainStorage>::update_signature_in_place(id, storage_type) {
