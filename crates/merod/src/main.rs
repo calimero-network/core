@@ -22,30 +22,34 @@ async fn main() -> EyreResult<()> {
     // Used by integration tests to verify panic hook logs structured info without panicking in-process.
     match std::env::var("MEROD_TEST_PANIC").as_deref() {
         Ok("1") => {
-            setup()?;
+            setup(None)?;
             panic!("test panic message");
         }
         Ok("string") => {
-            setup()?;
+            setup(None)?;
             std::panic::panic_any(String::from("string payload panic"));
         }
         _ => {}
     }
 
-    setup()?;
-
     let command = RootCommand::parse();
+
+    setup(command.args.log_level.as_deref())?;
 
     version::check_for_update();
 
     command.run().await
 }
 
-fn setup() -> EyreResult<()> {
-    let directives = match var("RUST_LOG") {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => "merod=info,calimero_=info".to_owned(),
-    };
+fn setup(log_level: Option<&str>) -> EyreResult<()> {
+    let directives = log_level
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| format!("merod={s},calimero_={s}"))
+        .or_else(|| match var("RUST_LOG") {
+            Ok(value) if !value.trim().is_empty() => Some(value),
+            _ => None,
+        })
+        .unwrap_or_else(|| "merod=info,calimero_=info".to_owned());
 
     registry()
         .with(EnvFilter::builder().parse(directives)?)
