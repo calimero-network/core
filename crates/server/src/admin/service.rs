@@ -237,6 +237,10 @@ pub(crate) fn setup(
             post(groups::issue_ownership_proof::handler),
         )
         .route(
+            "/groups/:group_id/issue-namespace-ownership-proof",
+            post(groups::issue_namespace_ownership_proof::handler),
+        )
+        .route(
             "/groups/:group_id/sync",
             post(groups::sync_group::handler),
         )
