@@ -2372,6 +2372,70 @@ impl Validate for IssueOwnershipProofApiRequest {
     }
 }
 
+/// Namespace-scoped sibling of [`IssueOwnershipProofApiRequest`].
+///
+/// Wire-identical MINUS the `contextId` field: the proof is scoped to the
+/// namespace-root group only. The response reuses
+/// [`IssueOwnershipProofApiResponse`] verbatim. Purely additive to
+/// `calimero-server-primitives`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueNamespaceOwnershipProofApiRequest {
+    pub audience: String,
+    pub subject: String,
+    /// Hex string, 32–128 chars inclusive (16–64 raw bytes).
+    pub nonce: String,
+    /// Caller-requested expiry in unix milliseconds. Server clamps to
+    /// `min(expires_at_ms, issued_at_ms + 5*60*1000)`.
+    pub expires_at_ms: u64,
+}
+
+impl Validate for IssueNamespaceOwnershipProofApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+
+        // audience: non-empty, <= 256 chars.
+        if self.audience.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "audience" });
+        } else if let Some(e) = validate_string_length(&self.audience, "audience", 256) {
+            errors.push(e);
+        }
+
+        // subject: non-empty, <= 512 chars.
+        if self.subject.is_empty() {
+            errors.push(ValidationError::EmptyField { field: "subject" });
+        } else if let Some(e) = validate_string_length(&self.subject, "subject", 512) {
+            errors.push(e);
+        }
+
+        // nonce: hex string, 32..=128 chars inclusive (16..=64 raw bytes).
+        let n = self.nonce.len();
+        if !(32..=128).contains(&n) {
+            errors.push(ValidationError::InvalidFormat {
+                field: "nonce",
+                reason: "nonce must be hex-encoded, 32..=128 characters".into(),
+            });
+        } else if !self.nonce.chars().all(|c| c.is_ascii_hexdigit()) {
+            errors.push(ValidationError::InvalidHexEncoding {
+                field: "nonce",
+                reason: "nonce must be valid hex".into(),
+            });
+        } else if n % 2 != 0 {
+            // An odd-length hex string can't decode to whole bytes, which is
+            // inconsistent with the documented "16..=64 raw bytes" contract.
+            errors.push(ValidationError::InvalidFormat {
+                field: "nonce",
+                reason: "nonce hex string must have even length".into(),
+            });
+        }
+
+        // expires_at_ms is validated in the handler (it requires comparing
+        // against the current wall-clock).
+
+        errors
+    }
+}
+
 // ---- Leave Namespace (cascading self-leave) ----
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

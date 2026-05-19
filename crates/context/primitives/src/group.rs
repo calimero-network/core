@@ -549,6 +549,30 @@ impl Message for IssueOwnershipProofRequest {
     type Result = eyre::Result<IssueOwnershipProofResponse>;
 }
 
+/// Namespace-scoped sibling of [`IssueOwnershipProofRequest`].
+///
+/// Identical wire/signing contract MINUS the `context_id`: the signed payload
+/// carries `context_id == ""` and the handler skips the context lookup +
+/// containment walk. The authorization root is the namespace-root `group_id`
+/// (direct-admin gate), and the response type is reused verbatim.
+///
+/// See the issue-ownership-proof handler for the locked wire format.
+#[derive(Debug)]
+pub struct IssueNamespaceOwnershipProofRequest {
+    pub group_id: ContextGroupId,
+    pub audience: String,
+    pub subject: String,
+    /// Hex string, validated by the API layer to be 32..=128 chars.
+    pub nonce: String,
+    /// Caller-requested expiry in unix ms. Clamped server-side to
+    /// `min(expires_at_ms, issued_at_ms + 5*60*1000)`.
+    pub expires_at_ms: u64,
+}
+
+impl Message for IssueNamespaceOwnershipProofRequest {
+    type Result = eyre::Result<IssueOwnershipProofResponse>;
+}
+
 #[derive(Clone, Debug)]
 pub struct IssueOwnershipProofResponse {
     /// Ed25519 public key of the signer (the node's group signing identity).
