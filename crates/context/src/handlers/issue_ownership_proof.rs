@@ -169,6 +169,17 @@ pub(crate) fn build_namespace_ownership_proof(
         bail!("node is not a direct admin of this group");
     }
 
+    // A namespace proof is scoped to a whole namespace, and a namespace IS its
+    // root group. Unlike the context path (`build_ownership_proof`), which
+    // legitimately accepts a subgroup context via the containment walk, the
+    // namespace primitive must reject any non-root `group_id` — admin on a
+    // subgroup must not yield a namespace-wide claim. Same check & API as the
+    // server-side precedent in
+    // `crates/server/src/admin/handlers/namespaces/create_group_in_namespace.rs`.
+    if group_store::get_parent_group(store, &group_id)?.is_some() {
+        bail!("group_id must reference a namespace root group");
+    }
+
     let Some(signing_key_bytes) =
         group_store::resolve_group_signing_key(store, &group_id, &node_identity)?
     else {
@@ -674,5 +685,47 @@ mod tests {
         )
         .expect_err("expected not-direct-admin error");
         assert!(err.to_string().contains("direct admin"));
+    }
+
+    #[test]
+    fn subgroup_namespace_proof_bails() {
+        // A namespace proof must be scoped to a namespace ROOT (a group with
+        // no parent). Being a direct admin of a subgroup nested under a root
+        // must NOT yield a namespace-wide claim: the builder must bail.
+        let store = test_store();
+        let root = ContextGroupId::from([0xAA; 32]);
+        let child = ContextGroupId::from([0xCC; 32]);
+
+        let signing_priv = PrivateKey::from([0x33; 32]);
+        let signing_pub = signing_priv.public_key();
+
+        // Admin + signing key registered directly at the child subgroup, so
+        // the `is_direct_group_admin` gate passes for `child` — the only
+        // thing standing between the caller and a namespace proof is the
+        // namespace-root check.
+        group_store::add_group_member(&store, &child, &signing_pub, GroupMemberRole::Admin)
+            .expect("add admin at child");
+        group_store::store_group_signing_key(&store, &child, &signing_pub, &signing_priv)
+            .expect("store signing key at child");
+
+        // `child` is nested under the namespace root `root`, so
+        // `get_parent_group(child)` is `Some(root)`.
+        group_store::nest_group(&store, &root, &child).expect("nest child under root");
+
+        let err = build_namespace_ownership_proof(
+            &store,
+            signing_pub,
+            child,
+            "mdma:enable-ha-namespace",
+            "subject-xyz",
+            "deadbeefcafebabe1122334455667788",
+            NOW_MS + 1_000,
+            NOW_MS,
+        )
+        .expect_err("namespace proof on a subgroup must bail");
+        assert!(
+            err.to_string().contains("root"),
+            "error must mention namespace root, got: {err}"
+        );
     }
 }
