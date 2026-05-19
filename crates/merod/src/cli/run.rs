@@ -155,7 +155,8 @@ impl RunCommand {
                 session_deadline: config.sync.session_deadline,
                 interval: config.sync.interval,
                 frequency: config.sync.frequency,
-                ..Default::default() // Use defaults for new fields
+                max_concurrent: config.sync.max_concurrent,
+                ..Default::default()
             },
             datastore: datastore_config,
             blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),

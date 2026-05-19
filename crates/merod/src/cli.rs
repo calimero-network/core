@@ -86,6 +86,10 @@ pub struct RootArgs {
     /// Name of node
     #[arg(short = 'n', long = "node", value_name = "NAME")]
     pub node_name: Utf8PathBuf,
+
+    /// Override the log level (e.g. debug, info, warn, error). Overrides RUST_LOG.
+    #[arg(long, value_name = "LEVEL")]
+    pub log_level: Option<String>,
 }
 
 impl RootCommand {

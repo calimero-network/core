@@ -280,6 +280,13 @@ pub struct SyncConfig {
     pub interval: Duration,
     #[serde(rename = "frequency_ms", with = "serde_duration")]
     pub frequency: Duration,
+    /// Maximum number of concurrent sync operations (default: 30).
+    #[serde(default = "default_max_concurrent_syncs")]
+    pub max_concurrent: usize,
+}
+
+fn default_max_concurrent_syncs() -> usize {
+    30
 }
 
 fn default_sync_session_deadline() -> Duration {
