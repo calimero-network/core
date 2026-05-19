@@ -1,7 +1,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_client::group::{IssueOwnershipProofRequest, IssueOwnershipProofResponse};
+use calimero_context_client::group::{
+    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, IssueOwnershipProofResponse,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -142,6 +144,78 @@ pub(crate) fn build_ownership_proof(
     })
 }
 
+/// Namespace-scoped variant of [`build_ownership_proof`].
+///
+/// This is [`build_ownership_proof`] MINUS the context lookup + containment
+/// walk, with `context_id` set to the empty string `""` in the signed
+/// payload. The authorization root is unchanged: `is_direct_group_admin` on
+/// the namespace-root `group_id`, signing key resolved by `group_id` via
+/// `resolve_group_signing_key`, signer derived from the private key, expiry
+/// clamp to `now_ms + MAX_PROOF_LIFETIME_MS`. The signed `OwnershipClaimPayload`
+/// struct (and therefore its field order / signature input) is reused
+/// verbatim; the ONLY delta vs a context proof is `context_id == ""`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_namespace_ownership_proof(
+    store: &Store,
+    node_identity: PublicKey,
+    group_id: ContextGroupId,
+    audience: &str,
+    subject: &str,
+    nonce: &str,
+    requested_expires_at_ms: u64,
+    now_ms: u64,
+) -> eyre::Result<OwnershipProofBuildOutput> {
+    if !group_store::is_direct_group_admin(store, &group_id, &node_identity)? {
+        bail!("node is not a direct admin of this group");
+    }
+
+    let Some(signing_key_bytes) =
+        group_store::resolve_group_signing_key(store, &group_id, &node_identity)?
+    else {
+        bail!("no signing key registered for self-identity in this group");
+    };
+
+    let max_exp = now_ms.saturating_add(MAX_PROOF_LIFETIME_MS);
+    let expires_at_ms = requested_expires_at_ms.min(max_exp);
+    if expires_at_ms <= now_ms {
+        bail!("expires_at_ms must be in the future");
+    }
+
+    // Derive the signer identity from the resolved signing key itself rather
+    // than trusting `node_identity` — identical rationale to
+    // `build_ownership_proof`; mdma cross-checks
+    // `payload.issuer_identity == response.signer_public_key`.
+    let private_key = PrivateKey::from(signing_key_bytes);
+    let signer_public_key = private_key.public_key();
+
+    let payload = OwnershipClaimPayload {
+        v: 1,
+        audience,
+        group_id: hex::encode(group_id.to_bytes()),
+        issuer_identity: signer_public_key.to_string(),
+        // The single, deliberate delta vs a context-scoped proof.
+        context_id: String::new(),
+        subject,
+        nonce,
+        issued_at_ms: now_ms,
+        expires_at_ms,
+    };
+    let signed_payload = serde_json::to_vec(&payload)?;
+
+    let mut sign_input = Vec::with_capacity(OWNERSHIP_PROOF_DOMAIN.len() + signed_payload.len());
+    sign_input.extend_from_slice(OWNERSHIP_PROOF_DOMAIN);
+    sign_input.extend_from_slice(&signed_payload);
+
+    let signature = private_key.sign(&sign_input)?;
+    let signature_bytes: [u8; 64] = signature.to_bytes();
+
+    Ok(OwnershipProofBuildOutput {
+        signer_public_key,
+        signed_payload,
+        signature: signature_bytes,
+    })
+}
+
 impl Handler<IssueOwnershipProofRequest> for ContextManager {
     type Result = ActorResponse<Self, <IssueOwnershipProofRequest as Message>::Result>;
 
@@ -181,6 +255,44 @@ impl Handler<IssueOwnershipProofRequest> for ContextManager {
     }
 }
 
+impl Handler<IssueNamespaceOwnershipProofRequest> for ContextManager {
+    type Result = ActorResponse<Self, <IssueNamespaceOwnershipProofRequest as Message>::Result>;
+
+    fn handle(
+        &mut self,
+        req: IssueNamespaceOwnershipProofRequest,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
+        let result = (|| {
+            let Some((node_identity, _)) = self.node_namespace_identity(&req.group_id) else {
+                bail!("node has no group identity configured");
+            };
+
+            let now_ms = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())
+                .map_err(|_| eyre::eyre!("system clock out of u64 millisecond range"))?;
+
+            let built = build_namespace_ownership_proof(
+                &self.datastore,
+                node_identity,
+                req.group_id,
+                &req.audience,
+                &req.subject,
+                &req.nonce,
+                req.expires_at_ms,
+                now_ms,
+            )?;
+
+            Ok(IssueOwnershipProofResponse {
+                signer_public_key: built.signer_public_key,
+                signed_payload: built.signed_payload,
+                signature: built.signature,
+            })
+        })();
+
+        ActorResponse::reply(result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -192,7 +304,7 @@ mod tests {
     use calimero_store::Store;
     use serde_json::Value;
 
-    use super::{build_ownership_proof, OWNERSHIP_PROOF_DOMAIN};
+    use super::{build_namespace_ownership_proof, build_ownership_proof, OWNERSHIP_PROOF_DOMAIN};
     use crate::group_store;
 
     const NOW_MS: u64 = 1_700_000_000_000;
@@ -491,5 +603,76 @@ mod tests {
             serde_json::from_slice(&out.signed_payload).expect("payload must be valid JSON");
         assert_eq!(json["issuer_identity"], out.signer_public_key.to_string());
         assert_eq!(json["issuer_identity"], real_pub.to_string());
+    }
+
+    #[test]
+    fn namespace_proof_no_context_succeeds() {
+        // Admin + signing key registered at the namespace-root group, but NO
+        // context is registered anywhere. A context-scoped proof would bail on
+        // the containment walk; the namespace primitive must succeed.
+        let store = test_store();
+        let group_id = ContextGroupId::from([0xAA; 32]);
+
+        let signing_priv = PrivateKey::from([0x33; 32]);
+        let signing_pub = signing_priv.public_key();
+
+        group_store::add_group_member(&store, &group_id, &signing_pub, GroupMemberRole::Admin)
+            .expect("add admin");
+        group_store::store_group_signing_key(&store, &group_id, &signing_pub, &signing_priv)
+            .expect("store signing key");
+
+        let out = build_namespace_ownership_proof(
+            &store,
+            signing_pub,
+            group_id,
+            "mdma:enable-ha-namespace",
+            "subject-xyz",
+            "deadbeefcafebabe1122334455667788",
+            NOW_MS + 1_000,
+            NOW_MS,
+        )
+        .expect("namespace proof with no context must succeed");
+
+        // Signature verifies over DOMAIN || signed_payload.
+        let mut sign_input =
+            Vec::with_capacity(OWNERSHIP_PROOF_DOMAIN.len() + out.signed_payload.len());
+        sign_input.extend_from_slice(OWNERSHIP_PROOF_DOMAIN);
+        sign_input.extend_from_slice(&out.signed_payload);
+        out.signer_public_key
+            .verify_raw_signature(&sign_input, &out.signature)
+            .expect("signature must verify");
+
+        let json: Value =
+            serde_json::from_slice(&out.signed_payload).expect("payload must be valid JSON");
+        assert_eq!(json["v"], 1);
+        // The only delta vs a context proof: context_id is the empty string.
+        assert_eq!(json["context_id"], "");
+        // Audience is passed through unchanged; core hardcodes nothing.
+        assert_eq!(json["audience"], "mdma:enable-ha-namespace");
+        assert_eq!(json["subject"], "subject-xyz");
+        assert_eq!(json["group_id"], hex::encode([0xAAu8; 32]));
+        assert_eq!(json["issuer_identity"], signing_pub.to_string());
+        assert_eq!(out.signer_public_key, signing_pub);
+    }
+
+    #[test]
+    fn non_admin_namespace_proof_bails() {
+        let store = test_store();
+        let group_id = ContextGroupId::from([0xAA; 32]);
+        let identity = PublicKey::from([0x44; 32]);
+
+        // Identity is not a member at all — not a direct admin.
+        let err = build_namespace_ownership_proof(
+            &store,
+            identity,
+            group_id,
+            "mdma:enable-ha-namespace",
+            "sub",
+            "deadbeefcafebabe1122334455667788",
+            NOW_MS + 1_000,
+            NOW_MS,
+        )
+        .expect_err("expected not-direct-admin error");
+        assert!(err.to_string().contains("direct admin"));
     }
 }

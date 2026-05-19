@@ -15,9 +15,9 @@ use crate::group::{
     DetachContextFromGroupRequest, GetContextMetadataRequest, GetGroupForContextRequest,
     GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
     GetMemberCapabilitiesRequest, GetMemberMetadataRequest, GetNamespaceIdentityRequest,
-    IssueOwnershipProofRequest, JoinContextRequest, JoinGroupRequest,
-    JoinSubgroupInheritanceRequest, LeaveContextRequest, LeaveGroupRequest, LeaveNamespaceRequest,
-    ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
+    IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest, JoinContextRequest,
+    JoinGroupRequest, JoinSubgroupInheritanceRequest, LeaveContextRequest, LeaveGroupRequest,
+    LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
     RetryGroupUpgradeRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
     SetGroupMetadataRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
@@ -476,5 +476,9 @@ pub enum ContextMessage {
     IssueOwnershipProof {
         request: IssueOwnershipProofRequest,
         outcome: oneshot::Sender<<IssueOwnershipProofRequest as Message>::Result>,
+    },
+    IssueNamespaceOwnershipProof {
+        request: IssueNamespaceOwnershipProofRequest,
+        outcome: oneshot::Sender<<IssueNamespaceOwnershipProofRequest as Message>::Result>,
     },
 }

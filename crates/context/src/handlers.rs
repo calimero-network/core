@@ -238,6 +238,9 @@ impl Handler<ContextMessage> for ContextManager {
             ContextMessage::IssueOwnershipProof { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
+            ContextMessage::IssueNamespaceOwnershipProof { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
         }
     }
 }
