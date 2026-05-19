@@ -55,7 +55,25 @@ pub struct SyncManager {
 
     pub(super) node_client: NodeClient,
     pub(super) context_client: ContextClient,
+    /// Concrete network client. Kept on the manager for external
+    /// callers (e.g. handlers/network_event/*.rs) that need the full
+    /// `NetworkClient` surface (`publish`, specialized-node-invite
+    /// helpers, etc.) — sync itself only ever uses `open_stream` and
+    /// `mesh_peers`, both of which are mediated by the
+    /// [`SyncNetwork`] trait field below.
     pub(crate) network_client: NetworkClient,
+    /// Sync's network surface, trait-mediated so tests can inject a
+    /// `MockSyncNetwork` without spinning up Actix + libp2p. In
+    /// production this is always `Arc::new(network_client.clone())`
+    /// — the two fields hold the same underlying handle. See
+    /// [`crate::sync::network::SyncNetwork`] for the contract.
+    ///
+    /// This split is the minimum-viable mockability for #2406:
+    /// external callers keep talking to the concrete `NetworkClient`
+    /// (no ripple), while sync's own methods read through the trait
+    /// (mockable). After #2312 (SyncDeps inversion) lands, only the
+    /// trait field will remain.
+    pub(crate) sync_network: Arc<dyn super::network::SyncNetwork>,
     pub(super) node_state: crate::NodeState,
 
     pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
@@ -113,6 +131,7 @@ impl Clone for SyncManager {
             node_client: self.node_client.clone(),
             context_client: self.context_client.clone(),
             network_client: self.network_client.clone(),
+            sync_network: Arc::clone(&self.sync_network),
             node_state: self.node_state.clone(),
             ctx_sync_rx: None,
             ns_sync_rx: None,
@@ -194,11 +213,13 @@ impl SyncManager {
             oneshot::Sender<eyre::Result<Vec<u8>>>,
         )>,
     ) -> Self {
+        let sync_network: Arc<dyn super::network::SyncNetwork> = Arc::new(network_client.clone());
         Self {
             sync_config,
             node_client,
             context_client,
             network_client,
+            sync_network,
             node_state,
             ctx_sync_rx: Some(ctx_sync_rx),
             ns_sync_rx: Some(ns_sync_rx),
@@ -208,6 +229,16 @@ impl SyncManager {
             session_result_rx: None,
             metrics: None,
         }
+    }
+
+    /// Test-only override of the sync network surface.
+    ///
+    /// Production code never calls this — the constructor wires
+    /// `sync_network` from the concrete `NetworkClient` automatically.
+    /// Tests use this to swap in a `MockSyncNetwork` after construction.
+    #[cfg(test)]
+    pub(crate) fn set_sync_network(&mut self, sync_network: Arc<dyn super::network::SyncNetwork>) {
+        self.sync_network = sync_network;
     }
 
     /// Wire the `SyncSessionActor` handles onto the original
@@ -809,7 +840,7 @@ impl SyncManager {
                 });
 
                 let ns_topic = TopicHash::from_raw(format!("ns/{}", hex::encode(ns_id_bytes)));
-                let ns_peers = self.network_client.mesh_peers(ns_topic).await;
+                let ns_peers = self.sync_network.mesh_peers(ns_topic).await;
                 if !ns_peers.is_empty() {
                     info!(
                         %context_id,
@@ -1002,7 +1033,7 @@ impl SyncManager {
         let mut probes = stream::iter(peers.iter().copied())
             .map(|peer_id| async move {
                 let outcome = async {
-                    let mut stream = self.network_client.open_stream(peer_id).await?;
+                    let mut stream = self.sync_network.open_stream(peer_id).await?;
 
                     let request_msg = StreamMessage::Init {
                         context_id,
@@ -1436,7 +1467,7 @@ impl SyncManager {
                                     "Added snapshot boundary checkpoints to DAG"
                                 );
 
-                                match self.network_client.open_stream(chosen_peer).await {
+                                match self.sync_network.open_stream(chosen_peer).await {
                                     Ok(mut fine_stream) => {
                                         if let Err(e) = self
                                             .fine_sync_from_boundary(
@@ -2261,7 +2292,7 @@ impl SyncManager {
                     self.sync_config.parent_pull_additional_peers,
                     self.sync_config.parent_pull_budget,
                 );
-                let mut mesh_peers = self.network_client.mesh_peers(topic.clone()).await;
+                let mut mesh_peers = self.sync_network.mesh_peers(topic.clone()).await;
 
                 loop {
                     let after = delta_store_ref.get_missing_parents().await;
@@ -2272,7 +2303,7 @@ impl SyncManager {
                     let next_peer = match budget.next(&mesh_peers) {
                         super::parent_pull::NextPeer::Peer(p) => p,
                         super::parent_pull::NextPeer::RefetchMesh => {
-                            mesh_peers = self.network_client.mesh_peers(topic.clone()).await;
+                            mesh_peers = self.sync_network.mesh_peers(topic.clone()).await;
                             budget.record_refetch();
                             match budget.next(&mesh_peers) {
                                 super::parent_pull::NextPeer::Peer(p) => p,
@@ -2415,7 +2446,7 @@ impl SyncManager {
 
         // Fine-sync to catch any deltas since the snapshot boundary
         if !result.dag_heads.is_empty() {
-            let mut stream = self.network_client.open_stream(peer_id).await?;
+            let mut stream = self.sync_network.open_stream(peer_id).await?;
             if let Err(e) = self
                 .fine_sync_from_boundary(context_id, peer_id, our_identity, &mut stream)
                 .await
@@ -3260,7 +3291,7 @@ impl SyncManager {
         // verification against the signed expected still defends
         // against any anchor serving non-canonical state.
         let topic = TopicHash::from_raw(context_id);
-        let mut mesh_peers = self.network_client.mesh_peers(topic).await;
+        let mut mesh_peers = self.sync_network.mesh_peers(topic).await;
         let mesh_peer_count = mesh_peers.len();
         mesh_peers.shuffle(&mut rand::thread_rng());
         // Walk mesh peers explicitly so cache-miss skips are visible
@@ -3603,7 +3634,7 @@ impl SyncManager {
                 }
             };
 
-        let mut stream = match self.network_client.open_stream(peer_id).await {
+        let mut stream = match self.sync_network.open_stream(peer_id).await {
             Ok(s) => s,
             Err(err) => {
                 debug!(
@@ -4105,7 +4136,7 @@ impl SyncManager {
 
         let mut peers = Vec::new();
         for attempt in 1..=super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
-            peers = self.network_client.mesh_peers(topic.clone()).await;
+            peers = self.sync_network.mesh_peers(topic.clone()).await;
             if !peers.is_empty() {
                 break;
             }
@@ -4147,7 +4178,7 @@ impl SyncManager {
         let mut transport_errors = 0usize;
 
         for peer in &peers {
-            let mut stream = match self.network_client.open_stream(*peer).await {
+            let mut stream = match self.sync_network.open_stream(*peer).await {
                 Ok(s) => s,
                 Err(e) => {
                     debug!(
@@ -4361,7 +4392,7 @@ impl SyncManager {
                 );
                 break;
             }
-            let mut peers = self.network_client.mesh_peers(topic.clone()).await;
+            let mut peers = self.sync_network.mesh_peers(topic.clone()).await;
             // Randomize peer order so a consistently-stale peer doesn't
             // get tried first every round. `choose_multiple` of all
             // peers is the same shuffle pattern used in
@@ -4380,7 +4411,7 @@ impl SyncManager {
                 if connect_started.elapsed() >= connect_deadline {
                     break 'connect;
                 }
-                match time::timeout(open_timeout, self.network_client.open_stream(*peer)).await {
+                match time::timeout(open_timeout, self.sync_network.open_stream(*peer)).await {
                     Ok(Ok(opened)) => {
                         stream = Some(opened);
                         break 'connect;
@@ -4486,7 +4517,7 @@ impl SyncManager {
 
         let topic =
             libp2p::gossipsub::TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
-        let peers = self.network_client.mesh_peers(topic).await;
+        let peers = self.sync_network.mesh_peers(topic).await;
         let Some(peer) = peers.first() else {
             debug!(
                 namespace_id = %hex::encode(namespace_id),
@@ -4495,7 +4526,7 @@ impl SyncManager {
             return;
         };
 
-        let Ok(mut stream) = self.network_client.open_stream(*peer).await else {
+        let Ok(mut stream) = self.sync_network.open_stream(*peer).await else {
             debug!("failed to open stream for namespace sync");
             return;
         };

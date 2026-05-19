@@ -278,7 +278,7 @@ impl SyncManager {
                 .map_err(|e| eyre::eyre!("Snapshot safety check failed: {:?}", e))?;
         }
 
-        let mut stream = self.network_client.open_stream(peer_id).await?;
+        let mut stream = self.sync_network.open_stream(peer_id).await?;
         let boundary = self
             .request_snapshot_boundary(context_id, &mut stream)
             .await?;
