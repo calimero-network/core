@@ -67,12 +67,13 @@ pub(crate) mod mock {
     //! actually exchange messages need a real `Stream`, which is
     //! tracked as a separate follow-up (see module doc).
 
-    use std::sync::Mutex;
+    use std::collections::VecDeque;
     use std::time::Duration;
 
     use async_trait::async_trait;
     use libp2p::gossipsub::TopicHash;
     use libp2p::PeerId;
+    use parking_lot::Mutex;
     use tokio::time;
 
     use super::SyncNetwork;
@@ -86,14 +87,19 @@ pub(crate) mod mock {
         SleepThenErr(Duration, String),
     }
 
-    /// Mock impl. `mesh_peers_responses` is a per-call queue (FIFO);
+    /// Mock impl. `mesh_peers_responses` is a per-call FIFO queue;
     /// once exhausted it returns the last response repeatedly (or
     /// empty if never seeded). Same shape for `open_stream_responses`,
-    /// except it surfaces `eyre::Error`.
+    /// except it surfaces `eyre::Error` on every call once exhausted.
+    ///
+    /// **Mutex choice**: `parking_lot::Mutex` (not `std::sync::Mutex`)
+    /// — never poisons on panic, so a failing test doesn't cascade
+    /// into "PoisonError" noise on subsequent tests. Held only for
+    /// the synchronous pop in each method; never across `.await`.
     #[derive(Default)]
     pub struct MockSyncNetwork {
-        mesh_peers_responses: Mutex<Vec<Vec<PeerId>>>,
-        open_stream_responses: Mutex<Vec<OpenStreamResponse>>,
+        mesh_peers_responses: Mutex<VecDeque<Vec<PeerId>>>,
+        open_stream_responses: Mutex<VecDeque<OpenStreamResponse>>,
     }
 
     impl MockSyncNetwork {
@@ -103,7 +109,7 @@ pub(crate) mod mock {
 
         /// Queue a response for the next `mesh_peers` call.
         pub fn push_mesh_peers(&self, peers: Vec<PeerId>) -> &Self {
-            self.mesh_peers_responses.lock().unwrap().push(peers);
+            self.mesh_peers_responses.lock().push_back(peers);
             self
         }
 
@@ -111,8 +117,7 @@ pub(crate) mod mock {
         pub fn push_open_stream_err(&self, msg: impl Into<String>) -> &Self {
             self.open_stream_responses
                 .lock()
-                .unwrap()
-                .push(OpenStreamResponse::Err(msg.into()));
+                .push_back(OpenStreamResponse::Err(msg.into()));
             self
         }
 
@@ -126,8 +131,7 @@ pub(crate) mod mock {
         ) -> &Self {
             self.open_stream_responses
                 .lock()
-                .unwrap()
-                .push(OpenStreamResponse::SleepThenErr(sleep_for, then_msg.into()));
+                .push_back(OpenStreamResponse::SleepThenErr(sleep_for, then_msg.into()));
             self
         }
     }
@@ -135,18 +139,15 @@ pub(crate) mod mock {
     #[async_trait]
     impl SyncNetwork for MockSyncNetwork {
         async fn mesh_peers(&self, _topic: TopicHash) -> Vec<PeerId> {
-            let mut queue = self.mesh_peers_responses.lock().unwrap();
-            if queue.is_empty() {
-                return Vec::new();
-            }
-            // Pop the front; if it's the last entry, leave a copy
-            // behind so repeated reads after the script is exhausted
+            let mut queue = self.mesh_peers_responses.lock();
+            // Pop the front; if it's the last entry, clone instead of
+            // popping so repeated reads after the script is exhausted
             // keep returning the final value (matches "mesh is stable
             // after discovery completes" production behaviour).
-            if queue.len() == 1 {
-                queue[0].clone()
-            } else {
-                queue.remove(0)
+            match queue.len() {
+                0 => Vec::new(),
+                1 => queue[0].clone(),
+                _ => queue.pop_front().unwrap_or_default(),
             }
         }
 
@@ -154,18 +155,13 @@ pub(crate) mod mock {
             &self,
             _peer_id: PeerId,
         ) -> eyre::Result<calimero_network_primitives::stream::Stream> {
-            let response = {
-                let mut queue = self.open_stream_responses.lock().unwrap();
-                if queue.is_empty() {
-                    return Err(eyre::eyre!(
-                        "MockSyncNetwork: open_stream called with no queued response"
-                    ));
-                }
-                queue.remove(0)
-            };
+            let response = self.open_stream_responses.lock().pop_front();
             match response {
-                OpenStreamResponse::Err(msg) => Err(eyre::eyre!(msg)),
-                OpenStreamResponse::SleepThenErr(sleep_for, msg) => {
+                None => Err(eyre::eyre!(
+                    "MockSyncNetwork: open_stream called with no queued response"
+                )),
+                Some(OpenStreamResponse::Err(msg)) => Err(eyre::eyre!(msg)),
+                Some(OpenStreamResponse::SleepThenErr(sleep_for, msg)) => {
                     time::sleep(sleep_for).await;
                     Err(eyre::eyre!(msg))
                 }
@@ -173,7 +169,6 @@ pub(crate) mod mock {
         }
     }
 
-    #[cfg(test)]
     mod tests {
         use super::*;
 
