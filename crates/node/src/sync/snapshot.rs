@@ -891,10 +891,32 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     }
     entity_ids.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
-    // Build SnapshotRecord list in canonical (id-sorted) order.
-    // Cursor support: skip any entity ids ≤ cursor.last_key.
+    // Build per-entity bundles in canonical (id-sorted) order. Each
+    // bundle holds all `SnapshotRecord`s for one entity (the
+    // `Entity` Entry+Index pair plus its optional
+    // `Auxiliary::ROTATION_LOG`). Pagination is atomic on bundle
+    // boundaries — a bundle either fits entirely on the current
+    // page or moves to the next. Without this, the per-record
+    // pagination could split an entity across pages, and the
+    // cursor (which records the last entity id committed) would
+    // cause the resumed iteration to skip the entity outright,
+    // permanently dropping its Auxiliary records.
+    //
+    // **Note on `SyncState`:** the sender doesn't look up
+    // `Key::SyncState(id)` — no production codebase path actually
+    // writes that key (it's defined in the storage layer but
+    // unused). The receiver mirrors this and rejects
+    // `Auxiliary { kind: SYNC_STATE, .. }` as misbehaving. If
+    // SyncState ever does start being written, replicating it
+    // safely will require per-record authentication (it's not
+    // bound to an entity signature) — track as a follow-up if /
+    // when that need arises.
+    //
+    // Cursor support: skip any entity ids ≤ cursor.last_key. The
+    // `≤` (not `<`) is correct because the cursor records the
+    // last fully-committed entity, not "next to emit."
     let start_after_id = start_cursor.map(|c| c.last_key);
-    let mut records: Vec<SnapshotRecord> = Vec::new();
+    let mut bundles: Vec<([u8; 32], Vec<SnapshotRecord>)> = Vec::new();
     for id in &entity_ids {
         let id_bytes = *id.as_bytes();
         if let Some(after) = start_after_id {
@@ -916,6 +938,8 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         let entry_bytes = all_records.get(&entry_key).cloned();
         let rotation_log_bytes = all_records.get(&rotation_log_key).cloned();
 
+        let mut bundle: Vec<SnapshotRecord> = Vec::new();
+
         // Emit Entity record bundling Entry + Index (the common case
         // — every persisted entity has both). Verification on the
         // receiver runs against the metadata inside `index`.
@@ -929,12 +953,12 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         // `Auxiliary { kind: INDEX, id, value: forged_index }` for
         // the same id and clobber the just-verified Index with a
         // forged one. Orphan Entry/Index in a well-formed state tree
-        // shouldn't exist anyway; if they do we drop them (warn
-        // emitted below) rather than ship them on an unverified
+        // shouldn't exist anyway; if they do we drop them (debug
+        // log emitted below) rather than ship them on an unverified
         // channel.
         match (index_bytes.clone(), entry_bytes.clone()) {
             (Some(index), Some(entry)) => {
-                records.push(SnapshotRecord::Entity {
+                bundle.push(SnapshotRecord::Entity {
                     id: id_bytes,
                     entry,
                     index,
@@ -960,12 +984,16 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         }
 
         if let Some(rotation_log) = rotation_log_bytes {
-            records.push(SnapshotRecord::Auxiliary {
+            bundle.push(SnapshotRecord::Auxiliary {
                 kind: snapshot_record_kind::ROTATION_LOG,
                 id: id_bytes,
                 value: rotation_log,
             });
             let _ = consumed_keys.insert(rotation_log_key);
+        }
+
+        if !bundle.is_empty() {
+            bundles.push((id_bytes, bundle));
         }
     }
 
@@ -981,19 +1009,29 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         );
     }
 
-    let total_entries = records.len() as u64;
+    let total_entries: u64 = bundles.iter().map(|(_, b)| b.len() as u64).sum();
 
-    // Serialize records into pages, respecting byte_limit and
-    // page_limit. Cursor cursors on the last entity id included on
-    // the page boundary — matches `start_after_id` semantics above.
+    // Serialize bundles into pages atomically. Cursor records the
+    // last entity id whose bundle was fully committed to a page.
     let mut pages: Vec<Vec<u8>> = Vec::new();
     let mut current_page: Vec<u8> = Vec::new();
     let mut last_id: Option<[u8; 32]> = None;
 
-    for record in records.into_iter() {
-        let record_bytes = borsh::to_vec(&record)?;
+    for (bundle_id, bundle) in bundles.into_iter() {
+        // Pre-serialize the whole bundle so we know its size.
+        let mut bundle_bytes: Vec<u8> = Vec::new();
+        for record in &bundle {
+            let record_bytes = borsh::to_vec(record)?;
+            bundle_bytes.extend(record_bytes);
+        }
 
-        if !current_page.is_empty() && (current_page.len() + record_bytes.len()) as u32 > byte_limit
+        // Page-break BEFORE adding this bundle if it would exceed
+        // byte_limit and the current page isn't empty. A bundle that
+        // by itself exceeds byte_limit still goes on its own page —
+        // splitting would defeat atomicity, and oversized bundles
+        // are bounded by `MAX_ENTITY_DATA_SIZE` on the wire types.
+        if !current_page.is_empty()
+            && (current_page.len() + bundle_bytes.len()) as u32 > byte_limit
         {
             pages.push(std::mem::take(&mut current_page));
             if pages.len() >= page_limit as usize {
@@ -1005,10 +1043,8 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             }
         }
 
-        current_page.extend(record_bytes);
-        last_id = Some(match &record {
-            SnapshotRecord::Entity { id, .. } | SnapshotRecord::Auxiliary { id, .. } => *id,
-        });
+        current_page.extend(bundle_bytes);
+        last_id = Some(bundle_id);
     }
 
     if !current_page.is_empty() {
