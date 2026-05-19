@@ -1,14 +1,20 @@
 //! Snapshot sync protocol for full state bootstrap.
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use std::collections::{BTreeMap, HashSet};
+
+use borsh::BorshDeserialize;
 use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;
+use calimero_node_primitives::sync::snapshot::{snapshot_record_kind, SnapshotRecord};
 use calimero_node_primitives::sync::{
     MessagePayload, SnapshotCursor, SnapshotError, StreamMessage,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
+use calimero_storage::address::Id;
 use calimero_storage::env::time_now;
+use calimero_storage::interface::Interface;
+use calimero_storage::store::{Key as StorageKey, MainStorage};
 use calimero_store::key::ContextState as ContextStateKey;
 use calimero_store::key::{Generic as GenericKey, SCOPE_SIZE};
 use calimero_store::slice::Slice;
@@ -418,7 +424,6 @@ impl SyncManager {
         stream: &mut Stream,
     ) -> Result<usize> {
         use calimero_node_primitives::sync::InitPayload;
-        use std::collections::HashSet;
 
         let identities = self
             .context_client
@@ -502,14 +507,133 @@ impl SyncManager {
 
                         let records = decode_snapshot_records(&decompressed)?;
                         let mut handle = self.context_client.datastore_handle();
-                        for (state_key, value) in &records {
-                            let key = ContextStateKey::new(context_id, *state_key);
-                            let slice: Slice<'_> = value.clone().into();
-                            handle.put(&key, &ContextStateValue::from(slice))?;
-                            received_keys.insert(*state_key);
+                        let mut applied = 0usize;
+                        let mut rejected = 0usize;
+                        for record in &records {
+                            match record {
+                                SnapshotRecord::Entity { id, entry, index } => {
+                                    // Per-entity signature verification
+                                    // (closes the peer-trust gap from
+                                    // issue #2387). Parse the index
+                                    // blob to recover metadata, then
+                                    // run `verify_snapshot_entity_signature`
+                                    // against the data + storage-type
+                                    // access-control rules. Drop the
+                                    // record on verification failure;
+                                    // the rest of the snapshot still
+                                    // applies.
+                                    let index_entity: calimero_storage::index::EntityIndex =
+                                        match borsh::from_slice(index) {
+                                            Ok(idx) => idx,
+                                            Err(e) => {
+                                                warn!(
+                                                    %context_id,
+                                                    id = ?id,
+                                                    error = ?e,
+                                                    "snapshot Entity record: index blob \
+                                                     failed to deserialize as EntityIndex — \
+                                                     dropping"
+                                                );
+                                                rejected += 1;
+                                                continue;
+                                            }
+                                        };
+                                    let id_obj = Id::new(*id);
+                                    if let Err(e) =
+                                        Interface::<MainStorage>::verify_snapshot_entity_signature(
+                                            id_obj,
+                                            entry,
+                                            &index_entity.metadata,
+                                        )
+                                    {
+                                        warn!(
+                                            %context_id,
+                                            id = ?id,
+                                            error = ?e,
+                                            storage_type = ?index_entity.metadata.storage_type,
+                                            "snapshot Entity record: signature \
+                                             verification failed — dropping"
+                                        );
+                                        rejected += 1;
+                                        continue;
+                                    }
+
+                                    // Verified — persist both Entry
+                                    // and Index blobs under their
+                                    // hashed storage keys.
+                                    let entry_state_key =
+                                        StorageKey::Entry(id_obj).to_bytes();
+                                    let index_state_key =
+                                        StorageKey::Index(id_obj).to_bytes();
+                                    let entry_key =
+                                        ContextStateKey::new(context_id, entry_state_key);
+                                    let index_key =
+                                        ContextStateKey::new(context_id, index_state_key);
+                                    let entry_slice: Slice<'_> = entry.clone().into();
+                                    let index_slice: Slice<'_> = index.clone().into();
+                                    handle.put(
+                                        &entry_key,
+                                        &ContextStateValue::from(entry_slice),
+                                    )?;
+                                    handle.put(
+                                        &index_key,
+                                        &ContextStateValue::from(index_slice),
+                                    )?;
+                                    let _ = received_keys.insert(entry_state_key);
+                                    let _ = received_keys.insert(index_state_key);
+                                    applied += 1;
+                                }
+                                SnapshotRecord::Auxiliary { kind, id, value } => {
+                                    // Auxiliary records aren't
+                                    // per-record signature-verifiable.
+                                    // Re-derive the storage key from
+                                    // (kind, id) and write through.
+                                    let id_obj = Id::new(*id);
+                                    let storage_key = match *kind {
+                                        snapshot_record_kind::INDEX => {
+                                            StorageKey::Index(id_obj)
+                                        }
+                                        snapshot_record_kind::ENTRY => {
+                                            StorageKey::Entry(id_obj)
+                                        }
+                                        snapshot_record_kind::SYNC_STATE => {
+                                            StorageKey::SyncState(id_obj)
+                                        }
+                                        snapshot_record_kind::ROTATION_LOG => {
+                                            StorageKey::RotationLog(id_obj)
+                                        }
+                                        other => {
+                                            warn!(
+                                                %context_id,
+                                                kind = other,
+                                                id = ?id,
+                                                "snapshot Auxiliary record: unknown kind — \
+                                                 dropping"
+                                            );
+                                            rejected += 1;
+                                            continue;
+                                        }
+                                    };
+                                    let state_key = storage_key.to_bytes();
+                                    let key = ContextStateKey::new(context_id, state_key);
+                                    let slice: Slice<'_> = value.clone().into();
+                                    handle.put(&key, &ContextStateValue::from(slice))?;
+                                    let _ = received_keys.insert(state_key);
+                                    applied += 1;
+                                }
+                            }
+                        }
+                        if rejected > 0 {
+                            warn!(
+                                %context_id,
+                                applied,
+                                rejected,
+                                page_records = records.len(),
+                                "snapshot page applied with rejections"
+                            );
                         }
 
-                        total_applied += records.len();
+                        total_applied += applied;
                         pages_in_burst += 1;
 
                         debug!(
@@ -641,6 +765,27 @@ struct SnapshotBoundary {
 ///
 /// Uses a snapshot iterator to ensure consistent reads even if writes occur
 /// during iteration. The snapshot provides a frozen point-in-time view.
+///
+/// **Wire-format note (#2387):** records are now structured
+/// [`SnapshotRecord`]s carrying the entity id and kind explicitly,
+/// so the receiver can group `Entry`+`Index` records per entity and
+/// run `Interface::verify_snapshot_entity_signature` before
+/// persisting. Pre-#2387 the wire shipped opaque
+/// `(state_key_hash, value)` tuples that gave the receiver no way to
+/// authenticate state-bearing records.
+///
+/// Discovery flow:
+/// 1. Iterate all `ContextStateKey` records for this context.
+/// 2. For each record value, attempt borsh deserialization as
+///    [`calimero_storage::index::EntityIndex`]; success identifies
+///    the record as `Key::Index(id)` and yields the entity id.
+/// 3. For each discovered id, look up `Key::Entry(id)` and
+///    `Key::RotationLog(id)` records by their hashed state keys
+///    and bundle them.
+/// 4. Records whose state-key doesn't match any discovered
+///    `Index`/`Entry`/`RotationLog` slot are dropped as orphans
+///    (with a warning) — a well-formed state tree shouldn't have
+///    any.
 fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     handle: &calimero_store::Handle<L>,
     context_id: ContextId,
@@ -651,37 +796,129 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // Use snapshot iterator for consistent reads during iteration
     let mut iter = handle.iter_snapshot::<ContextStateKey>()?;
 
-    // Collect entries for this context
-    let mut entries: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+    // Collect entries for this context into a state_key → value map
+    // for O(1) lookup by hashed key.
+    let mut all_records: BTreeMap<[u8; 32], Vec<u8>> = BTreeMap::new();
     for (key_result, value_result) in iter.entries() {
         let key = key_result?;
         let value = value_result?;
         if key.context_id() == context_id {
-            entries.push((key.state_key(), value.value.to_vec()));
+            let _ = all_records.insert(key.state_key(), value.value.to_vec());
+        }
+    }
+    let total_records = all_records.len();
+
+    // Discover entity ids by trying to deserialize each value as
+    // `EntityIndex`. Cross-check against the expected hashed key
+    // (`Key::Index(id).to_bytes()`) to avoid false positives from
+    // Entry values that happen to borsh-deserialize as a partial
+    // EntityIndex.
+    let mut entity_ids: Vec<Id> = Vec::new();
+    let mut consumed_keys: HashSet<[u8; 32]> = HashSet::new();
+    for (state_key, value) in &all_records {
+        let Ok(index_entity) =
+            borsh::from_slice::<calimero_storage::index::EntityIndex>(value.as_slice())
+        else {
+            continue;
+        };
+        let expected = StorageKey::Index(index_entity.id()).to_bytes();
+        if expected == *state_key {
+            entity_ids.push(index_entity.id());
+            let _ = consumed_keys.insert(*state_key);
+        }
+    }
+    entity_ids.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+
+    // Build SnapshotRecord list in canonical (id-sorted) order.
+    // Cursor support: skip any entity ids ≤ cursor.last_key.
+    let start_after_id = start_cursor.map(|c| c.last_key);
+    let mut records: Vec<SnapshotRecord> = Vec::new();
+    for id in &entity_ids {
+        let id_bytes = *id.as_bytes();
+        if let Some(after) = start_after_id {
+            if id_bytes <= after {
+                // Mark the keys consumed even though we're skipping
+                // them; orphan detection at the end should not flag
+                // them.
+                let _ = consumed_keys.insert(StorageKey::Entry(*id).to_bytes());
+                let _ = consumed_keys.insert(StorageKey::RotationLog(*id).to_bytes());
+                continue;
+            }
+        }
+
+        let index_key = StorageKey::Index(*id).to_bytes();
+        let entry_key = StorageKey::Entry(*id).to_bytes();
+        let rotation_log_key = StorageKey::RotationLog(*id).to_bytes();
+
+        let index_bytes = all_records.get(&index_key).cloned();
+        let entry_bytes = all_records.get(&entry_key).cloned();
+        let rotation_log_bytes = all_records.get(&rotation_log_key).cloned();
+
+        // Emit Entity record bundling Entry + Index (the common case
+        // — every persisted entity has both). Verification on the
+        // receiver runs against the metadata inside `index`.
+        if let (Some(index), Some(entry)) = (index_bytes.clone(), entry_bytes.clone()) {
+            records.push(SnapshotRecord::Entity {
+                id: id_bytes,
+                entry,
+                index,
+            });
+            let _ = consumed_keys.insert(entry_key);
+        } else if let Some(index) = index_bytes {
+            // Index without Entry — rare/anomalous (newly-allocated
+            // placeholder entity). Ship as Auxiliary so the receiver
+            // still gets the metadata; signature can't be verified
+            // without data.
+            records.push(SnapshotRecord::Auxiliary {
+                kind: snapshot_record_kind::INDEX,
+                id: id_bytes,
+                value: index,
+            });
+        } else if let Some(entry) = entry_bytes {
+            // Entry without Index — also anomalous. Ship as
+            // Auxiliary; the receiver won't have an Index to verify
+            // against but at least keeps the data byte-for-byte.
+            records.push(SnapshotRecord::Auxiliary {
+                kind: snapshot_record_kind::ENTRY,
+                id: id_bytes,
+                value: entry,
+            });
+            let _ = consumed_keys.insert(entry_key);
+        }
+
+        if let Some(rotation_log) = rotation_log_bytes {
+            records.push(SnapshotRecord::Auxiliary {
+                kind: snapshot_record_kind::ROTATION_LOG,
+                id: id_bytes,
+                value: rotation_log,
+            });
+            let _ = consumed_keys.insert(rotation_log_key);
         }
     }
 
-    // Sort by state_key for canonical ordering
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    let total_entries = entries.len() as u64;
+    // Any state_key not consumed → orphan (no matching Index, not
+    // recognised as Entry/RotationLog for a known entity). In a
+    // well-formed state tree these shouldn't exist; warn and drop.
+    let orphan_count = total_records.saturating_sub(consumed_keys.len());
+    if orphan_count > 0 {
+        warn!(
+            %context_id,
+            orphan_count,
+            "snapshot generation: dropping records with no matching entity Index"
+        );
+    }
 
-    // Skip to cursor position
-    let start_idx = start_cursor
-        .map(|c| {
-            entries
-                .iter()
-                .position(|(k, _)| *k > c.last_key)
-                .unwrap_or(entries.len())
-        })
-        .unwrap_or(0);
+    let total_entries = records.len() as u64;
 
-    // Generate pages
+    // Serialize records into pages, respecting byte_limit and
+    // page_limit. Cursor cursors on the last entity id included on
+    // the page boundary — matches `start_after_id` semantics above.
     let mut pages: Vec<Vec<u8>> = Vec::new();
     let mut current_page: Vec<u8> = Vec::new();
-    let mut last_key: Option<[u8; 32]> = None;
+    let mut last_id: Option<[u8; 32]> = None;
 
-    for (key, value) in entries.into_iter().skip(start_idx) {
-        let record_bytes = borsh::to_vec(&CanonicalRecord { key, value })?;
+    for record in records.into_iter() {
+        let record_bytes = borsh::to_vec(&record)?;
 
         if !current_page.is_empty() && (current_page.len() + record_bytes.len()) as u32 > byte_limit
         {
@@ -689,14 +926,16 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             if pages.len() >= page_limit as usize {
                 return Ok((
                     pages,
-                    last_key.map(|k| SnapshotCursor { last_key: k }),
+                    last_id.map(|k| SnapshotCursor { last_key: k }),
                     total_entries,
                 ));
             }
         }
 
         current_page.extend(record_bytes);
-        last_key = Some(key);
+        last_id = Some(match &record {
+            SnapshotRecord::Entity { id, .. } | SnapshotRecord::Auxiliary { id, .. } => *id,
+        });
     }
 
     if !current_page.is_empty() {
@@ -706,22 +945,23 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     Ok((pages, None, total_entries))
 }
 
-/// A record in the snapshot stream (key + value).
-#[derive(BorshSerialize, BorshDeserialize)]
-struct CanonicalRecord {
-    key: [u8; 32],
-    value: Vec<u8>,
-}
-
-/// Decode snapshot records from page payload.
-fn decode_snapshot_records(payload: &[u8]) -> Result<Vec<([u8; 32], Vec<u8>)>> {
+/// Decode snapshot records from a (decompressed) page payload.
+///
+/// Mirrors the encoding in [`generate_snapshot_pages`]: borsh-encoded
+/// [`SnapshotRecord`]s concatenated end-to-end. Used by both the
+/// receiver and the snapshot test fixtures.
+fn decode_snapshot_records(payload: &[u8]) -> Result<Vec<SnapshotRecord>> {
     let mut records = Vec::new();
-    let mut offset = 0;
-
-    while offset < payload.len() {
-        let record: CanonicalRecord = BorshDeserialize::deserialize(&mut &payload[offset..])?;
-        offset += borsh::to_vec(&record)?.len();
-        records.push((record.key, record.value));
+    let mut remaining = payload;
+    while !remaining.is_empty() {
+        let mut cursor = remaining;
+        let record = SnapshotRecord::deserialize(&mut cursor)?;
+        let consumed = remaining.len() - cursor.len();
+        if consumed == 0 {
+            eyre::bail!("snapshot record deserialization made no progress");
+        }
+        remaining = cursor;
+        records.push(record);
     }
 
     Ok(records)
@@ -770,56 +1010,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_canonical_record_encoding() {
-        let record = CanonicalRecord {
-            key: [0u8; 32],
-            value: vec![1, 2, 3, 4],
-        };
-
-        let encoded = borsh::to_vec(&record).unwrap();
-        let decoded: CanonicalRecord = BorshDeserialize::deserialize(&mut &encoded[..]).unwrap();
-
-        assert_eq!(record.key, decoded.key);
-        assert_eq!(record.value, decoded.value);
-    }
-
-    #[test]
     fn test_decode_snapshot_records_empty() {
         let records = decode_snapshot_records(&[]).unwrap();
         assert!(records.is_empty());
     }
 
     #[test]
-    fn test_decode_snapshot_records_single() {
-        let record = CanonicalRecord {
-            key: [1u8; 32],
-            value: vec![10, 20, 30],
+    fn test_decode_snapshot_records_single_entity() {
+        let record = SnapshotRecord::Entity {
+            id: [1u8; 32],
+            entry: vec![10, 20, 30],
+            index: vec![40, 50, 60],
         };
         let encoded = borsh::to_vec(&record).unwrap();
 
         let records = decode_snapshot_records(&encoded).unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].0, [1u8; 32]);
-        assert_eq!(records[0].1, vec![10, 20, 30]);
+        match &records[0] {
+            SnapshotRecord::Entity { id, entry, index } => {
+                assert_eq!(*id, [1u8; 32]);
+                assert_eq!(entry, &vec![10, 20, 30]);
+                assert_eq!(index, &vec![40, 50, 60]);
+            }
+            _ => panic!("expected Entity record"),
+        }
     }
 
     #[test]
-    fn test_decode_snapshot_records_multiple() {
-        let record1 = CanonicalRecord {
-            key: [1u8; 32],
-            value: vec![10],
+    fn test_decode_snapshot_records_mixed() {
+        // Mix Entity + Auxiliary records in a single page payload to
+        // exercise the streaming decode boundary handling.
+        let entity = SnapshotRecord::Entity {
+            id: [1u8; 32],
+            entry: vec![10],
+            index: vec![20],
         };
-        let record2 = CanonicalRecord {
-            key: [2u8; 32],
-            value: vec![20, 21],
+        let aux = SnapshotRecord::Auxiliary {
+            kind: snapshot_record_kind::ROTATION_LOG,
+            id: [2u8; 32],
+            value: vec![30, 31],
         };
 
-        let mut encoded = borsh::to_vec(&record1).unwrap();
-        encoded.extend(borsh::to_vec(&record2).unwrap());
+        let mut encoded = borsh::to_vec(&entity).unwrap();
+        encoded.extend(borsh::to_vec(&aux).unwrap());
 
         let records = decode_snapshot_records(&encoded).unwrap();
         assert_eq!(records.len(), 2);
-        assert_eq!(records[0].0, [1u8; 32]);
-        assert_eq!(records[1].0, [2u8; 32]);
+        assert!(matches!(
+            &records[0],
+            SnapshotRecord::Entity { id, .. } if *id == [1u8; 32]
+        ));
+        assert!(matches!(
+            &records[1],
+            SnapshotRecord::Auxiliary { kind, id, .. }
+                if *kind == snapshot_record_kind::ROTATION_LOG && *id == [2u8; 32]
+        ));
     }
 }

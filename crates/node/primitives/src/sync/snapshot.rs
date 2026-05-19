@@ -149,6 +149,12 @@ impl SnapshotStreamRequest {
 }
 
 /// A page of snapshot data (raw bytes format).
+///
+/// The `payload` is an lz4-compressed sequence of borsh-encoded
+/// [`SnapshotRecord`]s (post #2387 wire-format redesign). The
+/// receiver decodes the page, verifies per-entity signatures via
+/// `Interface::verify_snapshot_entity_signature`, and writes
+/// authenticated records to its local store.
 #[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct SnapshotPage {
     /// Compressed payload (lz4).
@@ -161,6 +167,86 @@ pub struct SnapshotPage {
     pub page_count: u64,
     /// Pages sent so far.
     pub sent_count: u64,
+}
+
+/// A single record inside a [`SnapshotPage`] payload.
+///
+/// Pre-#2387 the page payload was an opaque `(state_key, value)`
+/// stream where `state_key = sha256(discriminator || id)`. That
+/// made per-entity signature verification impossible on the
+/// receiver — the entity id and which `Key::*` variant a record
+/// belonged to were not recoverable from the wire.
+///
+/// Post-#2387 the wire carries entity id and record kind
+/// explicitly so the receiver can:
+///
+/// 1. Group `Entry` (data) + `Index` (EntityIndex with the signed
+///    `signature_data`) records by id.
+/// 2. Verify the writer's signature against the metadata + data
+///    via [`Interface::verify_snapshot_entity_signature`].
+/// 3. Reject any tampered or unsigned entity record before
+///    `handle.put` lands the bytes.
+///
+/// Non-entity records (per-entity rotation log, local sync-state
+/// pointers) ship as [`SnapshotRecord::Auxiliary`] — they're
+/// either implicit-from-the-signed-entity (rotation log) or
+/// local-state-ish (sync state) and not individually verifiable.
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub enum SnapshotRecord {
+    /// An entity's `Entry` (data) and `Index` (metadata) shipped
+    /// together so the receiver can verify the signature before
+    /// persisting either blob. Both bytes are required: signature
+    /// verification needs the metadata in `index`, and applying the
+    /// entity needs `entry`.
+    Entity {
+        /// The entity's 32-byte id.
+        id: [u8; 32],
+        /// Raw bytes for `Key::Entry(id)` — the entity's data
+        /// blob as `save_internal` persisted it.
+        entry: Vec<u8>,
+        /// Borsh-serialized `EntityIndex` for `Key::Index(id)` —
+        /// carries the `Metadata` with the writer's signed
+        /// `signature_data` inside `storage_type`.
+        index: Vec<u8>,
+    },
+    /// Auxiliary state keyed under the same context but not
+    /// signature-verifiable per record. Currently used for:
+    ///
+    /// * `kind = 2`: `Key::SyncState(id)` — last-sync-with-peer
+    ///   pointers. Local-state-adjacent; preserved on snapshot
+    ///   to avoid resetting receiver-side sync timers.
+    /// * `kind = 3`: `Key::RotationLog(id)` — per-entity writer
+    ///   rotation history. Its authenticity is implicit from the
+    ///   signed entity's writer set (the rotation log just records
+    ///   transitions between writer-set-signed states).
+    ///
+    /// The receiver re-derives the storage key via
+    /// `Key::SyncState(id).to_bytes()` /
+    /// `Key::RotationLog(id).to_bytes()` and writes through.
+    Auxiliary {
+        /// Discriminator byte from `calimero_storage::store::Key`.
+        kind: u8,
+        /// The entity / context id this record is keyed under.
+        id: [u8; 32],
+        /// Raw value bytes from the source peer's store.
+        value: Vec<u8>,
+    },
+}
+
+/// Snapshot record kind discriminators — mirror the
+/// `calimero_storage::store::Key` enum tags so the receiver can
+/// reconstruct the storage key from a `SnapshotRecord::Auxiliary`.
+pub mod snapshot_record_kind {
+    /// `Key::Index(id)` — not used in `Auxiliary` (Index is shipped
+    /// inside `Entity`); kept here for completeness.
+    pub const INDEX: u8 = 0;
+    /// `Key::Entry(id)` — not used in `Auxiliary` (Entry is shipped
+    /// inside `Entity`); kept here for completeness.
+    pub const ENTRY: u8 = 1;
+    /// `Key::SyncState(id)` — last-sync timestamps.
+    pub const SYNC_STATE: u8 = 2;
+    /// `Key::RotationLog(id)` — per-entity writer rotation history.
+    pub const ROTATION_LOG: u8 = 3;
 }
 
 impl SnapshotPage {

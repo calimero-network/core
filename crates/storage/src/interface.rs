@@ -206,6 +206,106 @@ const fn nonce_check_disabled_for_testing() -> bool {
 pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
 
 impl<S: StorageAdaptor> Interface<S> {
+    /// Verify the writer's signature on a snapshot-supplied entity
+    /// against the access-control rules in its metadata.
+    ///
+    /// Snapshot sync bypasses the
+    /// [`apply_action`](Self::apply_action) verification pipeline
+    /// (it writes data + metadata directly to storage from a chosen
+    /// peer). To close the peer-trust gap documented in issue
+    /// #2387, the snapshot receiver invokes this helper per-entity
+    /// before persisting:
+    ///
+    /// * `Public` / `Frozen` — accept unconditionally (Public has
+    ///   no signature; Frozen is content-addressed and verified
+    ///   elsewhere).
+    /// * `User` / `Shared` with `signature_data: Some(_)` — compute
+    ///   `payload_for_signing` from a synthetic `Action::Add { id,
+    ///   data, ancestors: vec![], metadata }` and `ed25519_verify`
+    ///   against the writer (owner for User, signer-hint or
+    ///   writer-set scan for Shared).
+    /// * `User` / `Shared` with `signature_data: None` — rejected as
+    ///   `InvalidSignature`. After the bootstrap-signing fix
+    ///   (`persist_signed_signatures` in
+    ///   `crates/context/src/handlers/execute/mod.rs`), no locally
+    ///   stored entity should carry `None` past `sign_authorized_actions`,
+    ///   so a snapshot record with `None` is from a buggy or hostile
+    ///   peer.
+    ///
+    /// Returns `Ok(())` if the entity is verified or doesn't require
+    /// verification; `Err(StorageError::InvalidSignature)` otherwise.
+    /// Does not write to storage.
+    pub fn verify_snapshot_entity_signature(
+        id: crate::address::Id,
+        data: &[u8],
+        metadata: &crate::entities::Metadata,
+    ) -> Result<(), StorageError> {
+        use crate::action::Action;
+        use crate::entities::StorageType;
+
+        // Public / Frozen don't require signature verification.
+        match &metadata.storage_type {
+            StorageType::Public | StorageType::Frozen => return Ok(()),
+            StorageType::User { .. } | StorageType::Shared { .. } => {}
+        }
+
+        // Reconstruct the authorization payload the writer signed.
+        // Snapshot doesn't carry ancestors and the verification is
+        // tree-shape-independent (v2 design — see
+        // `Action::payload_for_signing`), so an empty ancestor list
+        // is correct here.
+        let action = Action::Add {
+            id,
+            data: data.to_vec(),
+            ancestors: vec![],
+            metadata: metadata.clone(),
+        };
+        let payload = action.payload_for_signing();
+
+        match &metadata.storage_type {
+            StorageType::User {
+                owner,
+                signature_data: Some(sig_data),
+            } => {
+                if crate::env::ed25519_verify(&sig_data.signature, owner.digest(), &payload) {
+                    Ok(())
+                } else {
+                    Err(StorageError::InvalidSignature)
+                }
+            }
+            StorageType::User {
+                signature_data: None,
+                ..
+            } => Err(StorageError::InvalidSignature),
+            StorageType::Shared {
+                writers,
+                signature_data: Some(sig_data),
+            } => {
+                // Fast path: signer hint + verify once. Slow path:
+                // linear scan over writers. Mirrors `apply_action`.
+                let verified = match sig_data.signer {
+                    Some(hint) if writers.contains(&hint) => {
+                        crate::env::ed25519_verify(&sig_data.signature, hint.digest(), &payload)
+                    }
+                    _ => writers.iter().any(|w| {
+                        crate::env::ed25519_verify(&sig_data.signature, w.digest(), &payload)
+                    }),
+                };
+                if verified {
+                    Ok(())
+                } else {
+                    Err(StorageError::InvalidSignature)
+                }
+            }
+            StorageType::Shared {
+                signature_data: None,
+                ..
+            } => Err(StorageError::InvalidSignature),
+            // Unreachable: handled at the top of the function.
+            StorageType::Public | StorageType::Frozen => Ok(()),
+        }
+    }
+
     /// Adds a child entity to a parent's collection.
     ///
     /// Updates Merkle hashes and generates sync actions automatically.

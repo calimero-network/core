@@ -1291,3 +1291,120 @@ mod verify_ancestor_integrity_tests {
         );
     }
 }
+
+/// Tests for `Interface::verify_snapshot_entity_signature` — the
+/// per-entity signature check that closes the peer-trust gap on the
+/// Snapshot apply path (issue #2387). Uses `MockedStorage<3005..3010>`
+/// — keep the scope range disjoint from
+/// `verify_ancestor_integrity_tests` (3001–3004).
+#[cfg(test)]
+mod verify_snapshot_entity_signature_tests {
+    use std::collections::BTreeSet;
+
+    use calimero_primitives::identity::PublicKey;
+
+    use crate::address::Id;
+    use crate::entities::{Metadata, SignatureData, StorageType};
+    use crate::error::StorageError;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    fn meta_public() -> Metadata {
+        Metadata {
+            created_at: 0,
+            updated_at: 0.into(),
+            storage_type: StorageType::Public,
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    fn meta_shared_unsigned(writers: BTreeSet<PublicKey>) -> Metadata {
+        Metadata {
+            created_at: 0,
+            updated_at: 0.into(),
+            storage_type: StorageType::Shared {
+                writers,
+                signature_data: None,
+            },
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    fn meta_shared_signed_invalid(writers: BTreeSet<PublicKey>) -> Metadata {
+        // Signature is just zeros — cryptographically invalid against any payload.
+        Metadata {
+            created_at: 0,
+            updated_at: 0.into(),
+            storage_type: StorageType::Shared {
+                writers,
+                signature_data: Some(SignatureData {
+                    signature: [0u8; 64],
+                    nonce: 42,
+                    signer: None,
+                }),
+            },
+            crdt_type: None,
+            field_name: None,
+        }
+    }
+
+    #[test]
+    fn public_accepted_without_verify() {
+        // Public entities don't require a signature.
+        let id = Id::new([0x10; 32]);
+        let result = <Interface<MockedStorage<3005>>>::verify_snapshot_entity_signature(
+            id,
+            b"any-data",
+            &meta_public(),
+        );
+        assert!(
+            matches!(result, Ok(())),
+            "Public must accept without verify; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn shared_unsigned_rejected() {
+        // After the bootstrap-signing fix, no locally stored entity
+        // should carry signature_data: None past the runtime sign
+        // step. A snapshot record with `None` is from a buggy or
+        // hostile peer — reject.
+        let writer = PublicKey::from([0xAA; 32]);
+        let mut writers = BTreeSet::new();
+        writers.insert(writer);
+
+        let id = Id::new([0x11; 32]);
+        let result = <Interface<MockedStorage<3006>>>::verify_snapshot_entity_signature(
+            id,
+            b"data",
+            &meta_shared_unsigned(writers),
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "Shared with signature_data: None must be rejected; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn shared_signed_with_invalid_signature_rejected() {
+        // A tampered or forged record with a zero signature must fail
+        // verification — this is the core property the wire-format
+        // redesign (#2387) gives Snapshot.
+        let writer = PublicKey::from([0xBB; 32]);
+        let mut writers = BTreeSet::new();
+        writers.insert(writer);
+
+        let id = Id::new([0x12; 32]);
+        let result = <Interface<MockedStorage<3007>>>::verify_snapshot_entity_signature(
+            id,
+            b"data",
+            &meta_shared_signed_invalid(writers),
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "Shared with cryptographically invalid signature must be rejected; got {result:?}"
+        );
+    }
+}
