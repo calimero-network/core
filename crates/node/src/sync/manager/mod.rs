@@ -4321,10 +4321,24 @@ impl SyncManager {
         // (3-peer mesh × 3 s open × 10 retries ≈ 100 s, plus inter-round
         // sleeps) can't outlast the caller's own timeout and leave the
         // join in an ambiguous state. The deadline is `mesh_retries ×
-        // (mesh_retry_delay + DEADLINE_MAX_PEERS_PER_ROUND × open_timeout)` —
-        // sized for a small-to-medium mesh; on very-large meshes the
-        // deadline will fire mid-round and the per-peer loop bails via
-        // its own check (defense in depth, line below).
+        // (mesh_retry_delay + DEADLINE_MAX_PEERS_PER_ROUND × open_timeout)`.
+        //
+        // `DEADLINE_MAX_PEERS_PER_ROUND` is a worst-case *cap* used for
+        // budgeting, not an exact per-round peer count. It under-counts
+        // the per-round cost on very-large meshes (where the per-peer
+        // deadline check below bails the loop mid-round as a safety net)
+        // and over-counts on small or empty meshes (where the deadline
+        // simply doesn't fire because rounds are cheap — `mesh_retries ×
+        // mesh_retry_delay` ≈ 10 s on the 0-peer floor, well under any
+        // reasonable caller timeout). Either way the loop terminates
+        // inside `mesh_retries` rounds; the deadline is the upper-bound
+        // safety net, not a precise schedule.
+        //
+        // 4 covers the expected mesh size for namespace-join discovery
+        // (typically 1–3 peers in the namespace topic mesh during cold
+        // start). If we ever see meshes consistently above this, the
+        // constant should grow — the per-peer deadline check keeps the
+        // current value sound regardless.
         const DEADLINE_MAX_PEERS_PER_ROUND: u32 = 4;
         let open_timeout = self.sync_config.open_stream_timeout;
         let mesh_retries = super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED;
