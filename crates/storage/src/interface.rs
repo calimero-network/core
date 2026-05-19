@@ -214,6 +214,96 @@ impl<S: StorageAdaptor> Interface<S> {
     /// - `SerializationError` if child can't be encoded
     /// - `IndexNotFound` if parent doesn't exist
     ///
+    /// Persist the signed `signature_data` produced by the runtime's
+    /// `sign_authorized_actions` step back to the local index entry.
+    ///
+    /// The runtime signs actions in-place on the broadcast artifact,
+    /// but the entity persisted by [`save_raw`](Self::save_raw)
+    /// carries the placeholder signature (`[0; 64]`) emitted at WASM
+    /// save time — `save_raw` runs synchronously inside the WASM host
+    /// function and has no access to the identity private key. Without
+    /// this re-persist step, the locally stored entity keeps the
+    /// placeholder and HashComparison sync would ship that placeholder
+    /// to peers, breaking signature verification on receivers and
+    /// silently downgrading the entity's authorization commitment.
+    ///
+    /// Validates that the signed `storage_type` matches the stored one
+    /// structurally (same variant, same writers/owner) so this can
+    /// only patch the `signature_data` of an existing entity — never
+    /// change the access-control triple. Returns `Ok(false)` if the
+    /// entity no longer exists locally (raced a delete), `Ok(true)`
+    /// on successful update, or an error on structural mismatch.
+    ///
+    /// **Hash invariance**: `own_hash` is computed over the entity's
+    /// data bytes (see `save_internal`'s `Sha256::digest(&data)`), not
+    /// metadata, so patching `signature_data` does not invalidate the
+    /// merkle tree. No ancestor recomputation needed.
+    ///
+    /// # Errors
+    /// - `InvalidData` if the storage-type variants don't match, or
+    ///   if the access-control fields (writers / owner) differ from
+    ///   the stored entity.
+    pub fn update_signature_in_place(
+        id: Id,
+        signed_storage_type: crate::entities::StorageType,
+    ) -> Result<bool, StorageError> {
+        use crate::entities::StorageType;
+        let Some(mut index) = <Index<S>>::get_index(id)? else {
+            return Ok(false);
+        };
+        match (&index.metadata.storage_type, &signed_storage_type) {
+            (
+                StorageType::Shared {
+                    writers: stored_writers,
+                    ..
+                },
+                StorageType::Shared {
+                    writers: new_writers,
+                    ..
+                },
+            ) => {
+                if stored_writers != new_writers {
+                    return Err(StorageError::InvalidData(
+                        "update_signature_in_place: writer set mismatch".to_owned(),
+                    ));
+                }
+            }
+            (
+                StorageType::User {
+                    owner: stored_owner,
+                    ..
+                },
+                StorageType::User {
+                    owner: new_owner,
+                    ..
+                },
+            ) => {
+                if stored_owner != new_owner {
+                    return Err(StorageError::InvalidData(
+                        "update_signature_in_place: owner mismatch".to_owned(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(StorageError::InvalidData(
+                    "update_signature_in_place: storage-type variant mismatch (expected \
+                     Shared/User, with the same access-control triple as stored)"
+                        .to_owned(),
+                ));
+            }
+        }
+        index.metadata.storage_type = signed_storage_type;
+        <Index<S>>::save_index(&index)?;
+        Ok(true)
+    }
+
+    /// Adds a child entity to a parent's collection.
+    ///
+    /// Updates Merkle hashes and generates sync actions automatically.
+    ///
+    /// # Errors
+    /// - `SerializationError` if child can't be encoded
+    /// - `IndexNotFound` if parent doesn't exist
     pub fn add_child_to<D: Data>(parent_id: Id, child: &mut D) -> Result<bool, StorageError> {
         if !child.element().is_dirty() {
             return Ok(false);

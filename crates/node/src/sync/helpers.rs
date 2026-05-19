@@ -39,19 +39,15 @@ pub fn generate_nonce() -> calimero_crypto::Nonce {
 /// state. `Public` / `Frozen` entities don't need it (no signature
 /// required).
 ///
-/// Returns `None` for `Shared` / `User` entities whose stored
-/// `signature_data` is `None` — bootstrap state (e.g. an empty
-/// `SharedStorage::new` field on `#[app::state]` before any signed
-/// write). Shipping such an entity with `authorization = Some(...)` on
-/// the wire would land on the receiver as `Action::Add/Update` with
-/// `StorageType::Shared { signature_data: None }`, and the apply path
-/// rejects that with `"Remote Shared action must be signed"`. Returning
-/// `None` here lets the receiver fall back to its existing storage_type
-/// (preserving signed entities) or default to `Public` for new entities,
-/// matching the wire-format contract documented on
-/// [`LeafMetadata::authorization`]. The bootstrap entity gets re-typed
-/// correctly on the receiver as soon as the first signed write arrives
-/// via the delta path.
+/// The local index entry is expected to carry a real `signature_data`
+/// by the time HashComparison ships it: the runtime executor's
+/// `sign_authorized_actions` step writes the signed `signature_data`
+/// back to the local index via `Interface::update_signature_in_place`
+/// (see `crates/context/src/handlers/execute/mod.rs::persist_signed_signatures`).
+/// If an entity ever does carry `signature_data: None` here (e.g.
+/// inside a test fixture that skips the runtime sign step), the
+/// receiver will reject it with `"Remote Shared/User action must be
+/// signed"` — that's the intended error: unsigned state isn't sync'd.
 ///
 /// Single source of truth — all `TreeLeafData` construction sites in
 /// the sync senders go through this helper rather than open-coding the
@@ -63,14 +59,6 @@ pub fn wire_authorization_for(
     use calimero_storage::entities::StorageType;
     match &metadata.storage_type {
         StorageType::Public | StorageType::Frozen => None,
-        StorageType::Shared {
-            signature_data: None,
-            ..
-        }
-        | StorageType::User {
-            signature_data: None,
-            ..
-        } => None,
         StorageType::Shared { .. } | StorageType::User { .. } => {
             Some(metadata.storage_type.clone())
         }
@@ -131,51 +119,23 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     //    inside this `StorageType` against the new (tree-state-free)
     //    `payload_for_signing`, which the receiver reconstructs from
     //    the action's components (id, data, this storage_type).
+    //    Bootstrap entities now carry a real signature (see
+    //    `persist_signed_signatures` in
+    //    `crates/context/src/handlers/execute/mod.rs`) so this path
+    //    is always verifiable.
     //
-    // 2. Existing entity (any non-Shared/User type) — preserve it.
-    //    Avoids the v1 silent storage-type-flip bug where every sync
-    //    apply downgraded entities to `Public` via `Metadata::default()`.
+    // 2. Existing entity, no wire authorization — preserve the
+    //    stored storage_type. Avoids the v1 silent storage-type-flip
+    //    bug where every sync apply downgraded entities to `Public`
+    //    via `Metadata::default()`.
     //
-    // 3. Existing entity is Shared/User but no wire authorization — skip
-    //    the apply entirely (return `Ok(())`). Preserving the existing
-    //    `storage_type` and constructing an `Action::Update` would
-    //    splice the existing entity's signature data onto NEW value
-    //    bytes; the apply-path verifier would then reject with
-    //    `InvalidSignature` (the existing sig signed the OLD value).
-    //    That's still safe — the rejection prevents a downgrade — but
-    //    it's a doomed code path that wastes a verify and a log line
-    //    per leaf. The delta-path repair will deliver the entity
-    //    properly signed; we just hold off on it from sync.
-    //
-    // 4. New entity, no wire authorization — default to `Public`.
+    // 3. New entity, no wire authorization — default to `Public`.
     //    Non-Public new entities require creation-time invariants
-    //    (writer-set, owner) that arrive via the delta path.
-    use calimero_storage::entities::StorageType;
+    //    (writer-set, owner) that arrive via the wire authorization
+    //    or the delta path.
     if let Some(wire_auth) = leaf.metadata.authorization.as_ref() {
         metadata.storage_type = wire_auth.clone();
     } else if let Some(ref existing) = existing_index {
-        if matches!(
-            existing.metadata.storage_type,
-            StorageType::Shared { .. } | StorageType::User { .. }
-        ) {
-            // `info` (not `debug`) so operators have a signal when this
-            // fires. In the common case (both peers carrying an unsigned
-            // bootstrap `SharedStorage` field that no one has written
-            // yet) it fires once per entity per sync session — bounded
-            // by the number of bootstrap fields on `#[app::state]`. If
-            // the count grows unboundedly across many sync sessions for
-            // the same entity, the delta path is not delivering signed
-            // state — the operator-visible signal here is what surfaces
-            // that. A counter would be sharper than a log; left as
-            // a follow-up to keep this commit focused.
-            tracing::info!(
-                %entity_id,
-                existing_type = ?existing.metadata.storage_type,
-                "Skipping sync apply for Shared/User entity with no wire \
-                 authorization — delta path will repair"
-            );
-            return Ok(());
-        }
         metadata.storage_type = existing.metadata.storage_type.clone();
     }
 

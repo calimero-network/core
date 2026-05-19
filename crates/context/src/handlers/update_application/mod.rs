@@ -561,17 +561,17 @@ async fn execute_migration(
 ///
 /// These closures bridge the `calimero-storage` [`Key`]-based interface to the
 /// underlying `calimero-store` [`key::ContextState`]-based KV store.
-struct StorageCallbacks {
-    read: Rc<dyn Fn(&Key) -> Option<Vec<u8>>>,
-    write: Rc<dyn Fn(Key, &[u8]) -> bool>,
-    remove: Rc<dyn Fn(&Key) -> bool>,
+pub(crate) struct StorageCallbacks {
+    pub(crate) read: Rc<dyn Fn(&Key) -> Option<Vec<u8>>>,
+    pub(crate) write: Rc<dyn Fn(Key, &[u8]) -> bool>,
+    pub(crate) remove: Rc<dyn Fn(&Key) -> bool>,
 }
 
 /// Create storage callback closures that route `calimero-storage` operations to the datastore.
 ///
 /// Each callback translates a storage-layer [`Key`] into a context-scoped
 /// [`key::ContextState`] and forwards the operation to the store handle.
-fn create_storage_callbacks(
+pub(crate) fn create_storage_callbacks(
     datastore: &calimero_store::Store,
     context_id: ContextId,
 ) -> StorageCallbacks {
