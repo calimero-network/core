@@ -174,6 +174,15 @@ impl ToTokens for PublicLogicMethod<'_> {
                 #[cfg(target_arch = "wasm32")]
                 #[no_mangle]
                 pub extern "C" fn __calimero_sync_next() {
+                    // Route panic location + message through the host so a
+                    // WASM trap during apply surfaces the actual Rust
+                    // panic in node logs instead of a bare "unreachable".
+                    // Other exported methods install this hook already
+                    // (see the regular-method branch below); sync-next
+                    // didn't, which is why upstream sync failures were
+                    // hard to diagnose.
+                    ::calimero_sdk::env::setup_panic_hook();
+
                     let Some(args) = ::calimero_sdk::env::input() else {
                         ::calimero_sdk::env::panic_str("Expected payload to sync method.")
                     };
