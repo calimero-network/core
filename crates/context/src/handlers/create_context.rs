@@ -378,9 +378,7 @@ async fn create_context(
         // index entries are patched so subsequent HashComparison /
         // Snapshot responses ship verifiable state too.
         if !actions.is_empty() {
-            if let Err(e) =
-                sign_authorized_actions(&mut actions, &identity_secret)
-            {
+            if let Err(e) = sign_authorized_actions(&mut actions, &identity_secret) {
                 error!(?e, %context.id, "Failed to sign init actions");
                 bail!("Failed to sign init actions: {:?}", e);
             }

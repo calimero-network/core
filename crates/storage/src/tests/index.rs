@@ -1408,3 +1408,141 @@ mod verify_snapshot_entity_signature_tests {
         );
     }
 }
+
+/// Tests for `Interface::update_signature_in_place` API-boundary
+/// validation. Uses `MockedStorage<3008..3012>` — keep disjoint from
+/// `verify_ancestor_integrity_tests` (3001-3004) and
+/// `verify_snapshot_entity_signature_tests` (3005-3007).
+#[cfg(test)]
+mod update_signature_in_place_tests {
+    use std::collections::BTreeSet;
+
+    use calimero_primitives::identity::PublicKey;
+
+    use crate::address::Id;
+    use crate::entities::{SignatureData, StorageType};
+    use crate::error::StorageError;
+    use crate::interface::Interface;
+    use crate::store::MockedStorage;
+
+    fn shared_writers(writer: u8) -> BTreeSet<PublicKey> {
+        let mut writers = BTreeSet::new();
+        let _ = writers.insert(PublicKey::from([writer; 32]));
+        writers
+    }
+
+    fn shared_signed(writers: BTreeSet<PublicKey>, sig: [u8; 64]) -> StorageType {
+        StorageType::Shared {
+            writers,
+            signature_data: Some(SignatureData {
+                signature: sig,
+                nonce: 1,
+                signer: None,
+            }),
+        }
+    }
+
+    fn user_signed(owner: PublicKey, sig: [u8; 64]) -> StorageType {
+        StorageType::User {
+            owner,
+            signature_data: Some(SignatureData {
+                signature: sig,
+                nonce: 1,
+                signer: None,
+            }),
+        }
+    }
+
+    fn shared_unsigned(writers: BTreeSet<PublicKey>) -> StorageType {
+        StorageType::Shared {
+            writers,
+            signature_data: None,
+        }
+    }
+
+    #[test]
+    fn rejects_signature_data_none() {
+        // The function name says "signed" — passing `signature_data:
+        // None` is a contract violation and must be rejected at the
+        // API boundary, even if the entity doesn't exist locally
+        // (entity-not-found is checked AFTER input validation).
+        let id = Id::new([0x20; 32]);
+        let result = <Interface<MockedStorage<3008>>>::update_signature_in_place(
+            id,
+            shared_unsigned(shared_writers(0xAA)),
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidData(_))),
+            "signature_data: None must be rejected; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_placeholder_signature() {
+        // `[0; 64]` is the placeholder `save_raw` emits before the
+        // runtime signs. A caller passing this in would clobber a
+        // real signature stored previously — the exact regression
+        // this guard prevents.
+        let id = Id::new([0x21; 32]);
+        let result = <Interface<MockedStorage<3009>>>::update_signature_in_place(
+            id,
+            shared_signed(shared_writers(0xAA), [0u8; 64]),
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidData(_))),
+            "placeholder [0; 64] signature must be rejected; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_placeholder_signature_user() {
+        // Same guard, User variant.
+        let id = Id::new([0x22; 32]);
+        let owner = PublicKey::from([0xBB; 32]);
+        let result = <Interface<MockedStorage<3010>>>::update_signature_in_place(
+            id,
+            user_signed(owner, [0u8; 64]),
+        );
+        assert!(
+            matches!(result, Err(StorageError::InvalidData(_))),
+            "User placeholder [0; 64] signature must be rejected; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_public_or_frozen() {
+        // Public/Frozen carry no signature; calling this function
+        // with them is a programming error.
+        let id = Id::new([0x23; 32]);
+        let public_result =
+            <Interface<MockedStorage<3011>>>::update_signature_in_place(id, StorageType::Public);
+        assert!(
+            matches!(public_result, Err(StorageError::InvalidData(_))),
+            "Public must be rejected; got {public_result:?}"
+        );
+
+        let frozen_result =
+            <Interface<MockedStorage<3011>>>::update_signature_in_place(id, StorageType::Frozen);
+        assert!(
+            matches!(frozen_result, Err(StorageError::InvalidData(_))),
+            "Frozen must be rejected; got {frozen_result:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_real_signature_returns_false_when_entity_missing() {
+        // Valid input (Shared, Some, non-placeholder) on an entity
+        // that doesn't exist locally → `Ok(false)`. Confirms the
+        // input-validation guards above don't false-positive on
+        // legitimate signed inputs.
+        let id = Id::new([0x24; 32]);
+        let result = <Interface<MockedStorage<3012>>>::update_signature_in_place(
+            id,
+            shared_signed(shared_writers(0xAA), [0xAB; 64]),
+        );
+        assert!(
+            matches!(result, Ok(false)),
+            "valid signed input on missing entity should return Ok(false); got {result:?}"
+        );
+    }
+}

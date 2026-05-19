@@ -235,6 +235,12 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Returns `Ok(())` if the entity is verified or doesn't require
     /// verification; `Err(StorageError::InvalidSignature)` otherwise.
     /// Does not write to storage.
+    ///
+    /// # Errors
+    /// - `InvalidSignature` if the `signature_data` is `None`,
+    ///   carries the `[0; 64]` placeholder, or fails ed25519
+    ///   verification against the access-control rules in
+    ///   `metadata.storage_type`.
     pub fn verify_snapshot_entity_signature(
         id: crate::address::Id,
         data: &[u8],
@@ -319,12 +325,23 @@ impl<S: StorageAdaptor> Interface<S> {
     /// to peers, breaking signature verification on receivers and
     /// silently downgrading the entity's authorization commitment.
     ///
-    /// Validates that the signed `storage_type` matches the stored one
-    /// structurally (same variant, same writers/owner) so this can
-    /// only patch the `signature_data` of an existing entity — never
-    /// change the access-control triple. Returns `Ok(false)` if the
-    /// entity no longer exists locally (raced a delete), `Ok(true)`
-    /// on successful update, or an error on structural mismatch.
+    /// Validates that the signed `storage_type`:
+    ///
+    /// * Is `Shared` or `User` — `Public`/`Frozen` carry no signature.
+    /// * Carries a real signature: `signature_data` is `Some` AND its
+    ///   `signature` field is not the `[0; 64]` placeholder. This
+    ///   guards against a caller accidentally passing back an
+    ///   unsigned action and clobbering a previously-stored real
+    ///   signature. The contract is structural: the function name
+    ///   says "signed", and the API now enforces it rather than
+    ///   trusting every caller to filter beforehand.
+    /// * Matches the stored entity's access-control triple (same
+    ///   writers set for `Shared`, same owner for `User`) — this is
+    ///   a signature-patch operation, not a writer-set rotation.
+    ///
+    /// Returns `Ok(false)` if the entity no longer exists locally
+    /// (raced a delete); `Ok(true)` on successful update; or an
+    /// error on any of the validation failures above.
     ///
     /// **Hash invariance**: `own_hash` is computed over the entity's
     /// data bytes (see `save_internal`'s `Sha256::digest(&data)`), not
@@ -332,14 +349,62 @@ impl<S: StorageAdaptor> Interface<S> {
     /// merkle tree. No ancestor recomputation needed.
     ///
     /// # Errors
-    /// - `InvalidData` if the storage-type variants don't match, or
-    ///   if the access-control fields (writers / owner) differ from
-    ///   the stored entity.
+    /// - `InvalidData` if the input is `Public`/`Frozen`, missing
+    ///   `signature_data`, carries the `[0; 64]` placeholder, or
+    ///   differs from the stored access-control triple.
     pub fn update_signature_in_place(
         id: Id,
         signed_storage_type: crate::entities::StorageType,
     ) -> Result<bool, StorageError> {
         use crate::entities::StorageType;
+
+        // Contract guard: the input MUST be a Shared/User with a
+        // non-placeholder signature. Without this check, a caller
+        // could pass a `Some(SignatureData { signature: [0; 64], .. })`
+        // and silently overwrite a previously-stored real signature
+        // with the placeholder — a strict regression of the very
+        // bug this function exists to fix.
+        let incoming_sig_data = match &signed_storage_type {
+            StorageType::Shared {
+                signature_data: Some(sd),
+                ..
+            }
+            | StorageType::User {
+                signature_data: Some(sd),
+                ..
+            } => sd,
+            StorageType::Shared {
+                signature_data: None,
+                ..
+            }
+            | StorageType::User {
+                signature_data: None,
+                ..
+            } => {
+                return Err(StorageError::InvalidData(
+                    "update_signature_in_place: signature_data is None (input must \
+                     carry a real signature; bootstrap-unsigned actions should not \
+                     reach this API)"
+                        .to_owned(),
+                ));
+            }
+            StorageType::Public | StorageType::Frozen => {
+                return Err(StorageError::InvalidData(
+                    "update_signature_in_place: storage_type is Public/Frozen (only \
+                     Shared/User carry a signature to patch)"
+                        .to_owned(),
+                ));
+            }
+        };
+        if incoming_sig_data.signature == [0u8; 64] {
+            return Err(StorageError::InvalidData(
+                "update_signature_in_place: signature is the [0; 64] placeholder \
+                 (caller must replace the save_raw placeholder with a real ed25519 \
+                 signature before calling)"
+                    .to_owned(),
+            ));
+        }
+
         let Some(mut index) = <Index<S>>::get_index(id)? else {
             return Ok(false);
         };
@@ -366,8 +431,7 @@ impl<S: StorageAdaptor> Interface<S> {
                     ..
                 },
                 StorageType::User {
-                    owner: new_owner,
-                    ..
+                    owner: new_owner, ..
                 },
             ) => {
                 if stored_owner != new_owner {

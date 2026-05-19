@@ -561,24 +561,18 @@ impl SyncManager {
                                     // Verified — persist both Entry
                                     // and Index blobs under their
                                     // hashed storage keys.
-                                    let entry_state_key =
-                                        StorageKey::Entry(id_obj).to_bytes();
-                                    let index_state_key =
-                                        StorageKey::Index(id_obj).to_bytes();
+                                    let entry_state_key = StorageKey::Entry(id_obj).to_bytes();
+                                    let index_state_key = StorageKey::Index(id_obj).to_bytes();
                                     let entry_key =
                                         ContextStateKey::new(context_id, entry_state_key);
                                     let index_key =
                                         ContextStateKey::new(context_id, index_state_key);
                                     let entry_slice: Slice<'_> = entry.clone().into();
                                     let index_slice: Slice<'_> = index.clone().into();
-                                    handle.put(
-                                        &entry_key,
-                                        &ContextStateValue::from(entry_slice),
-                                    )?;
-                                    handle.put(
-                                        &index_key,
-                                        &ContextStateValue::from(index_slice),
-                                    )?;
+                                    handle
+                                        .put(&entry_key, &ContextStateValue::from(entry_slice))?;
+                                    handle
+                                        .put(&index_key, &ContextStateValue::from(index_slice))?;
                                     let _ = received_keys.insert(entry_state_key);
                                     let _ = received_keys.insert(index_state_key);
                                     applied += 1;
@@ -1067,8 +1061,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         // by itself exceeds byte_limit still goes on its own page —
         // splitting would defeat atomicity, and oversized bundles
         // are bounded by `MAX_ENTITY_DATA_SIZE` on the wire types.
-        if !current_page.is_empty()
-            && (current_page.len() + bundle_bytes.len()) as u32 > byte_limit
+        if !current_page.is_empty() && (current_page.len() + bundle_bytes.len()) as u32 > byte_limit
         {
             pages.push(std::mem::take(&mut current_page));
             if pages.len() >= page_limit as usize {
