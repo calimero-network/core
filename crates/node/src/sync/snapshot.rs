@@ -584,22 +584,84 @@ impl SyncManager {
                                     applied += 1;
                                 }
                                 SnapshotRecord::Auxiliary { kind, id, value } => {
-                                    // Auxiliary records aren't
-                                    // per-record signature-verifiable.
-                                    // Re-derive the storage key from
-                                    // (kind, id) and write through.
+                                    // `Auxiliary` is the channel for
+                                    // records that aren't
+                                    // per-record-signature-verifiable.
+                                    //
+                                    // `INDEX` / `ENTRY` are NEVER
+                                    // valid here: entity data + index
+                                    // flow through `Entity` records
+                                    // which verify the signature
+                                    // before writing. Accepting an
+                                    // `Auxiliary { kind: INDEX, .. }`
+                                    // would let a malicious peer
+                                    // overwrite a just-verified Index
+                                    // blob with a forged one. Reject
+                                    // outright.
+                                    //
+                                    // `SYNC_STATE` is reserved but
+                                    // never written by the current
+                                    // codebase (grep
+                                    // `Key::SyncState`); a peer
+                                    // emitting one is misbehaving.
+                                    // Reject for parity with
+                                    // INDEX/ENTRY until we have a
+                                    // documented use case.
+                                    //
+                                    // `ROTATION_LOG` is the remaining
+                                    // legitimate auxiliary kind:
+                                    // per-entity writer-rotation
+                                    // history used by the verifier
+                                    // for `writers_at(causal_point)`.
+                                    // Today we trust the source peer
+                                    // on this (same model as the
+                                    // pre-#2387 snapshot did for all
+                                    // records). A forged rotation log
+                                    // could fool the verifier into
+                                    // accepting actions signed by
+                                    // writers who weren't authorized
+                                    // at the relevant causal point —
+                                    // tracked as a follow-up: each
+                                    // RotationLog entry needs to be
+                                    // signed at the time it's written
+                                    // so the snapshot receiver can
+                                    // verify per-entry.
                                     let id_obj = Id::new(*id);
                                     let storage_key = match *kind {
-                                        snapshot_record_kind::INDEX => {
-                                            StorageKey::Index(id_obj)
-                                        }
-                                        snapshot_record_kind::ENTRY => {
-                                            StorageKey::Entry(id_obj)
+                                        snapshot_record_kind::INDEX
+                                        | snapshot_record_kind::ENTRY => {
+                                            warn!(
+                                                %context_id,
+                                                kind,
+                                                id = ?id,
+                                                "snapshot Auxiliary: INDEX/ENTRY kind is \
+                                                 not permitted on this channel (peer is \
+                                                 misbehaving or running an old protocol \
+                                                 — would bypass the per-entity signature \
+                                                 verify on Entity records) — dropping"
+                                            );
+                                            rejected += 1;
+                                            continue;
                                         }
                                         snapshot_record_kind::SYNC_STATE => {
-                                            StorageKey::SyncState(id_obj)
+                                            warn!(
+                                                %context_id,
+                                                id = ?id,
+                                                "snapshot Auxiliary: SYNC_STATE kind is \
+                                                 not written by the current codebase — \
+                                                 dropping"
+                                            );
+                                            rejected += 1;
+                                            continue;
                                         }
                                         snapshot_record_kind::ROTATION_LOG => {
+                                            // TODO(#2387 follow-up):
+                                            // sign rotation-log
+                                            // entries so the snapshot
+                                            // receiver can verify per
+                                            // entry instead of
+                                            // trusting the source
+                                            // peer.
                                             StorageKey::RotationLog(id_obj)
                                         }
                                         other => {
@@ -857,33 +919,44 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         // Emit Entity record bundling Entry + Index (the common case
         // — every persisted entity has both). Verification on the
         // receiver runs against the metadata inside `index`.
-        if let (Some(index), Some(entry)) = (index_bytes.clone(), entry_bytes.clone()) {
-            records.push(SnapshotRecord::Entity {
-                id: id_bytes,
-                entry,
-                index,
-            });
-            let _ = consumed_keys.insert(entry_key);
-        } else if let Some(index) = index_bytes {
-            // Index without Entry — rare/anomalous (newly-allocated
-            // placeholder entity). Ship as Auxiliary so the receiver
-            // still gets the metadata; signature can't be verified
-            // without data.
-            records.push(SnapshotRecord::Auxiliary {
-                kind: snapshot_record_kind::INDEX,
-                id: id_bytes,
-                value: index,
-            });
-        } else if let Some(entry) = entry_bytes {
-            // Entry without Index — also anomalous. Ship as
-            // Auxiliary; the receiver won't have an Index to verify
-            // against but at least keeps the data byte-for-byte.
-            records.push(SnapshotRecord::Auxiliary {
-                kind: snapshot_record_kind::ENTRY,
-                id: id_bytes,
-                value: entry,
-            });
-            let _ = consumed_keys.insert(entry_key);
+        //
+        // **No orphan-as-Auxiliary fallback.** A previous iteration
+        // shipped Index-without-Entry / Entry-without-Index as
+        // `SnapshotRecord::Auxiliary { kind: INDEX|ENTRY, .. }`. The
+        // receiver write-through then bypassed the per-entity
+        // signature check, opening a trust gap: a malicious peer
+        // could ship a verified `Entity { id, entry, index }` and an
+        // `Auxiliary { kind: INDEX, id, value: forged_index }` for
+        // the same id and clobber the just-verified Index with a
+        // forged one. Orphan Entry/Index in a well-formed state tree
+        // shouldn't exist anyway; if they do we drop them (warn
+        // emitted below) rather than ship them on an unverified
+        // channel.
+        match (index_bytes.clone(), entry_bytes.clone()) {
+            (Some(index), Some(entry)) => {
+                records.push(SnapshotRecord::Entity {
+                    id: id_bytes,
+                    entry,
+                    index,
+                });
+                let _ = consumed_keys.insert(entry_key);
+            }
+            (Some(_), None) => {
+                debug!(
+                    %context_id, id = ?id_bytes,
+                    "dropping orphan Index (no matching Entry) — would be \
+                     unverifiable on the receiver"
+                );
+            }
+            (None, Some(_)) => {
+                debug!(
+                    %context_id, id = ?id_bytes,
+                    "dropping orphan Entry (no matching Index) — would be \
+                     unverifiable on the receiver"
+                );
+                let _ = consumed_keys.insert(entry_key);
+            }
+            (None, None) => {}
         }
 
         if let Some(rotation_log) = rotation_log_bytes {
