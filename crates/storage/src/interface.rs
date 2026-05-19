@@ -2134,15 +2134,21 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         let mut metadata = metadata.clone();
-        // If this is a local user action, set the nonce
-        if let StorageType::User {
-            owner,
-            signature_data,
-        } = metadata.storage_type
-        {
-            if *owner == crate::env::executor_id() && signature_data.is_none() {
-                // This is a new local action. Set the nonce.
-                // Use the `updated_at` timestamp as the nonce.
+        // For a local User write, ALWAYS overwrite the incoming
+        // signature_data with a fresh placeholder tied to this call's
+        // nonce. We can't trust the WASM-provided value: a re-write
+        // via `UnorderedMap::insert_with_storage_type` /
+        // `EntryMut::drop` plumbs through the previously-stored
+        // metadata verbatim — including a real ed25519 signature for
+        // the prior (data, nonce) pair. Skipping the stamp in that
+        // case would broadcast the new data with the old signature,
+        // which receivers cannot verify (the signed payload commits
+        // to data + nonce, both of which just changed). Remote
+        // actions never go through `save_raw` (they apply via
+        // `apply_action`), so unconditionally stamping here is safe:
+        // it only fires when the executor is the owner.
+        if let StorageType::User { owner, .. } = metadata.storage_type {
+            if *owner == crate::env::executor_id() {
                 let nonce = *metadata.updated_at;
                 metadata.storage_type = StorageType::User {
                     owner,
@@ -2163,27 +2169,28 @@ impl<S: StorageAdaptor> Interface<S> {
         // Stamp if the executor is in EITHER. This is what enables rotate-self-out:
         // a writer rotating themselves out has executor ∈ stored but ∉ claimed; the
         // verifier on remote also uses stored, so the signature still verifies there.
+        //
+        // Same re-stamp-always rationale as the User arm above: a
+        // re-write may carry the previously-stored real signature
+        // through, and broadcasting that with new data + new nonce
+        // would not verify on receivers.
         let shared_to_stamp = if let StorageType::Shared {
             writers: claimed_writers,
-            signature_data,
+            ..
         } = &metadata.storage_type
         {
-            if signature_data.is_none() {
-                let executor: calimero_primitives::identity::PublicKey =
-                    crate::env::executor_id().into();
-                let stored_has_executor = <Index<S>>::get_metadata(id)?
-                    .as_ref()
-                    .map(|m| match &m.storage_type {
-                        StorageType::Shared { writers, .. } => writers.contains(&executor),
-                        _ => false,
-                    })
-                    .unwrap_or(false);
-                let claimed_has_executor = claimed_writers.contains(&executor);
-                if stored_has_executor || claimed_has_executor {
-                    Some((claimed_writers.clone(), executor))
-                } else {
-                    None
-                }
+            let executor: calimero_primitives::identity::PublicKey =
+                crate::env::executor_id().into();
+            let stored_has_executor = <Index<S>>::get_metadata(id)?
+                .as_ref()
+                .map(|m| match &m.storage_type {
+                    StorageType::Shared { writers, .. } => writers.contains(&executor),
+                    _ => false,
+                })
+                .unwrap_or(false);
+            let claimed_has_executor = claimed_writers.contains(&executor);
+            if stored_has_executor || claimed_has_executor {
+                Some((claimed_writers.clone(), executor))
             } else {
                 None
             }
