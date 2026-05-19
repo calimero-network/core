@@ -387,14 +387,21 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 <div class="config-field">
   <div class="cf-key">frequency_ms</div>
   <div class="cf-type">u64</div>
-  <div class="cf-default">10000</div>
+  <div class="cf-default">15000</div>
   <div class="cf-desc">Minimum ms between consecutive sync attempts for the same context.</div>
+</div>
+<div class="config-field">
+  <div class="cf-key">max_concurrent</div>
+  <div class="cf-type">usize</div>
+  <div class="cf-default">30</div>
+  <div class="cf-desc">Maximum number of concurrent sync operations across all contexts.</div>
 </div>
 
 <div class="toml-example"><span class="ts">[sync]</span>
 <span class="tk">timeout_ms</span> = <span class="tv">30000</span>
 <span class="tk">interval_ms</span> = <span class="tv">5000</span>
-<span class="tk">frequency_ms</span> = <span class="tv">10000</span></div>
+<span class="tk">frequency_ms</span> = <span class="tv">15000</span>
+<span class="tk">max_concurrent</span> = <span class="tv">30</span></div>
 </div>
 </details>
 
@@ -552,7 +559,8 @@ merod <span class="cf">--home</span> <span class="cv">~/.calimero</span> <span c
 <span class="ts">[sync]</span>
 <span class="tk">timeout_ms</span> = <span class="tv">30000</span>
 <span class="tk">interval_ms</span> = <span class="tv">5000</span>
-<span class="tk">frequency_ms</span> = <span class="tv">10000</span>
+<span class="tk">frequency_ms</span> = <span class="tv">15000</span>
+<span class="tk">max_concurrent</span> = <span class="tv">30</span>
 
 <span class="ts">[datastore]</span>
 <span class="tk">path</span> = <span class="tv">"data"</span>
