@@ -396,10 +396,14 @@ impl LeafMetadata {
     /// `Public` / `Frozen` the wire field must stay `None` (the receiver
     /// has no signature to verify on those, and applying a wire-supplied
     /// `Public` here would open a storage-type-downgrade path on the
-    /// receiver). Wrong-type calls panic in debug, log a `warn!` and
-    /// leave `authorization` unset in release — callers should go through
+    /// receiver). Wrong-type calls log a `warn!` and leave
+    /// `authorization` unset in both debug and release — uniform
+    /// behavior. Callers should go through
     /// `crate::sync::helpers::wire_authorization_for` in `calimero-node`
-    /// rather than build this directly.
+    /// rather than building this directly; the helper is the single
+    /// source of truth for which storage types carry wire authorization.
+    /// This guard is defense-in-depth in case a future caller bypasses
+    /// the helper.
     #[must_use]
     pub fn with_authorization(
         mut self,
@@ -410,26 +414,15 @@ impl LeafMetadata {
             authorization,
             StorageType::Shared { .. } | StorageType::User { .. }
         );
-        debug_assert!(
-            is_auth_type,
-            "with_authorization called with non-Shared/User storage type \
-             ({:?}); only Shared/User carry wire authorization. See field \
-             doc on `authorization`.",
-            authorization,
-        );
         if is_auth_type {
             self.authorization = Some(authorization);
         } else {
-            // Visibility for release builds — the debug_assert above
-            // catches this in test/dev, but a release build silently
-            // ignoring the call would mask a real caller bug. Operators
-            // can filter on this message to catch wrong-type call sites
-            // in production telemetry.
             tracing::warn!(
                 bad_type = ?authorization,
                 "with_authorization called with non-Shared/User storage type — \
-                 ignoring; this is a programming error and the resulting \
-                 LeafMetadata will ship without wire authorization",
+                 ignoring; this is a programming error. Callers should use \
+                 `calimero_node::sync::helpers::wire_authorization_for` which \
+                 only returns Shared/User."
             );
         }
         self

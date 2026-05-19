@@ -577,105 +577,60 @@ impl SyncManager {
                                     let _ = received_keys.insert(index_state_key);
                                     applied += 1;
                                 }
-                                SnapshotRecord::Auxiliary { kind, id, value } => {
+                                SnapshotRecord::Auxiliary { kind, id, .. } => {
                                     // `Auxiliary` is the channel for
                                     // records that aren't
                                     // per-record-signature-verifiable.
                                     //
-                                    // `INDEX` / `ENTRY` are NEVER
-                                    // valid here: entity data + index
-                                    // flow through `Entity` records
-                                    // which verify the signature
-                                    // before writing. Accepting an
-                                    // `Auxiliary { kind: INDEX, .. }`
-                                    // would let a malicious peer
-                                    // overwrite a just-verified Index
-                                    // blob with a forged one. Reject
-                                    // outright.
+                                    // Until per-record authentication
+                                    // exists (issue #2387 follow-up),
+                                    // every kind is rejected:
                                     //
-                                    // `SYNC_STATE` is reserved but
-                                    // never written by the current
-                                    // codebase (grep
-                                    // `Key::SyncState`); a peer
-                                    // emitting one is misbehaving.
-                                    // Reject for parity with
-                                    // INDEX/ENTRY until we have a
-                                    // documented use case.
-                                    //
-                                    // `ROTATION_LOG` is the remaining
-                                    // legitimate auxiliary kind:
-                                    // per-entity writer-rotation
-                                    // history used by the verifier
-                                    // for `writers_at(causal_point)`.
-                                    // Today we trust the source peer
-                                    // on this (same model as the
-                                    // pre-#2387 snapshot did for all
-                                    // records). A forged rotation log
-                                    // could fool the verifier into
-                                    // accepting actions signed by
-                                    // writers who weren't authorized
-                                    // at the relevant causal point —
-                                    // tracked as a follow-up: each
-                                    // RotationLog entry needs to be
-                                    // signed at the time it's written
-                                    // so the snapshot receiver can
-                                    // verify per-entry.
-                                    let id_obj = Id::new(*id);
-                                    let storage_key = match *kind {
-                                        snapshot_record_kind::INDEX
-                                        | snapshot_record_kind::ENTRY => {
-                                            warn!(
-                                                %context_id,
-                                                kind,
-                                                id = ?id,
-                                                "snapshot Auxiliary: INDEX/ENTRY kind is \
-                                                 not permitted on this channel (peer is \
-                                                 misbehaving or running an old protocol \
-                                                 — would bypass the per-entity signature \
-                                                 verify on Entity records) — dropping"
-                                            );
-                                            rejected += 1;
-                                            continue;
-                                        }
-                                        snapshot_record_kind::SYNC_STATE => {
-                                            warn!(
-                                                %context_id,
-                                                id = ?id,
-                                                "snapshot Auxiliary: SYNC_STATE kind is \
-                                                 not written by the current codebase — \
-                                                 dropping"
-                                            );
-                                            rejected += 1;
-                                            continue;
-                                        }
-                                        snapshot_record_kind::ROTATION_LOG => {
-                                            // TODO(#2387 follow-up):
-                                            // sign rotation-log
-                                            // entries so the snapshot
-                                            // receiver can verify per
-                                            // entry instead of
-                                            // trusting the source
-                                            // peer.
-                                            StorageKey::RotationLog(id_obj)
-                                        }
-                                        other => {
-                                            warn!(
-                                                %context_id,
-                                                kind = other,
-                                                id = ?id,
-                                                "snapshot Auxiliary record: unknown kind — \
-                                                 dropping"
-                                            );
-                                            rejected += 1;
-                                            continue;
-                                        }
-                                    };
-                                    let state_key = storage_key.to_bytes();
-                                    let key = ContextStateKey::new(context_id, state_key);
-                                    let slice: Slice<'_> = value.clone().into();
-                                    handle.put(&key, &ContextStateValue::from(slice))?;
-                                    let _ = received_keys.insert(state_key);
-                                    applied += 1;
+                                    // * `INDEX` / `ENTRY` — would
+                                    //   bypass the per-entity
+                                    //   signature verify on `Entity`
+                                    //   records. A malicious peer
+                                    //   shipping these alongside a
+                                    //   verified Entity could
+                                    //   clobber the just-verified
+                                    //   index/entry blobs.
+                                    // * `SYNC_STATE` — not written
+                                    //   by the current codebase
+                                    //   (grep `Key::SyncState`); a
+                                    //   peer emitting one is
+                                    //   misbehaving.
+                                    // * `ROTATION_LOG` — per-entity
+                                    //   writer-rotation history used
+                                    //   by the verifier for
+                                    //   `writers_at(causal_point)`.
+                                    //   A forged rotation log would
+                                    //   fool the verifier into
+                                    //   accepting actions signed by
+                                    //   writers who weren't
+                                    //   authorized at the relevant
+                                    //   causal point. The receiver
+                                    //   reconstructs rotation
+                                    //   history from verified delta
+                                    //   replay; late-arriving
+                                    //   pre-snapshot deltas that
+                                    //   reference rotation points
+                                    //   before the snapshot may fail
+                                    //   to verify until per-entry
+                                    //   rotation-log signing lands.
+                                    //   Bounded edge case;
+                                    //   acceptable trade-off for
+                                    //   closing the trust gap.
+                                    warn!(
+                                        %context_id,
+                                        kind,
+                                        id = ?id,
+                                        "snapshot Auxiliary record: rejecting — no kind \
+                                         currently has per-record authentication (issue \
+                                         #2387 follow-up: sign each rotation-log entry \
+                                         at write time)"
+                                    );
+                                    rejected += 1;
+                                    continue;
                                 }
                             }
                         }
@@ -937,9 +892,25 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
                 // a prior page. Mark them consumed so they don't
                 // appear in the residual unrecognized count for the
                 // current page.
-                let _ = consumed_keys.insert(index_key);
-                let _ = consumed_keys.insert(entry_key);
-                let _ = consumed_keys.insert(rotation_log_key);
+                //
+                // Only insert keys that actually exist in
+                // `all_records`. Inserting a phantom key (e.g. a
+                // RotationLog state_key for an entity that doesn't
+                // have one) would push `consumed_keys.len()` past
+                // `total_records`, making the
+                // `saturating_sub` at the bottom return 0 and
+                // silently suppress the operator-visible
+                // unrecognized-records warning even when real
+                // orphans exist.
+                if all_records.contains_key(&index_key) {
+                    let _ = consumed_keys.insert(index_key);
+                }
+                if all_records.contains_key(&entry_key) {
+                    let _ = consumed_keys.insert(entry_key);
+                }
+                if all_records.contains_key(&rotation_log_key) {
+                    let _ = consumed_keys.insert(rotation_log_key);
+                }
                 continue;
             }
         }
@@ -1006,12 +977,20 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             (None, None) => {}
         }
 
-        if let Some(rotation_log) = rotation_log_bytes {
-            bundle.push(SnapshotRecord::Auxiliary {
-                kind: snapshot_record_kind::ROTATION_LOG,
-                id: id_bytes,
-                value: rotation_log,
-            });
+        // RotationLog is intentionally NOT shipped via snapshot.
+        // The receiver rejects all `SnapshotRecord::Auxiliary`
+        // kinds (issue #2387 follow-up: per-record signing).
+        // Sending them would just burn bandwidth for records the
+        // receiver drops. The receiver reconstructs rotation
+        // history from verified delta replay; late-arriving
+        // pre-snapshot deltas referencing pre-snapshot rotation
+        // points may fail to verify until per-entry rotation-log
+        // signing lands — bounded edge case, documented in the
+        // receiver's Auxiliary reject path.
+        if rotation_log_bytes.is_some() {
+            // Mark the key consumed so the unrecognized-records
+            // warning at the bottom doesn't fire for it (we know
+            // about the record; we're choosing not to ship it).
             let _ = consumed_keys.insert(rotation_log_key);
         }
 
