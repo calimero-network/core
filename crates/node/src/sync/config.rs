@@ -82,6 +82,14 @@ pub const DEFAULT_MESH_RETRIES_UNINITIALIZED: u32 = 10;
 /// Default mesh discovery retry delay for uninitialized nodes (milliseconds).
 pub const DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED: u64 = 1_000;
 
+/// Per-attempt timeout for opening a stream to a mesh peer (milliseconds).
+/// A peer can be in the gossipsub mesh while its transport connection is
+/// stale, so the substream negotiation can stall until the connection
+/// itself idle-dies (~4s observed on CI). Bounding the open explicitly
+/// lets us fail fast and fail over to the next peer instead of waiting
+/// for connection death.
+pub const DEFAULT_OPEN_STREAM_TIMEOUT_MS: u64 = 3_000;
+
 /// Max concurrent peer probes when looking for a peer with state.
 /// Typical meshes are 2-20 peers; a pool of 4 is enough parallelism
 /// that the tail is bounded by the fastest responder, without racing
@@ -157,6 +165,13 @@ pub struct SyncConfig {
     /// Wall-clock budget for the cross-peer missing-parent fetch loop.
     /// See [`DEFAULT_PARENT_PULL_BUDGET_MS`].
     pub parent_pull_budget: time::Duration,
+
+    /// Per-attempt timeout for opening a stream to a mesh peer during
+    /// namespace-join discovery. See [`DEFAULT_OPEN_STREAM_TIMEOUT_MS`]
+    /// for the rationale (stale-connection idle-die backoff). Deployment-
+    /// sensitive: shorter for low-latency LANs with aggressive QUIC idle
+    /// timeouts, longer for high-latency WAN.
+    pub open_stream_timeout: time::Duration,
 }
 
 impl Default for SyncConfig {
@@ -172,6 +187,7 @@ impl Default for SyncConfig {
             peer_state_probe_concurrency: DEFAULT_PEER_STATE_PROBE_CONCURRENCY,
             parent_pull_additional_peers: DEFAULT_PARENT_PULL_ADDITIONAL_PEERS,
             parent_pull_budget: time::Duration::from_millis(DEFAULT_PARENT_PULL_BUDGET_MS),
+            open_stream_timeout: time::Duration::from_millis(DEFAULT_OPEN_STREAM_TIMEOUT_MS),
         }
     }
 }
