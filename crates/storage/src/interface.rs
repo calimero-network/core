@@ -508,11 +508,12 @@ impl<S: StorageAdaptor> Interface<S> {
     /// Replaces the cryptographic commitment to `ancestor.merkle_hash` that
     /// the v1 signed payload carried. The check is explicit + unsigned:
     /// for each ancestor in the action, look up the local entity's full
-    /// merkle hash and compare. Mismatch → [`StorageError::TreeStateMismatch`].
-    /// Ancestors that don't exist locally are skipped (auto-vivification
-    /// happens during apply); the v1 signed binding didn't provide any
-    /// stronger check on this case either — the receiver had no local
-    /// merkle hash to compare against.
+    /// merkle hash and compare. Currently **warn-only**: mismatches are
+    /// logged at `debug` and the function returns `()` — see the rationale
+    /// block below. Ancestors that don't exist locally are skipped
+    /// (auto-vivification happens during apply); the v1 signed binding
+    /// didn't provide any stronger check on this case either — the
+    /// receiver had no local merkle hash to compare against.
     ///
     /// **Skip on sync-reconcile.** The HashComparison apply path constructs
     /// actions with `ancestors: vec![]`, which makes this check a no-op
@@ -538,7 +539,18 @@ impl<S: StorageAdaptor> Interface<S> {
     ///
     /// Single responsibility: tree-shape integrity only. Does not touch
     /// signature verification, nonce checking, or mutation. Composable.
-    fn verify_ancestor_integrity(ancestors: &[ChildInfo]) -> Result<(), StorageError> {
+    ///
+    /// Returns `()` rather than `Result<()>` because the function never
+    /// fails for the caller's purposes: mismatches are debug-logged
+    /// (warn-only relax, see above), and storage-read errors during the
+    /// ancestor lookup are also debug-logged and treated as "no local
+    /// hash to compare" — which is the same outcome as the
+    /// auto-vivification path above. Returning `Result` was the original
+    /// intent (strict-reject mode) but turned out to break the SDK
+    /// macro; the [`StorageError::TreeStateMismatch`] variant is kept
+    /// in the error enum for the eventual strict-mode restoration but
+    /// currently unconstructed.
+    fn verify_ancestor_integrity(ancestors: &[ChildInfo]) {
         for ancestor in ancestors {
             // `get_hashes_for` returns `(full_hash, own_hash)`. We
             // bind the first element (`full_hash`) and compare it
@@ -550,7 +562,18 @@ impl<S: StorageAdaptor> Interface<S> {
             // compare data-only hashes, use `own_hash` (the second
             // element of `get_hashes_for`) and `ChildInfo::own_hash`
             // — don't conflate `merkle_hash` with "data hash".
-            let Some((local_hash, _)) = <Index<S>>::get_hashes_for(ancestor.id())? else {
+            let lookup = match <Index<S>>::get_hashes_for(ancestor.id()) {
+                Ok(opt) => opt,
+                Err(e) => {
+                    tracing::debug!(
+                        ancestor_id = %ancestor.id(),
+                        error = ?e,
+                        "ancestor lookup failed; skipping integrity check for this ancestor"
+                    );
+                    continue;
+                }
+            };
+            let Some((local_hash, _)) = lookup else {
                 // Ancestor doesn't exist locally yet. Apply will
                 // auto-vivify it from the action's claimed hash. The v1
                 // signed binding had no local hash to verify against
@@ -566,7 +589,6 @@ impl<S: StorageAdaptor> Interface<S> {
                 );
             }
         }
-        Ok(())
     }
 
     /// Applies a synchronization action from a remote node.
@@ -1068,7 +1090,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 // sync supplies `ancestors: vec![]`, which makes this a
                 // no-op there (correct — sync runs precisely when tree
                 // shapes have drifted).
-                Self::verify_ancestor_integrity(&ancestors)?;
+                Self::verify_ancestor_integrity(&ancestors);
                 let mut parent = None;
                 for this in ancestors.iter().rev() {
                     let parent = parent.replace(this);

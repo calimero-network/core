@@ -69,6 +69,19 @@ pub enum StorageError {
     /// view." The sync-reconcile path skips this check by definition
     /// (sync runs precisely when tree shapes have drifted), so the error
     /// only surfaces on the delta path.
+    ///
+    /// **Currently unconstructed.** `verify_ancestor_integrity` was
+    /// relaxed to warn-only (debug-log on mismatch, no error returned)
+    /// because the SDK macro at
+    /// `crates/sdk/macros/src/logic/method.rs:189` calls
+    /// `Root::sync(...).expect("fatal: sync failed")` — a hard error
+    /// here panics the WASM and aborts the entire CRDT merge.
+    /// The variant is kept (rather than removed) so the strict-reject
+    /// mode can be restored once the SDK panic-on-Err path is plumbed
+    /// through to surface sync errors properly, or once
+    /// `ApplyContext` carries a "this is a CRDT merge" flag so the
+    /// check fires only on truly-sequential deltas.
+    #[allow(dead_code, reason = "see doc — reserved for strict-mode restoration")]
     #[error("Tree state mismatch on apply: ancestor {0} merkle hash differs from local")]
     TreeStateMismatch(Id),
 
