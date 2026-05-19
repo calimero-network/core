@@ -998,7 +998,29 @@ mod user_storage_replay_protection {
     }
 
     #[test]
-    fn replay_with_lower_nonce_fails() {
+    fn replay_with_lower_nonce_is_silent_noop_for_upsert() {
+        // Upsert (Add/Update) used to reject lower-nonce actions as
+        // `NonceReplay`. That rejection bubbles through
+        // `Root::sync().expect("fatal: sync failed")` in the SDK
+        // macro and aborts the entire WASM sync batch, which blocks
+        // post-divergence convergence: a HashComparison or DAG
+        // catchup that re-delivers a now-stale-but-authentic leaf
+        // (the newer twin already arrived via gossipsub) would kill
+        // the whole sync.
+        //
+        // The new contract: verify the signature first (an
+        // unauthenticated stale action still rejects as
+        // `InvalidSignature`), then on `new_nonce <= last_nonce`
+        // silently skip with Ok(()). The state isn't downgraded —
+        // we just no-op on the stale action, leaving the newer
+        // local state intact. The owner-signature-replay test
+        // below (`replay_signature_with_different_data_rejected`)
+        // covers the security property: forged data can't slip
+        // through because the signature commits to `(id, data,
+        // nonce)` and verify still runs.
+        //
+        // The DeleteRef path keeps the strict `Err(NonceReplay)` on
+        // `<=` — see `tombstone_replay_with_lower_nonce_fails`.
         env::reset_for_testing();
 
         let (signing_key, owner) = create_test_keypair();
@@ -1021,23 +1043,70 @@ mod user_storage_replay_protection {
 
         sleep(Duration::from_millis(2));
 
-        // Action with LOWER nonce should fail
         let nonce2 = nonce1 - 1000;
         let action2 = create_signed_user_update_action(
             &signing_key,
             owner,
             page.id(),
             serialized,
-            nonce2, // Lower nonce!
+            nonce2, // Lower nonce
             page.element().created_at(),
         );
 
         let result = MainInterface::apply_action(action2, &ApplyContext::empty());
-        assert!(result.is_err());
-        match result {
-            Err(StorageError::NonceReplay(_)) => {}
-            other => panic!("Expected NonceReplay error, got {:?}", other),
-        }
+        assert!(
+            result.is_ok(),
+            "stale-but-signed upsert must be silently skipped, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn stale_upsert_with_invalid_signature_still_rejects() {
+        // Security invariant: silent-skip on stale nonce applies
+        // ONLY after the signature verifies. A stale upsert signed
+        // by the wrong key must still reject as
+        // `InvalidSignature` — without this, a future refactor that
+        // moves the signature check after the nonce check would
+        // silently accept unauthenticated stale traffic.
+        env::reset_for_testing();
+
+        let (signing_key, owner) = create_test_keypair();
+        let (wrong_signing_key, _) = create_test_keypair();
+
+        let mut element = Element::root();
+        element.set_user_domain(owner);
+        let page = Page::new_from_element("Page", element);
+        let serialized = to_vec(&page).unwrap();
+
+        let nonce1 = env::time_now();
+        let action1 = create_signed_user_add_action(
+            &signing_key,
+            owner,
+            page.id(),
+            serialized.clone(),
+            nonce1,
+        );
+        assert!(MainInterface::apply_action(action1, &ApplyContext::empty()).is_ok());
+
+        sleep(Duration::from_millis(2));
+
+        // Stale nonce + signed by WRONG key → InvalidSignature, not
+        // silent-skip.
+        let nonce2 = nonce1 - 1000;
+        let action2 = create_signed_user_update_action(
+            &wrong_signing_key,
+            owner,
+            page.id(),
+            serialized,
+            nonce2,
+            page.element().created_at(),
+        );
+
+        let result = MainInterface::apply_action(action2, &ApplyContext::empty());
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "stale upsert with invalid signature must reject as InvalidSignature, got {result:?}"
+        );
     }
 
     #[test]
@@ -1086,7 +1155,7 @@ mod user_storage_replay_protection {
     }
 
     #[test]
-    fn out_of_order_nonces_are_rejected() {
+    fn out_of_order_nonces_are_silently_skipped_for_upsert() {
         env::reset_for_testing();
 
         let (signing_key, owner) = create_test_keypair();
@@ -1109,8 +1178,13 @@ mod user_storage_replay_protection {
 
         sleep(Duration::from_millis(10));
 
-        // Try action with nonce OLDER than stored updated_at - should fail
-        // The replay protection compares nonce against stored updated_at
+        // Try action with nonce OLDER than stored updated_at — upsert
+        // now silently skips (returns Ok(())) rather than rejecting
+        // with `NonceReplay`. See the rationale on
+        // `replay_with_lower_nonce_is_silent_noop_for_upsert` above
+        // and the apply_action User arm comment. State must NOT be
+        // downgraded — the stale action is dropped without
+        // overwriting the newer stored value.
         let old_nonce = first_nonce - 1_000_000_000; // 1 second before first action
         let action_old = create_signed_user_update_action(
             &signing_key,
@@ -1122,11 +1196,116 @@ mod user_storage_replay_protection {
         );
 
         let result = MainInterface::apply_action(action_old, &ApplyContext::empty());
-        assert!(result.is_err());
-        match result {
-            Err(StorageError::NonceReplay(_)) => {}
-            other => panic!("Expected NonceReplay error, got {:?}", other),
-        }
+        assert!(
+            result.is_ok(),
+            "stale-but-signed upsert must be silently skipped, got {result:?}"
+        );
+
+        // Confirm the stored state was NOT downgraded by the stale
+        // upsert. Stored nonce should still be at or above the
+        // first action's nonce, not the stale `old_nonce`.
+        let stored_nonce = <Index<MainStorage>>::get_metadata(page.id())
+            .unwrap()
+            .map(|m| *m.updated_at)
+            .unwrap_or(0);
+        assert!(
+            stored_nonce >= first_nonce,
+            "stale upsert must not downgrade stored nonce; stored={stored_nonce} \
+             first={first_nonce} stale_attempt={old_nonce}"
+        );
+        assert!(
+            stored_nonce > old_nonce,
+            "stale upsert must not downgrade stored nonce; stored={stored_nonce} \
+             stale_attempt={old_nonce}"
+        );
+    }
+}
+
+/// Tests for Shared storage replay protection.
+///
+/// Mirrors the User-arm tests in `user_storage_replay_protection` so the
+/// silent-skip-on-stale contract is enforced consistently across both
+/// signed storage types.
+#[cfg(test)]
+mod shared_storage_replay_protection {
+    use std::collections::BTreeSet;
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    use ed25519_dalek::SigningKey;
+
+    use crate::address::Id;
+    use crate::env;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, MainInterface};
+    use crate::store::MainStorage;
+    use crate::tests::common::{build_signed_shared_action, pubkey_of, setup_root_for_main};
+
+    fn make_signing_key(seed: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed; 32])
+    }
+
+    #[test]
+    fn stale_shared_upsert_does_not_downgrade_state() {
+        // Mirror of `out_of_order_nonces_are_silently_skipped_for_upsert`
+        // for the Shared arm. A signature-verified action whose nonce
+        // is below the locally stored nonce must return Ok(()) (silent
+        // skip) AND must not downgrade the stored nonce.
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = pubkey_of(&alice_sk);
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let id = Id::new([0x5E; 32]);
+
+        // Bootstrap with a fresh nonce.
+        let nonce1 = env::time_now();
+        let bootstrap = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            writers.clone(),
+            nonce1,
+            &alice_sk,
+            vec![root.clone()],
+        );
+        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+
+        sleep(Duration::from_millis(2));
+
+        // Stale-but-signed update (nonce < stored). Must Ok(()) without
+        // downgrading state.
+        let nonce_stale = nonce1.saturating_sub(1_000_000);
+        let stale = build_signed_shared_action(
+            false,
+            id,
+            b"v1".to_vec(),
+            writers,
+            nonce_stale,
+            &alice_sk,
+            vec![],
+        );
+        let result = MainInterface::apply_action(stale, &ApplyContext::empty());
+        assert!(
+            result.is_ok(),
+            "stale-but-signed Shared upsert must be silently skipped, got {result:?}"
+        );
+
+        let stored_nonce = <Index<MainStorage>>::get_metadata(id)
+            .unwrap()
+            .map(|m| *m.updated_at)
+            .unwrap_or(0);
+        assert!(
+            stored_nonce >= nonce1,
+            "stale Shared upsert must not downgrade stored nonce; stored={stored_nonce} \
+             bootstrap_nonce={nonce1} stale_attempt={nonce_stale}"
+        );
+        assert!(
+            stored_nonce > nonce_stale,
+            "stale Shared upsert must not downgrade stored nonce; stored={stored_nonce} \
+             stale_attempt={nonce_stale}"
+        );
     }
 }
 

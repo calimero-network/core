@@ -140,9 +140,21 @@ where
     }
 
     /// Commits the root collection without an instance of the root state.
-    #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
+    #[expect(
+        clippy::panic,
+        reason = "fatal error if it happens; tracing::error first so node logs \
+                  carry the cause before the WASM abort, then panic with the \
+                  Display form in the message for any panic-hook consumer"
+    )]
     pub fn commit_headless() {
-        <Interface<S>>::commit_root::<Collection<T>>(None).unwrap();
+        <Interface<S>>::commit_root::<Collection<T>>(None).unwrap_or_else(|e| {
+            tracing::error!(
+                target: "storage::root",
+                error = %e,
+                "commit_headless: Interface::commit_root failed — panicking"
+            );
+            panic!("commit_headless: fatal: {e}");
+        });
     }
 
     /// Syncs the root collection.
@@ -162,46 +174,79 @@ where
         let artifact =
             from_slice::<StorageDelta>(args).map_err(StorageError::DeserializationError)?;
 
+        let variant = match &artifact {
+            StorageDelta::Actions(_) => "Actions",
+            StorageDelta::CausalActions { .. } => "CausalActions",
+            StorageDelta::Comparisons(_) => "Comparisons",
+        };
+
+        // `match` is an expression — assign directly. `inspect_err` then
+        // logs without rewriting the Result; `?` propagates the Err to
+        // the caller (the SDK macro's `.expect("fatal: sync failed")`).
+        // Without this trace, a `Result::Err` from apply_actions surfaces
+        // as a bare WASM `unreachable` trap with no clue what failed.
         match artifact {
-            StorageDelta::Actions(actions) => {
-                Self::apply_actions(actions, |_| ctx.clone())?;
-            }
+            StorageDelta::Actions(actions) => Self::apply_actions(actions, |_| ctx.clone()),
             StorageDelta::CausalActions {
                 actions,
                 delta_id,
                 delta_hlc,
                 effective_writers,
-            } => {
-                Self::apply_actions(actions, |action| crate::interface::ApplyContext {
-                    effective_writers: effective_writers.get(&action.id()).cloned(),
-                    delta_id: Some(delta_id),
-                    delta_hlc: Some(delta_hlc),
-                })?;
-            }
-            StorageDelta::Comparisons(comparisons) => {
-                if comparisons.is_empty() {
-                    push_comparison(Comparison {
-                        data: <Interface<S>>::find_by_id_raw(Id::root()),
-                        comparison_data: <Interface<S>>::generate_comparison_data(None)?,
-                    });
-                }
-
-                for Comparison {
-                    data,
-                    comparison_data,
-                } in comparisons
-                {
-                    <Interface<S>>::compare_affective(data, comparison_data, ctx)?;
-                }
-            }
+            } => Self::apply_actions(actions, |action| crate::interface::ApplyContext {
+                effective_writers: effective_writers.get(&action.id()).cloned(),
+                delta_id: Some(delta_id),
+                delta_hlc: Some(delta_hlc),
+            }),
+            // Extracted to a helper so the `?` operators inside
+            // propagate to a Result that the match arm returns,
+            // which then flows through the `.inspect_err()` below.
+            // Inlining the body here would let the inner `?`
+            // return from `sync` directly, bypassing the trace.
+            StorageDelta::Comparisons(comparisons) => Self::apply_comparisons(comparisons, ctx),
         }
+        .inspect_err(|e| {
+            tracing::error!(
+                target: "storage::root",
+                variant,
+                error = %e,
+                "Root::sync returned Err — will bubble up to __calimero_sync_next's .expect()"
+            );
+        })?;
 
         info!(
             target: "storage::root",
+            variant,
             "committing root after delta replay"
         );
         Self::commit_headless();
 
+        Ok(())
+    }
+
+    /// Apply a batch of `Comparison` entries from a sync delta.
+    ///
+    /// Extracted to a helper so the inner `?` operators propagate to
+    /// this function's `Result`, which the caller (`Self::sync`) returns
+    /// from its match expression and then runs through `.inspect_err`.
+    /// Inlining the body in the match arm would let `?` skip over the
+    /// trace.
+    fn apply_comparisons(
+        comparisons: Vec<Comparison>,
+        ctx: &crate::interface::ApplyContext,
+    ) -> Result<(), StorageError> {
+        if comparisons.is_empty() {
+            push_comparison(Comparison {
+                data: <Interface<S>>::find_by_id_raw(Id::root()),
+                comparison_data: <Interface<S>>::generate_comparison_data(None)?,
+            });
+        }
+        for Comparison {
+            data,
+            comparison_data,
+        } in comparisons
+        {
+            <Interface<S>>::compare_affective(data, comparison_data, ctx)?;
+        }
         Ok(())
     }
 
