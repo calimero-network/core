@@ -4302,22 +4302,53 @@ impl SyncManager {
             hex::encode(params.namespace_id)
         ));
 
-        // Retry peer discovery: gossipsub mesh for the namespace topic may
-        // still be forming when this runs (mDNS + GRAFT exchange can take
-        // several seconds). Use the same retry window as uninitialized
-        // context sync (10 × 1 s = 10 s) to ensure we don't give up too
-        // quickly in slower environments (CI, Docker, mDNS cold-start).
-        let mut peers = Vec::new();
-        for attempt in 1..=super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
-            peers = self.network_client.mesh_peers(topic.clone()).await;
-            if !peers.is_empty() {
-                break;
+        // Discover a mesh peer and open a namespace-join stream, retrying
+        // both. The gossipsub mesh may still be forming when this runs
+        // (mDNS + GRAFT exchange can take several seconds), and a peer can
+        // be in the mesh while its transport connection is stale — so each
+        // round we try *every* known peer, and the open is bounded by an
+        // explicit timeout so a stalled negotiation fails over to the next
+        // peer instead of waiting for connection death (~4s observed on
+        // CI). Use the uninitialized retry window (10 × 1 s) to stay
+        // reliable in slower environments (CI, Docker, mDNS cold-start).
+        let open_timeout =
+            std::time::Duration::from_millis(super::config::DEFAULT_OPEN_STREAM_TIMEOUT_MS);
+        let mut stream = None;
+        'connect: for attempt in 1..=super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
+            let peers = self.network_client.mesh_peers(topic.clone()).await;
+
+            for peer in &peers {
+                match time::timeout(open_timeout, self.network_client.open_stream(*peer)).await {
+                    Ok(Ok(opened)) => {
+                        stream = Some(opened);
+                        break 'connect;
+                    }
+                    Ok(Err(err)) => {
+                        debug!(
+                            namespace_id = %hex::encode(params.namespace_id),
+                            %peer,
+                            attempt,
+                            %err,
+                            "Failed to open namespace-join stream, trying next peer..."
+                        );
+                    }
+                    Err(_) => {
+                        debug!(
+                            namespace_id = %hex::encode(params.namespace_id),
+                            %peer,
+                            attempt,
+                            "Timed out opening namespace-join stream, trying next peer..."
+                        );
+                    }
+                }
             }
+
             if attempt < super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
                 debug!(
                     namespace_id = %hex::encode(params.namespace_id),
                     attempt,
-                    "No namespace mesh peers yet, retrying..."
+                    peer_count = peers.len(),
+                    "No reachable namespace mesh peer yet, retrying..."
                 );
                 time::sleep(std::time::Duration::from_millis(
                     super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
@@ -4326,18 +4357,12 @@ impl SyncManager {
             }
         }
 
-        let peer = peers.first().ok_or_else(|| {
+        let mut stream = stream.ok_or_else(|| {
             eyre::eyre!(
-                "no mesh peers for namespace {}",
+                "could not open a namespace-join stream to any mesh peer for namespace {}",
                 hex::encode(params.namespace_id)
             )
         })?;
-
-        let mut stream = self
-            .network_client
-            .open_stream(*peer)
-            .await
-            .wrap_err("open stream for namespace join")?;
 
         let msg = StreamMessage::Init {
             context_id: calimero_primitives::context::ContextId::from([0u8; 32]),

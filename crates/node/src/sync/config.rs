@@ -82,6 +82,14 @@ pub const DEFAULT_MESH_RETRIES_UNINITIALIZED: u32 = 10;
 /// Default mesh discovery retry delay for uninitialized nodes (milliseconds).
 pub const DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED: u64 = 1_000;
 
+/// Per-attempt timeout for opening a stream to a mesh peer (milliseconds).
+/// A peer can be in the gossipsub mesh while its transport connection is
+/// stale, so the substream negotiation can stall until the connection
+/// itself idle-dies (~4s observed on CI). Bounding the open explicitly
+/// lets us fail fast and fail over to the next peer instead of waiting
+/// for connection death.
+pub const DEFAULT_OPEN_STREAM_TIMEOUT_MS: u64 = 3_000;
+
 /// Max concurrent peer probes when looking for a peer with state.
 /// Typical meshes are 2-20 peers; a pool of 4 is enough parallelism
 /// that the tail is bounded by the fastest responder, without racing
