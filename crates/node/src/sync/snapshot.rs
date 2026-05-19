@@ -875,6 +875,15 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // (`Key::Index(id).to_bytes()`) to avoid false positives from
     // Entry values that happen to borsh-deserialize as a partial
     // EntityIndex.
+    //
+    // `consumed_keys` is intentionally populated ONLY in the
+    // bundling loop below — never here. That way the
+    // `unrecognized_count` at the end captures *every* state_key
+    // we didn't actually emit on the wire, and the orphan
+    // counters can be inspected as a subdivision of that total
+    // (a state_key contributes both to its specific orphan
+    // counter AND to `unrecognized_count`, which is the intended
+    // operator-visible behavior).
     let mut entity_ids: Vec<Id> = Vec::new();
     let mut consumed_keys: HashSet<[u8; 32]> = HashSet::new();
     for (state_key, value) in &all_records {
@@ -886,7 +895,6 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         let expected = StorageKey::Index(index_entity.id()).to_bytes();
         if expected == *state_key {
             entity_ids.push(index_entity.id());
-            let _ = consumed_keys.insert(*state_key);
         }
     }
     entity_ids.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
@@ -917,27 +925,30 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // last fully-committed entity, not "next to emit."
     let start_after_id = start_cursor.map(|c| c.last_key);
     let mut bundles: Vec<([u8; 32], Vec<SnapshotRecord>)> = Vec::new();
-    // Distinct orphan categories so the operator-visible warning is
-    // meaningful. `unrecognized` is the catch-all (records whose
-    // state_key didn't match any discovered entity's expected key).
+    // Specific anomaly counters. They subdivide `unrecognized_count`
+    // computed below — a state_key flagged here is ALSO counted in
+    // the residual unrecognized total. That's intentional: ops can
+    // see "100 non-bundle records dropped, of which 95 were orphan
+    // Indexes (specific pattern), 5 were truly unrecognized."
     let mut orphan_index_without_entry: u64 = 0;
     let mut orphan_entry_without_index: u64 = 0;
     for id in &entity_ids {
         let id_bytes = *id.as_bytes();
-        if let Some(after) = start_after_id {
-            if id_bytes <= after {
-                // Mark the keys consumed even though we're skipping
-                // them; orphan detection at the end should not flag
-                // them.
-                let _ = consumed_keys.insert(StorageKey::Entry(*id).to_bytes());
-                let _ = consumed_keys.insert(StorageKey::RotationLog(*id).to_bytes());
-                continue;
-            }
-        }
-
         let index_key = StorageKey::Index(*id).to_bytes();
         let entry_key = StorageKey::Entry(*id).to_bytes();
         let rotation_log_key = StorageKey::RotationLog(*id).to_bytes();
+        if let Some(after) = start_after_id {
+            if id_bytes <= after {
+                // Cursor-skipped — these keys were already shipped on
+                // a prior page. Mark them consumed so they don't
+                // appear in the residual unrecognized count for the
+                // current page.
+                let _ = consumed_keys.insert(index_key);
+                let _ = consumed_keys.insert(entry_key);
+                let _ = consumed_keys.insert(rotation_log_key);
+                continue;
+            }
+        }
 
         let index_bytes = all_records.get(&index_key).cloned();
         let entry_bytes = all_records.get(&entry_key).cloned();
@@ -961,6 +972,12 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         // shouldn't exist anyway; if they do we drop them (debug
         // log emitted below) rather than ship them on an unverified
         // channel.
+        //
+        // `consumed_keys` is updated only on successful bundling /
+        // explicit cursor skip. Orphan arms intentionally do NOT
+        // insert the orphan key into `consumed_keys` so they flow
+        // into the final `unrecognized_count` (the operator-visible
+        // catch-all for non-bundle records).
         match (index_bytes.clone(), entry_bytes.clone()) {
             (Some(index), Some(entry)) => {
                 bundle.push(SnapshotRecord::Entity {
@@ -968,6 +985,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
                     entry,
                     index,
                 });
+                let _ = consumed_keys.insert(index_key);
                 let _ = consumed_keys.insert(entry_key);
             }
             (Some(_), None) => {
@@ -979,18 +997,17 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
                 orphan_index_without_entry += 1;
             }
             (None, Some(_)) => {
-                // This branch is structurally unreachable —
-                // `entity_ids` was derived from successful
-                // `EntityIndex` deserializations in `all_records`,
-                // so `index_bytes` is always `Some` here. Kept for
-                // exhaustiveness; treat as orphan-Entry if it ever
-                // does fire (would indicate a discovery bug).
+                // Structurally unreachable: `entity_ids` was derived
+                // from successful `EntityIndex` deserializations in
+                // `all_records`, so `index_bytes` is always `Some`
+                // here. Kept for exhaustiveness; if it ever does
+                // fire it indicates a discovery bug and we want it
+                // counted as an orphan.
                 debug!(
                     %context_id, id = ?id_bytes,
                     "unreachable: entity_id without matching Index in all_records"
                 );
                 orphan_entry_without_index += 1;
-                let _ = consumed_keys.insert(entry_key);
             }
             (None, None) => {}
         }
@@ -1009,27 +1026,23 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         }
     }
 
-    // Entry-without-Index orphans: state_keys in `all_records` that
-    // are neither in `consumed_keys` nor are RotationLog keys for
-    // known entities. The discovery loop only consumed Index keys
-    // (via EntityIndex deserialize success); any leftover record
-    // whose state_key matches `Key::Entry(id).to_bytes()` for some
-    // arbitrary `id` is an orphan Entry. We can't recover `id` from
-    // the hashed state_key, so we just count.
+    // Residual non-bundle records: state_keys present in
+    // `all_records` that weren't bundled and weren't cursor-skipped.
+    // Includes both the orphan_* anomalies counted above and any
+    // truly unrecognized records (e.g. Entry blobs not paired with
+    // any discoverable Index — we can't recover their entity id from
+    // the hashed state_key, so we just tally).
     let unrecognized_count =
         u64::try_from(total_records.saturating_sub(consumed_keys.len())).unwrap_or(u64::MAX);
 
-    if orphan_index_without_entry > 0
-        || orphan_entry_without_index > 0
-        || unrecognized_count > 0
-    {
+    if unrecognized_count > 0 {
         warn!(
             %context_id,
+            unrecognized_count,
             orphan_index_without_entry,
             orphan_entry_without_index,
-            unrecognized_count,
-            "snapshot generation: dropping non-bundle records (well-formed state \
-             trees shouldn't have these)"
+            "snapshot generation: dropping non-bundle records (orphans + truly \
+             unrecognized) — well-formed state trees shouldn't have these"
         );
     }
 
