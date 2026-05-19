@@ -273,6 +273,15 @@ impl<S: StorageAdaptor> Interface<S> {
                 owner,
                 signature_data: Some(sig_data),
             } => {
+                // Explicit placeholder reject. `ed25519_verify` would
+                // also reject `[0; 64]` cryptographically, but
+                // bailing in O(1) before invoking the crypto library
+                // matches `update_signature_in_place`'s contract and
+                // avoids burning CPU on a known-bad value from a
+                // misbehaving peer. Defense-in-depth.
+                if sig_data.signature == [0u8; 64] {
+                    return Err(StorageError::InvalidSignature);
+                }
                 if crate::env::ed25519_verify(&sig_data.signature, owner.digest(), &payload) {
                     Ok(())
                 } else {
@@ -287,6 +296,15 @@ impl<S: StorageAdaptor> Interface<S> {
                 writers,
                 signature_data: Some(sig_data),
             } => {
+                // Same `[0; 64]` placeholder reject as the User arm
+                // above — particularly important for `Shared` since
+                // the writer-set scan would do up to N ed25519
+                // verifies (one per writer) before the crypto
+                // library rejects the placeholder, which is a free
+                // CPU-burn vector for a misbehaving peer.
+                if sig_data.signature == [0u8; 64] {
+                    return Err(StorageError::InvalidSignature);
+                }
                 // Fast path: signer hint + verify once. Slow path:
                 // linear scan over writers. Mirrors `apply_action`.
                 let verified = match sig_data.signer {
