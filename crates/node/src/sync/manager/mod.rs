@@ -4318,19 +4318,21 @@ impl SyncManager {
         //
         // The whole discovery+open loop is bounded by an outer deadline
         // so a worst-case `retries × peers × open_timeout` blow-up
-        // (3-peer mesh + default 3 s open + 10 retries ≈ 100 s) can't
-        // outlast the caller's own timeout and leave the join in an
-        // ambiguous state. The deadline is generous enough to cover a
-        // legitimate cold-start mesh formation
-        // (`mesh_retries × (mesh_retry_delay + open_timeout)`) but caps
-        // pathological cases.
+        // (3-peer mesh × 3 s open × 10 retries ≈ 100 s, plus inter-round
+        // sleeps) can't outlast the caller's own timeout and leave the
+        // join in an ambiguous state. The deadline is `mesh_retries ×
+        // (mesh_retry_delay + DEADLINE_MAX_PEERS_PER_ROUND × open_timeout)` —
+        // sized for a small-to-medium mesh; on very-large meshes the
+        // deadline will fire mid-round and the per-peer loop bails via
+        // its own check (defense in depth, line below).
+        const DEADLINE_MAX_PEERS_PER_ROUND: u32 = 4;
         let open_timeout = self.sync_config.open_stream_timeout;
         let mesh_retries = super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED;
         let mesh_retry_delay = std::time::Duration::from_millis(
             super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
         );
         let connect_deadline = mesh_retry_delay
-            .saturating_add(open_timeout)
+            .saturating_add(open_timeout.saturating_mul(DEADLINE_MAX_PEERS_PER_ROUND))
             .saturating_mul(mesh_retries);
         let connect_started = std::time::Instant::now();
 
@@ -4356,6 +4358,14 @@ impl SyncManager {
                 .collect();
 
             for peer in &peers {
+                // Per-peer deadline check — bails mid-round if the
+                // outer budget is exhausted, so a very-large mesh
+                // can't sit on `open_timeout` for several peers past
+                // the deadline before the top-of-loop check fires
+                // again.
+                if connect_started.elapsed() >= connect_deadline {
+                    break 'connect;
+                }
                 match time::timeout(open_timeout, self.network_client.open_stream(*peer)).await {
                     Ok(Ok(opened)) => {
                         stream = Some(opened);
@@ -4381,7 +4391,14 @@ impl SyncManager {
                 }
             }
 
-            if attempt < mesh_retries {
+            // Sleep before the next round only if (a) there IS a next
+            // round and (b) we'd still be inside the deadline after
+            // the sleep — otherwise we'd just burn the delay and
+            // immediately hit the deadline check at the top of the
+            // next iteration.
+            if attempt < mesh_retries
+                && connect_started.elapsed().saturating_add(mesh_retry_delay) < connect_deadline
+            {
                 debug!(
                     namespace_id = %hex::encode(params.namespace_id),
                     attempt,
@@ -4392,12 +4409,14 @@ impl SyncManager {
             }
         }
 
+        let elapsed = connect_started.elapsed();
         let mut stream = stream.ok_or_else(|| {
             eyre::eyre!(
                 "could not open a namespace-join stream to any mesh peer for namespace {} \
-                 (deadline {}ms)",
+                 (deadline {}ms, elapsed {}ms)",
                 hex::encode(params.namespace_id),
-                connect_deadline.as_millis()
+                connect_deadline.as_millis(),
+                elapsed.as_millis()
             )
         })?;
 
