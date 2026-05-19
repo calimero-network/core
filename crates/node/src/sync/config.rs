@@ -56,9 +56,9 @@ pub const DEFAULT_SYNC_SESSION_DEADLINE_SECS: u64 = DEFAULT_SYNC_TIMEOUT_SECS;
 /// This allows rapid re-sync if broadcasts fail, ensuring fast CRDT convergence
 pub const DEFAULT_SYNC_INTERVAL_SECS: u64 = 5;
 
-/// Default frequency of periodic sync checks (10 seconds)
+/// Default frequency of periodic sync checks (15 seconds)
 /// Aggressive fallback for when gossipsub broadcasts fail or are delayed
-pub const DEFAULT_SYNC_FREQUENCY_SECS: u64 = 10;
+pub const DEFAULT_SYNC_FREQUENCY_SECS: u64 = 15;
 
 /// Default maximum concurrent sync operations
 pub const DEFAULT_MAX_CONCURRENT_SYNCS: usize = 30;
