@@ -46,6 +46,7 @@ pub(crate) mod parent_pull;
 pub mod prometheus_metrics;
 pub mod rotation_log_reader;
 mod snapshot;
+pub(crate) mod state_access;
 pub(crate) mod stream;
 mod tracking;
 
@@ -66,6 +67,7 @@ pub use hash_comparison_protocol::{
     HashComparisonConfig, HashComparisonFirstRequest, HashComparisonProtocol, HashComparisonStats,
 };
 pub use level_sync::{LevelWiseConfig, LevelWiseFirstRequest, LevelWiseProtocol, LevelWiseStats};
+pub(crate) use manager::reconcile_cooldown;
 pub use manager::SyncManager;
 pub use metrics::{no_op_metrics, NoOpMetrics, PhaseTimer, SharedMetrics, SyncMetricsCollector};
 pub use prometheus_metrics::PrometheusSyncMetrics;

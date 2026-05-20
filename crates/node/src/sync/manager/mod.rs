@@ -3469,7 +3469,7 @@ impl SyncManager {
 /// - 7+ failures → 30m (cap)
 ///
 /// Free function so backoff math can be unit-tested independently.
-fn reconcile_cooldown(consecutive_failures: u32) -> std::time::Duration {
+pub(crate) fn reconcile_cooldown(consecutive_failures: u32) -> std::time::Duration {
     const BASE_SECS: u64 = 30;
     const MAX: std::time::Duration = std::time::Duration::from_secs(30 * 60);
     let exp = consecutive_failures.saturating_sub(1).min(8);

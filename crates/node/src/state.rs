@@ -596,3 +596,61 @@ impl NodeState {
         }
     }
 }
+
+// Production implementation of the `SyncStateAccess` trait. Inverts the
+// dependency: `sync/` consumes `&dyn SyncStateAccess` rather than
+// reaching into `NodeState`'s fields/methods directly, which lets unit
+// tests substitute a recording fake.
+impl crate::sync::state_access::SyncStateAccess for NodeState {
+    fn delta_store(&self, context_id: &ContextId) -> Option<DeltaStore> {
+        self.delta_stores.get(context_id).map(|entry| entry.clone())
+    }
+
+    fn register_delta_store(&self, context_id: ContextId, store: DeltaStore) {
+        let _ = self.delta_stores.insert(context_id, store);
+    }
+
+    fn end_sync_session(
+        &self,
+        context_id: &ContextId,
+    ) -> Option<Vec<calimero_node_primitives::delta_buffer::BufferedDelta>> {
+        Self::end_sync_session(self, context_id)
+    }
+
+    fn cancel_sync_session(&self, context_id: &ContextId) {
+        Self::cancel_sync_session(self, context_id)
+    }
+
+    fn peer_identities(&self, peer_id: &PeerId) -> Option<BTreeSet<PublicKey>> {
+        self.peer_identities.get(peer_id).map(|entry| entry.clone())
+    }
+
+    fn reconcile_remaining_cooldown(&self, context_id: &ContextId) -> Option<(Duration, u32)> {
+        let entry = self.reconcile_attempts.get(context_id)?;
+        let cooldown = crate::sync::reconcile_cooldown(entry.consecutive_failures);
+        let elapsed = entry.last_attempt_at.elapsed();
+        let remaining = cooldown.checked_sub(elapsed)?;
+        if remaining.is_zero() {
+            None
+        } else {
+            Some((remaining, entry.consecutive_failures))
+        }
+    }
+
+    fn record_reconcile_success(&self, context_id: &ContextId) {
+        let _ = self.reconcile_attempts.remove(context_id);
+    }
+
+    fn record_reconcile_failure(&self, context_id: ContextId) -> u32 {
+        let mut entry = self
+            .reconcile_attempts
+            .entry(context_id)
+            .or_insert_with(|| ReconcileAttempt {
+                last_attempt_at: Instant::now(),
+                consecutive_failures: 0,
+            });
+        entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+        entry.last_attempt_at = Instant::now();
+        entry.consecutive_failures
+    }
+}
