@@ -1335,12 +1335,8 @@ mod tests {
         let entity_id = Id::new([42u8; 32]);
         let mut older_meta = Metadata::new(100, 100);
         older_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
-        bob.storage().add_entity_with_parent(
-            entity_id,
-            parent_id,
-            b"older-from-bob",
-            older_meta,
-        );
+        bob.storage()
+            .add_entity_with_parent(entity_id, parent_id, b"older-from-bob", older_meta);
         let mut newer_meta = Metadata::new(100, 200);
         newer_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
         alice.storage().add_entity_with_parent(
@@ -1469,7 +1465,12 @@ mod tests {
             .await
         };
 
-        let (init_result, _resp_result) = tokio::join!(initiator_fut, responder_fut);
+        // The responder may return an error when the initiator bails
+        // and drops the stream mid-session (broken-pipe on its next
+        // recv). That's expected behaviour for the failure mode we're
+        // exercising — only the initiator's Err is load-bearing.
+        let (init_result, _resp_result_expected_stream_close) =
+            tokio::join!(initiator_fut, responder_fut);
 
         let err = init_result.expect_err(
             "initiator must return Err when peer reports root_node not_found — \
