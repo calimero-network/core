@@ -67,7 +67,10 @@ pub use hash_comparison_protocol::{
     HashComparisonConfig, HashComparisonFirstRequest, HashComparisonProtocol, HashComparisonStats,
 };
 pub use level_sync::{LevelWiseConfig, LevelWiseFirstRequest, LevelWiseProtocol, LevelWiseStats};
-pub(crate) use manager::reconcile_cooldown;
 pub use manager::SyncManager;
+pub(crate) use manager::{
+    reconcile_cooldown, reconcile_remaining_cooldown, record_reconcile_failure,
+    record_reconcile_success,
+};
 pub use metrics::{no_op_metrics, NoOpMetrics, PhaseTimer, SharedMetrics, SyncMetricsCollector};
 pub use prometheus_metrics::PrometheusSyncMetrics;

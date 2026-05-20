@@ -606,8 +606,25 @@ impl crate::sync::state_access::SyncStateAccess for NodeState {
         self.delta_stores.get(context_id).map(|entry| entry.clone())
     }
 
-    fn register_delta_store(&self, context_id: ContextId, store: DeltaStore) {
-        let _ = self.delta_stores.insert(context_id, store);
+    fn get_or_register_delta_store(
+        &self,
+        context_id: ContextId,
+        factory: Box<dyn FnOnce() -> DeltaStore + Send>,
+    ) -> (DeltaStore, bool) {
+        // DashMap's entry API gives us the atomicity we need — no
+        // TOCTOU window between "is there a store?" and "register
+        // one." Track creation via a flag captured by the factory
+        // wrapper so we can report it back to the caller.
+        let mut was_newly_created = false;
+        let store = self
+            .delta_stores
+            .entry(context_id)
+            .or_insert_with(|| {
+                was_newly_created = true;
+                factory()
+            })
+            .clone();
+        (store, was_newly_created)
     }
 
     fn end_sync_session(
@@ -626,31 +643,14 @@ impl crate::sync::state_access::SyncStateAccess for NodeState {
     }
 
     fn reconcile_remaining_cooldown(&self, context_id: &ContextId) -> Option<(Duration, u32)> {
-        let entry = self.reconcile_attempts.get(context_id)?;
-        let cooldown = crate::sync::reconcile_cooldown(entry.consecutive_failures);
-        let elapsed = entry.last_attempt_at.elapsed();
-        let remaining = cooldown.checked_sub(elapsed)?;
-        if remaining.is_zero() {
-            None
-        } else {
-            Some((remaining, entry.consecutive_failures))
-        }
+        crate::sync::reconcile_remaining_cooldown(&self.reconcile_attempts, context_id)
     }
 
     fn record_reconcile_success(&self, context_id: &ContextId) {
-        let _ = self.reconcile_attempts.remove(context_id);
+        crate::sync::record_reconcile_success(&self.reconcile_attempts, context_id);
     }
 
     fn record_reconcile_failure(&self, context_id: ContextId) -> u32 {
-        let mut entry = self
-            .reconcile_attempts
-            .entry(context_id)
-            .or_insert_with(|| ReconcileAttempt {
-                last_attempt_at: Instant::now(),
-                consecutive_failures: 0,
-            });
-        entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
-        entry.last_attempt_at = Instant::now();
-        entry.consecutive_failures
+        crate::sync::record_reconcile_failure(&self.reconcile_attempts, context_id)
     }
 }

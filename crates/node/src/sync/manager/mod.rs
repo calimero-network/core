@@ -68,12 +68,25 @@ pub struct SyncManager {
     /// — the two fields hold the same underlying handle. See
     /// [`crate::sync::network::SyncNetwork`] for the contract.
     ///
-    /// This split is the minimum-viable mockability for #2406:
-    /// external callers keep talking to the concrete `NetworkClient`
-    /// (no ripple), while sync's own methods read through the trait
-    /// (mockable). After #2312 (SyncDeps inversion) lands, only the
-    /// trait field will remain.
+    /// This split is the minimum-viable mockability: external callers
+    /// keep talking to the concrete `NetworkClient` (no ripple), while
+    /// sync's own methods read through the trait (mockable).
     pub(crate) sync_network: Arc<dyn super::network::SyncNetwork>,
+    /// Sync's view of the node's mutable runtime state. Trait-mediated
+    /// (`Arc<dyn SyncStateAccess>`) so tests can substitute a recording
+    /// fake without spinning up a full `NodeManager`. In production
+    /// this is always `Arc::new(node_state)` — the same `NodeState`
+    /// the rest of the node holds.
+    pub(super) state_access: Arc<dyn super::state_access::SyncStateAccess>,
+    /// Concrete `NodeState` kept solely to hand off to the cross-actor
+    /// `crate::handlers::state_delta::replay_buffered_delta` call,
+    /// which uses a richer surface than `SyncStateAccess` exposes
+    /// (governance-pending drain, delta-buffer operations, etc.). The
+    /// rest of sync goes through `state_access`. Folding this last
+    /// dependency requires either expanding `SyncStateAccess` to
+    /// match `replay_buffered_delta`'s needs or restructuring the
+    /// cross-actor call — both deferred per the spike that landed
+    /// this trait.
     pub(super) node_state: crate::NodeState,
 
     pub(super) ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
@@ -132,6 +145,7 @@ impl Clone for SyncManager {
             context_client: self.context_client.clone(),
             network_client: self.network_client.clone(),
             sync_network: Arc::clone(&self.sync_network),
+            state_access: Arc::clone(&self.state_access),
             node_state: self.node_state.clone(),
             ctx_sync_rx: None,
             ns_sync_rx: None,
@@ -214,12 +228,19 @@ impl SyncManager {
         )>,
     ) -> Self {
         let sync_network: Arc<dyn super::network::SyncNetwork> = Arc::new(network_client.clone());
+        // Wrap the concrete `NodeState` once here. The trait field is
+        // sync's primary state surface; the concrete `node_state`
+        // field is retained ONLY for the cross-actor
+        // `replay_buffered_delta` handoff (see field doc).
+        let state_access: Arc<dyn super::state_access::SyncStateAccess> =
+            Arc::new(node_state.clone());
         Self {
             sync_config,
             node_client,
             context_client,
             network_client,
             sync_network,
+            state_access,
             node_state,
             ctx_sync_rx: Some(ctx_sync_rx),
             ns_sync_rx: Some(ns_sync_rx),
@@ -920,7 +941,7 @@ impl SyncManager {
             .collect();
         let anchor_count = partition_peers_anchor_first(
             &mut shuffled,
-            &self.node_state.peer_identities,
+            &*self.state_access,
             &self.anchor_identities_for_context(&context_id),
         );
         if anchor_count > 0 {
@@ -1440,19 +1461,19 @@ impl SyncManager {
                             // This ensures that when new deltas arrive referencing the
                             // snapshot boundary heads as parents, the DAG accepts them.
                             if !result.dag_heads.is_empty() {
-                                let delta_store = self
-                                    .node_state
-                                    .delta_stores
-                                    .entry(context_id)
-                                    .or_insert_with(|| {
-                                        crate::delta_store::DeltaStore::new(
-                                            [0u8; 32],
-                                            self.context_client.clone(),
-                                            context_id,
-                                            our_identity,
-                                        )
-                                    })
-                                    .clone();
+                                let context_client = self.context_client.clone();
+                                let (delta_store, _was_newly_created) =
+                                    self.state_access.get_or_register_delta_store(
+                                        context_id,
+                                        Box::new(move || {
+                                            crate::delta_store::DeltaStore::new(
+                                                [0u8; 32],
+                                                context_client,
+                                                context_id,
+                                                our_identity,
+                                            )
+                                        }),
+                                    );
 
                                 let checkpoints_added = delta_store
                                     .add_snapshot_checkpoints(
@@ -1500,7 +1521,7 @@ impl SyncManager {
                             // Replay any buffered deltas (from uninitialized context period)
                             // This ensures handlers execute for deltas that arrived before sync completed
                             if let Some(buffered_deltas) =
-                                self.node_state.end_sync_session(&context_id)
+                                self.state_access.end_sync_session(&context_id)
                             {
                                 let buffered_count = buffered_deltas.len();
                                 if buffered_count > 0 {
@@ -1549,7 +1570,7 @@ impl SyncManager {
 
         // Check if we have pending deltas (incomplete DAG)
         // Even if node has some state, it might be missing parent deltas
-        if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
+        if let Some(delta_store) = self.state_access.delta_store(&context_id) {
             // NOTE: previously called `load_persisted_deltas()` here to
             // catch locally-created deltas from execute.rs that are in
             // the DB but not in the in-memory DAG. That rescan was
@@ -2106,22 +2127,18 @@ impl SyncManager {
 
                 // Get or create DeltaStore for this context (do this once before the loop)
                 let (delta_store_ref, is_new) = {
-                    let mut is_new = false;
-                    let delta_store = self
-                        .node_state
-                        .delta_stores
-                        .entry(context_id)
-                        .or_insert_with(|| {
-                            is_new = true;
+                    let context_client = self.context_client.clone();
+                    self.state_access.get_or_register_delta_store(
+                        context_id,
+                        Box::new(move || {
                             crate::delta_store::DeltaStore::new(
                                 [0u8; 32],
-                                self.context_client.clone(),
+                                context_client,
                                 context_id,
                                 our_identity,
                             )
-                        });
-
-                    (delta_store.clone(), is_new)
+                        }),
+                    )
                 };
 
                 // The previous revision ran `load_persisted_deltas`
@@ -2420,14 +2437,14 @@ impl SyncManager {
             Err(e) => {
                 // Cancel sync session on failure - discard buffered deltas
                 // since the context state is inconsistent
-                self.node_state.cancel_sync_session(&context_id);
+                self.state_access.cancel_sync_session(&context_id);
                 return Err(e);
             }
         };
         info!(%context_id, records = result.applied_records, "Snapshot sync completed");
 
         // End buffering and get any deltas that arrived during sync
-        let buffered_deltas = self.node_state.end_sync_session(&context_id);
+        let buffered_deltas = self.state_access.end_sync_session(&context_id);
         let buffered_count = buffered_deltas.as_ref().map_or(0, Vec::len);
 
         if buffered_count > 0 {
@@ -2501,21 +2518,18 @@ impl SyncManager {
         // warm-store case, but a fresh store here would otherwise miss
         // everything on disk and we'd later fail to match checkpoints.
         let (delta_store, is_new) = {
-            let mut is_new = false;
-            let entry = self
-                .node_state
-                .delta_stores
-                .entry(context_id)
-                .or_insert_with(|| {
-                    is_new = true;
+            let context_client = self.context_client.clone();
+            self.state_access.get_or_register_delta_store(
+                context_id,
+                Box::new(move || {
                     crate::delta_store::DeltaStore::new(
                         [0u8; 32],
-                        self.context_client.clone(),
+                        context_client,
                         context_id,
                         our_identity,
                     )
-                });
-            (entry.clone(), is_new)
+                }),
+            )
         };
         if is_new {
             if let Err(e) = delta_store.load_persisted_deltas().await {
@@ -2643,21 +2657,18 @@ impl SyncManager {
         // warm stores are kept current by execute-side incremental
         // notifications.
         let (delta_store, is_new) = {
-            let mut is_new = false;
-            let entry = self
-                .node_state
-                .delta_stores
-                .entry(context_id)
-                .or_insert_with(|| {
-                    is_new = true;
+            let context_client = self.context_client.clone();
+            self.state_access.get_or_register_delta_store(
+                context_id,
+                Box::new(move || {
                     crate::delta_store::DeltaStore::new(
                         [0u8; 32],
-                        self.context_client.clone(),
+                        context_client,
                         context_id,
                         our_identity,
                     )
-                });
-            (entry.clone(), is_new)
+                }),
+            )
         };
         if is_new {
             if let Err(e) = delta_store.load_persisted_deltas().await {
@@ -3245,7 +3256,7 @@ impl SyncManager {
         op_kind: &'static str,
     ) {
         if let Some((remaining, failures)) =
-            reconcile_remaining_cooldown(&self.node_state.reconcile_attempts, &context_id)
+            self.state_access.reconcile_remaining_cooldown(&context_id)
         {
             tracing::debug!(
                 %context_id,
@@ -3303,30 +3314,32 @@ impl SyncManager {
         // but cache hasn't warmed yet" in the no-anchor warn below.
         let mut peers_missing_cache_entry: usize = 0;
         let mut peers_known_not_anchor: usize = 0;
-        let anchor_peer = mesh_peers.iter().copied().find(|peer| {
-            match self.node_state.peer_identities.get(peer) {
-                Some(ids) => {
-                    if ids.iter().any(|id| anchors.contains(id)) {
-                        true
-                    } else {
-                        peers_known_not_anchor += 1;
+        let anchor_peer =
+            mesh_peers
+                .iter()
+                .copied()
+                .find(|peer| match self.state_access.peer_identities(peer) {
+                    Some(ids) => {
+                        if ids.iter().any(|id| anchors.contains(id)) {
+                            true
+                        } else {
+                            peers_known_not_anchor += 1;
+                            false
+                        }
+                    }
+                    None => {
+                        peers_missing_cache_entry += 1;
+                        tracing::debug!(
+                            %context_id,
+                            %peer,
+                            op_kind,
+                            "reconcile-after-divergence: mesh peer skipped — no peer_identities \
+                             cache entry yet (peer has not been observed signing a verified \
+                             message); cache warms as the peer's signed traffic is processed"
+                        );
                         false
                     }
-                }
-                None => {
-                    peers_missing_cache_entry += 1;
-                    tracing::debug!(
-                        %context_id,
-                        %peer,
-                        op_kind,
-                        "reconcile-after-divergence: mesh peer skipped — no peer_identities \
-                         cache entry yet (peer has not been observed signing a verified \
-                         message); cache warms as the peer's signed traffic is processed"
-                    );
-                    false
-                }
-            }
-        });
+                });
         let Some(anchor_peer) = anchor_peer else {
             tracing::warn!(
                 %context_id,
@@ -3370,10 +3383,9 @@ impl SyncManager {
                     op_kind,
                 );
                 if converged {
-                    record_reconcile_success(&self.node_state.reconcile_attempts, &context_id);
+                    self.state_access.record_reconcile_success(&context_id);
                 } else {
-                    let failures =
-                        record_reconcile_failure(&self.node_state.reconcile_attempts, context_id);
+                    let failures = self.state_access.record_reconcile_failure(context_id);
                     tracing::warn!(
                         %context_id,
                         op_kind,
@@ -3385,8 +3397,7 @@ impl SyncManager {
                 }
             }
             Err(err) => {
-                let failures =
-                    record_reconcile_failure(&self.node_state.reconcile_attempts, context_id);
+                let failures = self.state_access.record_reconcile_failure(context_id);
                 tracing::warn!(
                     %context_id,
                     %anchor_peer,
@@ -3481,7 +3492,7 @@ pub(crate) fn reconcile_cooldown(consecutive_failures: u32) -> std::time::Durati
 /// its cooldown window, return `Some((remaining_cooldown,
 /// consecutive_failures))`. Otherwise — no entry, or the cooldown has
 /// elapsed — return `None`.
-fn reconcile_remaining_cooldown(
+pub(crate) fn reconcile_remaining_cooldown(
     attempts: &dashmap::DashMap<ContextId, crate::state::ReconcileAttempt>,
     context_id: &ContextId,
 ) -> Option<(std::time::Duration, u32)> {
@@ -3500,7 +3511,7 @@ fn reconcile_remaining_cooldown(
 /// `consecutive_failures` and stamp `last_attempt_at = now`. Returns
 /// the new failure count so the caller can log the next cooldown
 /// directly.
-fn record_reconcile_failure(
+pub(crate) fn record_reconcile_failure(
     attempts: &dashmap::DashMap<ContextId, crate::state::ReconcileAttempt>,
     context_id: ContextId,
 ) -> u32 {
@@ -3517,7 +3528,7 @@ fn record_reconcile_failure(
 
 /// Clear backoff state for `context_id` after a successful reconcile.
 /// Subsequent divergences are treated as fresh — no inherited cooldown.
-fn record_reconcile_success(
+pub(crate) fn record_reconcile_success(
     attempts: &dashmap::DashMap<ContextId, crate::state::ReconcileAttempt>,
     context_id: &ContextId,
 ) {
@@ -3546,10 +3557,7 @@ fn record_reconcile_success(
 /// synthetic inputs without spinning up a sync manager.
 fn partition_peers_anchor_first(
     peers: &mut [libp2p::PeerId],
-    peer_identities: &dashmap::DashMap<
-        libp2p::PeerId,
-        std::collections::BTreeSet<calimero_primitives::identity::PublicKey>,
-    >,
+    state_access: &dyn super::state_access::SyncStateAccess,
     anchors: &std::collections::BTreeSet<calimero_primitives::identity::PublicKey>,
 ) -> usize {
     if anchors.is_empty() {
@@ -3558,8 +3566,8 @@ fn partition_peers_anchor_first(
     let anchor_flags: Vec<bool> = peers
         .iter()
         .map(|peer| {
-            peer_identities
-                .get(peer)
+            state_access
+                .peer_identities(peer)
                 .map(|ids| ids.iter().any(|id| anchors.contains(id)))
                 .unwrap_or(false)
         })

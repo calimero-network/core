@@ -43,12 +43,23 @@ pub(crate) trait SyncStateAccess: Send + Sync {
     /// yet — the store is lazily created on first sync.
     fn delta_store(&self, context_id: &ContextId) -> Option<DeltaStore>;
 
-    /// Register a freshly-constructed [`DeltaStore`] for `context_id`.
+    /// Atomic get-or-insert: return the [`DeltaStore`] for
+    /// `context_id` paired with a flag that's `true` iff this call
+    /// created the entry. The factory closure runs only on the
+    /// create path, atomic under the storage's internal lock — so
+    /// the `was_newly_created` bool is reliable for one-time setup
+    /// (e.g. hydrating the freshly-created store from disk).
     ///
-    /// Overwrites any prior registration. Called from sync paths that
-    /// realise a context is new (first interval sync, first reconcile,
-    /// first DAG catchup).
-    fn register_delta_store(&self, context_id: ContextId, store: DeltaStore);
+    /// The factory is `Box<dyn FnOnce ... + Send>` because trait
+    /// methods on a `dyn`-compatible trait can't be generic over the
+    /// closure type; the heap allocation runs at most once per
+    /// context per process lifetime (only on first sync for a
+    /// context).
+    fn get_or_register_delta_store(
+        &self,
+        context_id: ContextId,
+        factory: Box<dyn FnOnce() -> DeltaStore + Send>,
+    ) -> (DeltaStore, bool);
 
     /// End the active sync session for `context_id` and return any
     /// deltas the session buffered.
