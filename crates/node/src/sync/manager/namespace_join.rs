@@ -448,6 +448,12 @@ mod tests {
         let mock = MockSyncNetwork::default();
         let kept = PeerId::random();
         let blocked = PeerId::random();
+        // `mesh_peers` is sticky-last in the mock (see module doc): a
+        // single `push_mesh_peers` call seeds the same list for every
+        // round. The test budget below (`retries` open_stream Errs)
+        // depends on that — if sticky-last ever changes to return an
+        // empty list after the first read, the assertion below would
+        // pass vacuously instead of guarding the filter behaviour.
         mock.push_mesh_peers(vec![kept, blocked]);
         let mut excluded = HashSet::new();
         excluded.insert(blocked);

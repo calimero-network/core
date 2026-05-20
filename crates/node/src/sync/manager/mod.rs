@@ -4451,23 +4451,36 @@ impl SyncManager {
                     continue;
                 }
                 Ok(other) => {
+                    let detail = format!(
+                        "unexpected response variant: {:?}",
+                        other.as_ref().map(|m| std::mem::discriminant(m))
+                    );
                     debug!(
                         namespace_id = %hex::encode(params.namespace_id),
                         %peer,
-                        "namespace join: unexpected response {:?}, marking peer rejected",
-                        other.as_ref().map(|m| std::mem::discriminant(m))
+                        %detail,
+                        "namespace join: unexpected response, marking peer rejected"
                     );
                     rejected_peers.insert(peer);
+                    // Carry the unexpected-response detail into
+                    // `last_rejection` so the exhaustion error keeps
+                    // diagnostic context if every retry hits this arm.
+                    last_rejection = Some(detail);
                     continue;
                 }
                 Err(recv_err) => {
+                    let detail = format!("recv failed: {recv_err}");
                     debug!(
                         namespace_id = %hex::encode(params.namespace_id),
                         %peer,
-                        error = %recv_err,
+                        %detail,
                         "namespace join: recv failed, marking peer rejected, trying next peer"
                     );
                     rejected_peers.insert(peer);
+                    // Same rationale as the `Ok(other)` arm above —
+                    // carry the recv failure into `last_rejection` so
+                    // the exhaustion error remains informative.
+                    last_rejection = Some(detail);
                     continue;
                 }
             }
