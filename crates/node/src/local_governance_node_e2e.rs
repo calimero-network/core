@@ -9,10 +9,12 @@ use actix::Actor;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
 use calimero_context::group_store::{
-    add_group_member, check_group_membership, get_local_gov_nonce, save_group_meta,
+    add_group_member, check_group_membership, get_group_member_value, get_local_gov_nonce,
+    save_group_meta, store_group_signing_key,
 };
 use calimero_context::ContextManager;
 use calimero_context_client::client::ContextClient;
+use calimero_context_client::group::SetMemberAutoFollowRequest;
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_network_primitives::client::NetworkClient;
@@ -28,6 +30,7 @@ use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use prometheus_client::registry::Registry;
 use rand::rngs::OsRng;
+use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 
@@ -48,8 +51,22 @@ fn sample_meta(admin: PublicKey) -> GroupMetaValue {
     }
 }
 
-#[tokio::test]
-async fn apply_signed_group_op_via_context_client() {
+/// Bundle of resources kept alive for the duration of a test — dropping
+/// `_tmp` or `_pool` would tear down the blobstore / arbiters underneath
+/// the running actors.
+struct TestNode {
+    _pool: ArbiterPool,
+    _tmp: TempDir,
+    store: Store,
+    context_client: ContextClient,
+}
+
+/// Boots a `ContextManager` + `NodeManager` against an in-memory store and
+/// a tempdir-backed blobstore, with no peer wired up (the network client's
+/// recipient is a never-initialised `LazyRecipient`, so any outbound op
+/// publish becomes a local-only apply). Sufficient for governance handlers
+/// that just need the actor mailbox and the datastore.
+async fn boot_test_node() -> TestNode {
     let mut pool = ArbiterPool::new().await.expect("arbiter pool");
     let tmp = tempfile::tempdir().expect("tempdir");
 
@@ -159,6 +176,18 @@ async fn apply_signed_group_op_via_context_client() {
 
     sleep(Duration::from_millis(50)).await;
 
+    TestNode {
+        _pool: pool,
+        _tmp: tmp,
+        store,
+        context_client,
+    }
+}
+
+#[tokio::test]
+async fn apply_signed_group_op_via_context_client() {
+    let node = boot_test_node().await;
+
     let mut rng = OsRng;
     let gid = ContextGroupId::from([0x77u8; 32]);
     let gid_bytes = gid.to_bytes();
@@ -166,8 +195,8 @@ async fn apply_signed_group_op_via_context_client() {
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).expect("save_group_meta");
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).expect("add_group_member");
+    save_group_meta(&node.store, &gid, &sample_meta(admin_pk)).expect("save_group_meta");
+    add_group_member(&node.store, &gid, &admin_pk, GroupMemberRole::Admin).expect("add admin");
 
     let new_member = PrivateKey::random(&mut rng).public_key();
 
@@ -184,7 +213,8 @@ async fn apply_signed_group_op_via_context_client() {
     )
     .expect("sign op");
 
-    match context_client
+    match node
+        .context_client
         .apply_signed_group_op(op)
         .await
         .expect("apply")
@@ -194,13 +224,110 @@ async fn apply_signed_group_op_via_context_client() {
     }
 
     assert!(
-        check_group_membership(&store, &gid, &new_member).expect("check_group_membership"),
+        check_group_membership(&node.store, &gid, &new_member).expect("check_group_membership"),
         "member should be present after apply_signed_group_op"
     );
     assert_eq!(
-        get_local_gov_nonce(&store, &gid, &admin_pk)
+        get_local_gov_nonce(&node.store, &gid, &admin_pk)
             .expect("get_local_gov_nonce")
             .expect("nonce row"),
         1
     );
+}
+
+/// Plumbing test for the synchronous-error paths in the
+/// `set_member_auto_follow` actor handler. Both cases short-circuit
+/// before the async `sign_apply_and_publish` block, so they don't
+/// require a wired-up network actor — `ActorResponse::reply(Err(...))`
+/// returns immediately:
+///
+/// 1. Unknown group — preflight bails with `"not found"` before any
+///    signing or apply. Exercises that the request actually reaches the
+///    handler and that preflight runs against the requester's view.
+/// 2. Non-member target — surfaced by the handler's up-front
+///    `get_group_member_role` check (`"not a member"`), giving a
+///    clearer error than the apply-path bail.
+///
+/// The non-admin-non-self and happy-path cases are intentionally not
+/// tested here: both reach the async block which awaits the network
+/// actor (`mesh_peer_count_for_namespace`) — the apply-path admin-or-self
+/// bail and the apply itself live inside that block. Happy-path apply
+/// semantics and the admin-or-self rule are exhaustively covered by
+/// `group_store::tests::auto_follow_tests` (12 cases including admin-set,
+/// self-set, non-admin-rejected, and non-member-target variants).
+#[tokio::test]
+async fn set_member_auto_follow_handler_error_paths() {
+    let node = boot_test_node().await;
+
+    let mut rng = OsRng;
+    let gid = ContextGroupId::from([0x55u8; 32]);
+
+    let admin_sk = PrivateKey::random(&mut rng);
+    let alice_sk = PrivateKey::random(&mut rng);
+    let stranger = PrivateKey::random(&mut rng).public_key();
+
+    save_group_meta(&node.store, &gid, &sample_meta(admin_sk.public_key())).unwrap();
+    add_group_member(
+        &node.store,
+        &gid,
+        &admin_sk.public_key(),
+        GroupMemberRole::Admin,
+    )
+    .unwrap();
+    add_group_member(
+        &node.store,
+        &gid,
+        &alice_sk.public_key(),
+        GroupMemberRole::Member,
+    )
+    .unwrap();
+
+    // Admin needs a signing key registered so preflight can resolve one
+    // when admin acts as requester.
+    store_group_signing_key(&node.store, &gid, &admin_sk.public_key(), &admin_sk).unwrap();
+
+    // Case 1: unknown group — preflight bails before the membership
+    // check, before signing, before any async work.
+    let unknown_gid = ContextGroupId::from([0xEE; 32]);
+    let err = node
+        .context_client
+        .set_member_auto_follow(SetMemberAutoFollowRequest {
+            group_id: unknown_gid,
+            target: alice_sk.public_key(),
+            auto_follow_contexts: true,
+            auto_follow_subgroups: false,
+            requester: Some(admin_sk.public_key()),
+        })
+        .await
+        .expect_err("unknown group should fail preflight");
+    assert!(
+        err.to_string().contains("not found"),
+        "unexpected error: {err}"
+    );
+
+    // Case 2: non-member target — handler's up-front check rejects after
+    // preflight but before signing. The clearer error is the whole reason
+    // the handler does this ahead of the apply path's bail.
+    let err = node
+        .context_client
+        .set_member_auto_follow(SetMemberAutoFollowRequest {
+            group_id: gid,
+            target: stranger,
+            auto_follow_contexts: true,
+            auto_follow_subgroups: false,
+            requester: Some(admin_sk.public_key()),
+        })
+        .await
+        .expect_err("stranger is not a member");
+    assert!(
+        err.to_string().contains("not a member"),
+        "unexpected error: {err}"
+    );
+
+    // Alice's flags remain at default — nothing was applied.
+    let alice_row = get_group_member_value(&node.store, &gid, &alice_sk.public_key())
+        .unwrap()
+        .expect("alice row");
+    assert!(!alice_row.auto_follow.contexts);
+    assert!(!alice_row.auto_follow.subgroups);
 }

@@ -262,6 +262,10 @@ pub(crate) fn setup(
                 .put(groups::set_member_capabilities::handler),
         )
         .route(
+            "/groups/:group_id/members/:identity/auto-follow",
+            put(groups::set_member_auto_follow::handler),
+        )
+        .route(
             "/groups/:group_id/settings/default-capabilities",
             put(groups::set_default_capabilities::handler),
         )

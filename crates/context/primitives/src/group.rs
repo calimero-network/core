@@ -598,6 +598,24 @@ impl Message for SetMemberCapabilitiesRequest {
     type Result = eyre::Result<()>;
 }
 
+/// Set per-member auto-follow flags on a group.
+///
+/// Authorized by group admin (for any `target`) or by the `target` itself
+/// (self-setting). The apply path enforces the admin-or-self rule —
+/// see `GroupOp::MemberSetAutoFollow` and the auto-follow architecture doc.
+#[derive(Debug)]
+pub struct SetMemberAutoFollowRequest {
+    pub group_id: ContextGroupId,
+    pub target: PublicKey,
+    pub auto_follow_contexts: bool,
+    pub auto_follow_subgroups: bool,
+    pub requester: Option<PublicKey>,
+}
+
+impl Message for SetMemberAutoFollowRequest {
+    type Result = eyre::Result<()>;
+}
+
 #[derive(Debug)]
 pub struct GetMemberCapabilitiesRequest {
     pub group_id: ContextGroupId,

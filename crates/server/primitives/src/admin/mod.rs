@@ -2478,6 +2478,26 @@ impl Validate for SetMemberCapabilitiesApiRequest {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct SetMemberCapabilitiesApiResponse {}
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMemberAutoFollowApiRequest {
+    /// When true, the target auto-joins new contexts registered in this group.
+    pub auto_follow_contexts: bool,
+    /// When true, the target self-admits into subgroups nested under this group.
+    pub auto_follow_subgroups: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester: Option<PublicKey>,
+}
+
+impl Validate for SetMemberAutoFollowApiRequest {
+    fn validate(&self) -> Vec<ValidationError> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct SetMemberAutoFollowApiResponse {}
+
 // ---- Set Metadata (group / member / context) ----
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

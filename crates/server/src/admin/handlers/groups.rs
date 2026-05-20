@@ -23,6 +23,7 @@ pub mod retry_group_upgrade;
 pub mod set_context_metadata;
 pub mod set_default_capabilities;
 pub mod set_group_metadata;
+pub mod set_member_auto_follow;
 pub mod set_member_capabilities;
 pub mod set_member_metadata;
 pub mod set_subgroup_visibility;
