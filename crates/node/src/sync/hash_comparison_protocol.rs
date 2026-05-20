@@ -200,6 +200,15 @@ async fn run_initiator_impl<T: SyncTransport>(
     // Stack for DFS traversal
     let mut to_compare: Vec<([u8; 32], bool)> = vec![(remote_root_hash, true)];
 
+    // Leaves the initiator needs to push back to the peer because local
+    // is divergent from what the peer just sent us (see #2407
+    // bidirectional reconciliation below). Collected during the DFS and
+    // flushed in one chunked call after the walk to keep the number of
+    // round-trips O(divergent_leaves / MAX_ENTITIES_PER_PUSH) rather
+    // than O(divergent_leaves), and to keep `stats.requests_sent` well
+    // below `MAX_HASH_COMPARISON_REQUESTS` on heavily-diverged trees.
+    let mut pending_local_leaf_pushes: Vec<TreeLeafData> = Vec::new();
+
     while let Some((node_id, is_root_request)) = to_compare.pop() {
         // DoS protection: limit stack size
         if to_compare.len() > MAX_PENDING_NODES {
@@ -251,6 +260,22 @@ async fn run_initiator_impl<T: SyncTransport>(
         }
 
         if not_found {
+            if is_root_request {
+                // #2407 root-advance race: the peer's root moved between
+                // handshake (where we captured `remote_root_hash`) and now,
+                // so the peer no longer has that exact internal-node entity
+                // in its index. Without this branch the DFS stack stays
+                // empty, the session closes cleanly, and `Ok(stats)` is
+                // returned with all counters at zero — the manager records
+                // it as a successful sync and the divergent node never
+                // recovers. Bailing here surfaces the failure to the
+                // manager's fallback chain (DAG catchup → snapshot), which
+                // re-handshakes against the peer's current root.
+                bail!(
+                    "HashComparison sync aborted: peer reported root node not_found \
+                     (peer's root advanced after handshake)"
+                );
+            }
             debug!(%context_id, node_id = %hex::encode(node_id), "Node not found on peer");
             continue;
         }
@@ -288,6 +313,56 @@ async fn run_initiator_impl<T: SyncTransport>(
                         apply_leaf_with_crdt_merge(context_id, leaf_data)
                     })?;
                     stats.entities_merged += 1;
+
+                    // #2407 bidirectional leaf reconciliation: a parent's
+                    // `children` list is keyed by entity_id (see
+                    // `get_local_tree_node`: `c.id().as_bytes()`), so a
+                    // same-entity-different-HLC divergence ends up in
+                    // `common_children` and DFS recurses here. We've
+                    // already pulled the peer's version above; the
+                    // storage layer's LWW guard keeps the newer of
+                    // {local, peer}. If local won (silent skip), the
+                    // peer still holds the older version and would
+                    // re-emit it on every subsequent sync — the sticky
+                    // loop documented in #2407 evidence
+                    // (`entities_merged=2, entities_pushed=0,
+                    // success_count climbing forever`). Queue local's
+                    // leaf to push back so the peer can converge in the
+                    // SAME session; the peer's own LWW guard skips if
+                    // its version is already newer, so this is a no-op
+                    // when unnecessary. We accumulate and flush in one
+                    // chunked batch after the DFS so an N-leaf
+                    // divergence is N entities over O(N/batch) round-
+                    // trips, not N round-trips inline.
+                    let local_node = with_runtime_env(runtime_env.clone(), || {
+                        get_local_tree_node(context_id, &remote_node.id, false)
+                    })?;
+                    if let Some(local) = local_node {
+                        if local.is_leaf() && local.hash != remote_node.hash {
+                            if let Some(local_leaf) = local.leaf_data {
+                                // Same guard `collect_local_leaves`
+                                // applies on the snapshot-push path:
+                                // an oversized leaf is rejected by
+                                // the peer's `TreeLeafData::is_valid`
+                                // check inside `handle_entity_push`,
+                                // so queuing it here would silently
+                                // fail and re-enter the sticky loop
+                                // this fix exists to eliminate.
+                                if local_leaf.value.len() > MAX_LEAF_VALUE_SIZE {
+                                    warn!(
+                                        %context_id,
+                                        key = %hex::encode(local_leaf.key),
+                                        len = local_leaf.value.len(),
+                                        max = MAX_LEAF_VALUE_SIZE,
+                                        "leaf value exceeds MAX_LEAF_VALUE_SIZE, \
+                                         skipping bidirectional push"
+                                    );
+                                } else {
+                                    pending_local_leaf_pushes.push(local_leaf);
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
                 // Internal node: compare with local version
@@ -359,6 +434,28 @@ async fn run_initiator_impl<T: SyncTransport>(
         // #2319: yield once per peer round-trip batch too, in case the
         // batch was < 64 nodes but we are walking thousands of them.
         tokio::task::yield_now().await;
+    }
+
+    // Flush bidirectional-reconciliation leaf pushes (#2407). One
+    // chunked `push_entities` call covers all divergent leaves
+    // discovered during the DFS; the helper batches at
+    // `MAX_ENTITIES_PER_PUSH` and a single EntityPushAck is consumed
+    // per batch, so the request budget stays bounded.
+    if !pending_local_leaf_pushes.is_empty() {
+        let pushed = push_entities(
+            transport,
+            context_id,
+            identity,
+            &pending_local_leaf_pushes,
+            &mut stats,
+        )
+        .await?;
+        debug!(
+            %context_id,
+            divergent_leaves = pending_local_leaf_pushes.len(),
+            entities_pushed = pushed,
+            "Flushed bidirectional leaf reconciliation pushes"
+        );
     }
 
     // Close the transport to signal completion to the responder

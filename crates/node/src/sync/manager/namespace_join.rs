@@ -13,8 +13,11 @@
 //! this module deliberately holds none of it so the comments don't
 //! drift out of sync.
 
+use std::collections::HashSet;
+
 use calimero_network_primitives::stream::Stream;
 use libp2p::gossipsub::TopicHash;
+use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use tokio::time;
 use tracing::debug;
@@ -43,20 +46,27 @@ const DEADLINE_MAX_PEERS_PER_ROUND: u32 = 4;
 /// Open a stream to a namespace mesh peer.
 ///
 /// Iterates `mesh_retries` rounds. Each round: discover mesh peers,
-/// shuffle, try each with a per-peer `open_timeout`. The whole loop
-/// is bounded by an outer deadline computed from the retry/timeout
-/// config so a pathological large-mesh case can't outlast the
-/// caller's own timeout.
+/// shuffle, try each with a per-peer `open_timeout`. Peers in
+/// `excluded_peers` are filtered out before the inner loop —
+/// `initiate_namespace_join` uses this to retry against a different
+/// peer after one returns `NamespaceJoinRejected` without opening
+/// fresh transports to the rejecting peer. The whole loop is bounded
+/// by an outer deadline computed from the retry/timeout config so a
+/// pathological large-mesh case can't outlast the caller's own
+/// timeout.
 ///
-/// Returns `Ok(stream)` on first success or `Err(_)` after the
-/// deadline elapses / all retries exhaust.
+/// Returns `Ok((stream, peer_id))` on first success or `Err(_)` after
+/// the deadline elapses / all retries exhaust. The `peer_id` lets the
+/// caller record a rejection and pass the peer back via
+/// `excluded_peers` on the next call.
 pub(super) async fn open_namespace_join_stream(
     sync_network: &dyn SyncNetwork,
     namespace_id: [u8; 32],
     open_timeout: std::time::Duration,
     mesh_retries: u32,
     mesh_retry_delay: std::time::Duration,
-) -> eyre::Result<Stream> {
+    excluded_peers: &HashSet<PeerId>,
+) -> eyre::Result<(Stream, PeerId)> {
     // Production wiring always passes `DEFAULT_MESH_RETRIES_UNINITIALIZED`
     // (a non-zero compile-time const). A zero here would yield a zero
     // deadline and an empty `1..=0` loop body — the function would
@@ -82,7 +92,7 @@ pub(super) async fn open_namespace_join_stream(
     // `std::time::Instant`.
     let connect_started = tokio::time::Instant::now();
 
-    let mut stream = None;
+    let mut result: Option<(Stream, PeerId)> = None;
     'connect: for attempt in 1..=mesh_retries {
         if connect_started.elapsed() >= connect_deadline {
             debug!(
@@ -94,6 +104,15 @@ pub(super) async fn open_namespace_join_stream(
             break;
         }
         let mut peers = sync_network.mesh_peers(topic.clone()).await;
+        // Filter excluded peers before shuffling so an excluded peer
+        // doesn't get picked first and then `continue`'d — that would
+        // burn a slot in the shuffle order. Filtering up-front also
+        // makes the empty-after-exclusion case observable: if every
+        // mesh peer is excluded, we skip straight to the inter-round
+        // sleep (or, if this is the last attempt, the Err).
+        if !excluded_peers.is_empty() {
+            peers.retain(|p| !excluded_peers.contains(p));
+        }
         // In-place shuffle avoids the second `Vec` allocation that
         // `choose_multiple` would produce. Matches the pattern used
         // in `perform_interval_sync`.
@@ -105,7 +124,7 @@ pub(super) async fn open_namespace_join_stream(
             }
             match time::timeout(open_timeout, sync_network.open_stream(*peer)).await {
                 Ok(Ok(opened)) => {
-                    stream = Some(opened);
+                    result = Some((opened, *peer));
                     break 'connect;
                 }
                 Ok(Err(err)) => {
@@ -142,13 +161,14 @@ pub(super) async fn open_namespace_join_stream(
     }
 
     let elapsed = connect_started.elapsed();
-    stream.ok_or_else(|| {
+    result.ok_or_else(|| {
         eyre::eyre!(
             "could not open a namespace-join stream to any mesh peer for namespace {} \
-             (deadline {}ms, elapsed {}ms)",
+             (deadline {}ms, elapsed {}ms, excluded {})",
             hex::encode(namespace_id),
             connect_deadline.as_millis(),
-            elapsed.as_millis()
+            elapsed.as_millis(),
+            excluded_peers.len()
         )
     })
 }
@@ -173,6 +193,12 @@ mod tests {
         (Duration::from_millis(100), 3, Duration::from_millis(50))
     }
 
+    /// Default-empty exclusion set for tests that don't need to
+    /// exercise the protocol-level-retry rejection path.
+    fn no_excluded() -> HashSet<PeerId> {
+        HashSet::new()
+    }
+
     /// All peers in every round return Err → function returns Err
     /// with the deadline+elapsed signature. We seed exactly the
     /// expected error count (retries × peers = 6) and assert
@@ -193,9 +219,15 @@ mod tests {
             mock.push_open_stream_err(format!("err-{i}"));
         }
 
-        let result =
-            open_namespace_join_stream(&mock, NAMESPACE_ID, open_timeout, retries, retry_delay)
-                .await;
+        let result = open_namespace_join_stream(
+            &mock,
+            NAMESPACE_ID,
+            open_timeout,
+            retries,
+            retry_delay,
+            &no_excluded(),
+        )
+        .await;
 
         let err = result.unwrap_err().to_string();
         assert!(
@@ -234,9 +266,15 @@ mod tests {
             .saturating_add(open_timeout.saturating_mul(DEADLINE_MAX_PEERS_PER_ROUND))
             .saturating_mul(retries);
         let start = time::Instant::now();
-        let result =
-            open_namespace_join_stream(&mock, NAMESPACE_ID, open_timeout, retries, retry_delay)
-                .await;
+        let result = open_namespace_join_stream(
+            &mock,
+            NAMESPACE_ID,
+            open_timeout,
+            retries,
+            retry_delay,
+            &no_excluded(),
+        )
+        .await;
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "expected Err from hanging peers, got Ok");
@@ -263,9 +301,15 @@ mod tests {
         // mesh hasn't formed yet).
 
         let (open_timeout, retries, retry_delay) = defaults();
-        let result =
-            open_namespace_join_stream(&mock, NAMESPACE_ID, open_timeout, retries, retry_delay)
-                .await;
+        let result = open_namespace_join_stream(
+            &mock,
+            NAMESPACE_ID,
+            open_timeout,
+            retries,
+            retry_delay,
+            &no_excluded(),
+        )
+        .await;
 
         assert!(
             result.is_err(),
@@ -306,6 +350,7 @@ mod tests {
             open_timeout,
             mesh_retries,
             mesh_retry_delay,
+            &no_excluded(),
         )
         .await;
         let elapsed = start.elapsed();
@@ -332,11 +377,112 @@ mod tests {
         let mock: Arc<dyn SyncNetwork> = Arc::new(MockSyncNetwork::default());
 
         let (open_timeout, retries, retry_delay) = defaults();
-        let result =
-            open_namespace_join_stream(&*mock, NAMESPACE_ID, open_timeout, retries, retry_delay)
-                .await;
+        let result = open_namespace_join_stream(
+            &*mock,
+            NAMESPACE_ID,
+            open_timeout,
+            retries,
+            retry_delay,
+            &no_excluded(),
+        )
+        .await;
         // Empty mesh → Err is expected; we're just checking the
         // type coercion compiles and runs.
         assert!(result.is_err());
+    }
+
+    /// Every mesh peer present is in `excluded_peers` → connect loop
+    /// has nothing to try → Err after the full retry budget. Catches
+    /// the protocol-level-retry exhaustion case where every peer has
+    /// already rejected `NamespaceJoinRequest` on a prior attempt and
+    /// the manager re-calls the helper with all of them excluded.
+    #[tokio::test(start_paused = true)]
+    async fn all_peers_excluded_returns_err_without_open_attempts() {
+        let mock = MockSyncNetwork::default();
+        let p1 = PeerId::random();
+        let p2 = PeerId::random();
+        mock.push_mesh_peers(vec![p1, p2]);
+        let mut excluded = HashSet::new();
+        excluded.insert(p1);
+        excluded.insert(p2);
+
+        let (open_timeout, retries, retry_delay) = defaults();
+        // Crucially: NO `push_open_stream_*` calls. If the connect
+        // loop tries to open_stream against an excluded peer, the
+        // mock's "no queued response" Err surfaces — but that would
+        // mean the filter failed. With the filter working, the
+        // exhausted-mesh path returns Err without consuming the
+        // open_stream queue.
+        let result = open_namespace_join_stream(
+            &mock,
+            NAMESPACE_ID,
+            open_timeout,
+            retries,
+            retry_delay,
+            &excluded,
+        )
+        .await;
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("could not open a namespace-join stream"),
+            "unexpected err: {err}"
+        );
+        assert!(
+            err.contains("excluded 2"),
+            "err should report the excluded-peer count: {err}"
+        );
+        // The filter dropped both peers before open_stream got a
+        // chance to be called, so the open_stream queue is still
+        // empty (nothing seeded, nothing consumed). The mesh_peers
+        // entry consumed-or-sticky-last; either way no panic.
+        mock.assert_all_consumed();
+    }
+
+    /// Only the excluded peer is filtered; non-excluded peers in the
+    /// same mesh still get tried. The mock seeds *only* one
+    /// open_stream Err — if the filter also blocked the non-excluded
+    /// peer, we'd see "no queued response" instead.
+    #[tokio::test(start_paused = true)]
+    async fn excluded_peer_skipped_other_mesh_peer_still_attempted() {
+        let mock = MockSyncNetwork::default();
+        let kept = PeerId::random();
+        let blocked = PeerId::random();
+        // `mesh_peers` is sticky-last in the mock (see module doc): a
+        // single `push_mesh_peers` call seeds the same list for every
+        // round. The test budget below (`retries` open_stream Errs)
+        // depends on that — if sticky-last ever changes to return an
+        // empty list after the first read, the assertion below would
+        // pass vacuously instead of guarding the filter behaviour.
+        mock.push_mesh_peers(vec![kept, blocked]);
+        let mut excluded = HashSet::new();
+        excluded.insert(blocked);
+
+        // Per-round one peer remains → one open_stream attempt per
+        // round → `retries` attempts total. Seed exactly that many
+        // errors and assert_all_consumed below catches both
+        // "filter let the blocked peer through" (would consume more
+        // than seeded → error on exhaust) and "filter blocked the
+        // kept peer too" (would consume fewer → unconsumed Errs).
+        let (open_timeout, retries, retry_delay) = defaults();
+        for i in 0..(retries as usize) {
+            mock.push_open_stream_err(format!("kept-err-{i}"));
+        }
+
+        let result = open_namespace_join_stream(
+            &mock,
+            NAMESPACE_ID,
+            open_timeout,
+            retries,
+            retry_delay,
+            &excluded,
+        )
+        .await;
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("excluded 1"),
+            "err should report 1 excluded peer for diagnostic symmetry: {err}"
+        );
+        mock.assert_all_consumed();
     }
 }
