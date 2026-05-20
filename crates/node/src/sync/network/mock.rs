@@ -28,7 +28,7 @@
 //! against either method should use [`MockSyncNetwork::assert_all_consumed`]
 //! after running the code under test.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -57,6 +57,13 @@ pub(crate) enum OpenStreamResponse {
 #[derive(Default)]
 pub(crate) struct MockSyncNetwork {
     mesh_peers_responses: Mutex<VecDeque<Vec<PeerId>>>,
+    /// Per-peer `open_stream` response queues. Consulted *before*
+    /// the global queue — lets tests script different behaviour
+    /// for specific peers (e.g. one peer always hangs, another
+    /// always errors quickly), which is needed for any test that
+    /// asserts peer-ordering behaviour. If a peer has no per-peer
+    /// queue (or its queue is empty), the global queue is used.
+    open_stream_responses_per_peer: Mutex<HashMap<PeerId, VecDeque<OpenStreamResponse>>>,
     open_stream_responses: Mutex<VecDeque<OpenStreamResponse>>,
     /// `mesh_peers` call count — needed to distinguish "queued 1
     /// sticky-last entry and the code under test called mesh_peers
@@ -68,6 +75,12 @@ pub(crate) struct MockSyncNetwork {
     /// fails `assert_all_consumed`'s `open_stream_remaining > 0`
     /// check without needing a separate guard.
     mesh_peers_calls: Mutex<u32>,
+    /// `open_stream` peer-id call log — captures the `PeerId` of
+    /// every `open_stream` call in order. Used by tests that need
+    /// to assert the order peers were tried in (e.g. timed-out
+    /// peer deprioritisation in `namespace_join`). Cheap; bounded
+    /// by the number of attempts in a single discovery loop.
+    open_stream_call_log: Mutex<Vec<PeerId>>,
 }
 
 impl MockSyncNetwork {
@@ -99,6 +112,39 @@ impl MockSyncNetwork {
         self
     }
 
+    /// Queue an error response routed to a specific peer. Used by
+    /// tests that need different behaviour per peer (e.g. one peer
+    /// always hangs to trigger timeout, another always errors
+    /// quickly). Per-peer queues are consulted before the global
+    /// queue.
+    pub(crate) fn push_open_stream_err_for_peer(
+        &self,
+        peer: PeerId,
+        msg: impl Into<String>,
+    ) -> &Self {
+        self.open_stream_responses_per_peer
+            .lock()
+            .entry(peer)
+            .or_default()
+            .push_back(OpenStreamResponse::Err(msg.into()));
+        self
+    }
+
+    /// Queue a hang-then-error routed to a specific peer.
+    pub(crate) fn push_open_stream_hang_for_peer(
+        &self,
+        peer: PeerId,
+        sleep_for: Duration,
+        then_msg: impl Into<String>,
+    ) -> &Self {
+        self.open_stream_responses_per_peer
+            .lock()
+            .entry(peer)
+            .or_default()
+            .push_back(OpenStreamResponse::SleepThenErr(sleep_for, then_msg.into()));
+        self
+    }
+
     /// Panic if a queued response wasn't consumed by the code
     /// under test, or if a non-empty queue was never read from.
     ///
@@ -113,6 +159,13 @@ impl MockSyncNetwork {
     ///   the discovery path at all" — without the call-count
     ///   guard the assertion would pass silently in that case.
     ///
+    /// Return the peer-id arg of every `open_stream` call so far,
+    /// in call order. Used by tests that need to assert ordering
+    /// (e.g. timed-out peer deprioritisation).
+    pub(crate) fn open_stream_call_peers(&self) -> Vec<PeerId> {
+        self.open_stream_call_log.lock().clone()
+    }
+
     /// `#[track_caller]` so panics point at the test's call
     /// site, not inside this helper.
     ///
@@ -199,9 +252,16 @@ impl SyncNetwork for MockSyncNetwork {
 
     async fn open_stream(
         &self,
-        _peer_id: PeerId,
+        peer_id: PeerId,
     ) -> eyre::Result<calimero_network_primitives::stream::Stream> {
-        let response = self.open_stream_responses.lock().pop_front();
+        self.open_stream_call_log.lock().push(peer_id);
+        // Per-peer queue first, then fall back to global queue.
+        let response = self
+            .open_stream_responses_per_peer
+            .lock()
+            .get_mut(&peer_id)
+            .and_then(|q| q.pop_front())
+            .or_else(|| self.open_stream_responses.lock().pop_front());
         match response {
             None => Err(eyre::eyre!(
                 "MockSyncNetwork: open_stream called with no queued response"

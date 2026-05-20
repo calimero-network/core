@@ -13,8 +13,11 @@
 //! this module deliberately holds none of it so the comments don't
 //! drift out of sync.
 
+use std::collections::HashSet;
+
 use calimero_network_primitives::stream::Stream;
 use libp2p::gossipsub::TopicHash;
+use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use tokio::time;
 use tracing::debug;
@@ -82,6 +85,16 @@ pub(super) async fn open_namespace_join_stream(
     // `std::time::Instant`.
     let connect_started = tokio::time::Instant::now();
 
+    // Peers that hit `time::timeout` on `open_stream` earlier in
+    // this discovery sequence — i.e., we've already spent
+    // `open_timeout` waiting on them once. Subsequent rounds
+    // deprioritise (don't exclude) them so a consistently-stale
+    // peer doesn't keep burning the per-peer budget ahead of
+    // healthy ones. Plain `Err` (no timeout) does NOT add to this
+    // set — those failures might be transient and the peer is
+    // still worth trying first.
+    let mut timed_out_peers: HashSet<PeerId> = HashSet::new();
+
     let mut stream = None;
     'connect: for attempt in 1..=mesh_retries {
         if connect_started.elapsed() >= connect_deadline {
@@ -98,6 +111,14 @@ pub(super) async fn open_namespace_join_stream(
         // `choose_multiple` would produce. Matches the pattern used
         // in `perform_interval_sync`.
         peers.shuffle(&mut rand::thread_rng());
+        // Partition shuffled list: peers we haven't timed out on
+        // come first, timed-out peers last. Stable-by-construction
+        // (sort_by_key with a bool maps false=0/true=1, preserving
+        // the random-relative order within each partition). This
+        // means peers that briefly errored last round still get
+        // tried before the chronically-timing-out peer; only
+        // *prior-timeout* peers get pushed to the tail.
+        peers.sort_by_key(|p| timed_out_peers.contains(p));
 
         for peer in &peers {
             if connect_started.elapsed() >= connect_deadline {
@@ -118,11 +139,17 @@ pub(super) async fn open_namespace_join_stream(
                     );
                 }
                 Err(_) => {
+                    // Record the peer for deprioritisation in
+                    // subsequent rounds. Insertion is idempotent
+                    // (HashSet); a peer that times out repeatedly
+                    // stays at the tail without further bookkeeping.
+                    timed_out_peers.insert(*peer);
                     debug!(
                         namespace_id = %hex::encode(namespace_id),
                         %peer,
                         attempt,
-                        "Timed out opening namespace-join stream, trying next peer..."
+                        "Timed out opening namespace-join stream, trying next peer \
+                         (peer will be deprioritised in subsequent rounds)"
                     );
                 }
             }
@@ -338,5 +365,73 @@ mod tests {
         // Empty mesh → Err is expected; we're just checking the
         // type coercion compiles and runs.
         assert!(result.is_err());
+    }
+
+    /// Peers that timed out in earlier rounds are deprioritised in
+    /// subsequent rounds — they go to the tail of the (shuffled)
+    /// peer list, so non-timed-out peers are tried first.
+    ///
+    /// Two peers `slow` and `fast`: `slow` always hangs (timeout
+    /// every time tried); `fast` always errors quickly. Both fail,
+    /// so the loop runs the full retry budget. The expectation is
+    /// that across rounds we see `fast` tried before `slow` *more*
+    /// often in later rounds than in round 1 (where the shuffle is
+    /// 50/50). Concretely: after `slow` times out at least once,
+    /// every later round must try `fast` before `slow`.
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_peers_are_deprioritised_in_subsequent_rounds() {
+        let mock = MockSyncNetwork::default();
+        let slow = PeerId::random();
+        let fast = PeerId::random();
+        mock.push_mesh_peers(vec![slow, fast]);
+        let (open_timeout, retries, retry_delay) = defaults();
+        // Per-peer scripting: `slow` always hangs (triggers
+        // `tokio::time::timeout` to fire and adds it to the
+        // timed-out set), `fast` always errors quickly without
+        // timing out. Queue enough for the full retry budget
+        // (`retries` attempts per peer).
+        for _ in 0..retries {
+            mock.push_open_stream_hang_for_peer(slow, Duration::from_secs(10), "slow-hang");
+            mock.push_open_stream_err_for_peer(fast, "fast-err");
+        }
+
+        let result =
+            open_namespace_join_stream(&mock, NAMESPACE_ID, open_timeout, retries, retry_delay)
+                .await;
+        assert!(result.is_err(), "expected Err when all peers fail");
+
+        // Inspect the order peers were tried. Round 1's shuffle is
+        // random (slow may be first or second); but once `slow`
+        // times out, every later round must put `fast` first.
+        //
+        // The mock records the peer-id arg of each `open_stream`
+        // call in call order. We slice off round 1 and verify the
+        // remaining calls put `fast` strictly before `slow` within
+        // each round.
+        let call_log = mock.open_stream_call_peers();
+        assert!(
+            call_log.len() >= 4,
+            "expected at least 2 rounds × 2 peers in call log, got {}",
+            call_log.len()
+        );
+
+        // From round 2 onward (call_log[2..]), every pair of
+        // consecutive calls should be (fast, slow) — never
+        // (slow, fast) and never (slow, slow) — because the
+        // partition puts non-timed-out peers (fast) first.
+        let later_rounds = &call_log[2..];
+        for chunk in later_rounds.chunks(2) {
+            if chunk.len() != 2 {
+                break; // partial round at the deadline
+            }
+            assert_eq!(
+                chunk[0], fast,
+                "round-N first call must be fast (deprioritised slow), got chunk={chunk:?}"
+            );
+            assert_eq!(
+                chunk[1], slow,
+                "round-N second call must be slow, got chunk={chunk:?}"
+            );
+        }
     }
 }
