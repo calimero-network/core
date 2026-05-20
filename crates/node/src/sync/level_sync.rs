@@ -404,15 +404,17 @@ async fn run_initiator_impl<T: SyncTransport>(
     // Close the transport to signal completion
     transport.close().await?;
 
-    // Post-sync convergence check (#2407). Until this PR a mismatch
-    // was logged at debug-level and treated as "expected if local had
-    // concurrent changes" — but that comment was load-bearing only
-    // for a narrow case (writes between sync start and now). The
-    // common case where a mismatch indicates an actual sync bug was
-    // being masked. Now we surface mismatch as an Err so the sync
-    // manager retries; if concurrent writes really did cause it,
-    // the next interval-sync handshake observes the new state and
-    // either converges or surfaces persistent divergence.
+    // Post-sync convergence check (#2407). Previously this was
+    // silently debug-logged on mismatch with the comment "expected
+    // if local had concurrent changes" — true for one narrow case,
+    // but it also masked actual merge-correctness bugs.
+    //
+    // We can't distinguish "real divergence bug" from "legitimate
+    // bidirectional drift / concurrent local writes" without a
+    // second handshake round-trip, so we surface mismatch at WARN
+    // (was: debug) and rely on the sync manager / metrics consumer
+    // to react to *patterns* of unverified syncs across many ticks
+    // — that's the failure shape #2407 documents.
     let local_root_hash = with_runtime_env(runtime_env.clone(), || {
         get_local_root_hash_for_context(context_id)
     })?;
@@ -427,24 +429,18 @@ async fn run_initiator_impl<T: SyncTransport>(
             levels_synced = stats.levels_synced,
             nodes_compared = stats.nodes_compared,
             entities_merged = stats.entities_merged,
-            "LevelWise sync did NOT converge — surfacing as Err so the sync manager \
-             retries instead of silently masking divergence (#2407)"
+            "LevelWise sync did not match remote handshake root (#2407). \
+             Legitimate in bidirectional sync or with concurrent local writes; \
+             persistent occurrences across many interval-sync ticks indicate a real \
+             merge convergence bug."
         );
-        bail!(
-            "LevelWise sync completed but local root {} did not converge to remote root {} \
-             (levels={}, compared={}, merged={})",
-            hex::encode(&local_root_hash[..8]),
-            hex::encode(&remote_root_hash[..8]),
-            stats.levels_synced,
-            stats.nodes_compared,
-            stats.entities_merged,
+    } else {
+        debug!(
+            %context_id,
+            root_hash = %hex::encode(&local_root_hash[..8]),
+            "Root hash verified after sync"
         );
     }
-    debug!(
-        %context_id,
-        root_hash = %hex::encode(&local_root_hash[..8]),
-        "Root hash verified after sync"
-    );
 
     info!(
         %context_id,

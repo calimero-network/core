@@ -364,23 +364,27 @@ async fn run_initiator_impl<T: SyncTransport>(
     // Close the transport to signal completion to the responder
     transport.close().await?;
 
-    // Post-sync convergence check (#2407): a HashComparison session
-    // that returns Ok without confirming the two roots actually
-    // converged is indistinguishable from a no-op — the sync manager
-    // logs "success" and the next interval-sync repeats the same
-    // empty merge forever. Verify the local root now matches the
-    // remote root the initiator started with; on mismatch, surface
-    // as an Err so the manager retries (possibly via a different
-    // protocol path) instead of silently masking the divergence.
+    // Post-sync convergence check (#2407). We compare the local
+    // root against the remote root the initiator started with, but
+    // do NOT treat mismatch as fatal:
     //
-    // Concurrent local writes between sync start and now CAN
-    // legitimately leave the local root different from the remote
-    // root we observed at session start — but returning Err here
-    // still does the right thing: the next interval-sync tick will
-    // re-handshake against the (now possibly-advanced) remote and
-    // either converge or surface the persistent divergence. The
-    // alternative (silent Ok on mismatch) is what #2407 documents
-    // as the bug.
+    // - Pull-only convergence: local should equal remote_root_hash.
+    // - Bidirectional sync: the initiator pushed local-only data to
+    //   the peer, so the peer's root advanced past
+    //   `remote_root_hash` (which we captured at handshake) — the
+    //   initiator's post-sync root won't match that stale value,
+    //   even though both peers have converged to the same NEW root.
+    // - Concurrent local writes between handshake and now: same
+    //   shape — local moves on, won't match captured remote.
+    //
+    // We can't distinguish "real divergence bug (#2407)" from
+    // "legitimate bidirectional drift" without a second handshake
+    // round-trip. So instead: set the flag, surface mismatch at
+    // WARN level (was: silent debug), and let the sync manager /
+    // metrics consumer react to *patterns* of unverified syncs.
+    // The bug #2407 documents is a node logging this WARN every
+    // second forever — that's now visible in logs and via the
+    // `root_hash_verified` stats field.
     let local_root_hash = with_runtime_env(runtime_env.clone(), || {
         get_local_root_hash_for_context(context_id)
     })?;
@@ -404,18 +408,11 @@ async fn run_initiator_impl<T: SyncTransport>(
             nodes_compared = stats.nodes_compared,
             entities_merged = stats.entities_merged,
             entities_pushed = stats.entities_pushed,
-            "HashComparison sync did NOT converge — surfacing as Err so the \
-             sync manager retries instead of silently masking divergence (#2407)"
-        );
-        bail!(
-            "HashComparison sync completed but local root {} did not converge to remote root {} \
-             (compared={}, merged={}, pushed={}, skipped={})",
-            hex::encode(&local_root_hash[..8]),
-            hex::encode(&remote_root_hash[..8]),
-            stats.nodes_compared,
-            stats.entities_merged,
-            stats.entities_pushed,
-            stats.nodes_skipped,
+            nodes_skipped = stats.nodes_skipped,
+            "HashComparison sync did not match remote handshake root (#2407). \
+             Legitimate in bidirectional sync (peer's root advanced after our push) \
+             or with concurrent local writes; persistent occurrences of this WARN \
+             across many interval-sync ticks indicate a real merge convergence bug."
         );
     }
 
