@@ -139,16 +139,22 @@ pub(crate) mod mock {
     #[async_trait]
     impl SyncNetwork for MockSyncNetwork {
         async fn mesh_peers(&self, _topic: TopicHash) -> Vec<PeerId> {
-            let mut queue = self.mesh_peers_responses.lock();
-            // Pop the front; if it's the last entry, clone instead of
-            // popping so repeated reads after the script is exhausted
-            // keep returning the final value (matches "mesh is stable
-            // after discovery completes" production behaviour).
-            match queue.len() {
-                0 => Vec::new(),
-                1 => queue[0].clone(),
-                _ => queue.pop_front().unwrap_or_default(),
-            }
+            // Extract the value first, then drop the lock — keeps the
+            // critical section synchronous-only even if a future
+            // refactor adds an `.await` to this method's body.
+            let peers = {
+                let mut queue = self.mesh_peers_responses.lock();
+                match queue.len() {
+                    0 => None,
+                    // Last entry: clone instead of popping so repeated
+                    // reads after the script is exhausted keep returning
+                    // the final value (matches "mesh is stable after
+                    // discovery completes" production behaviour).
+                    1 => Some(queue[0].clone()),
+                    _ => queue.pop_front(),
+                }
+            };
+            peers.unwrap_or_default()
         }
 
         async fn open_stream(
@@ -192,6 +198,27 @@ pub(crate) mod mock {
         async fn mesh_peers_empty_when_never_seeded() {
             let mock = MockSyncNetwork::new();
             assert!(mock.mesh_peers(TopicHash::from_raw("x")).await.is_empty());
+        }
+
+        /// Explicit boundary test for the `match queue.len()` arms in
+        /// `mesh_peers`: seed N entries, call N+1 times, the (N+1)th
+        /// should return the Nth value (the "sticky last" semantic).
+        /// Catches off-by-one regressions in the pop-vs-clone branch.
+        #[tokio::test]
+        async fn mesh_peers_sticky_last_at_len_1_boundary() {
+            let mock = MockSyncNetwork::new();
+            let peer_a = PeerId::random();
+            let peer_b = PeerId::random();
+            mock.push_mesh_peers(vec![peer_a])
+                .push_mesh_peers(vec![peer_b]);
+
+            let topic = TopicHash::from_raw("test");
+            // Call 1: 2 entries queued → pop_front returns first.
+            assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_a]);
+            // Call 2: 1 entry left → clone (not pop) the last entry.
+            assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_b]);
+            // Call 3: still 1 entry left (cloning didn't pop) → same value again.
+            assert_eq!(mock.mesh_peers(topic).await, vec![peer_b]);
         }
 
         #[tokio::test]

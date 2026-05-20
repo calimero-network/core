@@ -776,7 +776,7 @@ impl SyncManager {
         for attempt in 1..=max_retries {
             final_attempt = attempt;
             peers = self
-                .network_client
+                .sync_network
                 .mesh_peers(TopicHash::from_raw(context_id))
                 .await;
 
@@ -1815,7 +1815,7 @@ impl SyncManager {
                             // LevelWise protocol may have left the peer's responder in a state
                             // where it expects LevelWiseRequest messages, not DagHeadsRequest.
                             let mut fallback_stream = self
-                                .network_client
+                                .sync_network
                                 .open_stream(chosen_peer)
                                 .await
                                 .wrap_err("open stream for level-wise fallback")?;
@@ -1947,7 +1947,7 @@ impl SyncManager {
         };
 
         let mut stream = self
-            .network_client
+            .sync_network
             .open_stream(chosen_peer)
             .await
             .wrap_err("open stream for sync")?;
