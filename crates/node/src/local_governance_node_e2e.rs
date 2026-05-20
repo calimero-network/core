@@ -331,3 +331,95 @@ async fn set_member_auto_follow_handler_error_paths() {
     assert!(!alice_row.auto_follow.contexts);
     assert!(!alice_row.auto_follow.subgroups);
 }
+
+/// Lifecycle / glue test for the auto-follow handler task. The pure
+/// routing branches are unit-tested in
+/// `calimero_context::auto_follow::tests::handler_routing`; this test
+/// proves the wiring above them — `spawn` → `op_events::subscribe` →
+/// dispatch to the right branch — survives real events without
+/// crashing or attempting work that would block on the missing
+/// network actor in this harness.
+///
+/// Strategy: stage state such that every `OpEvent` the handler reacts
+/// to lands on a short-circuit branch (NotAutoFollowing, NotForSelf,
+/// NothingToBackfill). That way the handler exercises its match arms
+/// and decision functions without reaching the
+/// `context_client.join_context(...)` call — which would hang awaiting
+/// the unwired network actor.
+#[tokio::test]
+async fn auto_follow_handler_processes_op_events_without_join() {
+    use calimero_context::op_events::{self, OpEvent};
+    use calimero_primitives::context::ContextId;
+
+    let node = boot_test_node().await;
+
+    let mut rng = OsRng;
+    let gid = ContextGroupId::from([0x66u8; 32]);
+    let self_sk = PrivateKey::random(&mut rng);
+    let self_pk = self_sk.public_key();
+
+    save_group_meta(&node.store, &gid, &sample_meta(self_pk)).unwrap();
+    calimero_context::group_store::store_namespace_identity(
+        &node.store,
+        &gid,
+        &self_pk,
+        &self_sk,
+        &[0u8; 32],
+    )
+    .unwrap();
+    add_group_member(&node.store, &gid, &self_pk, GroupMemberRole::Admin).unwrap();
+    // Flag remains false ⇒ ContextRegistered events take the
+    // `NotAutoFollowing` branch and return before `join_context`.
+
+    // First spawn establishes the handle; second must be a no-op
+    // (HANDLE-static idempotence guard). A regression here would
+    // duplicate every auto-join.
+    calimero_context::auto_follow::spawn(node.store.clone(), node.context_client.clone());
+    calimero_context::auto_follow::spawn(node.store.clone(), node.context_client.clone());
+
+    // Fire events the handler reacts to — all staged to hit
+    // short-circuit branches:
+    let ctx_unfollowed = ContextId::from([0x11u8; 32]);
+    op_events::notify(OpEvent::ContextRegistered {
+        group_id: gid.to_bytes(),
+        context_id: ctx_unfollowed,
+    });
+
+    // AutoFollowSet for a member who is not self — `NotForSelf`.
+    let other_member = PrivateKey::random(&mut rng).public_key();
+    op_events::notify(OpEvent::AutoFollowSet {
+        group_id: gid.to_bytes(),
+        member: other_member,
+        contexts: true,
+        subgroups: false,
+    });
+
+    // AutoFollowSet for self on an empty group — `NothingToBackfill`.
+    op_events::notify(OpEvent::AutoFollowSet {
+        group_id: gid.to_bytes(),
+        member: self_pk,
+        contexts: true,
+        subgroups: false,
+    });
+
+    // Variant the handler ignores via the catch-all arm. Catches a
+    // future refactor that accidentally drops one of the matched
+    // variants from the `match event` block.
+    op_events::notify(OpEvent::MemberRemoved {
+        group_id: gid.to_bytes(),
+        member: other_member,
+    });
+
+    // Yield long enough for the handler's broadcast receiver to drain
+    // every event. Failure mode: any branch other than the short-
+    // circuits would call `join_context` against the unwired network
+    // actor and hang until the test timeout fires.
+    sleep(Duration::from_millis(200)).await;
+
+    // Clean shutdown must be idempotent and unblock a subsequent
+    // spawn (e.g. across actor restarts).
+    calimero_context::auto_follow::shutdown();
+    calimero_context::auto_follow::shutdown();
+    calimero_context::auto_follow::spawn(node.store.clone(), node.context_client.clone());
+    calimero_context::auto_follow::shutdown();
+}

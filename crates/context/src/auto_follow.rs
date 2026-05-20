@@ -240,6 +240,41 @@ async fn run(store: Store, context_client: ContextClient, limiter: Arc<RateLimit
     }
 }
 
+/// Decision produced by inspecting store state for a
+/// `ContextRegistered` event. Extracted from
+/// [`handle_context_registered`] so the branch logic is unit-testable
+/// without a live `ContextClient` or rate limiter.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ContextRegisteredDecision {
+    /// No namespace identity for this group — we're not a member.
+    NotMember,
+    /// `auto_follow.contexts` is false for our identity in this group.
+    NotAutoFollowing,
+    /// Member has explicitly left this context on this node via
+    /// `leave_context`; honour the opt-out.
+    PreviouslyLeft,
+    /// Conditions satisfied — emit a `JoinContextRequest`.
+    Join,
+}
+
+pub(crate) fn decide_on_context_registered(
+    store: &Store,
+    group_id: [u8; 32],
+    context_id: &calimero_primitives::context::ContextId,
+) -> ContextRegisteredDecision {
+    let gid = ContextGroupId::from(group_id);
+    let Some(self_pk) = self_pk_for_group(store, &gid) else {
+        return ContextRegisteredDecision::NotMember;
+    };
+    if !should_auto_follow_contexts(store, &gid, &self_pk) {
+        return ContextRegisteredDecision::NotAutoFollowing;
+    }
+    if has_left_context(store, context_id, &self_pk) {
+        return ContextRegisteredDecision::PreviouslyLeft;
+    }
+    ContextRegisteredDecision::Join
+}
+
 async fn handle_context_registered(
     store: &Store,
     context_client: &ContextClient,
@@ -247,25 +282,23 @@ async fn handle_context_registered(
     group_id: [u8; 32],
     context_id: calimero_primitives::context::ContextId,
 ) {
-    let gid = ContextGroupId::from(group_id);
-    let self_pk = match self_pk_for_group(store, &gid) {
-        Some(pk) => pk,
-        None => return,
-    };
-    if !should_auto_follow_contexts(store, &gid, &self_pk) {
-        return;
-    }
-    if has_left_context(store, &context_id, &self_pk) {
-        // The user explicitly opted out of this context on this node via
-        // `leave_context`. Do not auto-rejoin even if `auto_follow.contexts`
-        // is true at the group level. Cleared by an explicit
-        // `JoinContextRequest` from the user.
-        debug!(
-            %context_id,
-            group_id = %hex::encode(group_id),
-            "auto-follow: skipping context-registered event — member has explicitly left this context"
-        );
-        return;
+    match decide_on_context_registered(store, group_id, &context_id) {
+        ContextRegisteredDecision::NotMember | ContextRegisteredDecision::NotAutoFollowing => {
+            return;
+        }
+        ContextRegisteredDecision::PreviouslyLeft => {
+            // The user explicitly opted out of this context on this node via
+            // `leave_context`. Do not auto-rejoin even if `auto_follow.contexts`
+            // is true at the group level. Cleared by an explicit
+            // `JoinContextRequest` from the user.
+            debug!(
+                %context_id,
+                group_id = %hex::encode(group_id),
+                "auto-follow: skipping context-registered event — member has explicitly left this context"
+            );
+            return;
+        }
+        ContextRegisteredDecision::Join => {}
     }
     if limiter.acquire().await.is_err() {
         debug!("auto-follow: rate limiter closed, skipping context event (shutdown)");
@@ -294,26 +327,43 @@ async fn handle_context_registered(
     }
 }
 
-async fn handle_auto_follow_enabled(
+/// Decision produced by inspecting store state for an
+/// `AutoFollowSet` event. Extracted from
+/// [`handle_auto_follow_enabled`] so the branch logic is
+/// unit-testable without a live `ContextClient` or rate limiter.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AutoFollowEnabledDecision {
+    /// No namespace identity for this group — we're not a member.
+    NotMember,
+    /// Event is for some other member; only self-flips trigger
+    /// local backfill.
+    NotForSelf,
+    /// We *would* backfill, but the group has no registered
+    /// contexts yet.
+    NothingToBackfill,
+    /// Failed to enumerate contexts — treated as a hard skip and
+    /// logged at the callsite.
+    EnumerateFailed,
+    /// Backfill the listed contexts. `truncated` is true when the
+    /// enumeration hit [`BACKFILL_LIMIT`].
+    Backfill {
+        contexts: Vec<calimero_primitives::context::ContextId>,
+        truncated: bool,
+    },
+}
+
+pub(crate) fn decide_on_auto_follow_enabled(
     store: &Store,
-    context_client: &ContextClient,
-    limiter: &Arc<RateLimiter>,
     group_id: [u8; 32],
     member: PublicKey,
-) {
+) -> AutoFollowEnabledDecision {
     let gid = ContextGroupId::from(group_id);
-    let self_pk = match self_pk_for_group(store, &gid) {
-        Some(pk) => pk,
-        None => return,
+    let Some(self_pk) = self_pk_for_group(store, &gid) else {
+        return AutoFollowEnabledDecision::NotMember;
     };
-    // Only backfill if the event is for self.
     if self_pk != member {
-        return;
+        return AutoFollowEnabledDecision::NotForSelf;
     }
-    // Cap backfill at `BACKFILL_LIMIT` contexts per flip. The common
-    // case is << 100. Over-cap records are joined via subsequent
-    // triggers (re-flipping the flag or future ContextRegistered
-    // events, which are event-driven and not subject to this cap).
     let contexts = match group_store::enumerate_group_contexts(store, &gid, 0, BACKFILL_LIMIT) {
         Ok(ids) => ids,
         Err(err) => {
@@ -322,13 +372,37 @@ async fn handle_auto_follow_enabled(
                 ?err,
                 "auto-follow: failed to enumerate contexts for backfill"
             );
-            return;
+            return AutoFollowEnabledDecision::EnumerateFailed;
         }
     };
     if contexts.is_empty() {
-        return;
+        return AutoFollowEnabledDecision::NothingToBackfill;
     }
-    if contexts.len() == BACKFILL_LIMIT {
+    let truncated = contexts.len() == BACKFILL_LIMIT;
+    AutoFollowEnabledDecision::Backfill {
+        contexts,
+        truncated,
+    }
+}
+
+async fn handle_auto_follow_enabled(
+    store: &Store,
+    context_client: &ContextClient,
+    limiter: &Arc<RateLimiter>,
+    group_id: [u8; 32],
+    member: PublicKey,
+) {
+    let (contexts, truncated) = match decide_on_auto_follow_enabled(store, group_id, member) {
+        AutoFollowEnabledDecision::NotMember
+        | AutoFollowEnabledDecision::NotForSelf
+        | AutoFollowEnabledDecision::NothingToBackfill
+        | AutoFollowEnabledDecision::EnumerateFailed => return,
+        AutoFollowEnabledDecision::Backfill {
+            contexts,
+            truncated,
+        } => (contexts, truncated),
+    };
+    if truncated {
         warn!(
             group_id = %hex::encode(group_id),
             limit = BACKFILL_LIMIT,
@@ -498,5 +572,255 @@ mod tests {
         // Subsequent acquire is also Err.
         let result = limiter.acquire().await;
         assert!(matches!(result, Err(RateLimiterClosed)));
+    }
+
+    /// Branch-coverage tests for the two pure decision functions
+    /// (`decide_on_context_registered`, `decide_on_auto_follow_enabled`).
+    /// Cover the routing logic without needing a live `ContextClient`
+    /// or actor system; equivalent end-to-end paths through a real
+    /// node are exercised by merobox workflows.
+    mod handler_routing {
+        use std::sync::Arc;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+        use calimero_primitives::identity::{PrivateKey, PublicKey};
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{AutoFollowFlags, ContextLeftMarker, GroupMetaValue};
+        use calimero_store::types::ContextLeftMarker as ContextLeftMarkerValue;
+        use calimero_store::Store;
+        use rand::rngs::OsRng;
+
+        use super::super::{
+            decide_on_auto_follow_enabled, decide_on_context_registered, AutoFollowEnabledDecision,
+            ContextRegisteredDecision, BACKFILL_LIMIT,
+        };
+        use crate::group_store::{
+            add_group_member, register_context_in_group, save_group_meta, set_member_auto_follow,
+            store_namespace_identity,
+        };
+
+        fn test_store() -> Store {
+            Store::new(Arc::new(InMemoryDB::owned()))
+        }
+
+        fn sample_meta(admin: PublicKey) -> GroupMetaValue {
+            GroupMetaValue {
+                app_key: [0xAA; 32],
+                target_application_id: ApplicationId::from([0xBB; 32]),
+                upgrade_policy: UpgradePolicy::Automatic,
+                created_at: 1_700_000_000,
+                admin_identity: admin,
+                owner_identity: admin,
+                migration: None,
+                auto_join: true,
+            }
+        }
+
+        /// Build a fresh store with `self_pk` registered as the namespace
+        /// identity for `gid` and added as a `Member` of the group. Returns
+        /// the store and the self identity so the test can vary
+        /// `auto_follow` state per case.
+        fn seed_self_member(
+            rng: &mut OsRng,
+            gid: ContextGroupId,
+        ) -> (Store, PrivateKey, PublicKey) {
+            let store = test_store();
+            let sk = PrivateKey::random(rng);
+            let pk = sk.public_key();
+            save_group_meta(&store, &gid, &sample_meta(pk)).expect("save_group_meta");
+            store_namespace_identity(&store, &gid, &pk, &sk, &[0u8; 32])
+                .expect("store_namespace_identity");
+            add_group_member(&store, &gid, &pk, GroupMemberRole::Member).expect("add member");
+            (store, sk, pk)
+        }
+
+        // ----- decide_on_context_registered ------------------------------
+
+        #[test]
+        fn context_registered_not_member_when_no_namespace_identity() {
+            let store = test_store();
+            let gid_bytes = [0x11u8; 32];
+            let context_id = ContextId::from([0x22u8; 32]);
+
+            // No `store_namespace_identity` call — should short-circuit.
+            assert_eq!(
+                decide_on_context_registered(&store, gid_bytes, &context_id),
+                ContextRegisteredDecision::NotMember,
+            );
+        }
+
+        #[test]
+        fn context_registered_not_auto_following_when_flag_false() {
+            let mut rng = OsRng;
+            let gid = ContextGroupId::from([0x33u8; 32]);
+            let (store, _sk, _pk) = seed_self_member(&mut rng, gid);
+            let context_id = ContextId::from([0x44u8; 32]);
+
+            // Flag defaults to false — no explicit set_member_auto_follow.
+            assert_eq!(
+                decide_on_context_registered(&store, gid.to_bytes(), &context_id),
+                ContextRegisteredDecision::NotAutoFollowing,
+            );
+        }
+
+        #[test]
+        fn context_registered_previously_left_when_marker_present() {
+            let mut rng = OsRng;
+            let gid = ContextGroupId::from([0x55u8; 32]);
+            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
+            set_member_auto_follow(
+                &store,
+                &gid,
+                &pk,
+                AutoFollowFlags {
+                    contexts: true,
+                    subgroups: false,
+                },
+            )
+            .expect("set_member_auto_follow");
+
+            let context_id = ContextId::from([0x66u8; 32]);
+            let mut handle = store.handle();
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+            handle
+                .put(
+                    &ContextLeftMarker::new(context_id, pk),
+                    &ContextLeftMarkerValue { left_at_ms: now_ms },
+                )
+                .expect("put leave marker");
+            drop(handle);
+
+            assert_eq!(
+                decide_on_context_registered(&store, gid.to_bytes(), &context_id),
+                ContextRegisteredDecision::PreviouslyLeft,
+            );
+        }
+
+        #[test]
+        fn context_registered_join_on_happy_path() {
+            let mut rng = OsRng;
+            let gid = ContextGroupId::from([0x77u8; 32]);
+            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
+            set_member_auto_follow(
+                &store,
+                &gid,
+                &pk,
+                AutoFollowFlags {
+                    contexts: true,
+                    subgroups: false,
+                },
+            )
+            .expect("set_member_auto_follow");
+
+            let context_id = ContextId::from([0x88u8; 32]);
+            assert_eq!(
+                decide_on_context_registered(&store, gid.to_bytes(), &context_id),
+                ContextRegisteredDecision::Join,
+            );
+        }
+
+        // ----- decide_on_auto_follow_enabled -----------------------------
+
+        #[test]
+        fn auto_follow_enabled_not_member_when_no_namespace_identity() {
+            let store = test_store();
+            let gid_bytes = [0x99u8; 32];
+            let bogus_member = PrivateKey::random(&mut OsRng).public_key();
+
+            assert_eq!(
+                decide_on_auto_follow_enabled(&store, gid_bytes, bogus_member),
+                AutoFollowEnabledDecision::NotMember,
+            );
+        }
+
+        #[test]
+        fn auto_follow_enabled_not_for_self_when_event_targets_other_member() {
+            let mut rng = OsRng;
+            let gid = ContextGroupId::from([0xAAu8; 32]);
+            let (store, _sk, _self_pk) = seed_self_member(&mut rng, gid);
+            let other = PrivateKey::random(&mut rng).public_key();
+
+            assert_eq!(
+                decide_on_auto_follow_enabled(&store, gid.to_bytes(), other),
+                AutoFollowEnabledDecision::NotForSelf,
+            );
+        }
+
+        #[test]
+        fn auto_follow_enabled_nothing_to_backfill_when_group_empty() {
+            let mut rng = OsRng;
+            let gid = ContextGroupId::from([0xBBu8; 32]);
+            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
+            // No contexts registered in the group yet.
+            assert_eq!(
+                decide_on_auto_follow_enabled(&store, gid.to_bytes(), pk),
+                AutoFollowEnabledDecision::NothingToBackfill,
+            );
+        }
+
+        #[test]
+        fn auto_follow_enabled_returns_backfill_with_existing_contexts() {
+            let mut rng = OsRng;
+            let gid = ContextGroupId::from([0xCCu8; 32]);
+            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
+
+            let ctx_a = ContextId::from([0xC1u8; 32]);
+            let ctx_b = ContextId::from([0xC2u8; 32]);
+            let ctx_c = ContextId::from([0xC3u8; 32]);
+            for cid in [ctx_a, ctx_b, ctx_c] {
+                register_context_in_group(&store, &gid, &cid).expect("register_context_in_group");
+            }
+
+            match decide_on_auto_follow_enabled(&store, gid.to_bytes(), pk) {
+                AutoFollowEnabledDecision::Backfill {
+                    contexts,
+                    truncated,
+                } => {
+                    assert!(!truncated, "3 contexts should not hit BACKFILL_LIMIT");
+                    assert_eq!(contexts.len(), 3);
+                    for cid in [ctx_a, ctx_b, ctx_c] {
+                        assert!(contexts.contains(&cid), "missing {cid:?} in backfill list");
+                    }
+                }
+                other => panic!("expected Backfill, got {other:?}"),
+            }
+        }
+
+        /// `BACKFILL_LIMIT` is 1000 — registering that many contexts in
+        /// an InMemoryDB store is cheap (no IO), and the assertion is
+        /// the only way to exercise the `truncated` branch that drives
+        /// the "backfill truncated" warning at the callsite.
+        #[test]
+        fn auto_follow_enabled_truncates_backfill_at_limit() {
+            let mut rng = OsRng;
+            let gid = ContextGroupId::from([0xDDu8; 32]);
+            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
+
+            // Register BACKFILL_LIMIT + 1 contexts; only BACKFILL_LIMIT
+            // should come back, and `truncated` should be true.
+            for i in 0..=BACKFILL_LIMIT {
+                let mut bytes = [0u8; 32];
+                bytes[0..4].copy_from_slice(&(i as u32).to_be_bytes());
+                let cid = ContextId::from(bytes);
+                register_context_in_group(&store, &gid, &cid).expect("register_context_in_group");
+            }
+
+            match decide_on_auto_follow_enabled(&store, gid.to_bytes(), pk) {
+                AutoFollowEnabledDecision::Backfill {
+                    contexts,
+                    truncated,
+                } => {
+                    assert!(truncated, "backfill should report truncation at limit");
+                    assert_eq!(contexts.len(), BACKFILL_LIMIT);
+                }
+                other => panic!("expected Backfill at limit, got {other:?}"),
+            }
+        }
     }
 }
