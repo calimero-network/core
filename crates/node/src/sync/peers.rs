@@ -24,7 +24,7 @@ use calimero_primitives::identity::PublicKey;
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use tokio::time;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::network::SyncNetwork;
 use super::state_access::SyncStateAccess;
@@ -84,7 +84,7 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
     resolve_namespace_topic: impl FnOnce() -> Option<TopicHash>,
 ) -> eyre::Result<DiscoveryOutcome> {
     let discovery_started = std::time::Instant::now();
-    let context_topic = TopicHash::from_raw(context_id.to_string());
+    let context_topic = TopicHash::from_raw(context_id);
 
     let mut peers = Vec::new();
     let mut final_attempt = 0u32;
@@ -106,19 +106,15 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
     }
 
     if !peers.is_empty() {
-        let elapsed = discovery_started.elapsed();
-        info!(
-            %context_id,
-            peer_count = peers.len(),
-            attempts = final_attempt,
-            ?elapsed,
-            "Mesh peer discovery succeeded (context topic)"
-        );
+        // The caller logs the success at info with the full field set
+        // (peer_count, attempts, elapsed, source); avoid duplicating it
+        // here. Keep the warn on the bail path below — the caller bails
+        // on Err and would otherwise log nothing.
         return Ok(DiscoveryOutcome {
             peers,
             source: PeerSource::ContextMesh,
             attempts: final_attempt,
-            elapsed,
+            elapsed: discovery_started.elapsed(),
         });
     }
 
@@ -129,18 +125,14 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
     if let Some(ns_topic) = resolve_namespace_topic() {
         let ns_peers = sync_network.mesh_peers(ns_topic).await;
         if !ns_peers.is_empty() {
-            let elapsed = discovery_started.elapsed();
-            info!(
-                %context_id,
-                peer_count = ns_peers.len(),
-                ?elapsed,
-                "context mesh empty; falling back to namespace mesh peers"
-            );
+            // Caller's success log carries `source = NamespaceFallback`,
+            // which already communicates that the context mesh was empty
+            // and the fallback fired — no separate info line needed here.
             return Ok(DiscoveryOutcome {
                 peers: ns_peers,
                 source: PeerSource::NamespaceFallback,
                 attempts: final_attempt,
-                elapsed,
+                elapsed: discovery_started.elapsed(),
             });
         }
     }
@@ -273,38 +265,20 @@ mod tests {
         );
     }
 
-    /// Context-mesh empty across all retries, namespace fallback
-    /// produces peers → outcome has `NamespaceFallback` source.
+    /// Both meshes empty (context topic exhausted retries AND the
+    /// namespace fallback also returned no peers) → Err. Distinct
+    /// from `discovery_errs_when_context_empty_and_no_namespace_fallback`,
+    /// which exercises the no-resolver branch.
+    ///
+    /// The positive `NamespaceFallback` case (context empty, namespace
+    /// returns peers) is tracked in #2426 — `MockSyncNetwork` today
+    /// ignores its topic argument, so per-topic responses aren't
+    /// expressible. That test will land with the mock change.
     #[tokio::test(start_paused = true)]
-    async fn discovery_falls_back_to_namespace_when_context_empty() {
+    async fn discovery_errs_when_both_meshes_empty() {
         let mock = MockSyncNetwork::default();
-        // First call returns empty (context topic), then we expect
-        // a SECOND call for the namespace topic that returns peers.
-        // Mock's sticky-last semantic means returning the SAME empty
-        // for context-mesh attempts… and then the namespace call
-        // also reads from the same queue. We work around with a
-        // closure that flips an internal flag — but actually, the
-        // mock's mesh_peers ignores the topic argument, so once we
-        // seed the namespace peers they'll be returned for the
-        // namespace call. Need a per-topic mock for a clean test —
-        // until then, exercise the empty-context, non-empty-namespace
-        // shape by NOT seeding mesh_peers at all (empty across
-        // retries) and providing a fallback closure that synthesises
-        // a fresh `MockSyncNetwork` call. The simplest sound test:
-        // verify that when `resolve_namespace_topic` returns Some
-        // AND the namespace topic mesh has peers, the outcome marks
-        // NamespaceFallback. To make that mock-tractable, we seed
-        // ONE mesh_peers response (empty list, the sticky-last) and
-        // a second response (with peers). The mock's queue
-        // semantics: first call pops empty, subsequent calls
-        // sticky-last on empty. So this test pattern doesn't quite
-        // fit the existing mock — skipping the fallback-with-peers
-        // assertion until the mock supports per-topic responses.
-        //
-        // What this test asserts instead: when the namespace topic
-        // hash is supplied but BOTH meshes are empty, we still get
-        // an Err (the fallback was attempted, no peers returned).
         let ns_topic = TopicHash::from_raw("ns/fake");
+
         let result = discover_mesh_peers_with_namespace_fallback(
             &mock,
             ctx(0xAA),
@@ -313,6 +287,7 @@ mod tests {
             || Some(ns_topic),
         )
         .await;
+
         assert!(
             result.is_err(),
             "both context mesh and namespace mesh empty → Err"

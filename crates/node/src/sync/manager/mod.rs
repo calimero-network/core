@@ -804,6 +804,9 @@ impl SyncManager {
         // `resolve_namespace` on a root group is a no-op (returns the
         // same id).
         let context_client = self.context_client.clone();
+        // `move` captures `context_id` by copy (`ContextId` is `[u8; 32]`),
+        // so `context_id` remains usable in the call below and in the
+        // `info!` log emitted after the discovery returns.
         let resolve_namespace_topic = move || {
             let group_id = context_client.get_context_group_id(&context_id).ok()??;
             let store = context_client.datastore_handle().into_inner();
