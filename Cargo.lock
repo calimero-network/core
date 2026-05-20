@@ -1405,6 +1405,7 @@ dependencies = [
  "indexmap 2.13.0",
  "libp2p",
  "lz4_flex",
+ "parking_lot",
  "prometheus-client",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
