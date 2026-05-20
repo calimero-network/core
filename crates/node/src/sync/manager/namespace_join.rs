@@ -61,9 +61,11 @@ pub(super) async fn open_namespace_join_stream(
     // (a non-zero compile-time const). A zero here would yield a zero
     // deadline and an empty `1..=0` loop body — the function would
     // return Err with a confusing "deadline 0ms, elapsed 0ms"
-    // message. Catch the degenerate input loudly in dev/test rather
-    // than silently surface the bad error.
-    debug_assert!(
+    // message. Use a hard `assert!` (not `debug_assert!`) so this
+    // catches the degenerate input in release builds too — the
+    // per-call branch cost is negligible against the discovery
+    // loop's latency.
+    assert!(
         mesh_retries > 0,
         "mesh_retries must be > 0; got {mesh_retries}"
     );
