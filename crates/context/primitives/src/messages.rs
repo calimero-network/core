@@ -20,12 +20,12 @@ use crate::group::{
     LeaveNamespaceRequest, ListAllGroupsRequest, ListGroupContextsRequest, ListGroupMembersRequest,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, RemoveGroupMembersRequest,
     RetryGroupUpgradeRequest, SetContextMetadataRequest, SetDefaultCapabilitiesRequest,
-    SetGroupMetadataRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
-    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
-    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
-    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
-    StoreSubgroupVisibilityRequest, SyncGroupRequest, UpdateGroupSettingsRequest,
-    UpdateMemberRoleRequest, UpgradeGroupRequest,
+    SetGroupMetadataRequest, SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest,
+    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
+    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
+    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
+    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
 };
 use crate::{ContextAtomic, ContextAtomicKey};
 
@@ -380,6 +380,10 @@ pub enum ContextMessage {
     SetMemberCapabilities {
         request: SetMemberCapabilitiesRequest,
         outcome: oneshot::Sender<<SetMemberCapabilitiesRequest as Message>::Result>,
+    },
+    SetMemberAutoFollow {
+        request: SetMemberAutoFollowRequest,
+        outcome: oneshot::Sender<<SetMemberAutoFollowRequest as Message>::Result>,
     },
     GetMemberCapabilities {
         request: GetMemberCapabilitiesRequest,

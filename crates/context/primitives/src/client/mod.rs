@@ -37,13 +37,13 @@ use crate::group::{
     ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
     ListNamespacesForApplicationRequest, ListNamespacesRequest, NamespaceSummary,
     RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextMetadataRequest,
-    SetDefaultCapabilitiesRequest, SetGroupMetadataRequest, SetMemberCapabilitiesRequest,
-    SetMemberMetadataRequest, SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest,
-    StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest, StoreGroupContextRequest,
-    StoreGroupMetaRequest, StoreGroupMetadataRequest, StoreMemberCapabilityRequest,
-    StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest, SyncGroupRequest,
-    SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest,
-    UpgradeGroupResponse,
+    SetDefaultCapabilitiesRequest, SetGroupMetadataRequest, SetMemberAutoFollowRequest,
+    SetMemberCapabilitiesRequest, SetMemberMetadataRequest, SetSubgroupVisibilityRequest,
+    SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
+    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
+    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
+    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
+    UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -1315,6 +1315,12 @@ impl ContextClient {
         set_member_capabilities,
         SetMemberCapabilities,
         SetMemberCapabilitiesRequest,
+        eyre::Result<()>
+    );
+    forward_to_actor!(
+        set_member_auto_follow,
+        SetMemberAutoFollow,
+        SetMemberAutoFollowRequest,
         eyre::Result<()>
     );
     forward_to_actor!(

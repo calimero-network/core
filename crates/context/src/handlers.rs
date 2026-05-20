@@ -43,6 +43,7 @@ pub mod retry_group_upgrade;
 pub mod set_context_metadata;
 pub mod set_default_capabilities;
 pub mod set_group_metadata;
+pub mod set_member_auto_follow;
 pub mod set_member_capabilities;
 pub mod set_member_metadata;
 pub mod set_subgroup_visibility;
@@ -164,6 +165,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::SetMemberCapabilities { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::SetMemberAutoFollow { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::GetMemberCapabilities { request, outcome } => {
