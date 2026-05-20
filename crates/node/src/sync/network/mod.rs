@@ -54,14 +54,19 @@ pub trait SyncNetwork: Send + Sync + 'static {
 
 #[async_trait]
 impl SyncNetwork for NetworkClient {
+    // Fully-qualified syntax — `NetworkClient::mesh_peers(self, …)`
+    // rather than `self.mesh_peers(…)` — is used here intentionally
+    // even though Rust's method resolution would currently prefer the
+    // inherent method. If the inherent method is ever renamed or
+    // removed in `calimero-network-primitives`, the bare-self form
+    // would silently start calling the trait method (this one),
+    // recursing forever. The fully-qualified form fails to compile
+    // instead, which is the failure mode we want.
     async fn mesh_peers(&self, topic: TopicHash) -> Vec<PeerId> {
-        // Rust's method resolution prefers inherent methods over
-        // trait methods, so this dispatches to `NetworkClient::mesh_peers`
-        // — no infinite recursion through the trait.
-        self.mesh_peers(topic).await
+        NetworkClient::mesh_peers(self, topic).await
     }
 
     async fn open_stream(&self, peer_id: PeerId) -> eyre::Result<Stream> {
-        self.open_stream(peer_id).await
+        NetworkClient::open_stream(self, peer_id).await
     }
 }

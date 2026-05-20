@@ -40,7 +40,7 @@ use tokio::time;
 use super::SyncNetwork;
 
 /// Per-call directive for a mocked `open_stream` response.
-pub enum OpenStreamResponse {
+pub(crate) enum OpenStreamResponse {
     /// Synthesise an error string.
     Err(String),
     /// Sleep for `Duration` then return `Err` — useful for
@@ -55,24 +55,31 @@ pub enum OpenStreamResponse {
 /// into "PoisonError" noise on subsequent tests. Held only for
 /// the synchronous pop in each method; never across `.await`.
 #[derive(Default)]
-pub struct MockSyncNetwork {
+pub(crate) struct MockSyncNetwork {
     mesh_peers_responses: Mutex<VecDeque<Vec<PeerId>>>,
     open_stream_responses: Mutex<VecDeque<OpenStreamResponse>>,
+    /// Total call count, used by [`Self::assert_all_consumed`] to
+    /// distinguish "queued 1 sticky-last entry and the code under
+    /// test called mesh_peers ≥1 times" (consumed) from "queued 1
+    /// entry and the code under test never called mesh_peers at
+    /// all" (silently-unused queue).
+    mesh_peers_calls: Mutex<u32>,
+    open_stream_calls: Mutex<u32>,
 }
 
 impl MockSyncNetwork {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Queue a response for the next `mesh_peers` call.
-    pub fn push_mesh_peers(&self, peers: Vec<PeerId>) -> &Self {
+    pub(crate) fn push_mesh_peers(&self, peers: Vec<PeerId>) -> &Self {
         self.mesh_peers_responses.lock().push_back(peers);
         self
     }
 
     /// Queue a response for the next `open_stream` call.
-    pub fn push_open_stream_err(&self, msg: impl Into<String>) -> &Self {
+    pub(crate) fn push_open_stream_err(&self, msg: impl Into<String>) -> &Self {
         self.open_stream_responses
             .lock()
             .push_back(OpenStreamResponse::Err(msg.into()));
@@ -82,26 +89,33 @@ impl MockSyncNetwork {
     /// Queue a response that sleeps then errors. The caller's
     /// `tokio::time::timeout` wrapper should fire before the
     /// sleep completes if `sleep_for > timeout`.
-    pub fn push_open_stream_hang(&self, sleep_for: Duration, then_msg: impl Into<String>) -> &Self {
+    pub(crate) fn push_open_stream_hang(
+        &self,
+        sleep_for: Duration,
+        then_msg: impl Into<String>,
+    ) -> &Self {
         self.open_stream_responses
             .lock()
             .push_back(OpenStreamResponse::SleepThenErr(sleep_for, then_msg.into()));
         self
     }
 
-    /// Panic if any queued response wasn't consumed by the code
-    /// under test.
+    /// Panic if a queued response wasn't consumed by the code
+    /// under test, or if a non-empty queue was never read from.
     ///
-    /// For `mesh_peers` the check is "at most 1 entry remains" —
-    /// the sticky-last semantic means the last queued entry is
-    /// expected to remain unconsumed (it's the steady-state
-    /// answer). For `open_stream` the check is "queue is empty"
-    /// — each scripted response is expected to be a distinct
-    /// attempt.
+    /// Checks:
     ///
-    /// Call this at the end of a test that wants to detect the
-    /// "queued more than the code under test consumed" failure mode,
-    /// which would otherwise pass silently:
+    /// - `open_stream`: queue must be empty.
+    /// - `mesh_peers`: queue must have ≤1 entry left (the
+    ///   sticky-last steady state), AND if any entries were
+    ///   queued the code under test must have called
+    ///   `mesh_peers` at least once. The latter catches "test
+    ///   queued a single sticky-last entry but never exercised
+    ///   the discovery path at all" — without the call-count
+    ///   guard the assertion would pass silently in that case.
+    ///
+    /// `#[track_caller]` so panics point at the test's call
+    /// site, not inside this helper.
     ///
     /// ```ignore
     /// mock.push_open_stream_err("first")
@@ -111,13 +125,27 @@ impl MockSyncNetwork {
     /// mock.assert_all_consumed();  // panics if code only called open_stream twice
     /// ```
     #[track_caller]
-    pub fn assert_all_consumed(&self) {
+    pub(crate) fn assert_all_consumed(&self) {
         let mesh_remaining = self.mesh_peers_responses.lock().len();
+        let mesh_calls = *self.mesh_peers_calls.lock();
         let open_stream_remaining = self.open_stream_responses.lock().len();
+
         if mesh_remaining > 1 {
             panic!(
                 "MockSyncNetwork: {} unconsumed `mesh_peers` responses queued (sticky-last \
                  leaves 1 by design; >1 means the code under test made fewer calls than expected)",
+                mesh_remaining
+            );
+        }
+        // Sticky-last guard: if anything was queued and the code
+        // under test never called mesh_peers, the queue still has
+        // 1 entry but `mesh_calls == 0` — flag that, otherwise the
+        // unconsumed-1-entry case is indistinguishable from the
+        // healthy steady-state read.
+        if mesh_remaining > 0 && mesh_calls == 0 {
+            panic!(
+                "MockSyncNetwork: `mesh_peers` was seeded with {} entries but the code under \
+                 test never called it",
                 mesh_remaining
             );
         }
@@ -133,6 +161,7 @@ impl MockSyncNetwork {
 #[async_trait]
 impl SyncNetwork for MockSyncNetwork {
     async fn mesh_peers(&self, _topic: TopicHash) -> Vec<PeerId> {
+        *self.mesh_peers_calls.lock() += 1;
         // Extract the value first, then drop the lock — keeps the
         // critical section synchronous-only even if a future
         // refactor adds an `.await` to this method's body.
@@ -155,6 +184,7 @@ impl SyncNetwork for MockSyncNetwork {
         &self,
         _peer_id: PeerId,
     ) -> eyre::Result<calimero_network_primitives::stream::Stream> {
+        *self.open_stream_calls.lock() += 1;
         let response = self.open_stream_responses.lock().pop_front();
         match response {
             None => Err(eyre::eyre!(
@@ -295,6 +325,19 @@ mod tests {
         let p2 = PeerId::random();
         // 2 entries queued, none consumed → sticky-last allows 1, panics on >1.
         mock.push_mesh_peers(vec![p1]).push_mesh_peers(vec![p2]);
+        mock.assert_all_consumed();
+    }
+
+    /// Catches the silent footgun the previous version had: a test
+    /// that queues a single `mesh_peers` entry but never exercises
+    /// the discovery path would have passed `assert_all_consumed`
+    /// without complaint (sticky-last accepts 1 leftover). With the
+    /// call-count guard, "seeded but never called" panics loudly.
+    #[tokio::test]
+    #[should_panic(expected = "never called it")]
+    async fn assert_all_consumed_panics_on_mesh_peers_seeded_but_never_called() {
+        let mock = MockSyncNetwork::new();
+        mock.push_mesh_peers(vec![PeerId::random()]);
         mock.assert_all_consumed();
     }
 }
