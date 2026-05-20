@@ -70,6 +70,14 @@ pub use hash_comparison_protocol::{
 };
 pub use level_sync::{LevelWiseConfig, LevelWiseFirstRequest, LevelWiseProtocol, LevelWiseStats};
 pub use manager::SyncManager;
+// `mod manager` is private to `sync/`; these `pub(crate)` re-exports
+// are the *only* way for `crate::state` to reach the reconcile-attempt
+// helpers from its `SyncStateAccess` impl on `NodeState`. The helpers
+// can't be inlined into `state.rs` without duplicating the logic that
+// the dedicated tests in `sync/manager/tests.rs` already cover
+// against synthetic `DashMap` inputs. Keeping the helpers as
+// implementation details of `sync::manager` and exposing them via
+// these narrow re-exports preserves both surfaces.
 pub(crate) use manager::{
     reconcile_cooldown, reconcile_remaining_cooldown, record_reconcile_failure,
     record_reconcile_success,

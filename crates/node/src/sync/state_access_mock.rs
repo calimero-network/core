@@ -22,6 +22,7 @@ use parking_lot::Mutex;
 
 use super::state_access::SyncStateAccess;
 use crate::delta_store::DeltaStore;
+use crate::sync::reconcile_cooldown;
 
 /// Record of a single trait-method call. Useful for asserting
 /// what the code under test asked for, in what order.
@@ -69,7 +70,10 @@ impl MockSyncStateAccess {
 
     /// Queue a response for the next `end_sync_session(ctx)` call.
     /// Returns are popped FIFO per `context_id`; once exhausted the
-    /// method returns `None`.
+    /// method returns `None`. **Note**: a queued `None` and the
+    /// exhausted-queue case both return `None` from `end_sync_session`
+    /// — tests that need to distinguish the two should also assert
+    /// on `calls()` length, not just the return value.
     pub(crate) fn push_end_sync_session_response(
         &self,
         context_id: ContextId,
@@ -84,7 +88,12 @@ impl MockSyncStateAccess {
 
     /// Pre-set the cooldown that `reconcile_remaining_cooldown(ctx)`
     /// returns. The mock does not advance time; the test owns the
-    /// observed value end-to-end.
+    /// observed value end-to-end. Useful when a test wants to start
+    /// in a pre-existing-cooldown state without driving N failures
+    /// to get there; otherwise prefer calling `record_reconcile_failure`
+    /// directly — that path now installs a cooldown the same way the
+    /// production impl does (see [`SyncStateAccess::record_reconcile_failure`]'s
+    /// mock body).
     pub(crate) fn set_reconcile_cooldown(
         &self,
         context_id: ContextId,
@@ -117,29 +126,33 @@ impl SyncStateAccess for MockSyncStateAccess {
         context_id: ContextId,
         factory: Box<dyn FnOnce() -> DeltaStore + Send>,
     ) -> (DeltaStore, bool) {
+        // Record the call *before* releasing the stores lock so a
+        // concurrent reader of `calls()` can never observe an inserted
+        // store without the matching log entry. Matches the call-then-
+        // return ordering of every other trait method in this impl.
         let mut stores = self.delta_stores.lock();
         match stores.get(&context_id) {
             Some(existing) => {
                 let store = existing.clone();
-                drop(stores);
                 self.calls
                     .lock()
                     .push(SyncStateAccessCall::GetOrRegisterDeltaStore {
                         context_id,
                         created: false,
                     });
+                drop(stores);
                 (store, false)
             }
             None => {
                 let store = factory();
                 let _replaced = stores.insert(context_id, store.clone());
-                drop(stores);
                 self.calls
                     .lock()
                     .push(SyncStateAccessCall::GetOrRegisterDeltaStore {
                         context_id,
                         created: true,
                     });
+                drop(stores);
                 (store, true)
             }
         }
@@ -191,7 +204,21 @@ impl SyncStateAccess for MockSyncStateAccess {
         let mut counts = self.failure_counts.lock();
         let entry = counts.entry(context_id).or_insert(0);
         *entry = entry.saturating_add(1);
-        *entry
+        let failures = *entry;
+        drop(counts);
+        // Mirror production: a failure also installs a cooldown
+        // computed from the new `consecutive_failures`. Without this,
+        // `reconcile_remaining_cooldown` would return `None` after a
+        // failure (because the cooldowns map is only populated via
+        // explicit `set_reconcile_cooldown`), which diverges from the
+        // real `NodeState` impl where one DashMap holds both fields
+        // of `ReconcileAttempt` together.
+        let cooldown = reconcile_cooldown(failures);
+        let _replaced = self
+            .reconcile_cooldowns
+            .lock()
+            .insert(context_id, (cooldown, failures));
+        failures
     }
 }
 
@@ -209,21 +236,29 @@ mod tests {
         assert!(mock.delta_store(&ctx(1)).is_none());
         assert!(mock.end_sync_session(&ctx(1)).is_none());
         assert!(mock.peer_identities(&PeerId::random()).is_none());
+        // Cooldown is None until a failure (or explicit
+        // `set_reconcile_cooldown`) installs one.
         assert!(mock.reconcile_remaining_cooldown(&ctx(2)).is_none());
         assert_eq!(mock.record_reconcile_failure(ctx(2)), 1);
+        // The first failure installs a cooldown — `reconcile_remaining_cooldown`
+        // returns Some, mirroring production behaviour.
+        assert!(mock.reconcile_remaining_cooldown(&ctx(2)).is_some());
         assert_eq!(mock.record_reconcile_failure(ctx(2)), 2);
         assert_eq!(mock.record_reconcile_failure(ctx(3)), 1);
-        // record_reconcile_success clears the count.
+        // record_reconcile_success clears the count and the cooldown.
         mock.record_reconcile_success(&ctx(2));
+        assert!(mock.reconcile_remaining_cooldown(&ctx(2)).is_none());
         assert_eq!(mock.record_reconcile_failure(ctx(2)), 1);
 
+        // `calls()` records every trait-method invocation in order;
+        // tests can pattern-match the full sequence to assert
+        // ordering. Sanity-check the first entry; assertion shapes
+        // for specific sequences belong in higher-level tests.
         let calls = mock.calls();
         assert!(matches!(
             calls.first(),
             Some(SyncStateAccessCall::DeltaStore(_))
         ));
-        // Order preserved.
-        assert!(calls.windows(2).all(|w| w[0] != w[1] || true));
     }
 
     #[test]

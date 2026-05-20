@@ -611,10 +611,15 @@ impl crate::sync::state_access::SyncStateAccess for NodeState {
         context_id: ContextId,
         factory: Box<dyn FnOnce() -> DeltaStore + Send>,
     ) -> (DeltaStore, bool) {
-        // DashMap's entry API gives us the atomicity we need — no
-        // TOCTOU window between "is there a store?" and "register
-        // one." Track creation via a flag captured by the factory
-        // wrapper so we can report it back to the caller.
+        // DashMap's `entry().or_insert_with()` runs the factory at most
+        // once per `context_id`, under the shard write-lock. The
+        // `was_newly_created` flag is updated inside that critical
+        // section, so the value the caller sees reflects whether
+        // *this thread* won the create race. Under contention exactly
+        // one thread sees `true`; every other thread sees `false`. The
+        // one-time setup at call sites (`load_persisted_deltas` after
+        // a fresh store) is therefore guaranteed to run exactly once
+        // per context across threads.
         let mut was_newly_created = false;
         let store = self
             .delta_stores
