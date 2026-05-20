@@ -39,7 +39,8 @@
 //! ```
 
 use crate::sync::helpers::{
-    apply_leaf_with_crdt_merge, generate_nonce, handle_entity_push, MAX_ENTITIES_PER_PUSH,
+    apply_leaf_with_crdt_merge, generate_nonce, get_local_root_hash_for_context,
+    handle_entity_push, MAX_ENTITIES_PER_PUSH,
 };
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
@@ -123,6 +124,12 @@ pub struct HashComparisonStats {
     pub nodes_skipped: u64,
     /// Number of requests sent to peer.
     pub requests_sent: u64,
+    /// Whether the post-sync local root hash matches the remote
+    /// root hash the initiator started with. Set by the initiator
+    /// after the DFS merge completes. A `false` value indicates the
+    /// merge did not converge the two peers — see #2407 for the
+    /// failure mode this guards against.
+    pub root_hash_verified: bool,
 }
 
 /// HashComparison sync protocol.
@@ -357,14 +364,60 @@ async fn run_initiator_impl<T: SyncTransport>(
     // Close the transport to signal completion to the responder
     transport.close().await?;
 
+    // Post-sync convergence check (#2407): a HashComparison session
+    // that returns Ok without confirming the two roots actually
+    // converged is indistinguishable from a no-op — the sync manager
+    // logs "success" and the next interval-sync repeats the same
+    // empty merge forever. Verify the local root now matches the
+    // remote root the initiator started with; on mismatch, surface
+    // as an Err so the manager retries (possibly via a different
+    // protocol path) instead of silently masking the divergence.
+    //
+    // Concurrent local writes between sync start and now CAN
+    // legitimately leave the local root different from the remote
+    // root we observed at session start — but returning Err here
+    // still does the right thing: the next interval-sync tick will
+    // re-handshake against the (now possibly-advanced) remote and
+    // either converge or surface the persistent divergence. The
+    // alternative (silent Ok on mismatch) is what #2407 documents
+    // as the bug.
+    let local_root_hash = with_runtime_env(runtime_env.clone(), || {
+        get_local_root_hash_for_context(context_id)
+    })?;
+    stats.root_hash_verified = local_root_hash == remote_root_hash;
+
     info!(
         %context_id,
         nodes_compared = stats.nodes_compared,
         entities_merged = stats.entities_merged,
         entities_pushed = stats.entities_pushed,
         nodes_skipped = stats.nodes_skipped,
+        root_hash_verified = stats.root_hash_verified,
         "HashComparison sync complete"
     );
+
+    if !stats.root_hash_verified {
+        warn!(
+            %context_id,
+            local_hash = %hex::encode(&local_root_hash[..8]),
+            remote_hash = %hex::encode(&remote_root_hash[..8]),
+            nodes_compared = stats.nodes_compared,
+            entities_merged = stats.entities_merged,
+            entities_pushed = stats.entities_pushed,
+            "HashComparison sync did NOT converge — surfacing as Err so the \
+             sync manager retries instead of silently masking divergence (#2407)"
+        );
+        bail!(
+            "HashComparison sync completed but local root {} did not converge to remote root {} \
+             (compared={}, merged={}, pushed={}, skipped={})",
+            hex::encode(&local_root_hash[..8]),
+            hex::encode(&remote_root_hash[..8]),
+            stats.nodes_compared,
+            stats.entities_merged,
+            stats.entities_pushed,
+            stats.nodes_skipped,
+        );
+    }
 
     Ok(stats)
 }

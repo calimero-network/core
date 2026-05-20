@@ -74,7 +74,9 @@ use calimero_store::Store;
 use eyre::{bail, Result};
 use tracing::{debug, info, trace, warn};
 
-use crate::sync::helpers::{apply_leaf_with_crdt_merge, generate_nonce};
+use crate::sync::helpers::{
+    apply_leaf_with_crdt_merge, generate_nonce, get_local_root_hash_for_context,
+};
 
 // =============================================================================
 // Configuration
@@ -402,29 +404,47 @@ async fn run_initiator_impl<T: SyncTransport>(
     // Close the transport to signal completion
     transport.close().await?;
 
-    // Verify root hash after sync to confirm convergence
-    // This is a post-sync verification, not the Invariant I7 pre-write check
-    let local_root_hash =
-        with_runtime_env(runtime_env.clone(), || get_local_root_hash(context_id))?;
+    // Post-sync convergence check (#2407). Until this PR a mismatch
+    // was logged at debug-level and treated as "expected if local had
+    // concurrent changes" — but that comment was load-bearing only
+    // for a narrow case (writes between sync start and now). The
+    // common case where a mismatch indicates an actual sync bug was
+    // being masked. Now we surface mismatch as an Err so the sync
+    // manager retries; if concurrent writes really did cause it,
+    // the next interval-sync handshake observes the new state and
+    // either converges or surfaces persistent divergence.
+    let local_root_hash = with_runtime_env(runtime_env.clone(), || {
+        get_local_root_hash_for_context(context_id)
+    })?;
 
     stats.root_hash_verified = local_root_hash == remote_root_hash;
 
-    if stats.root_hash_verified {
-        debug!(
-            %context_id,
-            root_hash = %hex::encode(&local_root_hash[..8]),
-            "Root hash verified after sync"
-        );
-    } else {
-        // This is expected if we had local-only changes or CRDT merge produced different result
-        // It's a warning, not an error, because CRDT merge may legitimately produce different hashes
-        debug!(
+    if !stats.root_hash_verified {
+        warn!(
             %context_id,
             local_hash = %hex::encode(&local_root_hash[..8]),
             remote_hash = %hex::encode(&remote_root_hash[..8]),
-            "Root hash differs after sync (expected if local had concurrent changes)"
+            levels_synced = stats.levels_synced,
+            nodes_compared = stats.nodes_compared,
+            entities_merged = stats.entities_merged,
+            "LevelWise sync did NOT converge — surfacing as Err so the sync manager \
+             retries instead of silently masking divergence (#2407)"
+        );
+        bail!(
+            "LevelWise sync completed but local root {} did not converge to remote root {} \
+             (levels={}, compared={}, merged={})",
+            hex::encode(&local_root_hash[..8]),
+            hex::encode(&remote_root_hash[..8]),
+            stats.levels_synced,
+            stats.nodes_compared,
+            stats.entities_merged,
         );
     }
+    debug!(
+        %context_id,
+        root_hash = %hex::encode(&local_root_hash[..8]),
+        "Root hash verified after sync"
+    );
 
     info!(
         %context_id,
@@ -631,20 +651,6 @@ async fn run_responder_loop<T: SyncTransport>(
 // =============================================================================
 // Storage Helpers
 // =============================================================================
-
-/// Get the local root hash for verification.
-fn get_local_root_hash(context_id: ContextId) -> Result<[u8; 32]> {
-    let root_id = Id::new(*context_id.as_ref());
-
-    match Index::<MainStorage>::get_hashes_for(root_id) {
-        Ok(Some((full_hash, _))) => Ok(full_hash),
-        Ok(None) => Ok([0u8; 32]), // Empty tree has zero hash
-        Err(e) => {
-            warn!(%context_id, error = %e, "Failed to get root hash");
-            Ok([0u8; 32])
-        }
-    }
-}
 
 /// Get local node hashes at a level for comparison.
 ///
