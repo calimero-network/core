@@ -42,7 +42,7 @@ impl SyncManager {
         );
 
         // Open stream to peer
-        let mut stream = self.network_client.open_stream(source).await?;
+        let mut stream = self.sync_network.open_stream(source).await?;
 
         // Fetch all missing ancestors, then add them in topological order (oldest first)
         let mut to_fetch = missing_ids.clone();

@@ -56,5 +56,11 @@ async-trait.workspace = true
 calimero-dag = { workspace = true, features = ["testing"] }
 calimero-storage = { workspace = true, features = ["testing"] }
 ed25519-dalek.workspace = true
+parking_lot.workspace = true
 rand_chacha = "0.3"
 tempfile.workspace = true
+# `tokio/test-util` is dev-only — provides `tokio::time::pause()` /
+# `#[tokio::test(start_paused)]` for time-controlled tests. Kept out
+# of `[dependencies]` so production binaries don't carry the
+# test-utility surface.
+tokio = { workspace = true, features = ["test-util"] }

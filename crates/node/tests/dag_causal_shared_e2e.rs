@@ -97,7 +97,14 @@ fn setup_root() -> ChildInfo {
     let root_id = Id::root();
     let root_meta = Metadata::default();
     Index::<MainStorage>::add_root(ChildInfo::new(root_id, [0; 32], root_meta.clone())).unwrap();
-    ChildInfo::new(root_id, [0; 32], root_meta)
+    // Return the post-`add_root` full_hash so callers using this as an
+    // ancestor pass the v2 `verify_ancestor_integrity` check at apply
+    // time. Without this every test using `setup_root` would trip
+    // `TreeStateMismatch`.
+    let (full_hash, _) = Index::<MainStorage>::get_hashes_for(root_id)
+        .unwrap()
+        .unwrap();
+    ChildInfo::new(root_id, full_hash, root_meta)
 }
 
 /// Build a signed `Shared` action (Add or Update). The signature is over

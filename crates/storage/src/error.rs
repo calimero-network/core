@@ -56,6 +56,35 @@ pub enum StorageError {
     #[error("Invalid signature for user-owned data")]
     InvalidSignature,
 
+    /// The action's claimed ancestor merkle hash does not match the receiver's
+    /// local state. Surfaced by
+    /// [`Interface::verify_ancestor_integrity`](crate::interface::Interface)
+    /// on the delta-replay path; the signature itself verified, but the tree
+    /// shape the signer asserted doesn't line up with the receiver's local
+    /// tree.
+    ///
+    /// This is distinct from [`Self::InvalidSignature`] (cryptographic
+    /// rejection) and lets operators tell "the writer's authorization is
+    /// invalid" apart from "the receiver's tree drifted from the writer's
+    /// view." The sync-reconcile path skips this check by definition
+    /// (sync runs precisely when tree shapes have drifted), so the error
+    /// only surfaces on the delta path.
+    ///
+    /// **Currently unconstructed.** `verify_ancestor_integrity` was
+    /// relaxed to warn-only (debug-log on mismatch, no error returned)
+    /// because the SDK macro at
+    /// `crates/sdk/macros/src/logic/method.rs:189` calls
+    /// `Root::sync(...).expect("fatal: sync failed")` — a hard error
+    /// here panics the WASM and aborts the entire CRDT merge.
+    /// The variant is kept (rather than removed) so the strict-reject
+    /// mode can be restored once the SDK panic-on-Err path is plumbed
+    /// through to surface sync errors properly, or once
+    /// `ApplyContext` carries a "this is a CRDT merge" flag so the
+    /// check fires only on truly-sequential deltas.
+    #[allow(dead_code, reason = "see doc — reserved for strict-mode restoration")]
+    #[error("Tree state mismatch on apply: ancestor {0} merkle hash differs from local")]
+    TreeStateMismatch(Id),
+
     /// A remote action was rejected due to an invalid (old or reused) nonce.
     /// `PublicKey` is `Box`ed to reduce the enum's size.
     #[error("Nonce replay detected for user {}: received nonce {}", 0.0, 0.1)]
@@ -110,6 +139,9 @@ impl Serialize for StorageError {
             )),
             Self::InvalidData(ref msg) => serializer.serialize_str(msg),
             Self::InvalidSignature => serializer.serialize_str("Invalid signature"),
+            Self::TreeStateMismatch(id) => serializer.serialize_str(&format!(
+                "Tree state mismatch on apply: ancestor {id} merkle hash differs from local"
+            )),
             Self::NonceReplay(ref data) => {
                 let (pk, nonce) = &**data;
                 serializer.serialize_str(&format!("Nonce replay for {}: {}", pk, nonce))

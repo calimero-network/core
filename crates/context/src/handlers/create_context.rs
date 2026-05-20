@@ -20,11 +20,12 @@ use eyre::{bail, OptionExt};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use tokio::sync::{Mutex, OwnedMutexGuard};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
 use crate::governance_broadcast::ObserveDelivery;
+use crate::handlers::execute::{persist_signed_signatures, sign_authorized_actions};
 use crate::{group_store, ContextManager, ContextMeta};
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -334,12 +335,25 @@ async fn create_context(
     // serialized delta so we can notify the node-side DeltaStore to
     // update its in-memory DAG without having to borsh-deserialize
     // the serialized blob back out.
+    // Commit storage BEFORE building the init delta — we need a
+    // `Store` handle to drive `persist_signed_signatures`, which
+    // writes the signed `signature_data` back into the freshly
+    // committed entity index entries. Without this, the bootstrap
+    // entities created during `init()` keep the `[0; 64]`
+    // placeholder signature emitted by `save_raw` (which runs
+    // inside the WASM host call and has no access to the identity
+    // private key), and HashComparison sync — plus the new
+    // per-entity Snapshot verification (#2387) — would reject them
+    // on every peer that tries to apply the snapshot.
+    let datastore = storage.commit()?;
+    let _private_datastore = private_storage.commit()?;
+
     let init_delta = if let Some(root_hash) = outcome.root_hash {
         context.root_hash = root_hash.into();
 
         // CRITICAL: Create delta and set dag_heads for init()
         // This ensures newly joined nodes can sync via delta protocol
-        let actions = if !outcome.artifact.is_empty() {
+        let mut actions = if !outcome.artifact.is_empty() {
             // Extract actions from init artifact
             match borsh::from_slice::<StorageDelta>(&outcome.artifact) {
                 Ok(StorageDelta::Actions(actions)) => actions,
@@ -356,6 +370,44 @@ async fn create_context(
             vec![]
         };
 
+        // Sign the bootstrap actions and persist the signed
+        // `signature_data` to local storage — same flow
+        // `execute_method` runs for regular method calls. The
+        // signed actions then go into the broadcast CausalDelta
+        // below so peers receive verifiable state, and the local
+        // index entries are patched so subsequent HashComparison /
+        // Snapshot responses ship verifiable state too.
+        // Partial-commit caveat: `storage.commit()` above already
+        // wrote the bootstrap entities to RocksDB (with placeholder
+        // signatures from `save_raw`). If signing or
+        // signature-persist fails below and we `bail!` out, those
+        // entities remain in the store as orphans — no
+        // `ContextConfig` / `ContextMeta` keys point to them, and
+        // no init delta references them, but the data is on disk.
+        // The user can retry context creation with the same group;
+        // a new context_id is generated each time, so the orphans
+        // don't conflict with the retry.
+        //
+        // Bailing is the right call here even with that cost: if
+        // we silently continued, the broadcast `CausalDelta` would
+        // carry placeholder-signed actions, peers would reject
+        // them, and the context would exist but be unusable. A
+        // proper fix (transactional commit or post-failure
+        // cleanup pass that walks `ContextStateKey` for this
+        // context_id and deletes orphan entries) is a follow-up.
+        if !actions.is_empty() {
+            if let Err(e) = sign_authorized_actions(&mut actions, &identity_secret) {
+                error!(?e, %context.id, "Failed to sign init actions");
+                bail!("Failed to sign init actions: {:?}", e);
+            }
+            if let Err(e) =
+                persist_signed_signatures(&datastore, &context, &identity_secret, &actions)
+            {
+                error!(?e, %context.id, "Failed to persist signed init signatures");
+                bail!("Failed to persist signed init signatures: {:?}", e);
+            }
+        }
+
         // Always create a genesis delta. The parent should be `[0; 32]` (genesis).
         // This way, the DAG will have a head that is associated with a delta even if state is empty.
         let hlc = calimero_storage::env::hlc_timestamp();
@@ -365,7 +417,9 @@ async fn create_context(
 
         context.dag_heads = vec![delta_id];
 
-        // Persist the init delta so peers can request it
+        // Persist the init delta so peers can request it. Uses the
+        // now-signed actions so peers applying the genesis delta
+        // verify against real signatures, not the placeholder.
         let serialized_actions = borsh::to_vec(&actions)?;
 
         let delta = types::ContextDagDelta {
@@ -390,9 +444,6 @@ async fn create_context(
     } else {
         None
     };
-
-    let datastore = storage.commit()?;
-    let _private_datastore = private_storage.commit()?;
 
     let mut handle = datastore.handle();
 

@@ -74,7 +74,9 @@ use calimero_store::Store;
 use eyre::{bail, Result};
 use tracing::{debug, info, trace, warn};
 
-use crate::sync::helpers::{apply_leaf_with_crdt_merge, generate_nonce};
+use crate::sync::helpers::{
+    apply_leaf_with_crdt_merge, generate_nonce, get_local_root_hash_for_context,
+};
 
 // =============================================================================
 // Configuration
@@ -402,27 +404,41 @@ async fn run_initiator_impl<T: SyncTransport>(
     // Close the transport to signal completion
     transport.close().await?;
 
-    // Verify root hash after sync to confirm convergence
-    // This is a post-sync verification, not the Invariant I7 pre-write check
-    let local_root_hash =
-        with_runtime_env(runtime_env.clone(), || get_local_root_hash(context_id))?;
+    // Post-sync convergence check (#2407). Previously this was
+    // silently debug-logged on mismatch with the comment "expected
+    // if local had concurrent changes" — true for one narrow case,
+    // but it also masked actual merge-correctness bugs.
+    //
+    // We can't distinguish "real divergence bug" from "legitimate
+    // bidirectional drift / concurrent local writes" without a
+    // second handshake round-trip, so we surface mismatch at WARN
+    // (was: debug) and rely on the sync manager / metrics consumer
+    // to react to *patterns* of unverified syncs across many ticks
+    // — that's the failure shape #2407 documents.
+    let local_root_hash = with_runtime_env(runtime_env.clone(), || {
+        get_local_root_hash_for_context(context_id)
+    })?;
 
     stats.root_hash_verified = local_root_hash == remote_root_hash;
 
-    if stats.root_hash_verified {
+    if !stats.root_hash_verified {
+        warn!(
+            %context_id,
+            local_hash = %hex::encode(&local_root_hash[..8]),
+            remote_hash = %hex::encode(&remote_root_hash[..8]),
+            levels_synced = stats.levels_synced,
+            nodes_compared = stats.nodes_compared,
+            entities_merged = stats.entities_merged,
+            "LevelWise sync did not match remote handshake root (#2407). \
+             Legitimate in bidirectional sync or with concurrent local writes; \
+             persistent occurrences across many interval-sync ticks indicate a real \
+             merge convergence bug."
+        );
+    } else {
         debug!(
             %context_id,
             root_hash = %hex::encode(&local_root_hash[..8]),
             "Root hash verified after sync"
-        );
-    } else {
-        // This is expected if we had local-only changes or CRDT merge produced different result
-        // It's a warning, not an error, because CRDT merge may legitimately produce different hashes
-        debug!(
-            %context_id,
-            local_hash = %hex::encode(&local_root_hash[..8]),
-            remote_hash = %hex::encode(&remote_root_hash[..8]),
-            "Root hash differs after sync (expected if local had concurrent changes)"
         );
     }
 
@@ -632,20 +648,6 @@ async fn run_responder_loop<T: SyncTransport>(
 // Storage Helpers
 // =============================================================================
 
-/// Get the local root hash for verification.
-fn get_local_root_hash(context_id: ContextId) -> Result<[u8; 32]> {
-    let root_id = Id::new(*context_id.as_ref());
-
-    match Index::<MainStorage>::get_hashes_for(root_id) {
-        Ok(Some((full_hash, _))) => Ok(full_hash),
-        Ok(None) => Ok([0u8; 32]), // Empty tree has zero hash
-        Err(e) => {
-            warn!(%context_id, error = %e, "Failed to get root hash");
-            Ok([0u8; 32])
-        }
-    }
-}
-
 /// Get local node hashes at a level for comparison.
 ///
 /// Returns a map of node_id -> hash for all nodes at the specified level.
@@ -804,6 +806,11 @@ fn get_nodes_at_level(
                     .with_created_at(child_index.metadata.created_at());
                     if let Some(parent_id) = child_index.parent_id() {
                         metadata = metadata.with_parent(*parent_id.as_bytes());
+                    }
+                    if let Some(auth) =
+                        crate::sync::helpers::wire_authorization_for(&child_index.metadata)
+                    {
+                        metadata = metadata.with_authorization(auth);
                     }
                     let leaf_data =
                         TreeLeafData::new(*child_storage_id.as_bytes(), entry_data, metadata);
