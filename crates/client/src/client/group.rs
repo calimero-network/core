@@ -32,6 +32,8 @@ use calimero_server_primitives::admin::ReparentGroupApiResponse;
 use calimero_server_primitives::admin::RetryGroupUpgradeApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetDefaultCapabilitiesApiResponse;
+use calimero_server_primitives::admin::SetMemberAutoFollowApiRequest;
+use calimero_server_primitives::admin::SetMemberAutoFollowApiResponse;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiRequest;
 use calimero_server_primitives::admin::SetMemberCapabilitiesApiResponse;
 use calimero_server_primitives::admin::SetMetadataApiRequest;
@@ -351,6 +353,28 @@ where
             .get(&format!(
                 "admin-api/groups/{group_id}/members/{identity_hex}/capabilities"
             ))
+            .await?;
+        Ok(response)
+    }
+
+    /// Toggle a member's per-group auto-follow flags
+    /// (`auto_follow.contexts` / `auto_follow.subgroups`).
+    ///
+    /// Authorized by group admin (for any `identity_hex`) or by the target
+    /// itself (self-setting). The apply path enforces the admin-or-self rule —
+    /// see `GroupOp::MemberSetAutoFollow`.
+    pub async fn set_member_auto_follow(
+        &self,
+        group_id: &str,
+        identity_hex: &str,
+        request: SetMemberAutoFollowApiRequest,
+    ) -> Result<SetMemberAutoFollowApiResponse> {
+        let response = self
+            .connection
+            .put_json(
+                &format!("admin-api/groups/{group_id}/members/{identity_hex}/auto-follow"),
+                request,
+            )
             .await?;
         Ok(response)
     }
