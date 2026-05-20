@@ -478,7 +478,11 @@ mod tests {
             &excluded,
         )
         .await;
-        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("excluded 1"),
+            "err should report 1 excluded peer for diagnostic symmetry: {err}"
+        );
         mock.assert_all_consumed();
     }
 }

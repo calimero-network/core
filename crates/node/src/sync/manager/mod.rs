@@ -4352,6 +4352,7 @@ impl SyncManager {
         let mut rejected_peers: std::collections::HashSet<libp2p::PeerId> =
             std::collections::HashSet::new();
         let mut last_rejection: Option<String> = None;
+        let mut last_connect_err: Option<String> = None;
         // Cap on protocol-level retries. The connect loop already
         // handles transport failure across peers; this cap bounds the
         // total post-open exchanges so a small mesh full of stale
@@ -4374,22 +4375,31 @@ impl SyncManager {
             {
                 Ok(opened) => opened,
                 Err(open_err) => {
-                    // Connect loop exhausted (no reachable peer left,
-                    // or every remaining mesh peer is in
-                    // `rejected_peers`). Surface the most diagnostic
-                    // error we have — a previous rejection beats the
-                    // generic "could not open" because the rejection
-                    // tells the caller *why* the peer wouldn't serve.
-                    if let Some(reason) = last_rejection {
-                        eyre::bail!(
-                            "namespace join failed after {} attempt(s): last rejection \
-                             \"{}\"; subsequent connect failed: {}",
-                            protocol_attempt - 1,
-                            reason,
-                            open_err
-                        );
+                    if last_rejection.is_none() {
+                        // First attempt's connect loop exhausted with
+                        // no prior protocol-level success. The
+                        // connect loop has its own mesh-retry budget;
+                        // re-running it immediately would repeat the
+                        // same exhaustion with no state change.
+                        // Surface the connect_err directly.
+                        return Err(open_err);
                     }
-                    return Err(open_err);
+                    // Connect failure *after* at least one peer has
+                    // rejected: do not bail. The mesh may surface a
+                    // fresh peer on a later protocol attempt that
+                    // wasn't visible during this one (mesh-formation
+                    // delay, peer just finished processing the
+                    // namespace governance DAG, etc.). Record the err
+                    // for the exhaustion diagnostic and let the loop
+                    // continue.
+                    debug!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        attempt = protocol_attempt,
+                        error = %open_err,
+                        "namespace join: connect failed after prior rejection, will retry"
+                    );
+                    last_connect_err = Some(open_err.to_string());
+                    continue;
                 }
             };
 
@@ -4488,9 +4498,10 @@ impl SyncManager {
 
         eyre::bail!(
             "namespace join exhausted {} protocol attempts (last rejection: {:?}, \
-             {} peer(s) rejected)",
+             last connect_err: {:?}, {} peer(s) rejected)",
             MAX_PROTOCOL_RETRIES,
             last_rejection,
+            last_connect_err,
             rejected_peers.len()
         )
     }
