@@ -487,6 +487,50 @@ fn partition_peer_with_only_non_anchor_identities_does_not_qualify() {
     assert_eq!(count, 0);
 }
 
+/// `partition_peers_anchor_first` works against any
+/// `SyncStateAccess` impl, not just `NodeState`. This test exercises
+/// the same partition behaviour using the `MockSyncStateAccess`
+/// fixture — a pure unit test surface for the partition helper that
+/// could be extended to higher-level sync code as more dependencies
+/// become mockable.
+///
+/// Pinning this demonstrates the test surface promised in the
+/// trait's doc: `sync/` code that goes through `SyncStateAccess`
+/// can be exercised without a `NodeState` at all.
+#[test]
+fn partition_works_against_mock_sync_state_access() {
+    use crate::sync::state_access_mock::{MockSyncStateAccess, SyncStateAccessCall};
+
+    let anchor_peer = dummy_peer(1);
+    let plain_peer = dummy_peer(2);
+    let pk_admin = dummy_pk(0xAA);
+
+    let mock = MockSyncStateAccess::default();
+    mock.insert_peer_identities(anchor_peer, [pk_admin].into_iter().collect());
+
+    let anchors: BTreeSet<PublicKey> = [pk_admin].into_iter().collect();
+
+    let mut peers = vec![plain_peer, anchor_peer];
+    let count = partition_peers_anchor_first(&mut peers, &mock, &anchors);
+    assert_eq!(count, 1, "exactly one anchor in the input");
+    assert_eq!(
+        peers,
+        vec![anchor_peer, plain_peer],
+        "anchor should come first"
+    );
+
+    // Both peer-identity lookups should have been observed in order.
+    let calls = mock.calls();
+    assert_eq!(
+        calls,
+        vec![
+            SyncStateAccessCall::PeerIdentities(plain_peer),
+            SyncStateAccessCall::PeerIdentities(anchor_peer),
+        ],
+        "partition should query peer_identities exactly once per input peer, in order"
+    );
+}
+
 // =========================================================================
 // `reconcile_cooldown` / `record_reconcile_*` — backoff for the
 // reconcile-after-divergence path
