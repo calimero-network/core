@@ -58,13 +58,16 @@ pub(crate) enum OpenStreamResponse {
 pub(crate) struct MockSyncNetwork {
     mesh_peers_responses: Mutex<VecDeque<Vec<PeerId>>>,
     open_stream_responses: Mutex<VecDeque<OpenStreamResponse>>,
-    /// Total call count, used by [`Self::assert_all_consumed`] to
-    /// distinguish "queued 1 sticky-last entry and the code under
-    /// test called mesh_peers ≥1 times" (consumed) from "queued 1
-    /// entry and the code under test never called mesh_peers at
-    /// all" (silently-unused queue).
+    /// `mesh_peers` call count — needed to distinguish "queued 1
+    /// sticky-last entry and the code under test called mesh_peers
+    /// ≥1 times" (consumed) from "queued 1 entry and the code under
+    /// test never called mesh_peers at all" (silently-unused queue).
+    ///
+    /// No analogous counter exists for `open_stream`: it has no
+    /// sticky-last semantic, so "seeded but never called" already
+    /// fails `assert_all_consumed`'s `open_stream_remaining > 0`
+    /// check without needing a separate guard.
     mesh_peers_calls: Mutex<u32>,
-    open_stream_calls: Mutex<u32>,
 }
 
 impl MockSyncNetwork {
@@ -158,29 +161,46 @@ impl MockSyncNetwork {
 impl SyncNetwork for MockSyncNetwork {
     async fn mesh_peers(&self, _topic: TopicHash) -> Vec<PeerId> {
         *self.mesh_peers_calls.lock() += 1;
-        // Extract the value first, then drop the lock — keeps the
-        // critical section synchronous-only even if a future
-        // refactor adds an `.await` to this method's body.
-        let peers = {
+        // Pull out a borrow indicator under the lock and do the
+        // (possibly-cloning) work after dropping it. Keeps the
+        // critical section minimal and bounded to synchronous
+        // operations regardless of how the work below evolves.
+        enum Take {
+            Empty,
+            Stick,
+            Pop(Vec<PeerId>),
+        }
+        let take = {
             let mut queue = self.mesh_peers_responses.lock();
             match queue.len() {
-                0 => None,
-                // Last entry: clone instead of popping so repeated
-                // reads after the script is exhausted keep returning
-                // the final value (matches "mesh is stable after
-                // discovery completes" production behaviour).
-                1 => Some(queue[0].clone()),
-                _ => queue.pop_front(),
+                0 => Take::Empty,
+                // Last entry: clone *after* dropping the lock so
+                // repeated reads keep returning the final value
+                // (matches "mesh is stable after discovery
+                // completes" production behaviour).
+                1 => Take::Stick,
+                _ => Take::Pop(queue.pop_front().unwrap_or_default()),
             }
         };
-        peers.unwrap_or_default()
+        match take {
+            Take::Empty => Vec::new(),
+            Take::Stick => {
+                // Re-lock briefly just to clone the last entry —
+                // bounded work, no `.await` in scope.
+                self.mesh_peers_responses
+                    .lock()
+                    .front()
+                    .cloned()
+                    .unwrap_or_default()
+            }
+            Take::Pop(peers) => peers,
+        }
     }
 
     async fn open_stream(
         &self,
         _peer_id: PeerId,
     ) -> eyre::Result<calimero_network_primitives::stream::Stream> {
-        *self.open_stream_calls.lock() += 1;
         let response = self.open_stream_responses.lock().pop_front();
         match response {
             None => Err(eyre::eyre!(
