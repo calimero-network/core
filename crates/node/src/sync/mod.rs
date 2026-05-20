@@ -47,6 +47,8 @@ pub mod prometheus_metrics;
 pub mod rotation_log_reader;
 mod snapshot;
 pub(crate) mod state_access;
+#[cfg(test)]
+pub(crate) mod state_access_mock;
 pub(crate) mod stream;
 mod tracking;
 
