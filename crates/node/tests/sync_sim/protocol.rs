@@ -1332,6 +1332,12 @@ mod tests {
         assert_eq!(alice.root_hash(), bob.root_hash(), "must start equal");
 
         // Same entity_id, different HLC values: Bob older, Alice newer.
+        // `Metadata::new(created_at, updated_at)` — see
+        // `crates/storage/src/entities.rs`. LWW compares `updated_at`,
+        // so Bob=100 vs Alice=200 means Alice is the intended LWW
+        // winner; the test fails if these are inverted because then
+        // Bob would already hold the winning value and no push is
+        // needed to converge.
         let entity_id = Id::new([42u8; 32]);
         let mut older_meta = Metadata::new(100, 100);
         older_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
@@ -1400,17 +1406,14 @@ mod tests {
     /// interval tick — the all-zero shape from #2411 logs.
     #[tokio::test]
     async fn test_root_not_found_surfaces_err() {
-        use calimero_node::sync::{HashComparisonConfig, HashComparisonProtocol};
-        use calimero_node_primitives::sync::SyncProtocolExecutor;
-        use calimero_primitives::identity::PublicKey;
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::Metadata;
 
         let ctx = shared_context();
         let alice = SimNode::new_in_context("alice", ctx);
         let bob = SimNode::new_in_context("bob", ctx);
 
         // Give both peers some state so the protocol has a tree to walk.
-        use calimero_storage::address::Id;
-        use calimero_storage::entities::Metadata;
         let seed_id = Id::new([7u8; 32]);
         for node in [&alice, &bob] {
             node.storage()
@@ -1439,8 +1442,6 @@ mod tests {
         };
 
         let responder_fut = async {
-            use calimero_node::sync::HashComparisonFirstRequest;
-            use calimero_node_primitives::sync::{InitPayload, StreamMessage};
             let first_msg = resp_stream
                 .recv()
                 .await?
