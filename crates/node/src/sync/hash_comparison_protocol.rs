@@ -39,7 +39,8 @@
 //! ```
 
 use crate::sync::helpers::{
-    apply_leaf_with_crdt_merge, generate_nonce, handle_entity_push, MAX_ENTITIES_PER_PUSH,
+    apply_leaf_with_crdt_merge, generate_nonce, get_local_root_hash_for_context,
+    handle_entity_push, MAX_ENTITIES_PER_PUSH,
 };
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
@@ -123,6 +124,12 @@ pub struct HashComparisonStats {
     pub nodes_skipped: u64,
     /// Number of requests sent to peer.
     pub requests_sent: u64,
+    /// Whether the post-sync local root hash matches the remote
+    /// root hash the initiator started with. Set by the initiator
+    /// after the DFS merge completes. A `false` value indicates the
+    /// merge did not converge the two peers — see #2407 for the
+    /// failure mode this guards against.
+    pub root_hash_verified: bool,
 }
 
 /// HashComparison sync protocol.
@@ -357,14 +364,57 @@ async fn run_initiator_impl<T: SyncTransport>(
     // Close the transport to signal completion to the responder
     transport.close().await?;
 
+    // Post-sync convergence check (#2407). We compare the local
+    // root against the remote root the initiator started with, but
+    // do NOT treat mismatch as fatal:
+    //
+    // - Pull-only convergence: local should equal remote_root_hash.
+    // - Bidirectional sync: the initiator pushed local-only data to
+    //   the peer, so the peer's root advanced past
+    //   `remote_root_hash` (which we captured at handshake) — the
+    //   initiator's post-sync root won't match that stale value,
+    //   even though both peers have converged to the same NEW root.
+    // - Concurrent local writes between handshake and now: same
+    //   shape — local moves on, won't match captured remote.
+    //
+    // We can't distinguish "real divergence bug (#2407)" from
+    // "legitimate bidirectional drift" without a second handshake
+    // round-trip. So instead: set the flag, surface mismatch at
+    // WARN level (was: silent debug), and let the sync manager /
+    // metrics consumer react to *patterns* of unverified syncs.
+    // The bug #2407 documents is a node logging this WARN every
+    // second forever — that's now visible in logs and via the
+    // `root_hash_verified` stats field.
+    let local_root_hash = with_runtime_env(runtime_env.clone(), || {
+        get_local_root_hash_for_context(context_id)
+    })?;
+    stats.root_hash_verified = local_root_hash == remote_root_hash;
+
     info!(
         %context_id,
         nodes_compared = stats.nodes_compared,
         entities_merged = stats.entities_merged,
         entities_pushed = stats.entities_pushed,
         nodes_skipped = stats.nodes_skipped,
+        root_hash_verified = stats.root_hash_verified,
         "HashComparison sync complete"
     );
+
+    if !stats.root_hash_verified {
+        warn!(
+            %context_id,
+            local_hash = %hex::encode(&local_root_hash[..8]),
+            remote_hash = %hex::encode(&remote_root_hash[..8]),
+            nodes_compared = stats.nodes_compared,
+            entities_merged = stats.entities_merged,
+            entities_pushed = stats.entities_pushed,
+            nodes_skipped = stats.nodes_skipped,
+            "HashComparison sync did not match remote handshake root (#2407). \
+             Legitimate in bidirectional sync (peer's root advanced after our push) \
+             or with concurrent local writes; persistent occurrences of this WARN \
+             across many interval-sync ticks indicate a real merge convergence bug."
+        );
+    }
 
     Ok(stats)
 }

@@ -13,6 +13,25 @@ use calimero_storage::store::MainStorage;
 use eyre::{bail, Result};
 use rand::Rng;
 
+/// Read the local root-hash for `context_id` from the index.
+///
+/// Returns `[0; 32]` if no root entry exists (empty tree) or if the
+/// index read fails. Used by both HashComparison and LevelWise to
+/// verify post-sync convergence (#2407).
+///
+/// Must be called inside a `with_runtime_env(...)` scope.
+pub fn get_local_root_hash_for_context(context_id: ContextId) -> Result<[u8; 32]> {
+    let root_id = Id::new(*context_id.as_ref());
+    match Index::<MainStorage>::get_hashes_for(root_id) {
+        Ok(Some((full_hash, _))) => Ok(full_hash),
+        Ok(None) => Ok([0u8; 32]),
+        Err(e) => {
+            tracing::warn!(%context_id, error = %e, "Failed to get root hash");
+            Ok([0u8; 32])
+        }
+    }
+}
+
 /// Validates that peer's application ID matches ours.
 ///
 /// # Errors
