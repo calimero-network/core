@@ -4328,142 +4328,23 @@ impl SyncManager {
         &self,
         params: NamespaceJoinParams,
     ) -> eyre::Result<JoinBundle> {
-        let topic = libp2p::gossipsub::TopicHash::from_raw(format!(
-            "ns/{}",
-            hex::encode(params.namespace_id)
-        ));
-
-        // Discover a mesh peer and open a namespace-join stream, retrying
-        // both. The gossipsub mesh may still be forming when this runs
-        // (mDNS + GRAFT exchange can take several seconds), and a peer can
-        // be in the mesh while its transport connection is stale — so each
-        // round we try every known peer (in randomized order so a
-        // consistently-stale peer doesn't get tried first every round and
-        // burn the per-peer timeout budget before falling over to a
-        // healthy one — matches `perform_interval_sync`'s shuffle). The
-        // open is bounded by an explicit timeout so a stalled negotiation
-        // fails over to the next peer instead of waiting for connection
-        // death (~4s observed on CI). Use the uninitialized retry window
-        // (10 × 1 s) to stay reliable in slower environments (CI, Docker,
-        // mDNS cold-start).
-        //
-        // The whole discovery+open loop is bounded by an outer deadline
-        // so a worst-case `retries × peers × open_timeout` blow-up
-        // (3-peer mesh × 3 s open × 10 retries ≈ 100 s, plus inter-round
-        // sleeps) can't outlast the caller's own timeout and leave the
-        // join in an ambiguous state. The deadline is `mesh_retries ×
-        // (mesh_retry_delay + DEADLINE_MAX_PEERS_PER_ROUND × open_timeout)`.
-        //
-        // `DEADLINE_MAX_PEERS_PER_ROUND` is a worst-case *cap* used for
-        // budgeting, not an exact per-round peer count. It under-counts
-        // the per-round cost on very-large meshes (where the per-peer
-        // deadline check below bails the loop mid-round as a safety net)
-        // and over-counts on small or empty meshes (where the deadline
-        // simply doesn't fire because rounds are cheap — `mesh_retries ×
-        // mesh_retry_delay` ≈ 10 s on the 0-peer floor, well under any
-        // reasonable caller timeout). Either way the loop terminates
-        // inside `mesh_retries` rounds; the deadline is the upper-bound
-        // safety net, not a precise schedule.
-        //
-        // 4 covers the expected mesh size for namespace-join discovery
-        // (typically 1–3 peers in the namespace topic mesh during cold
-        // start). If we ever see meshes consistently above this, the
-        // constant should grow — the per-peer deadline check keeps the
-        // current value sound regardless.
-        const DEADLINE_MAX_PEERS_PER_ROUND: u32 = 4;
-        let open_timeout = self.sync_config.open_stream_timeout;
-        let mesh_retries = super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED;
-        let mesh_retry_delay = std::time::Duration::from_millis(
-            super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
-        );
-        let connect_deadline = mesh_retry_delay
-            .saturating_add(open_timeout.saturating_mul(DEADLINE_MAX_PEERS_PER_ROUND))
-            .saturating_mul(mesh_retries);
-        let connect_started = std::time::Instant::now();
-
-        let mut stream = None;
-        'connect: for attempt in 1..=mesh_retries {
-            if connect_started.elapsed() >= connect_deadline {
-                debug!(
-                    namespace_id = %hex::encode(params.namespace_id),
-                    attempt,
-                    elapsed_ms = connect_started.elapsed().as_millis() as u64,
-                    "namespace-join connect-loop deadline exceeded, giving up"
-                );
-                break;
-            }
-            let mut peers = self.sync_network.mesh_peers(topic.clone()).await;
-            // Randomize peer order so a consistently-stale peer doesn't
-            // get tried first every round. `choose_multiple` of all
-            // peers is the same shuffle pattern used in
-            // `perform_interval_sync`.
-            peers = peers
-                .choose_multiple(&mut rand::thread_rng(), peers.len())
-                .copied()
-                .collect();
-
-            for peer in &peers {
-                // Per-peer deadline check — bails mid-round if the
-                // outer budget is exhausted, so a very-large mesh
-                // can't sit on `open_timeout` for several peers past
-                // the deadline before the top-of-loop check fires
-                // again.
-                if connect_started.elapsed() >= connect_deadline {
-                    break 'connect;
-                }
-                match time::timeout(open_timeout, self.sync_network.open_stream(*peer)).await {
-                    Ok(Ok(opened)) => {
-                        stream = Some(opened);
-                        break 'connect;
-                    }
-                    Ok(Err(err)) => {
-                        debug!(
-                            namespace_id = %hex::encode(params.namespace_id),
-                            %peer,
-                            attempt,
-                            %err,
-                            "Failed to open namespace-join stream, trying next peer..."
-                        );
-                    }
-                    Err(_) => {
-                        debug!(
-                            namespace_id = %hex::encode(params.namespace_id),
-                            %peer,
-                            attempt,
-                            "Timed out opening namespace-join stream, trying next peer..."
-                        );
-                    }
-                }
-            }
-
-            // Sleep before the next round only if (a) there IS a next
-            // round and (b) we'd still be inside the deadline after
-            // the sleep — otherwise we'd just burn the delay and
-            // immediately hit the deadline check at the top of the
-            // next iteration.
-            if attempt < mesh_retries
-                && connect_started.elapsed().saturating_add(mesh_retry_delay) < connect_deadline
-            {
-                debug!(
-                    namespace_id = %hex::encode(params.namespace_id),
-                    attempt,
-                    peer_count = peers.len(),
-                    "No reachable namespace mesh peer yet, retrying..."
-                );
-                time::sleep(mesh_retry_delay).await;
-            }
-        }
-
-        let elapsed = connect_started.elapsed();
-        let mut stream = stream.ok_or_else(|| {
-            eyre::eyre!(
-                "could not open a namespace-join stream to any mesh peer for namespace {} \
-                 (deadline {}ms, elapsed {}ms)",
-                hex::encode(params.namespace_id),
-                connect_deadline.as_millis(),
-                elapsed.as_millis()
-            )
-        })?;
+        // Discover a mesh peer and open a namespace-join stream.
+        // Connect-loop logic (shuffled-peer retry, per-peer timeout,
+        // outer deadline) lives in `namespace_join::open_namespace_join_stream`
+        // so it can be unit-tested against `MockSyncNetwork` without
+        // standing up a full `SyncManager`. See that module for the
+        // design rationale (mesh-formation latency, stale-transport
+        // fallback, deadline budgeting under large meshes).
+        let mut stream = namespace_join::open_namespace_join_stream(
+            &*self.sync_network,
+            params.namespace_id,
+            self.sync_config.open_stream_timeout,
+            super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED,
+            std::time::Duration::from_millis(
+                super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
+            ),
+        )
+        .await?;
 
         let msg = StreamMessage::Init {
             context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
@@ -4674,6 +4555,8 @@ impl SyncManager {
         }
     }
 }
+
+mod namespace_join;
 
 #[cfg(test)]
 mod tests;
