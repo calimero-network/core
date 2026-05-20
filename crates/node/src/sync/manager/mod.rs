@@ -4328,68 +4328,182 @@ impl SyncManager {
         &self,
         params: NamespaceJoinParams,
     ) -> eyre::Result<JoinBundle> {
-        // Discover a mesh peer and open a namespace-join stream.
         // Connect-loop logic (shuffled-peer retry, per-peer timeout,
         // outer deadline) lives in `namespace_join::open_namespace_join_stream`
         // so it can be unit-tested against `MockSyncNetwork` without
         // standing up a full `SyncManager`. See that module for the
         // design rationale (mesh-formation latency, stale-transport
         // fallback, deadline budgeting under large meshes).
-        let mut stream = namespace_join::open_namespace_join_stream(
-            &*self.sync_network,
-            params.namespace_id,
-            self.sync_config.open_stream_timeout,
-            super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED,
-            std::time::Duration::from_millis(
-                super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
-            ),
-        )
-        .await?;
+        //
+        // Outer loop retries the entire connect-and-exchange when the
+        // chosen peer returns `NamespaceJoinRejected` or fails the
+        // post-open send/recv. A peer can be in the gossipsub mesh
+        // and reachable on transport but not yet have processed the
+        // namespace governance DAG far enough to serve the join —
+        // rejecting that peer must not fail the whole join when
+        // another mesh peer is in a position to answer. Mirrors the
+        // pattern `initiate_open_subgroup_join` uses for the same
+        // mesh-cold-peer race.
+        //
+        // Rejected peers feed back into `open_namespace_join_stream`
+        // via `excluded_peers` so the next round skips them at the
+        // connect layer rather than re-opening a transport just to
+        // get rejected again.
+        let mut rejected_peers: std::collections::HashSet<libp2p::PeerId> =
+            std::collections::HashSet::new();
+        let mut last_rejection: Option<String> = None;
+        let mut last_connect_err: Option<String> = None;
+        // Cap on protocol-level retries. The connect loop already
+        // handles transport failure across peers; this cap bounds the
+        // total post-open exchanges so a small mesh full of stale
+        // peers can't deadlock the join indefinitely. Sized to cover
+        // typical 1–3 mesh peers plus headroom.
+        const MAX_PROTOCOL_RETRIES: usize = 5;
 
-        let msg = StreamMessage::Init {
-            context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
-            party_id: params.joiner_public_key,
-            payload: InitPayload::NamespaceJoinRequest {
-                namespace_id: params.namespace_id,
-                invitation_bytes: params.invitation_bytes,
-                joiner_public_key: params.joiner_public_key,
-            },
-            next_nonce: rand::thread_rng().gen(),
-        };
+        for protocol_attempt in 1..=MAX_PROTOCOL_RETRIES {
+            let (mut stream, peer) = match namespace_join::open_namespace_join_stream(
+                &*self.sync_network,
+                params.namespace_id,
+                self.sync_config.open_stream_timeout,
+                super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED,
+                std::time::Duration::from_millis(
+                    super::config::DEFAULT_MESH_RETRY_DELAY_MS_UNINITIALIZED,
+                ),
+                &rejected_peers,
+            )
+            .await
+            {
+                Ok(opened) => opened,
+                Err(open_err) => {
+                    if last_rejection.is_none() {
+                        // First attempt's connect loop exhausted with
+                        // no prior protocol-level success. The
+                        // connect loop has its own mesh-retry budget;
+                        // re-running it immediately would repeat the
+                        // same exhaustion with no state change.
+                        // Surface the connect_err directly.
+                        return Err(open_err);
+                    }
+                    // Connect failure *after* at least one peer has
+                    // rejected: do not bail. The mesh may surface a
+                    // fresh peer on a later protocol attempt that
+                    // wasn't visible during this one (mesh-formation
+                    // delay, peer just finished processing the
+                    // namespace governance DAG, etc.). Record the err
+                    // for the exhaustion diagnostic and let the loop
+                    // continue.
+                    debug!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        attempt = protocol_attempt,
+                        error = %open_err,
+                        "namespace join: connect failed after prior rejection, will retry"
+                    );
+                    last_connect_err = Some(open_err.to_string());
+                    continue;
+                }
+            };
 
-        super::stream::send(&mut stream, &msg, None).await?;
+            let msg = StreamMessage::Init {
+                context_id: calimero_primitives::context::ContextId::from([0u8; 32]),
+                party_id: params.joiner_public_key,
+                payload: InitPayload::NamespaceJoinRequest {
+                    namespace_id: params.namespace_id,
+                    invitation_bytes: params.invitation_bytes.clone(),
+                    joiner_public_key: params.joiner_public_key,
+                },
+                next_nonce: rand::thread_rng().gen(),
+            };
 
-        match super::stream::recv(&mut stream, None, self.sync_config.timeout).await? {
-            Some(StreamMessage::Message {
-                payload:
-                    MessagePayload::NamespaceJoinResponse {
+            if let Err(send_err) = super::stream::send(&mut stream, &msg, None).await {
+                debug!(
+                    namespace_id = %hex::encode(params.namespace_id),
+                    %peer,
+                    error = %send_err,
+                    "namespace join: send failed, marking peer rejected, trying next peer"
+                );
+                rejected_peers.insert(peer);
+                continue;
+            }
+
+            match super::stream::recv(&mut stream, None, self.sync_config.timeout).await {
+                Ok(Some(StreamMessage::Message {
+                    payload:
+                        MessagePayload::NamespaceJoinResponse {
+                            key_envelope_bytes,
+                            context_ids,
+                            application_id,
+                            governance_ops,
+                            default_capabilities,
+                        },
+                    ..
+                })) => {
+                    return Ok(JoinBundle {
                         key_envelope_bytes,
                         context_ids,
-                        application_id,
+                        application_id: application_id.into(),
                         governance_ops,
                         default_capabilities,
-                    },
-                ..
-            }) => Ok(JoinBundle {
-                key_envelope_bytes,
-                context_ids,
-                application_id: application_id.into(),
-                governance_ops,
-                default_capabilities,
-            }),
-            Some(StreamMessage::Message {
-                payload: MessagePayload::NamespaceJoinRejected { reason },
-                ..
-            }) => {
-                eyre::bail!("namespace join rejected: {}", reason)
-            }
-            other => {
-                eyre::bail!(
-                    "unexpected response to namespace join request: {:?}",
-                    other.as_ref().map(|m| std::mem::discriminant(m))
-                )
+                    });
+                }
+                Ok(Some(StreamMessage::Message {
+                    payload: MessagePayload::NamespaceJoinRejected { reason },
+                    ..
+                })) => {
+                    debug!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        %peer,
+                        %reason,
+                        attempt = protocol_attempt,
+                        "namespace join: peer rejected, trying next peer"
+                    );
+                    rejected_peers.insert(peer);
+                    last_rejection = Some(reason);
+                    continue;
+                }
+                Ok(other) => {
+                    let detail = format!(
+                        "unexpected response variant: {:?}",
+                        other.as_ref().map(|m| std::mem::discriminant(m))
+                    );
+                    debug!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        %peer,
+                        %detail,
+                        "namespace join: unexpected response, marking peer rejected"
+                    );
+                    rejected_peers.insert(peer);
+                    // Carry the unexpected-response detail into
+                    // `last_rejection` so the exhaustion error keeps
+                    // diagnostic context if every retry hits this arm.
+                    last_rejection = Some(detail);
+                    continue;
+                }
+                Err(recv_err) => {
+                    let detail = format!("recv failed: {recv_err}");
+                    debug!(
+                        namespace_id = %hex::encode(params.namespace_id),
+                        %peer,
+                        %detail,
+                        "namespace join: recv failed, marking peer rejected, trying next peer"
+                    );
+                    rejected_peers.insert(peer);
+                    // Same rationale as the `Ok(other)` arm above —
+                    // carry the recv failure into `last_rejection` so
+                    // the exhaustion error remains informative.
+                    last_rejection = Some(detail);
+                    continue;
+                }
             }
         }
+
+        eyre::bail!(
+            "namespace join exhausted {} protocol attempts (last rejection: {:?}, \
+             last connect_err: {:?}, {} peer(s) rejected)",
+            MAX_PROTOCOL_RETRIES,
+            last_rejection,
+            last_connect_err,
+            rejected_peers.len()
+        )
     }
 
     /// Pull all namespace governance ops from a mesh peer.
