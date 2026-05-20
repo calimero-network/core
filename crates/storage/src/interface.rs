@@ -1092,18 +1092,19 @@ impl<S: StorageAdaptor> Interface<S> {
 
                                 // Replay protection (per-entity monotonic nonce).
                                 //
-                                // Mirrors the upsert arm's
-                                // [`disable_nonce_check_for_testing`]
-                                // bypass so DAG-causal P5 tests that
-                                // exercise out-of-order delivery of
-                                // Shared deletes can opt into the v3
-                                // target behavior. Production
-                                // codepath unchanged — the const fn
-                                // returns false outside cfg(test).
+                                // Strict `<=` Err, symmetric with the
+                                // User DeleteRef arm above and matching
+                                // the rationale documented there: stale
+                                // delete semantics differ from upsert
+                                // silent-skip, and DeleteRef tests do
+                                // not opt into the test-only bypass.
+                                // Removing the previously-speculative
+                                // `nonce_check_disabled_for_testing`
+                                // guard here so the two delete arms
+                                // behave identically.
                                 let new_nonce = sig_data.nonce;
                                 let last_nonce = *existing_metadata.updated_at;
-                                let skip_nonce = nonce_check_disabled_for_testing();
-                                if !skip_nonce && new_nonce <= last_nonce {
+                                if new_nonce <= last_nonce {
                                     let placeholder = existing_writers
                                         .iter()
                                         .copied()
