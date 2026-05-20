@@ -251,6 +251,22 @@ async fn run_initiator_impl<T: SyncTransport>(
         }
 
         if not_found {
+            if is_root_request {
+                // #2407 root-advance race: the peer's root moved between
+                // handshake (where we captured `remote_root_hash`) and now,
+                // so the peer no longer has that exact internal-node entity
+                // in its index. Without this branch the DFS stack stays
+                // empty, the session closes cleanly, and `Ok(stats)` is
+                // returned with all counters at zero — the manager records
+                // it as a successful sync and the divergent node never
+                // recovers. Bailing here surfaces the failure to the
+                // manager's fallback chain (DAG catchup → snapshot), which
+                // re-handshakes against the peer's current root.
+                bail!(
+                    "HashComparison sync aborted: peer reported root node not_found \
+                     (peer's root advanced after handshake)"
+                );
+            }
             debug!(%context_id, node_id = %hex::encode(node_id), "Node not found on peer");
             continue;
         }
@@ -288,6 +304,41 @@ async fn run_initiator_impl<T: SyncTransport>(
                         apply_leaf_with_crdt_merge(context_id, leaf_data)
                     })?;
                     stats.entities_merged += 1;
+
+                    // #2407 bidirectional leaf reconciliation: a parent's
+                    // `children` list is keyed by entity_id (see
+                    // `get_local_tree_node`: `c.id().as_bytes()`), so a
+                    // same-entity-different-HLC divergence ends up in
+                    // `common_children` and DFS recurses here. We've
+                    // already pulled the peer's version above; the
+                    // storage layer's LWW guard keeps the newer of
+                    // {local, peer}. If local won (silent skip), the
+                    // peer still holds the older version and would
+                    // re-emit it on every subsequent sync — the sticky
+                    // loop documented in #2407 evidence
+                    // (`entities_merged=2, entities_pushed=0,
+                    // success_count climbing forever`). Push local's
+                    // leaf back so the peer can converge in the SAME
+                    // session; the peer's own LWW guard skips if its
+                    // version is already newer, so this is a no-op when
+                    // unnecessary.
+                    let local_node = with_runtime_env(runtime_env.clone(), || {
+                        get_local_tree_node(context_id, &remote_node.id, false)
+                    })?;
+                    if let Some(local) = local_node {
+                        if local.is_leaf() && local.hash != remote_node.hash {
+                            if let Some(local_leaf) = local.leaf_data {
+                                push_entities(
+                                    transport,
+                                    context_id,
+                                    identity,
+                                    &[local_leaf],
+                                    &mut stats,
+                                )
+                                .await?;
+                            }
+                        }
+                    }
                 }
             } else {
                 // Internal node: compare with local version

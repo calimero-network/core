@@ -1296,4 +1296,189 @@ mod tests {
             "root hashes should converge — new child placed at correct Merkle position"
         );
     }
+
+    /// **#2407 regression guard (bidirectional leaf push)**: when the
+    /// initiator holds the *newer* version of an entity the responder
+    /// also has at an older HLC, a SINGLE HashComparison sync must
+    /// converge both peers — the initiator pushes its local leaf after
+    /// pulling the responder's older one.
+    ///
+    /// Pre-fix: the initiator's DFS reached the leaf, called
+    /// `apply_leaf_with_crdt_merge` with the older remote leaf, the
+    /// storage layer's LWW guard silently kept local, `entities_merged`
+    /// incremented but local state never changed, and the loop closed
+    /// `Ok` with no push leg. The responder still held the older value
+    /// and would re-emit it on every subsequent interval sync — the
+    /// "Sync regression (smoke)" sticky-loop signature.
+    #[tokio::test]
+    async fn test_initiator_newer_leaf_pushes_to_peer_in_single_sync() {
+        use calimero_primitives::crdt::CrdtType;
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::Metadata;
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let bob = SimNode::new_in_context("bob", ctx);
+
+        // Shared parent so both peers have non-empty state and the
+        // protocol selects HashComparison over Snapshot.
+        let parent_id = Id::new([1u8; 32]);
+        let mut parent_meta = Metadata::new(50, 50);
+        parent_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        for node in [&alice, &bob] {
+            node.storage()
+                .add_entity(parent_id, b"shared-parent", parent_meta.clone());
+        }
+        assert_eq!(alice.root_hash(), bob.root_hash(), "must start equal");
+
+        // Same entity_id, different HLC values: Bob older, Alice newer.
+        let entity_id = Id::new([42u8; 32]);
+        let mut older_meta = Metadata::new(100, 100);
+        older_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        bob.storage().add_entity_with_parent(
+            entity_id,
+            parent_id,
+            b"older-from-bob",
+            older_meta,
+        );
+        let mut newer_meta = Metadata::new(100, 200);
+        newer_meta.crdt_type = Some(CrdtType::lww_register("alloc::string::String"));
+        alice.storage().add_entity_with_parent(
+            entity_id,
+            parent_id,
+            b"newer-from-alice",
+            newer_meta,
+        );
+
+        assert_ne!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "peers must start divergent"
+        );
+
+        // Alice initiates HashComparison. Without the bidirectional-leaf
+        // fix, this returns Ok but Bob keeps `older-from-bob` and the two
+        // peers stay divergent across arbitrary further sync rounds.
+        let stats = execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("sync should succeed");
+
+        // Alice still holds her newer leaf.
+        assert_eq!(
+            alice.storage().get_entity_data(entity_id).as_deref(),
+            Some(b"newer-from-alice".as_slice()),
+            "Alice must keep her newer LWW winner"
+        );
+        // Bob now holds Alice's newer leaf.
+        assert_eq!(
+            bob.storage().get_entity_data(entity_id).as_deref(),
+            Some(b"newer-from-alice".as_slice()),
+            "Bob must have received Alice's newer leaf via push in a single sync"
+        );
+        // Single-session convergence — the load-bearing assertion. Without
+        // the fix, this fails: Alice's root advances on her own LWW skip
+        // (no), her root stays put; Bob's root stays at the older value.
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "roots must converge in a single sync"
+        );
+        assert!(
+            stats.entities_pushed >= 1,
+            "at least one leaf must have been pushed; got entities_pushed={}",
+            stats.entities_pushed
+        );
+    }
+
+    /// **#2407 regression guard (root-not_found Err)**: when the
+    /// responder reports `not_found=true` for the root the initiator
+    /// asked about (the post-handshake "peer advanced" race), the
+    /// initiator must surface an Err so the manager's fallback chain
+    /// (DAG catchup → snapshot) takes over.
+    ///
+    /// Pre-fix: the initiator silently `continue`d on `not_found`, the
+    /// DFS stack stayed empty, the session closed `Ok` with all
+    /// counters at zero, and the manager recorded a successful sync.
+    /// CI evidence: `nodes_compared=0 entities_merged=0 entities_pushed=0
+    /// nodes_skipped=0` with the divergent root re-detected every
+    /// interval tick — the all-zero shape from #2411 logs.
+    #[tokio::test]
+    async fn test_root_not_found_surfaces_err() {
+        use calimero_node::sync::{HashComparisonConfig, HashComparisonProtocol};
+        use calimero_node_primitives::sync::SyncProtocolExecutor;
+        use calimero_primitives::identity::PublicKey;
+
+        let ctx = shared_context();
+        let alice = SimNode::new_in_context("alice", ctx);
+        let bob = SimNode::new_in_context("bob", ctx);
+
+        // Give both peers some state so the protocol has a tree to walk.
+        use calimero_storage::address::Id;
+        use calimero_storage::entities::Metadata;
+        let seed_id = Id::new([7u8; 32]);
+        for node in [&alice, &bob] {
+            node.storage()
+                .add_entity(seed_id, b"shared", Metadata::new(10, 10));
+        }
+
+        // Drive the initiator with a stale `remote_root_hash` Bob doesn't
+        // have in his index — simulates the post-handshake root-advance
+        // race. Bob's responder will look up the entity at this ID and
+        // return `TreeNodeResponse::not_found()`.
+        let (mut init_stream, mut resp_stream) = super::SimStream::pair();
+        let stale_root: [u8; 32] = [0xFF; 32];
+        let identity = PublicKey::from([0u8; 32]);
+
+        let initiator_fut = async {
+            HashComparisonProtocol::run_initiator(
+                &mut init_stream,
+                alice.storage().store(),
+                alice.context_id(),
+                identity,
+                HashComparisonConfig {
+                    remote_root_hash: stale_root,
+                },
+            )
+            .await
+        };
+
+        let responder_fut = async {
+            use calimero_node::sync::HashComparisonFirstRequest;
+            use calimero_node_primitives::sync::{InitPayload, StreamMessage};
+            let first_msg = resp_stream
+                .recv()
+                .await?
+                .ok_or_else(|| eyre::eyre!("stream closed before first message"))?;
+            let first_request = match first_msg {
+                StreamMessage::Init {
+                    payload:
+                        InitPayload::TreeNodeRequest {
+                            node_id, max_depth, ..
+                        },
+                    ..
+                } => HashComparisonFirstRequest { node_id, max_depth },
+                _ => bail!("expected TreeNodeRequest Init"),
+            };
+            HashComparisonProtocol::run_responder(
+                &mut resp_stream,
+                bob.storage().store(),
+                bob.context_id(),
+                identity,
+                first_request,
+            )
+            .await
+        };
+
+        let (init_result, _resp_result) = tokio::join!(initiator_fut, responder_fut);
+
+        let err = init_result.expect_err(
+            "initiator must return Err when peer reports root_node not_found — \
+             surfacing the failure so the manager's fallback chain runs",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not_found"),
+            "error message should mention not_found; got: {msg}"
+        );
+    }
 }
