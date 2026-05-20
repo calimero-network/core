@@ -340,7 +340,26 @@ async fn run_initiator_impl<T: SyncTransport>(
                     if let Some(local) = local_node {
                         if local.is_leaf() && local.hash != remote_node.hash {
                             if let Some(local_leaf) = local.leaf_data {
-                                pending_local_leaf_pushes.push(local_leaf);
+                                // Same guard `collect_local_leaves`
+                                // applies on the snapshot-push path:
+                                // an oversized leaf is rejected by
+                                // the peer's `TreeLeafData::is_valid`
+                                // check inside `handle_entity_push`,
+                                // so queuing it here would silently
+                                // fail and re-enter the sticky loop
+                                // this fix exists to eliminate.
+                                if local_leaf.value.len() > MAX_LEAF_VALUE_SIZE {
+                                    warn!(
+                                        %context_id,
+                                        key = %hex::encode(local_leaf.key),
+                                        len = local_leaf.value.len(),
+                                        max = MAX_LEAF_VALUE_SIZE,
+                                        "leaf value exceeds MAX_LEAF_VALUE_SIZE, \
+                                         skipping bidirectional push"
+                                    );
+                                } else {
+                                    pending_local_leaf_pushes.push(local_leaf);
+                                }
                             }
                         }
                     }
