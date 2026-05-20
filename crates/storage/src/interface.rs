@@ -808,12 +808,35 @@ impl<S: StorageAdaptor> Interface<S> {
                         // signature verification so replays are O(1)-rejected without
                         // iterating Ed25519 verifies over each writer (matches User arm).
                         //
-                        // P3 keeps the nonce check unchanged. Per the epic exit
-                        // criterion, the nonce check is removed only after weeks
-                        // of zero-divergence telemetry between nonce + DAG-causal.
-                        // Tests that need to validate the v3 target behavior
-                        // (post-nonce-removal) can opt out via the test-only
-                        // [`disable_nonce_check_for_testing`] hook.
+                        // Tests that need to validate behavior under
+                        // out-of-order delivery can opt out via the
+                        // test-only [`disable_nonce_check_for_testing`]
+                        // hook.
+                        //
+                        // Source asymmetry vs the signature check above:
+                        // signature uses `authoritative_writers` (the
+                        // pre-resolved causal writer set when callers
+                        // supply it); the nonce baseline below reads from
+                        // stored metadata regardless of causal context.
+                        // Intentional — the two checks answer different
+                        // questions:
+                        // * Signature: WHO can write at this causal point
+                        //   (authorization boundary).
+                        // * Nonce: WHEN this write happened relative to
+                        //   local state — same baseline `save_internal`
+                        //   reads for its LWW-by-HLC guard, so the two
+                        //   layers never disagree.
+                        //
+                        // `ApplyContext` deliberately does not carry an
+                        // `effective_last_nonce`: computing one would
+                        // require scanning the DAG for this entity's most
+                        // recent prior write at the causal point. The
+                        // HLC's `max(local, last_seen_remote) + 1`
+                        // monotonicity rule means a post-rotation writer
+                        // who has observed the rotation has also observed
+                        // all writes ancestral to it, so its HLC must
+                        // exceed the stored baseline — ruling out the
+                        // "fresh writer at lower HLC than stored" case.
                         let new_nonce = sig_data.nonce;
                         let last_nonce =
                             stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
