@@ -43,6 +43,7 @@ mod manager;
 pub mod metrics;
 pub(crate) mod network;
 pub(crate) mod parent_pull;
+pub(crate) mod peers;
 pub mod prometheus_metrics;
 pub mod rotation_log_reader;
 mod snapshot;

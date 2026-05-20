@@ -791,99 +791,62 @@ impl SyncManager {
             )
         };
 
-        let mesh_discovery_start = Instant::now();
-        let mut peers = Vec::new();
-        let mut final_attempt = 0u32;
-        for attempt in 1..=max_retries {
-            final_attempt = attempt;
-            peers = self
-                .sync_network
-                .mesh_peers(TopicHash::from_raw(context_id))
-                .await;
-
-            if !peers.is_empty() {
-                break;
-            }
-
-            if attempt < max_retries {
-                debug!(
+        // Resolve the namespace-root topic ONCE here for the
+        // namespace-fallback closure passed to the discovery helper.
+        // `get_context_group_id` returns the IMMEDIATE owning group
+        // (which for a subgroup-owned context is the subgroup id, not
+        // the namespace root). Only namespace roots have `ns/<id>`
+        // topics subscribed (see `NodeClient::subscribe_namespace`),
+        // so we walk up the parent chain to find the root before
+        // computing the fallback topic. Without this walk, contexts
+        // owned by subgroups always get 0 peers from the fallback and
+        // sync fails during the 5-10s cold-start window.
+        // `resolve_namespace` on a root group is a no-op (returns the
+        // same id).
+        let context_client = self.context_client.clone();
+        let resolve_namespace_topic = move || {
+            let group_id = context_client.get_context_group_id(&context_id).ok()??;
+            let store = context_client.datastore_handle().into_inner();
+            let ns_id_bytes = calimero_context::group_store::resolve_namespace(
+                &store,
+                &calimero_context_config::types::ContextGroupId::from(group_id),
+            )
+            .map(|id| id.to_bytes())
+            .unwrap_or_else(|err| {
+                // Errors here are rare and always indicate something
+                // worth investigating: store I/O failure or a
+                // circular parent chain exceeding
+                // MAX_NAMESPACE_DEPTH. Surface them before falling
+                // back so this debugging-focused code path doesn't
+                // hide real data-integrity bugs. Falling back to the
+                // immediate owning group preserves pre-extraction
+                // behaviour rather than aborting the whole sync
+                // attempt.
+                warn!(
                     %context_id,
-                    attempt,
-                    is_uninitialized,
-                    max_retries,
-                    "No peers found yet, mesh may still be forming, retrying..."
+                    %err,
+                    "failed to resolve namespace root for fallback topic; \
+                     using immediate group id as best-effort"
                 );
-                time::sleep(std::time::Duration::from_millis(retry_delay_ms)).await;
-            }
-        }
-        let mesh_elapsed = mesh_discovery_start.elapsed();
+                group_id
+            });
+            Some(TopicHash::from_raw(format!(
+                "ns/{}",
+                hex::encode(ns_id_bytes)
+            )))
+        };
 
-        if peers.is_empty() {
-            // Gossipsub mesh for the context topic hasn't formed yet (takes 5-10
-            // heartbeats / ~5-10s after subscription). Try namespace mesh peers as
-            // a fallback: the namespace topic's mesh is established during join
-            // with a 2-second grace period, so namespace peers are available even
-            // when the context-specific gossipsub mesh is still being built.
-            // Direct-stream context sync works over any connected P2P peer.
-            //
-            // `get_context_group_id` returns the context's IMMEDIATE owning group,
-            // which for a context owned by a subgroup is the subgroup id, not the
-            // namespace root. Only namespace roots ever have `ns/<id>` topics
-            // subscribed (see `NodeClient::subscribe_namespace`), so we must walk
-            // up the parent chain to find the root before computing the fallback
-            // topic. Without this walk, contexts owned by subgroups always get 0
-            // peers from the fallback and sync fails during the 5-10s cold-start
-            // window. `resolve_namespace` on a root group is a no-op (returns the
-            // same id), so behaviour for namespace-root-owned contexts is
-            // unchanged.
-            if let Ok(Some(group_id)) = self.context_client.get_context_group_id(&context_id) {
-                let store = self.context_client.datastore_handle().into_inner();
-                let ns_id_bytes = calimero_context::group_store::resolve_namespace(
-                    &store,
-                    &calimero_context_config::types::ContextGroupId::from(group_id),
-                )
-                .map(|id| id.to_bytes())
-                .unwrap_or_else(|err| {
-                    // Errors here are rare and always indicate something worth
-                    // investigating: store I/O failure or a circular parent chain
-                    // exceeding MAX_NAMESPACE_DEPTH. Surface them before falling
-                    // back so this debugging-focused code path doesn't hide real
-                    // data-integrity bugs. Falling back to the immediate owning
-                    // group preserves pre-fix behaviour rather than aborting the
-                    // whole sync attempt.
-                    warn!(
-                        %context_id,
-                        %err,
-                        "failed to resolve namespace root for fallback topic; \
-                         using immediate group id as best-effort"
-                    );
-                    group_id
-                });
-
-                let ns_topic = TopicHash::from_raw(format!("ns/{}", hex::encode(ns_id_bytes)));
-                let ns_peers = self.sync_network.mesh_peers(ns_topic).await;
-                if !ns_peers.is_empty() {
-                    info!(
-                        %context_id,
-                        peer_count = ns_peers.len(),
-                        is_uninitialized,
-                        "context gossipsub mesh not ready; falling back to namespace mesh peers"
-                    );
-                    peers = ns_peers;
-                }
-            }
-        }
-
-        if peers.is_empty() {
-            warn!(
-                %context_id,
-                is_uninitialized,
-                attempts = max_retries,
-                ?mesh_elapsed,
-                "Mesh peer discovery exhausted all retries"
-            );
-            bail!("No peers to sync with for context {}", context_id);
-        }
+        let outcome = super::peers::discover_mesh_peers_with_namespace_fallback(
+            &*self.sync_network,
+            context_id,
+            max_retries,
+            std::time::Duration::from_millis(retry_delay_ms),
+            resolve_namespace_topic,
+        )
+        .await?;
+        let peers = outcome.peers;
+        let final_attempt = outcome.attempts;
+        let mesh_elapsed = outcome.elapsed;
 
         info!(
             %context_id,
@@ -891,7 +854,7 @@ impl SyncManager {
             attempts = final_attempt,
             ?mesh_elapsed,
             is_uninitialized,
-            peers = ?peers,
+            source = ?outcome.source,
             "Mesh peer discovery succeeded"
         );
 
@@ -939,7 +902,7 @@ impl SyncManager {
             .choose_multiple(&mut rand::thread_rng(), peers.len())
             .copied()
             .collect();
-        let anchor_count = partition_peers_anchor_first(
+        let anchor_count = super::peers::partition_peers_anchor_first(
             &mut shuffled,
             &*self.state_access,
             &self.anchor_identities_for_context(&context_id),
@@ -3535,52 +3498,9 @@ pub(crate) fn record_reconcile_success(
     let _ = attempts.remove(context_id);
 }
 
-/// Stable-partition `peers` so peers with an observed trusted-anchor
-/// identity come first while preserving the relative order within each
-/// partition. Returns the index at which non-anchor peers start (i.e.
-/// the count of anchor peers).
-///
-/// A peer is an anchor if at least one identity recorded in
-/// `peer_identities` for that peer appears in `anchors`. An empty
-/// `anchors` set returns 0 immediately — no point sorting if every
-/// peer is going to be non-anchor.
-///
-/// The anchor predicate is materialized into a `Vec<bool>` keyed by
-/// the peer's original index before sorting. This avoids reacquiring
-/// the `DashMap` shard lock O(n log n) times during `sort_by_key`'s
-/// comparisons, and prevents a concurrent cache mutation from causing
-/// the post-sort anchor count to disagree with the actual partition
-/// boundary — both `sort_by_key` and the count read from the same
-/// snapshot.
-///
-/// Free function (not a method) so it can be unit-tested against
-/// synthetic inputs without spinning up a sync manager.
-fn partition_peers_anchor_first(
-    peers: &mut [libp2p::PeerId],
-    state_access: &dyn super::state_access::SyncStateAccess,
-    anchors: &std::collections::BTreeSet<calimero_primitives::identity::PublicKey>,
-) -> usize {
-    if anchors.is_empty() {
-        return 0;
-    }
-    let anchor_flags: Vec<bool> = peers
-        .iter()
-        .map(|peer| {
-            state_access
-                .peer_identities(peer)
-                .map(|ids| ids.iter().any(|id| anchors.contains(id)))
-                .unwrap_or(false)
-        })
-        .collect();
-    // sort_by_key over a pre-indexed flag table — stable, so the
-    // caller's random shuffle order is preserved within each partition.
-    let mut indices: Vec<usize> = (0..peers.len()).collect();
-    indices.sort_by_key(|&i| !anchor_flags[i]);
-    let anchor_count = anchor_flags.iter().filter(|&&f| f).count();
-    let reordered: Vec<libp2p::PeerId> = indices.iter().map(|&i| peers[i]).collect();
-    peers.copy_from_slice(&reordered);
-    anchor_count
-}
+// `partition_peers_anchor_first` moved to `sync::peers` as Phase 1 of
+// `SyncManager` decomposition. Call sites use
+// `super::peers::partition_peers_anchor_first`.
 
 impl SyncManager {
     /// Actively request governance catch-up from a specific peer whose
