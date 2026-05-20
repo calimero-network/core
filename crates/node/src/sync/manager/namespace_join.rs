@@ -21,8 +21,23 @@ use tracing::debug;
 
 use crate::sync::network::SyncNetwork;
 
-/// Per-round-peer budgeting cap. See doc on the same const in
-/// `manager/mod.rs::initiate_namespace_join`.
+/// Per-round-peer budgeting cap for the outer deadline. Used to
+/// size `connect_deadline = retries × (delay + cap × open_timeout)`.
+///
+/// This is a worst-case **cap**, not an exact per-round peer count.
+/// It under-counts the per-round cost on very-large meshes — the
+/// per-peer deadline check inside the inner loop bails as a safety
+/// net there. It over-counts on small/empty meshes — the deadline
+/// simply doesn't fire because rounds are cheap (the `retries ×
+/// retry_delay` floor is well under any reasonable caller timeout).
+/// Either way the loop terminates inside `retries` rounds; the
+/// deadline is the upper-bound safety net, not a precise schedule.
+///
+/// 4 covers the expected mesh size for namespace-join discovery
+/// (typically 1–3 peers in the namespace topic mesh during cold
+/// start). If we ever see meshes consistently above this, the
+/// constant should grow — the per-peer deadline check keeps the
+/// current value sound regardless.
 const DEADLINE_MAX_PEERS_PER_ROUND: u32 = 4;
 
 /// Open a stream to a namespace mesh peer.
@@ -42,6 +57,17 @@ pub(super) async fn open_namespace_join_stream(
     mesh_retries: u32,
     mesh_retry_delay: std::time::Duration,
 ) -> eyre::Result<Stream> {
+    // Production wiring always passes `DEFAULT_MESH_RETRIES_UNINITIALIZED`
+    // (a non-zero compile-time const). A zero here would yield a zero
+    // deadline and an empty `1..=0` loop body — the function would
+    // return Err with a confusing "deadline 0ms, elapsed 0ms"
+    // message. Catch the degenerate input loudly in dev/test rather
+    // than silently surface the bad error.
+    debug_assert!(
+        mesh_retries > 0,
+        "mesh_retries must be > 0; got {mesh_retries}"
+    );
+
     let topic = TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
 
     let connect_deadline = mesh_retry_delay
@@ -66,10 +92,10 @@ pub(super) async fn open_namespace_join_stream(
             break;
         }
         let mut peers = sync_network.mesh_peers(topic.clone()).await;
-        peers = peers
-            .choose_multiple(&mut rand::thread_rng(), peers.len())
-            .copied()
-            .collect();
+        // In-place shuffle avoids the second `Vec` allocation that
+        // `choose_multiple` would produce. Matches the pattern used
+        // in `perform_interval_sync`.
+        peers.shuffle(&mut rand::thread_rng());
 
         for peer in &peers {
             if connect_started.elapsed() >= connect_deadline {
@@ -146,22 +172,25 @@ mod tests {
     }
 
     /// All peers in every round return Err → function returns Err
-    /// with the deadline+elapsed signature.
+    /// with the deadline+elapsed signature. We seed exactly the
+    /// expected error count (retries × peers = 6) and assert
+    /// `assert_all_consumed` so an early-exit regression — which
+    /// would leave unconsumed entries — fails this test loudly.
     #[tokio::test(start_paused = true)]
     async fn all_peers_fail_every_round_returns_err() {
         let mock = MockSyncNetwork::default();
         let p1 = PeerId::random();
         let p2 = PeerId::random();
-        // Seed mesh peers; sticky-last means every round sees the
-        // same pair.
+        // Sticky-last on mesh_peers means every round sees this pair.
         mock.push_mesh_peers(vec![p1, p2]);
-        // Every open_stream attempt errors. With 3 retries × 2 peers
-        // we expect up to 6 errors. Push enough.
-        for i in 0..10 {
+        let (open_timeout, retries, retry_delay) = defaults();
+        // Each round tries every peer (3 × 2 = 6 attempts) and the
+        // deadline guard fires before any extra inner-loop attempt.
+        let expected_open_calls = (retries as usize) * 2;
+        for i in 0..expected_open_calls {
             mock.push_open_stream_err(format!("err-{i}"));
         }
 
-        let (open_timeout, retries, retry_delay) = defaults();
         let result =
             open_namespace_join_stream(&mock, NAMESPACE_ID, open_timeout, retries, retry_delay)
                 .await;
@@ -176,25 +205,32 @@ mod tests {
             "err should report deadline: {err}"
         );
         assert!(err.contains("elapsed"), "err should report elapsed: {err}");
+        // The retry loop ran exactly to the end of its budget:
+        // every queued `open_stream` was consumed (no early bail,
+        // no extra round). Sticky-last leaves the single
+        // `mesh_peers` entry, which is the expected steady state.
+        mock.assert_all_consumed();
     }
 
     /// Peer hangs past `open_timeout` → `tokio::time::timeout` fires
     /// and the loop continues with the next peer. With all peers
     /// hanging, eventually the deadline is hit and Err is returned.
-    /// This validates the time-bounded behaviour: under
-    /// `start_paused` the test completes in virtual-time microseconds
-    /// even though the loop simulates many seconds.
+    /// Under `start_paused` the test completes in virtual-time
+    /// microseconds despite simulating many seconds.
     #[tokio::test(start_paused = true)]
     async fn hanging_peers_are_interrupted_by_per_peer_timeout() {
         let mock = MockSyncNetwork::default();
         mock.push_mesh_peers(vec![PeerId::random(), PeerId::random()]);
-        // Every peer hangs for 10s — far longer than open_timeout
-        // (100ms). time::timeout should fire and we move on.
-        for i in 0..10 {
+        // Every peer hangs far longer than open_timeout; tokio's
+        // timeout should fire each time and we move on.
+        for i in 0..20 {
             mock.push_open_stream_hang(Duration::from_secs(10), format!("hang-{i}"));
         }
 
         let (open_timeout, retries, retry_delay) = defaults();
+        let connect_deadline = retry_delay
+            .saturating_add(open_timeout.saturating_mul(DEADLINE_MAX_PEERS_PER_ROUND))
+            .saturating_mul(retries);
         let start = time::Instant::now();
         let result =
             open_namespace_join_stream(&mock, NAMESPACE_ID, open_timeout, retries, retry_delay)
@@ -202,13 +238,16 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "expected Err from hanging peers, got Ok");
-        // Total virtual-elapsed time must be far less than what
-        // would happen WITHOUT the per-peer timeout — i.e., not
-        // 10s × peers × retries. Bound: deadline =
-        // 3 × (50ms + 4 × 100ms) = 1350ms.
+        // Tightly coupled to the deadline math so a future drift in
+        // `DEADLINE_MAX_PEERS_PER_ROUND` or the formula doesn't let
+        // this test silently widen. Bound: deadline + one extra
+        // open_timeout slot (the per-peer check may bail mid-attempt
+        // up to one timeout late).
+        let upper_bound = connect_deadline.saturating_add(open_timeout);
         assert!(
-            elapsed < Duration::from_secs(3),
-            "loop took {elapsed:?}, expected to be bounded by deadline ~1.35s"
+            elapsed <= upper_bound,
+            "loop took {elapsed:?}, expected ≤ {upper_bound:?} (deadline {connect_deadline:?} \
+             + one open_timeout slot)"
         );
     }
 
