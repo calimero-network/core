@@ -7,7 +7,7 @@
 
 use super::common::{Page, Paragraph};
 use crate::address::Id;
-use crate::entities::{Data, Element};
+use crate::entities::{ChildInfo, Data, Element, Metadata};
 use crate::index::Index;
 use crate::interface::{ApplyContext, Interface};
 use crate::store::{MockedStorage, StorageAdaptor};
@@ -782,4 +782,111 @@ fn stored_full_hash_stays_authoritative_through_ancestor_walks() {
             "full_hash must be set for every node after ops"
         );
     }
+}
+
+// ============================================================
+// `calculate_full_hash_for_children` — hash content is content-
+// derived, decoupled from `(created_at, id)` storage layout.
+// ============================================================
+//
+// These tests pin the invariant fix-issue-#2418 relies on: two
+// peers holding the same set of children at the same merkle
+// hashes must compute identical parent hashes regardless of how
+// their `created_at`s differ. The canonical case the fix
+// addresses is the `Root<T>` opaque-marker entity each peer
+// creates independently at a different local wall-clock time —
+// before the fix, the parent's `full_hash` iterated children in
+// stored `(created_at, id)` order, so the parent hash diverged
+// across peers even though every child's bytes matched.
+
+fn child(id_byte: u8, merkle_byte: u8, created_at: u64) -> ChildInfo {
+    let metadata = Metadata::new(created_at, created_at);
+    ChildInfo::new(Id::new([id_byte; 32]), [merkle_byte; 32], metadata)
+}
+
+#[test]
+fn full_hash_invariant_to_created_at_when_children_match() {
+    // Same ids + same merkle_hashes, different `created_at`s.
+    // This is the exact divergence shape #2418 documents:
+    // peer-1's `Root<T>` was created at T=100, peer-2's at T=105,
+    // but the value bytes (and therefore the merkle hashes) are
+    // identical.
+    let peer1 = vec![
+        child(0x01, 0xAA, 100),
+        child(0x02, 0xBB, 101),
+        child(0x03, 0xCC, 102),
+    ];
+    let peer2 = vec![
+        child(0x01, 0xAA, 200),
+        child(0x02, 0xBB, 201),
+        child(0x03, 0xCC, 202),
+    ];
+
+    let own_hash = [0xDE; 32];
+    let h1 =
+        Index::<TestStorage>::calculate_full_hash_for_children(own_hash, &Some(peer1)).unwrap();
+    let h2 =
+        Index::<TestStorage>::calculate_full_hash_for_children(own_hash, &Some(peer2)).unwrap();
+
+    assert_eq!(
+        h1, h2,
+        "parent hash must NOT depend on children's `created_at` — \
+         same ids + same merkle_hashes → same parent hash regardless \
+         of local creation times"
+    );
+}
+
+#[test]
+fn full_hash_invariant_to_input_order() {
+    // The function sorts by `id` internally, so the caller's
+    // iteration order should not matter. Catches a regression
+    // where someone removes the sort step expecting "the input
+    // is already sorted by Ord" (true today for stored children
+    // — but the function should defend against unsorted inputs
+    // because the whole point is decoupling the hash from the
+    // stored layout).
+    let in_order = vec![
+        child(0x01, 0xAA, 100),
+        child(0x02, 0xBB, 100),
+        child(0x03, 0xCC, 100),
+    ];
+    let reversed = vec![
+        child(0x03, 0xCC, 100),
+        child(0x02, 0xBB, 100),
+        child(0x01, 0xAA, 100),
+    ];
+
+    let own_hash = [0xDE; 32];
+    let h1 =
+        Index::<TestStorage>::calculate_full_hash_for_children(own_hash, &Some(in_order)).unwrap();
+    let h2 =
+        Index::<TestStorage>::calculate_full_hash_for_children(own_hash, &Some(reversed)).unwrap();
+
+    assert_eq!(
+        h1, h2,
+        "parent hash must NOT depend on input iteration order"
+    );
+}
+
+#[test]
+fn full_hash_changes_when_a_child_merkle_hash_changes() {
+    // Sanity: the hash MUST still depend on children's merkle
+    // hashes. Swap one child's merkle hash and the parent hash
+    // must change — otherwise the merkle invariant is broken.
+    let before = vec![child(0x01, 0xAA, 100), child(0x02, 0xBB, 100)];
+    let after = vec![
+        child(0x01, 0xAA, 100),
+        child(0x02, 0xBC, 100), // <-- merkle hash differs
+    ];
+
+    let own_hash = [0xDE; 32];
+    let h1 =
+        Index::<TestStorage>::calculate_full_hash_for_children(own_hash, &Some(before)).unwrap();
+    let h2 =
+        Index::<TestStorage>::calculate_full_hash_for_children(own_hash, &Some(after)).unwrap();
+
+    assert_ne!(
+        h1, h2,
+        "parent hash must change when a child's merkle hash changes"
+    );
 }
