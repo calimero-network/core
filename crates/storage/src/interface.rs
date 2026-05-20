@@ -814,6 +814,38 @@ impl<S: StorageAdaptor> Interface<S> {
                         // Tests that need to validate the v3 target behavior
                         // (post-nonce-removal) can opt out via the test-only
                         // [`disable_nonce_check_for_testing`] hook.
+                        //
+                        // Source asymmetry: signature verification (above) uses
+                        // `authoritative_writers` — the DAG-causal pre-resolved
+                        // set from `ctx.effective_writers` when available; the
+                        // nonce baseline below reads from `stored_metadata`
+                        // (local) regardless of causal context. This is
+                        // intentional: the two layers answer different
+                        // questions and using different sources is correct.
+                        //
+                        // * Signature verification answers WHO can write at
+                        //   this causal point. The DAG-causal writer set is
+                        //   the authoritative answer per ADR-0001 and #2266.
+                        // * Nonce check answers WHEN this write happened
+                        //   relative to local state. The local stored value
+                        //   is the LWW baseline — same source
+                        //   `save_internal`'s `last_metadata.updated_at >
+                        //   metadata.updated_at` LWW guard reads (defense
+                        //   in depth), so the two layers never disagree.
+                        //
+                        // `ApplyContext` deliberately does not carry an
+                        // `effective_last_nonce` — computing one would
+                        // require scanning the DAG for the most-recent
+                        // prior write to this entity at the causal point,
+                        // which is heavier than the design wants. The
+                        // HLC implementation's `max(local, last_seen_remote) + 1`
+                        // monotonicity rule rules out the only theoretical
+                        // failure mode (a post-rotation writer's HLC
+                        // somehow lower than the pre-rotation writer's
+                        // last write): a fresh writer who has observed the
+                        // rotation has also observed all writes ancestral
+                        // to it, so its HLC must exceed the stored
+                        // baseline. See #2402 for the full audit.
                         let new_nonce = sig_data.nonce;
                         let last_nonce =
                             stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
