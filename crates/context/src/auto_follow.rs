@@ -684,6 +684,9 @@ mod tests {
 
             let context_id = ContextId::from([0x66u8; 32]);
             let mut handle = store.handle();
+            // SAFETY: `SystemTime::now()` is always after `UNIX_EPOCH`
+            // on supported platforms; the timestamp is purely a stamp
+            // for the tombstone value, never read by the gate.
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
