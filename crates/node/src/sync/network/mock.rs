@@ -68,10 +68,6 @@ pub(crate) struct MockSyncNetwork {
 }
 
 impl MockSyncNetwork {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
     /// Queue a response for the next `mesh_peers` call.
     pub(crate) fn push_mesh_peers(&self, peers: Vec<PeerId>) -> &Self {
         self.mesh_peers_responses.lock().push_back(peers);
@@ -205,7 +201,7 @@ mod tests {
 
     #[tokio::test]
     async fn mesh_peers_returns_queued_value_then_repeats_last() {
-        let mock = MockSyncNetwork::new();
+        let mock = MockSyncNetwork::default();
         let peer_a = PeerId::random();
         let peer_b = PeerId::random();
         mock.push_mesh_peers(vec![peer_a])
@@ -221,7 +217,7 @@ mod tests {
 
     #[tokio::test]
     async fn mesh_peers_empty_when_never_seeded() {
-        let mock = MockSyncNetwork::new();
+        let mock = MockSyncNetwork::default();
         assert!(mock.mesh_peers(TopicHash::from_raw("x")).await.is_empty());
     }
 
@@ -231,7 +227,7 @@ mod tests {
     /// Catches off-by-one regressions in the pop-vs-clone branch.
     #[tokio::test]
     async fn mesh_peers_sticky_last_at_len_1_boundary() {
-        let mock = MockSyncNetwork::new();
+        let mock = MockSyncNetwork::default();
         let peer_a = PeerId::random();
         let peer_b = PeerId::random();
         mock.push_mesh_peers(vec![peer_a])
@@ -248,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_stream_returns_queued_errors_then_default_after_exhaustion() {
-        let mock = MockSyncNetwork::new();
+        let mock = MockSyncNetwork::default();
         mock.push_open_stream_err("first")
             .push_open_stream_err("second");
 
@@ -264,7 +260,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn open_stream_hang_sleeps_then_errors() {
-        let mock = MockSyncNetwork::new();
+        let mock = MockSyncNetwork::default();
         mock.push_open_stream_hang(Duration::from_secs(5), "hung");
 
         let peer = PeerId::random();
@@ -276,7 +272,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn open_stream_hang_is_interruptible_by_timeout() {
-        let mock = MockSyncNetwork::new();
+        let mock = MockSyncNetwork::default();
         mock.push_open_stream_hang(Duration::from_secs(30), "hung");
 
         let peer = PeerId::random();
@@ -288,7 +284,7 @@ mod tests {
 
     #[tokio::test]
     async fn assert_all_consumed_passes_when_all_used() {
-        let mock = MockSyncNetwork::new();
+        let mock = MockSyncNetwork::default();
         mock.push_open_stream_err("first")
             .push_open_stream_err("second");
         let peer = PeerId::random();
@@ -302,7 +298,7 @@ mod tests {
         // Sticky-last semantic: leaving the last `mesh_peers` entry
         // unconsumed is by design (steady-state mesh after
         // discovery), so the assertion accepts ≤1 remaining.
-        let mock = MockSyncNetwork::new();
+        let mock = MockSyncNetwork::default();
         let peer = PeerId::random();
         mock.push_mesh_peers(vec![peer]);
         let _ = mock.mesh_peers(TopicHash::from_raw("x")).await;
@@ -312,7 +308,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "unconsumed `open_stream` responses")]
     async fn assert_all_consumed_panics_on_unused_open_stream() {
-        let mock = MockSyncNetwork::new();
+        let mock = MockSyncNetwork::default();
         mock.push_open_stream_err("never-popped");
         mock.assert_all_consumed();
     }
@@ -320,7 +316,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "unconsumed `mesh_peers` responses")]
     async fn assert_all_consumed_panics_on_excess_mesh_peers() {
-        let mock = MockSyncNetwork::new();
+        let mock = MockSyncNetwork::default();
         let p1 = PeerId::random();
         let p2 = PeerId::random();
         // 2 entries queued, none consumed → sticky-last allows 1, panics on >1.
@@ -336,7 +332,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "never called it")]
     async fn assert_all_consumed_panics_on_mesh_peers_seeded_but_never_called() {
-        let mock = MockSyncNetwork::new();
+        let mock = MockSyncNetwork::default();
         mock.push_mesh_peers(vec![PeerId::random()]);
         mock.assert_all_consumed();
     }
