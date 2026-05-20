@@ -103,6 +103,20 @@ pub struct ChildInfo {
     pub metadata: Metadata,
 }
 
+// Sort by `(created_at, id)`. This order is load-bearing for
+// collections that preserve insertion semantics — `Vector::get(idx)`
+// iterates children in this order, so each push() must end up after
+// previous pushes. `created_at` is an HLC at write time, which is
+// roughly monotonic per writer, so this gives insertion-order
+// iteration. `id` is the tiebreaker for entries written at the same
+// HLC.
+//
+// The merkle full_hash computation in `Index::calculate_full_hash_for_children`
+// deliberately re-sorts by `id` alone before hashing, so the hash
+// content is independent of this ordering — peers that disagree on
+// `created_at` (e.g. locally-created entities like `Root<T>`) still
+// compute the same parent hash. The two concerns (storage iteration
+// order vs hash content) are intentionally decoupled.
 impl Ord for ChildInfo {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.created_at()

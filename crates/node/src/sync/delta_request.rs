@@ -286,7 +286,7 @@ impl SyncManager {
             MessagePayload::DeltaResponse {
                 delta: serialized.into(),
             }
-        } else if let Some(delta_store) = self.node_state.delta_stores.get(&context_id) {
+        } else if let Some(delta_store) = self.state_access.delta_store(&context_id) {
             // Not in RocksDB yet (race condition after broadcast), try DeltaStore
             if let Some(dag_delta) = delta_store.get_delta(&delta_id).await {
                 // dag::CausalDelta now includes HLC, so we can directly convert

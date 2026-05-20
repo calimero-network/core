@@ -596,3 +596,66 @@ impl NodeState {
         }
     }
 }
+
+// Production implementation of the `SyncStateAccess` trait. Inverts the
+// dependency: `sync/` consumes `&dyn SyncStateAccess` rather than
+// reaching into `NodeState`'s fields/methods directly, which lets unit
+// tests substitute a recording fake.
+impl crate::sync::state_access::SyncStateAccess for NodeState {
+    fn delta_store(&self, context_id: &ContextId) -> Option<DeltaStore> {
+        self.delta_stores.get(context_id).map(|entry| entry.clone())
+    }
+
+    fn get_or_register_delta_store(
+        &self,
+        context_id: ContextId,
+        factory: Box<dyn FnOnce() -> DeltaStore + Send>,
+    ) -> (DeltaStore, bool) {
+        // DashMap's `entry().or_insert_with()` runs the factory at most
+        // once per `context_id`, under the shard write-lock. The
+        // `was_newly_created` flag is updated inside that critical
+        // section, so the value the caller sees reflects whether
+        // *this thread* won the create race. Under contention exactly
+        // one thread sees `true`; every other thread sees `false`. The
+        // one-time setup at call sites (`load_persisted_deltas` after
+        // a fresh store) is therefore guaranteed to run exactly once
+        // per context across threads.
+        let mut was_newly_created = false;
+        let store = self
+            .delta_stores
+            .entry(context_id)
+            .or_insert_with(|| {
+                was_newly_created = true;
+                factory()
+            })
+            .clone();
+        (store, was_newly_created)
+    }
+
+    fn end_sync_session(
+        &self,
+        context_id: &ContextId,
+    ) -> Option<Vec<calimero_node_primitives::delta_buffer::BufferedDelta>> {
+        Self::end_sync_session(self, context_id)
+    }
+
+    fn cancel_sync_session(&self, context_id: &ContextId) {
+        Self::cancel_sync_session(self, context_id)
+    }
+
+    fn peer_identities(&self, peer_id: &PeerId) -> Option<BTreeSet<PublicKey>> {
+        self.peer_identities.get(peer_id).map(|entry| entry.clone())
+    }
+
+    fn reconcile_remaining_cooldown(&self, context_id: &ContextId) -> Option<(Duration, u32)> {
+        crate::sync::reconcile_remaining_cooldown(&self.reconcile_attempts, context_id)
+    }
+
+    fn record_reconcile_success(&self, context_id: &ContextId) {
+        crate::sync::record_reconcile_success(&self.reconcile_attempts, context_id);
+    }
+
+    fn record_reconcile_failure(&self, context_id: ContextId) -> u32 {
+        crate::sync::record_reconcile_failure(&self.reconcile_attempts, context_id)
+    }
+}
