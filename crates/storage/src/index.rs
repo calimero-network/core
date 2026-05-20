@@ -373,6 +373,24 @@ impl<S: StorageAdaptor> Index<S> {
     }
 
     /// Calculates full Merkle hash from own hash and children.
+    ///
+    /// **Iteration order is `id`-sorted, not `ChildInfo`'s natural
+    /// `(created_at, id)` Ord.** The merkle hash must be deterministic
+    /// across peers regardless of when each peer first observed each
+    /// child — and `created_at` is a local-clock observation that
+    /// diverges for entities two peers create independently with the
+    /// same content (canonical case: the `Root<T>` opaque-marker
+    /// entity the storage layer creates the first time an app
+    /// touches its state). Sorting by `id` alone before hashing
+    /// makes the parent hash purely content-derived: identical child
+    /// sets at identical merkle hashes produce identical parent
+    /// hashes regardless of when each node first wrote each child.
+    ///
+    /// The stored `ChildInfo` list keeps its `(created_at, id)`
+    /// order — that's load-bearing for `Vector::get(idx)`'s
+    /// insertion-order semantics and other collections that
+    /// depend on iteration order at the storage layer. The hash
+    /// content is decoupled from that layout here.
     pub(crate) fn calculate_full_hash_for_children(
         own_hash: [u8; 32],
         children: &Option<Vec<ChildInfo>>,
@@ -381,7 +399,10 @@ impl<S: StorageAdaptor> Index<S> {
         hasher.update(own_hash);
 
         if let Some(children_vec) = children {
-            for child in children_vec {
+            // Sort by id before hashing — see method-level doc.
+            let mut by_id: Vec<&ChildInfo> = children_vec.iter().collect();
+            by_id.sort_by_key(|c| c.id());
+            for child in by_id {
                 hasher.update(child.merkle_hash());
             }
         }
