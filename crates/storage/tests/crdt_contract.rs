@@ -14,13 +14,14 @@
 //! Together these guarantee convergence: any set of replicas applying the same
 //! set of updates in any order reaches the same final state.
 //!
-//! ## How PR-B and later test files use this
+//! ## How additional test files would reuse this
 //!
 //! Each `tests/*.rs` is its own crate, so [`assert_crdt_laws`] is **not** importable
-//! from a sibling integration-test file. PR-B's per-collection contract tests live
-//! as additional `#[test]` functions appended to *this* file so they can call the
-//! helper directly. If a future PR needs the helper from another file, promote it
-//! into a `tests/common/mod.rs` first.
+//! from a sibling integration-test file even if it were `pub`. Per-collection
+//! contract tests live as additional `#[test]` functions appended to *this* file
+//! so they can call the helper directly. If a future PR needs the helper from
+//! another file, promote it into a `tests/common/mod.rs` first — making it `pub`
+//! here would not be enough.
 
 use calimero_storage::collections::{CrdtMap, CrdtSequence, CrdtSet, Mergeable};
 
@@ -73,7 +74,7 @@ fn _unordered_map_implements_crdt_map() {
 /// - `eq`: state-equality closure. Most collections can't derive `PartialEq`
 ///   cheaply (storage I/O), so it's supplied per-type — it might enumerate entries
 ///   via `.entries()`, sort and compare, etc.
-pub fn assert_crdt_laws<T, A, B, C, E>(make_a: A, make_b: B, make_c: C, eq: E)
+fn assert_crdt_laws<T, A, B, C, E>(make_a: A, make_b: B, make_c: C, eq: E)
 where
     T: Mergeable,
     A: Fn() -> T,

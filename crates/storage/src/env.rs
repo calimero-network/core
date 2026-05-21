@@ -257,15 +257,37 @@ pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
     imp::update_hlc(remote_ts)
 }
 
-/// Reset for testing.
+/// Reset thread-local executor state for testing.
+///
+/// **INTERNAL test helper.** Only callable when compiled with `cfg(test)` or
+/// the `testing` feature. The feature is documented in `Cargo.toml` as
+/// not-for-production and only valid in `[dev-dependencies]`. A `debug_assert!`
+/// guards against accidental release-build misuse.
 #[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
 pub fn reset_for_testing() {
+    debug_assert!(
+        cfg!(debug_assertions),
+        "reset_for_testing reached an optimized release build; \
+         the `testing` feature must only appear in [dev-dependencies]"
+    );
     imp::reset_for_testing();
 }
 
-/// Set executor ID for testing purposes
+/// Set the thread-local executor identity for testing.
+///
+/// **INTERNAL test helper.** Mutates global identity used for per-executor
+/// authorization checks. Only callable when compiled with `cfg(test)` or the
+/// `testing` feature. See [`reset_for_testing`] for the same misuse warnings;
+/// the same `debug_assert!` guard applies.
 #[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
 pub fn set_executor_id(id: [u8; 32]) {
+    debug_assert!(
+        cfg!(debug_assertions),
+        "set_executor_id reached an optimized release build; \
+         the `testing` feature must only appear in [dev-dependencies]"
+    );
     imp::set_executor_id(id);
 }
 
