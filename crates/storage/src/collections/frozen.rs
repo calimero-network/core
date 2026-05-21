@@ -2,6 +2,24 @@
 //!
 //! Provides an `UnorderedMap<Hash, FrozenValue<T>>` where the key is the SHA256 hash
 //! of the value `T`. Data is immutable once inserted.
+//!
+//! # CRDT trait surface
+//!
+//! `FrozenStorage` implements [`Mergeable`](super::crdt_meta::Mergeable) by
+//! delegating to its inner `UnorderedMap` — but **does not** implement
+//! [`CrdtMap`](super::crdt_meta::CrdtMap). The public surface intentionally
+//! diverges from the bare map shape:
+//!
+//! - `insert(T) -> Result<Hash, _>` derives the key from the value's content
+//!   hash; `CrdtMap::insert` instead takes `(K, V)` and returns the previous
+//!   value at `K`. Forcing callers to pre-compute the hash to fit the shape
+//!   trait would defeat the point of content-addressable storage.
+//! - There is no `remove` (content-addressable entries are immutable by design)
+//!   and no `len` exposed publicly, both of which the shape trait requires.
+//!
+//! Merging is handled at the inner-map level via the existing `Mergeable` impl,
+//! which is sufficient for `#[app::state]` nesting; the shape-trait gap is
+//! deliberate.
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{StorageError, StoreError, UnorderedMap};
