@@ -16,15 +16,16 @@
 //! 1. **Signature shape.** `CrdtSequence::push(e) -> Result<(), _>` does not
 //!    surface a slot index, but `AuthoredVector::push` returns the assigned
 //!    index because callers need it to address the entry for subsequent
-//!    `update`/`tombstone` calls. Likewise `update` is owner-gated and
-//!    `remove` is replaced by `tombstone` (slot-preserving) — neither maps
-//!    onto the bare-sequence surface.
+//!    `update`/`tombstone` calls. `CrdtSequence::update` returns the previous
+//!    element (`Result<Option<E>, _>`) whereas `AuthoredVector::update`
+//!    returns `Result<(), _>` and is owner-gated. The bare-sequence surface
+//!    also has no slot-preserving retraction primitive — `tombstone` lives
+//!    outside the trait by design.
 //! 2. **Implicit-author hazard.** The shape-trait surface takes no `author`
 //!    parameter; a `CrdtSequence` impl would have to read the executor id from
 //!    ambient `env` state, which couples the trait to a global side channel.
-//!    The unified author-aware surface tracked by issue #2309 is the
-//!    intended cure here; this file deliberately stays `Mergeable`-only
-//!    until that lands.
+//!    The `Authored<C>` wrapper exploration in issue #2309 is the intended
+//!    cure here; this file deliberately stays `Mergeable`-only until that lands.
 
 use std::collections::BTreeMap;
 

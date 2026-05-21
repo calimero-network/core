@@ -24,9 +24,9 @@
 //!    parameter; a `CrdtMap` impl would have to read the executor id from
 //!    ambient `env` state, which couples the trait to a global side channel
 //!    and makes it easy to call from contexts (tests, helpers) where the id
-//!    isn't set. The unified author-aware surface tracked by issue #2309 is
-//!    the intended cure here; this file deliberately stays
-//!    `Mergeable`-only until that lands.
+//!    isn't set. The `Authored<C>` wrapper exploration in issue #2309 is
+//!    the intended cure here; this file deliberately stays `Mergeable`-only
+//!    until that lands.
 
 use std::collections::BTreeMap;
 
