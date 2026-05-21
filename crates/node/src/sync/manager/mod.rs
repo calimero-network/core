@@ -2780,7 +2780,9 @@ impl SyncManager {
                 next_nonce,
                 ..
             } => (context_id, party_id, payload, next_nonce),
-            unexpected @ (StreamMessage::Message { .. } | StreamMessage::OpaqueError) => {
+            unexpected @ (StreamMessage::Message { .. }
+            | StreamMessage::OpaqueError
+            | StreamMessage::NotMaterialized) => {
                 bail!("expected initialization handshake, got {:?}", unexpected)
             }
         };

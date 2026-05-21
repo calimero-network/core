@@ -337,6 +337,89 @@ mod tests {
         );
     }
 
+    /// #2422 Options 3/4 intersection filter: the namespace-fallback
+    /// arm now intersects ns_peers with the context-topic mesh, so a
+    /// namespace member who DIDN'T subscribe to the context (auto-follow
+    /// opted out, JoinContext in flight, etc.) is filtered out and not
+    /// dialed.
+    ///
+    /// `MockSyncNetwork` ignores its topic argument and returns queued
+    /// responses in order, so we set up the queue to mirror the three
+    /// calls the production code makes:
+    ///   1. Context-topic retry loop — returns empty (sticky-last on
+    ///      empty queue), exhausts the retry budget.
+    ///   2. ns_topic mesh_peers call — returns the namespace peer set.
+    ///   3. context-topic mesh_peers call (the new intersection lookup)
+    ///      — returns the subset that actually subscribes.
+    /// The intersection should equal step (2) ∩ step (3).
+    #[tokio::test(start_paused = true)]
+    async fn discovery_filters_namespace_peers_by_context_subscription() {
+        let mock = MockSyncNetwork::default();
+        let follower = dummy_peer(1);
+        let opted_out = dummy_peer(2);
+
+        // The retry loop runs `max_retries` times. Each call pops
+        // one queued response (sticky-last). Seed the queue:
+        //   [empty, empty, ns_peers=[follower, opted_out], ctx_subs=[follower]]
+        // The first two satisfy the retry-loop's empty results; the
+        // third satisfies the ns_peers query; the fourth satisfies
+        // the new context-topic intersection query.
+        mock.push_mesh_peers(vec![])
+            .push_mesh_peers(vec![])
+            .push_mesh_peers(vec![follower, opted_out])
+            .push_mesh_peers(vec![follower]);
+
+        let ns_topic = TopicHash::from_raw("ns/fake");
+        let outcome = discover_mesh_peers_with_namespace_fallback(
+            &mock,
+            ctx(0xAA),
+            2,
+            Duration::from_millis(10),
+            || Some(ns_topic),
+        )
+        .await
+        .expect("intersection should return follower");
+
+        assert_eq!(outcome.peers, vec![follower]);
+        assert_eq!(outcome.source, PeerSource::NamespaceFallback);
+        assert!(
+            !outcome.peers.contains(&opted_out),
+            "opted-out namespace member must be filtered out"
+        );
+    }
+
+    /// Companion to `discovery_filters_namespace_peers_by_context_subscription`:
+    /// if EVERY namespace member has opted out of the context (the
+    /// intersection is empty), discovery bails with the same "no peers"
+    /// error rather than falling back to the unfiltered namespace list.
+    #[tokio::test(start_paused = true)]
+    async fn discovery_errs_when_no_namespace_peer_subscribes_to_context() {
+        let mock = MockSyncNetwork::default();
+        let opted_out_a = dummy_peer(1);
+        let opted_out_b = dummy_peer(2);
+
+        // Retry loop: empty, empty. Then ns_peers = [a, b]; ctx_subs = [].
+        mock.push_mesh_peers(vec![])
+            .push_mesh_peers(vec![])
+            .push_mesh_peers(vec![opted_out_a, opted_out_b])
+            .push_mesh_peers(vec![]);
+
+        let ns_topic = TopicHash::from_raw("ns/fake");
+        let result = discover_mesh_peers_with_namespace_fallback(
+            &mock,
+            ctx(0xAA),
+            2,
+            Duration::from_millis(10),
+            || Some(ns_topic),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "all namespace peers opted out → no candidates → Err"
+        );
+    }
+
     // ---- partition_peers_anchor_first ----
     //
     // Tests for the partition function previously lived in
