@@ -115,6 +115,17 @@ pub trait CrdtSequence: Mergeable {
     fn len(&self) -> Result<usize, Self::Error>;
 }
 
+/// CRDT set shape — element-only collection (UnorderedSet) with union semantics.
+pub trait CrdtSet: Mergeable {
+    type Element;
+    type Error;
+
+    fn insert(&mut self, element: Self::Element) -> Result<bool, Self::Error>;
+    fn contains(&self, element: &Self::Element) -> Result<bool, Self::Error>;
+    fn remove(&mut self, element: &Self::Element) -> Result<bool, Self::Error>;
+    fn len(&self) -> Result<usize, Self::Error>;
+}
+
 /// Errors that can occur during CRDT merging
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeError {
@@ -273,6 +284,14 @@ mod tests {
     #[test]
     fn crdt_sequence_trait_shape_compiles() {
         fn _assert_subtrait<T: CrdtSequence>() {
+            fn _is_mergeable<U: Mergeable>() {}
+            _is_mergeable::<T>();
+        }
+    }
+
+    #[test]
+    fn crdt_set_trait_shape_compiles() {
+        fn _assert_subtrait<T: CrdtSet>() {
             fn _is_mergeable<U: Mergeable>() {}
             _is_mergeable::<T>();
         }
