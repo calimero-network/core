@@ -348,8 +348,11 @@ mod tests {
         let data1 = vec![1, 2, 3, 4];
         let data2 = vec![5, 6, 7, 8];
 
-        // Attempt merge with no registered functions
-        let result = merge_root_state(&data1, &data2, 100, 200);
+        // Attempt merge with no registered functions.
+        // `existing_created_at` (50) != `existing_ts` (100), so the
+        // bootstrap-default branch is NOT taken — this exercises the
+        // I5 error path.
+        let result = merge_root_state(&data1, &data2, 50, 100, 200);
 
         // Should return NoMergeFunctionRegistered error (I5 enforcement)
         assert!(
@@ -365,6 +368,84 @@ mod tests {
             ),
             "Expected NoMergeFunctionRegistered error, got: {:?}",
             err
+        );
+    }
+
+    /// Bootstrap signal: when the existing entity was created and has
+    /// never been explicitly updated since (`created_at == updated_at`),
+    /// `merge_root_state` must accept incoming unconditionally, even
+    /// when no merge function is registered. This is the regression
+    /// guard for the 2026-05-14 LWW-by-HLC inversion (Ronit/Fran
+    /// bootstrap, sync-regression smoke, mero-chat integration —
+    /// see PR description for the full timeline).
+    #[test]
+    #[serial]
+    fn test_bootstrap_accepts_incoming_without_registered_merger() {
+        use crate::merge::merge_root_state;
+
+        env::reset_for_testing();
+        clear_merge_registry(); // No app-registered merger
+
+        let local_default = vec![0u8; 0]; // imagine: WASM-default-serialised state
+        let remote_real = vec![1, 2, 3, 4]; // sender's real bytes
+
+        // Bootstrap shape: existing was created and never written ⇒
+        // its created_at equals its updated_at. The receiver's local
+        // HLC at materialisation (100) is later than the sender's
+        // earlier real write (50) — exactly the LWW-by-HLC inversion
+        // that the pre-fix code lost on.
+        let result = merge_root_state(
+            &local_default,
+            &remote_real,
+            /* existing_created_at */ 100,
+            /* existing_ts        */ 100,
+            /* incoming_ts        */ 50,
+        );
+
+        assert!(
+            result.is_ok(),
+            "Bootstrap (created == updated, no merger) must accept incoming, got: {:?}",
+            result
+        );
+        assert_eq!(
+            result.unwrap(),
+            remote_real,
+            "Bootstrap must return the incoming bytes verbatim"
+        );
+    }
+
+    /// Counter-test for the bootstrap branch: if the existing entity
+    /// has been written since creation (`created_at != updated_at`),
+    /// the bootstrap fast-path must NOT trigger — without a registered
+    /// merger this is a real divergence and must fail loudly per I5.
+    #[test]
+    #[serial]
+    fn test_post_bootstrap_no_merger_errors_loudly() {
+        use crate::merge::merge_root_state;
+
+        env::reset_for_testing();
+        clear_merge_registry();
+
+        let existing = vec![9, 9, 9];
+        let incoming = vec![7, 7, 7];
+
+        // Existing has been updated since creation (created_at 50 < updated_at 100).
+        let result = merge_root_state(
+            &existing, &incoming, /* existing_created_at */ 50,
+            /* existing_ts        */ 100, /* incoming_ts        */ 80,
+        );
+
+        assert!(
+            result.is_err(),
+            "Post-bootstrap with no merger must error (I5), got Ok: {:?}",
+            result
+        );
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                crate::collections::crdt_meta::MergeError::NoMergeFunctionRegistered
+            ),
+            "Expected NoMergeFunctionRegistered for post-bootstrap-no-merger"
         );
     }
 }
