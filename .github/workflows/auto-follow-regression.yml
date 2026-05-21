@@ -1,40 +1,54 @@
-name: Auto-follow regression (detection)
+name: Auto-follow regression
 
-# Manual-trigger detection runner for the 5 workflows in
-# `workflows/auto-follow-tests/`. Trigger this after merging the
-# workflows in to confirm which of them fail on master — those
-# failures are the live #2422 regression surface, and the resulting
-# log evidence + workflow-level pass/fail map directly drives the fix.
+# Regression runner for the 5 workflows in `workflows/auto-follow-tests/`.
+# Runs on push to master + pull_request scoped by the path filter
+# below, plus manual `workflow_dispatch`. Same shape as
+# `.github/workflows/sync-regression.yml`.
 #
-# Once the #2422 fix lands, the fix PR is expected to flip this from
-# `workflow_dispatch` to push/pull_request triggers — same shape as
-# `.github/workflows/sync-regression.yml` — so the workflows become a
-# permanent regression guard.
-#
-# Why workflow_dispatch only at this stage: master is currently
-# expected to fail at least workflow 2 (auto-follow-backfill-on-join)
-# and the log-grep guards on workflows 4 + 5. Wiring on
-# push/pull_request would mark master CI red until the fix lands; the
-# detection runs happen on demand instead.
+# Until the #2422 fix lands, master and any PR touching the listed
+# paths are expected to fail at least workflow 2
+# (auto-follow-backfill-on-join) and the log-grep guards on workflows
+# 4 + 5. That is BY DESIGN here — the red signal is the detection
+# signal that drives the fix. Once the fix lands, all five jobs
+# should be green; if any go red afterwards, that's a real regression.
 
 permissions:
   contents: read
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/context/src/auto_follow.rs"
+      - "crates/context/src/op_events.rs"
+      - "crates/context/src/group_store/**"
+      - "crates/context/src/handlers/set_member_auto_follow.rs"
+      - "crates/context/src/handlers/create_context.rs"
+      - "crates/node/src/sync/**"
+      - "crates/node/primitives/src/sync/**"
+      - "crates/store/src/**"
+      - "workflows/auto-follow-tests/**"
+      - ".github/workflows/auto-follow-regression.yml"
+      - ".github/actions/build-local-merod/**"
+      - ".github/actions/setup-merobox/**"
+
+  pull_request:
+    branches: [master]
+    paths:
+      - "crates/context/src/auto_follow.rs"
+      - "crates/context/src/op_events.rs"
+      - "crates/context/src/group_store/**"
+      - "crates/context/src/handlers/set_member_auto_follow.rs"
+      - "crates/context/src/handlers/create_context.rs"
+      - "crates/node/src/sync/**"
+      - "crates/node/primitives/src/sync/**"
+      - "crates/store/src/**"
+      - "workflows/auto-follow-tests/**"
+      - ".github/workflows/auto-follow-regression.yml"
+      - ".github/actions/build-local-merod/**"
+      - ".github/actions/setup-merobox/**"
+
   workflow_dispatch:
-    inputs:
-      workflow:
-        description: "Which workflow to run (or 'all' for the full matrix)."
-        required: false
-        default: all
-        type: choice
-        options:
-          - all
-          - auto-follow-on-context-registered
-          - auto-follow-backfill-on-join
-          - auto-follow-flag-flipped-late
-          - no-unknown-context-rejection-spam
-          - asymmetric-context-membership
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -51,8 +65,9 @@ jobs:
     name: Auto-follow regression (${{ matrix.workflow }})
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 20
-    # Fail-fast off: when we're DETECTING which bug paths exist, we
-    # want every workflow's outcome, not just the first failure.
+    # Fail-fast off: until #2422 is fixed, some workflows are expected
+    # to fail. We still want every entry's outcome on every run so the
+    # bug-coverage map is complete.
     strategy:
       fail-fast: false
       matrix:
@@ -63,33 +78,12 @@ jobs:
           - no-unknown-context-rejection-spam
           - asymmetric-context-membership
     steps:
-      - name: Decide whether to run this matrix entry
-        id: gate
-        # The choice-input narrows the matrix; we set `run=true|false`
-        # here so every step below can guard with `if: steps.gate.outputs.run == 'true'`.
-        # Hardcoded literal comparison; the input is a GitHub `choice`
-        # type so its value is constrained to the option list above
-        # (no attacker-controlled freeform string).
-        env:
-          INPUT_WORKFLOW: ${{ inputs.workflow }}
-          MATRIX_WORKFLOW: ${{ matrix.workflow }}
-        run: |
-          if [ "$INPUT_WORKFLOW" = "all" ] || [ "$INPUT_WORKFLOW" = "$MATRIX_WORKFLOW" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "Running matrix entry: $MATRIX_WORKFLOW"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping matrix entry: $MATRIX_WORKFLOW (input was $INPUT_WORKFLOW)"
-          fi
-
       - name: Checkout code
-        if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust CI
-        if: steps.gate.outputs.run == 'true'
         uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: stable
@@ -98,32 +92,28 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build local merod image
-        if: steps.gate.outputs.run == 'true'
         uses: ./.github/actions/build-local-merod
         env:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build kv-store-with-handlers WASM
-        if: steps.gate.outputs.run == 'true'
         run: |
           cd apps/kv-store-with-handlers
           ./build.sh
 
       - name: Setup merobox
-        if: steps.gate.outputs.run == 'true'
         uses: ./.github/actions/setup-merobox
 
       - name: Run workflow
-        if: steps.gate.outputs.run == 'true'
         # Same log-capture + run pattern as sync-regression.yml.
         # Container logs are captured WHILE the run is live —
         # `merobox bootstrap run` tears containers down on exit, so a
         # post-run `docker logs` pass would find nothing.
         #
-        # `MATRIX_WORKFLOW` is bound to a fixed `choice` matrix value,
-        # not attacker-controlled input, but we still funnel it through
-        # an env var so the shell body contains no `${{ ... }}` GitHub
+        # `MATRIX_WORKFLOW` is bound to a fixed matrix value, not
+        # attacker-controlled input, but we still funnel it through an
+        # env var so the shell body contains no `${{ ... }}` GitHub
         # interpolation — matches sync-regression.yml convention.
         env:
           MATRIX_WORKFLOW: ${{ matrix.workflow }}
@@ -172,7 +162,7 @@ jobs:
         # Always upload — even when the workflow itself passes, the
         # captured logs are the regression-signal artefact for the
         # log-grep guards below.
-        if: always() && steps.gate.outputs.run == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: auto-follow-regression-${{ matrix.workflow }}-logs
@@ -190,7 +180,7 @@ jobs:
         # (no files to grep means no match). The file-existence check
         # below fails the step in that case so upstream failure
         # surfaces.
-        if: always() && steps.gate.outputs.run == 'true' && (matrix.workflow == 'no-unknown-context-rejection-spam' || matrix.workflow == 'asymmetric-context-membership')
+        if: always() && (matrix.workflow == 'no-unknown-context-rejection-spam' || matrix.workflow == 'asymmetric-context-membership')
         env:
           WARN_SIGNATURE: "inbound stream for unknown context, closing cleanly"
         run: |
@@ -219,7 +209,7 @@ jobs:
         # signature below and the cascade enters exponential backoff.
         # Auto-follow workflows go through this code path on every
         # `create_context`, so it's a relevant guard here too.
-        if: always() && steps.gate.outputs.run == 'true'
+        if: always()
         env:
           OWNED_IDENT_SIGNATURE: "no owned identities found for context"
         run: |
