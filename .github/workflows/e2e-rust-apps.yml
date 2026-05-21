@@ -270,6 +270,22 @@ jobs:
           - workflow: mesh-soak-8node
             file: workflows/mesh-soak-8node.yml
             app: scaffolding-e2e
+          # #2422 auto-follow regression workflows.
+          - workflow: auto-follow-on-context-registered
+            file: workflows/auto-follow/auto-follow-on-context-registered.yml
+            app: scaffolding-e2e
+          - workflow: auto-follow-backfill-on-join
+            file: workflows/auto-follow/auto-follow-backfill-on-join.yml
+            app: scaffolding-e2e
+          - workflow: auto-follow-flag-flipped-late
+            file: workflows/auto-follow/auto-follow-flag-flipped-late.yml
+            app: scaffolding-e2e
+          - workflow: auto-follow-no-rejection-spam
+            file: workflows/auto-follow/no-unknown-context-rejection-spam.yml
+            app: scaffolding-e2e
+          - workflow: auto-follow-asymmetric-context-membership
+            file: workflows/auto-follow/asymmetric-context-membership.yml
+            app: scaffolding-e2e
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

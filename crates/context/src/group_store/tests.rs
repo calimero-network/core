@@ -5916,12 +5916,20 @@ mod auto_follow_tests {
         let err = apply_local_signed_group_op(&store, &op).unwrap_err();
         assert!(err.to_string().contains("auto-follow"));
 
-        // Sanity: the target's flags were not mutated.
+        // Sanity: the target's flags were not mutated by the
+        // rejected op. The target was added via the seed() helper
+        // which uses `add_group_member` directly — with the new
+        // default that means {contexts: true, subgroups: false}.
+        // The point of this test is that the failed op didn't
+        // SHIFT the values, not that they were originally false.
         let val = get_group_member_value(&store, &gid, &other_sk.public_key())
             .unwrap()
             .unwrap();
-        assert!(!val.auto_follow.contexts);
-        assert!(!val.auto_follow.subgroups);
+        assert!(val.auto_follow.contexts, "default contexts=true preserved");
+        assert!(
+            !val.auto_follow.subgroups,
+            "default subgroups=false preserved"
+        );
     }
 
     #[test]
@@ -5948,15 +5956,17 @@ mod auto_follow_tests {
     }
 
     #[test]
-    fn default_flags_are_false_and_preserved_on_role_change() {
+    fn default_flags_match_default_impl_and_preserved_on_role_change() {
         let mut rng = OsRng;
         let (store, gid, gid_bytes, admin_sk, member_sk) = seed(&mut rng);
 
-        // Initial state: flags default to false
+        // Initial state matches `AutoFollowFlags::default()`. Post-#2422
+        // that's {contexts: true, subgroups: false} — explicit assertion
+        // on the exact shape so a future default flip can't slip through.
         let before = get_group_member_value(&store, &gid, &member_sk.public_key())
             .unwrap()
             .unwrap();
-        assert!(!before.auto_follow.contexts);
+        assert!(before.auto_follow.contexts);
         assert!(!before.auto_follow.subgroups);
 
         // Member turns on contexts
@@ -6101,6 +6111,171 @@ mod auto_follow_tests {
         assert!(
             saw_context_registered,
             "ContextRegistered event should have fired"
+        );
+    }
+
+    /// #2422 Option 2: a `GroupOp::MemberAdded` apply path now ALSO
+    /// emits a synthesized `OpEvent::AutoFollowSet { contexts: true }`
+    /// when the freshly-written member row carries the new default
+    /// (`AutoFollowFlags::default() == {contexts: true, subgroups: false}`).
+    /// Without this, the auto-follow handler would only react to
+    /// FUTURE `OpEvent::ContextRegistered` events — pre-existing
+    /// contexts in the group at join-time would be missed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn member_added_emits_synthesized_auto_follow_set() {
+        use crate::op_events::{self, OpEvent};
+
+        let mut rng = OsRng;
+        let (store, _gid, gid_bytes, admin_sk, _existing_member_sk) = seed(&mut rng);
+
+        // Subscribe BEFORE applying ops so the broadcast channel
+        // doesn't drop events we care about.
+        let mut rx = op_events::subscribe();
+
+        // A brand-new joiner — not in the seed() pair.
+        let new_member_sk = PrivateKey::random(&mut rng);
+        let new_member_pk = new_member_sk.public_key();
+
+        let op = SignedGroupOp::sign(
+            &admin_sk,
+            gid_bytes,
+            vec![],
+            [0u8; 32],
+            1,
+            GroupOp::MemberAdded {
+                member: new_member_pk,
+                role: GroupMemberRole::Member,
+            },
+        )
+        .unwrap();
+        apply_local_signed_group_op(&store, &op).unwrap();
+
+        // Verify the storage-side fix landed first: the new member's
+        // row has `auto_follow.contexts == true` via the new Default.
+        let value = get_group_member_value(
+            &store,
+            &calimero_context_config::types::ContextGroupId::from(gid_bytes),
+            &new_member_pk,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            value.auto_follow.contexts,
+            "new member should default to contexts=true post-#2422"
+        );
+        assert!(
+            !value.auto_follow.subgroups,
+            "subgroups stays false (TEE-only path until non-TEE admission op exists)"
+        );
+
+        // Now drain events and confirm both `MemberAdded` and the
+        // synthesized `AutoFollowSet` fired for this exact member.
+        // Other tests in the same process share the global event
+        // channel, so filter on `member == new_member_pk`. The
+        // deadline is generous (10s) so the test stays reliable
+        // under heavy parallel-test load on CI — the events are
+        // emitted synchronously from `apply_local_signed_group_op`
+        // before we even start polling, so on an unloaded run the
+        // first `recv()` returns immediately.
+        let mut saw_member_added = false;
+        let mut saw_auto_follow = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline && !(saw_member_added && saw_auto_follow) {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(OpEvent::MemberAdded {
+                    group_id, member, ..
+                })) if group_id == gid_bytes && member == new_member_pk => {
+                    saw_member_added = true;
+                }
+                Ok(Ok(OpEvent::AutoFollowSet {
+                    group_id,
+                    member,
+                    contexts,
+                    subgroups,
+                })) if group_id == gid_bytes && member == new_member_pk => {
+                    assert!(
+                        contexts,
+                        "synthesized AutoFollowSet must carry contexts=true (Option 2)"
+                    );
+                    assert!(
+                        !subgroups,
+                        "synthesized AutoFollowSet mirrors stored subgroups (false by default)"
+                    );
+                    saw_auto_follow = true;
+                }
+                Ok(Ok(_)) => {} // unrelated events from parallel tests
+                Ok(Err(_)) => break,
+                Err(_) => continue,
+            }
+        }
+
+        assert!(
+            saw_member_added,
+            "MemberAdded event should have fired for the new joiner"
+        );
+        assert!(
+            saw_auto_follow,
+            "synthesized AutoFollowSet should have fired for the new joiner (#2422 Option 2)"
+        );
+    }
+
+    /// Verifies the opt-out path is preserved: if a member is added
+    /// and then their contexts flag is explicitly turned off via
+    /// `MemberSetAutoFollow`, the stored row reflects false. The
+    /// synthesized `AutoFollowSet` from `MemberAdded` carries the
+    /// default true, but a subsequent explicit SetMemberAutoFollow
+    /// must be honored.
+    #[test]
+    fn explicit_opt_out_after_member_added_is_preserved() {
+        let mut rng = OsRng;
+        let (store, gid, gid_bytes, admin_sk, _) = seed(&mut rng);
+
+        let target_sk = PrivateKey::random(&mut rng);
+        let target_pk = target_sk.public_key();
+
+        // Add member — picks up the new default {true, false}
+        apply_local_signed_group_op(
+            &store,
+            &SignedGroupOp::sign(
+                &admin_sk,
+                gid_bytes,
+                vec![],
+                [0u8; 32],
+                1,
+                GroupOp::MemberAdded {
+                    member: target_pk,
+                    role: GroupMemberRole::Member,
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Explicit opt-out (member acts on self)
+        apply_local_signed_group_op(
+            &store,
+            &SignedGroupOp::sign(
+                &target_sk,
+                gid_bytes,
+                vec![],
+                [0u8; 32],
+                1,
+                GroupOp::MemberSetAutoFollow {
+                    target: target_pk,
+                    auto_follow_contexts: false,
+                    auto_follow_subgroups: false,
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let value = get_group_member_value(&store, &gid, &target_pk)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !value.auto_follow.contexts,
+            "explicit opt-out via SetMemberAutoFollow must stick"
         );
     }
 }

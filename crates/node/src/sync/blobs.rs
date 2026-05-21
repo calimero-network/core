@@ -70,7 +70,8 @@ impl SyncManager {
             }
             unexpected @ (StreamMessage::Init { .. }
             | StreamMessage::Message { .. }
-            | StreamMessage::OpaqueError) => {
+            | StreamMessage::OpaqueError
+            | StreamMessage::NotMaterialized) => {
                 bail!("unexpected message: {:?}", unexpected)
             }
         };
@@ -103,7 +104,9 @@ impl SyncManager {
                         payload: MessagePayload::BlobShare { chunk },
                         next_nonce,
                     } => (sequence_id, chunk, next_nonce),
-                    unexpected @ (StreamMessage::Init { .. } | StreamMessage::Message { .. }) => {
+                    unexpected @ (StreamMessage::Init { .. }
+                    | StreamMessage::Message { .. }
+                    | StreamMessage::NotMaterialized) => {
                         bail!("unexpected message: {:?}", unexpected)
                     }
                 };
