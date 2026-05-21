@@ -5,6 +5,18 @@
 //! `writers_frozen`). Trust mirrors `UserStorage<T>`: the runtime signs each
 //! write, peers verify the signature against the stored writer set at merge
 //! time.
+//!
+//! # CRDT trait surface
+//!
+//! `SharedStorage` implements [`Mergeable`](super::crdt_meta::Mergeable) — merging
+//! the inner value via its own `Mergeable` and resolving the writer-set
+//! state by `(writers_nonce, lexical content)` — but does **not** implement
+//! any of [`CrdtMap`](super::crdt_meta::CrdtMap),
+//! [`CrdtSequence`](super::crdt_meta::CrdtSequence), or
+//! [`CrdtSet`](super::crdt_meta::CrdtSet). The shape doesn't fit any of those:
+//! `SharedStorage<T>` is a single-cell value container (closer to a
+//! group-writable register) with extra writer-set metadata, not a keyed,
+//! indexed, or membership collection.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
