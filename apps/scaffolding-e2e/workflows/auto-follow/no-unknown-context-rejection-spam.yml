@@ -33,25 +33,23 @@ description: >
       responder logs the rejection.
 
   Pass/fail policy:
-    - The workflow itself ALWAYS passes (it does no convergence
-      assertion on the asymmetric context — by construction node-2
-      never materialises it). All workflow steps are individually
+    - The convergence side is intentionally empty: by construction
+      node-2 never materialises context-A, so no positive overlap
+      assertion exists. Workflow steps are otherwise individually
       green on a healthy run.
-    - The REGRESSION SIGNAL is currently MANUAL: the workflow's node
-      logs (`auto-follow-no-rejection-spam-af-no-spam-node-*.log`
-      uploaded as an artefact by the matrix runner) must be grepped
-      for the three signatures below, and any hit is the regression:
+    - The REGRESSION GATE is inline via merobox's
+      `assert_log_absent` step (merobox#244) — a final step at the
+      end of the workflow scans both nodes' docker logs for three
+      signatures and fails the workflow on any hit:
         (a) "context not materialised within join race window"
             (debug-level — our topology's symptom)
         (b) "inbound stream for unknown context"
             (warn-level — Ronit/Fran shape, for future workflows
              that provoke !dialer_verified)
         (c) "no owned identities found for context"
-      An inline gate via `assert_log_absent` is the durable fix; the
-      step type is requested in calimero-network/merobox#243. Until
-      then, manual log inspection (or the same grep wired into the
-      matrix runner directly) is the gate. The sync-regression.yml
-      runner uses the same inline-grep pattern today.
+      Same shape as sync-regression.yml's #2356 guards, but now
+      expressed inline in the workflow file rather than as a CI-side
+      grep on the artefact.
     - The metric counterpart
       (`sync_failures_total{protocol="HashComparison"}` on node-1
       should stay near zero for this context) is deferred until
@@ -235,6 +233,34 @@ steps:
       - "is_set({{n1_self_read}})"
       - 'contains({{n1_self_read}}, "from-A")'
 
+  # ── Inline regression gate (per merobox#244) ─────────────────────────
+  # Three log signatures are the symptom of #2422 on this topology. A
+  # healthy build emits none of them across either node during the 30s
+  # observation window above. A regression on Options 3 / 4 emits the
+  # first (debug-level, our topology's symptom); a regression that also
+  # provokes !dialer_verified emits the second (warn-level, Ronit/Fran
+  # shape, broad-substring match so future "...closing cleanly" /
+  # "...closing with error" suffix variants are also caught); the
+  # third is the unrelated #2356 owned-identity guard kept in lockstep
+  # with sync-regression.yml.
+  #
+  # `assert_log_absent` scans the full container log history (no
+  # time-window scoping in the current API). The three patterns are
+  # specific failure-mode signatures from the sync responder/initiator
+  # and are NOT emitted during normal bootstrap, namespace join,
+  # governance gossip, or auto-follow setup — verified empirically on
+  # the green-build matrix runs at b694dc03 + 57fffca6 (zero hits
+  # across both nodes for all three patterns on the full lifetime log).
+  - name: Regression guard — no rejection spam on either node
+    type: assert_log_absent
+    nodes:
+      - af-no-spam-node-1
+      - af-no-spam-node-2
+    patterns:
+      - "context not materialised within join race window"
+      - "inbound stream for unknown context"
+      - "no owned identities found for context"
+
   # TODO (Phase A follow-up): when merobox grows `assert_context_absent`,
   # add the local-absent check on node-2 here:
   #
@@ -242,5 +268,3 @@ steps:
   #     type: assert_context_absent
   #     node: af-no-spam-node-2
   #     context_id: "{{ctx_a}}"
-  #
-  # Until then the CI runner's log grep is the regression gate.
