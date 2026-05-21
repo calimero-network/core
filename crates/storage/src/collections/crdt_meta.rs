@@ -83,46 +83,122 @@ pub trait Mergeable {
 /// over their key/value space. The `Error` associated type lets storage-backed and
 /// in-memory implementations coexist.
 pub trait CrdtMap: Mergeable {
+    /// Key type — typically borsh-serialisable and usable as a storage key.
     type Key;
+    /// Value type — often itself a CRDT so nested merging composes.
     type Value;
+    /// Error returned by fallible accessors (e.g. `StoreError` for storage-backed maps).
     type Error;
 
+    /// Insert or replace `value` at `key`. Returns the previous value if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails.
     fn insert(
         &mut self,
         key: Self::Key,
         value: Self::Value,
     ) -> Result<Option<Self::Value>, Self::Error>;
 
+    /// Fetch the value at `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails.
     fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error>;
 
+    /// Remove the entry at `key`. Returns the removed value if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails.
     fn remove(&mut self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error>;
 
+    /// Number of entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails.
     fn len(&self) -> Result<usize, Self::Error>;
 }
 
 /// CRDT sequence shape — indexed collection (Vector, RGA) that satisfies [`Mergeable`].
+///
+/// Concurrent inserts at the same logical position resolve per the implementor's
+/// rules (e.g. RGA causal ordering, Vector elementwise + LWW tail).
 pub trait CrdtSequence: Mergeable {
+    /// Element type.
     type Element;
+    /// Error returned by fallible accessors.
     type Error;
 
+    /// Append `element` to the sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails.
     fn push(&mut self, element: Self::Element) -> Result<(), Self::Error>;
+
+    /// Fetch the element at `index`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails.
     fn get(&self, index: usize) -> Result<Option<Self::Element>, Self::Error>;
+
+    /// Replace the element at `index`. Returns the previous element if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails or the index is out of bounds.
     fn update(
         &mut self,
         index: usize,
         element: Self::Element,
     ) -> Result<Option<Self::Element>, Self::Error>;
+
+    /// Number of elements.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails.
     fn len(&self) -> Result<usize, Self::Error>;
 }
 
 /// CRDT set shape — element-only collection (UnorderedSet) with union semantics.
 pub trait CrdtSet: Mergeable {
+    /// Element type.
     type Element;
+    /// Error returned by fallible accessors.
     type Error;
 
+    /// Insert `element`. Returns `true` if newly added, `false` if it was already present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails.
     fn insert(&mut self, element: Self::Element) -> Result<bool, Self::Error>;
+
+    /// Check membership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails.
     fn contains(&self, element: &Self::Element) -> Result<bool, Self::Error>;
+
+    /// Remove `element`. Returns `true` if it was present.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails.
     fn remove(&mut self, element: &Self::Element) -> Result<bool, Self::Error>;
+
+    /// Number of elements.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] if the underlying store fails.
     fn len(&self) -> Result<usize, Self::Error>;
 }
 
