@@ -149,12 +149,13 @@ mod tests {
     use super::*;
     use crate::collections::Root;
     use crate::env;
+    use crate::store::MainStorage;
 
     #[test]
     fn test_unordered_map_decompose() {
         env::reset_for_testing();
 
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
         map.insert("key1".to_owned(), "value1".to_owned()).unwrap();
         map.insert("key2".to_owned(), "value2".to_owned()).unwrap();
 
@@ -187,7 +188,7 @@ mod tests {
     fn test_vector_decompose() {
         env::reset_for_testing();
 
-        let mut vec = Root::new(|| Vector::new());
+        let mut vec = Root::new(|| Vector::<_, MainStorage>::new());
         vec.push(10u64).unwrap();
         vec.push(20u64).unwrap();
         vec.push(30u64).unwrap();

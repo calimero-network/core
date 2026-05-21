@@ -200,8 +200,8 @@
      3. STREAM MESSAGE
      ═══════════════════════════════════════════════════════════ -->
 <div class="card gc">
-<h2>StreamMessage <span class="transport-badge badge-stream">stream</span> <span class="variant-count">3 variants</span></h2>
-<p class="section-intro">Framing protocol for all point-to-point stream communication. Each stream begins with an <span class="code">Init</span> message, followed by zero or more <span class="code">Message</span> frames, and can terminate with <span class="code">OpaqueError</span>.</p>
+<h2>StreamMessage <span class="transport-badge badge-stream">stream</span> <span class="variant-count">4 variants</span></h2>
+<p class="section-intro">Framing protocol for all point-to-point stream communication. Each stream begins with an <span class="code">Init</span> message, followed by zero or more <span class="code">Message</span> frames, and can terminate with <span class="code">OpaqueError</span> or — as of #2422 — the typed <span class="code">NotMaterialized</span> variant for benign non-following peers.</p>
 
 <div class="typedef"><span class="kw">enum</span> <span class="ty">StreamMessage</span> {
     <span class="field">Init</span> {
@@ -210,7 +210,12 @@
     <span class="field">Message</span> {
         <span class="field">payload</span>: <span class="ty">MessagePayload</span>,  <span class="comment">// subsequent data frames</span>
     },
-    <span class="field">OpaqueError</span>,  <span class="comment">// unit variant — signals failure without leaking node state</span>
+    <span class="field">OpaqueError</span>,    <span class="comment">// unit variant — signals failure without leaking node state</span>
+    <span class="field">NotMaterialized</span>,<span class="comment">// unit variant (#2422) — typed responder reply when</span>
+                       <span class="comment">// dialer_verified=true but context not materialised within</span>
+                       <span class="comment">// the join-race window. Initiator's SyncManager downcasts to</span>
+                       <span class="comment">// PeerNotMaterialized and treats as benign — no failure_count</span>
+                       <span class="comment">// increment, no exponential backoff.</span>
 }</div>
 <div class="borsh-note">Borsh serialization · length-prefixed framing over libp2p streams (QUIC/TCP)</div>
 </div>

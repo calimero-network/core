@@ -617,7 +617,7 @@ mod tests {
 
         // vec1 = [Counter(2), Counter(1)] - Node 1 creates these
         env::set_executor_id([33; 32]);
-        let mut vec1 = Vector::new();
+        let mut vec1 = Vector::<_, MainStorage>::new();
         let mut c1 = GCounter::new();
         c1.increment().unwrap();
         c1.increment().unwrap(); // value = 2
@@ -629,7 +629,7 @@ mod tests {
 
         // vec2 = [Counter(1), Counter(3)] - Node 2 creates these
         env::set_executor_id([44; 32]);
-        let mut vec2 = Vector::new();
+        let mut vec2 = Vector::<_, MainStorage>::new();
         let mut c3 = GCounter::new();
         c3.increment().unwrap(); // value = 1
         vec2.push(c3).unwrap();
@@ -655,7 +655,7 @@ mod tests {
 
         // vec1 = [Counter(2)] - Node 1
         env::set_executor_id([55; 32]);
-        let mut vec1 = Vector::new();
+        let mut vec1 = Vector::<_, MainStorage>::new();
         let mut c1 = GCounter::new();
         c1.increment().unwrap();
         c1.increment().unwrap();
@@ -663,7 +663,7 @@ mod tests {
 
         // vec2 = [Counter(3), Counter(5), Counter(7)] - Node 2
         env::set_executor_id([66; 32]);
-        let mut vec2 = Vector::new();
+        let mut vec2 = Vector::<_, MainStorage>::new();
         let mut c2 = GCounter::new();
         c2.increment().unwrap();
         c2.increment().unwrap();
@@ -769,13 +769,13 @@ mod tests {
         env::reset_for_testing();
 
         // vec1 = [LwwRegister("A")]
-        let mut vec1 = Vector::new();
+        let mut vec1 = Vector::<_, MainStorage>::new();
         vec1.push(LwwRegister::new("A".to_owned())).unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(1));
 
         // vec2 = [LwwRegister("B")]
-        let mut vec2 = Vector::new();
+        let mut vec2 = Vector::<_, MainStorage>::new();
         vec2.push(LwwRegister::new("B".to_owned())).unwrap();
 
         // Merge
@@ -793,12 +793,12 @@ mod tests {
         use super::UnorderedSet;
 
         // set1 = {"alice", "bob"}
-        let mut set1 = UnorderedSet::new();
+        let mut set1 = UnorderedSet::<_, MainStorage>::new();
         set1.insert("alice".to_owned()).unwrap();
         set1.insert("bob".to_owned()).unwrap();
 
         // set2 = {"charlie", "dave"}
-        let mut set2 = UnorderedSet::new();
+        let mut set2 = UnorderedSet::<_, MainStorage>::new();
         set2.insert("charlie".to_owned()).unwrap();
         set2.insert("dave".to_owned()).unwrap();
 
@@ -819,13 +819,13 @@ mod tests {
         use super::UnorderedSet;
 
         // set1 = {"alice", "bob", "charlie"}
-        let mut set1 = UnorderedSet::new();
+        let mut set1 = UnorderedSet::<_, MainStorage>::new();
         set1.insert("alice".to_owned()).unwrap();
         set1.insert("bob".to_owned()).unwrap();
         set1.insert("charlie".to_owned()).unwrap();
 
         // set2 = {"bob", "charlie", "dave"}
-        let mut set2 = UnorderedSet::new();
+        let mut set2 = UnorderedSet::<_, MainStorage>::new();
         set2.insert("bob".to_owned()).unwrap();
         set2.insert("charlie".to_owned()).unwrap();
         set2.insert("dave".to_owned()).unwrap();
@@ -847,7 +847,7 @@ mod tests {
         use super::UnorderedSet;
 
         // set1 = {"alice"}
-        let mut set1 = UnorderedSet::new();
+        let mut set1 = UnorderedSet::<_, MainStorage>::new();
         set1.insert("alice".to_owned()).unwrap();
 
         // set2 = {} (empty)

@@ -16,6 +16,20 @@
 //!   already joined. Covers the "flag flipped on after contexts already
 //!   exist" case without a separate reconcile loop.
 //!
+//! # Implicit triggers (#2422 Option 2)
+//!
+//! The handler does NOT directly subscribe to `MemberAdded` /
+//! `MemberJoinedOpen` / `TeeMemberAdmitted` events. Instead, each of
+//! the corresponding apply sites in `crate::group_store` synthesizes
+//! an `AutoFollowSet { contexts: true, .. }` event when the freshly-
+//! written member row has `auto_follow.contexts` true (the post-#2422
+//! default — see [`AutoFollowFlags::default`]). This routes the
+//! "joiner with flag-on" path through the same backfill cascade as
+//! the explicit `SetMemberAutoFollow` op, so a joiner picks up
+//! contexts that existed in the group BEFORE they joined — closing
+//! the regression where the UI showed group membership but no data
+//! synced (Ronit/Fran 2026-05-20).
+//!
 //! Subgroup auto-follow (`subgroups: true`) is implemented per-role in
 //! a follow-up: for `ReadOnlyTee` it will reuse the TDX attestation
 //! flow from `fleet_join.rs`; for regular roles it requires a new
@@ -656,10 +670,23 @@ mod tests {
         fn context_registered_not_auto_following_when_flag_false() {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0x33u8; 32]);
-            let (store, _sk, _pk) = seed_self_member(&mut rng, gid);
+            let (store, _sk, pk) = seed_self_member(&mut rng, gid);
             let context_id = ContextId::from([0x44u8; 32]);
 
-            // Flag defaults to false — no explicit set_member_auto_follow.
+            // Post-#2422 the default for new members is `contexts: true`;
+            // explicitly toggle it back to false to exercise the
+            // `NotAutoFollowing` decision branch.
+            set_member_auto_follow(
+                &store,
+                &gid,
+                &pk,
+                AutoFollowFlags {
+                    contexts: false,
+                    subgroups: false,
+                },
+            )
+            .expect("set_member_auto_follow");
+
             assert_eq!(
                 decide_on_context_registered(&store, gid.to_bytes(), &context_id),
                 ContextRegisteredDecision::NotAutoFollowing,

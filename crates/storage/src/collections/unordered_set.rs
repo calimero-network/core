@@ -19,9 +19,10 @@ pub struct UnorderedSet<V, S: StorageAdaptor = MainStorage> {
     inner: Collection<V, S>,
 }
 
-impl<V> UnorderedSet<V, MainStorage>
+impl<V, S> UnorderedSet<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     /// Create a new set collection with a random ID.
     ///
@@ -30,6 +31,10 @@ where
     /// doesn't affect sync semantics.
     ///
     /// For top-level state fields, use `new_with_field_name` instead.
+    ///
+    /// `S` is inferred from the binding context; default-generic is
+    /// `MainStorage`. Inside `#[app::private]`, the macro substitutes
+    /// `PrivateStorage` as `S` on the field type.
     pub fn new() -> Self {
         Self::new_internal()
     }
@@ -227,11 +232,17 @@ where
     }
 }
 
-impl<V> Eq for UnorderedSet<V> where V: Eq + BorshSerialize + BorshDeserialize {}
+impl<V, S> Eq for UnorderedSet<V, S>
+where
+    V: Eq + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+}
 
-impl<V> PartialEq for UnorderedSet<V>
+impl<V, S> PartialEq for UnorderedSet<V, S>
 where
     V: PartialEq + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
@@ -242,9 +253,10 @@ where
     }
 }
 
-impl<V> Ord for UnorderedSet<V>
+impl<V, S> Ord for UnorderedSet<V, S>
 where
     V: Ord + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -255,9 +267,10 @@ where
     }
 }
 
-impl<V> PartialOrd for UnorderedSet<V>
+impl<V, S> PartialOrd for UnorderedSet<V, S>
 where
     V: PartialOrd + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         let l = self.iter().ok()?;
@@ -267,9 +280,10 @@ where
     }
 }
 
-impl<V> fmt::Debug for UnorderedSet<V>
+impl<V, S> fmt::Debug for UnorderedSet<V, S>
 where
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     #[expect(clippy::unwrap_used, clippy::unwrap_in_result, reason = "'tis fine")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -283,9 +297,10 @@ where
     }
 }
 
-impl<V> Default for UnorderedSet<V>
+impl<V, S> Default for UnorderedSet<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn default() -> Self {
         Self::new_internal()
@@ -348,10 +363,11 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::{Root, UnorderedSet};
+    use crate::store::MainStorage;
 
     #[test]
     fn test_unordered_set_operations() {
-        let mut set = Root::new(|| UnorderedSet::new());
+        let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
 
         assert!(set.insert("value1".to_owned()).expect("insert failed"));
 
@@ -378,7 +394,7 @@ mod tests {
 
     #[test]
     fn test_unordered_set_len() {
-        let mut set = Root::new(|| UnorderedSet::new());
+        let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
 
         assert!(set.insert("value1".to_owned()).expect("insert failed"));
         assert!(set.insert("value2".to_owned()).expect("insert failed"));
@@ -393,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_unordered_set_clear() {
-        let mut set = Root::new(|| UnorderedSet::new());
+        let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
 
         assert!(set.insert("value1".to_owned()).expect("insert failed"));
         assert!(set.insert("value2".to_owned()).expect("insert failed"));
@@ -409,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_unordered_set_items() {
-        let mut set = Root::new(|| UnorderedSet::new());
+        let mut set = Root::new(|| UnorderedSet::<_, MainStorage>::new());
 
         assert!(set.insert("value1".to_owned()).expect("insert failed"));
         assert!(set.insert("value2".to_owned()).expect("insert failed"));

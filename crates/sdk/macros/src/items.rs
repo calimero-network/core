@@ -3,6 +3,7 @@ use quote::ToTokens;
 use syn::parse::{Parse, ParseStream};
 use syn::{Attribute, ItemEnum, ItemStruct, Result as SynResult, Token, Visibility};
 
+#[derive(Clone)]
 pub enum StructOrEnumItem {
     Struct(ItemStruct),
     Enum(ItemEnum),
