@@ -100,6 +100,21 @@ pub trait CrdtMap: Mergeable {
     fn len(&self) -> Result<usize, Self::Error>;
 }
 
+/// CRDT sequence shape — indexed collection (Vector, RGA) that satisfies [`Mergeable`].
+pub trait CrdtSequence: Mergeable {
+    type Element;
+    type Error;
+
+    fn push(&mut self, element: Self::Element) -> Result<(), Self::Error>;
+    fn get(&self, index: usize) -> Result<Option<Self::Element>, Self::Error>;
+    fn update(
+        &mut self,
+        index: usize,
+        element: Self::Element,
+    ) -> Result<Option<Self::Element>, Self::Error>;
+    fn len(&self) -> Result<usize, Self::Error>;
+}
+
 /// Errors that can occur during CRDT merging
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeError {
@@ -250,6 +265,14 @@ mod tests {
     #[test]
     fn crdt_map_trait_shape_compiles() {
         fn _assert_subtrait<T: CrdtMap>() {
+            fn _is_mergeable<U: Mergeable>() {}
+            _is_mergeable::<T>();
+        }
+    }
+
+    #[test]
+    fn crdt_sequence_trait_shape_compiles() {
+        fn _assert_subtrait<T: CrdtSequence>() {
             fn _is_mergeable<U: Mergeable>() {}
             _is_mergeable::<T>();
         }
