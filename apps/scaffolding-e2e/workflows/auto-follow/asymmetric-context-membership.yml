@@ -38,14 +38,19 @@ description: >
   Pass/fail policy:
     - Workflow PASSES on the positive overlap (context_b converged,
       both nodes read each other's writes in context_b).
-    - The CI runner adds three log-grep checks:
-        (a) no "context not materialised within join race window"
+    - The regression signal is currently MANUAL: the per-node logs
+      uploaded as an artefact must be grepped for three signatures —
+        (a) "context not materialised within join race window"
             on either node (debug-level — our topology's symptom)
-        (b) no "inbound stream for unknown context, closing cleanly"
+        (b) "inbound stream for unknown context, closing cleanly"
             on either node (warn-level — Ronit/Fran shape, kept for
             future workflows that provoke !dialer_verified)
-        (c) no "no owned identities found for context" on either node
-      Same shape as sync-regression.yml's #2356 guards.
+        (c) "no owned identities found for context" on either node
+      An inline gate via `assert_log_absent` is the durable fix;
+      requested in calimero-network/merobox#243. Until then, manual
+      log inspection (or the same grep wired into the matrix runner
+      directly, matching sync-regression.yml's #2356 pattern) is the
+      gate.
     - Local-absence checks (context_a not on node-2, context_c not
       on node-1) and metric checks
       (`sync_failures_total{protocol="HashComparison"}` near zero)
@@ -247,10 +252,23 @@ steps:
       ctx_b: contextId
       n1_key_b: memberPublicKey
 
-  # context_c is created by node-1, but only node-2 should materialise
-  # it (node-1 doesn't follow subgroup_c). This is exactly the
-  # Ronit/Fran asymmetry: the context exists in the namespace DAG, but
-  # not every node has a local entry for it.
+  # context_c is created by node-1 to register it in the namespace
+  # DAG, but node-1 is opted out of subgroup_c's auto-follow (Phase 3)
+  # so it doesn't auto-join later. NOTE: `create_context` always
+  # materialises the context locally on the creator regardless of
+  # auto-follow flags — so node-1 does have a local entry for context_c
+  # as the creator, but only node-2 reaches it through the auto-follow
+  # path. The Ronit/Fran asymmetry this workflow tests is: the
+  # context exists in the namespace DAG, but a non-following peer
+  # (node-2 ∌ subgroup_a) does not pick up subgroup_a's context_a
+  # through gossipsub. Verifying creator-side absence of context_c on
+  # node-1 would require a non-creator topology, which is a separate
+  # workflow (see Phase A `assert_context_absent` TODO at the end).
+  #
+  # `n1_key_c` is captured for completeness but intentionally unused:
+  # node-1 never writes into context_c (the test invariant). Removing
+  # the capture would prevent future test extensions from referencing
+  # node-1's creator-identity for context_c, so it stays.
   - name: Node-1 creates context in subgroup_c
     type: create_context
     node: af-asym-node-1
@@ -260,6 +278,14 @@ steps:
       ctx_c: contextId
       n1_key_c: memberPublicKey
 
+  # 10s gives ContextRegistered events from all three creates time to
+  # gossip to node-2 and for node-2's auto-follow handler to process
+  # the two it does follow (subgroup_b + subgroup_c). The latest CI
+  # run logs confirm node-2's `auto-follow: joined context` lines for
+  # both groups land within ~50ms of context creation on node-1, well
+  # under the 10s budget. Phase 5's `wait_for_sync` is the actual
+  # convergence gate; this `wait` is just a settle window before the
+  # first node-2 write.
   - name: Wait for ContextRegistered events + auto-follow joins to settle
     type: wait
     seconds: 10

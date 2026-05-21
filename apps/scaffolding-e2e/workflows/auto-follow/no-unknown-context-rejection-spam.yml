@@ -37,12 +37,21 @@ description: >
       assertion on the asymmetric context — by construction node-2
       never materialises it). All workflow steps are individually
       green on a healthy run.
-    - The REGRESSION SIGNAL lives in the CI runner
-      (.github/workflows/auto-follow-regression.yml), which post-runs
-      a `grep -F "context not materialised within join race window"`
-      pass over docker-logs/af-no-spam-node-*.log and fails the job on
-      any match (with a secondary grep on the Ronit/Fran-shape warn).
-      Same pattern as sync-regression.yml's #2356 guard.
+    - The REGRESSION SIGNAL is currently MANUAL: the workflow's node
+      logs (`auto-follow-no-rejection-spam-af-no-spam-node-*.log`
+      uploaded as an artefact by the matrix runner) must be grepped
+      for the three signatures below, and any hit is the regression:
+        (a) "context not materialised within join race window"
+            (debug-level — our topology's symptom)
+        (b) "inbound stream for unknown context"
+            (warn-level — Ronit/Fran shape, for future workflows
+             that provoke !dialer_verified)
+        (c) "no owned identities found for context"
+      An inline gate via `assert_log_absent` is the durable fix; the
+      step type is requested in calimero-network/merobox#243. Until
+      then, manual log inspection (or the same grep wired into the
+      matrix runner directly) is the gate. The sync-regression.yml
+      runner uses the same inline-grep pattern today.
     - The metric counterpart
       (`sync_failures_total{protocol="HashComparison"}` on node-1
       should stay near zero for this context) is deferred until

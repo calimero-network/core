@@ -6171,10 +6171,15 @@ mod auto_follow_tests {
         // Now drain events and confirm both `MemberAdded` and the
         // synthesized `AutoFollowSet` fired for this exact member.
         // Other tests in the same process share the global event
-        // channel, so filter on `member == new_member_pk`.
+        // channel, so filter on `member == new_member_pk`. The
+        // deadline is generous (10s) so the test stays reliable
+        // under heavy parallel-test load on CI — the events are
+        // emitted synchronously from `apply_local_signed_group_op`
+        // before we even start polling, so on an unloaded run the
+        // first `recv()` returns immediately.
         let mut saw_member_added = false;
         let mut saw_auto_follow = false;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline && !(saw_member_added && saw_auto_follow) {
             match tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await {
                 Ok(Ok(OpEvent::MemberAdded {
