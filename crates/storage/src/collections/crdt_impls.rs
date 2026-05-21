@@ -338,6 +338,37 @@ where
     }
 }
 
+impl<K, V, S> CrdtMap for UnorderedMap<K, V, S>
+where
+    K: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
+    V: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable,
+    S: StorageAdaptor,
+{
+    type Key = K;
+    type Value = V;
+    type Error = crate::collections::error::StoreError;
+
+    fn insert(
+        &mut self,
+        key: Self::Key,
+        value: Self::Value,
+    ) -> Result<Option<Self::Value>, Self::Error> {
+        UnorderedMap::insert(self, key, value)
+    }
+
+    fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error> {
+        UnorderedMap::get(self, key)
+    }
+
+    fn remove(&mut self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error> {
+        UnorderedMap::remove(self, key)
+    }
+
+    fn len(&self) -> Result<usize, Self::Error> {
+        UnorderedMap::len(self)
+    }
+}
+
 // ============================================================================
 // UnorderedSet
 // ============================================================================

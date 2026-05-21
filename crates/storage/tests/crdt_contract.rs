@@ -22,11 +22,10 @@
 //! helper directly. If a future PR needs the helper from another file, promote it
 //! into a `tests/common/mod.rs` first.
 
-use calimero_storage::collections::{CrdtSequence, CrdtSet, Mergeable};
+use calimero_storage::collections::{CrdtMap, CrdtSequence, CrdtSet, Mergeable};
 
-// Compile-time assertion: a missing sub-trait impl shows up as a build error here
-// instead of a confusing test-time panic. CrdtMap assertion lives alongside its
-// `#[test]` fn below as it's added.
+// Compile-time assertions: a missing sub-trait impl shows up as a build error here
+// instead of a confusing test-time panic.
 fn _vector_implements_crdt_sequence() {
     fn _assert<T: CrdtSequence>() {}
     _assert::<
@@ -41,6 +40,17 @@ fn _unordered_set_implements_crdt_set() {
     fn _assert<T: CrdtSet>() {}
     _assert::<
         calimero_storage::collections::UnorderedSet<String, calimero_storage::store::MainStorage>,
+    >();
+}
+
+fn _unordered_map_implements_crdt_map() {
+    fn _assert<T: CrdtMap>() {}
+    _assert::<
+        calimero_storage::collections::UnorderedMap<
+            String,
+            calimero_storage::collections::Counter,
+            calimero_storage::store::MainStorage,
+        >,
     >();
 }
 
@@ -219,6 +229,52 @@ fn unordered_set_satisfies_crdt_laws() {
         || fresh(&["alice", "bob"]),
         || fresh(&["bob", "carol"]),
         || fresh(&["dave"]),
+        eq,
+    );
+}
+
+#[test]
+fn unordered_map_with_counter_satisfies_crdt_laws() {
+    use calimero_storage::collections::{Counter, UnorderedMap};
+    use calimero_storage::env;
+    use calimero_storage::store::MainStorage;
+
+    env::reset_for_testing();
+
+    let make = |executor: [u8; 32], key: &'static str, count: usize| {
+        move || {
+            env::set_executor_id(executor);
+            let mut m = UnorderedMap::new();
+            let mut c = Counter::<false, MainStorage>::new();
+            for _ in 0..count {
+                c.increment().unwrap();
+            }
+            m.insert(key.to_owned(), c).unwrap();
+            m
+        }
+    };
+
+    let eq = |a: &UnorderedMap<String, Counter, MainStorage>,
+              b: &UnorderedMap<String, Counter, MainStorage>| {
+        let mut a_entries: Vec<(String, u64)> = a
+            .entries()
+            .unwrap()
+            .map(|(k, v)| (k, v.value().unwrap()))
+            .collect();
+        let mut b_entries: Vec<(String, u64)> = b
+            .entries()
+            .unwrap()
+            .map(|(k, v)| (k, v.value().unwrap()))
+            .collect();
+        a_entries.sort();
+        b_entries.sort();
+        a_entries == b_entries
+    };
+
+    assert_crdt_laws(
+        make([11; 32], "alice", 2),
+        make([22; 32], "bob", 3),
+        make([33; 32], "carol", 5),
         eq,
     );
 }
