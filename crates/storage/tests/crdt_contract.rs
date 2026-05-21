@@ -25,8 +25,12 @@
 
 use calimero_storage::collections::{CrdtMap, CrdtSequence, CrdtSet, Mergeable};
 
-// Compile-time assertions: a missing sub-trait impl shows up as a build error here
-// instead of a confusing test-time panic.
+// Compile-time assertions: a missing sub-trait impl shows up as a build error
+// here instead of a confusing test-time panic. These functions are never
+// called — the trait-bound check happens during type-checking, which is what
+// catches the regression. `#[allow(dead_code)]` silences the otherwise-correct
+// warning that the function body is never executed.
+#[allow(dead_code)]
 fn _vector_implements_crdt_sequence() {
     fn _assert<T: CrdtSequence>() {}
     _assert::<
@@ -37,6 +41,7 @@ fn _vector_implements_crdt_sequence() {
     >();
 }
 
+#[allow(dead_code)]
 fn _unordered_set_implements_crdt_set() {
     fn _assert<T: CrdtSet>() {}
     _assert::<
@@ -44,6 +49,7 @@ fn _unordered_set_implements_crdt_set() {
     >();
 }
 
+#[allow(dead_code)]
 fn _unordered_map_implements_crdt_map() {
     fn _assert<T: CrdtMap>() {}
     _assert::<
@@ -242,15 +248,34 @@ fn unordered_map_with_counter_satisfies_crdt_laws() {
 
     env::reset_for_testing();
 
-    let make = |executor: [u8; 32], key: &'static str, count: usize| {
+    // Each replica writes both a shared key (`"shared"`) AND a private key.
+    // - The shared key forces UnorderedMap::merge to recursively merge the
+    //   nested Counter values, which is where the per-actor max-merge
+    //   conflict resolution actually runs.
+    // - The private keys ensure add-wins union behaviour is also exercised.
+    // Without the shared key the test would pass trivially: disjoint-keys
+    // merges never conflict.
+    let make = |executor: [u8; 32],
+                private_key: &'static str,
+                shared_count: usize,
+                private_count: usize| {
         move || {
             env::set_executor_id(executor);
             let mut m = UnorderedMap::new();
-            let mut c = Counter::<false, MainStorage>::new();
-            for _ in 0..count {
-                c.increment().unwrap();
+
+            // Shared key — every replica writes to it under its own actor.
+            let mut shared = Counter::<false, MainStorage>::new();
+            for _ in 0..shared_count {
+                shared.increment().unwrap();
             }
-            m.insert(key.to_owned(), c).unwrap();
+            m.insert("shared".to_owned(), shared).unwrap();
+
+            // Private key — only this replica writes to it.
+            let mut private = Counter::<false, MainStorage>::new();
+            for _ in 0..private_count {
+                private.increment().unwrap();
+            }
+            m.insert(private_key.to_owned(), private).unwrap();
             m
         }
     };
@@ -273,9 +298,9 @@ fn unordered_map_with_counter_satisfies_crdt_laws() {
     };
 
     assert_crdt_laws(
-        make([11; 32], "alice", 2),
-        make([22; 32], "bob", 3),
-        make([33; 32], "carol", 5),
+        make([11; 32], "alice", 2, 1),
+        make([22; 32], "bob", 3, 1),
+        make([33; 32], "carol", 5, 1),
         eq,
     );
 }
@@ -304,6 +329,31 @@ fn lww_register_satisfies_crdt_laws() {
         || fresh("carol", [33; 32]),
         eq,
     );
+
+    // Additional check on equal-timestamp tie-breaking: with all three
+    // timestamps pinned to zero, the merge must converge on the value carried
+    // by the *highest* node_id (the documented LWW tie-breaker). The
+    // commutativity check inside `assert_crdt_laws` only proves
+    // `merge(a, b) == merge(b, a)`, not which side wins — so a buggy impl
+    // that systematically picks the *lower* node_id would still pass
+    // commutativity but break the semantic contract.
+    let mut r1 = fresh("alice", [11; 32]);
+    let r3 = fresh("carol", [33; 32]);
+    r1.merge(&r3);
+    assert_eq!(
+        r1.get(),
+        "carol",
+        "LWW tie-break: higher node_id ([33;32]) must win at equal timestamps"
+    );
+
+    let mut r3b = fresh("carol", [33; 32]);
+    let r1b = fresh("alice", [11; 32]);
+    r3b.merge(&r1b);
+    assert_eq!(
+        r3b.get(),
+        "carol",
+        "LWW tie-break must be order-independent: higher node_id wins from either direction"
+    );
 }
 
 #[test]
@@ -314,13 +364,27 @@ fn counter_satisfies_crdt_laws() {
 
     env::reset_for_testing();
 
-    // Counter's commutativity depends on per-replica actor ids — without
-    // distinct executors the merges would all collapse onto the same slot.
-    let make = |executor: [u8; 32], count: usize| {
+    // Each replica increments under its own private executor AND under a
+    // single shared executor with replica-specific counts. The shared
+    // executor is what exercises the *per-actor max-merge* conflict logic
+    // — without it every test slot would be disjoint and commutativity
+    // would hold trivially. With it, `merge(a, b)` must take the max of
+    // the shared-executor count from both sides regardless of merge order.
+    const SHARED_EXECUTOR: [u8; 32] = [99; 32];
+
+    let make = |private_executor: [u8; 32], private_count: usize, shared_count: usize| {
         move || {
-            env::set_executor_id(executor);
             let mut c = Counter::<false, MainStorage>::new();
-            for _ in 0..count {
+
+            // Increments under the shared executor (the conflict-resolution slot).
+            env::set_executor_id(SHARED_EXECUTOR);
+            for _ in 0..shared_count {
+                c.increment().unwrap();
+            }
+
+            // Increments under this replica's private executor.
+            env::set_executor_id(private_executor);
+            for _ in 0..private_count {
                 c.increment().unwrap();
             }
             c
@@ -331,7 +395,14 @@ fn counter_satisfies_crdt_laws() {
         a.value().unwrap() == b.value().unwrap()
     };
 
-    assert_crdt_laws(make([11; 32], 2), make([22; 32], 3), make([33; 32], 5), eq);
+    // Shared-slot counts: 2, 7, 4 — max under merge is 7 (regardless of order).
+    // Private counts: 2, 3, 5 — non-overlapping executors, always summed.
+    assert_crdt_laws(
+        make([11; 32], 2, 2),
+        make([22; 32], 3, 7),
+        make([33; 32], 5, 4),
+        eq,
+    );
 }
 
 // RGA generates fresh per-character ids on each `insert_str` call, so two
