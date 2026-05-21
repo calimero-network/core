@@ -112,26 +112,16 @@ steps:
     type: wait
     seconds: 3
 
-  - name: Node-1 creates context-A
-    type: create_context
-    node: af-no-spam-node-1
-    application_id: "{{app_id}}"
-    group_id: "{{group_id}}"
-    outputs:
-      ctx_a: contextId
-      node1_key_a: memberPublicKey
-
-  - name: Node-1 writes into context-A
-    type: call
-    node: af-no-spam-node-1
-    context_id: "{{ctx_a}}"
-    method: set
-    args:
-      key: "alpha"
-      value: "from-A"
-    executor_public_key: "{{node1_key_a}}"
-
-  # ── Node-2 joins the namespace + subgroup with auto-follow OFF ──────
+  # ── Node-2 joins the namespace + subgroup BEFORE any context exists ──
+  # Critical ordering: add node-2 + opt out FIRST, then create context-A.
+  # Post-#2422 the member default is `contexts: true`, so the
+  # synthesised AutoFollowSet that fires from the MemberAdded apply
+  # path would race the opt-out and backfill any pre-existing
+  # contexts before we get a chance to flip the flag. By doing the
+  # add+opt-out while the subgroup is still context-less, MemberAdded's
+  # AutoFollowSet handler has nothing to backfill, the opt-out lands
+  # cleanly, and node-2 sees ContextRegistered later with
+  # auto_follow.contexts=false (so handle_context_registered no-ops).
   - name: Node-1 invites node-2 to namespace
     type: create_namespace_invitation
     node: af-no-spam-node-1
@@ -163,12 +153,6 @@ steps:
     type: wait
     seconds: 5
 
-  # CRITICAL: explicitly opt node-2 OUT of auto-follow. Post-#2422 the
-  # member default is `contexts: true`, so the synthesised
-  # AutoFollowSet that fires from the MemberAdded apply path would
-  # otherwise make node-2 auto-join context-A — defeating the whole
-  # point of this workflow. The admin sets it to false on node-2's
-  # behalf (admin-or-self rule in set_member_auto_follow).
   - name: Admin opts node-2 OUT of contexts auto-follow
     type: set_member_auto_follow
     node: af-no-spam-node-1
@@ -180,6 +164,29 @@ steps:
   - name: Wait for opt-out to propagate
     type: wait
     seconds: 5
+
+  # ── Now the subgroup has a non-following member: create context-A ────
+  # ContextRegistered will gossip to node-2, whose
+  # handle_context_registered sees auto_follow.contexts=false and
+  # skips the auto-follow path. node-2 stays absent from context-A.
+  - name: Node-1 creates context-A
+    type: create_context
+    node: af-no-spam-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_a: contextId
+      node1_key_a: memberPublicKey
+
+  - name: Node-1 writes into context-A
+    type: call
+    node: af-no-spam-node-1
+    context_id: "{{ctx_a}}"
+    method: set
+    args:
+      key: "alpha"
+      value: "from-A"
+    executor_public_key: "{{node1_key_a}}"
 
   # ── Provoke the symptom ──────────────────────────────────────────────
   # 30s window per the issue test plan. We do NOT call wait_for_sync
