@@ -159,10 +159,27 @@ steps:
       - identity: "{{node2_identity}}"
         role: Member
 
-  # CRITICAL: do NOT flip auto_follow for node-2. The whole point of
-  # this workflow is that a non-following member should be benign —
-  # node-1's sync layer should not pick it as a sync target, and
-  # node-2's responder should not log rejection spam if it is picked.
+  - name: Wait for MemberAdded op to converge
+    type: wait
+    seconds: 5
+
+  # CRITICAL: explicitly opt node-2 OUT of auto-follow. Post-#2422 the
+  # member default is `contexts: true`, so the synthesised
+  # AutoFollowSet that fires from the MemberAdded apply path would
+  # otherwise make node-2 auto-join context-A — defeating the whole
+  # point of this workflow. The admin sets it to false on node-2's
+  # behalf (admin-or-self rule in set_member_auto_follow).
+  - name: Admin opts node-2 OUT of contexts auto-follow
+    type: set_member_auto_follow
+    node: af-no-spam-node-1
+    group_id: "{{group_id}}"
+    member_id: "{{node2_identity}}"
+    auto_follow_contexts: false
+    auto_follow_subgroups: false
+
+  - name: Wait for opt-out to propagate
+    type: wait
+    seconds: 5
 
   # ── Provoke the symptom ──────────────────────────────────────────────
   # 30s window per the issue test plan. We do NOT call wait_for_sync

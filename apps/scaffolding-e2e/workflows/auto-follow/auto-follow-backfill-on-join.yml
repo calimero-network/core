@@ -206,6 +206,10 @@ steps:
     auto_follow_contexts: true
     auto_follow_subgroups: false
 
+  - name: Wait for AutoFollowSet op to propagate and backfill to start
+    type: wait
+    seconds: 5
+
   # Rate limiter is 20 tokens/min default — 3 contexts is well within
   # the immediate burst, so backfill should complete in ~seconds, not
   # minutes. The 60s timeout per `wait_for_sync` is generous to absorb

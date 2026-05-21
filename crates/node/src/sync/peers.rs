@@ -150,6 +150,7 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
             // intersection is empty we bail with the same "no peers" arm
             // below, instead of falling back to the unfiltered ns_peers
             // and provoking the rejection-spam.
+            let ns_candidate_count = ns_peers.len();
             let ctx_subscribers: BTreeSet<PeerId> = sync_network
                 .mesh_peers(context_topic.clone())
                 .await
@@ -173,7 +174,8 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
             }
             debug!(
                 %context_id,
-                ns_candidates = ctx_subscribers.len(),
+                ns_candidates = ns_candidate_count,
+                ctx_subscribers = ctx_subscribers.len(),
                 "namespace fallback found peers but none subscribe to the context topic; \
                  not dialing — see #2422"
             );

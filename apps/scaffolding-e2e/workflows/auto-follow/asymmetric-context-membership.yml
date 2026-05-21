@@ -164,8 +164,34 @@ steps:
     seconds: 5
 
   # ── Phase 3: Asymmetric auto-follow setup ───────────────────────────
-  # Node-1 follows A + B (NOT C).
-  - name: Node-1 self-flips auto-follow for subgroup_a
+  # Post-#2422 the member default is `contexts: true`, so every
+  # `add_group_members` above already synthesised an AutoFollowSet
+  # event with `contexts: true`. To construct the asymmetric topology
+  # this workflow tests, we need explicit OPT-OUT calls for the
+  # subgroups each node should NOT follow:
+  #   - node-1 ⊅ subgroup_c
+  #   - node-2 ⊅ subgroup_a
+  # The `set true` calls on the subgroups they DO follow are no-ops
+  # now (already true by default) — kept for documentation of intent.
+  - name: Node-1 opts OUT of auto-follow for subgroup_c
+    type: set_member_auto_follow
+    node: af-asym-node-1
+    group_id: "{{group_c}}"
+    member_id: "{{node1_identity}}"
+    auto_follow_contexts: false
+    auto_follow_subgroups: false
+
+  - name: Admin opts node-2 OUT of auto-follow for subgroup_a
+    type: set_member_auto_follow
+    node: af-asym-node-1
+    group_id: "{{group_a}}"
+    member_id: "{{node2_identity}}"
+    auto_follow_contexts: false
+    auto_follow_subgroups: false
+
+  # The next four are redundant under the new default but kept so the
+  # asymmetric intent reads explicitly from the workflow.
+  - name: Node-1 reaffirms auto-follow for subgroup_a
     type: set_member_auto_follow
     node: af-asym-node-1
     group_id: "{{group_a}}"
@@ -173,7 +199,7 @@ steps:
     auto_follow_contexts: true
     auto_follow_subgroups: false
 
-  - name: Node-1 self-flips auto-follow for subgroup_b
+  - name: Node-1 reaffirms auto-follow for subgroup_b
     type: set_member_auto_follow
     node: af-asym-node-1
     group_id: "{{group_b}}"
@@ -181,8 +207,7 @@ steps:
     auto_follow_contexts: true
     auto_follow_subgroups: false
 
-  # Node-2 follows B + C (NOT A). Admin sets these on node-2's behalf.
-  - name: Admin sets auto-follow for node-2 in subgroup_b
+  - name: Admin reaffirms auto-follow for node-2 in subgroup_b
     type: set_member_auto_follow
     node: af-asym-node-1
     group_id: "{{group_b}}"
@@ -190,7 +215,7 @@ steps:
     auto_follow_contexts: true
     auto_follow_subgroups: false
 
-  - name: Admin sets auto-follow for node-2 in subgroup_c
+  - name: Admin reaffirms auto-follow for node-2 in subgroup_c
     type: set_member_auto_follow
     node: af-asym-node-1
     group_id: "{{group_c}}"
