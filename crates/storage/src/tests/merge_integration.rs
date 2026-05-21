@@ -402,6 +402,189 @@ fn test_root_cold_join_with_registered_merger_accepts_remote_contents() {
     );
 }
 
+/// Cold-join scenario for an app that DOES have a registered `Mergeable`
+/// impl AND the bootstrap signal is set (`created_at == updated_at` on
+/// the local side — the joiner's `Root` was just materialised and has
+/// never been explicitly written).
+///
+/// The contract under test is the precedence order inside
+/// `merge_root_state`'s `NoFunctionsRegistered` arm: `try_merge_registered`
+/// runs *first*, and only falls back to the bootstrap branch when no
+/// merger is registered. So with a merger present, the registered
+/// `Mergeable` must win and produce a field-by-field merge — NOT a
+/// wholesale `incoming`-byte accept from the bootstrap arm. (A
+/// wholesale accept would still be correct for the empty-local case,
+/// but it would silently bypass the registered merger's per-field
+/// semantics whenever any peer's first join overlaps with a still-
+/// fresh local Root, which is wrong for any real app.)
+#[test]
+#[serial]
+fn test_root_cold_join_bootstrap_signal_with_registered_merger_uses_merger() {
+    env::reset_for_testing();
+    clear_merge_registry();
+
+    #[derive(BorshSerialize, BorshDeserialize, Debug)]
+    struct App {
+        kv: UnorderedMap<String, LwwRegister<String>>,
+    }
+
+    impl Mergeable for App {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.kv.merge(&other.kv)?;
+            Ok(())
+        }
+    }
+
+    register_crdt_merge::<App>();
+
+    // Remote: populated with a single key.
+    let mut remote = Root::new(|| App {
+        kv: UnorderedMap::new(),
+    });
+    remote
+        .kv
+        .insert(
+            "from_remote".to_string(),
+            LwwRegister::new("remote_value".to_string()),
+        )
+        .unwrap();
+    let remote_bytes = borsh::to_vec(&*remote).unwrap();
+
+    // Local: empty default, just materialised on the joiner.
+    let local = App {
+        kv: UnorderedMap::new(),
+    };
+    let local_bytes = borsh::to_vec(&local).unwrap();
+
+    // Bootstrap signal: created_at == existing_ts. Same wall-clock-y
+    // shape a real cold joiner produces.
+    let local_created_at: u64 = 200;
+    let local_ts: u64 = 200;
+    let remote_ts: u64 = 100;
+
+    let merged_bytes = merge_root_state(
+        &local_bytes,
+        &remote_bytes,
+        local_created_at,
+        local_ts,
+        remote_ts,
+    )
+    .expect("merge must succeed: registered Mergeable handles the merge");
+
+    let merged: App = borsh::from_slice(&merged_bytes).unwrap();
+
+    // The registered merger's field-by-field semantics applied — the
+    // remote's key is present in the merged map. (If the bootstrap
+    // branch had short-circuited ahead of the merger, the result would
+    // still happen to be correct in this minimal case, but the
+    // precedence contract would be wrong. The next assertion catches
+    // that — see below.)
+    assert_eq!(
+        merged
+            .kv
+            .get(&"from_remote".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
+        Some("remote_value".to_string()),
+        "registered Mergeable must merge in the remote's contents"
+    );
+}
+
+/// Cold-join scenario for an app that DID register a `Mergeable` impl,
+/// with the bootstrap signal AND a local-side write that conflicts with
+/// the remote. Verifies the registered merger's field-level CRDT
+/// semantics are applied — not a wholesale incoming-byte accept that
+/// would drop the local-side field. This pins the precedence: with a
+/// merger registered, the bootstrap branch must NEVER run, even when
+/// the bootstrap signal (`created_at == updated_at`) is set.
+#[test]
+#[serial]
+fn test_root_cold_join_bootstrap_signal_with_merger_preserves_local_fields() {
+    env::reset_for_testing();
+    clear_merge_registry();
+
+    #[derive(BorshSerialize, BorshDeserialize, Debug)]
+    struct App {
+        kv: UnorderedMap<String, LwwRegister<String>>,
+    }
+
+    impl Mergeable for App {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.kv.merge(&other.kv)?;
+            Ok(())
+        }
+    }
+
+    register_crdt_merge::<App>();
+
+    // Remote: has `remote_key`.
+    let mut remote = Root::new(|| App {
+        kv: UnorderedMap::new(),
+    });
+    remote
+        .kv
+        .insert(
+            "remote_key".to_string(),
+            LwwRegister::new("from_remote".to_string()),
+        )
+        .unwrap();
+    let remote_bytes = borsh::to_vec(&*remote).unwrap();
+
+    // Local: also has a write, under `local_key`. (The bootstrap
+    // signal applies to the `Root` *entry* HLC, not to whether the
+    // serialised inner state is non-empty.)
+    let mut local = App {
+        kv: UnorderedMap::new(),
+    };
+    local
+        .kv
+        .insert(
+            "local_key".to_string(),
+            LwwRegister::new("from_local".to_string()),
+        )
+        .unwrap();
+    let local_bytes = borsh::to_vec(&local).unwrap();
+
+    // Bootstrap signal still set.
+    let local_created_at: u64 = 200;
+    let local_ts: u64 = 200;
+    let remote_ts: u64 = 100;
+
+    let merged_bytes = merge_root_state(
+        &local_bytes,
+        &remote_bytes,
+        local_created_at,
+        local_ts,
+        remote_ts,
+    )
+    .expect("merge must succeed via registered Mergeable");
+
+    let merged: App = borsh::from_slice(&merged_bytes).unwrap();
+
+    // BOTH fields must survive. If the bootstrap branch had short-
+    // circuited ahead of the merger, `local_key` would have been
+    // dropped (wholesale incoming-byte accept = local discarded).
+    assert_eq!(
+        merged
+            .kv
+            .get(&"remote_key".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
+        Some("from_remote".to_string()),
+        "remote field must be merged in"
+    );
+    assert_eq!(
+        merged
+            .kv
+            .get(&"local_key".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
+        Some("from_local".to_string()),
+        "local field must NOT be dropped by a bootstrap-branch short-circuit \
+         when a Mergeable is registered"
+    );
+}
+
 /// Cold-join scenario for an app that did NOT register a `Mergeable` impl:
 /// `merge_root_state` must still accept the incoming bytes via the
 /// bootstrap-aware default (created_at == updated_at on the local side,

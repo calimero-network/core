@@ -52,7 +52,7 @@ where
     S: StorageAdaptor,
 {
     /// Creates a new root collection with the given value.
-    #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     pub fn new_internal<F: FnOnce() -> T>(f: F) -> Self {
         let mut inner = Collection::new(Some(*ROOT_ID));
 
@@ -81,7 +81,15 @@ where
         // `field_name = "root"` is still set so peer-side
         // `compare_tree_nodes` keeps routing this leaf the same way it
         // always has — the only change is that `crdt_type` is `None`.
-        let value = inner.insert_with_field_name(id, f(), "root").unwrap();
+        //
+        // SAFETY: `insert_with_field_name` only returns `Err` if the
+        // underlying storage backend itself is in a fatal state (e.g.
+        // a `StoreError` from a write to the host store). That is the
+        // same precondition the rest of `Root::new_internal`'s panics
+        // rely on — there is no recoverable failure mode here.
+        let value = inner
+            .insert_with_field_name(id, f(), "root")
+            .expect("fatal: Root<T> entry insert failed");
 
         Self {
             inner,

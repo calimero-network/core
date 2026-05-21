@@ -146,6 +146,23 @@ static ROOT_ID: LazyLock<Id> = LazyLock::new(|| Id::root());
 /// child of [`ROOT_ID`]. Mirrors [`root::Root::entry_id`] but available
 /// at module scope so the merge dispatch in `interface.rs` can
 /// recognise it without picking a concrete `T`.
+///
+/// **Why `[118; 32]`?** This is the historical sentinel — the entry id
+/// that has always held the app's `Root<T>` payload. It is a fixed
+/// well-known constant, not a hash, and changing it would break wire
+/// compatibility with every existing peer that ships state under this
+/// id. Two collision-resistance properties:
+///
+///   1. Random ids (`Id::random()` — 32 cryptographically-random bytes)
+///      collide with this constant with probability ~`2^-256`.
+///   2. Field-name-derived ids (used for nested-collection entries) go
+///      through `compute_id` and are bound to a parent id + field-name
+///      hash, so they cannot reach `[118; 32]` from any byte-collision-
+///      free hash function modulo the same astronomical odds.
+///
+/// In short: `[118; 32]` cannot be reached unintentionally; an attacker
+/// who *could* synthesise an entity at this id would already have a
+/// hash-collision primitive on the entity-id space.
 pub(crate) const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
 
 /// Whether `id` addresses the app's root state — either the canonical
@@ -155,10 +172,12 @@ pub(crate) const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
 /// Both ids share the same merge path: their content is the app's
 /// serialised state and must be merged via the registered `Mergeable`
 /// (or the bootstrap-aware default in `merge_root_state`), not the
-/// generic non-root LWW-by-HLC path. Mixing them up (treating the
-/// `Root<T>` entry as a non-root entity) caused the bootstrap-HLC
-/// inversion that turned `wait_for_sync` red across multiple CIs in
-/// 2026-05-14..05-21.
+/// generic non-root LWW-by-HLC path. Treating the `Root<T>` entry as a
+/// non-root entity routes the whole serialised state blob through
+/// `apply_lww_winner`, which on a cold join silently discards the
+/// remote's data whenever the joiner's just-materialised local `Root`
+/// happens to carry a later HLC (which it usually does, since it was
+/// constructed after the remote's writes).
 #[inline]
 pub(crate) fn is_app_root_entry(id: Id) -> bool {
     id.is_root() || id == ROOT_ENTRY_ID
