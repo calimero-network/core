@@ -60,6 +60,15 @@ impl<'a> NamespaceMembershipService<'a> {
         }
 
         add_group_member(self.store, &group_id, member, role)?;
+        // #2422 Option 2: synthesize an `AutoFollowSet` so the auto-follow
+        // handler backfills any pre-existing contexts in this group. Same
+        // rationale as the `GroupOp::MemberAdded` arm in `apply_group_op_
+        // mutations` — the handler doesn't subscribe to `MemberJoined`/
+        // `MemberJoinedOpen` events, so without this synthesized event an
+        // Open-subgroup self-joiner with `contexts: true` (the post-#2422
+        // default) would only auto-follow FUTURE contexts, not the ones
+        // already registered when they joined.
+        super::emit_auto_follow_set_if_enabled(self.store, &group_id, member)?;
         Ok(())
     }
 

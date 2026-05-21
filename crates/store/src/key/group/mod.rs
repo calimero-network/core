@@ -1191,13 +1191,35 @@ pub struct GroupMetaValue {
 ///   the member's inherited role.
 ///
 /// See `architecture/auto-follow.html` for the full design.
-/// Defaults to both `false` for regular members; `ReadOnlyTee` members get
-/// both set to `true` at admission time.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+///
+/// # Default
+///
+/// `contexts = true`, `subgroups = false`. Joining a group implies wanting
+/// the group's data: the user mental model on the join flow is "I'm in this
+/// namespace, I want its contexts." The opt-out is an explicit
+/// `set_member_auto_follow(contexts: false)` per member, per group. This
+/// closes #2422 Option 1 (joiners weren't auto-followed by default,
+/// producing the "I joined but no data syncs" UX bug).
+///
+/// `subgroups` stays `false` because subgroup auto-follow for non-TEE roles
+/// requires a new admission op (existing `MemberAdded` must be admin-signed —
+/// see `crates/context/src/auto_follow.rs` module doc). The TEE fleet-join
+/// path overrides both to `true` via an explicit `SetMemberAutoFollow` op
+/// after admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct AutoFollowFlags {
     pub contexts: bool,
     pub subgroups: bool,
+}
+
+impl Default for AutoFollowFlags {
+    fn default() -> Self {
+        Self {
+            contexts: true,
+            subgroups: false,
+        }
+    }
 }
 
 /// Stored against [`GroupMember`]. Tracks the member's role and, for the local
@@ -1207,9 +1229,14 @@ pub struct AutoFollowFlags {
 /// `auto_follow` was added after the initial schema; [`BorshDeserialize`] is
 /// implemented manually so that records written under the legacy three-field
 /// layout still decode — the missing bytes default to
-/// [`AutoFollowFlags::default()`]. Serialization always writes the full
-/// four-field layout, so any mutation transparently upgrades the on-disk
-/// record. See the auto-follow architecture doc.
+/// [`AutoFollowFlags::default()`], which since the #2422 fix is
+/// `{contexts: true, subgroups: false}`. This means legacy on-disk records
+/// (pre-#2422) start auto-following contexts on the next deserialize.
+/// Operators who want to preserve the old opt-out behaviour for specific
+/// existing members can issue `set_member_auto_follow(contexts: false)`
+/// per member. Serialization always writes the full four-field layout, so
+/// any mutation transparently upgrades the on-disk record. See the
+/// auto-follow architecture doc.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize))]
 pub struct GroupMemberValue {
@@ -1880,7 +1907,34 @@ mod tests {
         assert_eq!(decoded.role, GroupMemberRole::Admin);
         assert_eq!(decoded.private_key, Some([0x11; 32]));
         assert_eq!(decoded.sender_key, None);
+        // Post-#2422: legacy records decode with the new default
+        // (contexts=true, subgroups=false). Explicit assertion on the
+        // exact values, alongside the Default-based check, so this test
+        // documents both contracts.
         assert_eq!(decoded.auto_follow, AutoFollowFlags::default());
+        assert_eq!(
+            decoded.auto_follow,
+            AutoFollowFlags {
+                contexts: true,
+                subgroups: false,
+            }
+        );
+    }
+
+    /// `AutoFollowFlags::default()` is the contract that ALL "no
+    /// preference expressed" entry points rely on (legacy borsh
+    /// decode + `add_group_member`'s `.unwrap_or_default()` fallback).
+    /// Pin the exact values here so a future Default impl change is
+    /// caught at compile-test time, not at runtime in production.
+    #[test]
+    fn auto_follow_flags_default_is_contexts_true_subgroups_false() {
+        assert_eq!(
+            AutoFollowFlags::default(),
+            AutoFollowFlags {
+                contexts: true,
+                subgroups: false,
+            }
+        );
     }
 
     /// A record with a new-format (four-field) layout must round-trip.

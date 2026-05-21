@@ -122,18 +122,61 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
     // topic if the caller can resolve one — the namespace mesh is
     // formed during join with a 2-second grace period, so it's
     // typically reachable while the context mesh is still forming.
+    //
+    // #2422 Options 3+4: narrow the namespace-fallback list to peers
+    // that ALSO subscribe to the context's own gossipsub topic.
+    // Context-topic subscription is materialisation-gated — only
+    // `node_client.subscribe(&context_id)` adds it, and that's only
+    // called from `create_context`, `join_context`, and
+    // `join_group`'s subscribe arm — so the intersection equals
+    // "namespace peer that has a local entry for this context".
+    // Non-following namespace members get filtered out: they can't
+    // serve the sync, so dialing them just produces
+    // `inbound stream for unknown context, closing cleanly`
+    // (`mod.rs::internal_handle_opened_stream`) plus failure_count
+    // climbs into 256s backoff for no reason. Closes the Ronit/Fran
+    // symptom on the initiator side.
     if let Some(ns_topic) = resolve_namespace_topic() {
         let ns_peers = sync_network.mesh_peers(ns_topic).await;
         if !ns_peers.is_empty() {
-            // Caller's success log carries `source = NamespaceFallback`,
-            // which already communicates that the context mesh was empty
-            // and the fallback fired — no separate info line needed here.
-            return Ok(DiscoveryOutcome {
-                peers: ns_peers,
-                source: PeerSource::NamespaceFallback,
-                attempts: final_attempt,
-                elapsed: discovery_started.elapsed(),
-            });
+            // Snapshot context-topic subscribers and intersect. Done as a
+            // second `mesh_peers` call rather than a single bigger query
+            // so each invocation hits the existing libp2p APIs unchanged.
+            // The context-topic snapshot may genuinely be empty even
+            // after we've exhausted the context-topic retry budget above
+            // — that's the case where every namespace member has opted
+            // out of this context (workflow #4 / #5 in
+            // `apps/scaffolding-e2e/workflows/auto-follow-*`). When the
+            // intersection is empty we bail with the same "no peers" arm
+            // below, instead of falling back to the unfiltered ns_peers
+            // and provoking the rejection-spam.
+            let ctx_subscribers: BTreeSet<PeerId> = sync_network
+                .mesh_peers(context_topic.clone())
+                .await
+                .into_iter()
+                .collect();
+            let filtered: Vec<PeerId> = ns_peers
+                .into_iter()
+                .filter(|peer| ctx_subscribers.contains(peer))
+                .collect();
+            if !filtered.is_empty() {
+                // Caller's success log carries `source = NamespaceFallback`,
+                // which already communicates that the context mesh was
+                // empty and the fallback fired — no separate info line
+                // needed here.
+                return Ok(DiscoveryOutcome {
+                    peers: filtered,
+                    source: PeerSource::NamespaceFallback,
+                    attempts: final_attempt,
+                    elapsed: discovery_started.elapsed(),
+                });
+            }
+            debug!(
+                %context_id,
+                ns_candidates = ctx_subscribers.len(),
+                "namespace fallback found peers but none subscribe to the context topic; \
+                 not dialing — see #2422"
+            );
         }
     }
 

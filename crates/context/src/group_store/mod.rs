@@ -1182,6 +1182,50 @@ fn diff_sorted_context_hashes(
 }
 
 /// Apply the mutation described by a [`GroupOp`] to the local store.
+/// Synthesize an `OpEvent::AutoFollowSet` for a freshly-written member
+/// row when its `auto_follow.contexts` flag is `true`. Called from every
+/// apply-site that creates a new `GroupMember` row (admin-add, TEE
+/// attestation, Open-subgroup self-join) so the auto-follow handler — which
+/// only listens to `AutoFollowSet`, not `MemberAdded` / `MemberJoined` /
+/// `TeeMemberAdmitted` — gets a single, uniform trigger for the
+/// "joiner has the flag on, backfill the group's contexts" cascade.
+///
+/// Idempotent: if the member's row was already in the store (e.g. a
+/// `MemberAdded` op for someone re-added after a remove), the value
+/// reflects whatever was preserved by `add_group_member` and we emit
+/// based on that. The handler's downstream `handle_auto_follow_enabled`
+/// uses `join_context`, which is itself idempotent.
+///
+/// Returns Ok(()) silently if the row can't be read — the apply-site
+/// has already returned a success result by this point, so a transient
+/// read failure here shouldn't fail the op. Logged at warn instead.
+pub(super) fn emit_auto_follow_set_if_enabled(
+    store: &Store,
+    group_id: &ContextGroupId,
+    member: &PublicKey,
+) -> EyreResult<()> {
+    let value = match get_group_member_value(store, group_id, member)? {
+        Some(v) => v,
+        None => {
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                %member,
+                "post-apply read found no member row — skipping auto-follow emission"
+            );
+            return Ok(());
+        }
+    };
+    if value.auto_follow.contexts {
+        crate::op_events::notify(crate::op_events::OpEvent::AutoFollowSet {
+            group_id: group_id.to_bytes(),
+            member: *member,
+            contexts: true,
+            subgroups: value.auto_follow.subgroups,
+        });
+    }
+    Ok(())
+}
+
 ///
 /// Handles authorization checks and state mutations for ALL `GroupOp` variants.
 /// Returns `Ok(true)` if the op was handled, `Ok(false)` if the variant is not
@@ -1231,6 +1275,18 @@ fn apply_group_op_mutations(
                 member: *member,
                 role: role.clone(),
             });
+            // #2422 Option 2: synthesize an `AutoFollowSet` event whenever
+            // a freshly-written member row has `auto_follow.contexts` set
+            // (the post-#2422 default). The auto-follow handler subscribes
+            // to `AutoFollowSet` (not `MemberAdded`), so without this the
+            // joiner would correctly auto-follow FUTURE
+            // `OpEvent::ContextRegistered` events but never backfill
+            // contexts that already existed in the group at join time —
+            // which is the user-reported regression (Ronit/Fran 2026-05-20).
+            // The handler short-circuits via `NotForSelf` on every node
+            // except the joiner, so the cascade only fires once per
+            // membership change.
+            emit_auto_follow_set_if_enabled(store, group_id, member)?;
         }
         GroupOp::MemberRemoved {
             member,
@@ -1517,6 +1573,16 @@ fn apply_group_op_mutations(
                 group_id: group_id.to_bytes(),
                 member: *member,
             });
+            // #2422 Option 2: TEE attestation goes through
+            // `admit_member_if_absent` → `add_group_member`, which writes
+            // the new default `{contexts: true, subgroups: false}`. The
+            // fleet-join sidecar (`crates/server/src/admin/handlers/tee/
+            // fleet_join.rs`) then issues an explicit `SetMemberAutoFollow
+            // {true, true}` op, which fires its own `AutoFollowSet`. That
+            // creates a second cascade — both join_context attempts are
+            // idempotent (see auto_follow.rs:101-107), so the only cost
+            // is two rate-limiter tokens. Documented and accepted.
+            emit_auto_follow_set_if_enabled(store, group_id, member)?;
         }
         GroupOp::MemberSetAutoFollow {
             target,

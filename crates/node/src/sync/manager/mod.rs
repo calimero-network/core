@@ -47,6 +47,31 @@ use calimero_node_primitives::sync::{
     SyncHandshake, SyncProtocol, SyncProtocolExecutor,
 };
 
+/// Typed marker returned by [`SyncManager::recv`] when the responder
+/// indicates the context is not materialised locally on the receiving
+/// side (#2422 Option 4 — see `StreamMessage::NotMaterialized` doc).
+///
+/// Caught by `apply_session_result` and treated as benign:
+/// - no `state.on_failure()` call (failure_count stays put)
+/// - no exponential backoff (`backoff_delay` stays at last value)
+/// - debug-only log (not warn)
+///
+/// The initiator simply drops this peer for this round and continues.
+/// On the next sync tick the peer-selection filter
+/// (`peers.rs::discover_mesh_peers_with_namespace_fallback`) should
+/// have stopped picking this peer altogether, but the error stays as
+/// a safety net for races (peer in flight of materialising, etc.).
+#[derive(Debug, Clone, Copy)]
+pub struct PeerNotMaterialized;
+
+impl std::fmt::Display for PeerNotMaterialized {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("peer has not materialised this context locally")
+    }
+}
+
+impl std::error::Error for PeerNotMaterialized {}
+
 /// Network synchronization manager.
 ///
 /// Orchestrates sync protocols: full resync, delta sync, state sync.
@@ -482,6 +507,26 @@ impl SyncManager {
                     );
                 }
                 Ok(Err(ref err)) => {
+                    // #2422 Option 4: PeerNotMaterialized is benign —
+                    // the responder told us they're a valid namespace
+                    // peer that simply hasn't joined this context. Do
+                    // not increment failure_count or apply backoff —
+                    // doing so starves legitimate sync against other
+                    // peers behind 256s exponential delays. The peer
+                    // selection filter in peers.rs::namespace-fallback
+                    // already excludes non-followers up-front; this
+                    // arm catches the residual race (peer in flight
+                    // of materialising, mixed-version cluster, etc.).
+                    if err.downcast_ref::<PeerNotMaterialized>().is_some() {
+                        debug!(
+                            %context_id,
+                            ?took,
+                            %peer_id,
+                            "peer has not materialised this context — \
+                             dropping for this round, not a failure"
+                        );
+                        return;
+                    }
                     state.on_failure(err.to_string());
                     warn!(
                         %context_id,
@@ -1169,13 +1214,26 @@ impl SyncManager {
     }
 
     /// Receives a message from the stream (delegates to stream module).
+    ///
+    /// #2422 Option 4: when the responder replies with
+    /// [`StreamMessage::NotMaterialized`], convert it to a
+    /// [`PeerNotMaterialized`] error so the apply-session-result
+    /// classifier can treat it as benign (no `on_failure`, no
+    /// exponential backoff). The conversion happens here — the
+    /// single common recv path — so individual protocol decoders
+    /// (HashComparison, LevelWise, etc.) don't each have to grow a
+    /// NotMaterialized arm.
     pub(super) async fn recv(
         &self,
         stream: &mut Stream,
         shared_key: Option<(SharedKey, Nonce)>,
     ) -> eyre::Result<Option<StreamMessage<'static>>> {
         let budget = self.sync_config.timeout / 3;
-        super::stream::recv(stream, shared_key, budget).await
+        let msg = super::stream::recv(stream, shared_key, budget).await?;
+        if matches!(msg, Some(StreamMessage::NotMaterialized)) {
+            return Err(eyre::Error::new(PeerNotMaterialized));
+        }
+        Ok(msg)
     }
 
     /// Get blob ID and application config from application or context config
@@ -2878,17 +2936,31 @@ impl SyncManager {
                         ctx
                     }
                     None => {
+                        // #2422 Option 4: send the typed
+                        // `NotMaterialized` instead of a bare
+                        // `OpaqueError`. The dialer was a verified
+                        // group member, just hasn't materialised
+                        // this context locally (auto-follow opt-out,
+                        // pending JoinContext, etc.). The initiator
+                        // classifies `NotMaterialized` as benign in
+                        // `manager/mod.rs::run_interval_sync_once`
+                        // and skips the `on_failure()` /
+                        // exponential-backoff path. Keeps long-lived
+                        // sync state healthy even when peer
+                        // selection picks a non-following peer.
                         debug!(
                             %context_id,
                             ?their_identity,
-                            "context not materialised within join race window, closing stream"
+                            "context not materialised within join race window — sending NotMaterialized"
                         );
-                        if let Err(err) = self.send(stream, &StreamMessage::OpaqueError, None).await
+                        if let Err(err) = self
+                            .send(stream, &StreamMessage::NotMaterialized, None)
+                            .await
                         {
                             error!(
                                 %err,
                                 %context_id,
-                                "failed to send OpaqueError for unknown context"
+                                "failed to send NotMaterialized for non-materialised context"
                             );
                         }
                         return Ok(None);
