@@ -86,7 +86,7 @@ untouched.
 ### Implications for the rest of the plan
 
 - **Files Task 4 will touch**:
-  - New: `crates/storage/src/collections/authored.rs` (module-private
+  - New: `crates/storage/src/collections/authored_common.rs` (module-private
     helpers exposed via `pub(super)`).
   - Modified: `crates/storage/src/collections/authored_map.rs` — replace
     inline stamp construction (lines 136-141), inline owner-gate
@@ -100,7 +100,7 @@ untouched.
     can be abstracted via `Fn(addr) -> Result<Option<Id>, _>`).
   - Modified: `crates/storage/src/collections.rs` (or wherever the
     `mod authored_map; mod authored_vector;` declarations live) — add
-    `mod authored;` declaration. Verified via `grep` would confirm path.
+    `mod authored_common;` declaration. Verified via `grep` would confirm path.
   - **NOT touched**: any public API of `AuthoredMap` or `AuthoredVector`;
     `interface.rs`; `merge.rs`; `entities.rs`; any test file.
 

@@ -46,7 +46,6 @@ mod tests {
     use serial_test::serial;
 
     use super::*;
-    use crate::env;
 
     #[test]
     #[serial]
