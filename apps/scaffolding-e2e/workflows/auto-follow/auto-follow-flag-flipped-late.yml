@@ -41,7 +41,7 @@ nuke_on_end: false
 
 nodes:
   count: 2
-  image: merod:local
+  image: ghcr.io/calimero-network/merod:edge
   prefix: af-late-flip-node
 
 steps:
@@ -49,7 +49,7 @@ steps:
   - name: Install application on node-1
     type: install_application
     node: af-late-flip-node-1
-    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    path: res/scaffolding_e2e.wasm
     dev: true
     outputs:
       app_id: applicationId
@@ -57,7 +57,7 @@ steps:
   - name: Install application on node-2
     type: install_application
     node: af-late-flip-node-2
-    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    path: res/scaffolding_e2e.wasm
     dev: true
 
   - name: Node-1 creates namespace

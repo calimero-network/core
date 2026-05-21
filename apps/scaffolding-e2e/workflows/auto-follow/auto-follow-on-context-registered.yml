@@ -27,7 +27,7 @@ nodes:
   # `merod:local` is built by the auto-follow-regression CI runner from
   # the PR HEAD; `merobox bootstrap run --image merod:local` overrides
   # at the CLI level so a local run picks up the locally-built image.
-  image: merod:local
+  image: ghcr.io/calimero-network/merod:edge
   prefix: af-baseline-node
 
 steps:
@@ -35,7 +35,7 @@ steps:
   - name: Install kv-store-with-handlers on node-1
     type: install_application
     node: af-baseline-node-1
-    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    path: res/scaffolding_e2e.wasm
     dev: true
     outputs:
       app_id: applicationId
@@ -43,7 +43,7 @@ steps:
   - name: Install kv-store-with-handlers on node-2
     type: install_application
     node: af-baseline-node-2
-    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    path: res/scaffolding_e2e.wasm
     dev: true
 
   - name: Node-1 creates namespace

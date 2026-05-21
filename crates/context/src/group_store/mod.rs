@@ -1196,21 +1196,36 @@ fn diff_sorted_context_hashes(
 /// based on that. The handler's downstream `handle_auto_follow_enabled`
 /// uses `join_context`, which is itself idempotent.
 ///
-/// Returns Ok(()) silently if the row can't be read — the apply-site
-/// has already returned a success result by this point, so a transient
-/// read failure here shouldn't fail the op. Logged at warn instead.
+/// Read failures are downgraded to a warn log and `Ok(())` — the
+/// apply-site has already written the row and committed by the time
+/// this is called, so a transient read failure here should not roll
+/// back the op via the caller's `?`. The synthesized event is a
+/// best-effort optimisation; missing it means the joiner won't
+/// backfill pre-existing contexts in this group, but they'll still
+/// auto-follow future ones via the `ContextRegistered` event handler.
 pub(super) fn emit_auto_follow_set_if_enabled(
     store: &Store,
     group_id: &ContextGroupId,
     member: &PublicKey,
 ) -> EyreResult<()> {
-    let value = match get_group_member_value(store, group_id, member)? {
-        Some(v) => v,
-        None => {
+    let value = match get_group_member_value(store, group_id, member) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
             tracing::warn!(
                 group_id = %hex::encode(group_id.to_bytes()),
                 %member,
                 "post-apply read found no member row — skipping auto-follow emission"
+            );
+            return Ok(());
+        }
+        Err(err) => {
+            // Best-effort: log and continue. See the function-level
+            // doc comment for the rationale.
+            tracing::warn!(
+                group_id = %hex::encode(group_id.to_bytes()),
+                %member,
+                ?err,
+                "post-apply read failed — skipping auto-follow emission"
             );
             return Ok(());
         }

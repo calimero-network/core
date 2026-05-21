@@ -270,6 +270,34 @@ jobs:
           - workflow: mesh-soak-8node
             file: workflows/mesh-soak-8node.yml
             app: scaffolding-e2e
+          # #2422 auto-follow regression workflows. All five live in
+          # `apps/scaffolding-e2e/workflows/auto-follow/`. They are
+          # NOT smoke-only — they exercise the production auto-follow
+          # path end-to-end via real merobox two-node clusters with
+          # no explicit `join_context` shortcut. Workflows 1/2/3 test
+          # the happy-path / backfill / late-flip flows (expected
+          # green post-fix). Workflows 4/5 probe the sync-layer
+          # NotMaterialized typed-response path; an opted-out node-2
+          # is in the same subgroup with `auto_follow.contexts: false`
+          # so the initiator must never dial it (peer-filter in
+          # peers.rs::namespace-fallback) and any residual dial is
+          # classified as benign (PeerNotMaterialized downcast in
+          # manager/mod.rs::apply_session_result).
+          - workflow: auto-follow-on-context-registered
+            file: workflows/auto-follow/auto-follow-on-context-registered.yml
+            app: scaffolding-e2e
+          - workflow: auto-follow-backfill-on-join
+            file: workflows/auto-follow/auto-follow-backfill-on-join.yml
+            app: scaffolding-e2e
+          - workflow: auto-follow-flag-flipped-late
+            file: workflows/auto-follow/auto-follow-flag-flipped-late.yml
+            app: scaffolding-e2e
+          - workflow: auto-follow-no-rejection-spam
+            file: workflows/auto-follow/no-unknown-context-rejection-spam.yml
+            app: scaffolding-e2e
+          - workflow: auto-follow-asymmetric-context-membership
+            file: workflows/auto-follow/asymmetric-context-membership.yml
+            app: scaffolding-e2e
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

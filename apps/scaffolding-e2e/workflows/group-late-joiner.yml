@@ -88,10 +88,14 @@ steps:
     namespace_id: '{{namespace_id}}'
     invitation: '{{namespace_invitation}}'
 
-  - name: Node-2 joins context via group membership
-    type: join_context
-    node: e2e-node-2
-    context_id: '{{ctx_id}}'
+  # No explicit `type: join_context` here. Post-#2422 auto-follow
+  # (Options 1+2): joiners default to `auto_follow.contexts: true`
+  # and the MemberAdded apply path now emits AutoFollowSet so the
+  # auto-follow handler backfills pre-existing contexts. This
+  # workflow now genuinely tests the auto-follow path that real
+  # UI flows depend on, instead of short-circuiting it with a
+  # manual join_context (which masked the regression that shipped
+  # to Ronit/Fran).
 
   - name: Wait for node-2 to catch up to existing state
     type: wait_for_sync
