@@ -170,10 +170,40 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: Guard — no unknown-context rejection spam
+      - name: Guard — no rejection of inbound sync from non-following peer
         # Workflows 4 + 5's regression signal lives here, NOT inside
         # the YAML — neither workflow asserts the log line directly,
         # by design (mirrors sync-regression.yml's #2356 guard pattern).
+        #
+        # Two distinct signatures, two distinct topologies:
+        #
+        # 1. "context not materialised within join race window" — the
+        #    debug-level signature emitted at
+        #      crates/node/src/sync/manager/mod.rs (the materialisation
+        #      window's `materialised == None` arm)
+        #    when the receiver IS a verified group member (so
+        #    `dialer_verified == true`) but the context is not in its
+        #    local store. This is the topology workflows 4 + 5 build:
+        #    node-2 IS added to the subgroup, so `dialer_verified`
+        #    flips to true, and node-2 simply hasn't materialised the
+        #    context locally because auto-follow wasn't enabled for it.
+        #
+        #    RUST_LOG is set to `info,calimero_=debug` (top-level
+        #    `env:` block), so the debug message is captured in the
+        #    docker logs and grep-able here.
+        #
+        # 2. "inbound stream for unknown context, closing cleanly" —
+        #    the warn-level signature emitted when EITHER
+        #    `get_group_for_context` returns None OR
+        #    `check_group_membership` returns false (the
+        #    `!dialer_verified` arm). This matches the Ronit/Fran
+        #    incident log verbatim (the warn level made it visible in
+        #    the user-supplied log dump). Our workflows do not build
+        #    that exact `!dialer_verified` topology by themselves —
+        #    every receiver IS a verified group member — but we still
+        #    grep for it so any future workflow that does provoke the
+        #    Ronit/Fran shape (e.g. an added cross-namespace test) is
+        #    auto-guarded.
         #
         # Fail-loud on absent logs: a merobox run that aborts before
         # any container starts would produce a silent false negative
@@ -182,7 +212,13 @@ jobs:
         # surfaces.
         if: always() && (matrix.workflow == 'no-unknown-context-rejection-spam' || matrix.workflow == 'asymmetric-context-membership')
         env:
-          WARN_SIGNATURE: "inbound stream for unknown context, closing cleanly"
+          # Symptom for the workflows-4/5 topology (verified member,
+          # non-materialised context). debug-level — captured because
+          # RUST_LOG includes calimero_=debug.
+          NOT_MATERIALISED_SIGNATURE: "context not materialised within join race window"
+          # Symptom for the Ronit/Fran incident topology (unverified
+          # dialer / missing group_for_context mapping). warn-level.
+          UNKNOWN_CONTEXT_SIGNATURE: "inbound stream for unknown context, closing cleanly"
         run: |
           set +e
           shopt -s nullglob
@@ -194,13 +230,27 @@ jobs:
             echo "::error::No docker-logs/af-*-node-*.log captured — merobox run likely aborted before any container started."
             exit 1
           fi
-          if grep -h -F "$WARN_SIGNATURE" "${log_files[@]}" 2>/dev/null; then
-            echo "::error::Auto-follow regression: peer with non-materialised context rejected an inbound sync stream as 'unknown context'."
-            echo "This is the #2422 symptom on options 3/4 — the sync layer is picking a non-following peer as a sync target."
-            echo "See crates/node/src/sync/manager/mod.rs (peer-selection + responder materialisation gate)."
+
+          fail=0
+
+          if grep -h -F "$NOT_MATERIALISED_SIGNATURE" "${log_files[@]}" 2>/dev/null; then
+            echo "::error::Auto-follow regression: receiver closed an inbound sync stream because the context was not materialised within the join-race window."
+            echo "This is the #2422 symptom on options 3/4 — node-1's sync layer picked node-2 as a sync target for a context node-2 never auto-followed."
+            echo "See crates/node/src/sync/manager/mod.rs (materialisation-window arm)."
+            fail=1
+          fi
+
+          if grep -h -F "$UNKNOWN_CONTEXT_SIGNATURE" "${log_files[@]}" 2>/dev/null; then
+            echo "::error::Auto-follow regression (Ronit/Fran shape): inbound stream rejected as 'unknown context, closing cleanly'."
+            echo "The dialer was not a verified group member or the group_for_context mapping was absent on the receiver."
+            echo "See crates/node/src/sync/manager/mod.rs (the !dialer_verified arm)."
+            fail=1
+          fi
+
+          if [ "$fail" = "1" ]; then
             exit 1
           fi
-          echo "OK: no 'unknown context' rejection spam observed across ${#log_files[@]} log file(s)."
+          echo "OK: no rejection-of-inbound-from-non-following-peer signatures observed across ${#log_files[@]} log file(s)."
 
       - name: Guard — no creator-side owned-identity race
         # Same companion guard as sync-regression.yml carries — if the

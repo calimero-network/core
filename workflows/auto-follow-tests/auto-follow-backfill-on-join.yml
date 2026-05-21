@@ -1,30 +1,46 @@
-name: "Auto-follow backfill on join (the regression)"
+name: "Auto-follow backfill on join (tight-timing variant)"
 description: >
-  Workflow 2 of the #2422 regression test plan — the direct repro of
-  the user-reported regression.
+  Workflow 2 of the #2422 regression test plan.
 
-  Setup: subgroup with THREE pre-existing contexts (A, B, C). Node-2
-  joins the subgroup AFTER those contexts already exist. Admin then
-  toggles `auto_follow.contexts = true` for node-2. Per the spec, this
-  should backfill all three contexts onto node-2.
+  IMPORTANT — what this DOES and DOES NOT exercise:
 
-  Today the backfill IS implemented in
-    crates/context/src/auto_follow.rs::handle_auto_follow_enabled
-  triggered by `OpEvent::AutoFollowSet { member = self, contexts: true }`,
-  capped at BACKFILL_LIMIT = 1000. So the structural backfill path
-  exists — what this workflow probes is whether it fires reliably for
-  EVERY pre-existing context (or only some of them, which is the
-  Ronit/Fran-incident asymmetry).
+  This workflow probes the `OpEvent::AutoFollowSet → backfill` cascade
+  (crates/context/src/auto_follow.rs::handle_auto_follow_enabled)
+  under tight timing — node-2 is added to the subgroup, then admin
+  flips the contexts flag for node-2 only 5s later, so the
+  AutoFollowSet event arrives at node-2's handler while node-2's
+  MemberAdded apply is freshly committed. If the backfill enumeration
+  has any store-write/store-read race against the just-applied
+  MemberAdded row, the per-context cross-reads in Phase 4 will fail
+  with "context not found".
 
-  Expected on master: depends on the bug class.
-    - If the backfill is reliable: PASS (all three reads succeed).
-    - If there's a missed-event / store-read race per context:
-      one or more of the per-context reads in Phase 3 fails.
+  This workflow does NOT exercise the ACTUAL on-join-with-flag-already-on
+  path that #2422 option 2 describes. That path requires `MemberAdded`
+  to fire with `auto_follow.contexts` already true in the member value
+  — today, only the TEE fleet-join code (`crates/server/src/admin/
+  handlers/tee/fleet_join.rs`) reaches that state, and there is no
+  non-TEE workflow primitive that can construct it. A faithful repro
+  would need either:
+    (a) a TEE-fleet-join e2e harness (heavy; out of scope for this
+        Phase B drop), or
+    (b) a future "add member with flags" admin op variant, or
+    (c) emitting `AutoFollowSet` from the `MemberAdded` apply path
+        when the joiner's stored `auto_follow.contexts` is already
+        true (per the project memory's predicted fix shape — at which
+        point this workflow becomes the e2e regression guard for it).
 
-  This is intentionally light on `wait`s between the SetMemberAutoFollow
-  and the post-condition checks: padding waits would HIDE the race we're
-  trying to detect. `wait_for_sync` is the only convergence gate, and
-  its 60s timeout is the regression signal.
+  Pair with workflow 3 (`auto-follow-flag-flipped-late.yml`), which
+  runs the SAME `AutoFollowSet → backfill` cascade but with a 15s
+  settle period between MemberAdded and SetMemberAutoFollow so the
+  two are temporally separated. If THIS workflow fails and workflow 3
+  passes, the gap is the tight-timing race; if both fail, the backfill
+  enumeration itself is broken; if both pass, the AutoFollowSet path
+  is healthy and the actual #2422 option-2 surface is elsewhere
+  (and needs the TEE/fleet-join harness or fix path (c) above to
+  detect).
+
+  The `wait_for_sync` 60s timeout is the convergence gate, and the
+  per-context `call` reads at the end are the real assertion.
 
 no_docker: false
 nuke_on_start: true

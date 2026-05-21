@@ -10,11 +10,18 @@ description: >
   hasn't materialised the context. Today's sync-target selection in
     crates/node/src/sync/manager/mod.rs
   treats namespace-mesh membership as good enough and picks node-2 as
-  a sync target for the context. node-2's responder then rejects the
-  stream with `inbound stream for unknown context, closing cleanly`
-  (see the materialisation-wait gate in
-    crates/node/src/sync/manager/mod.rs::internal_handle_opened_stream)
-  and node-1's failure_count climbs into exponential backoff.
+  a sync target for the context. node-2 IS a verified group member
+  in this topology (it was added via `add_group_members`), so the
+  receiver-side gate sees `dialer_verified = true` and falls into the
+  `materialised == None` arm, logging at DEBUG level:
+    "context not materialised within join race window, closing stream"
+  (see crates/node/src/sync/manager/mod.rs — the materialisation
+  window). The CI runner greps for that exact debug signature; the
+  Ronit/Fran-shape warn ("inbound stream for unknown context") only
+  fires when `dialer_verified = false`, which this workflow does NOT
+  reproduce (would need a cross-namespace stream or a missing
+  group_for_context mapping). Both signatures are guarded in CI so a
+  future workflow that does provoke the warn shape is auto-covered.
 
   Workflow shape:
     - bootstrap two-node namespace + subgroup
@@ -32,9 +39,10 @@ description: >
       green on a healthy run.
     - The REGRESSION SIGNAL lives in the CI runner
       (.github/workflows/auto-follow-regression.yml), which post-runs
-      `grep -F "inbound stream for unknown context, closing cleanly"
-      docker-logs/af-no-spam-node-*.log` and fails the job on any
-      match. Same pattern as sync-regression.yml's #2356 guard.
+      a `grep -F "context not materialised within join race window"`
+      pass over docker-logs/af-no-spam-node-*.log and fails the job on
+      any match (with a secondary grep on the Ronit/Fran-shape warn).
+      Same pattern as sync-regression.yml's #2356 guard.
     - The metric counterpart
       (`sync_failures_total{protocol="HashComparison"}` on node-1
       should stay near zero for this context) is deferred until
@@ -163,11 +171,13 @@ steps:
   # signal (workflow timeout vs. log spam are different bugs).
   #
   # During this sleep, node-1's sync manager fires its periodic
-  # sync-tick. Pre-fix, it picks node-2 as a sync target for ctx-A
-  # (namespace-mesh fallback in
-  #   crates/node/src/sync/manager/mod.rs)
-  # and node-2's responder rejects the inbound stream. Both sides log
-  # the warn signature the CI runner greps for.
+  # sync-tick (default 5–10s — see crates/node/src/sync/config.rs).
+  # Pre-fix, it picks node-2 as a sync target for ctx-A via the
+  # namespace-mesh fallback in crates/node/src/sync/manager/mod.rs;
+  # node-2's receiver-side gate verifies node-2 IS a group member
+  # (dialer_verified = true) but finds the context is not materialised
+  # locally, logging "context not materialised within join race
+  # window" at debug level. The CI runner greps that exact signature.
   - name: Window during which the bug would log spam
     type: wait
     seconds: 30

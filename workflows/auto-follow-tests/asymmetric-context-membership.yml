@@ -14,25 +14,37 @@ description: >
   Healthy outcome (post-fix):
     - context_b converges on both nodes (the overlap)
     - context_a stays node-1-only; context_c stays node-2-only
-    - No "unknown context, closing cleanly" warnings in either log,
-      because the sync layer should not pick a non-following peer
-      as a sync target (option 3) or, if it does, the responder's
-      typed NotMaterialized response keeps it benign (option 4).
+    - No "context not materialised within join race window" debug
+      messages in either log, because the sync layer should not
+      pick a non-following peer as a sync target (option 3) or, if
+      it does, the responder's typed NotMaterialized response keeps
+      it benign (option 4).
 
   Bug surface today (pre-fix):
     - Both nodes' sync layers fall back to namespace-mesh peers and
       pick the other node as a sync target for the context they
-      don't share. The non-following side then rejects the inbound
-      stream with `unknown context, closing cleanly` and the
-      requesting side's failure_count climbs into 256s backoff. The
-      symptom matches the incident log verbatim.
+      don't share. The non-following side IS a verified group member
+      (added via add_group_members), so the receiver-side gate sees
+      dialer_verified = true, falls into the materialisation-window
+      timeout, and emits the debug-level "context not materialised"
+      signature once the window elapses. The requesting side's
+      failure_count climbs into 256s backoff. The user-reported
+      incident additionally had a Ronit/Fran-shape !dialer_verified
+      race that produced the warn-level "inbound stream for unknown
+      context" log — that shape is not built by this workflow but
+      the CI runner greps for it as well, so any future workflow
+      that does provoke it is auto-guarded.
 
   Pass/fail policy:
     - Workflow PASSES on the positive overlap (context_b converged,
       both nodes read each other's writes in context_b).
-    - The CI runner adds two log-grep checks:
-        (a) no "unknown context, closing cleanly" on either node
-        (b) no "no owned identities found for context" on either node
+    - The CI runner adds three log-grep checks:
+        (a) no "context not materialised within join race window"
+            on either node (debug-level — our topology's symptom)
+        (b) no "inbound stream for unknown context, closing cleanly"
+            on either node (warn-level — Ronit/Fran shape, kept for
+            future workflows that provoke !dialer_verified)
+        (c) no "no owned identities found for context" on either node
       Same shape as sync-regression.yml's #2356 guards.
     - Local-absence checks (context_a not on node-2, context_c not
       on node-1) and metric checks
@@ -313,9 +325,11 @@ steps:
   # This sleep gives the sync manager time to fire its periodic sync
   # tick across context_a (where only node-1 follows) and context_c
   # (where only node-2 follows). On a buggy build this is the window
-  # where "unknown context, closing cleanly" warnings would show up
-  # on whichever peer was picked as the non-following sync target.
-  # The CI runner greps for that signature post-run.
+  # where the non-following peer's receiver-side gate hits its
+  # materialisation-window timeout and emits the debug-level
+  # "context not materialised within join race window" signature.
+  # The CI runner greps for that signature (plus the warn-level
+  # Ronit/Fran shape) post-run.
   - name: Settle window for asymmetric-context sync ticks
     type: wait
     seconds: 30

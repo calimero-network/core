@@ -1,26 +1,39 @@
 name: "Auto-follow flag flipped late (backfill control test)"
 description: >
-  Workflow 3 of the #2422 regression test plan — the control for the
-  AutoFollowSet → backfill path.
+  Workflow 3 of the #2422 regression test plan — the temporally-relaxed
+  variant of workflow 2.
 
-  Difference from workflow 2 (auto-follow-backfill-on-join):
-    - Workflow 2: node-2 joins the subgroup BEFORE flag is set.
-    - Workflow 3 (this one): node-2 joins the subgroup with
-      `auto_follow.contexts = false` (default), goes quiet, and only
-      THEN does admin set the flag. The backfill is then triggered by
-      a clean AutoFollowSet event well after MemberAdded propagation
-      has settled.
+  Both this workflow and workflow 2 exercise the SAME code path:
+    OpEvent::AutoFollowSet { member = self, contexts: true }
+      → crates/context/src/auto_follow.rs::handle_auto_follow_enabled
+      → group_store::enumerate_group_contexts (capped at BACKFILL_LIMIT)
+      → JoinContextRequest per enumerated context
+  (covered by unit tests at
+    crates/context/src/auto_follow.rs::tests::handler_routing
+   for the four AutoFollowEnabledDecision branches).
 
-  Expected on master: PASS. This is the textbook
-    handle_auto_follow_enabled → AutoFollowEnabledDecision::Backfill
-  path, covered by unit tests in
-    crates/context/src/auto_follow.rs::tests::handler_routing.
+  The difference between the two is timing only:
+    - Workflow 2 (`auto-follow-backfill-on-join.yml`) flips the
+      contexts flag 5s after `add_group_members` — tight enough that
+      the AutoFollowSet event arrives at node-2's handler while the
+      MemberAdded apply is freshly committed.
+    - Workflow 3 (this one) waits 15s between `add_group_members` and
+      the flag flip, so MemberAdded apply has fully settled on node-2
+      before AutoFollowSet arrives. The backfill enumeration then
+      runs against a quiescent store.
 
-  Why both 2 and 3 exist as separate workflows: if workflow 2 fails but
-  workflow 3 passes, the gap is specifically on the JOIN edge (race
-  between MemberAdded apply on node-2 and AutoFollowSet apply on
-  node-2). If both fail, the backfill enumeration itself is broken.
-  If both pass, the regression is somewhere else (workflow 4 or 5).
+  Expected on master: PASS. The AutoFollowSet → backfill path is
+  exercised in production on every legitimate flag flip and is
+  unit-tested in handler_routing.
+
+  Why both 2 and 3 exist: if workflow 2 fails and workflow 3 passes,
+  the gap is a tight-timing race between MemberAdded write and
+  AutoFollowSet read on the same store. If both fail, the backfill
+  enumeration itself is broken. If both pass, the AutoFollowSet
+  cascade is healthy and the actual #2422 surface is elsewhere
+  (workflow 4 or 5, or the on-join-with-flag-already-on path that
+  neither workflow today reproduces — see workflow 2's description
+  for what's needed to cover that).
 
 no_docker: false
 nuke_on_start: true
