@@ -278,3 +278,86 @@ fn unordered_map_with_counter_satisfies_crdt_laws() {
         eq,
     );
 }
+
+#[test]
+fn lww_register_satisfies_crdt_laws() {
+    use calimero_storage::collections::LwwRegister;
+    use calimero_storage::env;
+    use calimero_storage::logical_clock::HybridTimestamp;
+
+    env::reset_for_testing();
+
+    // Same pinned-metadata trick as the Vector test: `LwwRegister::new` reads
+    // the live HLC on every call, which violates the determinism contract.
+    // Using `HybridTimestamp::zero()` for everyone forces the tie-breaker onto
+    // node_id — which is fixed per builder — so merges converge deterministically.
+    fn fresh(name: &str, node: [u8; 32]) -> LwwRegister<String> {
+        LwwRegister::new_with_metadata(name.to_owned(), HybridTimestamp::zero(), node)
+    }
+
+    let eq = |a: &LwwRegister<String>, b: &LwwRegister<String>| a.get() == b.get();
+
+    assert_crdt_laws(
+        || fresh("alice", [11; 32]),
+        || fresh("bob", [22; 32]),
+        || fresh("carol", [33; 32]),
+        eq,
+    );
+}
+
+#[test]
+fn counter_satisfies_crdt_laws() {
+    use calimero_storage::collections::Counter;
+    use calimero_storage::env;
+    use calimero_storage::store::MainStorage;
+
+    env::reset_for_testing();
+
+    // Counter's commutativity depends on per-replica actor ids — without
+    // distinct executors the merges would all collapse onto the same slot.
+    let make = |executor: [u8; 32], count: usize| {
+        move || {
+            env::set_executor_id(executor);
+            let mut c = Counter::<false, MainStorage>::new();
+            for _ in 0..count {
+                c.increment().unwrap();
+            }
+            c
+        }
+    };
+
+    let eq = |a: &Counter<false, MainStorage>, b: &Counter<false, MainStorage>| {
+        a.value().unwrap() == b.value().unwrap()
+    };
+
+    assert_crdt_laws(make([11; 32], 2), make([22; 32], 3), make([33; 32], 5), eq);
+}
+
+// RGA generates fresh per-character ids on each `insert_str` call, so two
+// `make_a()` invocations produce disjoint character sets. Merging those
+// disjoint sets doubles the content, which violates structural equality
+// across runs — the helper's determinism contract cannot be satisfied
+// without bypassing RGA's own non-determinism. Rather than fight the
+// model, we ignore this test and document the reason inline so a future
+// refactor (e.g. deterministic CharId seeding) can revive it. Mergeable
+// for RGA is still covered by the existing tests in `crdt_impls.rs`.
+#[test]
+#[ignore = "RGA inserts allocate fresh per-character ids; two `make_*()` calls produce disjoint id sets, breaking the determinism contract `assert_crdt_laws` requires. Mergeable laws for RGA are exercised by `test_rga_merge_*` in src/collections/crdt_impls.rs."]
+fn rga_satisfies_crdt_laws() {
+    use calimero_storage::collections::ReplicatedGrowableArray;
+    use calimero_storage::env;
+
+    env::reset_for_testing();
+
+    fn fresh(s: &str) -> ReplicatedGrowableArray {
+        let mut r = ReplicatedGrowableArray::new();
+        r.insert_str(0, s).unwrap();
+        r
+    }
+
+    let eq = |a: &ReplicatedGrowableArray, b: &ReplicatedGrowableArray| {
+        a.len().unwrap() == b.len().unwrap()
+    };
+
+    assert_crdt_laws(|| fresh("aa"), || fresh("bb"), || fresh("cc"), eq);
+}
