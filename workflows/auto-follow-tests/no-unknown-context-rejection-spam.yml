@@ -1,0 +1,203 @@
+name: "No unknown-context rejection spam (peer-selection)"
+description: >
+  Workflow 4 of the #2422 regression test plan — covers options 3 + 4
+  from the issue (filter sync-target discovery by per-context
+  subscription; typed NotMaterialized response).
+
+  Setup: a context exists on node-1; node-2 is in the same group but
+  DELIBERATELY opted out of auto-follow (`auto_follow.contexts = false`).
+  node-2 is therefore a legitimate namespace mesh peer that simply
+  hasn't materialised the context. Today's sync-target selection in
+    crates/node/src/sync/manager/mod.rs
+  treats namespace-mesh membership as good enough and picks node-2 as
+  a sync target for the context. node-2's responder then rejects the
+  stream with `inbound stream for unknown context, closing cleanly`
+  (see the materialisation-wait gate in
+    crates/node/src/sync/manager/mod.rs::internal_handle_opened_stream)
+  and node-1's failure_count climbs into exponential backoff.
+
+  Workflow shape:
+    - bootstrap two-node namespace + subgroup
+    - admin (node-1) auto-follows its own contexts and writes data
+    - node-2 joins WITHOUT auto-follow being set on it
+    - then we just sleep — letting normal gossipsub + sync-session
+      timers run on their own. The bug manifests during that window:
+      node-1's sync layer picks node-2 as a sync target and node-2's
+      responder logs the rejection.
+
+  Pass/fail policy:
+    - The workflow itself ALWAYS passes (it does no convergence
+      assertion on the asymmetric context — by construction node-2
+      never materialises it). All workflow steps are individually
+      green on a healthy run.
+    - The REGRESSION SIGNAL lives in the CI runner
+      (.github/workflows/auto-follow-regression.yml), which post-runs
+      `grep -F "inbound stream for unknown context, closing cleanly"
+      docker-logs/af-no-spam-node-*.log` and fails the job on any
+      match. Same pattern as sync-regression.yml's #2356 guard.
+    - The metric counterpart
+      (`sync_failures_total{protocol="HashComparison"}` on node-1
+      should stay near zero for this context) is deferred until
+      merobox grows an `assert_metric` step. The runtime-side
+      plumbing already exists in
+        crates/node/src/sync/prometheus_metrics.rs::sync_failures_total
+      so adding it is a workflow-author change, not a core change.
+    - The local-absent assertion on node-2 (no materialised entry for
+      ctx-A) is deferred until merobox grows an
+      `assert_context_absent` step. See the marked TODO at the end.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: af-no-spam-node
+
+steps:
+  - name: Install application on node-1
+    type: install_application
+    node: af-no-spam-node-1
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: af-no-spam-node-2
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: af-no-spam-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Node-1 captures its namespace identity
+    type: get_namespace_identity
+    node: af-no-spam-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      node1_identity: publicKey
+
+  - name: Node-1 creates subgroup
+    type: create_group_in_namespace
+    node: af-no-spam-node-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "no-rejection-spam"
+    outputs:
+      group_id: groupId
+
+  - name: Enable contexts auto-follow for node-1 (admin self-flip)
+    type: set_member_auto_follow
+    node: af-no-spam-node-1
+    group_id: "{{group_id}}"
+    member_id: "{{node1_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  - name: Wait for admin self-flip to apply
+    type: wait
+    seconds: 3
+
+  - name: Node-1 creates context-A
+    type: create_context
+    node: af-no-spam-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_a: contextId
+      node1_key_a: memberPublicKey
+
+  - name: Node-1 writes into context-A
+    type: call
+    node: af-no-spam-node-1
+    context_id: "{{ctx_a}}"
+    method: set
+    args:
+      key: "alpha"
+      value: "from-A"
+    executor_public_key: "{{node1_key_a}}"
+
+  # ── Node-2 joins the namespace + subgroup with auto-follow OFF ──────
+  - name: Node-1 invites node-2 to namespace
+    type: create_namespace_invitation
+    node: af-no-spam-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      ns_invite: invitation
+
+  - name: Wait for governance to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: af-no-spam-node-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{ns_invite}}"
+    outputs:
+      node2_identity: memberIdentity
+
+  - name: Node-1 adds node-2 to subgroup
+    type: add_group_members
+    node: af-no-spam-node-1
+    group_id: "{{group_id}}"
+    members:
+      - identity: "{{node2_identity}}"
+        role: Member
+
+  # CRITICAL: do NOT flip auto_follow for node-2. The whole point of
+  # this workflow is that a non-following member should be benign —
+  # node-1's sync layer should not pick it as a sync target, and
+  # node-2's responder should not log rejection spam if it is picked.
+
+  # ── Provoke the symptom ──────────────────────────────────────────────
+  # 30s window per the issue test plan. We do NOT call wait_for_sync
+  # for ctx-A on both nodes — by construction node-2 should never
+  # converge, and asserting that here would muddle the regression
+  # signal (workflow timeout vs. log spam are different bugs).
+  #
+  # During this sleep, node-1's sync manager fires its periodic
+  # sync-tick. Pre-fix, it picks node-2 as a sync target for ctx-A
+  # (namespace-mesh fallback in
+  #   crates/node/src/sync/manager/mod.rs)
+  # and node-2's responder rejects the inbound stream. Both sides log
+  # the warn signature the CI runner greps for.
+  - name: Window during which the bug would log spam
+    type: wait
+    seconds: 30
+
+  # Sanity assertion: node-1 still has its own write — i.e. the workflow
+  # didn't accidentally tear down node-1's context. This ensures the
+  # log-grep in CI is meaningfully testing the bug, not a degenerate
+  # "node-1 was broken so there was no sync attempt at all" outcome.
+  - name: Node-1 still has its own context
+    type: call
+    node: af-no-spam-node-1
+    context_id: "{{ctx_a}}"
+    method: get
+    args:
+      key: "alpha"
+    outputs:
+      n1_self_read: result
+
+  - name: Assert node-1 reads its own write
+    type: assert
+    statements:
+      - "is_set({{n1_self_read}})"
+      - 'contains({{n1_self_read}}, "from-A")'
+
+  # TODO (Phase A follow-up): when merobox grows `assert_context_absent`,
+  # add the local-absent check on node-2 here:
+  #
+  #   - name: Assert node-2 has not materialised context-A
+  #     type: assert_context_absent
+  #     node: af-no-spam-node-2
+  #     context_id: "{{ctx_a}}"
+  #
+  # Until then the CI runner's log grep is the regression gate.

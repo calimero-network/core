@@ -1,0 +1,256 @@
+name: "Auto-follow flag flipped late (backfill control test)"
+description: >
+  Workflow 3 of the #2422 regression test plan — the control for the
+  AutoFollowSet → backfill path.
+
+  Difference from workflow 2 (auto-follow-backfill-on-join):
+    - Workflow 2: node-2 joins the subgroup BEFORE flag is set.
+    - Workflow 3 (this one): node-2 joins the subgroup with
+      `auto_follow.contexts = false` (default), goes quiet, and only
+      THEN does admin set the flag. The backfill is then triggered by
+      a clean AutoFollowSet event well after MemberAdded propagation
+      has settled.
+
+  Expected on master: PASS. This is the textbook
+    handle_auto_follow_enabled → AutoFollowEnabledDecision::Backfill
+  path, covered by unit tests in
+    crates/context/src/auto_follow.rs::tests::handler_routing.
+
+  Why both 2 and 3 exist as separate workflows: if workflow 2 fails but
+  workflow 3 passes, the gap is specifically on the JOIN edge (race
+  between MemberAdded apply on node-2 and AutoFollowSet apply on
+  node-2). If both fail, the backfill enumeration itself is broken.
+  If both pass, the regression is somewhere else (workflow 4 or 5).
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: af-late-flip-node
+
+steps:
+  # ── Phase 1: Same starting shape as workflow 2 ──────────────────────
+  - name: Install application on node-1
+    type: install_application
+    node: af-late-flip-node-1
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: af-late-flip-node-2
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: af-late-flip-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Node-1 captures its namespace identity
+    type: get_namespace_identity
+    node: af-late-flip-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      node1_identity: publicKey
+
+  - name: Node-1 creates subgroup
+    type: create_group_in_namespace
+    node: af-late-flip-node-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "auto-follow-late-flip"
+    outputs:
+      group_id: groupId
+
+  - name: Enable contexts auto-follow for node-1 (admin self-flip)
+    type: set_member_auto_follow
+    node: af-late-flip-node-1
+    group_id: "{{group_id}}"
+    member_id: "{{node1_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  - name: Wait for admin self-flip to apply
+    type: wait
+    seconds: 3
+
+  - name: Node-1 creates context-A
+    type: create_context
+    node: af-late-flip-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_a: contextId
+      node1_key_a: memberPublicKey
+
+  - name: Node-1 writes into context-A
+    type: call
+    node: af-late-flip-node-1
+    context_id: "{{ctx_a}}"
+    method: set
+    args:
+      key: "alpha"
+      value: "from-A"
+    executor_public_key: "{{node1_key_a}}"
+
+  - name: Node-1 creates context-B
+    type: create_context
+    node: af-late-flip-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_b: contextId
+      node1_key_b: memberPublicKey
+
+  - name: Node-1 writes into context-B
+    type: call
+    node: af-late-flip-node-1
+    context_id: "{{ctx_b}}"
+    method: set
+    args:
+      key: "beta"
+      value: "from-B"
+    executor_public_key: "{{node1_key_b}}"
+
+  - name: Node-1 creates context-C
+    type: create_context
+    node: af-late-flip-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_c: contextId
+      node1_key_c: memberPublicKey
+
+  - name: Node-1 writes into context-C
+    type: call
+    node: af-late-flip-node-1
+    context_id: "{{ctx_c}}"
+    method: set
+    args:
+      key: "gamma"
+      value: "from-C"
+    executor_public_key: "{{node1_key_c}}"
+
+  # ── Phase 2: Node-2 joins, then SETTLES, then flag flips ────────────
+  - name: Node-1 invites node-2 to namespace
+    type: create_namespace_invitation
+    node: af-late-flip-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      ns_invite: invitation
+
+  - name: Wait for governance to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: af-late-flip-node-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{ns_invite}}"
+    outputs:
+      node2_identity: memberIdentity
+
+  - name: Node-1 adds node-2 to subgroup
+    type: add_group_members
+    node: af-late-flip-node-1
+    group_id: "{{group_id}}"
+    members:
+      - identity: "{{node2_identity}}"
+        role: Member
+
+  # The settling window. Unlike workflow 2 (which is intentionally
+  # tight to catch races), this workflow waits long enough that
+  # MemberAdded apply on node-2 has DEFINITELY completed BEFORE the
+  # SetMemberAutoFollow op even leaves node-1. That isolates the
+  # backfill path from the join-edge race.
+  - name: Settle period — node-2 fully joined, flag still false
+    type: wait
+    seconds: 15
+
+  # NOW flip the flag → AutoFollowSet event → backfill cascade
+  - name: Enable contexts auto-follow for node-2 (late flip)
+    type: set_member_auto_follow
+    node: af-late-flip-node-1
+    group_id: "{{group_id}}"
+    member_id: "{{node2_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  # ── Phase 3: Backfill convergence assertions ────────────────────────
+  - name: Wait for context-A to converge on node-2
+    type: wait_for_sync
+    context_id: "{{ctx_a}}"
+    nodes:
+      - af-late-flip-node-1
+      - af-late-flip-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Wait for context-B to converge on node-2
+    type: wait_for_sync
+    context_id: "{{ctx_b}}"
+    nodes:
+      - af-late-flip-node-1
+      - af-late-flip-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Wait for context-C to converge on node-2
+    type: wait_for_sync
+    context_id: "{{ctx_c}}"
+    nodes:
+      - af-late-flip-node-1
+      - af-late-flip-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads context-A
+    type: call
+    node: af-late-flip-node-2
+    context_id: "{{ctx_a}}"
+    method: get
+    args:
+      key: "alpha"
+    outputs:
+      n2_read_a: result
+
+  - name: Node-2 reads context-B
+    type: call
+    node: af-late-flip-node-2
+    context_id: "{{ctx_b}}"
+    method: get
+    args:
+      key: "beta"
+    outputs:
+      n2_read_b: result
+
+  - name: Node-2 reads context-C
+    type: call
+    node: af-late-flip-node-2
+    context_id: "{{ctx_c}}"
+    method: get
+    args:
+      key: "gamma"
+    outputs:
+      n2_read_c: result
+
+  - name: Assert backfill enumerated all pre-existing contexts
+    type: assert
+    statements:
+      - "is_set({{n2_read_a}})"
+      - "is_set({{n2_read_b}})"
+      - "is_set({{n2_read_c}})"
+      - 'contains({{n2_read_a}}, "from-A")'
+      - 'contains({{n2_read_b}}, "from-B")'
+      - 'contains({{n2_read_c}}, "from-C")'

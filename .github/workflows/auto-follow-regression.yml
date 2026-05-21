@@ -1,0 +1,240 @@
+name: Auto-follow regression (detection)
+
+# Manual-trigger detection runner for the 5 workflows in
+# `workflows/auto-follow-tests/`. Trigger this after merging the
+# workflows in to confirm which of them fail on master — those
+# failures are the live #2422 regression surface, and the resulting
+# log evidence + workflow-level pass/fail map directly drives the fix.
+#
+# Once the #2422 fix lands, the fix PR is expected to flip this from
+# `workflow_dispatch` to push/pull_request triggers — same shape as
+# `.github/workflows/sync-regression.yml` — so the workflows become a
+# permanent regression guard.
+#
+# Why workflow_dispatch only at this stage: master is currently
+# expected to fail at least workflow 2 (auto-follow-backfill-on-join)
+# and the log-grep guards on workflows 4 + 5. Wiring on
+# push/pull_request would mark master CI red until the fix lands; the
+# detection runs happen on demand instead.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      workflow:
+        description: "Which workflow to run (or 'all' for the full matrix)."
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - auto-follow-on-context-registered
+          - auto-follow-backfill-on-join
+          - auto-follow-flag-flipped-late
+          - no-unknown-context-rejection-spam
+          - asymmetric-context-membership
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_LOG: info,calimero_=debug
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  auto-follow-regression:
+    name: Auto-follow regression (${{ matrix.workflow }})
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 20
+    # Fail-fast off: when we're DETECTING which bug paths exist, we
+    # want every workflow's outcome, not just the first failure.
+    strategy:
+      fail-fast: false
+      matrix:
+        workflow:
+          - auto-follow-on-context-registered
+          - auto-follow-backfill-on-join
+          - auto-follow-flag-flipped-late
+          - no-unknown-context-rejection-spam
+          - asymmetric-context-membership
+    steps:
+      - name: Decide whether to run this matrix entry
+        id: gate
+        # The choice-input narrows the matrix; we set `run=true|false`
+        # here so every step below can guard with `if: steps.gate.outputs.run == 'true'`.
+        # Hardcoded literal comparison; the input is a GitHub `choice`
+        # type so its value is constrained to the option list above
+        # (no attacker-controlled freeform string).
+        env:
+          INPUT_WORKFLOW: ${{ inputs.workflow }}
+          MATRIX_WORKFLOW: ${{ matrix.workflow }}
+        run: |
+          if [ "$INPUT_WORKFLOW" = "all" ] || [ "$INPUT_WORKFLOW" = "$MATRIX_WORKFLOW" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Running matrix entry: $MATRIX_WORKFLOW"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping matrix entry: $MATRIX_WORKFLOW (input was $INPUT_WORKFLOW)"
+          fi
+
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        if: steps.gate.outputs.run == 'true'
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          shared-key: auto-follow-regression
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build local merod image
+        if: steps.gate.outputs.run == 'true'
+        uses: ./.github/actions/build-local-merod
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build kv-store-with-handlers WASM
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          cd apps/kv-store-with-handlers
+          ./build.sh
+
+      - name: Setup merobox
+        if: steps.gate.outputs.run == 'true'
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run workflow
+        if: steps.gate.outputs.run == 'true'
+        # Same log-capture + run pattern as sync-regression.yml.
+        # Container logs are captured WHILE the run is live —
+        # `merobox bootstrap run` tears containers down on exit, so a
+        # post-run `docker logs` pass would find nothing.
+        #
+        # `MATRIX_WORKFLOW` is bound to a fixed `choice` matrix value,
+        # not attacker-controlled input, but we still funnel it through
+        # an env var so the shell body contains no `${{ ... }}` GitHub
+        # interpolation — matches sync-regression.yml convention.
+        env:
+          MATRIX_WORKFLOW: ${{ matrix.workflow }}
+        run: |
+          mkdir -p docker-logs
+
+          LOGDIR="$GITHUB_WORKSPACE/docker-logs"
+          WATCHER_STATE_DIR="$(mktemp -d)"
+          (
+            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+              for c in $(docker ps --filter "label=calimero.node=true" \
+                                   --format "{{.Names}}" 2>/dev/null \
+                         | grep -v -- '-init$' || true); do
+                mark="$WATCHER_STATE_DIR/${c}"
+                if [ ! -f "$mark" ]; then
+                  touch "$mark"
+                  echo "[log-watcher] following $c"
+                  docker logs -f --timestamps "$c" \
+                    > "$LOGDIR/${c}.log" 2>&1 &
+                fi
+              done
+              sleep 1
+            done
+          ) &
+          WATCHER_PID=$!
+
+          set +e
+          set -o pipefail
+          merobox bootstrap run \
+              "workflows/auto-follow-tests/${MATRIX_WORKFLOW}.yml" \
+              --image merod:local \
+              --e2e-mode \
+              --verbose 2>&1 | tee "docker-logs/merobox-${MATRIX_WORKFLOW}.log"
+          exit_code=$?
+          set +o pipefail
+
+          touch "$WATCHER_STATE_DIR/stop"
+          sleep 2
+          kill "$WATCHER_PID" 2>/dev/null || true
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
+
+          exit "$exit_code"
+
+      - name: Upload docker logs
+        # Always upload — even when the workflow itself passes, the
+        # captured logs are the regression-signal artefact for the
+        # log-grep guards below.
+        if: always() && steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-follow-regression-${{ matrix.workflow }}-logs
+          path: docker-logs/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Guard — no unknown-context rejection spam
+        # Workflows 4 + 5's regression signal lives here, NOT inside
+        # the YAML — neither workflow asserts the log line directly,
+        # by design (mirrors sync-regression.yml's #2356 guard pattern).
+        #
+        # Fail-loud on absent logs: a merobox run that aborts before
+        # any container starts would produce a silent false negative
+        # (no files to grep means no match). The file-existence check
+        # below fails the step in that case so upstream failure
+        # surfaces.
+        if: always() && steps.gate.outputs.run == 'true' && (matrix.workflow == 'no-unknown-context-rejection-spam' || matrix.workflow == 'asymmetric-context-membership')
+        env:
+          WARN_SIGNATURE: "inbound stream for unknown context, closing cleanly"
+        run: |
+          set +e
+          shopt -s nullglob
+          # Each workflow uses its own node-name prefix; glob across
+          # all of them so the guard works regardless of which
+          # workflow this matrix entry is.
+          log_files=(docker-logs/af-*-node-*.log)
+          if [ ${#log_files[@]} -eq 0 ]; then
+            echo "::error::No docker-logs/af-*-node-*.log captured — merobox run likely aborted before any container started."
+            exit 1
+          fi
+          if grep -h -F "$WARN_SIGNATURE" "${log_files[@]}" 2>/dev/null; then
+            echo "::error::Auto-follow regression: peer with non-materialised context rejected an inbound sync stream as 'unknown context'."
+            echo "This is the #2422 symptom on options 3/4 — the sync layer is picking a non-following peer as a sync target."
+            echo "See crates/node/src/sync/manager/mod.rs (peer-selection + responder materialisation gate)."
+            exit 1
+          fi
+          echo "OK: no 'unknown context' rejection spam observed across ${#log_files[@]} log file(s)."
+
+      - name: Guard — no creator-side owned-identity race
+        # Same companion guard as sync-regression.yml carries — if the
+        # creator's auto-follow cascade fires before ContextIdentity
+        # is written, the synchronous sync attempt bails with the
+        # signature below and the cascade enters exponential backoff.
+        # Auto-follow workflows go through this code path on every
+        # `create_context`, so it's a relevant guard here too.
+        if: always() && steps.gate.outputs.run == 'true'
+        env:
+          OWNED_IDENT_SIGNATURE: "no owned identities found for context"
+        run: |
+          set +e
+          shopt -s nullglob
+          log_files=(docker-logs/af-*-node-*.log)
+          if [ ${#log_files[@]} -eq 0 ]; then
+            echo "::error::No docker-logs/af-*-node-*.log captured — cannot verify owned-identity guard."
+            exit 1
+          fi
+          if grep -h -F "$OWNED_IDENT_SIGNATURE" "${log_files[@]}" 2>/dev/null; then
+            echo "::error::Detected 'no owned identities found' race on a creator node."
+            echo "ContextIdentity must be written BEFORE sign_apply_and_publish(ContextRegistered)"
+            echo "so the auto-follow cascade triggered by the local apply can find the key."
+            echo "See crates/context/src/handlers/create_context.rs."
+            exit 1
+          fi
+          echo "OK: no creator-side owned-identity races observed across ${#log_files[@]} log file(s)."

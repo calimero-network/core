@@ -1,0 +1,334 @@
+name: "Asymmetric context membership (incident reproducer)"
+description: >
+  Workflow 5 of the #2422 regression test plan — the direct
+  reproducer of the user-reported incident
+  (Ronit/Fran, 2026-05-20).
+
+  Setup: two nodes in the same namespace, each in three subgroups,
+  each subgroup owning one context. Auto-follow is asymmetric per the
+  reproducer:
+    - node-1 follows contexts in subgroup_a + subgroup_b (NOT _c)
+    - node-2 follows contexts in subgroup_b + subgroup_c (NOT _a)
+  Both nodes write into the contexts they DO follow.
+
+  Healthy outcome (post-fix):
+    - context_b converges on both nodes (the overlap)
+    - context_a stays node-1-only; context_c stays node-2-only
+    - No "unknown context, closing cleanly" warnings in either log,
+      because the sync layer should not pick a non-following peer
+      as a sync target (option 3) or, if it does, the responder's
+      typed NotMaterialized response keeps it benign (option 4).
+
+  Bug surface today (pre-fix):
+    - Both nodes' sync layers fall back to namespace-mesh peers and
+      pick the other node as a sync target for the context they
+      don't share. The non-following side then rejects the inbound
+      stream with `unknown context, closing cleanly` and the
+      requesting side's failure_count climbs into 256s backoff. The
+      symptom matches the incident log verbatim.
+
+  Pass/fail policy:
+    - Workflow PASSES on the positive overlap (context_b converged,
+      both nodes read each other's writes in context_b).
+    - The CI runner adds two log-grep checks:
+        (a) no "unknown context, closing cleanly" on either node
+        (b) no "no owned identities found for context" on either node
+      Same shape as sync-regression.yml's #2356 guards.
+    - Local-absence checks (context_a not on node-2, context_c not
+      on node-1) and metric checks
+      (`sync_failures_total{protocol="HashComparison"}` near zero)
+      are deferred until merobox grows `assert_context_absent` and
+      `assert_metric`. TODOs marked at the end.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: af-asym-node
+
+steps:
+  # ── Phase 1: Bootstrap namespace + both nodes joined ────────────────
+  - name: Install application on node-1
+    type: install_application
+    node: af-asym-node-1
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: af-asym-node-2
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: af-asym-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Node-1 captures its namespace identity
+    type: get_namespace_identity
+    node: af-asym-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      node1_identity: publicKey
+
+  - name: Node-1 invites node-2 to namespace
+    type: create_namespace_invitation
+    node: af-asym-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      ns_invite: invitation
+
+  - name: Wait for namespace governance to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: af-asym-node-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{ns_invite}}"
+    outputs:
+      node2_identity: memberIdentity
+
+  # ── Phase 2: Three subgroups, both nodes members of all three ───────
+  - name: Node-1 creates subgroup_a
+    type: create_group_in_namespace
+    node: af-asym-node-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "asym-subgroup-a"
+    outputs:
+      group_a: groupId
+
+  - name: Node-1 creates subgroup_b
+    type: create_group_in_namespace
+    node: af-asym-node-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "asym-subgroup-b"
+    outputs:
+      group_b: groupId
+
+  - name: Node-1 creates subgroup_c
+    type: create_group_in_namespace
+    node: af-asym-node-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "asym-subgroup-c"
+    outputs:
+      group_c: groupId
+
+  - name: Add node-2 to subgroup_a
+    type: add_group_members
+    node: af-asym-node-1
+    group_id: "{{group_a}}"
+    members:
+      - identity: "{{node2_identity}}"
+        role: Member
+
+  - name: Add node-2 to subgroup_b
+    type: add_group_members
+    node: af-asym-node-1
+    group_id: "{{group_b}}"
+    members:
+      - identity: "{{node2_identity}}"
+        role: Member
+
+  - name: Add node-2 to subgroup_c
+    type: add_group_members
+    node: af-asym-node-1
+    group_id: "{{group_c}}"
+    members:
+      - identity: "{{node2_identity}}"
+        role: Member
+
+  - name: Wait for member governance to converge
+    type: wait
+    seconds: 5
+
+  # ── Phase 3: Asymmetric auto-follow setup ───────────────────────────
+  # Node-1 follows A + B (NOT C).
+  - name: Node-1 self-flips auto-follow for subgroup_a
+    type: set_member_auto_follow
+    node: af-asym-node-1
+    group_id: "{{group_a}}"
+    member_id: "{{node1_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  - name: Node-1 self-flips auto-follow for subgroup_b
+    type: set_member_auto_follow
+    node: af-asym-node-1
+    group_id: "{{group_b}}"
+    member_id: "{{node1_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  # Node-2 follows B + C (NOT A). Admin sets these on node-2's behalf.
+  - name: Admin sets auto-follow for node-2 in subgroup_b
+    type: set_member_auto_follow
+    node: af-asym-node-1
+    group_id: "{{group_b}}"
+    member_id: "{{node2_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  - name: Admin sets auto-follow for node-2 in subgroup_c
+    type: set_member_auto_follow
+    node: af-asym-node-1
+    group_id: "{{group_c}}"
+    member_id: "{{node2_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  - name: Wait for auto-follow flags to propagate
+    type: wait
+    seconds: 5
+
+  # ── Phase 4: Create contexts, both sides write ───────────────────────
+  # Per the issue spec: node-1 writes A + B; node-2 writes B + C.
+  - name: Node-1 creates context in subgroup_a
+    type: create_context
+    node: af-asym-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_a}}"
+    outputs:
+      ctx_a: contextId
+      n1_key_a: memberPublicKey
+
+  - name: Node-1 creates context in subgroup_b
+    type: create_context
+    node: af-asym-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_b}}"
+    outputs:
+      ctx_b: contextId
+      n1_key_b: memberPublicKey
+
+  # context_c is created by node-1, but only node-2 should materialise
+  # it (node-1 doesn't follow subgroup_c). This is exactly the
+  # Ronit/Fran asymmetry: the context exists in the namespace DAG, but
+  # not every node has a local entry for it.
+  - name: Node-1 creates context in subgroup_c
+    type: create_context
+    node: af-asym-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_c}}"
+    outputs:
+      ctx_c: contextId
+      n1_key_c: memberPublicKey
+
+  - name: Wait for ContextRegistered events + auto-follow joins to settle
+    type: wait
+    seconds: 10
+
+  - name: Node-1 writes into context_a
+    type: call
+    node: af-asym-node-1
+    context_id: "{{ctx_a}}"
+    method: set
+    args:
+      key: "alpha"
+      value: "n1-to-A"
+    executor_public_key: "{{n1_key_a}}"
+
+  - name: Node-1 writes into context_b
+    type: call
+    node: af-asym-node-1
+    context_id: "{{ctx_b}}"
+    method: set
+    args:
+      key: "beta-n1"
+      value: "n1-to-B"
+    executor_public_key: "{{n1_key_b}}"
+
+  # node-2 writes into context_b — proves node-2 materialised B via
+  # auto-follow and can execute writes against it locally. If node-2
+  # never auto-followed B, this `call` step fails.
+  - name: Node-2 writes into context_b
+    type: call
+    node: af-asym-node-2
+    context_id: "{{ctx_b}}"
+    method: set
+    args:
+      key: "beta-n2"
+      value: "n2-to-B"
+
+  # node-2 also writes into context_c.
+  - name: Node-2 writes into context_c
+    type: call
+    node: af-asym-node-2
+    context_id: "{{ctx_c}}"
+    method: set
+    args:
+      key: "gamma-n2"
+      value: "n2-to-C"
+
+  # ── Phase 5: Convergence assertion on the overlapping context ───────
+  - name: Wait for context_b to converge on both nodes
+    type: wait_for_sync
+    context_id: "{{ctx_b}}"
+    nodes:
+      - af-asym-node-1
+      - af-asym-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-1 reads what node-2 wrote in context_b
+    type: call
+    node: af-asym-node-1
+    context_id: "{{ctx_b}}"
+    method: get
+    args:
+      key: "beta-n2"
+    executor_public_key: "{{n1_key_b}}"
+    outputs:
+      n1_reads_n2: result
+
+  - name: Node-2 reads what node-1 wrote in context_b
+    type: call
+    node: af-asym-node-2
+    context_id: "{{ctx_b}}"
+    method: get
+    args:
+      key: "beta-n1"
+    outputs:
+      n2_reads_n1: result
+
+  - name: Assert context_b is fully bidirectional
+    type: assert
+    statements:
+      - "is_set({{n1_reads_n2}})"
+      - "is_set({{n2_reads_n1}})"
+      - 'contains({{n1_reads_n2}}, "n2-to-B")'
+      - 'contains({{n2_reads_n1}}, "n1-to-B")'
+
+  # ── Phase 6: settle window before workflow exits ─────────────────────
+  # This sleep gives the sync manager time to fire its periodic sync
+  # tick across context_a (where only node-1 follows) and context_c
+  # (where only node-2 follows). On a buggy build this is the window
+  # where "unknown context, closing cleanly" warnings would show up
+  # on whichever peer was picked as the non-following sync target.
+  # The CI runner greps for that signature post-run.
+  - name: Settle window for asymmetric-context sync ticks
+    type: wait
+    seconds: 30
+
+  # TODO (Phase A follow-up): when merobox grows `assert_context_absent`,
+  # close the loop with:
+  #   - name: Assert node-1 has no local entry for context_c
+  #     type: assert_context_absent
+  #     node: af-asym-node-1
+  #     context_id: "{{ctx_c}}"
+  #   - name: Assert node-2 has no local entry for context_a
+  #     type: assert_context_absent
+  #     node: af-asym-node-2
+  #     context_id: "{{ctx_a}}"
+  # Until then, the CI runner's log-grep is the gate on the asymmetric
+  # state being benign (no rejection spam, no failure_count climb).

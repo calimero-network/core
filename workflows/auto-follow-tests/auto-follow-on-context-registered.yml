@@ -1,0 +1,177 @@
+name: "Auto-follow on context-registered (happy path)"
+description: >
+  Workflow 1 of the #2422 regression test plan.
+
+  Goal: prove the event-driven auto-follow path
+  (`OpEvent::ContextRegistered` → `JoinContext`) is wired end-to-end.
+  Admin sets `auto_follow.contexts = true` for the joiner BEFORE
+  creating the context, then creates a context. The joiner should
+  materialise the context locally with no explicit `join_context` step.
+
+  Expected on master: PASS. Wires:
+    crates/context/src/auto_follow.rs::handle_context_registered
+    (decision = Join → emit JoinContextRequest)
+
+  If THIS workflow fails on master, the failure is upstream of #2422
+  — the event-driven happy path itself is broken (the bug class lives
+  one branch deeper, in the on-join backfill path that workflows 2 and 5
+  exercise).
+
+# Mirrors `workflows/sync-tests/opaque-leaf-regression.yml` shape.
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  # `merod:local` is built by the auto-follow-regression CI runner from
+  # the PR HEAD; `merobox bootstrap run --image merod:local` overrides
+  # at the CLI level so a local run picks up the locally-built image.
+  image: merod:local
+  prefix: af-baseline-node
+
+steps:
+  # ── Phase 1: Bootstrap two-node namespace + subgroup ────────────────
+  - name: Install kv-store-with-handlers on node-1
+    type: install_application
+    node: af-baseline-node-1
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install kv-store-with-handlers on node-2
+    type: install_application
+    node: af-baseline-node-2
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: af-baseline-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Node-1 captures its namespace identity
+    type: get_namespace_identity
+    node: af-baseline-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      node1_identity: publicKey
+
+  - name: Node-1 invites node-2 to namespace
+    type: create_namespace_invitation
+    node: af-baseline-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      ns_invite: invitation
+
+  - name: Wait for namespace governance to gossip
+    # Same 10s budget as sync-tests/opaque-leaf-regression.yml — enough
+    # for the invitation to become visible to node-2 in a 2-node mesh.
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: af-baseline-node-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{ns_invite}}"
+    outputs:
+      node2_identity: memberIdentity
+
+  - name: Node-1 creates subgroup
+    type: create_group_in_namespace
+    node: af-baseline-node-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "auto-follow-baseline"
+    outputs:
+      group_id: groupId
+
+  - name: Node-1 adds node-2 to the subgroup
+    type: add_group_members
+    node: af-baseline-node-1
+    group_id: "{{group_id}}"
+    members:
+      - identity: "{{node2_identity}}"
+        role: Member
+
+  - name: Wait for member governance to converge on both nodes
+    type: wait
+    seconds: 5
+
+  # ── Phase 2: Enable auto-follow BEFORE creating the context ─────────
+  # This is the critical ordering for the event-driven path:
+  #   set flag → context created → ContextRegistered event → JoinContext
+  - name: Enable contexts auto-follow for node-2
+    type: set_member_auto_follow
+    node: af-baseline-node-1
+    group_id: "{{group_id}}"
+    member_id: "{{node2_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  - name: Wait for AutoFollowSet op to propagate to node-2
+    # The handler reads `should_auto_follow_contexts` from the store on
+    # each ContextRegistered event, so node-2 must have applied the
+    # SetMemberAutoFollow op BEFORE the next step's ContextRegistered
+    # event reaches its handler. 5s is the gossipsub budget used by the
+    # sibling `workflow-set-member-auto-follow-example.yml`.
+    type: wait
+    seconds: 5
+
+  # ── Phase 3: Create the context and verify auto-join ────────────────
+  - name: Node-1 creates context in subgroup
+    type: create_context
+    node: af-baseline-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+      node1_key: memberPublicKey
+
+  - name: Node-1 writes a key into the new context
+    type: call
+    node: af-baseline-node-1
+    context_id: "{{ctx_id}}"
+    method: set
+    args:
+      key: "hello"
+      value: "from-node-1"
+    executor_public_key: "{{node1_key}}"
+
+  - name: Wait for context to materialise + converge on node-2
+    # `wait_for_sync` polls DAG heads + root_hash convergence on the
+    # listed nodes. If auto-follow didn't fire on node-2, node-2 has no
+    # local entry for `ctx_id` and this step times out — which IS the
+    # regression signal (workflow fails on timeout, not via a separate
+    # absent-check step).
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - af-baseline-node-1
+      - af-baseline-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Node-2 reads what node-1 wrote
+    # This `call` doubles as a presence assertion — it fails with
+    # "context not found" if auto-follow never materialised `ctx_id` on
+    # node-2, which surfaces as a workflow failure with a clear error
+    # (clearer than a wait_for_sync timeout alone).
+    type: call
+    node: af-baseline-node-2
+    context_id: "{{ctx_id}}"
+    method: get
+    args:
+      key: "hello"
+    outputs:
+      node2_read: result
+
+  - name: Assert node-2 read the value node-1 wrote
+    type: assert
+    statements:
+      - "is_set({{node2_read}})"
+      - 'contains({{node2_read}}, "from-node-1")'

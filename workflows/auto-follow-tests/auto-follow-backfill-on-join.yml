@@ -1,0 +1,270 @@
+name: "Auto-follow backfill on join (the regression)"
+description: >
+  Workflow 2 of the #2422 regression test plan — the direct repro of
+  the user-reported regression.
+
+  Setup: subgroup with THREE pre-existing contexts (A, B, C). Node-2
+  joins the subgroup AFTER those contexts already exist. Admin then
+  toggles `auto_follow.contexts = true` for node-2. Per the spec, this
+  should backfill all three contexts onto node-2.
+
+  Today the backfill IS implemented in
+    crates/context/src/auto_follow.rs::handle_auto_follow_enabled
+  triggered by `OpEvent::AutoFollowSet { member = self, contexts: true }`,
+  capped at BACKFILL_LIMIT = 1000. So the structural backfill path
+  exists — what this workflow probes is whether it fires reliably for
+  EVERY pre-existing context (or only some of them, which is the
+  Ronit/Fran-incident asymmetry).
+
+  Expected on master: depends on the bug class.
+    - If the backfill is reliable: PASS (all three reads succeed).
+    - If there's a missed-event / store-read race per context:
+      one or more of the per-context reads in Phase 3 fails.
+
+  This is intentionally light on `wait`s between the SetMemberAutoFollow
+  and the post-condition checks: padding waits would HIDE the race we're
+  trying to detect. `wait_for_sync` is the only convergence gate, and
+  its 60s timeout is the regression signal.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: af-backfill-node
+
+steps:
+  # ── Phase 1: Bootstrap with pre-existing contexts BEFORE node-2 joins ─
+  - name: Install application on node-1
+    type: install_application
+    node: af-backfill-node-1
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Install application on node-2
+    type: install_application
+    node: af-backfill-node-2
+    path: apps/kv-store-with-handlers/res/kv_store_with_handlers.wasm
+    dev: true
+
+  - name: Node-1 creates namespace
+    type: create_namespace
+    node: af-backfill-node-1
+    application_id: "{{app_id}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Node-1 captures its namespace identity
+    type: get_namespace_identity
+    node: af-backfill-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      node1_identity: publicKey
+
+  - name: Node-1 creates subgroup
+    type: create_group_in_namespace
+    node: af-backfill-node-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "auto-follow-backfill"
+    outputs:
+      group_id: groupId
+
+  # Admin enables auto-follow on itself so it actually materialises the
+  # contexts it's about to create (and so the post-create writes go
+  # through node-1's local store, not just the governance DAG).
+  - name: Enable contexts auto-follow for node-1 (admin self-flip)
+    type: set_member_auto_follow
+    node: af-backfill-node-1
+    group_id: "{{group_id}}"
+    member_id: "{{node1_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  - name: Wait for admin self-flip to apply
+    type: wait
+    seconds: 3
+
+  # Create three contexts BEFORE node-2 is even invited — this is what
+  # the backfill path is supposed to enumerate later.
+  - name: Node-1 creates context-A
+    type: create_context
+    node: af-backfill-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_a: contextId
+      node1_key_a: memberPublicKey
+
+  - name: Node-1 writes a key into context-A
+    type: call
+    node: af-backfill-node-1
+    context_id: "{{ctx_a}}"
+    method: set
+    args:
+      key: "alpha"
+      value: "from-A"
+    executor_public_key: "{{node1_key_a}}"
+
+  - name: Node-1 creates context-B
+    type: create_context
+    node: af-backfill-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_b: contextId
+      node1_key_b: memberPublicKey
+
+  - name: Node-1 writes a key into context-B
+    type: call
+    node: af-backfill-node-1
+    context_id: "{{ctx_b}}"
+    method: set
+    args:
+      key: "beta"
+      value: "from-B"
+    executor_public_key: "{{node1_key_b}}"
+
+  - name: Node-1 creates context-C
+    type: create_context
+    node: af-backfill-node-1
+    application_id: "{{app_id}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_c: contextId
+      node1_key_c: memberPublicKey
+
+  - name: Node-1 writes a key into context-C
+    type: call
+    node: af-backfill-node-1
+    context_id: "{{ctx_c}}"
+    method: set
+    args:
+      key: "gamma"
+      value: "from-C"
+    executor_public_key: "{{node1_key_c}}"
+
+  # ── Phase 2: Node-2 joins the namespace + subgroup ──────────────────
+  - name: Node-1 invites node-2 to namespace
+    type: create_namespace_invitation
+    node: af-backfill-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      ns_invite: invitation
+
+  - name: Wait for namespace + contexts governance to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: af-backfill-node-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{ns_invite}}"
+    outputs:
+      node2_identity: memberIdentity
+
+  - name: Node-1 adds node-2 to subgroup
+    type: add_group_members
+    node: af-backfill-node-1
+    group_id: "{{group_id}}"
+    members:
+      - identity: "{{node2_identity}}"
+        role: Member
+
+  - name: Wait for MemberAdded op to apply on node-2
+    type: wait
+    seconds: 5
+
+  # ── Phase 3: Flip the flag on node-2 → backfill should fire ─────────
+  # This is the AutoFollowSet → handle_auto_follow_enabled →
+  # enumerate_group_contexts → JoinContext-per-context cascade.
+  - name: Enable contexts auto-follow for node-2 (post-join flip)
+    type: set_member_auto_follow
+    node: af-backfill-node-1
+    group_id: "{{group_id}}"
+    member_id: "{{node2_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  # Rate limiter is 20 tokens/min default — 3 contexts is well within
+  # the immediate burst, so backfill should complete in ~seconds, not
+  # minutes. The 60s timeout per `wait_for_sync` is generous to absorb
+  # gossipsub + sync-session latency on a cold runner.
+  - name: Wait for context-A to converge on both nodes
+    type: wait_for_sync
+    context_id: "{{ctx_a}}"
+    nodes:
+      - af-backfill-node-1
+      - af-backfill-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Wait for context-B to converge on both nodes
+    type: wait_for_sync
+    context_id: "{{ctx_b}}"
+    nodes:
+      - af-backfill-node-1
+      - af-backfill-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  - name: Wait for context-C to converge on both nodes
+    type: wait_for_sync
+    context_id: "{{ctx_c}}"
+    nodes:
+      - af-backfill-node-1
+      - af-backfill-node-2
+    timeout: 60
+    check_interval: 2
+    trigger_sync: true
+
+  # ── Phase 4: Per-context cross-reads as the real assertion ──────────
+  # Each `call` below fails the workflow if node-2 doesn't have the
+  # context materialised locally — clearer signal than a wait_for_sync
+  # timeout alone. If the backfill silently misses one of A/B/C, the
+  # corresponding read fails with "context not found".
+  - name: Node-2 reads context-A
+    type: call
+    node: af-backfill-node-2
+    context_id: "{{ctx_a}}"
+    method: get
+    args:
+      key: "alpha"
+    outputs:
+      n2_read_a: result
+
+  - name: Node-2 reads context-B
+    type: call
+    node: af-backfill-node-2
+    context_id: "{{ctx_b}}"
+    method: get
+    args:
+      key: "beta"
+    outputs:
+      n2_read_b: result
+
+  - name: Node-2 reads context-C
+    type: call
+    node: af-backfill-node-2
+    context_id: "{{ctx_c}}"
+    method: get
+    args:
+      key: "gamma"
+    outputs:
+      n2_read_c: result
+
+  - name: Assert node-2 backfilled all three pre-existing contexts
+    type: assert
+    statements:
+      - "is_set({{n2_read_a}})"
+      - "is_set({{n2_read_b}})"
+      - "is_set({{n2_read_c}})"
+      - 'contains({{n2_read_a}}, "from-A")'
+      - 'contains({{n2_read_b}}, "from-B")'
+      - 'contains({{n2_read_c}}, "from-C")'
