@@ -1270,8 +1270,10 @@ impl<S: StorageAdaptor> Interface<S> {
                     )?;
                 }
 
-                crate::delta::push_action(Action::Compare { id });
-                debug!(%id, "Queued compare action after apply");
+                if S::participates_in_sync() {
+                    crate::delta::push_action(Action::Compare { id });
+                    debug!(%id, "Queued compare action after apply");
+                }
             }
             Action::Compare { .. } => {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
@@ -1643,8 +1645,10 @@ impl<S: StorageAdaptor> Interface<S> {
             <Interface<S>>::apply_action(action, ctx)?;
         }
 
-        for action in remote {
-            crate::delta::push_action(action);
+        if S::participates_in_sync() {
+            for action in remote {
+                crate::delta::push_action(action);
+            }
         }
 
         Ok(())
@@ -1826,12 +1830,21 @@ impl<S: StorageAdaptor> Interface<S> {
         // Use DeleteRef for efficient tombstone-based deletion.
         // More efficient than Delete: only sends ID + timestamp + metadata vs full ancestor tree.
         // The tombstone is created by remove_child_from, we just broadcast the deletion.
-        crate::delta::push_action(Action::DeleteRef {
-            id: child_id,
-            deleted_at,
-            // Pass the full metadata
-            metadata,
-        });
+        //
+        // Gated by `S::participates_in_sync()`: a `PrivateStorage` delete
+        // stays local and must NOT enter the synced delta stream — same
+        // reasoning as the `Compare` push at the end of `apply_action`
+        // above. The remove_child_from call right above mutates only
+        // `S`'s index, so the broadcast was the only sync surface for
+        // this path.
+        if S::participates_in_sync() {
+            crate::delta::push_action(Action::DeleteRef {
+                id: child_id,
+                deleted_at,
+                // Pass the full metadata
+                metadata,
+            });
+        }
 
         Ok(true)
     }
@@ -2324,7 +2337,21 @@ impl<S: StorageAdaptor> Interface<S> {
             }
         };
 
-        crate::delta::push_action(action);
+        // #2319 root cause: this push is the choke point through which
+        // every storage mutation enters the synced delta stream. For
+        // `MainStorage` that is correct. For `PrivateStorage` — backing
+        // `#[app::private]` tree-collection fields after the macro
+        // substitution — it was leaking actions for purely node-local
+        // collection bookkeeping (e.g. the `add_child_to(*ROOT_ID, ...)`
+        // call inside `Collection::new()` when an UnorderedMap is
+        // default-constructed during `PrivateSecrets::default()`). Peers
+        // applied those actions to their `MainStorage` and ended up
+        // with extra `crdt_type=None, field_name=None` children under
+        // context-root that the author didn't have. Gate the push on
+        // `S::participates_in_sync()` so private writes stay local.
+        if S::participates_in_sync() {
+            crate::delta::push_action(action);
+        }
 
         debug!(%id, ?full_hash, is_new, "save_raw completed");
 

@@ -38,9 +38,10 @@ pub struct Vector<V, S: StorageAdaptor = MainStorage> {
     inner: Collection<V, S>,
 }
 
-impl<V> Vector<V, MainStorage>
+impl<V, S> Vector<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     /// Create a new vector collection with a random ID.
     ///
@@ -49,6 +50,11 @@ where
     /// doesn't affect sync semantics.
     ///
     /// For top-level state fields, use `new_with_field_name` instead.
+    ///
+    /// `S` is inferred from the binding context; default-generic is
+    /// `MainStorage`. Inside `#[app::private]`, the macro substitutes
+    /// `PrivateStorage` as `S` on the field type, and this constructor
+    /// infers `S = PrivateStorage` at the assignment site.
     pub fn new() -> Self {
         Self::new_internal()
     }
@@ -324,11 +330,17 @@ where
     }
 }
 
-impl<V> Eq for Vector<V> where V: Eq + BorshSerialize + BorshDeserialize {}
+impl<V, S> Eq for Vector<V, S>
+where
+    V: Eq + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+}
 
-impl<V> PartialEq for Vector<V>
+impl<V, S> PartialEq for Vector<V, S>
 where
     V: PartialEq + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
@@ -339,9 +351,10 @@ where
     }
 }
 
-impl<V> Ord for Vector<V>
+impl<V, S> Ord for Vector<V, S>
 where
     V: Ord + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -352,9 +365,10 @@ where
     }
 }
 
-impl<V> PartialOrd for Vector<V>
+impl<V, S> PartialOrd for Vector<V, S>
 where
     V: PartialOrd + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         let l = self.iter().ok()?;
@@ -364,9 +378,10 @@ where
     }
 }
 
-impl<V> fmt::Debug for Vector<V>
+impl<V, S> fmt::Debug for Vector<V, S>
 where
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     #[expect(clippy::unwrap_used, clippy::unwrap_in_result, reason = "'tis fine")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -440,10 +455,11 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::{Root, Vector};
+    use crate::store::MainStorage;
 
     #[test]
     fn test_vector_push() {
-        let mut vector = Root::new(|| Vector::new());
+        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
 
         let value = "test_data".to_owned();
         let result = vector.push(value.clone());
@@ -453,7 +469,7 @@ mod tests {
 
     #[test]
     fn test_vector_get() {
-        let mut vector = Root::new(|| Vector::new());
+        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
 
         let value = "test_data".to_owned();
         let _ = vector.push(value.clone()).unwrap();
@@ -463,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_vector_update() {
-        let mut vector = Root::new(|| Vector::new());
+        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
 
         let value1 = "test_data1".to_owned();
         let value2 = "test_data2".to_owned();
@@ -486,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_vector_pop() {
-        let mut vector = Root::new(|| Vector::new());
+        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
 
         let value = "test_data".to_owned();
         let _ = vector.push(value.clone()).unwrap();
@@ -497,7 +513,7 @@ mod tests {
 
     #[test]
     fn test_vector_items() {
-        let mut vector = Root::new(|| Vector::new());
+        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
 
         let value1 = "test_data1".to_owned();
         let value2 = "test_data2".to_owned();
@@ -509,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_vector_contains() {
-        let mut vector = Root::new(|| Vector::new());
+        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
 
         let value = "test_data".to_owned();
         let _ = vector.push(value.clone()).unwrap();
@@ -520,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_vector_clear() {
-        let mut vector = Root::new(|| Vector::new());
+        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
 
         let value = "test_data".to_owned();
         let _ = vector.push(value.clone()).unwrap();
@@ -530,7 +546,7 @@ mod tests {
 
     #[test]
     fn test_vector_find() {
-        let mut vector = Root::new(|| Vector::new());
+        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
 
         let _ = vector.push("apple".to_owned()).unwrap();
         let _ = vector.push("banana".to_owned()).unwrap();
@@ -554,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_vector_filter() {
-        let mut vector = Root::new(|| Vector::new());
+        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
 
         let _ = vector.push("apple".to_owned()).unwrap();
         let _ = vector.push("banana".to_owned()).unwrap();
@@ -584,7 +600,7 @@ mod tests {
 
     #[test]
     fn test_vector_find_with_numbers() {
-        let mut vector = Root::new(|| Vector::new());
+        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
 
         let _ = vector.push(1u32).unwrap();
         let _ = vector.push(5u32).unwrap();
@@ -599,7 +615,7 @@ mod tests {
 
     #[test]
     fn test_vector_filter_with_numbers() {
-        let mut vector = Root::new(|| Vector::new());
+        let mut vector = Root::new(|| Vector::<_, MainStorage>::new());
 
         let _ = vector.push(1u32).unwrap();
         let _ = vector.push(5u32).unwrap();

@@ -24,10 +24,11 @@ pub struct UnorderedMap<K, V, S: StorageAdaptor = MainStorage> {
     inner: Collection<(K, V), S>,
 }
 
-impl<K, V> UnorderedMap<K, V, MainStorage>
+impl<K, V, S> UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     /// Create a new map collection with a random ID.
     ///
@@ -36,6 +37,13 @@ where
     /// doesn't affect sync semantics.
     ///
     /// For top-level state fields, use `new_with_field_name` instead.
+    ///
+    /// The storage adaptor `S` is inferred from the binding context.
+    /// Default-generic remains `MainStorage`, so existing call sites
+    /// (`UnorderedMap::<K, V>::new()`) keep their behaviour. Inside a
+    /// `#[app::private]` struct, the macro substitutes `PrivateStorage`
+    /// as `S` on the field type, and this constructor infers `S =
+    /// PrivateStorage` from the assignment site.
     pub fn new() -> Self {
         Self::new_internal()
     }
@@ -736,10 +744,11 @@ where
 mod tests {
     use crate::collections::unordered_map::Entry;
     use crate::collections::{Root, UnorderedMap};
+    use crate::store::MainStorage;
 
     #[test]
     fn test_unordered_map_basic_operations() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
 
         assert!(map
             .insert("key".to_owned(), "value".to_owned())
@@ -788,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_insert_and_get() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
 
         assert!(map
             .insert("key1".to_owned(), "value1".to_owned())
@@ -811,7 +820,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_update_value() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
 
         assert!(map
             .insert("key".to_owned(), "value".to_owned())
@@ -830,7 +839,7 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
 
         assert!(map
             .insert("key".to_owned(), "value".to_owned())
@@ -846,7 +855,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
 
         assert!(map
             .insert("key1".to_owned(), "value1".to_owned())
@@ -865,7 +874,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_len() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
 
         assert_eq!(map.len().expect("len failed"), 0);
 
@@ -894,7 +903,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_contains() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
 
         assert!(map
             .insert("key".to_owned(), "value".to_owned())
@@ -907,7 +916,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_entries() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
 
         assert!(map
             .insert("key1".to_owned(), "value1".to_owned())
@@ -931,7 +940,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_get_mut() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
         drop(
             map.insert("key1".to_owned(), "value1".to_owned())
                 .expect("insert failed"),
@@ -962,7 +971,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_entry_vacant() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
 
         // Test `or_insert()`
         {
@@ -997,7 +1006,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_entry_occupied_or_insert() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
         drop(
             map.insert("key1".to_owned(), "value1".to_owned())
                 .expect("insert failed"),
@@ -1042,7 +1051,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_entry_occupied_mutations() {
-        let mut map = Root::new(|| UnorderedMap::new());
+        let mut map = Root::new(|| UnorderedMap::<_, _, MainStorage>::new());
         drop(map.insert("key1".to_owned(), "value1".to_owned()).unwrap());
         drop(map.insert("key2".to_owned(), "value2".to_owned()).unwrap());
         drop(map.insert("key3".to_owned(), "value3".to_owned()).unwrap());

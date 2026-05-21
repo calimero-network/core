@@ -165,6 +165,236 @@ steps:
     statements:
       - "{{guess_result}} == False"
 
+  # ---------------------------------------------------------------
+  # Cover the rest of the private-state shapes exercised by the
+  # `#[app::private]` substitution:
+  #
+  #   - UnorderedMap / UnorderedSet / Vector  (tree-backed, rewritten
+  #     to `PrivateStorage` by the macro — must stay node-local)
+  #   - u64 / bool / Option<String> / BTreeMap / BTreeSet  (borsh-blob)
+  #
+  # The assertions below double as a privacy check: every "is node 2's
+  # local state on node 1?" answer must be "no".
+  #
+  # Outputs capture the full RPC envelope (`result`) so we can compare
+  # against `{"output": ...}` with `json_equal` — that's the working
+  # pattern used by example.yml and e2e.yml.
+  # ---------------------------------------------------------------
+
+  - name: Node 1 Secrets Added Count
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    method: secrets_added
+    outputs:
+      node_1_secrets_added: result
+
+  - name: Assert Node 1 Counted Both Adds
+    type: json_assert
+    statements:
+      - 'json_equal({{node_1_secrets_added}}, {"output": 2})'
+
+  - name: Node 2 Secrets Added Count
+    type: call
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    method: secrets_added
+    outputs:
+      node_2_secrets_added: result
+
+  - name: Assert Node 2 Independent Count
+    # Node 2 called `add_secret` exactly once (game3 above). Node 1's
+    # two adds must not have leaked into node 2's local counter.
+    type: json_assert
+    statements:
+      - 'json_equal({{node_2_secrets_added}}, {"output": 1})'
+
+  - name: Node 2 Attempted Games
+    type: call
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    method: attempted_games
+    outputs:
+      node_2_attempted: result
+
+  - name: Assert Node 2 Recorded Its Attempt
+    # `attempted_games` is an `UnorderedSet<String>` — the macro
+    # rewrites it to `PrivateStorage`. The wrong-guess on game1 above
+    # must have landed in node 2's local set, and only node 2's.
+    #
+    # NOTE: `UnorderedSet` iteration order is not guaranteed. This
+    # single-element assertion is safe; if you extend this step with
+    # additional attempts, replace `json_equal` with `json_subset`
+    # plus a length check, or sort the result before comparing, to
+    # avoid order-sensitive flakes.
+    type: json_assert
+    statements:
+      - 'json_equal({{node_2_attempted}}, {"output": ["game1"]})'
+
+  - name: Node 1 Attempted Games
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    method: attempted_games
+    outputs:
+      node_1_attempted: result
+
+  - name: Assert Node 1 Did Not See Node 2 Attempts
+    # If `PrivateStorage` substitution failed and the set leaked into
+    # the synced tree, node 1 would observe "game1" here — this is
+    # the privacy regression test.
+    type: json_assert
+    statements:
+      - 'json_equal({{node_1_attempted}}, {"output": []})'
+
+  - name: Node 2 Guess Count
+    type: call
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    method: guess_count
+    outputs:
+      node_2_guess_count: result
+
+  - name: Assert Node 2 Logged One Guess
+    # `guess_log` is a `Vector<GuessEntry>` rewritten to
+    # `PrivateStorage`; the wrong-guess above is the only entry.
+    type: json_assert
+    statements:
+      - 'json_equal({{node_2_guess_count}}, {"output": 1})'
+
+  - name: Node 1 Guess Count
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    method: guess_count
+    outputs:
+      node_1_guess_count: result
+
+  - name: Assert Node 1 Logged Zero Guesses
+    type: json_assert
+    statements:
+      - 'json_equal({{node_1_guess_count}}, {"output": 0})'
+
+  # ---------------------------------------------------------------
+  # Borsh-blob shapes: u64 / bool / Option<String> / BTreeMap / BTreeSet.
+  # Toggle the flag, write some notes/tags on node 1, confirm round-trip
+  # and absence on node 2.
+  # ---------------------------------------------------------------
+
+  - name: Node 1 Enable Remember Last Guess
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    method: set_remember_last_guess
+    args:
+      value: true
+
+  - name: Node 1 Read Remember Flag
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    method: remember_last_guess
+    outputs:
+      node_1_remember: result
+
+  - name: Assert Node 1 Remember Flag On
+    type: json_assert
+    statements:
+      - 'json_equal({{node_1_remember}}, {"output": true})'
+
+  - name: Node 2 Read Remember Flag
+    type: call
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    method: remember_last_guess
+    outputs:
+      node_2_remember: result
+
+  - name: Assert Node 2 Remember Flag Untouched
+    # The bool lives in the borsh-blob inside private storage. Node 1
+    # toggling it must not be visible on node 2.
+    type: json_assert
+    statements:
+      - 'json_equal({{node_2_remember}}, {"output": false})'
+
+  - name: Node 1 Set A Note
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    method: set_note
+    args:
+      game_id: game1
+      note: "my-private-note"
+
+  - name: Node 1 Read Notes
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    method: notes
+    outputs:
+      node_1_notes: result
+
+  - name: Assert Node 1 Note Round-Trips
+    type: json_assert
+    statements:
+      - 'json_equal({{node_1_notes}}, {"output": {"game1": "my-private-note"}})'
+
+  - name: Node 2 Read Notes
+    type: call
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    method: notes
+    outputs:
+      node_2_notes: result
+
+  - name: Assert Node 2 Notes Empty
+    type: json_assert
+    statements:
+      - 'json_equal({{node_2_notes}}, {"output": {}})'
+
+  - name: Node 1 Add Tag Alpha
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    method: add_tag
+    args:
+      tag: "alpha"
+
+  - name: Node 1 Add Tag Beta
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    method: add_tag
+    args:
+      tag: "beta"
+
+  - name: Node 1 Read Tags
+    type: call
+    node: rust-private-data-1
+    context_id: "{{context_id}}"
+    method: tags
+    outputs:
+      node_1_tags: result
+
+  - name: Assert Node 1 Tags
+    # BTreeSet serialises in sorted order.
+    type: json_assert
+    statements:
+      - 'json_equal({{node_1_tags}}, {"output": ["alpha", "beta"]})'
+
+  - name: Node 2 Read Tags
+    type: call
+    node: rust-private-data-2
+    context_id: "{{context_id}}"
+    method: tags
+    outputs:
+      node_2_tags: result
+
+  - name: Assert Node 2 Tags Empty
+    type: json_assert
+    statements:
+      - 'json_equal({{node_2_tags}}, {"output": []})'
+
 stop_all_nodes: false
 restart: false
 wait_timeout: 120
