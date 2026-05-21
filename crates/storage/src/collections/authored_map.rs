@@ -8,6 +8,25 @@
 //! The per-entry authorization is enforced at merge time in
 //! `Interface::apply_action` (see `interface.rs`). Local `update`/`remove`
 //! additionally short-circuit non-owner calls so bugs surface in-process.
+//!
+//! # CRDT trait surface
+//!
+//! `AuthoredMap` implements [`Mergeable`](super::crdt_meta::Mergeable) — required
+//! for `#[app::state]` nesting — but **does not** implement
+//! [`CrdtMap`](super::crdt_meta::CrdtMap). Two reasons:
+//!
+//! 1. **Signature shape.** `CrdtMap::insert(k, v) -> Result<Option<V>, _>`
+//!    has replace-and-return-previous semantics; `AuthoredMap::insert` rejects
+//!    existing keys (entries are non-transferable; the new owner must
+//!    `remove` then `insert`). The same goes for `update`/`remove`, both of
+//!    which are gated by `env::executor_id()` against the stored owner.
+//! 2. **Implicit-author hazard.** The shape-trait surface takes no `author`
+//!    parameter; a `CrdtMap` impl would have to read the executor id from
+//!    ambient `env` state, which couples the trait to a global side channel
+//!    and makes it easy to call from contexts (tests, helpers) where the id
+//!    isn't set. The unified author-aware surface tracked by issue #2309 is
+//!    the intended cure here; this file deliberately stays
+//!    `Mergeable`-only until that lands.
 
 use std::collections::BTreeMap;
 
