@@ -255,7 +255,7 @@ impl std::error::Error for MergeError {}
 
 impl From<crate::collections::error::StoreError> for MergeError {
     fn from(err: crate::collections::error::StoreError) -> Self {
-        MergeError::StorageError(format!("{err:?}"))
+        MergeError::StorageError(format!("{err}"))
     }
 }
 
@@ -378,13 +378,20 @@ mod tests {
         let store_err = crate::collections::error::StoreError::ArithmeticOverflow(
             "overflow while computing collection size".to_owned(),
         );
-        let original = format!("{store_err:?}");
+        let display_form = format!("{store_err}");
 
         let merge_err: MergeError = store_err.into();
 
         match merge_err {
             MergeError::StorageError(msg) => {
-                assert_eq!(msg, original, "expected debug formatting to be preserved");
+                assert_eq!(
+                    msg, display_form,
+                    "From<StoreError> must use Display so the thiserror message chain is preserved"
+                );
+                assert!(
+                    msg.contains("overflow while computing collection size"),
+                    "original error payload must survive the conversion, got: {msg}"
+                );
             }
             other => panic!("expected MergeError::StorageError, got {other:?}"),
         }
