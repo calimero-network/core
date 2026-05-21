@@ -555,22 +555,46 @@ impl ContextStorageApplier {
             }
         }
 
-        // CRITICAL FIX: Even if all parent checks passed, we STILL might need merge.
-        // The issue is: we don't know if the remote node applied our parent as a merge.
-        // Their child delta's actions are based on THEIR computed state, not ours.
+        // If we reach this point, every parent of this delta was:
+        //   1. present in our `parent_hashes` map (we know its computed hash);
+        //   2. computed by us to the same hash that matches our current state;
+        //   3. NOT in `merged_deltas` (was applied sequentially, not as a merge).
         //
-        // CONSERVATIVE FINAL CHECK: Always use merge semantics. CRDT merge is idempotent,
-        // so if states were identical, we get the same result. If not, we merge correctly.
+        // (1) ensures the parent isn't an opaque "from elsewhere" delta whose
+        // applied state we can't reason about. (2) ensures our current state
+        // is exactly the state the delta's author was working against — we
+        // haven't drifted via concurrent local writes. (3) ensures the
+        // parent's apply was deterministic for both us and the author —
+        // neither side took the CRDT-merge path that can produce different
+        // hashes for the same input.
         //
-        // This is the safest approach and ensures eventual consistency.
+        // Under those three conditions the delta is sequential by every
+        // available signal and direct apply will produce the same result the
+        // author got. The previous code returned `true` here on a "CRDT merge
+        // is idempotent so always-merge is safe" theory; that's false in
+        // practice — the merge-apply path (`Interface::save_internal` →
+        // `try_merge_data` / `try_merge_non_root`) routes through different
+        // metadata-stamping and ancestor-resolution code than the direct
+        // apply path, so two nodes that BOTH had the exact same state
+        // pre-delta could compute different post-delta root hashes if one
+        // direct-applied and the other merge-applied. That divergence then
+        // cascades: the `merged_deltas` write below records the
+        // divergent-applying side, so every subsequent child of this delta
+        // also takes the merge path (line ~465 above) and never reconverges
+        // — the "same DAG heads, different root hash" symptom in #2319.
+        //
+        // Cases where merge is still needed are caught above and return
+        // `true` before we get here: legitimate concurrent branches (line
+        // ~498), unknown parents (line ~554), and parents previously
+        // applied via merge (line ~473).
         debug!(
             context_id = %self.context_id,
             delta_id = ?delta.id,
             current_root_hash = ?Hash::from(*current_root_hash),
             delta_expected_hash = ?Hash::from(delta.expected_root_hash),
-            "Using CRDT merge semantics for all remote deltas (conservative)"
+            "All parent checks passed and state matches — treating as sequential apply"
         );
-        true
+        false
     }
 
     /// Resolve the writer set for every Shared entity touched by `delta`.

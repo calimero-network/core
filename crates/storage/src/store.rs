@@ -3,7 +3,10 @@
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
-use crate::env::{storage_read, storage_remove, storage_write};
+use crate::env::{
+    private_storage_read, private_storage_remove, private_storage_write, storage_read,
+    storage_remove, storage_write,
+};
 
 /// A key for storage operations.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -77,6 +80,32 @@ pub trait StorageAdaptor: 'static {
 
     /// Writes data to persistent storage.
     fn storage_write(key: Key, value: &[u8]) -> bool;
+
+    /// Whether writes through this adaptor participate in the synced
+    /// state delta stream.
+    ///
+    /// `Interface::save_raw` (and the `Action::Compare` push at the end of
+    /// `Interface::apply_action`, and the `Action::DeleteRef` push at the
+    /// end of the delete path) records every storage mutation as an
+    /// `Action` in the global delta stream. Those actions get bundled into
+    /// the next outgoing `StateDelta` and replayed on every peer.
+    ///
+    /// That's correct for `MainStorage`, where the whole point is that
+    /// writes propagate. It's a bug for `PrivateStorage`: a write that
+    /// stays on this node by design should not produce a wire action.
+    /// Otherwise peers replay the action against their own `MainStorage`,
+    /// creating entities the author doesn't have — the #2319 "Same DAG
+    /// heads, different root hash" divergence pattern (one extra
+    /// `crdt_type=None, field_name=None` child appearing in the receiver's
+    /// context-root index entry after every `PrivateStorage` collection
+    /// construction).
+    ///
+    /// Default is `true` (sync-participating). `PrivateStorage` overrides
+    /// to `false`. Test mocks default to `true` since they stand in for
+    /// `MainStorage` in unit tests.
+    fn participates_in_sync() -> bool {
+        true
+    }
 }
 
 /// Storage iteration support for GC and snapshots.
@@ -131,6 +160,100 @@ impl StorageAdaptor for MainStorage {
 
     fn storage_write(key: Key, value: &[u8]) -> bool {
         storage_write(key, value)
+    }
+}
+
+/// Node-local (private) storage adaptor.
+///
+/// Routes all reads/writes/removes to the node-local private-storage
+/// namespace via [`env::private_storage_read`](crate::env::private_storage_read)
+/// and friends. Entries stored here **do not** participate in the
+/// synced Merkle tree — they stay on the node that wrote them.
+///
+/// # When to use
+///
+/// `PrivateStorage` makes sense when you need scalable node-local
+/// state where only the *entries you change* are rewritten, not the
+/// whole blob. The alternative — borsh-serialising a plain
+/// `std::collections::BTreeMap` (or similar) into the outer private
+/// blob — is correct but rewrites the entire serialised value on
+/// every mutation; that's fine for small state but expensive at any
+/// non-trivial scale.
+///
+/// # Direct usage (rare)
+///
+/// You normally don't write `PrivateStorage` directly. The
+/// `#[app::private]` macro auto-substitutes it on tree-backed
+/// structural collections (`UnorderedMap`, `UnorderedSet`,
+/// `Vector`) declared as struct fields, so app code stays unchanged.
+/// Direct use is reserved for the rare case where you need an
+/// explicit type alias or a collection outside an `#[app::private]`
+/// struct that must still go to node-local storage:
+///
+/// ```ignore
+/// use calimero_storage::collections::UnorderedMap;
+/// use calimero_storage::store::PrivateStorage;
+///
+/// // Type alias for use outside `#[app::private]`.
+/// type LocalCache = UnorderedMap<String, Vec<u8>, PrivateStorage>;
+/// ```
+///
+/// # What goes here vs MainStorage vs the borsh blob
+///
+/// | Data shape | Where it lives |
+/// |---|---|
+/// | Synced app state (`#[app::state]` struct fields) | `MainStorage` — synced via merkle tree |
+/// | Local-only structural collections inside `#[app::private]` | `PrivateStorage` — node-local, per-entity granularity |
+/// | Local-only primitives + std types (`u64`, `String`, `BTreeMap`, `Vec`) inside `#[app::private]` | The outer private blob — borsh-serialised together, rewritten on every change |
+///
+/// CRDT collections (`LwwRegister`, `Counter`, `GCounter`,
+/// `PNCounter`, `ReplicatedGrowableArray`) are deliberately **not**
+/// supported with `PrivateStorage`: CRDTs are multi-writer
+/// conflict-resolution machinery, and private storage has exactly
+/// one writer (this node), so the per-writer bookkeeping is overhead
+/// without a corresponding semantic gain. Use a plain `u64` /
+/// `String` / `Vec` instead.
+///
+/// Access-control collections (`SharedStorage`, `UserStorage`,
+/// `FrozenStorage`) and authored collections (`AuthoredMap`,
+/// `AuthoredVector`) are likewise excluded: their semantics
+/// (cross-writer mutability, per-user separation, immutability,
+/// per-entry authorship) all assume the synced tree.
+///
+/// # Background — the bug this closes
+///
+/// Before this adaptor existed, tree-backed collections inside
+/// `#[app::private]` defaulted to `MainStorage`, so their *entries*
+/// silently landed in the synced merkle tree even though the
+/// containing struct's blob stayed private. The writing node ended
+/// up holding entities the receiving nodes didn't, producing
+/// persistent root-hash divergence on every write (see issue #2423).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[non_exhaustive]
+pub struct PrivateStorage;
+
+impl StorageAdaptor for PrivateStorage {
+    fn storage_read(key: Key) -> Option<Vec<u8>> {
+        private_storage_read(key)
+    }
+
+    fn storage_remove(key: Key) -> bool {
+        private_storage_remove(key)
+    }
+
+    fn storage_write(key: Key, value: &[u8]) -> bool {
+        private_storage_write(key, value)
+    }
+
+    /// Private writes never participate in the synced delta stream.
+    ///
+    /// See the trait-level doc for the bug this closes (#2319 receiver
+    /// gets extra `crdt_type=None` children of context-root every time a
+    /// `PrivateStorage`-backed collection is constructed, because
+    /// `Interface::save_raw` was unconditionally pushing every storage
+    /// mutation onto the global delta queue regardless of adaptor).
+    fn participates_in_sync() -> bool {
+        false
     }
 }
 

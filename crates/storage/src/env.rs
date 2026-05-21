@@ -165,6 +165,28 @@ pub fn storage_write(key: Key, value: &[u8]) -> bool {
     imp::storage_write(key, value)
 }
 
+/// Reads data from node-local (private) persistent storage.
+///
+/// Private storage is **NOT synchronised across nodes** — entries
+/// written here stay on this node only. Used by the `PrivateStorage`
+/// adaptor that backs `#[app::private]` collections.
+#[must_use]
+pub fn private_storage_read(key: Key) -> Option<Vec<u8>> {
+    imp::private_storage_read(key)
+}
+
+/// Removes data from node-local (private) persistent storage.
+#[must_use]
+pub fn private_storage_remove(key: Key) -> bool {
+    imp::private_storage_remove(key)
+}
+
+/// Writes data to node-local (private) persistent storage.
+#[must_use]
+pub fn private_storage_write(key: Key, value: &[u8]) -> bool {
+    imp::private_storage_write(key, value)
+}
+
 /// Fill the buffer with random bytes.
 ///
 /// # Parameters
@@ -300,6 +322,21 @@ mod calimero_vm {
         env::storage_write(&key.to_bytes(), value)
     }
 
+    /// Reads data from node-local private storage.
+    pub(super) fn private_storage_read(key: Key) -> Option<Vec<u8>> {
+        env::private_storage_read(&key.to_bytes())
+    }
+
+    /// Removes data from node-local private storage.
+    pub(super) fn private_storage_remove(key: Key) -> bool {
+        env::private_storage_remove(&key.to_bytes())
+    }
+
+    /// Writes data to node-local private storage.
+    pub(super) fn private_storage_write(key: Key, value: &[u8]) -> bool {
+        env::private_storage_write(&key.to_bytes(), value)
+    }
+
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
         env::random_bytes(buf)
@@ -391,6 +428,12 @@ mod mocked {
 
     /// The default storage system.
     type DefaultStore = MockedStorage<{ usize::MAX }>;
+    /// Scope used to back the mocked private-storage path. Distinct
+    /// from `DefaultStore` so test-mode reads/writes through the
+    /// `PrivateStorage` adaptor stay isolated from main-storage state
+    /// — matching the WASM host's behaviour where private storage is
+    /// a separate namespace.
+    type DefaultPrivateStore = MockedStorage<{ usize::MAX - 1 }>;
 
     /// Commits the root hash to the runtime.
     pub(super) fn commit(root_hash: &[u8; 32], _artifact: &[u8]) {
@@ -430,6 +473,49 @@ mod mocked {
         } else {
             DefaultStore::storage_write(key, value)
         }
+    }
+
+    // Why these don't consult `RUNTIME_ENV` like their main-storage
+    // siblings:
+    //
+    // `RuntimeEnv` carries callbacks only for main-storage reads /
+    // writes / removes (see `super::RuntimeEnv`) — it has no private
+    // storage backend to route to. That's not an omission: in
+    // production, private storage is served by a dedicated WASM host
+    // import (`imp::private_storage_*` → `VMLogic::private_storage`
+    // → a separate `Storage` handle that maps to its own RocksDB
+    // column, see `crates/context/src/handlers/execute/storage.rs`'s
+    // `ContextPrivateStorage`). `with_runtime_env` is only installed
+    // around native shim code that drives MainStorage (snapshot /
+    // signature persistence in `crates/context` and `crates/runtime`)
+    // — none of those scopes touch private storage.
+    //
+    // So in mocked mode, `DefaultPrivateStore` IS the backend for
+    // node-local private state. The asymmetry vs `storage_*` is
+    // intentional: there is nothing else to route to. If a future
+    // caller ever needs runtime-env routing for private state (e.g. a
+    // native test harness that wants reads/writes to land in a real
+    // `Storage` handle), the right fix is to extend `RuntimeEnv` with
+    // private callbacks rather than re-pointing this mock — the
+    // current contract is "private storage is per-node-local; in
+    // tests, the mock IS the node."
+
+    /// Reads data from node-local private storage. Mocked path routes
+    /// to a separate `MockedStorage` scope so private state stays
+    /// isolated from main state in tests, matching the WASM host's
+    /// separate-namespace behaviour.
+    pub(super) fn private_storage_read(key: Key) -> Option<Vec<u8>> {
+        DefaultPrivateStore::storage_read(key)
+    }
+
+    /// Removes data from node-local private storage (mocked path).
+    pub(super) fn private_storage_remove(key: Key) -> bool {
+        DefaultPrivateStore::storage_remove(key)
+    }
+
+    /// Writes data to node-local private storage (mocked path).
+    pub(super) fn private_storage_write(key: Key, value: &[u8]) -> bool {
+        DefaultPrivateStore::storage_write(key, value)
     }
 
     /// Fills the buffer with random bytes.
