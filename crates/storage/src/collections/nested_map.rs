@@ -4,6 +4,16 @@
 //! The key insight: the storage layer already handles nesting correctly through IDs,
 //! but the get-modify-put pattern breaks it by creating blobs.
 //!
+//! # CRDT trait surface
+//!
+//! This module exposes an extension *trait* — [`NestedMapOps`] — on
+//! `UnorderedMap<K1, UnorderedMap<K2, V>>`, not a wrapper struct of its own.
+//! There is therefore no type here to implement
+//! [`CrdtMap`](super::crdt_meta::CrdtMap) (or
+//! [`Mergeable`](super::crdt_meta::Mergeable)) for: the outer `UnorderedMap`
+//! already supplies both via its existing impls in `unordered_map.rs`, and
+//! `NestedMapOps` is purely an ergonomic shortcut for two-level access.
+//!
 //! # The Problem
 //!
 //! ```rust,no_run
