@@ -403,6 +403,31 @@ where
     }
 }
 
+impl<T, S> CrdtSet for UnorderedSet<T, S>
+where
+    T: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
+    S: StorageAdaptor,
+{
+    type Element = T;
+    type Error = crate::collections::error::StoreError;
+
+    fn insert(&mut self, element: Self::Element) -> Result<bool, Self::Error> {
+        UnorderedSet::insert(self, element)
+    }
+
+    fn contains(&self, element: &Self::Element) -> Result<bool, Self::Error> {
+        UnorderedSet::contains(self, element)
+    }
+
+    fn remove(&mut self, element: &Self::Element) -> Result<bool, Self::Error> {
+        UnorderedSet::remove(self, element)
+    }
+
+    fn len(&self) -> Result<usize, Self::Error> {
+        UnorderedSet::len(self)
+    }
+}
+
 // ============================================================================
 // Vector
 // ============================================================================

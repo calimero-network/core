@@ -22,11 +22,11 @@
 //! helper directly. If a future PR needs the helper from another file, promote it
 //! into a `tests/common/mod.rs` first.
 
-use calimero_storage::collections::{CrdtSequence, Mergeable};
+use calimero_storage::collections::{CrdtSequence, CrdtSet, Mergeable};
 
 // Compile-time assertion: a missing sub-trait impl shows up as a build error here
-// instead of a confusing test-time panic. CrdtSet/CrdtMap assertions live alongside
-// their respective `#[test]` fns below as they're added.
+// instead of a confusing test-time panic. CrdtMap assertion lives alongside its
+// `#[test]` fn below as it's added.
 fn _vector_implements_crdt_sequence() {
     fn _assert<T: CrdtSequence>() {}
     _assert::<
@@ -34,6 +34,13 @@ fn _vector_implements_crdt_sequence() {
             calimero_storage::collections::LwwRegister<String>,
             calimero_storage::store::MainStorage,
         >,
+    >();
+}
+
+fn _unordered_set_implements_crdt_set() {
+    fn _assert<T: CrdtSet>() {}
+    _assert::<
+        calimero_storage::collections::UnorderedSet<String, calimero_storage::store::MainStorage>,
     >();
 }
 
@@ -180,6 +187,38 @@ fn vector_with_lww_register_satisfies_crdt_laws() {
         || fresh("alice", [11; 32]),
         || fresh("bob", [22; 32]),
         || fresh("carol", [33; 32]),
+        eq,
+    );
+}
+
+#[test]
+fn unordered_set_satisfies_crdt_laws() {
+    use calimero_storage::collections::UnorderedSet;
+    use calimero_storage::env;
+    use calimero_storage::store::MainStorage;
+
+    env::reset_for_testing();
+
+    fn fresh(items: &[&str]) -> UnorderedSet<String, MainStorage> {
+        let mut s = UnorderedSet::new();
+        for item in items {
+            s.insert((*item).to_owned()).unwrap();
+        }
+        s
+    }
+
+    let eq = |a: &UnorderedSet<String, MainStorage>, b: &UnorderedSet<String, MainStorage>| {
+        let mut a_items: Vec<_> = a.iter().unwrap().collect();
+        let mut b_items: Vec<_> = b.iter().unwrap().collect();
+        a_items.sort();
+        b_items.sort();
+        a_items == b_items
+    };
+
+    assert_crdt_laws(
+        || fresh(&["alice", "bob"]),
+        || fresh(&["bob", "carol"]),
+        || fresh(&["dave"]),
         eq,
     );
 }
