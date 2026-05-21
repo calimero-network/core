@@ -392,6 +392,16 @@ steps:
   # context_a against node-1) and the receiver-side gate would have
   # logged at least one of the three signatures below. A healthy
   # build emits none of them.
+  # `assert_log_absent` scans each node's full docker log history (no
+  # time-window scoping in the current API). The three patterns below
+  # are specific failure-mode signatures from the sync responder/
+  # initiator and are NOT emitted during normal bootstrap, namespace
+  # join, governance gossip, or auto-follow setup — verified
+  # empirically on the green-build matrix runs at b694dc03 +
+  # 57fffca6 (zero hits across both nodes for all three patterns on
+  # the full lifetime log). The pattern for shape (b) is the broader
+  # form so it also matches future "...closing with error" suffix
+  # variants, consistent with the spam workflow.
   - name: Regression guard — no rejection spam on either node
     type: assert_log_absent
     nodes:
@@ -399,7 +409,7 @@ steps:
       - af-asym-node-2
     patterns:
       - "context not materialised within join race window"
-      - "inbound stream for unknown context, closing cleanly"
+      - "inbound stream for unknown context"
       - "no owned identities found for context"
 
   # TODO (Phase A follow-up): when merobox grows `assert_context_absent`,

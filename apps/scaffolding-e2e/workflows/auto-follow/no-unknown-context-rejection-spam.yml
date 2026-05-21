@@ -239,8 +239,18 @@ steps:
   # observation window above. A regression on Options 3 / 4 emits the
   # first (debug-level, our topology's symptom); a regression that also
   # provokes !dialer_verified emits the second (warn-level, Ronit/Fran
-  # shape); the third is the unrelated #2356 owned-identity guard kept
-  # in lockstep with sync-regression.yml.
+  # shape, broad-substring match so future "...closing cleanly" /
+  # "...closing with error" suffix variants are also caught); the
+  # third is the unrelated #2356 owned-identity guard kept in lockstep
+  # with sync-regression.yml.
+  #
+  # `assert_log_absent` scans the full container log history (no
+  # time-window scoping in the current API). The three patterns are
+  # specific failure-mode signatures from the sync responder/initiator
+  # and are NOT emitted during normal bootstrap, namespace join,
+  # governance gossip, or auto-follow setup — verified empirically on
+  # the green-build matrix runs at b694dc03 + 57fffca6 (zero hits
+  # across both nodes for all three patterns on the full lifetime log).
   - name: Regression guard — no rejection spam on either node
     type: assert_log_absent
     nodes:
