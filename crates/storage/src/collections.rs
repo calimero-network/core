@@ -142,6 +142,28 @@ type StoreResult<T> = std::result::Result<T, StoreError>;
 
 static ROOT_ID: LazyLock<Id> = LazyLock::new(|| Id::root());
 
+/// The fixed id under which an app's `Root<T>` value lives — a single
+/// child of [`ROOT_ID`]. Mirrors [`root::Root::entry_id`] but available
+/// at module scope so the merge dispatch in `interface.rs` can
+/// recognise it without picking a concrete `T`.
+pub(crate) const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
+
+/// Whether `id` addresses the app's root state — either the canonical
+/// `ROOT_ID` (system root) or the `Root<T>` entry (the WASM app's
+/// serialised root-state container).
+///
+/// Both ids share the same merge path: their content is the app's
+/// serialised state and must be merged via the registered `Mergeable`
+/// (or the bootstrap-aware default in `merge_root_state`), not the
+/// generic non-root LWW-by-HLC path. Mixing them up (treating the
+/// `Root<T>` entry as a non-root entity) caused the bootstrap-HLC
+/// inversion that turned `wait_for_sync` red across multiple CIs in
+/// 2026-05-14..05-21.
+#[inline]
+pub(crate) fn is_app_root_entry(id: Id) -> bool {
+    id.is_root() || id == ROOT_ENTRY_ID
+}
+
 impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// Creates a new collection.
     #[expect(clippy::expect_used, reason = "fatal error if it happens")]
@@ -256,33 +278,26 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         self.insert_with_storage_type(id, item, StorageType::Public)
     }
 
-    /// Inserts an item into the collection with a fixed `id`, `field_name` and
-    /// `crdt_type` on the entry's storage element.
+    /// Inserts an item with a caller-provided fixed `id` and `field_name`,
+    /// but no `crdt_type`. Used by containers whose merge semantics are
+    /// dispatched out-of-band (i.e. not by the generic LWW/G-counter path
+    /// on the entry's `crdt_type`) — currently only `Root<T>`.
     ///
-    /// Unlike [`Collection::new_with_field_name_and_crdt_type`] (which *derives*
-    /// the id from the field name), this keeps the caller-provided `id` — used
-    /// by `Root<T>` whose single entry has the fixed id `Id::new([118; 32])`.
-    ///
-    /// `id` is a plain `Id` (not `Option<Id>`) so the contract is enforced at
-    /// the type level — the method *requires* a caller-provided fixed id, and
-    /// the type signature reflects that. (`insert_with_storage_type` keeps
-    /// `Option<Id>` because for it `None` is a meaningful "let storage pick".)
-    pub(crate) fn insert_with_crdt_type(
+    /// `id` is a plain `Id` (not `Option<Id>`) so the contract is enforced
+    /// at the type level: this method *requires* a caller-provided fixed
+    /// id. (`insert_with_storage_type` keeps `Option<Id>` because there
+    /// `None` is a meaningful "let storage pick".)
+    pub(crate) fn insert_with_field_name(
         &mut self,
         id: Id,
         item: T,
         field_name: &str,
-        crdt_type: CrdtType,
     ) -> StoreResult<T> {
         let mut collection = CollectionMut::new(self);
 
         let mut entry = Entry {
             item,
-            storage: Element::new_with_field_name_and_crdt_type(
-                Some(id),
-                Some(field_name.to_string()),
-                crdt_type,
-            ),
+            storage: Element::new_with_field_name(Some(id), Some(field_name.to_string())),
         };
 
         collection.insert(&mut entry)?;

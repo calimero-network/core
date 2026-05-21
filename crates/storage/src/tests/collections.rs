@@ -3,7 +3,7 @@
 //! Tests all collection types (UnorderedMap, Vector, UnorderedSet)
 //! Moved from inline tests in collections modules for better organization
 
-use crate::collections::{CrdtType, Root, UnorderedMap, UnorderedSet, Vector};
+use crate::collections::{Root, UnorderedMap, UnorderedSet, Vector};
 use crate::env;
 use crate::index::Index;
 use crate::store::MainStorage;
@@ -13,12 +13,21 @@ use serial_test::serial;
 // Root Tests
 // ============================================================
 
-/// `Root<T>`'s single entry (`Id::new([118; 32])` == `Root::<T>::entry_id()`)
-/// must be created with an LWW `crdt_type` so HashComparison sync treats it as
-/// a normal CRDT leaf rather than an "opaque" (`crdt_type: None`) leaf.
+/// `Root<T>` is not a generic LWW register — it is a typed container whose
+/// merge semantics are delegated to the application's registered `Mergeable`
+/// impl via `merge_root_state` (see `interface::try_merge_data` dispatch on
+/// `is_app_root_entry`). So the entry must carry `crdt_type = None`, and
+/// HashComparison routes the leaf through `merge_root_state` rather than the
+/// generic `apply_lww_winner` path.
+///
+/// Tagging this entry with an `LwwRegister` `crdt_type` causes silent data
+/// loss on cold join: a just-materialised local `Root` whose HLC is *later*
+/// than the earlier-written remote `Root` wins the LWW comparison and drops
+/// all remote application state. This test pins the contract so a future
+/// refactor cannot reintroduce that regression.
 #[test]
 #[serial]
-fn test_root_entry_gets_lww_register_crdt_type() {
+fn test_root_entry_has_no_crdt_type_so_merge_routes_via_registered_mergeable() {
     // Other tests in this binary also touch `MainStorage` (a global,
     // process-wide store) at the same entry id. Reset so we observe a
     // fresh `Root::new` rather than stale state from a prior test.
@@ -34,15 +43,13 @@ fn test_root_entry_gets_lww_register_crdt_type() {
         .expect("get_index should not error")
         .expect("Root entry index should exist");
 
-    // Use `type_name::<T>()` to match the convention used by `Root::new_internal`
-    // and the rest of the codebase (cf. `LwwRegister<T>` in `crdt_impls.rs`),
-    // not a hand-written label.
+    // `crdt_type` MUST be `None` — `Root<T>` is dispatched through
+    // `merge_root_state` in `interface::try_merge_data`, not the
+    // `apply_lww_winner` path. If this regresses to `Some(LwwRegister(...))`,
+    // cold-join scenarios with HLC inversion will silently lose data.
     assert_eq!(
-        index.metadata.crdt_type,
-        Some(CrdtType::lww_register(std::any::type_name::<
-            UnorderedMap<String, String>,
-        >())),
-        "Root<T> entry must carry an LwwRegister crdt_type matching type_name::<T>(), got {:?}",
+        index.metadata.crdt_type, None,
+        "Root<T> entry must NOT carry a crdt_type — got {:?}",
         index.metadata.crdt_type
     );
 

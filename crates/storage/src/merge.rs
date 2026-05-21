@@ -98,22 +98,42 @@ use crate::store::MainStorage;
 pub fn merge_root_state(
     existing: &[u8],
     incoming: &[u8],
+    existing_created_at: u64,
     existing_ts: u64,
     incoming_ts: u64,
 ) -> Result<Vec<u8>, MergeError> {
-    // Try registered CRDT merge functions first
-    // This enables automatic nested CRDT merging when apps use #[app::state]
+    // Try registered CRDT merge functions first.
+    // This enables automatic nested CRDT merging when apps use `#[app::state]`.
     match try_merge_registered(existing, incoming, existing_ts, incoming_ts) {
         MergeRegistryResult::Success(merged) => Ok(merged),
         MergeRegistryResult::NoFunctionsRegistered => {
+            // Bootstrap-aware default.
+            //
+            // `existing_created_at == existing_ts` means the local entity
+            // was created and has never been explicitly updated since —
+            // the freshly-materialised default state on a joiner. In
+            // that case the incoming side carries the only real history
+            // and must be accepted unconditionally; plain LWW-by-HLC
+            // would silently keep the local default because the
+            // materialisation-time HLC is *later* than the remote's
+            // earlier real write.
+            if existing_created_at == existing_ts {
+                tracing::debug!(
+                    target: "calimero_storage::merge",
+                    existing_created_at,
+                    existing_ts,
+                    incoming_ts,
+                    "merge_root_state: bootstrap signal (created == updated, never written), accepting incoming"
+                );
+                return Ok(incoming.to_vec());
+            }
+
             // I5 Enforcement: No silent data loss
             //
-            // If the root entity contains CRDTs (Counter, etc.) and no merge function
-            // is registered, an LWW fallback would cause DATA LOSS. One node's CRDT
-            // contributions would be silently discarded.
-            //
-            // Instead of silently falling back to LWW, we fail with an actionable error
-            // message telling the developer how to fix it.
+            // Both sides have real history, but no merger is registered.
+            // An LWW fallback would silently drop one side's CRDT
+            // contributions. Fail loudly instead with an actionable
+            // error pointing the developer at `#[app::state]`.
             Err(MergeError::NoMergeFunctionRegistered)
         }
         MergeRegistryResult::AllFunctionsFailed => {

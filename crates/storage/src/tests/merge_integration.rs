@@ -77,7 +77,7 @@ fn test_merge_via_registry() {
     let bytes2 = borsh::to_vec(&*state2).unwrap();
 
     // MERGE via registry (simulates sync)
-    let merged_bytes = merge_root_state(&bytes1, &bytes2, 100, 200).unwrap();
+    let merged_bytes = merge_root_state(&bytes1, &bytes2, 0, 100, 200).unwrap();
 
     // Deserialize result
     let merged: TestApp = borsh::from_slice(&merged_bytes).unwrap();
@@ -249,7 +249,7 @@ fn test_merge_with_nested_map() {
     let bytes1_modified = borsh::to_vec(&state1_modified).unwrap();
 
     // MERGE
-    let merged_bytes = merge_root_state(&bytes1_modified, &bytes2, 100, 100).unwrap();
+    let merged_bytes = merge_root_state(&bytes1_modified, &bytes2, 0, 100, 100).unwrap();
 
     // Deserialize and verify
     let merged: AppWithNestedMap = borsh::from_slice(&merged_bytes).unwrap();
@@ -285,6 +285,162 @@ fn test_merge_with_nested_map() {
     );
 
     println!("✅ Nested map merge test PASSED - all concurrent updates preserved!");
+}
+
+/// Cold-join scenario: the local side is a freshly-materialised empty `Root`
+/// whose HLC is LATER than the remote's populated `Root` (a typical
+/// cold-joiner — node-2's local state is constructed after node-1 has
+/// already done its writes). With a registered `Mergeable` impl in place,
+/// `merge_root_state` must return the populated remote's contents
+/// (delegated to per-field CRDT semantics in the merger), not silently
+/// keep the empty local side because its HLC is "newer".
+///
+/// This is the exact failure shape that routing `Root<T>` through the
+/// generic LWW-by-HLC path produces — the regression this test guards.
+#[test]
+#[serial]
+fn test_root_cold_join_with_registered_merger_accepts_remote_contents() {
+    env::reset_for_testing();
+    clear_merge_registry();
+
+    #[derive(BorshSerialize, BorshDeserialize, Debug)]
+    struct App {
+        kv: UnorderedMap<String, LwwRegister<String>>,
+    }
+
+    impl Mergeable for App {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.kv.merge(&other.kv)?;
+            Ok(())
+        }
+    }
+
+    register_crdt_merge::<App>();
+
+    // Remote (the seeded peer): wrote three keys before the joiner
+    // materialised. Its `Root` HLC is "earlier".
+    let mut remote = Root::new(|| App {
+        kv: UnorderedMap::new(),
+    });
+    remote
+        .kv
+        .insert(
+            "alpha".to_string(),
+            LwwRegister::new("a-from-remote".to_string()),
+        )
+        .unwrap();
+    remote
+        .kv
+        .insert(
+            "beta".to_string(),
+            LwwRegister::new("b-from-remote".to_string()),
+        )
+        .unwrap();
+    remote
+        .kv
+        .insert(
+            "gamma".to_string(),
+            LwwRegister::new("c-from-remote".to_string()),
+        )
+        .unwrap();
+    let remote_bytes = borsh::to_vec(&*remote).unwrap();
+
+    // Local (the cold joiner): empty default `Root`, materialised AFTER
+    // the remote's writes — its HLC is "later".
+    let local = App {
+        kv: UnorderedMap::new(),
+    };
+    let local_bytes = borsh::to_vec(&local).unwrap();
+
+    // HLC inversion: local_ts (200) > remote_ts (100).
+    // existing_created_at != existing_ts to avoid the bootstrap branch —
+    // we want to exercise the REGISTERED-merger path under HLC inversion.
+    let local_ts: u64 = 200;
+    let remote_ts: u64 = 100;
+    let local_created_at: u64 = 150;
+
+    let merged_bytes = merge_root_state(
+        &local_bytes,
+        &remote_bytes,
+        local_created_at,
+        local_ts,
+        remote_ts,
+    )
+    .expect("merge_root_state should succeed via registered Mergeable");
+
+    let merged: App = borsh::from_slice(&merged_bytes).unwrap();
+
+    // All three remote keys must be present in the merged result.
+    // Pre-fix (LWW-by-HLC on whole Root blob): the empty local with the
+    // later HLC would win and ALL THREE assertions below would fail.
+    assert_eq!(
+        merged
+            .kv
+            .get(&"alpha".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
+        Some("a-from-remote".to_string()),
+        "remote's 'alpha' must survive cold-join HLC inversion"
+    );
+    assert_eq!(
+        merged
+            .kv
+            .get(&"beta".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
+        Some("b-from-remote".to_string()),
+        "remote's 'beta' must survive cold-join HLC inversion"
+    );
+    assert_eq!(
+        merged
+            .kv
+            .get(&"gamma".to_string())
+            .unwrap()
+            .map(|r| r.get().clone()),
+        Some("c-from-remote".to_string()),
+        "remote's 'gamma' must survive cold-join HLC inversion"
+    );
+}
+
+/// Cold-join scenario for an app that did NOT register a `Mergeable` impl:
+/// `merge_root_state` must still accept the incoming bytes via the
+/// bootstrap-aware default (created_at == updated_at on the local side,
+/// meaning the local entity has never been explicitly written). Without
+/// this fallback, cold-joiners of un-registered apps would either silently
+/// drop the remote state (under an LWW-by-HLC fallback) or hard-fail with
+/// `NoMergeFunctionRegistered` on every cold sync.
+#[test]
+#[serial]
+fn test_root_cold_join_without_registered_merger_accepts_incoming() {
+    env::reset_for_testing();
+    clear_merge_registry();
+
+    // Some opaque bytes representing the remote's populated state.
+    // The exact shape is irrelevant — the bootstrap branch does not
+    // deserialise; it accepts the incoming bytes wholesale.
+    let remote_bytes: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    // Some other opaque bytes for the empty local default.
+    let local_bytes: Vec<u8> = vec![0, 0, 0, 0];
+
+    // Bootstrap signal: created_at == existing_ts (never explicitly
+    // updated since materialisation).
+    let local_created_at: u64 = 200;
+    let local_ts: u64 = 200;
+    let remote_ts: u64 = 100;
+
+    let merged = merge_root_state(
+        &local_bytes,
+        &remote_bytes,
+        local_created_at,
+        local_ts,
+        remote_ts,
+    )
+    .expect("bootstrap branch should accept incoming bytes");
+
+    assert_eq!(
+        merged, remote_bytes,
+        "bootstrap branch must return the incoming side verbatim"
+    );
 }
 
 #[test]
@@ -333,7 +489,7 @@ fn test_merge_map_of_counters() {
     let bytes2 = borsh::to_vec(&state2).unwrap();
 
     // MERGE
-    let merged_bytes = merge_root_state(&bytes1, &bytes2, 100, 100).unwrap();
+    let merged_bytes = merge_root_state(&bytes1, &bytes2, 0, 100, 100).unwrap();
 
     let merged: AppWithCounters = borsh::from_slice(&merged_bytes).unwrap();
 
@@ -404,7 +560,7 @@ fn test_merge_map_of_lww_registers() {
     let bytes2 = borsh::to_vec(&state2).unwrap();
 
     // MERGE
-    let merged_bytes = merge_root_state(&bytes1, &bytes2, 100, 100).unwrap();
+    let merged_bytes = merge_root_state(&bytes1, &bytes2, 0, 100, 100).unwrap();
 
     let merged: AppWithRegisters = borsh::from_slice(&merged_bytes).unwrap();
 
@@ -481,7 +637,7 @@ fn test_merge_vector_of_counters() {
     let bytes2 = borsh::to_vec(&state2).unwrap();
 
     // MERGE
-    let merged_bytes = merge_root_state(&bytes1, &bytes2, 100, 100).unwrap();
+    let merged_bytes = merge_root_state(&bytes1, &bytes2, 0, 100, 100).unwrap();
 
     let merged: AppWithVectorCounters = borsh::from_slice(&merged_bytes).unwrap();
 
@@ -565,7 +721,7 @@ fn test_merge_map_of_sets() {
     let bytes2 = borsh::to_vec(&state2).unwrap();
 
     // MERGE
-    let merged_bytes = merge_root_state(&bytes1, &bytes2, 100, 100).unwrap();
+    let merged_bytes = merge_root_state(&bytes1, &bytes2, 0, 100, 100).unwrap();
 
     let merged: AppWithSetTags = borsh::from_slice(&merged_bytes).unwrap();
 
@@ -679,7 +835,7 @@ fn test_merge_nested_document_with_rga() {
     // Before fix: RGA merge was NO-OP → states stayed different
     // After fix: RGA merge combines character sets → convergence
     // Note: Using same timestamp forces merge logic instead of LWW
-    let merged_bytes = merge_root_state(&bytes1, &bytes2, 100, 100).unwrap();
+    let merged_bytes = merge_root_state(&bytes1, &bytes2, 0, 100, 100).unwrap();
     let merged_state: CollabEditor = borsh::from_slice(&merged_bytes).unwrap();
 
     // Verify merge results
@@ -716,7 +872,7 @@ fn test_merge_nested_document_with_rga() {
 
     // Most importantly: both nodes should compute the SAME state
     // Let's verify by doing reverse merge (node2 state + node1 state)
-    let reverse_bytes = merge_root_state(&bytes2, &bytes1, 100, 100).unwrap();
+    let reverse_bytes = merge_root_state(&bytes2, &bytes1, 0, 100, 100).unwrap();
     let reverse_state: CollabEditor = borsh::from_slice(&reverse_bytes).unwrap();
 
     let reverse_doc = reverse_state
@@ -827,7 +983,7 @@ fn test_merge_determinism_reproduces_e2e_issue() {
         // 1. Node-2 has its current state (initial_bytes)
         // 2. Node-2 receives delta from Node-1 (containing node1_bytes)
         // 3. merge_root_state is called to combine them
-        let merged = merge_root_state(&initial_bytes, &node1_bytes, 100, 200).unwrap();
+        let merged = merge_root_state(&initial_bytes, &node1_bytes, 0, 100, 200).unwrap();
         println!("Merge attempt {}: {} bytes", i, merged.len());
         all_merge_results.push(merged);
     }
@@ -846,8 +1002,8 @@ fn test_merge_determinism_reproduces_e2e_issue() {
 
     // === Phase 4: Verify merge commutativity ===
     // merge(A, B) should equal merge(B, A) for CRDTs
-    let merge_ab = merge_root_state(&initial_bytes, &node1_bytes, 100, 200).unwrap();
-    let merge_ba = merge_root_state(&node1_bytes, &initial_bytes, 200, 100).unwrap();
+    let merge_ab = merge_root_state(&initial_bytes, &node1_bytes, 0, 100, 200).unwrap();
+    let merge_ba = merge_root_state(&node1_bytes, &initial_bytes, 0, 200, 100).unwrap();
 
     // Deserialize and compare semantically (bytes might differ due to ordering)
     let state_ab: E2eKvStoreSimulation = borsh::from_slice(&merge_ab).unwrap();
