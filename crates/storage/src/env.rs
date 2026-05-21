@@ -261,12 +261,12 @@ pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
 ///
 /// **INTERNAL test helper.** Only callable when compiled with `cfg(test)` or
 /// the `testing` feature. The feature is documented in `Cargo.toml` as
-/// not-for-production and only valid in `[dev-dependencies]`. A `debug_assert!`
-/// guards against accidental release-build misuse.
+/// not-for-production and only valid in `[dev-dependencies]`. A runtime
+/// `assert!` panics if the function is reached in an optimized release build.
 #[cfg(any(test, feature = "testing"))]
 #[doc(hidden)]
 pub fn reset_for_testing() {
-    debug_assert!(
+    assert!(
         cfg!(debug_assertions),
         "reset_for_testing reached an optimized release build; \
          the `testing` feature must only appear in [dev-dependencies]"
@@ -279,11 +279,11 @@ pub fn reset_for_testing() {
 /// **INTERNAL test helper.** Mutates global identity used for per-executor
 /// authorization checks. Only callable when compiled with `cfg(test)` or the
 /// `testing` feature. See [`reset_for_testing`] for the same misuse warnings;
-/// the same `debug_assert!` guard applies.
+/// the same release-build `assert!` guard applies.
 #[cfg(any(test, feature = "testing"))]
 #[doc(hidden)]
 pub fn set_executor_id(id: [u8; 32]) {
-    debug_assert!(
+    assert!(
         cfg!(debug_assertions),
         "set_executor_id reached an optimized release build; \
          the `testing` feature must only appear in [dev-dependencies]"
