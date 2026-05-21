@@ -258,13 +258,13 @@ pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
 }
 
 /// Reset for testing.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn reset_for_testing() {
     imp::reset_for_testing();
 }
 
 /// Set executor ID for testing purposes
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn set_executor_id(id: [u8; 32]) {
     imp::set_executor_id(id);
 }
@@ -400,7 +400,7 @@ mod calimero_vm {
     }
 
     /// Resets the environment state for testing.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn reset_for_testing() {
         WASM_HLC.with(|hlc| {
             *hlc.borrow_mut() = None;
@@ -549,7 +549,7 @@ mod mocked {
     }
 
     /// Set executor ID for testing purposes
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn set_executor_id(new_id: [u8; 32]) {
         EXECUTOR_ID.with(|id| id.set(new_id));
     }
@@ -612,7 +612,7 @@ mod mocked {
     ///
     /// Clears the thread-local ROOT_HASH, HLC, and STORAGE, allowing multiple tests
     /// to run in sequence without contaminating each other.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(super) fn reset_for_testing() {
         ROOT_HASH.with(|rh| {
             *rh.borrow_mut() = None;

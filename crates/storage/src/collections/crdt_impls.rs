@@ -8,7 +8,9 @@
 //! - UnorderedSet
 //! - Vector
 
-use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
+use super::crdt_meta::{
+    CrdtMap, CrdtMeta, CrdtSequence, CrdtSet, CrdtType, MergeError, Mergeable, StorageStrategy,
+};
 use super::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap, UnorderedSet, Vector};
 #[cfg(test)]
 use super::{GCounter, PNCounter};
@@ -489,6 +491,35 @@ where
         // If we're longer, keep our additional elements (LWW: keep ours)
 
         Ok(())
+    }
+}
+
+impl<T, S> CrdtSequence for Vector<T, S>
+where
+    T: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable,
+    S: StorageAdaptor,
+{
+    type Element = T;
+    type Error = crate::collections::error::StoreError;
+
+    fn push(&mut self, element: Self::Element) -> Result<(), Self::Error> {
+        Vector::push(self, element)
+    }
+
+    fn get(&self, index: usize) -> Result<Option<Self::Element>, Self::Error> {
+        Vector::get(self, index)
+    }
+
+    fn update(
+        &mut self,
+        index: usize,
+        element: Self::Element,
+    ) -> Result<Option<Self::Element>, Self::Error> {
+        Vector::update(self, index, element)
+    }
+
+    fn len(&self) -> Result<usize, Self::Error> {
+        Vector::len(self)
     }
 }
 

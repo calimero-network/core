@@ -1621,6 +1621,7 @@ dependencies = [
  "calimero-prelude",
  "calimero-primitives",
  "calimero-sdk",
+ "calimero-storage",
  "calimero-storage-macros",
  "claims",
  "ed25519-dalek",

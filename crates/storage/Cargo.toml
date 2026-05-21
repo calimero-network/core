@@ -37,6 +37,15 @@ velcro.workspace = true
 
 calimero-sdk.workspace = true
 
+# Self-reference with the `testing` feature so integration tests under
+# `tests/` can call into helpers like `env::reset_for_testing` /
+# `env::set_executor_id`. The unit-test path (`#[cfg(test)]`) doesn't
+# enable features on the library side; the cleanest way to flip the
+# feature on for the `cargo test` build of this crate is a dev-dep
+# self-reference. See env.rs for the `cfg(any(test, feature = "testing"))`
+# gates.
+calimero-storage = { path = ".", features = ["testing"] }
+
 [features]
 default = []
 testing = []  # Exposes test utilities for dependent crates
