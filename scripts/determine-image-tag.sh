@@ -164,6 +164,77 @@ if [ "$EVENT_NAME" == "pull_request" ]; then
             TAG="edge${TAG_SUFFIX}"
         fi
     fi
+elif [ "$EVENT_NAME" = "push" ] && [ "$HEAD_BRANCH" = "master" ]; then
+    # Master push: release.yml is triggered in parallel with this caller
+    # workflow (e.g. fuzzy-load-test.yml), and the moving `:edge${TAG_SUFFIX}`
+    # tag in ghcr only gets re-pointed at the just-merged binary once
+    # release.yml's `Release Merod Profiling container` (or its non-profiling
+    # twin) finishes. Until then, `:edge${TAG_SUFFIX}` still points at the
+    # PREVIOUS master commit's binary.
+    #
+    # Without this wait, every master push gets one guaranteed false-positive
+    # cycle on every workflow that pulls `:edge${TAG_SUFFIX}`, because the
+    # test pulls the prior binary and exercises whatever bugs that prior
+    # commit had. Mirror the PR-branch wait loop so the test only proceeds
+    # once the new image is actually live.
+    HEAD_SHA="${GITHUB_SHA:-}"
+
+    if [ -z "$HEAD_SHA" ]; then
+        echo "WARNING: GITHUB_SHA not set in environment - cannot identify release.yml run for this push"
+        echo "Falling back to :edge${TAG_SUFFIX} without waiting (may be the previous commit's binary)"
+        TAG="edge${TAG_SUFFIX}"
+    else
+        echo "Master push detected - waiting for release.yml on commit ${HEAD_SHA} to republish :edge${TAG_SUFFIX}"
+
+        if [ "$PROFILING_MODE" = "--profiling" ]; then
+            MAX_WAIT=1800  # 30 minutes - profiling container build takes longer
+        else
+            MAX_WAIT=1200  # 20 minutes - same budget as the PR-branch path
+        fi
+        WAIT_INTERVAL=10
+        ELAPSED=0
+        TAG=""
+
+        while [ $ELAPSED -lt $MAX_WAIT ]; do
+            # Filter release.yml runs by the exact merge commit SHA. On
+            # master push, this uniquely identifies the run that produces
+            # the new :edge${TAG_SUFFIX} image we want to pull.
+            RUNS=$(gh api "repos/${REPO}/actions/workflows/release.yml/runs?head_sha=${HEAD_SHA}" \
+                --jq '.workflow_runs[0] // {"status":"unknown"}' 2>/dev/null \
+                || echo '{"status":"unknown"}')
+
+            STATUS=$(echo "$RUNS" | jq -r '.status // "unknown"')
+            CONCLUSION=$(echo "$RUNS" | jq -r '.conclusion // "unknown"')
+
+            if [ "$STATUS" = "completed" ]; then
+                if [ "$CONCLUSION" = "success" ]; then
+                    echo "release.yml completed successfully after ${ELAPSED}s - :edge${TAG_SUFFIX} now resolves to ${HEAD_SHA}"
+                else
+                    echo "release.yml completed with conclusion: ${CONCLUSION}"
+                    echo "Falling back to :edge${TAG_SUFFIX} as-is (may be the previous commit's binary)"
+                fi
+                TAG="edge${TAG_SUFFIX}"
+                break
+            fi
+
+            if [ "$STATUS" = "queued" ] || [ "$STATUS" = "in_progress" ]; then
+                echo "release.yml ${STATUS}... waiting (${ELAPSED}s/${MAX_WAIT}s)"
+            elif [ "$STATUS" = "unknown" ]; then
+                echo "release.yml run for ${HEAD_SHA} not found yet... waiting (${ELAPSED}s/${MAX_WAIT}s)"
+            else
+                echo "release.yml status: ${STATUS}... waiting (${ELAPSED}s/${MAX_WAIT}s)"
+            fi
+
+            sleep $WAIT_INTERVAL
+            ELAPSED=$((ELAPSED + WAIT_INTERVAL))
+        done
+
+        if [ -z "$TAG" ]; then
+            echo "Timeout waiting for release.yml after ${MAX_WAIT}s"
+            echo "Falling back to :edge${TAG_SUFFIX} as-is (may be the previous commit's binary)"
+            TAG="edge${TAG_SUFFIX}"
+        fi
+    fi
 else
     TAG="edge${TAG_SUFFIX}"
 fi
