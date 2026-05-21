@@ -35,7 +35,6 @@ use calimero_primitives::identity::PublicKey;
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{StoreError, Vector};
 use crate::entities::{ChildInfo, Data, Element, StorageType};
-use crate::env;
 use crate::index::Index;
 use crate::interface::StorageError;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -122,11 +121,7 @@ where
     /// # Errors
     /// Returns any underlying storage error.
     pub fn push(&mut self, value: V) -> Result<usize, StoreError> {
-        let owner: PublicKey = env::executor_id().into();
-        let storage_type = StorageType::User {
-            owner,
-            signature_data: None,
-        };
+        let storage_type = super::authored_common::make_owner_stamp();
         self.inner.push_with_storage_type(value, storage_type)
     }
 
@@ -142,8 +137,7 @@ where
     pub fn update(&mut self, index: usize, value: V) -> Result<(), StoreError> {
         let (entry_id, stored_owner) = self.require_owner(index)?;
 
-        let executor: PublicKey = env::executor_id().into();
-        if stored_owner != executor {
+        if !super::authored_common::executor_matches_owner(&stored_owner) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "AuthoredVector::update: not entry owner".to_owned(),
             )));
