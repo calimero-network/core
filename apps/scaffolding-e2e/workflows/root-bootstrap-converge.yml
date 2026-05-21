@@ -50,6 +50,12 @@ description: >
 force_pull_image: false
 near_devnet: false
 
+# `nodes.image` below is the workflow's default — used when this YAML
+# is run locally without an explicit override (`merobox bootstrap run
+# root-bootstrap-converge.yml` alone). In CI the `--image merod:local`
+# flag on `merobox bootstrap run` overrides it so the matrix tests the
+# binary that this PR's `Build Image` job just built. `force_pull_image:
+# false` prevents merobox from pulling the remote tag on top of either.
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge
