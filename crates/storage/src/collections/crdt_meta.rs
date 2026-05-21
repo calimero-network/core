@@ -77,6 +77,29 @@ pub trait Mergeable {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError>;
 }
 
+/// CRDT map shape — key/value collection that satisfies the [`Mergeable`] contract.
+///
+/// Implementors must guarantee that `merge` is associative, commutative, and idempotent
+/// over their key/value space. The `Error` associated type lets storage-backed and
+/// in-memory implementations coexist.
+pub trait CrdtMap: Mergeable {
+    type Key;
+    type Value;
+    type Error;
+
+    fn insert(
+        &mut self,
+        key: Self::Key,
+        value: Self::Value,
+    ) -> Result<Option<Self::Value>, Self::Error>;
+
+    fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error>;
+
+    fn remove(&mut self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error>;
+
+    fn len(&self) -> Result<usize, Self::Error>;
+}
+
 /// Errors that can occur during CRDT merging
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeError {
@@ -223,6 +246,14 @@ macro_rules! is_crdt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crdt_map_trait_shape_compiles() {
+        fn _assert_subtrait<T: CrdtMap>() {
+            fn _is_mergeable<U: Mergeable>() {}
+            _is_mergeable::<T>();
+        }
+    }
 
     #[test]
     fn store_error_converts_into_merge_storage_error() {
