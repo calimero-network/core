@@ -6,6 +6,25 @@
 //! entry's author can update or tombstone it. There is intentionally no
 //! physical `remove` — shifting indices would complicate concurrent-push
 //! merge semantics. Use `tombstone(idx)` to mark a slot as retracted.
+//!
+//! # CRDT trait surface
+//!
+//! `AuthoredVector` implements [`Mergeable`](super::crdt_meta::Mergeable) — required
+//! for `#[app::state]` nesting — but **does not** implement
+//! [`CrdtSequence`](super::crdt_meta::CrdtSequence). Two reasons:
+//!
+//! 1. **Signature shape.** `CrdtSequence::push(e) -> Result<(), _>` does not
+//!    surface a slot index, but `AuthoredVector::push` returns the assigned
+//!    index because callers need it to address the entry for subsequent
+//!    `update`/`tombstone` calls. Likewise `update` is owner-gated and
+//!    `remove` is replaced by `tombstone` (slot-preserving) — neither maps
+//!    onto the bare-sequence surface.
+//! 2. **Implicit-author hazard.** The shape-trait surface takes no `author`
+//!    parameter; a `CrdtSequence` impl would have to read the executor id from
+//!    ambient `env` state, which couples the trait to a global side channel.
+//!    The unified author-aware surface tracked by issue #2309 is the
+//!    intended cure here; this file deliberately stays `Mergeable`-only
+//!    until that lands.
 
 use std::collections::BTreeMap;
 
