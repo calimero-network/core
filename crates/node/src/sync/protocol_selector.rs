@@ -99,8 +99,10 @@ impl ProtocolSelector {
     /// selection was `SyncProtocol::None` (already converged), or
     /// `Err(_)` if every protocol in the chain failed.
     ///
-    /// `peer_root_hash` is the deref'd `[u8; 32]` of the peer's root
-    /// — needed by `LevelWiseConfig`.
+    /// `local_root_hash` is included in the `None` arm's debug log
+    /// so operators can correlate "no sync needed" entries with the
+    /// state of the local context. `peer_root_hash` is the deref'd
+    /// `[u8; 32]` of the peer's root — needed by `LevelWiseConfig`.
     ///
     /// ## Stream postconditions
     ///
@@ -133,6 +135,7 @@ impl ProtocolSelector {
         context_id: ContextId,
         chosen_peer: PeerId,
         our_identity: PublicKey,
+        local_root_hash: &Hash,
         peer_root_hash: &Hash,
         stream: &mut Stream,
     ) -> Result<Option<SyncProtocol>> {
@@ -141,6 +144,7 @@ impl ProtocolSelector {
                 debug!(
                     %context_id,
                     %chosen_peer,
+                    root_hash = %local_root_hash,
                     reason = %selection.reason,
                     "No sync needed: {}",
                     selection.reason

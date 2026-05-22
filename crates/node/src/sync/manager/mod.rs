@@ -1536,6 +1536,7 @@ impl SyncManager {
                     context_id,
                     chosen_peer,
                     our_identity,
+                    &context.root_hash,
                     &peer_root_hash,
                     stream,
                 )
