@@ -264,11 +264,12 @@ pub enum GroupOp {
     /// Cascade variant of [`Self::TargetApplicationSet`]: update the
     /// target application on the signed group AND on every descendant
     /// subgroup whose current `app_key` equals `from_app_key`. Walked at
-    /// apply time against the receiver's local tree state, depth-bounded
-    /// by `MAX_NAMESPACE_DEPTH`. Same `manage_application` permission as
-    /// the non-cascade variant on the signed group. Descendants that
-    /// run a different application (different `app_key`) are skipped --
-    /// heterogeneous deployments stay untouched.
+    /// apply time against the receiver's local tree state, bounded by
+    /// the namespace tree's maximum nesting depth (enforced in the
+    /// apply handler in `calimero-context`). Same `manage_application`
+    /// permission as the non-cascade variant on the signed group.
+    /// Descendants that run a different application (different
+    /// `app_key`) are skipped -- heterogeneous deployments stay untouched.
     ///
     /// `from_app_key` is the matching predicate, snapshotted at the
     /// emission peer's RPC-handling time. Carried in the op itself so
