@@ -290,14 +290,47 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
         self.len().map(|len| len == 0)
     }
 
-    /// Insert multiple characters at once (more efficient for strings)
+    /// Insert multiple characters at once (more efficient for strings).
+    ///
+    /// Allocates a fresh HLC timestamp from the environment; for tests that
+    /// need byte-for-byte reproducibility across replicas, see
+    /// [`insert_str_at_timestamp`](Self::insert_str_at_timestamp).
     ///
     /// # Errors
     ///
     /// Returns error if position is out of bounds or storage operation fails
     pub fn insert_str(&mut self, pos: usize, s: &str) -> Result<(), StoreError> {
         let timestamp = env::hlc_timestamp();
+        self.insert_str_at_timestamp(pos, timestamp, s)
+    }
 
+    /// Insert multiple characters at `pos` using `timestamp` as the HLC
+    /// component of every new `CharId`.
+    ///
+    /// Identical to [`insert_str`](Self::insert_str) except the HLC
+    /// timestamp is supplied by the caller rather than read from
+    /// `env::hlc_timestamp()`. With a fixed `timestamp` the resulting
+    /// `CharId` set is fully deterministic, which is what test fixtures
+    /// (and the CRDT contract tests in `tests/crdt_contract.rs`) need to
+    /// satisfy the determinism requirement of the structural-equality
+    /// laws — two `make_a()` calls in `assert_mergeable_laws` must
+    /// produce identical character sets, which the HLC-driven path
+    /// can't guarantee because each call advances the clock.
+    ///
+    /// Production callers should prefer `insert_str` — supplying your
+    /// own timestamp from outside the HLC chain bypasses the causal
+    /// ordering guarantees the HLC provides between concurrent
+    /// inserters.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if position is out of bounds or storage operation fails
+    pub fn insert_str_at_timestamp(
+        &mut self,
+        pos: usize,
+        timestamp: crate::logical_clock::HybridTimestamp,
+        s: &str,
+    ) -> Result<(), StoreError> {
         // Find the left neighbor
         let ordered = self.get_ordered_chars()?;
         let mut left = if pos == 0 {

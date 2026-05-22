@@ -417,28 +417,51 @@ fn shared_executor_counter_merge() {
     );
 }
 
-// RGA generates fresh per-character ids on each `insert_str` call, so two
-// `make_a()` invocations produce disjoint character sets. Merging those
-// disjoint sets doubles the content, which violates structural equality
-// across runs — the helper's determinism contract cannot be satisfied
-// without bypassing RGA's own non-determinism. Rather than fight the
-// model, we ignore this test and document the reason inline so a future
-// refactor (e.g. deterministic CharId seeding) can revive it. Mergeable
-// for RGA is still covered by the existing tests in `crdt_impls.rs`.
+// RGA's default `insert_str` allocates fresh per-character ids from the
+// live HLC, so two `make_a()` invocations produce disjoint character
+// sets — that violates the structural-equality requirement of
+// `assert_mergeable_laws`, even though the underlying merge IS
+// idempotent/commutative/associative. We side-step the determinism
+// problem by going through `insert_str_at_timestamp`, which pins the
+// HLC component of every `CharId` to a caller-supplied value. With a
+// stable per-replica timestamp seed, repeated `make_*()` calls produce
+// byte-for-byte identical `CharId` sets, the merge laws line up, and
+// we get a real contract test (instead of leaning on the per-merge
+// tests in `crdt_impls.rs`).
+//
+// Wire-level dedup wouldn't have helped here: per
+// `crates/node/src/delta_store.rs` "each delta is applied at most once
+// (the DAG dedups by content-addressed `delta.id`)", so the
+// in-process redelivery scenario this test exercises doesn't
+// correspond to anything RGA's merge sees in production. The
+// determinism gap was purely test-framing.
 #[test]
-#[ignore = "RGA inserts allocate fresh per-character ids; two `make_*()` calls produce disjoint id sets, breaking the determinism contract `assert_mergeable_laws` requires. Mergeable laws for RGA are exercised by `test_rga_merge_*` in src/collections/crdt_impls.rs."]
 fn rga_satisfies_crdt_laws() {
     use calimero_storage::collections::ReplicatedGrowableArray;
+    use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
 
-    fn fresh(s: &str) -> ReplicatedGrowableArray {
+    // Three pinned timestamps with distinct, deterministic IDs so the
+    // resulting CharId sets are disjoint per builder but identical
+    // between repeat calls of the same builder.
+    fn pinned(seed: u128, time: u64) -> HybridTimestamp {
+        let id = ID::from(std::num::NonZeroU128::new(seed).expect("seed must be non-zero"));
+        HybridTimestamp::new(Timestamp::new(NTP64(time), id))
+    }
+
+    fn fresh(ts: HybridTimestamp, s: &str) -> ReplicatedGrowableArray {
         let mut r = ReplicatedGrowableArray::new();
-        r.insert_str(0, s).unwrap();
+        r.insert_str_at_timestamp(0, ts, s).unwrap();
         r
     }
 
     let eq = |a: &ReplicatedGrowableArray, b: &ReplicatedGrowableArray| {
-        a.len().unwrap() == b.len().unwrap()
+        a.get_text().unwrap() == b.get_text().unwrap()
     };
 
-    assert_mergeable_laws(|| fresh("aa"), || fresh("bb"), || fresh("cc"), eq);
+    assert_mergeable_laws(
+        || fresh(pinned(11, 1_000), "aa"),
+        || fresh(pinned(22, 2_000), "bb"),
+        || fresh(pinned(33, 3_000), "cc"),
+        eq,
+    );
 }
