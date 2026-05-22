@@ -133,13 +133,24 @@ jobs:
           # would have them stomp on each other's containers. Sequential
           # also makes failures easier to triage from log artefacts.
           for wf in workflows/app-upgrade/*.yml; do
-              name=$(basename "$wf" .yml)
+              # Sanitise the derived log-filename component. The glob itself
+              # is hardcoded, but defence in depth: a future workflow whose
+              # filename includes shell-metacharacter-like bytes (or path
+              # separators if someone ever symlinks into the directory)
+              # would otherwise be interpolated into the log path. Strip to
+              # the safe set used by every existing workflow filename.
+              name=$(basename "$wf" .yml | tr -cd 'A-Za-z0-9_-')
               echo "::group::Running $name"
+              # Pipe merobox stdout/stderr through tee to capture it as a
+              # build artefact. ${PIPESTATUS[0]} captures merobox's exit
+              # explicitly -- more legible than relying on `pipefail` to
+              # surface merobox's failure as the pipeline's `$?`, and
+              # robust even if a future edit drops `pipefail`.
               merobox bootstrap run "$wf" \
                   --image merod:local \
                   --e2e-mode \
                   --verbose 2>&1 | tee "docker-logs/merobox-${name}.log"
-              wf_exit=$?
+              wf_exit=${PIPESTATUS[0]}
               echo "::endgroup::"
               if [ "$wf_exit" -ne 0 ]; then
                   echo "::error::Workflow $name failed with exit $wf_exit"
