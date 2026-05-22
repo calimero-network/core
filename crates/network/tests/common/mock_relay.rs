@@ -241,17 +241,21 @@ impl MockRelay {
 
     /// Forcibly close any active connections to `peer`. Returns true if at
     /// least one connection was found.
+    ///
+    /// Panics if the relay task is no longer running — a test that calls
+    /// this expects the relay to be alive, and an Err on the command
+    /// channel or a dropped ack would otherwise be conflated with the
+    /// semantic "peer not connected" return, producing misleading
+    /// assertion messages at call sites.
     pub async fn disconnect_peer(&self, peer: PeerId) -> bool {
         let (ack_tx, ack_rx) = oneshot::channel();
-        if self
-            .cmd_tx
+        self.cmd_tx
             .send(Command::DisconnectPeer { peer, ack: ack_tx })
             .await
-            .is_err()
-        {
-            return false;
-        }
-        ack_rx.await.unwrap_or(false)
+            .expect("mock relay task is not running (cmd channel closed)");
+        ack_rx
+            .await
+            .expect("mock relay task dropped the disconnect ack (likely panicked)")
     }
 
     /// Snapshot of what the relay has observed since spawn. Reads shared
