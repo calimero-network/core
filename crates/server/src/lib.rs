@@ -172,6 +172,12 @@ pub async fn start(
 /// by CORS, every access-token expiry surfaces as a hard logout for the user
 /// instead of a transparent refresh. See `cors_tests` for the regression
 /// guard.
+///
+/// **`allow_credentials` is intentionally not set.** It is incompatible with
+/// `allow_origin(Any)` per the CORS spec, so adding it here would be a no-op
+/// for browsers in the current configuration. If credentialed requests
+/// (cookies, TLS client certs) ever become required, `allow_origin(Any)`
+/// must first be replaced with an explicit allow-list of trusted origins.
 fn build_cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(Any)
