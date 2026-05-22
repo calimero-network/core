@@ -2,7 +2,7 @@ use actix::StreamHandler;
 use calimero_network_primitives::messages::NetworkEvent;
 use eyre::eyre;
 use libp2p::core::ConnectedPoint;
-use libp2p::swarm::SwarmEvent;
+use libp2p::swarm::{DialError, SwarmEvent};
 use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
 use tracing::{debug, info, trace, warn};
@@ -83,11 +83,26 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 peer_id, endpoint, ..
             } => {
                 debug!(%peer_id, ?endpoint, "Connection established");
-                if let ConnectedPoint::Dialer { .. } = endpoint {
-                    self.discovery
-                        .state
-                        .add_peer_addr(peer_id, endpoint.get_remote_address());
 
+                // Record the remote address for both inbound and outbound
+                // connections. The previous version only recorded for the
+                // Dialer endpoint, which meant a peer that dialed us first
+                // never made it into our address book until rendezvous
+                // happened to surface them later. That left the rendezvous-
+                // tick re-dial loop with nothing to iterate on
+                // ConnectionClosed.
+                //
+                // Skip relayed multiaddrs (`/p2p-circuit/`) — those aren't
+                // useful as direct-dial entries for the peer, and storing
+                // them would pollute the book with addresses that always
+                // fail to dial directly.
+                let remote = endpoint.get_remote_address();
+                let is_relayed = remote.iter().any(|p| matches!(p, Protocol::P2pCircuit));
+                if !is_relayed {
+                    self.discovery.state.add_peer_addr(peer_id, remote);
+                }
+
+                if let ConnectedPoint::Dialer { .. } = endpoint {
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
                         let _ignored = sender.send(Ok(()));
                     }
@@ -136,7 +151,32 @@ impl StreamHandler<FromSwarm> for NetworkManager {
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 debug!(?peer_id, %error, "Outgoing connection error");
+
+                // Attribute the failure to specific addresses where DialError
+                // gives us that detail. Three variants carry addresses:
+                //   - LocalPeerId { address }: we dialed our own peer id at
+                //     that address; whoever advertised it for this peer was
+                //     wrong, so evict.
+                //   - WrongPeerId { address, .. }: the peer at that address
+                //     turned out to have a different identity; same idea.
+                //   - Transport(Vec<(addr, err)>): each address we tried in
+                //     this dial, with the transport-level error per attempt.
+                // Other variants (NoAddresses, Aborted, Denied, DialPeer
+                // ConditionFalse) don't pin the failure to an address, so
+                // there's nothing to attribute.
                 if let Some(peer_id) = peer_id {
+                    let failed_addrs: Vec<&Multiaddr> = match &error {
+                        DialError::LocalPeerId { address }
+                        | DialError::WrongPeerId { address, .. } => vec![address],
+                        DialError::Transport(attempts) => {
+                            attempts.iter().map(|(addr, _)| addr).collect()
+                        }
+                        _ => vec![],
+                    };
+                    for addr in failed_addrs {
+                        let _ = self.discovery.state.record_dial_failure(&peer_id, addr);
+                    }
+
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
                         let _ignored = sender.send(Err(eyre!(error)));
                     }

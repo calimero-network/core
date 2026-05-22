@@ -4,8 +4,15 @@ mod tests;
 
 use core::time::Duration;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
+
+/// Consecutive-failure threshold at which an address is evicted from a
+/// peer's address book. Three is chosen as a small magic number that
+/// tolerates transient flakiness (one bad TCP retransmit, one identify
+/// race) without keeping a permanently broken address around long enough
+/// to waste many rendezvous-tick dial attempts.
+pub(crate) const DIAL_FAILURE_EVICTION_THRESHOLD: u8 = 3;
 
 use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::Cookie;
@@ -147,13 +154,44 @@ impl DiscoveryState {
         }
     }
 
+    /// Record an address for a peer, or reset its failure counter to zero if
+    /// it already exists. Called from successful connection events (the
+    /// address obviously works), from identify (the peer told us it
+    /// listens there), and from the rendezvous discovery path.
+    ///
+    /// Addresses are stored as supplied, without normalization. The caller
+    /// is responsible for filtering out forms we don't want to dial
+    /// directly — most notably relayed multiaddrs (`/p2p-circuit/`) for
+    /// inbound connection records.
     pub(crate) fn add_peer_addr(&mut self, peer_id: PeerId, addr: &Multiaddr) {
         let _ = self
             .peers
             .entry(peer_id)
             .or_default()
             .addrs
-            .insert(addr.clone());
+            .insert(addr.clone(), 0);
+    }
+
+    /// Mark a dial failure for `addr` under `peer_id`. Increments the
+    /// per-address counter; if it reaches
+    /// [`DIAL_FAILURE_EVICTION_THRESHOLD`], evicts the address and returns
+    /// true. No-op if the peer or address is not in the book (we don't
+    /// add entries for addresses we never planned to keep).
+    pub(crate) fn record_dial_failure(&mut self, peer_id: &PeerId, addr: &Multiaddr) -> bool {
+        let Some(peer_info) = self.peers.get_mut(peer_id) else {
+            return false;
+        };
+        let Some(count) = peer_info.addrs.get_mut(addr) else {
+            return false;
+        };
+
+        *count = count.saturating_add(1);
+        if *count >= DIAL_FAILURE_EVICTION_THRESHOLD {
+            let _ = peer_info.addrs.remove(addr);
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn remove_peer(&mut self, peer_id: &PeerId) {
@@ -204,7 +242,7 @@ impl DiscoveryState {
                 let _ = discoveries.insert(mechanism);
 
                 let _ = entry.insert(PeerInfo {
-                    addrs: HashSet::default(),
+                    addrs: HashMap::default(),
                     discoveries,
                     relay: None,
                     rendezvous: None,
@@ -375,9 +413,18 @@ impl DiscoveryState {
 
 /// PeerInfo is a struct that holds information about a peer.
 /// It offers immutable methods for accessing the information.
+///
+/// `addrs` maps each known address to the number of consecutive dial
+/// failures observed for it. The counter is reset on every successful
+/// connection (or on a fresh identify push that re-introduces the
+/// address) and incremented on `OutgoingConnectionError`. An address is
+/// evicted entirely once the count reaches
+/// [`DIAL_FAILURE_EVICTION_THRESHOLD`]. This bounds growth without
+/// penalising stable long-online peers — a working address keeps its
+/// counter at zero indefinitely.
 #[derive(Clone, Debug, Default)]
 pub struct PeerInfo {
-    addrs: HashSet<Multiaddr>,
+    addrs: HashMap<Multiaddr, u8>,
     discoveries: HashSet<PeerDiscoveryMechanism>,
     relay: Option<PeerRelayInfo>,
     rendezvous: Option<PeerRendezvousInfo>,
@@ -385,18 +432,18 @@ pub struct PeerInfo {
 
 impl PeerInfo {
     pub(crate) fn addrs(&self) -> impl Iterator<Item = &Multiaddr> {
-        self.addrs.iter()
+        self.addrs.keys()
     }
 
     pub(crate) fn get_preferred_addr(&self) -> Option<&Multiaddr> {
         let udp_addrs: Vec<&Multiaddr> = self
             .addrs
-            .iter()
+            .keys()
             .filter(|addr| addr.iter().any(|p| matches!(p, Protocol::Udp(_))))
             .collect();
 
         match udp_addrs.len() {
-            0 => self.addrs.iter().next(),
+            0 => self.addrs.keys().next(),
             _ => Some(udp_addrs[0]),
         }
     }
