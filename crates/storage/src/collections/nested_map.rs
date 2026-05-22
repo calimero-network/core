@@ -4,6 +4,15 @@
 //! The key insight: the storage layer already handles nesting correctly through IDs,
 //! but the get-modify-put pattern breaks it by creating blobs.
 //!
+//! # Merge semantics
+//!
+//! `NestedMapOps` is an extension trait, not a wrapper struct — there is no
+//! new type here to merge. The outer `UnorderedMap` already implements
+//! [`Mergeable`](super::crdt_meta::Mergeable) (see `unordered_map.rs`) and
+//! that impl recursively merges inner-map values key-by-key, which is what
+//! makes the nested shape converge. `NestedMapOps` is purely an ergonomic
+//! shortcut for two-level access; it adds no merge logic of its own.
+//!
 //! # The Problem
 //!
 //! ```rust,no_run

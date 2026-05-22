@@ -8,6 +8,15 @@
 //! The per-entry authorization is enforced at merge time in
 //! `Interface::apply_action` (see `interface.rs`). Local `update`/`remove`
 //! additionally short-circuit non-owner calls so bugs surface in-process.
+//!
+//! # Merge semantics
+//!
+//! `AuthoredMap` implements [`Mergeable`](super::crdt_meta::Mergeable) by
+//! delegating to its inner `UnorderedMap`. The owner stamp travels with each
+//! entry, so per-entry authorization survives the merge: post-merge,
+//! `update`/`remove` still reject calls from non-owners. New keys from either
+//! side are unioned; updates to the same key on both sides resolve through the
+//! inner map's merge (typically LWW on the contained value).
 
 use std::collections::BTreeMap;
 
@@ -17,7 +26,6 @@ use calimero_primitives::identity::PublicKey;
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{compute_id, StoreError, UnorderedMap};
 use crate::entities::{ChildInfo, Data, Element, StorageType};
-use crate::env;
 use crate::index::Index;
 use crate::interface::StorageError;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -114,11 +122,7 @@ where
             )));
         }
 
-        let owner: PublicKey = env::executor_id().into();
-        let storage_type = StorageType::User {
-            owner,
-            signature_data: None,
-        };
+        let storage_type = super::authored_common::make_owner_stamp();
 
         let _previous = self
             .inner
@@ -140,8 +144,7 @@ where
             .owner_of(k)?
             .ok_or(StoreError::StorageError(StorageError::NotFound(entry_id)))?;
 
-        let executor: PublicKey = env::executor_id().into();
-        if stored_owner != executor {
+        if !super::authored_common::executor_matches_owner(&stored_owner) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "AuthoredMap::update: not entry owner".to_owned(),
             )));
@@ -170,8 +173,7 @@ where
             return Ok(None);
         };
 
-        let executor: PublicKey = env::executor_id().into();
-        if stored_owner != executor {
+        if !super::authored_common::executor_matches_owner(&stored_owner) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "AuthoredMap::remove: not entry owner".to_owned(),
             )));
