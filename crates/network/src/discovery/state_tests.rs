@@ -318,7 +318,7 @@ fn test_on_relay_reservation_lost_marks_expired_and_queues_recovery() {
 }
 
 #[test]
-fn test_on_relay_reservation_lost_from_requested_queues_recovery() {
+fn test_on_relay_reservation_lost_from_requested_does_not_queue() {
     let mut state = DiscoveryState::default();
     let relay_peer = PeerId::random();
 
@@ -327,31 +327,60 @@ fn test_on_relay_reservation_lost_from_requested_queues_recovery() {
 
     let actions = state.on_relay_reservation_lost(&relay_peer);
 
-    // Reservation that never reached Accepted still counts as previously
-    // active — the relayed listener was open, and losing it should retry.
-    assert_eq!(actions.relay_reservations, vec![relay_peer]);
+    // From Requested, status flips to Expired but no recovery is queued.
+    // Requested means either a pending request that just failed (queuing
+    // would loop on a deliberate denial) or a stale event for a prior loss
+    // whose recovery is already in flight (queuing would duplicate it).
+    assert!(actions.relay_reservations.is_empty());
+    assert_eq!(
+        state.peers[&relay_peer]
+            .relay
+            .as_ref()
+            .unwrap()
+            .reservation_status(),
+        RelayReservationStatus::Expired,
+        "status flips to Expired even when no recovery is queued"
+    );
 }
 
 #[test]
-fn test_on_relay_reservation_lost_is_idempotent_when_already_expired() {
+fn test_on_relay_reservation_lost_is_idempotent_under_event_burst() {
     let mut state = DiscoveryState::default();
     let relay_peer = PeerId::random();
 
     state.update_peer_protocols(&relay_peer, &[HOP_PROTOCOL_NAME]);
     state.update_relay_reservation_status(&relay_peer, RelayReservationStatus::Accepted);
 
-    // First loss queues recovery.
-    let first = state.on_relay_reservation_lost(&relay_peer);
-    assert_eq!(first.relay_reservations, vec![relay_peer]);
-
-    // A second event for the same peer (e.g. ExternalAddrExpired followed
-    // by ListenerClosed) must not queue a duplicate dial.
-    let second = state.on_relay_reservation_lost(&relay_peer);
-    assert!(
-        second.relay_reservations.is_empty(),
-        "repeated loss for already-Expired peer must produce no action"
+    // Burst simulating one disconnect: ConnectionClosed -> ListenerClosed ->
+    // ExternalAddrExpired arrive in quick succession. Between the first
+    // event and the next, NetworkManager's execute_reachability_actions
+    // calls create_relay_reservation, which flips Expired -> Requested for
+    // the in-flight new reservation.
+    let after_connection_closed = state.on_relay_reservation_lost(&relay_peer);
+    assert_eq!(
+        after_connection_closed.relay_reservations,
+        vec![relay_peer],
+        "first event of the burst queues exactly one recovery"
     );
-    assert!(!second.has_actions());
+
+    // Simulate create_relay_reservation completing successfully and setting
+    // status to Requested on its new libp2p listener.
+    state.update_relay_reservation_status(&relay_peer, RelayReservationStatus::Requested);
+
+    let after_listener_closed = state.on_relay_reservation_lost(&relay_peer);
+    assert!(
+        after_listener_closed.relay_reservations.is_empty(),
+        "second event in the burst (ListenerClosed for the dead listener) \
+         must not queue another listen_on; the recovery is already in flight"
+    );
+
+    // After the second event, status is back to Expired (the in-flight
+    // libp2p listener keeps running until ExternalAddrConfirmed lands).
+    let after_external_addr_expired = state.on_relay_reservation_lost(&relay_peer);
+    assert!(
+        after_external_addr_expired.relay_reservations.is_empty(),
+        "third event in the burst is also a no-op"
+    );
 }
 
 #[test]
@@ -361,7 +390,8 @@ fn test_on_relay_reservation_lost_for_discovered_peer_is_noop() {
 
     state.update_peer_protocols(&relay_peer, &[HOP_PROTOCOL_NAME]);
     // Discovered means we know the peer speaks the hop protocol but never
-    // asked it for a reservation. Losing "nothing" should not retry.
+    // asked it for a reservation. Losing "nothing" should be a no-op and
+    // leave status untouched — there is nothing to mark Expired.
 
     let actions = state.on_relay_reservation_lost(&relay_peer);
 
@@ -372,8 +402,8 @@ fn test_on_relay_reservation_lost_for_discovered_peer_is_noop() {
             .as_ref()
             .unwrap()
             .reservation_status(),
-        RelayReservationStatus::Expired,
-        "status still flips to Expired even when no recovery is queued"
+        RelayReservationStatus::Discovered,
+        "status stays Discovered; nothing to mark Expired"
     );
 }
 
