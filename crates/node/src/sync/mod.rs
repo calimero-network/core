@@ -45,6 +45,7 @@ pub(crate) mod network;
 pub(crate) mod parent_pull;
 pub(crate) mod peers;
 pub mod prometheus_metrics;
+pub(crate) mod reconciler;
 pub mod rotation_log_reader;
 mod snapshot;
 pub(crate) mod state_access;
@@ -71,17 +72,16 @@ pub use hash_comparison_protocol::{
 };
 pub use level_sync::{LevelWiseConfig, LevelWiseFirstRequest, LevelWiseProtocol, LevelWiseStats};
 pub use manager::SyncManager;
-// `mod manager` is private to `sync/`; these `pub(crate)` re-exports
-// are the *only* way for `crate::state` to reach the reconcile-attempt
-// helpers from its `SyncStateAccess` impl on `NodeState`. The helpers
-// can't be inlined into `state.rs` without duplicating the logic that
-// the dedicated tests in `sync/manager/tests.rs` already cover
-// against synthetic `DashMap` inputs. Keeping the helpers as
-// implementation details of `sync::manager` and exposing them via
-// these narrow re-exports preserves both surfaces.
-pub(crate) use manager::{
-    reconcile_cooldown, reconcile_remaining_cooldown, record_reconcile_failure,
-    record_reconcile_success,
-};
+// `mod reconciler` is `pub(crate)` to `sync/`; these re-exports give
+// `crate::state` a stable path to the reconcile-attempt helpers from
+// its `SyncStateAccess` impl on `NodeState`. The helpers can't be
+// inlined into `state.rs` without duplicating the logic that the
+// dedicated tests in `sync/reconciler.rs` already cover against
+// synthetic `DashMap` inputs. Keeping the helpers as implementation
+// details of `sync::reconciler` and exposing them via these narrow
+// re-exports preserves both surfaces.
 pub use metrics::{no_op_metrics, NoOpMetrics, PhaseTimer, SharedMetrics, SyncMetricsCollector};
 pub use prometheus_metrics::PrometheusSyncMetrics;
+pub(crate) use reconciler::{
+    reconcile_remaining_cooldown, record_reconcile_failure, record_reconcile_success,
+};
