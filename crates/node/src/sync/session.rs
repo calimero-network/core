@@ -17,7 +17,7 @@
 //! free-function `dispatch_recently_attempted` / `session_dispatch_wedged`
 //! helpers with a single typed `SessionTracker`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use calimero_primitives::context::ContextId;
@@ -59,6 +59,16 @@ pub(super) struct SessionTracker {
     /// Running count of mailbox-full drops in the current rollup
     /// window. Reset by [`Self::tick_full_drops_summary`].
     full_drops_in_window: u64,
+    /// Distinct contexts that had at least one drop in the current
+    /// rollup window. Reset alongside `full_drops_in_window`. Kept as
+    /// a separate set (rather than deriving from `last_full_warn`)
+    /// because `last_full_warn`'s entries can age past the window
+    /// boundary mid-window, which would make a derived count both
+    /// over-count (entries from prior windows that haven't been
+    /// pruned yet) and under-count (current-window entries inserted
+    /// early enough that their elapsed time has crossed the window).
+    /// A dedicated per-window set sidesteps both errors.
+    drop_contexts_in_window: HashSet<ContextId>,
     /// Start of the current rollup window.
     full_window_started: Instant,
     /// `session_deadline * 2`. After this, an unresolved dispatch is
@@ -134,6 +144,7 @@ impl SessionTracker {
             initiator_dispatched_at: HashMap::new(),
             last_full_warn: HashMap::new(),
             full_drops_in_window: 0,
+            drop_contexts_in_window: HashSet::new(),
             full_window_started: Instant::now(),
             session_wedge_grace: session_deadline * SESSION_WEDGE_GRACE_MULTIPLIER,
             dispatch_backoff,
@@ -149,6 +160,14 @@ impl SessionTracker {
     /// Read-only eligibility check for the dispatch loop. `force`
     /// mirrors the explicit-request override the loop applies when a
     /// caller pushed a specific context onto `ctx_sync_rx`.
+    ///
+    /// `force=true` bypasses [`SkipReason::DispatchRecentlyAttempted`]
+    /// (the #2319 mailbox-full backoff) and
+    /// [`SkipReason::LastSyncTooRecent`] (the success-interval
+    /// throttle). It does NOT bypass [`SkipReason::AlreadyInProgress`]
+    /// — an in-flight session is never double-dispatched even on an
+    /// explicit request; the wedge watchdog is the right recovery
+    /// path for genuinely stuck sessions.
     pub(super) fn dispatch_decision(&self, ctx: &ContextId, force: bool) -> DispatchDecision {
         if !force
             && dispatch_recently_attempted(&self.last_dispatch_attempt, ctx, self.dispatch_backoff)
@@ -191,6 +210,7 @@ impl SessionTracker {
     /// returns whether the caller should emit the loud warn this round.
     pub(super) fn record_dispatch_full(&mut self, ctx: ContextId) -> FullWarnHint {
         self.full_drops_in_window += 1;
+        let _inserted = self.drop_contexts_in_window.insert(ctx);
         let _prev = self.last_dispatch_attempt.insert(ctx, Instant::now());
         let warn_now = self
             .last_full_warn
@@ -354,22 +374,24 @@ impl SessionTracker {
     /// window; otherwise returns `None` (and still resets the window
     /// if elapsed, to avoid unbounded `last_full_warn` growth).
     ///
-    /// `contexts_affected` is captured AFTER `last_full_warn` is
-    /// pruned of stale entries, so it counts only contexts whose
-    /// warn fired within the current rollup window — not contexts
-    /// that had drops one or more windows ago. The pre-extraction
-    /// inline code read the count before pruning; this is an
-    /// opportunistic fix landed alongside the move.
+    /// `contexts_affected` is the size of [`Self::drop_contexts_in_window`]
+    /// at tick time — exactly the distinct contexts that had at least
+    /// one drop in the just-closed window. Both the drop counter and
+    /// the context set are reset alongside `full_window_started`.
+    /// `last_full_warn` is pruned of entries past the rate-limit
+    /// window so it doesn't grow unboundedly; that prune is bookkeeping
+    /// only and does not feed into the rollup count.
     pub(super) fn tick_full_drops_summary(&mut self) -> Option<FullDropsRollup> {
         if self.full_window_started.elapsed() < MAILBOX_FULL_SUMMARY_WINDOW {
             return None;
         }
         let drops = self.full_drops_in_window;
+        let contexts_affected = self.drop_contexts_in_window.len();
         self.full_drops_in_window = 0;
+        self.drop_contexts_in_window.clear();
         self.full_window_started = Instant::now();
         self.last_full_warn
             .retain(|_, t| t.elapsed() < MAILBOX_FULL_SUMMARY_WINDOW);
-        let contexts_affected = self.last_full_warn.len();
         if drops > 0 {
             Some(FullDropsRollup {
                 drops,
@@ -750,8 +772,36 @@ mod tests {
         let rollup = t.tick_full_drops_summary().expect("rollup fired");
         assert_eq!(rollup.drops, 3);
         assert_eq!(rollup.contexts_affected, 2);
-        // Counter reset.
+        // Counter + context set reset.
         assert_eq!(t.full_drops_in_window, 0);
+        assert!(t.drop_contexts_in_window.is_empty());
+    }
+
+    #[test]
+    fn tick_full_drops_summary_count_is_per_window_not_cumulative() {
+        // Reproduces the bug the L390/L393 review caught: a context
+        // whose only drop happened in window N must NOT be counted
+        // in window N+1's rollup, even though its `last_full_warn`
+        // entry may linger in the rate-limit map for a while.
+        let mut t = tracker();
+        // Window 1: one context drops.
+        let _ = t.record_dispatch_full(ctx(1));
+        t.force_full_window_expired();
+        let r1 = t.tick_full_drops_summary().expect("window 1 fires");
+        assert_eq!(r1.drops, 1);
+        assert_eq!(r1.contexts_affected, 1);
+
+        // Window 2: a DIFFERENT context drops. ctx(1) had no drops
+        // this window, so it must not show up in the count even if
+        // its `last_full_warn` entry hasn't been pruned yet.
+        let _ = t.record_dispatch_full(ctx(2));
+        t.force_full_window_expired();
+        let r2 = t.tick_full_drops_summary().expect("window 2 fires");
+        assert_eq!(r2.drops, 1);
+        assert_eq!(
+            r2.contexts_affected, 1,
+            "must count only contexts that dropped IN window 2, not the cumulative set"
+        );
     }
 
     #[test]
