@@ -216,8 +216,17 @@ impl SessionTracker {
     /// followed by `start()` on first sync, otherwise
     /// `existing.take_last_sync()` (the in-progress marker the
     /// watchdog watches for).
+    ///
+    /// Also clears any stale `last_dispatch_attempt` entry for the
+    /// context. A successful dispatch supersedes any prior backoff
+    /// from a `Full`/`Closed` outcome, so leaving the stale stamp in
+    /// place would cause [`Self::dispatch_decision`] to return
+    /// `Skip(DispatchRecentlyAttempted)` on subsequent ticks instead
+    /// of the correct `Skip(AlreadyInProgress)` — same skip outcome
+    /// but a misleading log line.
     pub(super) fn record_dispatch_succeeded(&mut self, ctx: ContextId, is_first_sync: bool) {
         let _prev = self.initiator_dispatched_at.insert(ctx, Instant::now());
+        let _stale = self.last_dispatch_attempt.remove(&ctx);
         if is_first_sync {
             let mut new_state = SyncState::new();
             new_state.start();
@@ -565,6 +574,23 @@ mod tests {
         assert!(s.last_sync().is_none());
         // Wedge timer set.
         assert!(t.initiator_dispatched_at.contains_key(&ctx(1)));
+    }
+
+    #[test]
+    fn record_dispatch_succeeded_clears_stale_dispatch_attempt() {
+        let mut t = tracker();
+        // Simulate a prior Full outcome that bumped the backoff.
+        let _ = t.record_dispatch_full(ctx(1));
+        assert!(t.last_dispatch_attempt.contains_key(&ctx(1)));
+        // Subsequent dispatch succeeds; backoff stamp must clear so
+        // the next decision doesn't mis-report DispatchRecentlyAttempted.
+        t.record_dispatch_succeeded(ctx(1), true);
+        assert!(!t.last_dispatch_attempt.contains_key(&ctx(1)));
+        // The context is now AlreadyInProgress, not RecentlyAttempted.
+        match t.dispatch_decision(&ctx(1), false) {
+            DispatchDecision::Skip(SkipReason::AlreadyInProgress) => {}
+            other => panic!("expected AlreadyInProgress, got {other:?}"),
+        }
     }
 
     #[test]
