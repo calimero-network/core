@@ -376,13 +376,22 @@ async fn relay_quota_exhaustion_denies_second_client() {
                     listener_id,
                     reason,
                     ..
-                } if listener_id == b_listener && reason.is_err() => {
-                    // Log the actual error for triage when this test does
-                    // fail; the wrapped form is too noisy for an assertion
-                    // message but useful in the output.
-                    eprintln!("client B ListenerClosed reason: {:?}", reason.err());
-                    return;
-                }
+                } if listener_id == b_listener => match reason {
+                    Err(err) => {
+                        // Log the actual error for triage when this test
+                        // does fail; the wrapped form is too noisy for an
+                        // assertion message but useful in the output.
+                        eprintln!("client B ListenerClosed reason: {err:?}");
+                        return;
+                    }
+                    Ok(()) => {
+                        panic!(
+                            "client B's relayed listener closed gracefully, but this test \
+                             expected an error reason (relay quota denial). A graceful close \
+                             here indicates a different failure mode than quota exhaustion."
+                        );
+                    }
+                },
                 SwarmEvent::ExternalAddrConfirmed { address } if is_relayed(&address) => {
                     panic!("client B should not have got a reservation; quota was 1");
                 }
@@ -392,19 +401,24 @@ async fn relay_quota_exhaustion_denies_second_client() {
     })
     .await;
 
+    // Assert the timeout outcome before unwinding client A's driver — the
+    // timeout result is already computed, and surfacing it first means a
+    // CI-side timeout failure is more diagnosable than a driver panic that
+    // happens during cleanup.
+    assert!(
+        result.is_ok(),
+        "timed out waiting for ListenerClosed on client B's relayed listener"
+    );
+
+    // Now cleanly stop client A's driver. If the driver itself panicked
+    // (rather than being aborted), surface that too — it would explain
+    // why a quota slot might have been freed early.
     client_a_driver.abort();
-    // Await the driver after abort so any panic inside it surfaces here
-    // (JoinError::is_cancelled() distinguishes abort from a real panic).
     if let Err(err) = client_a_driver.await {
         if !err.is_cancelled() {
             panic!("client A driver task panicked: {err:?}");
         }
     }
-
-    assert!(
-        result.is_ok(),
-        "timed out waiting for ListenerClosed on client B's relayed listener"
-    );
 
     let obs = relay.observations();
     assert!(

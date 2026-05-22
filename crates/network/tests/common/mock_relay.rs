@@ -30,9 +30,7 @@
 //!   mock currently provides.
 
 use core::time::Duration;
-use std::sync::Arc;
-
-use std::sync::Mutex as StdMutex;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use eyre::{eyre, Result};
 use futures_util::StreamExt;
@@ -43,7 +41,10 @@ use libp2p::{identify, noise, relay, tcp, yamux, Multiaddr, PeerId, Swarm, Swarm
 use multiaddr::Protocol;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::{AbortHandle, JoinHandle};
+use tokio::time::timeout;
 use tracing::{debug, warn};
+
+const BIND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Identify protocol version advertised by the mock. Distinct from the real
 /// boot-node string so logs make the source obvious.
@@ -182,22 +183,32 @@ impl MockRelay {
         // listener fails to bind (e.g. on a constrained CI environment) the
         // swarm emits ListenerError / ListenerClosed before NewListenAddr;
         // surface those explicitly instead of spinning until the stream
-        // closes with a generic message.
-        let listen_addr = loop {
-            match swarm.next().await {
-                Some(SwarmEvent::NewListenAddr { address, .. }) => break address,
-                Some(SwarmEvent::ListenerError { error, .. }) => {
-                    return Err(eyre!("mock relay listener error during bind: {error}"));
+        // closes with a generic message. A hard timeout caps the wait so a
+        // wedged kernel can't hang the entire test runner.
+        let listen_addr = timeout(BIND_TIMEOUT, async {
+            loop {
+                match swarm.next().await {
+                    Some(SwarmEvent::NewListenAddr { address, .. }) => return Ok(address),
+                    Some(SwarmEvent::ListenerError { error, .. }) => {
+                        return Err(eyre!("mock relay listener error during bind: {error}"));
+                    }
+                    Some(SwarmEvent::ListenerClosed {
+                        reason: Err(error), ..
+                    }) => {
+                        return Err(eyre!("mock relay listener closed during bind: {error}"));
+                    }
+                    Some(_) => continue,
+                    None => return Err(eyre!("mock relay swarm closed before listening")),
                 }
-                Some(SwarmEvent::ListenerClosed {
-                    reason: Err(error), ..
-                }) => {
-                    return Err(eyre!("mock relay listener closed during bind: {error}"));
-                }
-                Some(_) => continue,
-                None => return Err(eyre!("mock relay swarm closed before listening")),
             }
-        };
+        })
+        .await
+        .map_err(|_| {
+            eyre!(
+                "mock relay did not bind within {:?} — likely a kernel or libp2p hang",
+                BIND_TIMEOUT
+            )
+        })??;
 
         // libp2p's relay::Behaviour fills the reservation response with the
         // SERVER's external addresses, not the client's listen addresses, so
@@ -268,9 +279,14 @@ impl MockRelay {
             .clone()
     }
 
-    /// Stop the relay. Idempotent; subsequent calls are no-ops. Logs
-    /// (rather than swallows) a JoinError so a panic inside the swarm task
-    /// is visible in test output.
+    /// Stop the relay. Idempotent; subsequent calls are no-ops.
+    ///
+    /// The cmd-channel send and ack receive are best-effort — if the task
+    /// has already exited cleanly they fail silently, which is fine. But
+    /// the final `handle.await` is the authoritative liveness check: a
+    /// panic inside the swarm task surfaces as `JoinError::is_panic()`
+    /// here and we propagate it via `panic!` so the test fails loudly
+    /// rather than letting the panic disappear into stderr.
     pub async fn shutdown(&self) {
         let (ack_tx, ack_rx) = oneshot::channel();
         let _ = self.cmd_tx.send(Command::Shutdown { ack: ack_tx }).await;
@@ -278,8 +294,15 @@ impl MockRelay {
 
         let mut guard = self.join.lock().await;
         if let Some(handle) = guard.take() {
-            if let Err(err) = handle.await {
-                eprintln!("mock relay task did not exit cleanly: {err:?}");
+            match handle.await {
+                Ok(()) => {}
+                Err(err) if err.is_cancelled() => {
+                    // Drop fired and aborted the task before we got here.
+                    // Not a panic — accept silently.
+                }
+                Err(err) => {
+                    panic!("mock relay task panicked: {err:?}");
+                }
             }
         }
     }
@@ -293,6 +316,11 @@ impl Drop for MockRelay {
         // deliberately do not lock self.join here — if shutdown() is
         // concurrently holding it, we must still guarantee the task is
         // cancelled.
+        //
+        // Best-effort by design: Drop cannot await the JoinHandle, so a
+        // panic inside the swarm task that happens *after* abort is silently
+        // lost. shutdown() is the authoritative stop path and propagates
+        // task panics; Drop is the fallback for unjoined leaks.
         self.abort.abort();
     }
 }
