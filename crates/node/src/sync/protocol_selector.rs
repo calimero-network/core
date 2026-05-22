@@ -1,9 +1,10 @@
 //! Protocol-dispatch for the initiator side of a sync session.
 //!
-//! Once [`select_protocol`] has chosen which sync protocol to run
-//! against a given peer (based on local + remote handshakes), this
-//! module executes the chosen protocol and walks the fallback chain
-//! when one fails:
+//! `SyncManager::handle_dag_sync` calls [`select_protocol`] against
+//! local + remote handshakes to choose a sync protocol, then forwards
+//! the resulting `ProtocolSelection` into this module's
+//! [`ProtocolSelector::execute`], which runs the chosen protocol and
+//! walks the fallback chain when one fails:
 //!
 //! - `None` → no-op, sync converged on root-hash match.
 //! - `Snapshot { .. }` → `fallback_to_snapshot_sync`.
@@ -99,9 +100,32 @@ impl ProtocolSelector {
     /// `Err(_)` if every protocol in the chain failed.
     ///
     /// `peer_root_hash` is the deref'd `[u8; 32]` of the peer's root
-    /// — needed by `LevelWiseConfig`. `stream` is the established
-    /// sync stream; the LevelWise fallback opens its own fresh stream
-    /// because the responder may be in a LevelWise-specific state.
+    /// — needed by `LevelWiseConfig`.
+    ///
+    /// ## Stream postconditions
+    ///
+    /// `stream` is the established sync stream. The selector borrows
+    /// it for the duration of the call but does not return it; the
+    /// caller does not get to know which state it ends in without
+    /// reading the arms. Per-arm:
+    ///
+    /// - `None`: untouched.
+    /// - `Snapshot`, `BloomFilter`, `SubtreePrefetch`: untouched —
+    ///   `fallback_to_snapshot_sync` opens its own stream.
+    /// - `DeltaSync`: passed straight to `request_dag_heads_and_sync`,
+    ///   which may consume it; indeterminate on return.
+    /// - `HashComparison`: passed to `StreamTransport`, consumed by
+    ///   `HashComparisonProtocol::run_initiator`; the responder's
+    ///   state is well-defined on success (idle) and indeterminate on
+    ///   failure (see the HashComparison-fallback note below).
+    /// - `LevelWise`: passed to `StreamTransport`, consumed by
+    ///   `LevelWiseProtocol::run_initiator`; the fallback path opens
+    ///   a fresh stream because the responder may be in a
+    ///   LevelWise-specific state.
+    ///
+    /// Bottom line: `stream` should be treated as consumed after this
+    /// call returns regardless of variant — the caller's drop runs
+    /// after the function returns and closes it cleanly either way.
     pub(crate) async fn execute<D: ProtocolDispatch>(
         &self,
         dispatch: &D,
@@ -149,8 +173,21 @@ impl ProtocolSelector {
                     .await
                     .wrap_err("delta sync")?;
 
+                // Unlike HashComparison/LevelWise, DeltaSync does not
+                // fall back to snapshot when the peer turns out to
+                // have no data: `select_protocol` only picks DeltaSync
+                // when the local + remote handshakes already showed
+                // overlapping state, so a `None` here is a real wire-
+                // level discrepancy (peer's handshake claimed data,
+                // delta request found none) that should bubble up so
+                // the caller picks a different peer or backs off,
+                // rather than silently rolling forward into a snapshot
+                // sync against a peer whose state is suspect.
                 if matches!(result, SyncProtocol::None) {
-                    bail!("Peer has no data for this context");
+                    bail!(
+                        "Peer {chosen_peer} has no data for context {context_id} \
+                         despite handshake indicating overlap"
+                    );
                 }
 
                 Ok(Some(result))
@@ -355,10 +392,10 @@ mod tests {
     // only `dispatch.*` callbacks — but the higher-leverage HashComparison
     // and LevelWise fallback chains genuinely need a `Stream` fixture.
     //
-    // Tracked alongside the broader sync-test-fixture work; not adding
-    // half-coverage here. The dispatch body moved verbatim from
+    // Tracked in issue #2458 alongside the broader sync-test-fixture
+    // work. The dispatch body moved verbatim from
     // `SyncManager::handle_dag_sync` (lines 1492-1749 pre-extraction),
     // so the existing partition-scenario integration tests
     // (`p3_dag_causal_tests`, `p5_partition_scenarios_tests`) continue
-    // to exercise every fallback path end-to-end.
+    // to exercise every fallback path end-to-end in the meantime.
 }
