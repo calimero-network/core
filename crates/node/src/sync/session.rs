@@ -305,13 +305,19 @@ impl SessionTracker {
     /// caller emits the warn log per context with the grace value
     /// from [`Self::session_wedge_grace`].
     ///
+    /// Returned `Vec` is sorted so call sites and tests see a
+    /// deterministic order across runs (the underlying iteration is
+    /// over a `HashMap`, which has randomised hash seeds per process).
+    ///
     /// Also prunes any past-grace entries from
     /// `initiator_dispatched_at` — including ones that arrived to a
     /// result first and weren't wedged — so the map doesn't grow
-    /// unboundedly.
+    /// unboundedly. Pruning runs AFTER the `on_failure` step so a
+    /// future extension to `on_failure` that touches the dispatch map
+    /// is not silently undone by `retain`.
     pub(super) fn tick_wedge_watchdog(&mut self) -> Vec<ContextId> {
         let grace = self.session_wedge_grace;
-        let wedged: Vec<ContextId> = self
+        let mut wedged: Vec<ContextId> = self
             .initiator_dispatched_at
             .keys()
             .copied()
@@ -319,8 +325,7 @@ impl SessionTracker {
                 session_dispatch_wedged(&self.initiator_dispatched_at, &self.state, ctx, grace)
             })
             .collect();
-        self.initiator_dispatched_at
-            .retain(|_, dispatched_at| dispatched_at.elapsed() < grace);
+        wedged.sort();
         for ctx in &wedged {
             if let Some(s) = self.state.get_mut(ctx) {
                 s.on_failure(
@@ -329,6 +334,8 @@ impl SessionTracker {
                 );
             }
         }
+        self.initiator_dispatched_at
+            .retain(|_, dispatched_at| dispatched_at.elapsed() < grace);
         wedged
     }
 
@@ -337,16 +344,23 @@ impl SessionTracker {
     /// summarise, returns `Some((drops, contexts))` and resets the
     /// window; otherwise returns `None` (and still resets the window
     /// if elapsed, to avoid unbounded `last_full_warn` growth).
+    ///
+    /// `contexts_affected` is captured AFTER `last_full_warn` is
+    /// pruned of stale entries, so it counts only contexts whose
+    /// warn fired within the current rollup window — not contexts
+    /// that had drops one or more windows ago. The pre-extraction
+    /// inline code read the count before pruning; this is an
+    /// opportunistic fix landed alongside the move.
     pub(super) fn tick_full_drops_summary(&mut self) -> Option<FullDropsRollup> {
         if self.full_window_started.elapsed() < MAILBOX_FULL_SUMMARY_WINDOW {
             return None;
         }
         let drops = self.full_drops_in_window;
-        let contexts_affected = self.last_full_warn.len();
         self.full_drops_in_window = 0;
         self.full_window_started = Instant::now();
         self.last_full_warn
             .retain(|_, t| t.elapsed() < MAILBOX_FULL_SUMMARY_WINDOW);
+        let contexts_affected = self.last_full_warn.len();
         if drops > 0 {
             Some(FullDropsRollup {
                 drops,
