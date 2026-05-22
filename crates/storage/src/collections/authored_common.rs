@@ -41,7 +41,11 @@ pub(super) fn executor_matches_owner(owner: &PublicKey) -> bool {
     &current_executor() == owner
 }
 
-#[cfg(test)]
+// `with_executor_id` / `set_executor_id` are gated
+// `#[cfg(not(target_arch = "wasm32"))]`, so tests that mutate the executor
+// identity must match that gate to keep the `cargo test --target wasm32-*`
+// build green.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use serial_test::serial;
 
@@ -50,18 +54,16 @@ mod tests {
     #[test]
     #[serial]
     fn current_executor_returns_env_executor_id() {
-        env::reset_for_testing();
-        env::set_executor_id([42; 32]);
-        let expected: PublicKey = [42; 32].into();
-        assert_eq!(current_executor(), expected);
+        env::with_executor_id([42; 32], || {
+            let expected: PublicKey = [42; 32].into();
+            assert_eq!(current_executor(), expected);
+        });
     }
 
     #[test]
     #[serial]
     fn make_owner_stamp_uses_current_executor() {
-        env::reset_for_testing();
-        env::set_executor_id([42; 32]);
-        match make_owner_stamp() {
+        env::with_executor_id([42; 32], || match make_owner_stamp() {
             StorageType::User {
                 owner,
                 signature_data,
@@ -74,24 +76,24 @@ mod tests {
                 );
             }
             other => panic!("expected StorageType::User, got {other:?}"),
-        }
+        });
     }
 
     #[test]
     #[serial]
     fn owner_check_accepts_matching_executor() {
-        env::reset_for_testing();
-        env::set_executor_id([42; 32]);
-        let owner: PublicKey = [42; 32].into();
-        assert!(executor_matches_owner(&owner));
+        env::with_executor_id([42; 32], || {
+            let owner: PublicKey = [42; 32].into();
+            assert!(executor_matches_owner(&owner));
+        });
     }
 
     #[test]
     #[serial]
     fn owner_check_rejects_mismatched_executor() {
-        env::reset_for_testing();
-        env::set_executor_id([42; 32]);
-        let owner: PublicKey = [99; 32].into();
-        assert!(!executor_matches_owner(&owner));
+        env::with_executor_id([42; 32], || {
+            let owner: PublicKey = [99; 32].into();
+            assert!(!executor_matches_owner(&owner));
+        });
     }
 }

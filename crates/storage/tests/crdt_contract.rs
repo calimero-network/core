@@ -116,11 +116,6 @@ where
 }
 
 #[test]
-fn scaffold_file_compiles() {
-    // Smoke test: this file builds. Real impl tests land in PR-B.
-}
-
-#[test]
 fn vector_with_lww_register_satisfies_crdt_laws() {
     use calimero_storage::collections::{LwwRegister, Vector};
     use calimero_storage::logical_clock::HybridTimestamp;

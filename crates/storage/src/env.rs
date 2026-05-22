@@ -281,6 +281,16 @@ pub(crate) fn set_executor_id(id: [u8; 32]) {
 /// inner RAII guard: a panicking test still cleans up the thread-local before
 /// the next test runs.
 ///
+/// # Scope of effect
+///
+/// Only writes the `EXECUTOR_ID` thread-local. If a [`with_runtime_env`]-style
+/// `RuntimeEnv` is installed when `with_executor_id` is called, the public
+/// [`executor_id`] getter will continue to return the `RuntimeEnv`'s identity
+/// (it prefers `RuntimeEnv` over the thread-local), so the guard's `id` is
+/// effectively shadowed for the duration of `f()`. Tests that need to override
+/// identity must not be nested inside a `RuntimeEnv`; the contract tests in
+/// this crate use the plain thread-local path and are unaffected.
+///
 /// Native-only: WASM doesn't expose executor-identity mutation (the runtime
 /// owns it). The `#[cfg(not(target_arch = "wasm32"))]` gate matches
 /// [`set_executor_id`].
