@@ -245,16 +245,75 @@ fn unordered_map_with_counter_satisfies_crdt_laws() {
     assert_mergeable_laws(make("alice", 1), make("bob", 1), make("carol", 1), eq);
 }
 
-// Shared-key + per-replica executor conflict variant — the path that actually
-// exercises UnorderedMap's recursive merge into a nested Counter on the same
-// key from different replicas. Requires `env::set_executor_id` from an
-// integration test, which today is `#[cfg(test)]`-only. The follow-up PR
-// introducing the `env::with_executor_id` scoped guard will revive this case.
+// Shared-key + per-replica executor conflict variant — the path that
+// actually exercises UnorderedMap's recursive merge into a nested
+// Counter on the same key from different replicas. Each replica writes
+// the shared key under its own `executor_id` via the scoped
+// [`env::with_executor_id`] guard, which restores prior identity even
+// on panic so a failure here doesn't pollute siblings in the same
+// process.
 #[test]
-#[ignore = "see follow-up PR — requires env::with_executor_id scoped guard"]
 fn unordered_map_with_counter_shared_key_conflict() {
-    // body intentionally elided; restored in the follow-up PR alongside the
-    // scoped-executor-id guard. See pre-reshape-2435 tag for the original.
+    use calimero_storage::collections::{Counter, UnorderedMap};
+    use calimero_storage::env;
+    use calimero_storage::store::MainStorage;
+
+    // Each replica writes both a shared key (`"shared"`) AND a private key.
+    // - The shared key forces UnorderedMap::merge to recursively merge the
+    //   nested Counter values, which is where the per-actor max-merge
+    //   conflict resolution actually runs.
+    // - The private keys ensure add-wins union behaviour is also exercised.
+    // Without the shared key the test would pass trivially: disjoint-keys
+    // merges never conflict.
+    let make = |executor: [u8; 32],
+                private_key: &'static str,
+                shared_count: usize,
+                private_count: usize| {
+        move || {
+            env::with_executor_id(executor, || {
+                let mut m = UnorderedMap::new();
+
+                // Shared key — every replica writes to it under its own actor.
+                let mut shared = Counter::<false, MainStorage>::new();
+                for _ in 0..shared_count {
+                    shared.increment().unwrap();
+                }
+                m.insert("shared".to_owned(), shared).unwrap();
+
+                // Private key — only this replica writes to it.
+                let mut private = Counter::<false, MainStorage>::new();
+                for _ in 0..private_count {
+                    private.increment().unwrap();
+                }
+                m.insert(private_key.to_owned(), private).unwrap();
+                m
+            })
+        }
+    };
+
+    let eq = |a: &UnorderedMap<String, Counter, MainStorage>,
+              b: &UnorderedMap<String, Counter, MainStorage>| {
+        let mut a_entries: Vec<(String, u64)> = a
+            .entries()
+            .unwrap()
+            .map(|(k, v)| (k, v.value().unwrap()))
+            .collect();
+        let mut b_entries: Vec<(String, u64)> = b
+            .entries()
+            .unwrap()
+            .map(|(k, v)| (k, v.value().unwrap()))
+            .collect();
+        a_entries.sort();
+        b_entries.sort();
+        a_entries == b_entries
+    };
+
+    assert_mergeable_laws(
+        make([11; 32], "alice", 2, 1),
+        make([22; 32], "bob", 3, 1),
+        make([33; 32], "carol", 5, 1),
+        eq,
+    );
 }
 
 #[test]
@@ -305,19 +364,57 @@ fn lww_register_satisfies_crdt_laws() {
     );
 }
 
-// Counter shared-executor max-merge conflict: each replica increments under
-// its own private executor AND under a shared executor (the per-actor
-// conflict slot). With shared-slot counts {2, 7, 4} the max-under-merge is 7
-// regardless of merge order; private slots simply sum (disjoint executors).
+// Counter shared-executor max-merge conflict: each replica increments
+// under its own private executor AND under a shared executor (the
+// per-actor conflict slot). With shared-slot counts {2, 7, 4} the
+// max-under-merge is 7 regardless of merge order; private slots simply
+// sum (disjoint executors).
 //
-// Requires `env::set_executor_id` from an integration test, which today is
-// `#[cfg(test)]`-only inside the storage crate. The follow-up PR introducing
-// the `env::with_executor_id` scoped guard will revive this case.
+// Driven by the `env::with_executor_id` scoped guard so the
+// per-replica increments run under the right `executor_id`, with prior
+// identity restored even on panic so a failure here doesn't pollute
+// siblings in the same process.
 #[test]
-#[ignore = "see follow-up PR — requires env::with_executor_id scoped guard"]
 fn shared_executor_counter_merge() {
-    // body intentionally elided; restored in the follow-up PR alongside the
-    // scoped-executor-id guard. See pre-reshape-2435 tag for the original.
+    use calimero_storage::collections::Counter;
+    use calimero_storage::env;
+    use calimero_storage::store::MainStorage;
+
+    const SHARED_EXECUTOR: [u8; 32] = [99; 32];
+
+    let make = |private_executor: [u8; 32], private_count: usize, shared_count: usize| {
+        move || {
+            let mut c = Counter::<false, MainStorage>::new();
+
+            // Increments under the shared executor (the conflict-resolution slot).
+            env::with_executor_id(SHARED_EXECUTOR, || {
+                for _ in 0..shared_count {
+                    c.increment().unwrap();
+                }
+            });
+
+            // Increments under this replica's private executor.
+            env::with_executor_id(private_executor, || {
+                for _ in 0..private_count {
+                    c.increment().unwrap();
+                }
+            });
+            c
+        }
+    };
+
+    let eq = |a: &Counter<false, MainStorage>, b: &Counter<false, MainStorage>| {
+        a.value().unwrap() == b.value().unwrap()
+    };
+
+    // Shared-slot counts: 2, 7, 4 — max under merge is 7 (regardless of order).
+    // Private counts: 2, 3, 5 — non-overlapping executors, always summed.
+    assert_mergeable_laws(
+        make([11; 32], 2, 2),
+        make([22; 32], 3, 7),
+        make([33; 32], 5, 4),
+        eq,
+    );
 }
 
 // RGA generates fresh per-character ids on each `insert_str` call, so two
