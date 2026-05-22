@@ -322,6 +322,19 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     /// ordering guarantees the HLC provides between concurrent
     /// inserters.
     ///
+    /// # Precondition: timestamp uniqueness per RGA
+    ///
+    /// Each character's `CharId` is `(timestamp, seq)` where `seq` is the
+    /// byte offset within the inserted string (always starting at 0). If a
+    /// caller invokes this method twice on the same `ReplicatedGrowableArray`
+    /// with the same `timestamp`, the second call's characters will collide
+    /// with the first's on `(timestamp, 0..)` and silently overwrite them in
+    /// the underlying `chars` map. Live `insert_str` is safe by HLC
+    /// monotonicity — every call gets a fresh logical timestamp. Test
+    /// fixtures that want to insert multiple times on the same RGA must use
+    /// distinct timestamps per call (the contract test in
+    /// `tests/crdt_contract.rs` does exactly one insert per replica).
+    ///
     /// # Errors
     ///
     /// Returns error if position is out of bounds or storage operation fails

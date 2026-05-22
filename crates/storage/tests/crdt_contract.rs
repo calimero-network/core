@@ -194,11 +194,9 @@ fn unordered_set_satisfies_crdt_laws() {
 
 // Disjoint-keys merge for UnorderedMap<String, Counter> with no shared-key
 // conflict slot. Establishes add-wins union over keys without touching the
-// per-actor max-merge conflict path — that path requires mutating executor
-// identity, which is `#[cfg(test)]`-only inside the storage crate. The
-// shared-key conflict variant of this test lives below as
-// `unordered_map_with_counter_shared_key_conflict` (ignored, pending the
-// `env::with_executor_id` scoped guard).
+// per-actor max-merge conflict path. The shared-key conflict variant lives
+// below as `unordered_map_with_counter_shared_key_conflict`, which exercises
+// the per-actor max-merge slot via the `env::with_executor_id` scoped guard.
 #[test]
 fn unordered_map_with_counter_satisfies_crdt_laws() {
     use calimero_storage::collections::{Counter, UnorderedMap};
