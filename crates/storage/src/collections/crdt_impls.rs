@@ -8,9 +8,7 @@
 //! - UnorderedSet
 //! - Vector
 
-use super::crdt_meta::{
-    CrdtMap, CrdtMeta, CrdtSequence, CrdtSet, CrdtType, MergeError, Mergeable, StorageStrategy,
-};
+use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
 use super::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap, UnorderedSet, Vector};
 #[cfg(test)]
 use super::{GCounter, PNCounter};
@@ -288,37 +286,6 @@ where
     }
 }
 
-impl<K, V, S> CrdtMap for UnorderedMap<K, V, S>
-where
-    K: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
-    V: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable,
-    S: StorageAdaptor,
-{
-    type Key = K;
-    type Value = V;
-    type Error = crate::collections::error::StoreError;
-
-    fn insert(
-        &mut self,
-        key: Self::Key,
-        value: Self::Value,
-    ) -> Result<Option<Self::Value>, Self::Error> {
-        UnorderedMap::insert(self, key, value)
-    }
-
-    fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error> {
-        UnorderedMap::get(self, key)
-    }
-
-    fn remove(&mut self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error> {
-        UnorderedMap::remove(self, key)
-    }
-
-    fn len(&self) -> Result<usize, Self::Error> {
-        UnorderedMap::len(self)
-    }
-}
-
 // ============================================================================
 // UnorderedSet
 // ============================================================================
@@ -377,31 +344,6 @@ where
         }
 
         Ok(())
-    }
-}
-
-impl<T, S> CrdtSet for UnorderedSet<T, S>
-where
-    T: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
-    S: StorageAdaptor,
-{
-    type Element = T;
-    type Error = crate::collections::error::StoreError;
-
-    fn insert(&mut self, element: Self::Element) -> Result<bool, Self::Error> {
-        UnorderedSet::insert(self, element)
-    }
-
-    fn contains(&self, element: &Self::Element) -> Result<bool, Self::Error> {
-        UnorderedSet::contains(self, element)
-    }
-
-    fn remove(&mut self, element: &Self::Element) -> Result<bool, Self::Error> {
-        UnorderedSet::remove(self, element)
-    }
-
-    fn len(&self) -> Result<usize, Self::Error> {
-        UnorderedSet::len(self)
     }
 }
 
@@ -478,35 +420,6 @@ where
         // If we're longer, keep our additional elements (LWW: keep ours)
 
         Ok(())
-    }
-}
-
-impl<T, S> CrdtSequence for Vector<T, S>
-where
-    T: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable,
-    S: StorageAdaptor,
-{
-    type Element = T;
-    type Error = crate::collections::error::StoreError;
-
-    fn push(&mut self, element: Self::Element) -> Result<(), Self::Error> {
-        Vector::push(self, element)
-    }
-
-    fn get(&self, index: usize) -> Result<Option<Self::Element>, Self::Error> {
-        Vector::get(self, index)
-    }
-
-    fn update(
-        &mut self,
-        index: usize,
-        element: Self::Element,
-    ) -> Result<Option<Self::Element>, Self::Error> {
-        Vector::update(self, index, element)
-    }
-
-    fn len(&self) -> Result<usize, Self::Error> {
-        Vector::len(self)
     }
 }
 

@@ -6,17 +6,17 @@
 //! write, peers verify the signature against the stored writer set at merge
 //! time.
 //!
-//! # CRDT trait surface
+//! # Merge semantics
 //!
-//! `SharedStorage` implements [`Mergeable`](super::crdt_meta::Mergeable) — merging
-//! the inner value via its own `Mergeable` and resolving the writer-set
-//! state by `(writers_nonce, lexical content)` — but does **not** implement
-//! any of [`CrdtMap`](super::crdt_meta::CrdtMap),
-//! [`CrdtSequence`](super::crdt_meta::CrdtSequence), or
-//! [`CrdtSet`](super::crdt_meta::CrdtSet). The shape doesn't fit any of those:
-//! `SharedStorage<T>` is a single-cell value container (closer to a
-//! group-writable register) with extra writer-set metadata, not a keyed,
-//! indexed, or membership collection.
+//! `SharedStorage` implements [`Mergeable`](super::crdt_meta::Mergeable) on two
+//! axes:
+//!
+//! - **Inner value** — delegates to `T`'s own `Mergeable` impl, so a wrapped
+//!   CRDT keeps its convergence semantics (counter sums, LWW wins, etc.).
+//! - **Writer-set metadata** — resolved by `(writers_nonce, lexical content)`:
+//!   the side with the higher nonce wins, with a deterministic tie-break on
+//!   the serialised writer set so concurrent rotations from different signers
+//!   converge to the same outcome on all replicas.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;

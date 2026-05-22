@@ -257,37 +257,15 @@ pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
     imp::update_hlc(remote_ts)
 }
 
-/// Reset thread-local executor state for testing.
-///
-/// **INTERNAL test helper.** Only callable when compiled with `cfg(test)` or
-/// the `testing` feature. The feature is documented in `Cargo.toml` as
-/// not-for-production and only valid in `[dev-dependencies]`. A runtime
-/// `assert!` panics if the function is reached in an optimized release build.
-#[cfg(any(test, feature = "testing"))]
-#[doc(hidden)]
+/// Reset for testing.
+#[cfg(test)]
 pub fn reset_for_testing() {
-    assert!(
-        cfg!(debug_assertions),
-        "reset_for_testing reached an optimized release build; \
-         the `testing` feature must only appear in [dev-dependencies]"
-    );
     imp::reset_for_testing();
 }
 
-/// Set the thread-local executor identity for testing.
-///
-/// **INTERNAL test helper.** Mutates global identity used for per-executor
-/// authorization checks. Only callable when compiled with `cfg(test)` or the
-/// `testing` feature. See [`reset_for_testing`] for the same misuse warnings;
-/// the same release-build `assert!` guard applies.
-#[cfg(any(test, feature = "testing"))]
-#[doc(hidden)]
+/// Set executor ID for testing purposes
+#[cfg(test)]
 pub fn set_executor_id(id: [u8; 32]) {
-    assert!(
-        cfg!(debug_assertions),
-        "set_executor_id reached an optimized release build; \
-         the `testing` feature must only appear in [dev-dependencies]"
-    );
     imp::set_executor_id(id);
 }
 
@@ -422,7 +400,7 @@ mod calimero_vm {
     }
 
     /// Resets the environment state for testing.
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(test)]
     pub(super) fn reset_for_testing() {
         WASM_HLC.with(|hlc| {
             *hlc.borrow_mut() = None;
@@ -571,7 +549,7 @@ mod mocked {
     }
 
     /// Set executor ID for testing purposes
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(test)]
     pub(super) fn set_executor_id(new_id: [u8; 32]) {
         EXECUTOR_ID.with(|id| id.set(new_id));
     }
@@ -634,7 +612,7 @@ mod mocked {
     ///
     /// Clears the thread-local ROOT_HASH, HLC, and STORAGE, allowing multiple tests
     /// to run in sequence without contaminating each other.
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(test)]
     pub(super) fn reset_for_testing() {
         ROOT_HASH.with(|rh| {
             *rh.borrow_mut() = None;
