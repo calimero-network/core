@@ -40,7 +40,7 @@ use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{identify, noise, relay, tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder};
 use multiaddr::Protocol;
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tracing::{debug, warn};
 
 /// Identify protocol version advertised by the mock. Distinct from the real
@@ -126,10 +126,15 @@ enum Command {
 
 /// Handle to a running mock relay server. Drop or call [`Self::shutdown`]
 /// to stop it.
+///
+/// `abort` is kept separately from the join handle (without a lock) so
+/// [`Drop`] can always cancel the background task even if [`Self::shutdown`]
+/// is concurrently holding the join-handle mutex.
 pub struct MockRelay {
     peer_id: PeerId,
     listen_addr: Multiaddr,
     cmd_tx: mpsc::Sender<Command>,
+    abort: AbortHandle,
     join: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -165,11 +170,21 @@ impl MockRelay {
 
         let _listener: ListenerId = swarm.listen_on("/ip4/127.0.0.1/tcp/0".parse()?)?;
 
-        // Wait for the listener to report a concrete bound address.
+        // Wait for the listener to report a concrete bound address. If the
+        // listener fails to bind (e.g. on a constrained CI environment) the
+        // swarm emits ListenerError / ListenerClosed before NewListenAddr;
+        // surface those explicitly instead of spinning until the stream
+        // closes with a generic message.
         let listen_addr = loop {
             match swarm.next().await {
-                Some(SwarmEvent::NewListenAddr { address, .. }) => {
-                    break address;
+                Some(SwarmEvent::NewListenAddr { address, .. }) => break address,
+                Some(SwarmEvent::ListenerError { error, .. }) => {
+                    return Err(eyre!("mock relay listener error during bind: {error}"));
+                }
+                Some(SwarmEvent::ListenerClosed {
+                    reason: Err(error), ..
+                }) => {
+                    return Err(eyre!("mock relay listener closed during bind: {error}"));
                 }
                 Some(_) => continue,
                 None => return Err(eyre!("mock relay swarm closed before listening")),
@@ -194,11 +209,13 @@ impl MockRelay {
         let join = tokio::spawn(async move {
             run_swarm(swarm, &mut cmd_rx, observations_for_task).await;
         });
+        let abort = join.abort_handle();
 
         Ok(Self {
             peer_id,
             listen_addr,
             cmd_tx,
+            abort,
             join: Mutex::new(Some(join)),
         })
     }
@@ -257,11 +274,13 @@ impl MockRelay {
 
 impl Drop for MockRelay {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.join.try_lock() {
-            if let Some(handle) = guard.take() {
-                handle.abort();
-            }
-        }
+        // Abort unconditionally. AbortHandle::abort is a no-op if the task
+        // has already finished (e.g. shutdown() already ran), so this is
+        // safe to call whether or not the task is still active. We
+        // deliberately do not lock self.join here — if shutdown() is
+        // concurrently holding it, we must still guarantee the task is
+        // cancelled.
+        self.abort.abort();
     }
 }
 

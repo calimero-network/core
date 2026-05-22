@@ -103,7 +103,10 @@ where
 {
     let result = timeout(deadline, async {
         loop {
-            let event = swarm.next().await.expect("swarm stream closed");
+            let event = swarm
+                .next()
+                .await
+                .unwrap_or_else(|| panic!("swarm stream closed while waiting for: {label}"));
             if let Some(value) = predicate(&event) {
                 return value;
             }
@@ -302,6 +305,27 @@ async fn relay_quota_exhaustion_denies_second_client() {
     .expect("build client A");
     let _ = establish_reservation(&mut client_a, &relay).await;
 
+    // Drive client A's swarm continuously in a background task so its
+    // libp2p connection (and therefore its reservation) stays alive while
+    // we test client B. Without this, A's swarm goes unpolled between
+    // the end of establish_reservation and the start of the assertion
+    // loop, which can let a yamux ping or identify exchange time out and
+    // free the quota slot — letting client B succeed and producing a
+    // confusing false positive.
+    let client_a_driver = tokio::spawn(async move {
+        // Loop until cancelled by the test's abort. Panic on stream
+        // closure so we surface a real environment break rather than
+        // hanging.
+        loop {
+            let event = client_a
+                .next()
+                .await
+                .expect("client A swarm closed unexpectedly");
+            // Don't act on A's events — we only need to keep it polled.
+            let _ = event;
+        }
+    });
+
     // Client B: tries to reserve, must be denied.
     let mut client_b = Behaviour::build_swarm(&client_config(
         Keypair::generate_ed25519(),
@@ -338,61 +362,55 @@ async fn relay_quota_exhaustion_denies_second_client() {
         .expect("client B listen_on");
 
     // Client B must observe ListenerClosed (not ExternalAddrConfirmed) for
-    // the rejected reservation. Drive client A in the background so its
-    // connection stays alive and holds the quota.
-    //
-    // The matched ListenerClosed must be for client B's freshly created
-    // listener AND must carry an error reason. We don't pattern-match the
-    // specific libp2p error type because relay-client wraps its protocol
-    // errors several Either layers deep, and matching against the stringified
-    // form would be brittle. Instead we narrow on listener_id + reason.is_err()
-    // and assert that the only plausible failure here is the relay denial:
-    // the listener was created moments ago, the transport is healthy (client
-    // A is connected over the same TCP path), and ExternalAddrConfirmed has
-    // not fired for it. A spurious ListenerError unrelated to the quota
-    // denial would imply a different bug, which would surface as a separate
-    // test failure rather than a false positive on this one.
-    let mut saw_close = false;
+    // the rejected reservation. The matched ListenerClosed must be for
+    // client B's freshly created listener AND must carry an error reason.
+    // We don't pattern-match the specific libp2p error variant because the
+    // relay-client wraps its protocol errors several Either layers deep
+    // and matching against the stringified form would be brittle. Instead
+    // we narrow on listener_id + reason.is_err() and corroborate via the
+    // relay-side observations.reservations_denied counter below, which
+    // gives us a positive signal from the relay's own state machine.
     let result = timeout(Duration::from_secs(15), async {
         loop {
-            tokio::select! {
-                _ = client_a.next() => {}
-                event = client_b.next() => {
-                    match event.expect("client B stream") {
-                        SwarmEvent::ListenerClosed { listener_id, reason, .. }
-                            if listener_id == b_listener && reason.is_err() =>
-                        {
-                            // Log the actual error for triage when this test
-                            // does fail; the wrapped form is too noisy for an
-                            // assertion message but useful in the output.
-                            eprintln!(
-                                "client B ListenerClosed reason: {:?}",
-                                reason.err()
-                            );
-                            saw_close = true;
-                            return;
-                        }
-                        SwarmEvent::ExternalAddrConfirmed { address } if is_relayed(&address) => {
-                            panic!("client B should not have got a reservation; quota was 1");
-                        }
-                        _ => {}
-                    }
+            match client_b.next().await.expect("client B stream") {
+                SwarmEvent::ListenerClosed {
+                    listener_id,
+                    reason,
+                    ..
+                } if listener_id == b_listener && reason.is_err() => {
+                    // Log the actual error for triage when this test does
+                    // fail; the wrapped form is too noisy for an assertion
+                    // message but useful in the output.
+                    eprintln!("client B ListenerClosed reason: {:?}", reason.err());
+                    return;
                 }
+                SwarmEvent::ExternalAddrConfirmed { address } if is_relayed(&address) => {
+                    panic!("client B should not have got a reservation; quota was 1");
+                }
+                _ => {}
             }
         }
     })
     .await;
 
+    client_a_driver.abort();
+
     assert!(
         result.is_ok(),
-        "timed out waiting for quota denial on client B"
+        "timed out waiting for ListenerClosed on client B's relayed listener"
     );
-    assert!(saw_close, "client B should have seen ListenerClosed");
 
     let obs = relay.observations().await;
     assert!(
         obs.reservations_accepted >= 1,
-        "at least one reservation accepted (client A); got {obs:?}"
+        "client A's reservation must have been accepted; got {obs:?}"
+    );
+    assert!(
+        obs.reservations_denied >= 1,
+        "relay must have denied at least one reservation request from client B; got {obs:?}. \
+         Without a denial counter increment, the client-side ListenerClosed could be triggered \
+         by a different failure mode (e.g. transport teardown) that doesn't exercise the quota \
+         path we mean to test."
     );
 
     relay.shutdown().await;
