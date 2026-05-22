@@ -59,7 +59,16 @@ pub use ack_router::AckRouter;
 ///
 /// v1 was internal to feature branch development and never deployed to any
 /// persistent network. No backward-compatible deserialization is needed.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 5;
+///
+/// Schema v6: adds `CascadeTargetApplicationSet` and
+/// `CascadeGroupMigrationSet` variants at the END of the `GroupOp` enum
+/// for namespace-level application-upgrade cascade. Variant ordinals for
+/// every prior variant are preserved (Borsh tags variants by source
+/// order). Older peers cannot deserialize these new variants -- the
+/// rollout posture is operator-discipline: deploy v6 to every peer
+/// before triggering a cascade. See
+/// docs/superpowers/specs/2026-05-22-namespace-cascade-app-upgrade-design.md.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 6;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
@@ -252,6 +261,39 @@ pub enum GroupOp {
     /// regular admin (no automatic role change beyond the owner field).
     /// See `architecture/membership-and-leave.html` § 7.
     TransferOwnership { new_owner: PublicKey },
+    /// Cascade variant of [`Self::TargetApplicationSet`]: update the
+    /// target application on the signed group AND on every descendant
+    /// subgroup whose current `app_key` equals `from_app_key`. Walked at
+    /// apply time against the receiver's local tree state, depth-bounded
+    /// by `MAX_NAMESPACE_DEPTH`. Same `manage_application` permission as
+    /// the non-cascade variant on the signed group. Descendants that
+    /// run a different application (different `app_key`) are skipped --
+    /// heterogeneous deployments stay untouched.
+    ///
+    /// `from_app_key` is the matching predicate, snapshotted at the
+    /// emission peer's RPC-handling time. Carried in the op itself so
+    /// every receiver applies the same filter against its own tree
+    /// state -- ensures cross-peer convergence even when local stores
+    /// have diverged between the emission peer's snapshot and a remote
+    /// peer's apply time.
+    ///
+    /// Operationally invoked by an `upgrade_group` RPC with `cascade:
+    /// true`. See `docs/superpowers/specs/2026-05-22-namespace-cascade-app-upgrade-design.md`.
+    CascadeTargetApplicationSet {
+        from_app_key: [u8; 32],
+        app_key: [u8; 32],
+        target_application_id: ApplicationId,
+    },
+    /// Cascade variant of [`Self::GroupMigrationSet`]: emitted alongside
+    /// [`Self::CascadeTargetApplicationSet`] when the operator requested
+    /// cascade-with-migration. Updates the migration bytes on the signed
+    /// group AND on every descendant subgroup whose current `app_key`
+    /// equals `from_app_key`. Same matching-predicate semantics as the
+    /// target variant.
+    CascadeGroupMigrationSet {
+        from_app_key: [u8; 32],
+        migration: Option<Vec<u8>>,
+    },
 }
 
 impl GroupOp {
@@ -287,6 +329,8 @@ impl GroupOp {
             GroupOp::TeeAdmissionPolicySet { .. } => "tee_admission_policy_set",
             GroupOp::MemberJoinedViaTeeAttestation { .. } => "member_joined_via_tee",
             GroupOp::MemberSetAutoFollow { .. } => "member_set_auto_follow",
+            GroupOp::CascadeTargetApplicationSet { .. } => "cascade_target_application_set",
+            GroupOp::CascadeGroupMigrationSet { .. } => "cascade_group_migration_set",
         }
     }
 }

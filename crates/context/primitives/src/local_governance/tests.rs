@@ -283,3 +283,109 @@ fn namespace_signable_bytes_deterministic() {
     assert_eq!(a, b);
     assert!(a.starts_with(NAMESPACE_GOVERNANCE_SIGN_DOMAIN));
 }
+
+// --- Cascade op variants (Option C in cascade design doc) ---
+
+fn sample_application_id(seed: u8) -> ApplicationId {
+    let mut bytes = [0u8; 32];
+    bytes[0] = seed;
+    bytes[31] = !seed;
+    ApplicationId::from(bytes)
+}
+
+#[test]
+fn cascade_target_application_set_sign_verify() {
+    let mut rng = OsRng;
+    let sk = PrivateKey::random(&mut rng);
+
+    let op = SignedGroupOp::sign(
+        &sk,
+        sample_group_id(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::CascadeTargetApplicationSet {
+            from_app_key: [9u8; 32],
+            app_key: [10u8; 32],
+            target_application_id: sample_application_id(0x42),
+        },
+    )
+    .expect("sign");
+
+    op.verify_signature().expect("verify");
+    assert_eq!(
+        op.op.op_kind_label(),
+        "cascade_target_application_set",
+        "op_kind_label must distinguish cascade variant for metrics"
+    );
+}
+
+#[test]
+fn cascade_group_migration_set_sign_verify() {
+    let mut rng = OsRng;
+    let sk = PrivateKey::random(&mut rng);
+
+    let op = SignedGroupOp::sign(
+        &sk,
+        sample_group_id(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::CascadeGroupMigrationSet {
+            from_app_key: [9u8; 32],
+            migration: Some(b"migrate_v1_to_v2".to_vec()),
+        },
+    )
+    .expect("sign");
+
+    op.verify_signature().expect("verify");
+    assert_eq!(
+        op.op.op_kind_label(),
+        "cascade_group_migration_set",
+        "op_kind_label must distinguish cascade migration variant for metrics"
+    );
+}
+
+#[test]
+fn cascade_target_distinct_from_single_group_target() {
+    // A cascade op and a non-cascade op with the same new app_key/target
+    // must produce DIFFERENT content hashes -- otherwise replay/dedup
+    // would conflate the two distinct governance intents.
+    let mut rng = OsRng;
+    let sk = PrivateKey::random(&mut rng);
+    let new_app_key = [11u8; 32];
+    let target = sample_application_id(0x77);
+
+    let single = SignedGroupOp::sign(
+        &sk,
+        sample_group_id(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::TargetApplicationSet {
+            app_key: new_app_key,
+            target_application_id: target,
+        },
+    )
+    .expect("sign");
+
+    let cascade = SignedGroupOp::sign(
+        &sk,
+        sample_group_id(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::CascadeTargetApplicationSet {
+            from_app_key: [9u8; 32],
+            app_key: new_app_key,
+            target_application_id: target,
+        },
+    )
+    .expect("sign");
+
+    assert_ne!(
+        single.content_hash().expect("hash single"),
+        cascade.content_hash().expect("hash cascade"),
+        "cascade and single-group target ops must hash distinctly"
+    );
+}
