@@ -53,14 +53,22 @@ This works for human-driven clients but breaks two concrete scenarios:
 Each <code>GroupMember</code> gains a pair of opt-in flags:
 </p>
 <pre class="code">AutoFollowFlags {
-    contexts:  bool,   // auto-join new ContextRegistered
-    subgroups: bool,   // auto-admit into newly-nested subgroups
+    contexts:  bool,   // auto-join new ContextRegistered     — default true
+    subgroups: bool,   // auto-admit into newly-nested subgroups — default false
 }</pre>
 
 <p>
-Both default to <code>false</code> for regular members. <code>ReadOnlyTee</code> members get both
-set to <code>true</code> automatically — that's the TEE-fleet use case. Flags are toggled by a
-new governance op <code>GroupOp::MemberSetAutoFollow</code> with admin-or-self authorization:
+Defaults <strong>(as of #2422)</strong>: <code>contexts: true</code>, <code>subgroups: false</code>.
+A new member added via <code>add_group_member</code> auto-follows new contexts in the group by
+default; subgroup auto-admit stays opt-in. <code>ReadOnlyTee</code> members get both set to
+<code>true</code> automatically — that's the TEE-fleet use case. The default lives in a single
+explicit <code>impl Default for AutoFollowFlags</code> in
+<code>crates/store/src/key/group/mod.rs</code>, so both the borsh-legacy decode fallback and
+<code>.unwrap_or_default()</code> sites pick it up.
+</p>
+<p>
+Flags are toggled by the governance op <code>GroupOp::MemberSetAutoFollow</code> with
+admin-or-self authorization:
 </p>
 <ul>
   <li>A group admin can toggle flags for any member.</li>
@@ -82,7 +90,19 @@ reconcile loop.
      ═══════════════════════════════════════════════════════════════════ -->
 <div class="card gc">
 <h2>Flow</h2>
-<pre class="code">1. Admin or member publishes MemberSetAutoFollow { target, contexts, subgroups }.
+<pre class="code">0. <strong>(NEW, #2422)</strong> A new member is added to the group via
+   GroupOp::MemberAdded / GroupOp::MemberJoinedViaTeeAttestation /
+   RootOp::MemberJoined (open-subgroup self-join).
+   └─ Apply path writes a fresh GroupMember row with default flags
+      (contexts: true, subgroups: false).
+   └─ emit_auto_follow_set_if_enabled synthesises
+      OpEvent::AutoFollowSet { member, contexts: true, subgroups: false }
+      so the on-join backfill cascade fires without requiring an
+      explicit MemberSetAutoFollow op. This closes the Ronit/Fran
+      regression where a joiner saw no pre-existing contexts until an
+      admin manually flipped a flag.
+
+1. Admin or member publishes MemberSetAutoFollow { target, contexts, subgroups }.
    └─ Authorized by admin-or-self check in apply_group_op_mutations.
    └─ Store updates GroupMemberValue.auto_follow.
    └─ op_events::notify(OpEvent::AutoFollowSet { ... }).
@@ -90,7 +110,10 @@ reconcile loop.
 2. Auto-follow handler (spawned once from ContextManager::started) observes
    AutoFollowSet { member = self, contexts: true } and backfills: enumerate
    up to BACKFILL_LIMIT contexts in the group, emit JoinContext for each.
-   Backfill is rate-limited to DEFAULT_BURST / DEFAULT_PER.
+   Backfill is rate-limited to DEFAULT_BURST / DEFAULT_PER. Idempotent on
+   already-joined contexts, so steps 0 + 1 firing for the same member is
+   safe (e.g. TEE fleet-join: synthesised from MemberJoinedViaTeeAttestation
+   then explicit MemberSetAutoFollow from fleet_join.rs).
 
 3. Later, anyone registers a new context in the group.
    └─ GroupOp::ContextRegistered applied.

@@ -324,10 +324,12 @@ async fn set_member_auto_follow_handler_error_paths() {
         "unexpected error: {err}"
     );
 
-    // Alice's flags remain at default — nothing was applied.
+    // Alice's flags remain at the default produced by `add_group_member`
+    // — neither failed call mutated her row. The default is
+    // `{ contexts: true, subgroups: false }` per #2422.
     let alice_row = get_group_member_value(&node.store, &gid, &alice_sk.public_key())
         .unwrap()
         .expect("alice row");
-    assert!(!alice_row.auto_follow.contexts);
+    assert!(alice_row.auto_follow.contexts);
     assert!(!alice_row.auto_follow.subgroups);
 }

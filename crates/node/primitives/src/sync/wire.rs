@@ -87,8 +87,33 @@ pub enum StreamMessage<'a> {
     /// Opaque error - reveals nothing about node state.
     ///
     /// Used when something goes wrong but we don't want to leak
-    /// information to potentially malicious peers.
+    /// information to potentially malicious peers (e.g. unverified
+    /// dialer, cross-namespace stream leak).
     OpaqueError,
+    /// Typed "I am a valid peer for this context but haven't materialised
+    /// it locally yet" response. Sent by the receiver when the inbound
+    /// stream's `dialer_verified` check passed (the dialer IS a member of
+    /// the context's group) but the receiver itself has no local entry
+    /// for the context — e.g. they opted out of auto-follow, or the
+    /// `JoinContext` is still in flight.
+    ///
+    /// The initiator MUST treat this as benign: do not increment
+    /// `failure_count`, do not apply exponential backoff, just drop this
+    /// peer for this round and continue. Closes the Ronit/Fran incident
+    /// path where namespace-fallback peer selection picked a non-following
+    /// peer and the resulting `OpaqueError` cascaded into 256s backoff
+    /// against a peer that fundamentally cannot serve the context.
+    ///
+    /// # Wire Format Change
+    ///
+    /// New variant at index 3, appended to the enum tail. Borsh enum
+    /// serialization is by declaration order, so old nodes will fail to
+    /// deserialize this variant. Coordinated upgrade required across the
+    /// network — same constraint as the `sequence_id` u64 change
+    /// documented on the `Message` variant. Pre-upgrade peers fall back
+    /// to the previous behaviour (no benign signal) and continue working
+    /// for all other variants.
+    NotMaterialized,
 }
 
 // =============================================================================
