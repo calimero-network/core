@@ -43,6 +43,7 @@ pub mod user;
 pub use user::UserStorage;
 pub mod shared;
 pub use shared::SharedStorage;
+mod authored_common;
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
 pub mod authored_vector;

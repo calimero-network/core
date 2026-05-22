@@ -6,6 +6,16 @@
 //! entry's author can update or tombstone it. There is intentionally no
 //! physical `remove` — shifting indices would complicate concurrent-push
 //! merge semantics. Use `tombstone(idx)` to mark a slot as retracted.
+//!
+//! # Merge semantics
+//!
+//! `AuthoredVector` implements [`Mergeable`](super::crdt_meta::Mergeable) by
+//! delegating to its inner `Vector`. Each slot carries its author's public key
+//! and (optionally) a tombstone marker; both survive the merge. Concurrent
+//! pushes from different members extend the tail without conflict; concurrent
+//! `update`/`tombstone` on the same slot from different authors are rejected
+//! at apply time by the per-entry owner check (only the original author can
+//! mutate their slot).
 
 use std::collections::BTreeMap;
 
@@ -15,7 +25,6 @@ use calimero_primitives::identity::PublicKey;
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{StoreError, Vector};
 use crate::entities::{ChildInfo, Data, Element, StorageType};
-use crate::env;
 use crate::index::Index;
 use crate::interface::StorageError;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -102,11 +111,7 @@ where
     /// # Errors
     /// Returns any underlying storage error.
     pub fn push(&mut self, value: V) -> Result<usize, StoreError> {
-        let owner: PublicKey = env::executor_id().into();
-        let storage_type = StorageType::User {
-            owner,
-            signature_data: None,
-        };
+        let storage_type = super::authored_common::make_owner_stamp();
         self.inner.push_with_storage_type(value, storage_type)
     }
 
@@ -122,8 +127,7 @@ where
     pub fn update(&mut self, index: usize, value: V) -> Result<(), StoreError> {
         let (entry_id, stored_owner) = self.require_owner(index)?;
 
-        let executor: PublicKey = env::executor_id().into();
-        if stored_owner != executor {
+        if !super::authored_common::executor_matches_owner(&stored_owner) {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "AuthoredVector::update: not entry owner".to_owned(),
             )));

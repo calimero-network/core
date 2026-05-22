@@ -151,57 +151,25 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Merge positive counts (both G-Counter and PN-Counter)
         // For each executor in other, take the max of their counts
-        for (executor_id, other_count) in other.positive.entries().map_err(|e| {
-            MergeError::StorageError(format!("Failed to get positive counter entries: {:?}", e))
-        })? {
-            let self_count = self
-                .positive
-                .get(&executor_id)
-                .map_err(|e| {
-                    MergeError::StorageError(format!(
-                        "Failed to get positive counter value: {:?}",
-                        e
-                    ))
-                })?
-                .unwrap_or(0);
+        for (executor_id, other_count) in other.positive.entries()? {
+            let self_count = self.positive.get(&executor_id)?.unwrap_or(0);
 
             // Take max for this executor (monotonic property)
             let new_count = self_count.max(other_count);
             if new_count > self_count {
-                let _ = self.positive.insert(executor_id, new_count).map_err(|e| {
-                    MergeError::StorageError(format!(
-                        "Failed to insert positive counter value: {:?}",
-                        e
-                    ))
-                })?;
+                let _ = self.positive.insert(executor_id, new_count)?;
             }
         }
 
         // If PN-Counter mode, also merge negative counts
         if ALLOW_DECREMENT {
-            for (executor_id, other_count) in other.negative.entries().map_err(|e| {
-                MergeError::StorageError(format!("Failed to get negative counter entries: {:?}", e))
-            })? {
-                let self_count = self
-                    .negative
-                    .get(&executor_id)
-                    .map_err(|e| {
-                        MergeError::StorageError(format!(
-                            "Failed to get negative counter value: {:?}",
-                            e
-                        ))
-                    })?
-                    .unwrap_or(0);
+            for (executor_id, other_count) in other.negative.entries()? {
+                let self_count = self.negative.get(&executor_id)?.unwrap_or(0);
 
                 // Take max for this executor (monotonic property)
                 let new_count = self_count.max(other_count);
                 if new_count > self_count {
-                    let _ = self.negative.insert(executor_id, new_count).map_err(|e| {
-                        MergeError::StorageError(format!(
-                            "Failed to insert negative counter value: {:?}",
-                            e
-                        ))
-                    })?;
+                    let _ = self.negative.insert(executor_id, new_count)?;
                 }
             }
         }
@@ -239,17 +207,12 @@ impl Mergeable for ReplicatedGrowableArray {
         // We can't use `chars.merge()` because RgaChar doesn't implement Mergeable
         // (it's a simple data struct, not a CRDT). Instead, we copy all characters
         // from `other` that we don't have yet.
-        let other_chars = other
-            .chars
-            .entries()
-            .map_err(|e| MergeError::StorageError(format!("Failed to get RGA chars: {:?}", e)))?;
+        let other_chars = other.chars.entries()?;
 
         for (key, char_data) in other_chars {
             if self.chars.get(&key).ok().flatten().is_none() {
                 // Character exists in other but not in self - add it
-                drop(self.chars.insert(key, char_data).map_err(|e| {
-                    MergeError::StorageError(format!("Failed to insert char: {:?}", e))
-                })?);
+                drop(self.chars.insert(key, char_data)?);
             }
             // If character exists in both, keep ours (they should be identical anyway,
             // since characters are immutable once inserted)
@@ -305,30 +268,17 @@ where
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Iterate all entries in the other map
         // Performance: O(N) but only called during rare root conflicts
-        let other_entries = other
-            .entries()
-            .map_err(|e| MergeError::StorageError(format!("Failed to get entries: {:?}", e)))?;
+        let other_entries = other.entries()?;
 
         for (key, other_value) in other_entries {
-            if let Some(mut our_value) = self
-                .get(&key)
-                .map_err(|e| MergeError::StorageError(format!("Failed to get value: {:?}", e)))?
-            {
+            if let Some(mut our_value) = self.get(&key)? {
                 // Key exists in both - recursively merge values
                 // This is where nested CRDT merging happens!
                 our_value.merge(&other_value)?;
-                drop(
-                    self.insert(key, our_value).map_err(|e| {
-                        MergeError::StorageError(format!("Failed to insert: {:?}", e))
-                    })?,
-                );
+                drop(self.insert(key, our_value)?);
             } else {
                 // Key only in other - add it (add-wins semantics)
-                drop(
-                    self.insert(key, other_value).map_err(|e| {
-                        MergeError::StorageError(format!("Failed to insert: {:?}", e))
-                    })?,
-                );
+                drop(self.insert(key, other_value)?);
             }
         }
 
@@ -385,16 +335,12 @@ where
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
         // Set merge: union (add-wins semantics)
         // All elements from both sets are preserved
-        let other_values = other
-            .iter()
-            .map_err(|e| MergeError::StorageError(format!("Failed to get values: {:?}", e)))?;
+        let other_values = other.iter()?;
 
         for value in other_values {
             // Insert returns true if new, false if already exists
             // We don't care - idempotent add-wins semantics
-            let _ = self
-                .insert(value)
-                .map_err(|e| MergeError::StorageError(format!("Failed to insert: {:?}", e)))?;
+            let _ = self.insert(value)?;
         }
 
         Ok(())
@@ -448,28 +394,17 @@ where
     ///
     /// See: crates/storage/src/collections/vector_merge.md
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        let our_len = self
-            .len()
-            .map_err(|e| MergeError::StorageError(format!("Failed to get length: {:?}", e)))?;
-        let their_len = other.len().map_err(|e| {
-            MergeError::StorageError(format!("Failed to get other length: {:?}", e))
-        })?;
+        let our_len = self.len()?;
+        let their_len = other.len()?;
 
         // Merge elements at same indices
         let min_len = our_len.min(their_len);
         for i in 0..min_len {
-            if let Some(mut our_value) = self
-                .get(i)
-                .map_err(|e| MergeError::StorageError(format!("Failed to get element: {:?}", e)))?
-            {
-                if let Some(their_value) = other.get(i).map_err(|e| {
-                    MergeError::StorageError(format!("Failed to get other element: {:?}", e))
-                })? {
+            if let Some(mut our_value) = self.get(i)? {
+                if let Some(their_value) = other.get(i)? {
                     // Recursively merge values at same index
                     our_value.merge(&their_value)?;
-                    drop(self.update(i, our_value).map_err(|e| {
-                        MergeError::StorageError(format!("Failed to update element: {:?}", e))
-                    })?);
+                    drop(self.update(i, our_value)?);
                 }
             }
         }
@@ -477,12 +412,8 @@ where
         // If other is longer, append remaining elements (LWW: take their additions)
         if their_len > our_len {
             for i in our_len..their_len {
-                if let Some(value) = other.get(i).map_err(|e| {
-                    MergeError::StorageError(format!("Failed to get other element: {:?}", e))
-                })? {
-                    self.push(value).map_err(|e| {
-                        MergeError::StorageError(format!("Failed to push element: {:?}", e))
-                    })?;
+                if let Some(value) = other.get(i)? {
+                    self.push(value)?;
                 }
             }
         }
