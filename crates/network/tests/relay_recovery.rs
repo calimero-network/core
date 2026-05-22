@@ -194,7 +194,7 @@ async fn client_can_reserve_circuit_against_mock_relay() {
 
     let _ = establish_reservation(&mut client_swarm, &relay).await;
 
-    let obs = relay.observations().await;
+    let obs = relay.observations();
     assert!(
         obs.reservations_accepted >= 1,
         "relay should have accepted at least one reservation; got {obs:?}"
@@ -312,17 +312,16 @@ async fn relay_quota_exhaustion_denies_second_client() {
     // loop, which can let a yamux ping or identify exchange time out and
     // free the quota slot — letting client B succeed and producing a
     // confusing false positive.
+    //
+    // The driver exits silently on stream close (returns `None`). Panicking
+    // there would only be observable if the test joins the task, which we
+    // don't reliably do (the task is aborted, and abort then join would add
+    // ordering complications). If client A's swarm dies, the test loses
+    // its quota-holder and the assertion `obs.reservations_denied >= 1`
+    // below will fail with a clear message anyway.
     let client_a_driver = tokio::spawn(async move {
-        // Loop until cancelled by the test's abort. Panic on stream
-        // closure so we surface a real environment break rather than
-        // hanging.
-        loop {
-            let event = client_a
-                .next()
-                .await
-                .expect("client A swarm closed unexpectedly");
-            // Don't act on A's events — we only need to keep it polled.
-            let _ = event;
+        while client_a.next().await.is_some() {
+            // Only purpose is to keep the swarm polled.
         }
     });
 
@@ -394,13 +393,20 @@ async fn relay_quota_exhaustion_denies_second_client() {
     .await;
 
     client_a_driver.abort();
+    // Await the driver after abort so any panic inside it surfaces here
+    // (JoinError::is_cancelled() distinguishes abort from a real panic).
+    if let Err(err) = client_a_driver.await {
+        if !err.is_cancelled() {
+            panic!("client A driver task panicked: {err:?}");
+        }
+    }
 
     assert!(
         result.is_ok(),
         "timed out waiting for ListenerClosed on client B's relayed listener"
     );
 
-    let obs = relay.observations().await;
+    let obs = relay.observations();
     assert!(
         obs.reservations_accepted >= 1,
         "client A's reservation must have been accepted; got {obs:?}"

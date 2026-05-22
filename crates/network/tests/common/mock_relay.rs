@@ -32,6 +32,8 @@
 use core::time::Duration;
 use std::sync::Arc;
 
+use std::sync::Mutex as StdMutex;
+
 use eyre::{eyre, Result};
 use futures_util::StreamExt;
 use libp2p::core::transport::ListenerId;
@@ -116,9 +118,6 @@ enum Command {
         peer: PeerId,
         ack: oneshot::Sender<bool>,
     },
-    Observations {
-        ack: oneshot::Sender<MockRelayObservations>,
-    },
     Shutdown {
         ack: oneshot::Sender<()>,
     },
@@ -130,12 +129,21 @@ enum Command {
 /// `abort` is kept separately from the join handle (without a lock) so
 /// [`Drop`] can always cancel the background task even if [`Self::shutdown`]
 /// is concurrently holding the join-handle mutex.
+///
+/// `observations` is a [`std::sync::Mutex`] shared with the swarm task. The
+/// critical section is just an increment-or-clone, never held across an
+/// await, so the synchronous mutex is correct here and avoids the lock-
+/// across-await footgun an async `tokio::sync::Mutex` would introduce
+/// inside the swarm's `select!`. It also means `observations()` is
+/// infallible — it reads shared state directly rather than racing a
+/// command roundtrip against task shutdown.
 pub struct MockRelay {
     peer_id: PeerId,
     listen_addr: Multiaddr,
     cmd_tx: mpsc::Sender<Command>,
     abort: AbortHandle,
     join: Mutex<Option<JoinHandle<()>>>,
+    observations: Arc<StdMutex<MockRelayObservations>>,
 }
 
 impl MockRelay {
@@ -203,7 +211,7 @@ impl MockRelay {
         swarm.add_external_address(listen_addr.clone());
 
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(16);
-        let observations = Arc::new(Mutex::new(MockRelayObservations::default()));
+        let observations = Arc::new(StdMutex::new(MockRelayObservations::default()));
 
         let observations_for_task = Arc::clone(&observations);
         let join = tokio::spawn(async move {
@@ -217,6 +225,7 @@ impl MockRelay {
             cmd_tx,
             abort,
             join: Mutex::new(Some(join)),
+            observations,
         })
     }
 
@@ -245,21 +254,19 @@ impl MockRelay {
         ack_rx.await.unwrap_or(false)
     }
 
-    /// Snapshot of what the relay has observed since spawn.
-    pub async fn observations(&self) -> MockRelayObservations {
-        let (ack_tx, ack_rx) = oneshot::channel();
-        if self
-            .cmd_tx
-            .send(Command::Observations { ack: ack_tx })
-            .await
-            .is_err()
-        {
-            return MockRelayObservations::default();
-        }
-        ack_rx.await.unwrap_or_default()
+    /// Snapshot of what the relay has observed since spawn. Reads shared
+    /// state directly, so it's infallible — there is no task-roundtrip that
+    /// could race with shutdown.
+    pub fn observations(&self) -> MockRelayObservations {
+        self.observations
+            .lock()
+            .expect("observations mutex poisoned")
+            .clone()
     }
 
-    /// Stop the relay. Idempotent; subsequent calls are no-ops.
+    /// Stop the relay. Idempotent; subsequent calls are no-ops. Logs
+    /// (rather than swallows) a JoinError so a panic inside the swarm task
+    /// is visible in test output.
     pub async fn shutdown(&self) {
         let (ack_tx, ack_rx) = oneshot::channel();
         let _ = self.cmd_tx.send(Command::Shutdown { ack: ack_tx }).await;
@@ -267,7 +274,9 @@ impl MockRelay {
 
         let mut guard = self.join.lock().await;
         if let Some(handle) = guard.take() {
-            let _ = handle.await;
+            if let Err(err) = handle.await {
+                eprintln!("mock relay task did not exit cleanly: {err:?}");
+            }
         }
     }
 }
@@ -287,7 +296,7 @@ impl Drop for MockRelay {
 async fn run_swarm(
     mut swarm: Swarm<MockBehaviour>,
     cmd_rx: &mut mpsc::Receiver<Command>,
-    observations: Arc<Mutex<MockRelayObservations>>,
+    observations: Arc<StdMutex<MockRelayObservations>>,
 ) {
     loop {
         // `biased;` gives control commands priority over swarm events. Without
@@ -302,10 +311,6 @@ async fn run_swarm(
                         let result = swarm.disconnect_peer_id(peer).is_ok();
                         let _ = ack.send(result);
                     }
-                    Some(Command::Observations { ack }) => {
-                        let snapshot = observations.lock().await.clone();
-                        let _ = ack.send(snapshot);
-                    }
                     Some(Command::Shutdown { ack }) => {
                         let _ = ack.send(());
                         break;
@@ -318,7 +323,11 @@ async fn run_swarm(
                 match event {
                     SwarmEvent::Behaviour(MockBehaviourEvent::Relay(relay_event)) => {
                         debug!(?relay_event, "mock relay: relay event");
-                        let mut obs = observations.lock().await;
+                        // Synchronous std::sync::Mutex — the critical section
+                        // is a single integer increment, never held across an
+                        // await. No async-lock-in-select! footgun.
+                        let mut obs =
+                            observations.lock().expect("observations mutex poisoned");
                         match relay_event {
                             relay::Event::ReservationReqAccepted { .. } => {
                                 obs.reservations_accepted += 1;
