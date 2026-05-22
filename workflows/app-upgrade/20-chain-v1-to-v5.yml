@@ -1,0 +1,393 @@
+name: Application migration chain v1 → v5 (single node)
+description: >
+  Stress test for the per-context migration pipeline: walks one context
+  through four consecutive schema migrations (v1 → v2 → v3 → v4 → v5),
+  asserting after every step that:
+
+    a) the corresponding migrate_vX_to_vY function actually ran (via the
+       Event::Migrated log emitted from #[app::migrate]),
+    b) schema_info() reports the expected new schema_version,
+    c) field-level changes apply correctly:
+         v1 → v2:  notes field added (populated by migration)
+         v2 → v3:  notes field removed (silently dropped)
+         v3 → v4:  description renamed to details
+         v4 → v5:  counter type changed from u64 to String
+    d) data written through v(N-1)'s API survives into vN and is readable
+       through vN's API, *and* writes done at intermediate versions persist
+       through subsequent migrations.
+
+  Exercises every fixture under apps/migrations/. If any single migration
+  step breaks, the chain fails at that step with the exact schema delta
+  that broke.
+
+# Test configuration
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-chain-node
+  base_port: 9220
+  base_rpc_port: 9320
+
+steps:
+  # ── Phase 1: Install all five binaries ────────────────────────────────
+  - name: Install migration-suite-v1
+    type: install_application
+    node: app-migration-chain-node-1
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install migration-suite-v2-add-field
+    type: install_application
+    node: app-migration-chain-node-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Install migration-suite-v3-remove-field
+    type: install_application
+    node: app-migration-chain-node-1
+    path: apps/migrations/migration-suite-v3-remove-field/res/migration_suite_v3_remove_field.wasm
+    dev: true
+    outputs:
+      app_v3: applicationId
+
+  - name: Install migration-suite-v4-rename-field
+    type: install_application
+    node: app-migration-chain-node-1
+    path: apps/migrations/migration-suite-v4-rename-field/res/migration_suite_v4_rename_field.wasm
+    dev: true
+    outputs:
+      app_v4: applicationId
+
+  - name: Install migration-suite-v5-change-type
+    type: install_application
+    node: app-migration-chain-node-1
+    path: apps/migrations/migration-suite-v5-change-type/res/migration_suite_v5_change_type.wasm
+    dev: true
+    outputs:
+      app_v5: applicationId
+
+  # ── Phase 2: Namespace + subgroup + context on v1 ─────────────────────
+  - name: Create namespace
+    type: create_namespace
+    node: app-migration-chain-node-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-chain-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup
+    type: create_group_in_namespace
+    node: app-migration-chain-node-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "chain-test"
+    outputs:
+      group_id: groupId
+
+  - name: Create context on v1
+    type: create_context
+    node: app-migration-chain-node-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-chain-node-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  # ── Phase 3: Write initial v1 state ───────────────────────────────────
+  - name: v1 — set description
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "written-at-v1"
+
+  - name: v1 — increment counter (→ 1)
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  # ── Phase 4: v1 → v2 (add field `notes`) ──────────────────────────────
+  - name: Upgrade v1 → v2
+    type: upgrade_group
+    node: app-migration-chain-node-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  - name: Wait for v1 → v2 to apply
+    type: wait
+    seconds: 6
+
+  - name: Assert Migrated event (v1 → v2)
+    type: assert_log_present
+    nodes:
+      - app-migration-chain-node-1
+    patterns:
+      - "Migrated"
+      - "1.0.0"
+      - "2.0.0"
+    min_matches: 1
+
+  - name: v2 — read schema_info
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 shape (notes populated, prior data preserved)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"description": "written-at-v1", "counter": "1"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"notes": "added in v2"}})'
+
+  - name: v2 — overwrite notes (proves v2 binary is live)
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: set_notes
+    args:
+      notes: "written-at-v2"
+
+  # ── Phase 5: v2 → v3 (drop field `notes`) ─────────────────────────────
+  - name: Upgrade v2 → v3
+    type: upgrade_group
+    node: app-migration-chain-node-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v3}}"
+    migrate_method: migrate_v2_to_v3
+
+  - name: Wait for v2 → v3 to apply
+    type: wait
+    seconds: 6
+
+  - name: Assert Migrated event (v2 → v3)
+    type: assert_log_present
+    nodes:
+      - app-migration-chain-node-1
+    patterns:
+      - "Migrated"
+      - "2.0.0"
+      - "3.0.0"
+    min_matches: 1
+
+  - name: v3 — read schema_info
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v3_schema: result
+
+  - name: Assert v3 shape (notes dropped, description still readable)
+    type: json_assert
+    statements:
+      - 'json_subset({{v3_schema}}, {"output": {"schema_version": "3.0.0"}})'
+      - 'json_subset({{v3_schema}}, {"output": {"description": "written-at-v1", "counter": "1"}})'
+      # `notes` no longer present in SchemaInfo — json_subset is permissive
+      # about extra fields, so the assertion above is sufficient. If a
+      # phantom notes field appeared, that itself wouldn't be caught — but
+      # the next migration's deserialiser would fail loudly.
+
+  - name: v3 — overwrite description (test write at v3)
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "written-at-v3"
+
+  - name: v3 — increment counter (→ 2)
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  # ── Phase 6: v3 → v4 (rename description → details) ───────────────────
+  - name: Upgrade v3 → v4
+    type: upgrade_group
+    node: app-migration-chain-node-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v4}}"
+    migrate_method: migrate_v3_to_v4
+
+  - name: Wait for v3 → v4 to apply
+    type: wait
+    seconds: 6
+
+  - name: Assert Migrated event (v3 → v4)
+    type: assert_log_present
+    nodes:
+      - app-migration-chain-node-1
+    patterns:
+      - "Migrated"
+      - "3.0.0"
+      - "4.0.0"
+    min_matches: 1
+
+  - name: v4 — read schema_info
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v4_schema: result
+
+  - name: Assert v4 shape (description renamed to details, value preserved)
+    type: json_assert
+    statements:
+      - 'json_subset({{v4_schema}}, {"output": {"schema_version": "4.0.0"}})'
+      # v3's `description = "written-at-v3"` moved into v4's `details` field
+      - 'json_subset({{v4_schema}}, {"output": {"details": "written-at-v3", "counter": "2"}})'
+
+  - name: v4 — overwrite details (test v4-only setter)
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: set_details
+    args:
+      details: "written-at-v4"
+
+  # ── Phase 7: v4 → v5 (counter type u64 → String) ──────────────────────
+  - name: Upgrade v4 → v5
+    type: upgrade_group
+    node: app-migration-chain-node-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v5}}"
+    migrate_method: migrate_v4_to_v5
+
+  - name: Wait for v4 → v5 to apply
+    type: wait
+    seconds: 6
+
+  - name: Assert Migrated event (v4 → v5)
+    type: assert_log_present
+    nodes:
+      - app-migration-chain-node-1
+    patterns:
+      - "Migrated"
+      - "4.0.0"
+      - "5.0.0"
+    min_matches: 1
+
+  - name: v5 — read schema_info
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v5_schema: result
+
+  - name: Assert v5 shape (details preserved, counter stringified)
+    type: json_assert
+    statements:
+      - 'json_subset({{v5_schema}}, {"output": {"schema_version": "5.0.0"}})'
+      - 'json_subset({{v5_schema}}, {"output": {"details": "written-at-v4"}})'
+      # counter went u64(2) → String("2") via migrate_v4_to_v5
+      - 'json_subset({{v5_schema}}, {"output": {"counter": "2"}})'
+
+  - name: v5 — set string counter (proves new type works)
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: set_counter
+    args:
+      counter: "v5-string-counter"
+
+  - name: v5 — read counter back
+    type: call
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    method: get_counter
+    outputs:
+      v5_counter: result
+
+  - name: Assert v5 counter accepts string
+    type: json_assert
+    statements:
+      - 'json_equal({{v5_counter}}, {"output": "v5-string-counter"})'
+
+  # ── Phase 8: Final sanity — four distinct Migrated transitions logged ─
+  # The aggregate count of "Migrated" event lines should be exactly 4
+  # across the run (one per upgrade step). assert_log_present's
+  # min_matches gives us a floor; a stricter equality check would need
+  # an aggregate-count step which doesn't currently exist in merobox.
+  - name: Assert aggregate Migrated event count (>= 4)
+    type: assert_log_present
+    nodes:
+      - app-migration-chain-node-1
+    patterns:
+      - "Migrated"
+    min_matches: 4
+
+  # ── Phase 9: Teardown ─────────────────────────────────────────────────
+  - name: Delete context
+    type: delete_context
+    node: app-migration-chain-node-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-chain-node-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-chain-node-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-chain-node-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-chain-node-1
+    application_id: "{{app_v2}}"
+
+  - name: Uninstall v3
+    type: uninstall_application
+    node: app-migration-chain-node-1
+    application_id: "{{app_v3}}"
+
+  - name: Uninstall v4
+    type: uninstall_application
+    node: app-migration-chain-node-1
+    application_id: "{{app_v4}}"
+
+  - name: Uninstall v5
+    type: uninstall_application
+    node: app-migration-chain-node-1
+    application_id: "{{app_v5}}"
+
+stop_all_nodes: false

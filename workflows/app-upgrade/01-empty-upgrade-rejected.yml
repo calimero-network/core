@@ -1,0 +1,115 @@
+name: Empty upgrade rejected (target == current, no migration)
+description: >
+  Server-side guard test: an `upgrade_group` call targeting the group's
+  current application with no `migrate_method` must be rejected. The
+  guard lives in crates/context/src/handlers/upgrade_group.rs:480 and
+  exists to prevent operationally-empty upgrade ops from churning the
+  governance DAG.
+
+  Asserts:
+    1. The upgrade_group RPC fails (expected_failure: true).
+    2. The server log carries the canonical error text from
+       upgrade_group.rs:480 — "group is already targeting this
+       application and no migration was requested".
+
+  Tiny + fast — runs in well under a minute.
+
+# Test configuration
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-reject-node
+  base_port: 9230
+  base_rpc_port: 9330
+
+steps:
+  - name: Install migration-suite-v1
+    type: install_application
+    node: app-migration-reject-node-1
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Create namespace
+    type: create_namespace
+    node: app-migration-reject-node-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-reject-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup
+    type: create_group_in_namespace
+    node: app-migration-reject-node-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "empty-upgrade-test"
+    outputs:
+      group_id: groupId
+
+  - name: Create context on v1
+    type: create_context
+    node: app-migration-reject-node-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  # Trigger the rejected path: target == current && no migration.
+  - name: Attempt empty upgrade (expected to fail)
+    type: upgrade_group
+    node: app-migration-reject-node-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v1}}"
+    expected_failure: true
+
+  # Verify the failure path is the documented one, not some unrelated error
+  # (auth failure, missing group, etc.). The exact bail! text is from
+  # crates/context/src/handlers/upgrade_group.rs:480.
+  - name: Assert canonical rejection message in logs
+    type: assert_log_present
+    nodes:
+      - app-migration-reject-node-1
+    patterns:
+      - "group is already targeting this application and no migration was requested"
+    min_matches: 1
+
+  # ── Teardown ─────────────────────────────────────────────────────────
+  - name: Delete context
+    type: delete_context
+    node: app-migration-reject-node-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-reject-node-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-reject-node-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-reject-node-1
+    application_id: "{{app_v1}}"
+
+stop_all_nodes: false

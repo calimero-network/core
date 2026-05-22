@@ -1,0 +1,170 @@
+name: App migration e2e
+
+# End-to-end coverage for the per-context application migration pipeline
+# introduced in #1911. Runs the workflows under workflows/app-upgrade/
+# against a locally built merod image, exercising every fixture under
+# apps/migrations/migration-suite-v{1..5}.
+#
+# The Rust unit layer for migration is well-covered
+# (crates/context/src/handlers/update_application/mod.rs has 16
+# verify_appkey_continuity tests). What this job adds is end-to-end
+# proof that install -> upgrade_group -> migrate_method -> state in the
+# new shape actually works. Pre-#1911 this was deferred ("blocked
+# pending update_context_application step type support in merobox") --
+# that step now exists as merobox's `upgrade_group` step.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/context/src/handlers/update_application/**"
+      - "crates/context/src/handlers/upgrade_group.rs"
+      - "crates/context/primitives/src/messages.rs"
+      - "crates/sdk/macros/**"
+      - "crates/storage/src/**"
+      - "apps/migrations/**"
+      - "workflows/app-upgrade/**"
+      - ".github/workflows/app-migration-e2e.yml"
+      - ".github/actions/build-local-merod/**"
+      - ".github/actions/setup-merobox/**"
+
+  pull_request:
+    branches: [master]
+    paths:
+      - "crates/context/src/handlers/update_application/**"
+      - "crates/context/src/handlers/upgrade_group.rs"
+      - "crates/context/primitives/src/messages.rs"
+      - "crates/sdk/macros/**"
+      - "crates/storage/src/**"
+      - "apps/migrations/**"
+      - "workflows/app-upgrade/**"
+      - ".github/workflows/app-migration-e2e.yml"
+      - ".github/actions/build-local-merod/**"
+      - ".github/actions/setup-merobox/**"
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_LOG: info,calimero_=debug
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  app-migration-e2e:
+    name: App migration e2e
+    # Same runner class as sync-regression / e2e-rust-apps so cold-start
+    # performance is comparable and we share the rust-ci cache.
+    runs-on: ubuntu-24.04-8cpu
+    # The chain workflow has 4 sequential upgrades x ~6s wait each plus
+    # WASM build + image build overhead. 20 min cap gives generous
+    # headroom; a regression typically fails inside the first migration.
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          shared-key: app-migration-e2e
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build local merod image
+        uses: ./.github/actions/build-local-merod
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build migration-suite WASM fixtures
+        # Convenience wrapper around each suite's build.sh -- see
+        # workflows/app-upgrade/build-wasms.sh.
+        run: bash workflows/app-upgrade/build-wasms.sh
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run app-migration workflows
+        # Iterates every workflow in workflows/app-upgrade/, running each
+        # against the locally built merod:local image. Captures docker
+        # logs per node during each run so a failure leaves diagnosable
+        # artefacts. Same log-watcher pattern as sync-regression.yml --
+        # the init containers exit quickly and merobox tears the runtime
+        # containers down on exit, so `docker logs` after the fact catches
+        # nothing.
+        run: |
+          mkdir -p docker-logs
+          LOGDIR="$GITHUB_WORKSPACE/docker-logs"
+          WATCHER_STATE_DIR="$(mktemp -d)"
+          (
+            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+              for c in $(docker ps --filter "label=calimero.node=true" \
+                                   --format "{{.Names}}" 2>/dev/null \
+                         | grep -v -- '-init$' || true); do
+                mark="$WATCHER_STATE_DIR/${c}"
+                if [ ! -f "$mark" ]; then
+                  touch "$mark"
+                  echo "[log-watcher] following $c"
+                  docker logs -f --timestamps "$c" \
+                    > "$LOGDIR/${c}.log" 2>&1 &
+                fi
+              done
+              sleep 1
+            done
+          ) &
+          WATCHER_PID=$!
+
+          set +e
+          set -o pipefail
+          overall_exit=0
+          # Sequential rather than parallel: each workflow nukes docker
+          # state on start (nuke_on_start: true), so running concurrently
+          # would have them stomp on each other's containers. Sequential
+          # also makes failures easier to triage from log artefacts.
+          for wf in workflows/app-upgrade/*.yml; do
+              name=$(basename "$wf" .yml)
+              echo "::group::Running $name"
+              merobox bootstrap run "$wf" \
+                  --image merod:local \
+                  --e2e-mode \
+                  --verbose 2>&1 | tee "docker-logs/merobox-${name}.log"
+              wf_exit=$?
+              echo "::endgroup::"
+              if [ "$wf_exit" -ne 0 ]; then
+                  echo "::error::Workflow $name failed with exit $wf_exit"
+                  overall_exit=$wf_exit
+              fi
+          done
+          set +o pipefail
+
+          touch "$WATCHER_STATE_DIR/stop"
+          sleep 2
+          kill "$WATCHER_PID" 2>/dev/null || true
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
+
+          exit "$overall_exit"
+
+      - name: Upload docker logs
+        # Always upload -- even green runs benefit from log evidence
+        # (e.g. confirming the Migrated event was actually emitted, not
+        # just present in node output by coincidence). Same pattern as
+        # sync-regression.yml.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-migration-e2e-docker-logs
+          path: docker-logs/
+          retention-days: 7
+          if-no-files-found: ignore

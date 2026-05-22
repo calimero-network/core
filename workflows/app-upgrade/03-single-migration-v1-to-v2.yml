@@ -1,0 +1,221 @@
+name: Application migration v1 → v2 (single node)
+description: >
+  End-to-end smoke test for the per-context migration pipeline introduced
+  in #1911. Installs migration-suite-v1, creates a context, writes state
+  through the v1 API, installs migration-suite-v2-add-field, then triggers
+  `upgrade_group` with `migrate_method=migrate_v1_to_v2`. Asserts:
+
+    1. The migrate function ran (Event::Migrated { v1 -> v2 } log line).
+    2. schema_info() now reports v2 ("schema_version": "2.0.0") with the
+       new `notes` field populated by the migration ("added in v2").
+    3. Pre-migration writes survived (description + counter readable via
+       v2's API).
+
+  This is the headline e2e gap from PR #1911 — see
+  workflows/app-upgrade/README.md.
+
+# Test configuration
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  # GHA wrapper builds merod:local from PR HEAD and loads it before invoking
+  # merobox. Same pattern as workflows/sync-tests/opaque-leaf-regression.yml.
+  image: merod:local
+  prefix: app-migration-node
+  base_port: 9210
+  base_rpc_port: 9310
+
+steps:
+  # ── Phase 1: Install both binaries on the single node ─────────────────
+  - name: Install migration-suite-v1
+    type: install_application
+    node: app-migration-node-1
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install migration-suite-v2-add-field
+    type: install_application
+    node: app-migration-node-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # ── Phase 2: Namespace + subgroup + context on v1 ─────────────────────
+  - name: Create namespace
+    type: create_namespace
+    node: app-migration-node-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-node-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup
+    type: create_group_in_namespace
+    node: app-migration-node-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "migration-test"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (on v1)
+    type: create_context
+    node: app-migration-node-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  # ── Phase 3: Write v1 state ───────────────────────────────────────────
+  - name: Set description (v1)
+    type: call
+    node: app-migration-node-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "set-before-migration"
+
+  - name: Increment counter (v1)
+    type: call
+    node: app-migration-node-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Read v1 schema_info (sanity)
+    type: call
+    node: app-migration-node-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema before migration
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "description": "set-before-migration", "counter": "1"}})'
+
+  # ── Phase 4: Set upgrade policy + trigger migration ───────────────────
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-node-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade with migrate_v1_to_v2
+    type: upgrade_group
+    node: app-migration-node-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  - name: Wait for upgrade + migration to apply
+    type: wait
+    seconds: 8
+
+  - name: Read upgrade status
+    type: get_group_upgrade_status
+    node: app-migration-node-1
+    group_id: "{{group_id}}"
+
+  # ── Phase 5: Verify migration actually executed ───────────────────────
+  # Assert #1: Migrate function emitted the Migrated event.
+  # The #[app::emit!] macro on `Event::Migrated { v1 -> v2 }` writes a
+  # structured event into node logs visible to assert_log_present.
+  - name: Assert Migrated event observed (v1 → v2)
+    type: assert_log_present
+    nodes:
+      - app-migration-node-1
+    patterns:
+      - "Migrated"
+      - "1.0.0"
+      - "2.0.0"
+    min_matches: 1
+
+  # Assert #2: schema_info() now returns v2 shape + preserved data.
+  - name: Read post-migration schema_info
+    type: call
+    node: app-migration-node-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 schema after migration
+    type: json_assert
+    statements:
+      # schema_version flipped to 2.0.0
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0"}})'
+      # pre-migration writes preserved
+      - 'json_subset({{v2_schema}}, {"output": {"description": "set-before-migration", "counter": "1"}})'
+      # the new v2-only `notes` field is present + populated by migration
+      - 'json_subset({{v2_schema}}, {"output": {"notes": "added in v2"}})'
+
+  # Assert #3: v2-only setters/getters work post-migration (i.e. we are
+  # really executing on the v2 binary, not the v1 binary that happens to
+  # silently tolerate the new shape).
+  - name: Call v2-only setter `set_notes`
+    type: call
+    node: app-migration-node-1
+    context_id: "{{ctx_id}}"
+    method: set_notes
+    args:
+      notes: "written-post-migration"
+
+  - name: Read notes via v2 getter
+    type: call
+    node: app-migration-node-1
+    context_id: "{{ctx_id}}"
+    method: get_notes
+    outputs:
+      notes_after: result
+
+  - name: Assert v2 setter/getter round-tripped
+    type: json_assert
+    statements:
+      - 'json_equal({{notes_after}}, {"output": "written-post-migration"})'
+
+  # ── Phase 6: Teardown ─────────────────────────────────────────────────
+  - name: Delete context
+    type: delete_context
+    node: app-migration-node-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-node-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-node-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-node-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-node-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
