@@ -286,3 +286,127 @@ fn test_state_mutations() {
     assert_eq!(state.relay_index.len(), 0);
     assert_eq!(state.rendezvous_index.len(), 0);
 }
+
+#[test]
+fn test_on_relay_reservation_lost_marks_expired_and_queues_recovery() {
+    let mut state = DiscoveryState::default();
+    let relay_peer = PeerId::random();
+
+    state.update_peer_protocols(&relay_peer, &[HOP_PROTOCOL_NAME]);
+    state.update_relay_reservation_status(&relay_peer, RelayReservationStatus::Accepted);
+
+    let actions = state.on_relay_reservation_lost(&relay_peer);
+
+    assert_eq!(
+        state.peers[&relay_peer]
+            .relay
+            .as_ref()
+            .unwrap()
+            .reservation_status(),
+        RelayReservationStatus::Expired,
+        "lost reservation should transition to Expired"
+    );
+    assert_eq!(
+        actions.relay_reservations,
+        vec![relay_peer],
+        "recovery action should queue the relay peer for re-request"
+    );
+    assert!(
+        actions.has_actions(),
+        "loss of an Accepted reservation must produce a non-empty action set"
+    );
+}
+
+#[test]
+fn test_on_relay_reservation_lost_from_requested_queues_recovery() {
+    let mut state = DiscoveryState::default();
+    let relay_peer = PeerId::random();
+
+    state.update_peer_protocols(&relay_peer, &[HOP_PROTOCOL_NAME]);
+    state.update_relay_reservation_status(&relay_peer, RelayReservationStatus::Requested);
+
+    let actions = state.on_relay_reservation_lost(&relay_peer);
+
+    // Reservation that never reached Accepted still counts as previously
+    // active — the relayed listener was open, and losing it should retry.
+    assert_eq!(actions.relay_reservations, vec![relay_peer]);
+}
+
+#[test]
+fn test_on_relay_reservation_lost_is_idempotent_when_already_expired() {
+    let mut state = DiscoveryState::default();
+    let relay_peer = PeerId::random();
+
+    state.update_peer_protocols(&relay_peer, &[HOP_PROTOCOL_NAME]);
+    state.update_relay_reservation_status(&relay_peer, RelayReservationStatus::Accepted);
+
+    // First loss queues recovery.
+    let first = state.on_relay_reservation_lost(&relay_peer);
+    assert_eq!(first.relay_reservations, vec![relay_peer]);
+
+    // A second event for the same peer (e.g. ExternalAddrExpired followed
+    // by ListenerClosed) must not queue a duplicate dial.
+    let second = state.on_relay_reservation_lost(&relay_peer);
+    assert!(
+        second.relay_reservations.is_empty(),
+        "repeated loss for already-Expired peer must produce no action"
+    );
+    assert!(!second.has_actions());
+}
+
+#[test]
+fn test_on_relay_reservation_lost_for_discovered_peer_is_noop() {
+    let mut state = DiscoveryState::default();
+    let relay_peer = PeerId::random();
+
+    state.update_peer_protocols(&relay_peer, &[HOP_PROTOCOL_NAME]);
+    // Discovered means we know the peer speaks the hop protocol but never
+    // asked it for a reservation. Losing "nothing" should not retry.
+
+    let actions = state.on_relay_reservation_lost(&relay_peer);
+
+    assert!(actions.relay_reservations.is_empty());
+    assert_eq!(
+        state.peers[&relay_peer]
+            .relay
+            .as_ref()
+            .unwrap()
+            .reservation_status(),
+        RelayReservationStatus::Expired,
+        "status still flips to Expired even when no recovery is queued"
+    );
+}
+
+#[test]
+fn test_on_relay_reservation_lost_for_non_relay_peer_is_noop() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Peer is not in relay_index — e.g. a rendezvous-only peer.
+    state.update_peer_protocols(&peer, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    let actions = state.on_relay_reservation_lost(&peer);
+
+    assert!(actions.relay_reservations.is_empty());
+    assert!(!actions.has_actions());
+}
+
+#[test]
+fn test_on_relay_reservation_lost_multiple_relays_queue_independently() {
+    let mut state = DiscoveryState::default();
+    let relay_a = PeerId::random();
+    let relay_b = PeerId::random();
+
+    state.update_peer_protocols(&relay_a, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&relay_b, &[HOP_PROTOCOL_NAME]);
+    state.update_relay_reservation_status(&relay_a, RelayReservationStatus::Accepted);
+    state.update_relay_reservation_status(&relay_b, RelayReservationStatus::Accepted);
+
+    let actions_a = state.on_relay_reservation_lost(&relay_a);
+    assert_eq!(actions_a.relay_reservations, vec![relay_a]);
+
+    // Losing the second relay should still produce a recovery action, even
+    // though the first is already Expired. Each relay is tracked independently.
+    let actions_b = state.on_relay_reservation_lost(&relay_b);
+    assert_eq!(actions_b.relay_reservations, vec![relay_b]);
+}

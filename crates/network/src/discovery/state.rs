@@ -231,6 +231,44 @@ impl DiscoveryState {
             .and_modify(|info| info.update_relay_reservation_status(status));
     }
 
+    /// Called when a previously-active relay reservation is lost
+    /// (relayed listen address expired, listener closed, or the control
+    /// connection to the relay dropped).
+    ///
+    /// Marks the peer's reservation as Expired and queues a re-request
+    /// when the peer is still known as a relay and we previously held an
+    /// Accepted or Requested reservation with it. Without this, an expired
+    /// reservation leaves us silently unreachable through that relay until
+    /// the next process restart, because no other code path re-evaluates
+    /// the need for a reservation outside the Reachable -> Unreachable
+    /// transition.
+    ///
+    /// The downstream [`crate::NetworkManager::create_relay_reservation`]
+    /// still gates on the configured registrations limit, so this only
+    /// enqueues intent; it does not unconditionally dial.
+    pub(crate) fn on_relay_reservation_lost(&mut self, relay_peer: &PeerId) -> ReachabilityActions {
+        let was_active = self
+            .get_peer_info(relay_peer)
+            .and_then(|info| info.relay())
+            .is_some_and(|info| {
+                matches!(
+                    info.reservation_status(),
+                    RelayReservationStatus::Accepted | RelayReservationStatus::Requested
+                )
+            });
+
+        self.update_relay_reservation_status(relay_peer, RelayReservationStatus::Expired);
+
+        if !was_active || !self.relay_index.contains(relay_peer) {
+            return ReachabilityActions::none();
+        }
+
+        ReachabilityActions {
+            relay_reservations: vec![*relay_peer],
+            ..ReachabilityActions::none()
+        }
+    }
+
     pub(crate) fn update_rendezvous_registration_status(
         &mut self,
         rendezvous_peer: &PeerId,
