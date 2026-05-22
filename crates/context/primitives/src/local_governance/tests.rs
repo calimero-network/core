@@ -504,7 +504,13 @@ fn cascade_group_migration_set_borsh_round_trip() {
     let bytes_none = borsh::to_vec(&original_none).expect("serialize none");
     let decoded_none: GroupOp = borsh::from_slice(&bytes_none).expect("deserialize none");
     match decoded_none {
-        GroupOp::CascadeGroupMigrationSet { migration, .. } => assert!(migration.is_none()),
+        GroupOp::CascadeGroupMigrationSet {
+            from_app_key,
+            migration,
+        } => {
+            assert_eq!(from_app_key, [0u8; 32]);
+            assert!(migration.is_none());
+        }
         other => panic!("expected CascadeGroupMigrationSet, got {:?}", other),
     }
 }
