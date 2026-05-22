@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 
 use super::state_access::SyncStateAccess;
 use crate::delta_store::DeltaStore;
-use crate::sync::reconcile_cooldown;
+use crate::sync::reconciler::reconcile_cooldown;
 
 /// Record of a single trait-method call. Useful for asserting
 /// what the code under test asked for, in what order.
