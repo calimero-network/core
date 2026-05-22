@@ -297,9 +297,19 @@ impl SyncManager {
     /// Production code never calls this — the constructor wires
     /// `sync_network` from the concrete `NetworkClient` automatically.
     /// Tests use this to swap in a `MockSyncNetwork` after construction.
+    ///
+    /// Also rebuilds the [`super::reconciler::Reconciler`] field so it
+    /// observes the swapped network too. Without this, the reconciler
+    /// keeps the construction-time `Arc` and `mesh_peers` calls on the
+    /// reconcile path bypass the mock.
     #[cfg(test)]
     pub(crate) fn set_sync_network(&mut self, sync_network: Arc<dyn super::network::SyncNetwork>) {
-        self.sync_network = sync_network;
+        self.sync_network = Arc::clone(&sync_network);
+        self.reconciler = super::reconciler::Reconciler::new(
+            Arc::clone(&self.state_access),
+            sync_network,
+            self.context_client.clone(),
+        );
     }
 
     /// Wire the `SyncSessionActor` handles onto the original
