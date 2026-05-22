@@ -4,9 +4,12 @@
 //! Both collections stamp each entry with the current executor identity at
 //! write time and reject non-owner mutations. The signatures of the
 //! collection-specific methods differ enough (map vs sequence) that a single
-//! generic wrapper would still need bespoke impl blocks per shape — see the
-//! audit at `docs/superpowers/notes/2026-05-21-authored-comparison.md` for
-//! the full decision rationale.
+//! generic wrapper would still need bespoke impl blocks per shape — keying
+//! by `K` vs by index, reject-on-collision vs auto-slot-return, physical
+//! delete vs in-place tombstone with `V: Default` — so the right factoring
+//! is to extract the *author-tracking mechanics* (executor lookup, owner
+//! stamp construction, owner-equality check) into this shared helper module
+//! while the public method shapes stay distinct.
 //!
 //! This module owns the **identical** part: how the owner is sourced, how
 //! the stamp is constructed, and how the owner-gate check decides accept vs
