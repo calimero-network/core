@@ -231,6 +231,65 @@ impl DiscoveryState {
             .and_modify(|info| info.update_relay_reservation_status(status));
     }
 
+    /// Called when a relay reservation is lost — relayed listen address
+    /// expired, listener closed, or the control connection to the relay
+    /// dropped.
+    ///
+    /// A single disconnect typically produces several of these events in
+    /// quick succession (ConnectionClosed, then ListenerClosed for the dead
+    /// listener, then ExternalAddrExpired for the dead address). The first
+    /// one finds the peer in `Accepted`, marks `Expired`, and queues
+    /// recovery; the downstream call to `create_relay_reservation` flips
+    /// status to `Requested` and starts a new libp2p listener. Without
+    /// further care, the next event in the burst would see `Requested`,
+    /// treat it as "active", and queue another `listen_on`, producing
+    /// duplicate listeners (and looping in the quota-denial case).
+    ///
+    /// To prevent that, only the `Accepted -> Expired` transition queues a
+    /// recovery. From `Requested` we still flip to `Expired` (state stays
+    /// authoritative), but we do not queue: either the request itself
+    /// failed (queuing would loop on a deliberate denial) or this is a
+    /// stale event from a prior disconnect whose recovery is already in
+    /// flight (queuing would duplicate it). The in-flight libp2p listener
+    /// is untouched and, when its reservation completes, ExternalAddrConfirmed
+    /// will set status back to `Accepted`.
+    ///
+    /// The downstream [`crate::NetworkManager::create_relay_reservation`]
+    /// still gates on the configured registrations limit, so this only
+    /// enqueues intent; it does not unconditionally dial.
+    pub(crate) fn on_relay_reservation_lost(&mut self, relay_peer: &PeerId) -> ReachabilityActions {
+        let prior_status = self
+            .get_peer_info(relay_peer)
+            .and_then(|info| info.relay())
+            .map(|info| info.reservation_status());
+
+        match prior_status {
+            // Lost an Accepted reservation — the case recovery is for.
+            Some(RelayReservationStatus::Accepted) => {
+                self.update_relay_reservation_status(relay_peer, RelayReservationStatus::Expired);
+
+                if !self.relay_index.contains(relay_peer) {
+                    return ReachabilityActions::none();
+                }
+
+                ReachabilityActions {
+                    relay_reservations: vec![*relay_peer],
+                    ..ReachabilityActions::none()
+                }
+            }
+            // Pending request failed, or stale event for a prior loss whose
+            // recovery is in flight. Mark Expired but do not queue.
+            Some(RelayReservationStatus::Requested) => {
+                self.update_relay_reservation_status(relay_peer, RelayReservationStatus::Expired);
+                ReachabilityActions::none()
+            }
+            // Already-Expired or never-tracked peer. Nothing to do.
+            Some(RelayReservationStatus::Expired | RelayReservationStatus::Discovered) | None => {
+                ReachabilityActions::none()
+            }
+        }
+    }
+
     pub(crate) fn update_rendezvous_registration_status(
         &mut self,
         rendezvous_peer: &PeerId,
