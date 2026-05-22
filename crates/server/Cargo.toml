@@ -47,6 +47,7 @@ mero-auth.workspace = true
 [dev-dependencies]
 color-eyre.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower = { workspace = true, features = ["util"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [build-dependencies]

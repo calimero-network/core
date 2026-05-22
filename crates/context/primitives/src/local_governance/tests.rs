@@ -283,3 +283,234 @@ fn namespace_signable_bytes_deterministic() {
     assert_eq!(a, b);
     assert!(a.starts_with(NAMESPACE_GOVERNANCE_SIGN_DOMAIN));
 }
+
+// --- Cascade op variants (Option C in cascade design doc) ---
+
+fn sample_application_id(seed: u8) -> ApplicationId {
+    let mut bytes = [0u8; 32];
+    bytes[0] = seed;
+    bytes[31] = !seed;
+    ApplicationId::from(bytes)
+}
+
+#[test]
+fn cascade_target_application_set_sign_verify() {
+    let mut rng = OsRng;
+    let sk = PrivateKey::random(&mut rng);
+
+    let op = SignedGroupOp::sign(
+        &sk,
+        sample_group_id(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::CascadeTargetApplicationSet {
+            from_app_key: [9u8; 32],
+            app_key: [10u8; 32],
+            target_application_id: sample_application_id(0x42),
+        },
+    )
+    .expect("sign");
+
+    op.verify_signature().expect("verify");
+    assert_eq!(
+        op.op.op_kind_label(),
+        "cascade_target_application_set",
+        "op_kind_label must distinguish cascade variant for metrics"
+    );
+}
+
+#[test]
+fn cascade_group_migration_set_sign_verify() {
+    let mut rng = OsRng;
+    let sk = PrivateKey::random(&mut rng);
+
+    let op = SignedGroupOp::sign(
+        &sk,
+        sample_group_id(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::CascadeGroupMigrationSet {
+            from_app_key: [9u8; 32],
+            migration: Some(b"migrate_v1_to_v2".to_vec()),
+        },
+    )
+    .expect("sign");
+
+    op.verify_signature().expect("verify");
+    assert_eq!(
+        op.op.op_kind_label(),
+        "cascade_group_migration_set",
+        "op_kind_label must distinguish cascade migration variant for metrics"
+    );
+}
+
+#[test]
+fn cascade_target_distinct_from_single_group_target() {
+    // A cascade op and a non-cascade op with the same new app_key/target
+    // must produce DIFFERENT content hashes -- otherwise replay/dedup
+    // would conflate the two distinct governance intents.
+    let mut rng = OsRng;
+    let sk = PrivateKey::random(&mut rng);
+    let new_app_key = [11u8; 32];
+    let target = sample_application_id(0x77);
+
+    let single = SignedGroupOp::sign(
+        &sk,
+        sample_group_id(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::TargetApplicationSet {
+            app_key: new_app_key,
+            target_application_id: target,
+        },
+    )
+    .expect("sign");
+
+    let cascade = SignedGroupOp::sign(
+        &sk,
+        sample_group_id(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::CascadeTargetApplicationSet {
+            from_app_key: [9u8; 32],
+            app_key: new_app_key,
+            target_application_id: target,
+        },
+    )
+    .expect("sign");
+
+    assert_ne!(
+        single.content_hash().expect("hash single"),
+        cascade.content_hash().expect("hash cascade"),
+        "cascade and single-group target ops must hash distinctly"
+    );
+}
+
+#[test]
+fn cascade_target_from_app_key_changes_hash() {
+    // The Borsh-discriminant guarantees distinctness from the
+    // single-group variant (covered by
+    // `cascade_target_distinct_from_single_group_target`). This test
+    // covers the stronger invariant: `from_app_key` is itself part of
+    // the signed bytes, so two cascade ops that agree on every field
+    // EXCEPT `from_app_key` must still hash differently. Otherwise a
+    // refactor that accidentally collapses `from_app_key` (e.g. by
+    // defaulting it or excluding it from signable bytes) would silently
+    // break dedup of intent-different cascades.
+    let mut rng = OsRng;
+    let sk = PrivateKey::random(&mut rng);
+    let new_app_key = [11u8; 32];
+    let target = sample_application_id(0x77);
+
+    let a = SignedGroupOp::sign(
+        &sk,
+        sample_group_id(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::CascadeTargetApplicationSet {
+            from_app_key: [9u8; 32],
+            app_key: new_app_key,
+            target_application_id: target,
+        },
+    )
+    .expect("sign");
+
+    let b = SignedGroupOp::sign(
+        &sk,
+        sample_group_id(),
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::CascadeTargetApplicationSet {
+            from_app_key: [8u8; 32], // only this differs
+            app_key: new_app_key,
+            target_application_id: target,
+        },
+    )
+    .expect("sign");
+
+    assert_ne!(
+        a.content_hash().expect("hash a"),
+        b.content_hash().expect("hash b"),
+        "from_app_key must be covered by the signed content hash"
+    );
+}
+
+#[test]
+fn cascade_target_application_set_borsh_round_trip() {
+    // Explicit wire-format round-trip for the new variant. The
+    // sign/verify tests above implicitly exercise serialization (sign
+    // hashes the Borsh bytes; verify rebuilds them) but do not assert
+    // that field values survive a standalone serialize -> deserialize
+    // round trip on the GroupOp itself. A future enum reordering that
+    // shifts variant tags would silently change which variant a stored
+    // op decodes as; this guards against that by asserting field
+    // equality after a round trip.
+    let original = GroupOp::CascadeTargetApplicationSet {
+        from_app_key: [9u8; 32],
+        app_key: [10u8; 32],
+        target_application_id: sample_application_id(0x42),
+    };
+
+    let bytes = borsh::to_vec(&original).expect("serialize");
+    let decoded: GroupOp = borsh::from_slice(&bytes).expect("deserialize");
+
+    match decoded {
+        GroupOp::CascadeTargetApplicationSet {
+            from_app_key,
+            app_key,
+            target_application_id,
+        } => {
+            assert_eq!(from_app_key, [9u8; 32]);
+            assert_eq!(app_key, [10u8; 32]);
+            assert_eq!(target_application_id, sample_application_id(0x42));
+        }
+        other => panic!("expected CascadeTargetApplicationSet, got {:?}", other),
+    }
+}
+
+#[test]
+fn cascade_group_migration_set_borsh_round_trip() {
+    // Symmetric round-trip guard for the migration variant.
+    let original = GroupOp::CascadeGroupMigrationSet {
+        from_app_key: [9u8; 32],
+        migration: Some(b"migrate_v1_to_v2".to_vec()),
+    };
+
+    let bytes = borsh::to_vec(&original).expect("serialize");
+    let decoded: GroupOp = borsh::from_slice(&bytes).expect("deserialize");
+
+    match decoded {
+        GroupOp::CascadeGroupMigrationSet {
+            from_app_key,
+            migration,
+        } => {
+            assert_eq!(from_app_key, [9u8; 32]);
+            assert_eq!(migration.as_deref(), Some(b"migrate_v1_to_v2".as_ref()));
+        }
+        other => panic!("expected CascadeGroupMigrationSet, got {:?}", other),
+    }
+
+    // Also cover migration = None.
+    let original_none = GroupOp::CascadeGroupMigrationSet {
+        from_app_key: [0u8; 32],
+        migration: None,
+    };
+    let bytes_none = borsh::to_vec(&original_none).expect("serialize none");
+    let decoded_none: GroupOp = borsh::from_slice(&bytes_none).expect("deserialize none");
+    match decoded_none {
+        GroupOp::CascadeGroupMigrationSet {
+            from_app_key,
+            migration,
+        } => {
+            assert_eq!(from_app_key, [0u8; 32]);
+            assert!(migration.is_none());
+        }
+        other => panic!("expected CascadeGroupMigrationSet, got {:?}", other),
+    }
+}

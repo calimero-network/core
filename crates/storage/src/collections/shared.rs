@@ -5,6 +5,18 @@
 //! `writers_frozen`). Trust mirrors `UserStorage<T>`: the runtime signs each
 //! write, peers verify the signature against the stored writer set at merge
 //! time.
+//!
+//! # Merge semantics
+//!
+//! `SharedStorage` implements [`Mergeable`](super::crdt_meta::Mergeable) on two
+//! axes:
+//!
+//! - **Inner value** — delegates to `T`'s own `Mergeable` impl, so a wrapped
+//!   CRDT keeps its convergence semantics (counter sums, LWW wins, etc.).
+//! - **Writer-set metadata** — resolved by `(writers_nonce, lexical content)`:
+//!   the side with the higher nonce wins, with a deterministic tie-break on
+//!   the serialised writer set so concurrent rotations from different signers
+//!   converge to the same outcome on all replicas.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;

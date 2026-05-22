@@ -263,10 +263,59 @@ pub fn reset_for_testing() {
     imp::reset_for_testing();
 }
 
-/// Set executor ID for testing purposes
-#[cfg(test)]
-pub fn set_executor_id(id: [u8; 32]) {
+/// Set executor ID. `pub(crate)` because the only sanctioned way to mutate
+/// executor identity from outside the crate is the scoped [`with_executor_id`]
+/// guard below — that guard guarantees restoration on panic, whereas a raw
+/// setter would leave a thread polluted on unwind.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn set_executor_id(id: [u8; 32]) {
     imp::set_executor_id(id);
+}
+
+/// Run `f` with the executor identity set to `id`, then restore the prior
+/// identity (whatever it was) when the closure returns — even on panic.
+///
+/// Integration tests for CRDTs frequently need to simulate writes from several
+/// different authors against the same in-process replica. The closure form
+/// makes the save/restore pairing impossible to forget and unwind-safe via the
+/// inner RAII guard: a panicking test still cleans up the thread-local before
+/// the next test runs.
+///
+/// # Scope of effect
+///
+/// Only writes the `EXECUTOR_ID` thread-local. If a [`with_runtime_env`]-style
+/// `RuntimeEnv` is installed when `with_executor_id` is called, the public
+/// [`executor_id`] getter will continue to return the `RuntimeEnv`'s identity
+/// (it prefers `RuntimeEnv` over the thread-local), so the guard's `id` is
+/// effectively shadowed for the duration of `f()`. Tests that need to override
+/// identity must not be nested inside a `RuntimeEnv`; the contract tests in
+/// this crate use the plain thread-local path and are unaffected.
+///
+/// Native-only: WASM doesn't expose executor-identity mutation (the runtime
+/// owns it). The `#[cfg(not(target_arch = "wasm32"))]` gate matches
+/// [`set_executor_id`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn with_executor_id<R>(id: [u8; 32], f: impl FnOnce() -> R) -> R {
+    struct Guard {
+        prior: [u8; 32],
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            set_executor_id(self.prior);
+        }
+    }
+
+    // Save and restore via the EXECUTOR_ID thread-local rather than the
+    // public `executor_id()` getter: that getter prefers a `RuntimeEnv`
+    // value when one is installed, but `set_executor_id` only writes
+    // the thread-local fallback — so reading via `executor_id()` and
+    // restoring via `set_executor_id` would be asymmetric. Anchoring
+    // both ends on the same storage keeps the guard semantically
+    // correct regardless of whether a runtime env is in scope.
+    let prior = imp::executor_id_fallback();
+    set_executor_id(id);
+    let _g = Guard { prior };
+    f()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -548,10 +597,21 @@ mod mocked {
         println!("{}", message);
     }
 
-    /// Set executor ID for testing purposes
-    #[cfg(test)]
+    /// Sets the thread-local executor ID. Only callable from this crate
+    /// via the `pub(crate)` re-export above; external callers must go
+    /// through the scoped [`super::with_executor_id`] guard so they
+    /// can't forget to restore prior state on panic.
     pub(super) fn set_executor_id(new_id: [u8; 32]) {
         EXECUTOR_ID.with(|id| id.set(new_id));
+    }
+
+    /// Reads the thread-local executor ID fallback, bypassing
+    /// `RUNTIME_ENV`. Used by [`super::with_executor_id`] for symmetric
+    /// save/restore around its mutation of the same thread-local — the
+    /// public `executor_id()` getter prefers `RUNTIME_ENV`, which
+    /// wouldn't restore correctly via `set_executor_id`.
+    pub(super) fn executor_id_fallback() -> [u8; 32] {
+        EXECUTOR_ID.with(|id| id.get())
     }
 
     /// Gets the current time.

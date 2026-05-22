@@ -47,6 +47,7 @@ pub(crate) mod peers;
 pub mod prometheus_metrics;
 pub(crate) mod reconciler;
 pub mod rotation_log_reader;
+pub(crate) mod session;
 mod snapshot;
 pub(crate) mod state_access;
 #[cfg(test)]

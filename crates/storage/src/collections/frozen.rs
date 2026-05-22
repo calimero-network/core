@@ -2,6 +2,16 @@
 //!
 //! Provides an `UnorderedMap<Hash, FrozenValue<T>>` where the key is the SHA256 hash
 //! of the value `T`. Data is immutable once inserted.
+//!
+//! # Merge semantics
+//!
+//! `FrozenStorage` implements [`Mergeable`](super::crdt_meta::Mergeable) by
+//! delegating to its inner `UnorderedMap<Hash, FrozenValue<…>>`. Because the
+//! key is the SHA-256 of the value, two replicas that "insert the same logical
+//! value" produce the same key — concurrent inserts of equivalent content
+//! deduplicate automatically. Entries are immutable (no `remove`, no
+//! overwrite), so merge can only ever grow the set of stored hashes; conflict
+//! resolution is therefore degenerate (set-union over hash keys).
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
 use super::{StorageError, StoreError, UnorderedMap};
