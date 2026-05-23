@@ -258,33 +258,26 @@ impl SessionTracker {
 
     /// Apply a `SyncSessionResult` from the result channel. Clears
     /// the dispatch-attempt + wedge timers for the context, then
-    /// updates `SyncState`. Logs preserved verbatim from the
-    /// pre-extraction `apply_session_result` body so log-grep-based
-    /// regression detection still works.
+    /// updates `SyncState`. The per-arm `info!` / `warn!` / `debug!`
+    /// calls inside the `Some(s)` branch are the operator-visible
+    /// signals for sync outcomes; their fields and wording have
+    /// stayed stable across the run-loop extractions so log-grep
+    /// filters keep matching.
     ///
-    /// Defensive: emits a `warn!` if no `SyncState` entry exists for
-    /// the result's `context_id`. This should never happen in
-    /// practice — `record_dispatch_succeeded` always inserts an
-    /// in-progress entry before a session can produce a result — so
-    /// a hit here indicates one of (a) the dispatch-tracking path
-    /// skipped `record_dispatch_succeeded`, (b) cross-actor routing
+    /// The `None` branch is defensive: `record_dispatch_succeeded`
+    /// always inserts an in-progress entry before a session can
+    /// produce a result, so a result for an untracked context
+    /// indicates one of (a) the dispatch-tracking path skipped
+    /// `record_dispatch_succeeded`, (b) cross-actor routing
     /// delivered a result for the wrong `context_id`, or (c)
-    /// external code cleared the state map mid-session. Without the
-    /// warn, those bugs are silently swallowed by `and_modify`'s
-    /// no-op-on-missing-entry behaviour.
+    /// external code cleared the state map mid-session. Without
+    /// the warn, those bugs would be silently swallowed; with it,
+    /// operators see the inconsistency and the inner result variant
+    /// is included so they can correlate it back to the originating
+    /// dispatch.
     pub(super) fn apply_result(&mut self, result: SyncSessionResult) {
         let _removed = self.last_dispatch_attempt.remove(&result.context_id);
         let _removed = self.initiator_dispatched_at.remove(&result.context_id);
-
-        if !self.state.contains_key(&result.context_id) {
-            warn!(
-                context_id = %result.context_id,
-                peer_id = %result.peer_id,
-                took = ?result.took,
-                "SyncSessionResult arrived for context with no tracked SyncState — \
-                 dispatch-tracking inconsistency or external state mutation (logic bug, #2445)"
-            );
-        }
 
         let SyncSessionResult {
             context_id,
@@ -293,59 +286,71 @@ impl SessionTracker {
             result,
         } = result;
 
-        let _ignored = self.state.entry(context_id).and_modify(|s| match result {
-            Ok(Ok(ref protocol)) => {
-                s.on_success(peer_id, TrackingSyncProtocol::from(protocol));
-                info!(
+        match self.state.get_mut(&context_id) {
+            None => {
+                warn!(
                     %context_id,
+                    %peer_id,
                     ?took,
-                    ?protocol,
-                    success_count = s.success_count,
-                    "Sync finished successfully"
+                    ?result,
+                    "SyncSessionResult arrived for context with no tracked SyncState — \
+                     dispatch-tracking inconsistency or external state mutation (logic bug)"
                 );
             }
-            Ok(Err(ref err)) => {
-                // #2422 Option 4: PeerNotMaterialized is benign — the
-                // responder told us they're a valid namespace peer
-                // that simply hasn't joined this context. Do not
-                // increment failure_count or apply backoff — doing so
-                // starves legitimate sync against other peers behind
-                // 256s exponential delays. The peer-selection filter
-                // in peers.rs::namespace-fallback already excludes
-                // non-followers up-front; this arm catches the
-                // residual race (peer in flight of materialising,
-                // mixed-version cluster, etc.).
-                if err.downcast_ref::<PeerNotMaterialized>().is_some() {
-                    debug!(
+            Some(s) => match result {
+                Ok(Ok(ref protocol)) => {
+                    s.on_success(peer_id, TrackingSyncProtocol::from(protocol));
+                    info!(
                         %context_id,
                         ?took,
-                        %peer_id,
-                        "peer has not materialised this context — \
-                         dropping for this round, not a failure"
+                        ?protocol,
+                        success_count = s.success_count,
+                        "Sync finished successfully"
                     );
-                    return;
                 }
-                s.on_failure(err.to_string());
-                warn!(
-                    %context_id,
-                    ?took,
-                    error = %err,
-                    failure_count = s.failure_count(),
-                    backoff_secs = s.backoff_delay().as_secs(),
-                    "Sync failed, applying exponential backoff"
-                );
-            }
-            Err(ref timeout_err) => {
-                s.on_failure(timeout_err.to_string());
-                warn!(
-                    %context_id,
-                    ?took,
-                    failure_count = s.failure_count(),
-                    backoff_secs = s.backoff_delay().as_secs(),
-                    "Sync timed out, applying exponential backoff"
-                );
-            }
-        });
+                Ok(Err(ref err)) => {
+                    // #2422 Option 4: PeerNotMaterialized is benign —
+                    // the responder told us they're a valid namespace
+                    // peer that simply hasn't joined this context. Do
+                    // not increment failure_count or apply backoff —
+                    // doing so starves legitimate sync against other
+                    // peers behind 256s exponential delays. The peer-
+                    // selection filter in peers.rs::namespace-fallback
+                    // already excludes non-followers up-front; this
+                    // arm catches the residual race (peer in flight
+                    // of materialising, mixed-version cluster, etc.).
+                    if err.downcast_ref::<PeerNotMaterialized>().is_some() {
+                        debug!(
+                            %context_id,
+                            ?took,
+                            %peer_id,
+                            "peer has not materialised this context — \
+                             dropping for this round, not a failure"
+                        );
+                        return;
+                    }
+                    s.on_failure(err.to_string());
+                    warn!(
+                        %context_id,
+                        ?took,
+                        error = %err,
+                        failure_count = s.failure_count(),
+                        backoff_secs = s.backoff_delay().as_secs(),
+                        "Sync failed, applying exponential backoff"
+                    );
+                }
+                Err(ref timeout_err) => {
+                    s.on_failure(timeout_err.to_string());
+                    warn!(
+                        %context_id,
+                        ?took,
+                        failure_count = s.failure_count(),
+                        backoff_secs = s.backoff_delay().as_secs(),
+                        "Sync timed out, applying exponential backoff"
+                    );
+                }
+            },
+        }
     }
 
     /// Wedge-watchdog tick. Returns contexts whose initiator was
@@ -732,17 +737,13 @@ mod tests {
 
     #[test]
     fn apply_result_with_missing_state_does_not_panic_or_create_entry() {
-        // #2445 defensive-warn invariant: a `SyncSessionResult`
-        // arriving for a context with no tracked `SyncState` must
-        // (a) not panic, (b) not silently create a state entry, and
-        // (c) clear any backoff / wedge timers that may exist for
-        // the context (they shouldn't either, but the clears are
-        // idempotent on absent keys).
-        //
-        // The accompanying `warn!` log fires inside `apply_result`
-        // and is the operator-visible signal that the dispatch-
-        // tracking invariant was violated; this test exercises the
-        // state side-effects.
+        // A `SyncSessionResult` arriving for a context with no tracked
+        // `SyncState` must (a) not panic, (b) not silently create a
+        // state entry (the `None` branch is observation-only), and (c)
+        // the unconditional dispatch / wedge timer clears at the top
+        // of `apply_result` must still run. The accompanying `warn!`
+        // is the operator-visible signal; this test covers the state
+        // side-effects.
         let mut t = tracker();
         assert!(
             !t.state.contains_key(&ctx(1)),
@@ -753,12 +754,40 @@ mod tests {
 
         assert!(
             !t.state.contains_key(&ctx(1)),
-            "apply_result must NOT create a state entry on missing-state path \
-             (and_modify's behaviour must be preserved)"
+            "apply_result must NOT create a state entry on missing-state path"
         );
         // Timers are removed unconditionally; verify they're still absent.
         assert!(!t.last_dispatch_attempt.contains_key(&ctx(1)));
         assert!(!t.initiator_dispatched_at.contains_key(&ctx(1)));
+    }
+
+    #[test]
+    fn apply_result_clears_stale_timers_on_missing_state_path() {
+        // Same anomalous path as the test above, but with
+        // pre-existing entries in both timer maps. Exercises the
+        // unconditional `remove` at the top of `apply_result`: even
+        // when state is gone, the dispatch / wedge timers for the
+        // context must be cleared (otherwise they'd persist
+        // unboundedly across the inconsistency).
+        let mut t = tracker();
+        let _ = t.last_dispatch_attempt.insert(ctx(1), Instant::now());
+        let _ = t.initiator_dispatched_at.insert(ctx(1), Instant::now());
+        assert!(!t.state.contains_key(&ctx(1)));
+
+        t.apply_result(ok_result(ctx(1)));
+
+        assert!(
+            !t.last_dispatch_attempt.contains_key(&ctx(1)),
+            "dispatch-attempt timer must be cleared even on missing-state path"
+        );
+        assert!(
+            !t.initiator_dispatched_at.contains_key(&ctx(1)),
+            "wedge timer must be cleared even on missing-state path"
+        );
+        assert!(
+            !t.state.contains_key(&ctx(1)),
+            "missing-state path must not create a state entry"
+        );
     }
 
     // -----------------------------------------------------------------
