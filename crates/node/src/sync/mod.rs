@@ -35,6 +35,7 @@
 mod blobs;
 mod config;
 mod delta_request;
+pub(crate) mod driver;
 mod hash_comparison;
 pub mod hash_comparison_protocol;
 pub(crate) mod helpers;
