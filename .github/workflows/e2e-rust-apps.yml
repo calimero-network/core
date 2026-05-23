@@ -304,6 +304,9 @@ jobs:
           - workflow: sync-resilience-network-partition
             file: workflows/sync-resilience-network-partition.yml
             app: scaffolding-e2e
+          - workflow: sync-resilience-lossy-link
+            file: workflows/sync-resilience-lossy-link.yml
+            app: scaffolding-e2e
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
