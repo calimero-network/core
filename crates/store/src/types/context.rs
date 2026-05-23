@@ -166,6 +166,14 @@ pub struct ContextDagDelta {
     /// against it. `None` for legacy deltas authored before this
     /// field was added.
     pub governance_position_blob: Option<Vec<u8>>,
+    /// Ed25519 signature by `author_id`'s identity key over the
+    /// canonical `DeltaSignaturePayload`. Closes the anti-impersonation
+    /// gap on the delta envelope: a current group-key holder can't
+    /// relabel a foreign delta as their own (or vice versa). Served
+    /// alongside `author_id` on the wire; verified by every receive
+    /// path before applying. `None` for snapshot checkpoints / genesis
+    /// rows that have no author signature to record.
+    pub delta_signature: Option<[u8; 64]>,
 }
 
 impl ContextDagDelta {

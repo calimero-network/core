@@ -286,6 +286,20 @@ pub enum MessagePayload<'a> {
         /// governance cut to cite — initiator skips the membership
         /// check in that case (there's nothing to check against).
         governance_position_blob: Option<Cow<'a, [u8]>>,
+        /// Ed25519 signature by `author_id`'s identity key over the
+        /// canonical [`super::delta_auth::DeltaSignaturePayload`].
+        /// Closes the anti-impersonation gap on the delta envelope:
+        /// without this, a current group-key holder could relabel a
+        /// foreign delta as their own (or vice versa) since
+        /// `membership_status_at` would pass for both members.
+        ///
+        /// `Option` for the transition: the storage schema and wire
+        /// carry the field, but signing isn't yet populated at the
+        /// `execute` site, so existing rows + freshly authored deltas
+        /// report `None` until that lands. Initiators that see `Some`
+        /// MUST verify; `None` is tolerated until the signing wire-up
+        /// is complete, then this tightens to required.
+        delta_signature: Option<[u8; 64]>,
     },
 
     /// Delta not found response.

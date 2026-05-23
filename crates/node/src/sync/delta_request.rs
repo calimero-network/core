@@ -135,7 +135,7 @@ impl SyncManager {
                         // gossip or another catch-up populates the
                         // author. Follow-up: thread author through
                         // request_delta's return.
-                        if let Err(e) = delta_store.add_delta(dag_delta, None, None).await {
+                        if let Err(e) = delta_store.add_delta(dag_delta, None, None, None).await {
                             warn!(?e, %context_id, delta_id = ?missing_id, "Failed to persist fetched delta to DAG");
                             continue;
                         }
@@ -319,6 +319,7 @@ impl SyncManager {
                         governance_position_blob: stored_delta
                             .governance_position_blob
                             .map(Into::into),
+                        delta_signature: stored_delta.delta_signature,
                     }
                 }
             }

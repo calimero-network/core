@@ -29,6 +29,41 @@ pub fn get_group_for_context(
     ContextTreeService::new(store, ContextGroupId::from([0u8; 32])).group_for_context(context_id)
 }
 
+/// Returns `true` if `author` is currently an authorized member of
+/// `context_id`'s owning group, or if `context_id` is not registered to any
+/// group (no group-membership constraint applies). The check includes the
+/// namespace-creator admin-identity carve-out, mirroring `membership_status_at`.
+///
+/// Used by sync apply paths (HashComparison EntityPush, snapshot apply) that
+/// can't carry a per-leaf governance position on the wire — the check is
+/// against the receiver's *current* group state, not the author's signed
+/// cut. Trade-off: this is strictly coarser than the gossip path's
+/// `membership_status_at(author, sender_position)` — legitimate pre-removal
+/// writes from a now-removed author that propagate via HC will be dropped on
+/// receivers that have already applied the removal. The strict alternative
+/// (per-leaf governance position on the HC wire) is tracked separately; this
+/// helper is the practical fix for the HC authorization-bypass back door
+/// where an unverified merge accepted writes the gossip path correctly
+/// rejected.
+pub fn is_currently_authorized_for_context(
+    store: &Store,
+    context_id: &ContextId,
+    author: &PublicKey,
+) -> EyreResult<bool> {
+    let Some(group_id) = get_group_for_context(store, context_id)? else {
+        return Ok(true);
+    };
+    // Namespace creator carve-out: the creator does not emit a self-
+    // `MemberJoined` op at namespace genesis, so their membership lives in
+    // `GroupMeta::admin_identity` rather than a `GroupMember` row. Without
+    // this short-circuit, `check_group_membership` returns false for the
+    // creator and HC would drop their legitimately-authored entities.
+    if super::membership::is_group_admin(store, &group_id, author)? {
+        return Ok(true);
+    }
+    super::membership::check_group_membership(store, &group_id, author)
+}
+
 pub fn enumerate_group_contexts(
     store: &Store,
     group_id: &ContextGroupId,

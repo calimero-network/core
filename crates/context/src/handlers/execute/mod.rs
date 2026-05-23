@@ -1535,6 +1535,9 @@ async fn internal_execute(
                     events: None, // No events stored for locally created deltas
                     author_id: Some(executor),
                     governance_position_blob,
+                    // Per-delta envelope signature is scaffolded but not
+                    // yet populated end-to-end; tracked separately.
+                    delta_signature: None,
                 },
             )?;
 

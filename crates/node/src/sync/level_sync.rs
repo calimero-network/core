@@ -76,6 +76,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, generate_nonce, get_local_root_hash_for_context,
+    is_leaf_currently_authorized,
 };
 
 // =============================================================================
@@ -362,6 +363,22 @@ async fn run_initiator_impl<T: SyncTransport>(
                         key = %hex::encode(leaf_data.key),
                         "Merging leaf entity"
                     );
+
+                    // Authorization gate, parity with HashComparison's
+                    // per-leaf check. LevelWise is a fallback the manager
+                    // selects when HC isn't a good fit (wide/shallow
+                    // trees), and it walks the same leaf-merge path —
+                    // without this check, a revoked author's writes that
+                    // gossip rejected could re-enter via LevelWise the
+                    // same way they did via HC.
+                    if !is_leaf_currently_authorized(store, &context_id, leaf_data) {
+                        warn!(
+                            %context_id,
+                            key = %hex::encode(leaf_data.key),
+                            "LevelWise merge skipped: claimed author is not currently authorized for this context"
+                        );
+                        continue;
+                    }
 
                     with_runtime_env(runtime_env.clone(), || {
                         apply_leaf_with_crdt_merge(context_id, leaf_data)

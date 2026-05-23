@@ -1117,9 +1117,16 @@ impl DeltaStore {
         events: Option<Vec<u8>>,
         author_id: Option<calimero_primitives::identity::PublicKey>,
         governance_position_blob: Option<Vec<u8>>,
+        delta_signature: Option<[u8; 64]>,
     ) -> Result<AddDeltaResult> {
-        self.add_delta_internal(delta, events, author_id, governance_position_blob)
-            .await
+        self.add_delta_internal(
+            delta,
+            events,
+            author_id,
+            governance_position_blob,
+            delta_signature,
+        )
+        .await
     }
 
     /// Add a delta to the store (without event data)
@@ -1130,9 +1137,16 @@ impl DeltaStore {
         delta: CausalDelta<Vec<Action>>,
         author_id: Option<calimero_primitives::identity::PublicKey>,
         governance_position_blob: Option<Vec<u8>>,
+        delta_signature: Option<[u8; 64]>,
     ) -> Result<bool> {
         let result = self
-            .add_delta_internal(delta, None, author_id, governance_position_blob)
+            .add_delta_internal(
+                delta,
+                None,
+                author_id,
+                governance_position_blob,
+                delta_signature,
+            )
             .await?;
         Ok(result.applied)
     }
@@ -1270,6 +1284,7 @@ impl DeltaStore {
         events: Option<Vec<u8>>,
         author_id: Option<calimero_primitives::identity::PublicKey>,
         governance_position_blob: Option<Vec<u8>>,
+        delta_signature: Option<[u8; 64]>,
     ) -> Result<AddDeltaResult> {
         let delta_id = delta.id;
         let expected_root_hash = delta.expected_root_hash;
@@ -1303,6 +1318,7 @@ impl DeltaStore {
                         events: events.clone(), // Store events for potential cascade
                         author_id,
                         governance_position_blob: governance_position_blob.clone(),
+                        delta_signature,
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to pre-persist delta with events: {}", e))?;
@@ -1380,6 +1396,7 @@ impl DeltaStore {
                         events: events.clone(),
                         author_id,
                         governance_position_blob: governance_position_blob.clone(),
+                        delta_signature,
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to update applied delta: {}", e))?;
@@ -1408,6 +1425,7 @@ impl DeltaStore {
                         events: None,
                         author_id,
                         governance_position_blob,
+                        delta_signature,
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to persist applied delta: {}", e))?;
@@ -1971,6 +1989,7 @@ impl DeltaStore {
                     events: stored_events.clone(),
                     author_id: None,
                     governance_position_blob: None,
+                    delta_signature: None,
                 };
                 if let Err(e) = handle.put(&db_key, &record) {
                     warn!(
@@ -2246,6 +2265,7 @@ impl DeltaStore {
                         // peer-authored deltas; no author claim to verify.
                         author_id: None,
                         governance_position_blob: None,
+                        delta_signature: None,
                     },
                 ) {
                     tracing::warn!(

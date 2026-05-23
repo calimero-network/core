@@ -180,7 +180,8 @@ impl SyncManager {
                     let entity_count = entities.len();
                     trace!(%context_id, entity_count, "Handling EntityPush from initiator");
 
-                    let applied = handle_entity_push(&runtime_env, context_id, &entities);
+                    let applied =
+                        handle_entity_push(&datastore, &runtime_env, context_id, &entities);
 
                     let msg = StreamMessage::Message {
                         sequence_id: sqx.next(),

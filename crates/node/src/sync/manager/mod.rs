@@ -1653,6 +1653,7 @@ impl SyncManager {
                                     delta,
                                     author_id: response_author,
                                     governance_position_blob,
+                                    delta_signature: response_delta_signature,
                                 },
                             ..
                         }) => {
@@ -1771,7 +1772,12 @@ impl SyncManager {
                             let persisted_gov_blob =
                                 governance_position_blob.as_ref().map(|c| c.to_vec());
                             if let Err(e) = delta_store_ref
-                                .add_delta(dag_delta, Some(author), persisted_gov_blob)
+                                .add_delta(
+                                    dag_delta,
+                                    Some(author),
+                                    persisted_gov_blob,
+                                    response_delta_signature,
+                                )
                                 .await
                             {
                                 warn!(

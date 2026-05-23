@@ -839,6 +839,7 @@ pub(crate) async fn apply_authorized_state_delta(
             events.clone(),
             Some(author_id),
             governance_position_blob.clone(),
+            None,
         )
         .await?;
     let mut applied = add_result.applied;
@@ -2149,7 +2150,7 @@ async fn request_missing_deltas(
             // the author info. Follow-up: extend `fetched_deltas` to
             // capture author + position from the response.
             match delta_store
-                .add_delta_with_events(dag_delta, None, None, None)
+                .add_delta_with_events(dag_delta, None, None, None, None)
                 .await
             {
                 Ok(result) => {
@@ -2621,6 +2622,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 buffered.events.clone(),
                 Some(buffered.author_id),
                 buffered_gov_blob,
+                None,
             )
             .await?
     };

@@ -40,7 +40,7 @@
 
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, generate_nonce, get_local_root_hash_for_context,
-    handle_entity_push, MAX_ENTITIES_PER_PUSH,
+    handle_entity_push, is_leaf_currently_authorized, MAX_ENTITIES_PER_PUSH,
 };
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
@@ -308,6 +308,25 @@ async fn run_initiator_impl<T: SyncTransport>(
                         key = %hex::encode(leaf_data.key),
                         "Merging leaf entity"
                     );
+
+                    // Authorization gate, parity with `handle_entity_push`.
+                    // Without this, the initiator's per-leaf merge in the
+                    // DFS would re-import entities whose claimed author has
+                    // been removed from the context's group — the same back
+                    // door batched EntityPush had before the helper-level
+                    // filter landed. Skipping silently here is fine because
+                    // the leaf will simply remain "missing locally," and
+                    // `root_hash_verified` will report `false` so the
+                    // session is treated as a partial merge rather than a
+                    // successful convergence.
+                    if !is_leaf_currently_authorized(store, &context_id, leaf_data) {
+                        warn!(
+                            %context_id,
+                            key = %hex::encode(leaf_data.key),
+                            "HC merge skipped: claimed author is not currently authorized for this context"
+                        );
+                        continue;
+                    }
 
                     with_runtime_env(runtime_env.clone(), || {
                         apply_leaf_with_crdt_merge(context_id, leaf_data)
@@ -658,7 +677,7 @@ async fn run_responder_impl<T: SyncTransport>(
                 let entity_count = entities.len();
                 trace!(%context_id, entity_count, "Handling EntityPush from initiator");
 
-                let applied = handle_entity_push(&runtime_env, context_id, &entities);
+                let applied = handle_entity_push(store, &runtime_env, context_id, &entities);
 
                 let msg = StreamMessage::Message {
                     sequence_id,

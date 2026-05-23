@@ -5,11 +5,13 @@
 use calimero_node_primitives::sync::TreeLeafData;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
-use calimero_storage::entities::{ChildInfo, Metadata};
+use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{Action, ApplyContext, Interface};
 use calimero_storage::store::MainStorage;
+use calimero_store::Store;
 use eyre::{bail, Result};
 use rand::Rng;
 
@@ -75,11 +77,78 @@ pub fn generate_nonce() -> calimero_crypto::Nonce {
 pub fn wire_authorization_for(
     metadata: &Metadata,
 ) -> Option<calimero_storage::entities::StorageType> {
-    use calimero_storage::entities::StorageType;
     match &metadata.storage_type {
         StorageType::Public | StorageType::Frozen => None,
         StorageType::Shared { .. } | StorageType::User { .. } => {
             Some(metadata.storage_type.clone())
+        }
+    }
+}
+
+/// Extract the claimed author of a sync'd leaf from its wire-carried
+/// authorization, when the storage type admits one.
+///
+/// * `User { owner, .. }` → `owner` is the author by definition.
+/// * `Shared { signature_data: Some(SignatureData { signer: Some(pk), .. }), .. }`
+///   → the per-action signature carries the explicit signer. When `signer`
+///   is `None` (older actions without the hint), returns `None` — the
+///   author can't be identified without scanning the writer set, and the
+///   caller treats this as "don't enforce membership here, defer to the
+///   per-action signature check inside `apply_action`."
+/// * `Public` / `Frozen` / authorization absent → `None`; no author to
+///   check (the per-action signature path verifies what's verifiable).
+fn extract_author_from_leaf_authorization(
+    authorization: Option<&StorageType>,
+) -> Option<PublicKey> {
+    match authorization? {
+        StorageType::User { owner, .. } => Some(*owner),
+        StorageType::Shared { signature_data, .. } => {
+            signature_data.as_ref().and_then(|sd| sd.signer)
+        }
+        StorageType::Public | StorageType::Frozen => None,
+    }
+}
+
+/// Authorization gate for sync apply paths that don't carry a per-leaf
+/// governance position on the wire (HashComparison EntityPush, snapshot
+/// apply). Mirrors `state_delta_bridge`'s cross-DAG `membership_status_at`
+/// check, coarsened to the receiver's *current* group state.
+///
+/// Returns `true` iff the entity should be applied:
+/// * No identifiable author → applied (Public / Frozen / Shared without
+///   `signer` hint; the per-action signature inside `apply_action`
+///   remains the verifier).
+/// * Author identified + currently a member of `context_id`'s owning
+///   group → applied.
+/// * Author identified + NOT currently a member (or lookup error) →
+///   dropped. Closes the HC back door where a now-removed author's
+///   entities entered storage without re-running the membership check
+///   that the gossip path runs unconditionally. The trade-off (over-
+///   rejection of legitimate pre-removal writes that propagate via HC)
+///   is documented on
+///   [`calimero_context::group_store::is_currently_authorized_for_context`].
+pub fn is_leaf_currently_authorized(
+    store: &Store,
+    context_id: &ContextId,
+    leaf: &TreeLeafData,
+) -> bool {
+    let Some(author) =
+        extract_author_from_leaf_authorization(leaf.metadata.authorization.as_ref())
+    else {
+        return true;
+    };
+    match calimero_context::group_store::is_currently_authorized_for_context(
+        store, context_id, &author,
+    ) {
+        Ok(authorized) => authorized,
+        Err(err) => {
+            tracing::warn!(
+                %context_id,
+                %author,
+                error = %err,
+                "is_leaf_currently_authorized: membership lookup failed; dropping entity to avoid silent bypass"
+            );
+            false
         }
     }
 }
@@ -271,8 +340,17 @@ pub const MAX_ENTITIES_PER_PUSH: usize = 500;
 /// Must be called within a `with_runtime_env` scope for each entity.
 /// Truncates to `MAX_ENTITIES_PER_PUSH` entities per message for DoS protection.
 ///
-/// Returns the number of entities successfully applied.
+/// Each leaf is first run through [`is_leaf_currently_authorized`] — entities
+/// whose claimed author is not currently an authorized member of the
+/// context's group are dropped before they touch storage. This closes the
+/// HC EntityPush authorization back door (gossip rejects a now-removed
+/// author's delta, but HC would re-import the same entity unverified).
+///
+/// Returns the number of entities successfully applied (excludes dropped
+/// entities, whether dropped for invalidity, unauthorized author, or apply
+/// failure).
 pub fn handle_entity_push(
+    store: &Store,
     runtime_env: &calimero_storage::env::RuntimeEnv,
     context_id: ContextId,
     entities: &[TreeLeafData],
@@ -291,6 +369,7 @@ pub fn handle_entity_push(
 
     calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
         let mut applied = 0u32;
+        let mut dropped_unauthorized = 0u32;
         for leaf in entities {
             if !leaf.is_valid() {
                 tracing::warn!(
@@ -298,6 +377,15 @@ pub fn handle_entity_push(
                     key = %hex::encode(leaf.key),
                     len = leaf.value.len(),
                     "pushed entity failed TreeLeafData::is_valid(), skipping"
+                );
+                continue;
+            }
+            if !is_leaf_currently_authorized(store, &context_id, leaf) {
+                dropped_unauthorized += 1;
+                tracing::warn!(
+                    %context_id,
+                    key = %hex::encode(leaf.key),
+                    "pushed entity dropped: claimed author is not currently authorized for this context"
                 );
                 continue;
             }
@@ -312,6 +400,13 @@ pub fn handle_entity_push(
                     );
                 }
             }
+        }
+        if dropped_unauthorized > 0 {
+            tracing::info!(
+                %context_id,
+                dropped_unauthorized,
+                "EntityPush: dropped entities whose author is no longer authorized"
+            );
         }
         applied
     })
@@ -403,4 +498,73 @@ mod tests {
     // (via `with_runtime_env`). It is tested indirectly through the sync_sim
     // integration tests which set up `SimStorage` with proper storage backends.
     // See: crates/node/tests/sync_sim/
+
+    use calimero_storage::entities::{SignatureData, StorageType};
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn extract_author_user_returns_owner() {
+        let owner = PublicKey::from([7u8; 32]);
+        let st = StorageType::User {
+            owner,
+            signature_data: None,
+        };
+        assert_eq!(
+            extract_author_from_leaf_authorization(Some(&st)),
+            Some(owner),
+        );
+    }
+
+    #[test]
+    fn extract_author_shared_with_signer_hint_returns_signer() {
+        let signer = PublicKey::from([9u8; 32]);
+        let st = StorageType::Shared {
+            writers: BTreeSet::from([signer]),
+            signature_data: Some(SignatureData {
+                signer: Some(signer),
+                signature: [0u8; 64],
+                nonce: 0,
+            }),
+        };
+        assert_eq!(
+            extract_author_from_leaf_authorization(Some(&st)),
+            Some(signer),
+        );
+    }
+
+    #[test]
+    fn extract_author_shared_without_signer_hint_returns_none() {
+        // Older actions can omit the signer hint — caller treats `None`
+        // as "defer to per-action signature verification inside apply_action."
+        let st = StorageType::Shared {
+            writers: BTreeSet::from([PublicKey::from([1u8; 32])]),
+            signature_data: Some(SignatureData {
+                signer: None,
+                signature: [0u8; 64],
+                nonce: 0,
+            }),
+        };
+        assert_eq!(extract_author_from_leaf_authorization(Some(&st)), None);
+    }
+
+    #[test]
+    fn extract_author_public_returns_none() {
+        assert_eq!(
+            extract_author_from_leaf_authorization(Some(&StorageType::Public)),
+            None,
+        );
+    }
+
+    #[test]
+    fn extract_author_frozen_returns_none() {
+        assert_eq!(
+            extract_author_from_leaf_authorization(Some(&StorageType::Frozen)),
+            None,
+        );
+    }
+
+    #[test]
+    fn extract_author_no_authorization_returns_none() {
+        assert_eq!(extract_author_from_leaf_authorization(None), None);
+    }
 }
