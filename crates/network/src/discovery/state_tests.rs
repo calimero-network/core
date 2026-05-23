@@ -11,7 +11,7 @@ fn test_get_preferred_addr() {
 
     assert_eq!(peer_info.get_preferred_addr(), None);
 
-    let _ = peer_info.addrs.insert(tcp_addr_1);
+    let _ = peer_info.addrs.insert(tcp_addr_1, 0);
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -22,7 +22,7 @@ fn test_get_preferred_addr() {
         Protocol::Tcp(4001)
     );
 
-    let _ = peer_info.addrs.insert(quic_addr);
+    let _ = peer_info.addrs.insert(quic_addr, 0);
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -33,7 +33,7 @@ fn test_get_preferred_addr() {
         Protocol::Udp(4001)
     );
 
-    let _ = peer_info.addrs.insert(tcp_addr_2);
+    let _ = peer_info.addrs.insert(tcp_addr_2, 0);
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -242,8 +242,8 @@ fn test_state_mutations() {
     state.add_peer_addr(peer_id, &tcp_addr);
     assert_eq!(state.peers.len(), 1);
     assert_eq!(state.peers[&peer_id].addrs.len(), 2);
-    assert!(state.peers[&peer_id].addrs.contains(&tcp_addr));
-    assert!(state.peers[&peer_id].addrs.contains(&quic_addr));
+    assert!(state.peers[&peer_id].addrs.contains_key(&tcp_addr));
+    assert!(state.peers[&peer_id].addrs.contains_key(&quic_addr));
 
     state.add_peer_discovery_mechanism(&peer_id, mdns_discovery);
     state.add_peer_discovery_mechanism(&peer_id, rendezvous_discovery);
@@ -439,4 +439,113 @@ fn test_on_relay_reservation_lost_multiple_relays_queue_independently() {
     // though the first is already Expired. Each relay is tracked independently.
     let actions_b = state.on_relay_reservation_lost(&relay_b);
     assert_eq!(actions_b.relay_reservations, vec![relay_b]);
+}
+
+#[test]
+fn test_add_peer_addr_initialises_failure_counter_to_zero() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+
+    state.add_peer_addr(peer, &addr);
+    assert_eq!(state.peers[&peer].addrs[&addr], 0);
+}
+
+#[test]
+fn test_add_peer_addr_resets_failure_counter_when_address_already_present() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+
+    state.add_peer_addr(peer, &addr);
+    let _ = state.record_dial_failure(&peer, &addr);
+    let _ = state.record_dial_failure(&peer, &addr);
+    assert_eq!(state.peers[&peer].addrs[&addr], 2);
+
+    // A re-addition (successful identify push, fresh dial, etc.) treats
+    // the address as healthy again and resets the counter.
+    state.add_peer_addr(peer, &addr);
+    assert_eq!(state.peers[&peer].addrs[&addr], 0);
+}
+
+#[test]
+fn test_record_dial_failure_evicts_at_threshold() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+
+    state.add_peer_addr(peer, &addr);
+    for _ in 0..(DIAL_FAILURE_EVICTION_THRESHOLD - 1) {
+        assert!(
+            !state.record_dial_failure(&peer, &addr),
+            "address must not evict before reaching the threshold"
+        );
+    }
+    assert!(state.peers[&peer].addrs.contains_key(&addr));
+
+    // The threshold-th failure evicts.
+    let evicted = state.record_dial_failure(&peer, &addr);
+    assert!(evicted, "reaching the threshold must evict");
+    assert!(!state.peers[&peer].addrs.contains_key(&addr));
+}
+
+#[test]
+fn test_record_dial_failure_is_noop_for_unknown_peer_or_address() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+    let other_addr: Multiaddr = "/ip4/127.0.0.1/tcp/4002".parse().unwrap();
+
+    // Unknown peer: no-op.
+    assert!(!state.record_dial_failure(&peer, &addr));
+    assert!(!state.peers.contains_key(&peer));
+
+    // Known peer, unknown address: no-op (don't speculatively insert an
+    // address we never planned to keep).
+    state.add_peer_addr(peer, &addr);
+    assert!(!state.record_dial_failure(&peer, &other_addr));
+    assert!(!state.peers[&peer].addrs.contains_key(&other_addr));
+}
+
+#[test]
+fn test_dial_success_after_failures_resets_counter() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+
+    state.add_peer_addr(peer, &addr);
+    let _ = state.record_dial_failure(&peer, &addr);
+    let _ = state.record_dial_failure(&peer, &addr);
+    assert_eq!(state.peers[&peer].addrs[&addr], 2);
+
+    // ConnectionEstablished re-records the address, resetting the counter.
+    // The address now needs another full threshold of consecutive
+    // failures before eviction.
+    state.add_peer_addr(peer, &addr);
+    assert_eq!(state.peers[&peer].addrs[&addr], 0);
+
+    for _ in 0..(DIAL_FAILURE_EVICTION_THRESHOLD - 1) {
+        assert!(!state.record_dial_failure(&peer, &addr));
+    }
+    assert!(state.peers[&peer].addrs.contains_key(&addr));
+}
+
+#[test]
+fn test_independent_addresses_track_failures_separately() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr_a: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+    let addr_b: Multiaddr = "/ip4/127.0.0.1/tcp/4002".parse().unwrap();
+
+    state.add_peer_addr(peer, &addr_a);
+    state.add_peer_addr(peer, &addr_b);
+
+    // Fail addr_a to the threshold; addr_b is untouched.
+    for _ in 0..DIAL_FAILURE_EVICTION_THRESHOLD {
+        let _ = state.record_dial_failure(&peer, &addr_a);
+    }
+
+    assert!(!state.peers[&peer].addrs.contains_key(&addr_a));
+    assert!(state.peers[&peer].addrs.contains_key(&addr_b));
+    assert_eq!(state.peers[&peer].addrs[&addr_b], 0);
 }

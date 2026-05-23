@@ -16,6 +16,7 @@ impl EventHandler<Event> for NetworkManager {
             peer_id,
             info:
                 Info {
+                    listen_addrs,
                     observed_addr,
                     protocols,
                     ..
@@ -26,6 +27,25 @@ impl EventHandler<Event> for NetworkManager {
             self.discovery
                 .state
                 .update_peer_protocols(&peer_id, &protocols);
+
+            // Mirror the peer's declared listen addresses into our local
+            // address book. Without this, we only ever learn an address
+            // when a dial to it succeeds and ConnectionEstablished fires —
+            // so a peer that advertises three addresses but only one
+            // happens to work first would shrink to one entry in our
+            // book, leaving us no fallback when that address dies.
+            //
+            // Filter out relayed addresses (`/p2p-circuit/`); they aren't
+            // useful as direct-dial entries and the rendezvous-tick redial
+            // loop would just waste attempts on them. Filter out our own
+            // observed address (sometimes echoed back); it's about us, not
+            // the peer.
+            for addr in &listen_addrs {
+                let is_relayed = addr.iter().any(|p| matches!(p, Protocol::P2pCircuit));
+                if !is_relayed && addr != &observed_addr {
+                    self.discovery.state.add_peer_addr(peer_id, addr);
+                }
+            }
 
             if let Some(advertise_address) = &self.discovery.advertise {
                 let is_external_addr = observed_addr
