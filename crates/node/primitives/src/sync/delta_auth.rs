@@ -37,13 +37,33 @@ use calimero_context_config::types::GovernancePosition;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 
+/// Domain separator prefixed to every delta-envelope signature payload.
+///
+/// Without this, an ed25519 signature produced for a `DeltaSignaturePayload`
+/// could in principle be replayed as a signature for a different protocol
+/// message that happened to borsh-serialize to identical bytes (cross-
+/// protocol replay). The separator is included as a typed field on
+/// `DeltaSignaturePayload` so its borsh-serialization is part of the
+/// signed bytes; receivers reconstruct the payload with the same
+/// constant, so any signature produced for a different domain fails
+/// verification.
+///
+/// The literal string is part of the protocol — never change it without
+/// a wire-format version bump.
+pub const DOMAIN_SEPARATOR: &[u8; 16] = b"calimero/delta/1";
+
 /// Canonical payload for the delta-envelope signature. Borsh-serialized
 /// and signed by `author_id`'s ed25519 key. Only used for serialization —
 /// receivers re-construct it from their own data and compare signature
 /// bytes, so `BorshDeserialize` isn't needed (and wouldn't work with the
 /// `&GovernancePosition` borrow anyway).
+///
+/// The `domain` field is always [`DOMAIN_SEPARATOR`] — it's serialized
+/// into the signed bytes so signatures from other protocols using the
+/// same key can't be replayed here.
 #[derive(BorshSerialize)]
 pub struct DeltaSignaturePayload<'a> {
+    pub domain: [u8; 16],
     pub context_id: ContextId,
     pub delta_id: [u8; 32],
     pub author_id: PublicKey,
@@ -63,6 +83,7 @@ pub fn delta_signature_payload(
     governance_position: Option<&GovernancePosition>,
 ) -> Result<Vec<u8>, borsh::io::Error> {
     let payload = DeltaSignaturePayload {
+        domain: *DOMAIN_SEPARATOR,
         context_id,
         delta_id,
         author_id,

@@ -141,7 +141,8 @@ pub struct LevelWiseStats {
     /// rationale as `HashComparisonStats::deferred_root_merges`; the
     /// caller (`ProtocolSelector`) dispatches them through
     /// `ContextClient::merge_root_state` after the sync completes.
-    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>)>,
+    /// Each entry is `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)`.
+    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
 }
 
 // =============================================================================
@@ -400,9 +401,11 @@ async fn run_initiator_impl<T: SyncTransport>(
                     if calimero_storage::collections::is_app_root_entry(entity_id)
                         && !is_opaque
                     {
-                        stats
-                            .deferred_root_merges
-                            .push((leaf_data.key, leaf_data.value.clone()));
+                        stats.deferred_root_merges.push((
+                            leaf_data.key,
+                            leaf_data.value.clone(),
+                            leaf_data.metadata.hlc_timestamp,
+                        ));
                         continue;
                     }
 

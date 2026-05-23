@@ -462,7 +462,7 @@ pub(crate) async fn dispatch_deferred_root_merges(
     store: &calimero_store::Store,
     context_id: ContextId,
     our_identity: PublicKey,
-    deferred: &[([u8; 32], Vec<u8>)],
+    deferred: &[([u8; 32], Vec<u8>, u64)],
 ) {
     use calimero_storage::address::Id;
     use calimero_storage::entities::Metadata;
@@ -480,7 +480,7 @@ pub(crate) async fn dispatch_deferred_root_merges(
         our_identity,
     );
 
-    for (key, incoming) in deferred {
+    for (key, incoming, incoming_hlc_ts) in deferred {
         let entity_id = Id::new(*key);
 
         // Read existing bytes + metadata under the runtime env so
@@ -515,19 +515,14 @@ pub(crate) async fn dispatch_deferred_root_merges(
             }
         };
 
-        // Use the maximum of existing and incoming timestamps for the
-        // merged result's updated_at — convention matches LWW timestamp
-        // semantics and ensures the merged write strictly advances the
-        // local logical clock for this entity.
+        // `incoming_ts` is the wire-carried HLC timestamp the remote
+        // peer recorded when it wrote the entity. The post-merge
+        // result's `updated_at` advances to `max(existing, incoming)`
+        // so the merged write is strictly newer than either input
+        // — necessary for the next sync round's LWW comparisons to
+        // resolve consistently.
         let existing_ts: u64 = (*existing_metadata.updated_at).into();
-        let incoming_ts: u64 = existing_ts.max(
-            // HC leaves don't carry an HLC-keyed update timestamp for
-            // the root entity (the leaf carries its own metadata, but
-            // that's per-leaf, not per-root-merge). Use existing_ts + 1
-            // as a synthetic monotonic tick; the merge IS the write so
-            // the local clock must advance.
-            existing_ts.saturating_add(1),
-        );
+        let incoming_ts: u64 = *incoming_hlc_ts;
 
         let request = MergeRootStateRequest {
             existing,
@@ -553,10 +548,15 @@ pub(crate) async fn dispatch_deferred_root_merges(
             }
         };
 
-        // Write merged bytes back. Bump `updated_at` to incoming_ts so the
-        // post-merge state is timestamped consistently for the next sync.
+        // Write merged bytes back. `updated_at` advances to
+        // `max(existing_ts, incoming_ts)` — the merged state must be
+        // strictly newer than both inputs so the next LWW comparison
+        // resolves consistently. If `incoming_ts` was older than
+        // `existing_ts` (a stale push during concurrent updates), we
+        // still keep the merged bytes but timestamp them at
+        // `existing_ts` rather than going backwards.
         let mut new_metadata = existing_metadata.clone();
-        new_metadata.updated_at = incoming_ts.into();
+        new_metadata.updated_at = existing_ts.max(incoming_ts).into();
 
         let write_result = with_runtime_env(runtime_env.clone(), || {
             Interface::<MainStorage>::write_pre_merged_root_state(

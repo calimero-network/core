@@ -399,7 +399,11 @@ pub const MAX_ENTITIES_PER_PUSH: usize = 500;
 #[derive(Debug, Default)]
 pub struct EntityPushOutcome {
     pub applied: u32,
-    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>)>,
+    /// `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)` — same
+    /// shape as [`crate::sync::hash_comparison_protocol::HashComparisonStats::deferred_root_merges`].
+    /// Carrying the leaf's HLC timestamp lets the dispatcher use the
+    /// actual remote write time instead of a synthetic value.
+    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
 }
 
 /// Handle an incoming `EntityPush` by applying CRDT merge for each entity.
@@ -440,7 +444,7 @@ pub fn handle_entity_push(
     calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
         let mut applied = 0u32;
         let mut dropped_unauthorized = 0u32;
-        let mut deferred_root_merges: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+        let mut deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)> = Vec::new();
         for leaf in entities {
             if !leaf.is_valid() {
                 tracing::warn!(
@@ -485,7 +489,11 @@ pub fn handle_entity_push(
             if calimero_storage::collections::is_app_root_entry(entity_id)
                 && !is_opaque_crdt_type(&leaf.metadata.crdt_type)
             {
-                deferred_root_merges.push((leaf.key, leaf.value.clone()));
+                deferred_root_merges.push((
+                    leaf.key,
+                    leaf.value.clone(),
+                    leaf.metadata.hlc_timestamp,
+                ));
                 continue;
             }
             match apply_leaf_with_crdt_merge(context_id, leaf) {

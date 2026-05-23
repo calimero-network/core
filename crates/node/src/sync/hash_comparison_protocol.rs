@@ -133,14 +133,17 @@ pub struct HashComparisonStats {
     /// Root-state byte blobs the DFS encountered on remote leaves
     /// that the host can't merge by itself (separate-address-space
     /// merge registry — see [`crate::sync::helpers::apply_leaf_with_crdt_merge`]).
-    /// Each entry is `(entity_id_bytes, incoming_bytes)`. The caller
-    /// (`ProtocolSelector`) dispatches each one through
+    /// Each entry is `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)`.
+    /// The caller (`ProtocolSelector`) dispatches each one through
     /// `ContextClient::merge_root_state` after the sync completes,
     /// closing the loop on root-entity divergence that HC would
     /// otherwise silently drop. Storing the entity id lets the caller
     /// distinguish `ROOT_ID` from the `Root<T>` entry (both treated
-    /// as root by `is_app_root_entry`, both possible in HC leaves).
-    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>)>,
+    /// as root by `is_app_root_entry`, both possible in HC leaves);
+    /// the timestamp is the leaf's wire-carried `hlc_timestamp` so
+    /// the dispatch uses the actual remote write time instead of a
+    /// synthetic value.
+    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
 }
 
 /// HashComparison sync protocol.
@@ -363,9 +366,11 @@ async fn run_initiator_impl<T: SyncTransport>(
                     if calimero_storage::collections::is_app_root_entry(entity_id)
                         && !is_opaque
                     {
-                        stats
-                            .deferred_root_merges
-                            .push((leaf_data.key, leaf_data.value.clone()));
+                        stats.deferred_root_merges.push((
+                            leaf_data.key,
+                            leaf_data.value.clone(),
+                            leaf_data.metadata.hlc_timestamp,
+                        ));
                         continue;
                     }
 
