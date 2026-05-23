@@ -126,13 +126,21 @@ steps:
       key: during_pause
       value: written_while_paused
 
-  - name: Pause duration
+  - name: Wait while node-2 is paused (60s)
     type: wait
     seconds: 60
 
   - name: Unpause node-2 (simulate wake)
     type: unpause_container
     container: sync-resil-node-2
+
+  # The paused container's TCP stack was frozen too; on unpause, libp2p
+  # needs to redial the (now half-open or dead) connection to node-1
+  # and rejoin the gossipsub mesh. trigger_sync called before that
+  # finishes would race the reconnect.
+  - name: Wait for libp2p to redial after unpause
+    type: wait
+    seconds: 10
 
   # ---------- Catch-up ----------
 
@@ -159,5 +167,25 @@ steps:
     type: assert
     statements:
       - "contains({{during_n2}}, 'written_while_paused')"
+
+  # Re-read the baseline key on node-2 post-unpause. Catches the class
+  # of regression where the paused node loses pre-pause state on wake
+  # (e.g. a state-machine bug that re-initialises the context on
+  # reconnect).
+
+  - name: Read baseline key on node-2 post-unpause
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n2_post: result
+
+  - name: Assert node-2 retained baseline across pause
+    type: assert
+    statements:
+      - "contains({{baseline_n2_post}}, 'awake')"
 
 stop_all_nodes: true

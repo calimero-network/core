@@ -125,6 +125,16 @@ steps:
     wait_healthy: true
     timeout: 60
 
+  # wait_healthy confirms merod's admin endpoint is back up; it does NOT
+  # confirm that libp2p has re-dialled node-2 and the gossipsub mesh
+  # has reformed for this context. A 10s buffer lets that happen
+  # before the next write, so the test exercises the mesh-rejoin path
+  # rather than relying on wait_for_sync's pull-based fallback to mask
+  # a race.
+  - name: Wait for libp2p mesh to reform after restart
+    type: wait
+    seconds: 10
+
   # ---------- Recovery: node-1 must come back and sync the next write ----------
 
   - name: Write post-restart key on node-1
@@ -159,5 +169,24 @@ steps:
     type: assert
     statements:
       - "contains({{post_n2}}, 'recovered')"
+
+  # Re-read the baseline key on node-1 post-restart. Catches the class
+  # of regression where the restarted node loses pre-restart state
+  # (storage persistence bug, fsck during restart, etc.).
+
+  - name: Read baseline key on node-1 post-restart
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n1_post: result
+
+  - name: Assert node-1 retained baseline across restart
+    type: assert
+    statements:
+      - "contains({{baseline_n1_post}}, 'pre_restart')"
 
 stop_all_nodes: true

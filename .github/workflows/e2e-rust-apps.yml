@@ -301,8 +301,8 @@ jobs:
           - workflow: sync-resilience-peer-pause
             file: workflows/sync-resilience-peer-pause.yml
             app: scaffolding-e2e
-          - workflow: sync-resilience-network-blip
-            file: workflows/sync-resilience-network-blip.yml
+          - workflow: sync-resilience-network-partition
+            file: workflows/sync-resilience-network-partition.yml
             app: scaffolding-e2e
     steps:
       - name: Checkout code
