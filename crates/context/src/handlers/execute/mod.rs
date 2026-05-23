@@ -1551,8 +1551,7 @@ async fn internal_execute(
                     executor,
                     governance_position.as_ref(),
                 )?;
-            let delta_signature =
-                Some(identity_private_key.sign(&signature_payload)?.to_bytes());
+            let delta_signature = Some(identity_private_key.sign(&signature_payload)?.to_bytes());
             delta_signature_for_broadcast = delta_signature;
 
             handle.put(

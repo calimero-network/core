@@ -34,17 +34,22 @@
 
 pub mod registry;
 
-// The registry is WASM/test-only — host production binaries can no
-// longer call `register_crdt_merge` (it doesn't exist) or pattern-match
-// on `MergeRegistryResult` (also gone). Host root-state merges route
-// through `merge_root_state_typed` via the WASM
+// The registry is WASM-only in production. Host production binaries
+// can no longer call `register_crdt_merge` (it doesn't exist) or
+// pattern-match on `MergeRegistryResult` (also gone). Host root-state
+// merges route through `merge_root_state_typed` via the WASM
 // `__calimero_merge_root_state` export +
 // `ContextClient::merge_root_state` — see
 // [`crate::merge::registry`] module docs for the rationale (core#2469).
-#[cfg(any(target_arch = "wasm32", test))]
+//
+// The `testing` feature flag re-exposes the registry to dependent
+// crates' tests (calimero-storage integration tests, calimero-node
+// sim tests) so they can keep exercising the WASM-side dispatch
+// shape without spinning up a real WASM runtime.
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResult};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub use registry::clear_merge_registry;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -89,17 +94,22 @@ pub enum MergeRootStateResponse {
 ///
 /// Deserializes both sides as `T`, runs the app-provided
 /// `Mergeable::merge`, returns serialized merged bytes. Mirrors the
-/// closure built by `register_crdt_merge` (which is being deleted) but
-/// without the registry indirection — the macro knows `T` at compile
-/// time and calls this directly.
+/// closure built by `register_crdt_merge` but without the registry
+/// indirection — the macro knows `T` at compile time and calls this
+/// directly.
 ///
 /// Wrapped in `with_merge_mode` to suppress timestamp generation during
-/// merge, matching the contract of the deleted registry path: every
-/// node must produce the same merged hash from the same inputs.
-pub fn merge_root_state_typed<T>(
-    existing: &[u8],
-    incoming: &[u8],
-) -> Result<Vec<u8>, MergeError>
+/// merge: every node must produce the same merged hash from the same
+/// inputs.
+///
+/// # Errors
+///
+/// Returns `MergeError::SerializationError` if either input bytes
+/// fail to deserialize as `T`, or if the merged state fails to
+/// re-serialize. Returns whatever error variant
+/// `<T as Mergeable>::merge` produces if the app's merge logic fails
+/// (typically a `MergeError`).
+pub fn merge_root_state_typed<T>(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable,
 {
@@ -180,9 +190,9 @@ pub fn merge_root_state(
     // bootstrap fast-path / I5 error path stay reachable for the
     // (uncommon) host code paths that still call `merge_root_state`.
     // WASM and test builds still consult the real registry.
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
     let dispatch_result = try_merge_registered(existing, incoming, existing_ts, incoming_ts);
-    #[cfg(not(any(target_arch = "wasm32", test)))]
+    #[cfg(not(any(target_arch = "wasm32", test, feature = "testing")))]
     let dispatch_result = registry::MergeRegistryResult::NoFunctionsRegistered;
     match dispatch_result {
         registry::MergeRegistryResult::Success(merged) => Ok(merged),
@@ -509,10 +519,7 @@ mod typed_dispatch_tests {
     }
 
     impl Mergeable for DispatchTestApp {
-        fn merge(
-            &mut self,
-            other: &Self,
-        ) -> Result<(), crate::collections::crdt_meta::MergeError> {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
             self.counter.merge(&other.counter)
         }
     }

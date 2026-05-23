@@ -115,9 +115,8 @@ pub fn verify_delta_signature(
     governance_position: Option<&GovernancePosition>,
     signature: &[u8; 64],
 ) -> eyre::Result<()> {
-    let payload =
-        delta_signature_payload(context_id, delta_id, author_id, governance_position)
-            .map_err(|err| eyre::eyre!("failed to serialize delta signature payload: {err}"))?;
+    let payload = delta_signature_payload(context_id, delta_id, author_id, governance_position)
+        .map_err(|err| eyre::eyre!("failed to serialize delta signature payload: {err}"))?;
     author_id
         .verify_raw_signature(&payload, signature)
         .map_err(|err| eyre::eyre!("delta envelope signature verification failed: {err}"))

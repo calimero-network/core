@@ -35,17 +35,17 @@
 //! against the same table thereafter. Tests use a `thread_local!` so
 //! parallel-running tests can't stomp on each other's registrations.
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 use std::any::TypeId;
 #[cfg(test)]
 use std::cell::RefCell;
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 use std::collections::HashMap;
-#[cfg(all(not(test), target_arch = "wasm32"))]
+#[cfg(all(any(target_arch = "wasm32", feature = "testing"), not(test)))]
 use std::sync::{LazyLock, RwLock};
 
 /// Function signature for merging serialized state
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub type MergeFn = fn(&[u8], &[u8], u64, u64) -> Result<Vec<u8>, Box<dyn std::error::Error>>;
 
 /// Result of attempting to merge using registered merge functions.
@@ -70,7 +70,7 @@ pub enum MergeRegistryResult {
 }
 
 /// Production registry — process-global, shared across async workers.
-#[cfg(all(target_arch = "wasm32", not(test)))]
+#[cfg(all(any(target_arch = "wasm32", feature = "testing"), not(test)))]
 static MERGE_REGISTRY: LazyLock<RwLock<HashMap<TypeId, MergeFn>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
@@ -124,7 +124,7 @@ thread_local! {
 /// if the lock is poisoned (a poisoned lock means a prior writer
 /// panicked, which we treat as unrecoverable for a process-global
 /// singleton).
-#[cfg(all(target_arch = "wasm32", not(test)))]
+#[cfg(all(any(target_arch = "wasm32", feature = "testing"), not(test)))]
 fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R {
     let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
         tracing::error!(
@@ -157,7 +157,7 @@ fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R
 
 /// Runs `f` with read-only access to the registry. Aborts the process
 /// if the lock is poisoned (same reasoning as `with_registry_mut`).
-#[cfg(all(target_arch = "wasm32", not(test)))]
+#[cfg(all(any(target_arch = "wasm32", feature = "testing"), not(test)))]
 fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
     let registry = MERGE_REGISTRY.read().unwrap_or_else(|_| {
         tracing::error!(
@@ -220,7 +220,7 @@ fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
 /// // Register at app startup
 /// register_crdt_merge::<MyState>();
 /// ```
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub fn register_crdt_merge<T>()
 where
     T: borsh::BorshSerialize + borsh::BorshDeserialize + crate::collections::Mergeable + 'static,
@@ -255,7 +255,7 @@ where
 }
 
 /// Clear the merge registry (for testing only)
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn clear_merge_registry() {
     with_registry_mut(|registry| registry.clear());
 }
@@ -266,7 +266,7 @@ pub fn clear_merge_registry() {
 /// - `Success(merged)` if a merge function succeeded
 /// - `NoFunctionsRegistered` if no merge functions are registered (I5 violation)
 /// - `AllFunctionsFailed` if merge functions exist but none could merge the data
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub fn try_merge_registered(
     existing: &[u8],
     incoming: &[u8],

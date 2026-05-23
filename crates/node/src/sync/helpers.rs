@@ -132,8 +132,7 @@ pub fn is_leaf_currently_authorized(
     context_id: &ContextId,
     leaf: &TreeLeafData,
 ) -> bool {
-    let Some(author) =
-        extract_author_from_leaf_authorization(leaf.metadata.authorization.as_ref())
+    let Some(author) = extract_author_from_leaf_authorization(leaf.metadata.authorization.as_ref())
     else {
         return true;
     };

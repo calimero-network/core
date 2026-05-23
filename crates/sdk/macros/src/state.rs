@@ -423,25 +423,54 @@ fn generate_mergeable_impl(
     }
 }
 
-/// Generate the WASM export the host calls for root-state CRDT merge.
+/// Generate the WASM exports the host + WASM runtime call for root-state CRDT merge.
+///
+/// Two exports are emitted:
+///
+/// 1. `__calimero_register_merge` — called by the WASM runtime at
+///    module-load time. Populates the WASM-side `MERGE_REGISTRY`
+///    static so that `Interface::save_internal` (running inside WASM
+///    during normal delta apply via `__calimero_sync_next`) can
+///    dispatch the typed merge. This is the WASM-internal dispatch
+///    path and is load-bearing — without it, every WASM-side root
+///    entity merge fails with `NoMergeFunctionRegistered`.
+///
+/// 2. `__calimero_merge_root_state` — called by the host (via
+///    `ContextClient::merge_root_state`) when HC / LevelWise sync
+///    needs to merge a root entity. The host can't dispatch the
+///    typed merge itself (separate address space), so it hands the
+///    bytes to this export, which deserializes as `T`, runs
+///    `Mergeable::merge`, returns serialized bytes.
 fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>) -> TokenStream {
     quote! {
         // ============================================================================
-        // AUTO-GENERATED WASM Export for Root-State CRDT Merge
+        // AUTO-GENERATED WASM Export — WASM-Internal Registration Hook
+        // ============================================================================
+        //
+        // Called by the runtime at WASM module load. Populates the
+        // WASM-side `MERGE_REGISTRY` so the WASM `Interface::save_internal`
+        // can dispatch root-entity merges via the app's typed
+        // `Mergeable::merge`. Required for normal `__calimero_sync_next`
+        // delta apply when the delta touches the root entity.
+        //
+        #[cfg(target_arch = "wasm32")]
+        #[no_mangle]
+        pub extern "C" fn __calimero_register_merge() {
+            ::calimero_storage::register_crdt_merge::<#ident #ty_generics>();
+        }
+
+        // ============================================================================
+        // AUTO-GENERATED WASM Export — Host-Initiated Root-State Merge
         // ============================================================================
         //
         // The host invokes this export whenever it needs to merge two root-state
-        // byte blobs (HC sync apply, snapshot apply, anywhere a sync path encounters
-        // root-entity divergence). The host can't deserialize the app's root type
-        // — only the WASM module can, since the type only exists here.
+        // byte blobs (HC sync apply, LevelWise sync apply, anywhere a sync
+        // path on the host encounters root-entity divergence). The host
+        // can't deserialize the app's root type — only the WASM module
+        // can, since the type only exists here.
         //
         // Input: borsh-serialized `MergeRootStateRequest` via `env::input()`.
         // Output: borsh-serialized `MergeRootStateResponse` via `env::value_return()`.
-        //
-        // This export replaces the deleted `__calimero_register_merge` /
-        // `register_crdt_merge` registry indirection. The registry was a vestige
-        // of an attempt to dispatch merge functions on the host where they can't
-        // possibly work (type erasure); the type-aware dispatch belongs here.
         //
         // Developer impact: ZERO — the macro hides the export entirely.
         //

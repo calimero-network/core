@@ -398,9 +398,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                         calimero_primitives::crdt::CrdtType::LwwRegister { inner_type }
                             if inner_type == crate::sync::hash_comparison_protocol::OPAQUE_LEAF_CRDT_TYPE_NAME
                     );
-                    if calimero_storage::collections::is_app_root_entry(entity_id)
-                        && !is_opaque
-                    {
+                    if calimero_storage::collections::is_app_root_entry(entity_id) && !is_opaque {
                         stats.deferred_root_merges.push((
                             leaf_data.key,
                             leaf_data.value.clone(),

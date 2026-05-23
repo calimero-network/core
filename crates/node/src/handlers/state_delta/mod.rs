@@ -2071,10 +2071,10 @@ async fn request_missing_deltas(
     let mut to_fetch = missing_ids;
     type ParentFetch = (
         calimero_dag::CausalDelta<Vec<Action>>,
-        [u8; 32],                // delta_id (redundant with .id but kept for log clarity)
-        PublicKey,               // author_id from wire
-        Option<Vec<u8>>,         // governance_position_blob from wire
-        Option<[u8; 64]>,        // delta_signature from wire
+        [u8; 32],         // delta_id (redundant with .id but kept for log clarity)
+        PublicKey,        // author_id from wire
+        Option<Vec<u8>>,  // governance_position_blob from wire
+        Option<[u8; 64]>, // delta_signature from wire
     );
     let mut fetched_deltas: Vec<ParentFetch> = Vec::new();
     let mut fetch_count = 0;
@@ -2147,7 +2147,9 @@ async fn request_missing_deltas(
                         calimero_context_config::types::GovernancePosition,
                     > = match governance_position_blob
                         .as_deref()
-                        .map(borsh::from_slice::<calimero_context_config::types::GovernancePosition>)
+                        .map(
+                            borsh::from_slice::<calimero_context_config::types::GovernancePosition>,
+                        )
                         .transpose()
                     {
                         Ok(pos) => pos,
@@ -2169,13 +2171,15 @@ async fn request_missing_deltas(
                     // `None` is tolerated for the wire-up transition;
                     // any present signature MUST verify.
                     if let Some(ref sig) = response_delta_signature {
-                        if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
-                            context_id,
-                            storage_delta.id,
-                            response_author,
-                            governance_position.as_ref(),
-                            sig,
-                        ) {
+                        if let Err(err) =
+                            calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+                                context_id,
+                                storage_delta.id,
+                                response_author,
+                                governance_position.as_ref(),
+                                sig,
+                            )
+                        {
                             warn!(
                                 %context_id,
                                 delta_id = ?missing_id,
@@ -2269,7 +2273,9 @@ async fn request_missing_deltas(
                         // Skip if we already have it or are about to fetch it
                         if !delta_store.has_delta(parent_id).await
                             && !to_fetch.contains(parent_id)
-                            && !fetched_deltas.iter().any(|(d, _, _, _, _)| d.id == *parent_id)
+                            && !fetched_deltas
+                                .iter()
+                                .any(|(d, _, _, _, _)| d.id == *parent_id)
                         {
                             to_fetch.push(*parent_id);
                         }
@@ -2300,8 +2306,8 @@ async fn request_missing_deltas(
         // Reverse so oldest ancestors are added first
         fetched_deltas.reverse();
 
-        for (dag_delta, delta_id, author_id, governance_position_blob, delta_signature)
-            in fetched_deltas
+        for (dag_delta, delta_id, author_id, governance_position_blob, delta_signature) in
+            fetched_deltas
         {
             // Use the events-aware entry point so we can forward any events
             // attached to *cascaded children* to the caller. The peer-fetched

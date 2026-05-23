@@ -474,11 +474,8 @@ pub(crate) async fn dispatch_deferred_root_merges(
 
     // Build a runtime env so storage callbacks resolve against the
     // right context — mirrors what HC initiator does for its DFS.
-    let runtime_env = calimero_node_primitives::sync::create_runtime_env(
-        store,
-        context_id,
-        our_identity,
-    );
+    let runtime_env =
+        calimero_node_primitives::sync::create_runtime_env(store, context_id, our_identity);
 
     for (key, incoming, incoming_hlc_ts) in deferred {
         let entity_id = Id::new(*key);
@@ -559,12 +556,8 @@ pub(crate) async fn dispatch_deferred_root_merges(
         new_metadata.updated_at = existing_ts.max(incoming_ts).into();
 
         let write_result = with_runtime_env(runtime_env.clone(), || {
-            Interface::<MainStorage>::write_pre_merged_root_state(
-                entity_id,
-                &merged,
-                new_metadata,
-            )
-            .map_err(|e| eyre::eyre!("write_pre_merged_root_state: {e}"))
+            Interface::<MainStorage>::write_pre_merged_root_state(entity_id, &merged, new_metadata)
+                .map_err(|e| eyre::eyre!("write_pre_merged_root_state: {e}"))
         });
 
         match write_result {
@@ -584,7 +577,6 @@ pub(crate) async fn dispatch_deferred_root_merges(
                 );
             }
         }
-
     }
 }
 
