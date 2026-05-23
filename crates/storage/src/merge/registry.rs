@@ -1,46 +1,76 @@
-//! Merge registry for automatic CRDT merging
+//! Merge registry for automatic CRDT merging — WASM-side only.
 //!
-//! This module provides a type registry that allows merge_root_state()
-//! to automatically call the correct merge logic for any app state type.
+//! This module provides a type registry the macro-generated
+//! `__calimero_register_merge` export populates so the WASM-side
+//! `Interface::save_internal` can dispatch root-state CRDT merges via
+//! the app's typed `Mergeable::merge`. The macro emits `register_crdt_merge`
+//! calls inside the WASM module's static-init; the registry then lives
+//! in WASM's static memory and is consulted by WASM-side
+//! `merge_root_state` whenever a root-entity action is applied.
 //!
-//! # Problem
+//! ## Scope
 //!
-//! The root state can be any type defined by the app. We can't know at compile
-//! time what type to deserialize to. We need runtime type dispatch.
+//! Compiled **only** when `cfg(target_arch = "wasm32")` or `cfg(test)`.
+//! The host binary doesn't link the registry at all:
 //!
-//! # Solution
+//! - Host code can't accidentally call `register_crdt_merge` — the
+//!   symbol doesn't exist. (Pre-cleanup it did, but nothing ever
+//!   populated it, and host-side `merge_root_state` consulting an
+//!   empty registry was the root cause of core#2469.)
+//! - Host root-state merges route through WASM via the macro-generated
+//!   `__calimero_merge_root_state` export +
+//!   [`crate::merge::merge_root_state_typed`] +
+//!   `ContextClient::merge_root_state`. The registry is no longer the
+//!   dispatch boundary.
 //!
-//! Apps register their state type with a merge function:
+//! Tests still build the registry so the existing
+//! `merge_registry_integration` / `merge_registry_concurrent` /
+//! `merge_integration` test suites keep exercising the dispatch shape
+//! the WASM side relies on.
 //!
-//! ```ignore
-//! // In app initialization:
-//! register_crdt_merge::<MyAppState>();
+//! ## Storage backend
 //!
-//! // Now sync automatically calls MyAppState::merge()
-//! ```
-//!
-//! # Storage
-//!
-//! Production uses a process-global `RwLock<HashMap<...>>`; apps register
-//! their state types once at startup and every async worker dispatches
-//! against the same table.
-//!
-//! Under `#[cfg(test)]` the backing store is a `thread_local!` so that
+//! Production WASM uses a process-global `RwLock<HashMap<...>>` — apps
+//! register their state types once at static-init and dispatch is
+//! against the same table thereafter. Tests use a `thread_local!` so
 //! parallel-running tests can't stomp on each other's registrations.
-//! See the comment on the `#[cfg(test)]` declaration below.
 
+#[cfg(any(target_arch = "wasm32", test))]
 use std::any::TypeId;
 #[cfg(test)]
 use std::cell::RefCell;
+#[cfg(any(target_arch = "wasm32", test))]
 use std::collections::HashMap;
-#[cfg(not(test))]
+#[cfg(all(not(test), target_arch = "wasm32"))]
 use std::sync::{LazyLock, RwLock};
 
 /// Function signature for merging serialized state
+#[cfg(any(target_arch = "wasm32", test))]
 pub type MergeFn = fn(&[u8], &[u8], u64, u64) -> Result<Vec<u8>, Box<dyn std::error::Error>>;
 
+/// Result of attempting to merge using registered merge functions.
+///
+/// Available on every target — `merge_root_state` pattern-matches on
+/// this enum to choose the bootstrap / I5-error / LWW-fallback path.
+/// On host production builds the registry doesn't exist so the
+/// `Success` and `AllFunctionsFailed` arms can't be produced from
+/// inside the storage crate, but the enum still has to be matchable
+/// (the host stub in `merge_root_state` constructs
+/// `NoFunctionsRegistered` and the match handles it identically to the
+/// WASM path).
+#[derive(Debug)]
+#[must_use]
+pub enum MergeRegistryResult {
+    /// A registered merge function succeeded
+    Success(Vec<u8>),
+    /// No merge functions are registered (I5 enforcement needed)
+    NoFunctionsRegistered,
+    /// Merge functions are registered but all failed (e.g., type mismatch)
+    AllFunctionsFailed,
+}
+
 /// Production registry — process-global, shared across async workers.
-#[cfg(not(test))]
+#[cfg(all(target_arch = "wasm32", not(test)))]
 static MERGE_REGISTRY: LazyLock<RwLock<HashMap<TypeId, MergeFn>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
@@ -94,7 +124,7 @@ thread_local! {
 /// if the lock is poisoned (a poisoned lock means a prior writer
 /// panicked, which we treat as unrecoverable for a process-global
 /// singleton).
-#[cfg(not(test))]
+#[cfg(all(target_arch = "wasm32", not(test)))]
 fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R {
     let mut registry = MERGE_REGISTRY.write().unwrap_or_else(|_| {
         tracing::error!(
@@ -127,7 +157,7 @@ fn with_registry_mut<R>(f: impl FnOnce(&mut HashMap<TypeId, MergeFn>) -> R) -> R
 
 /// Runs `f` with read-only access to the registry. Aborts the process
 /// if the lock is poisoned (same reasoning as `with_registry_mut`).
-#[cfg(not(test))]
+#[cfg(all(target_arch = "wasm32", not(test)))]
 fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
     let registry = MERGE_REGISTRY.read().unwrap_or_else(|_| {
         tracing::error!(
@@ -190,6 +220,7 @@ fn with_registry<R>(f: impl FnOnce(&HashMap<TypeId, MergeFn>) -> R) -> R {
 /// // Register at app startup
 /// register_crdt_merge::<MyState>();
 /// ```
+#[cfg(any(target_arch = "wasm32", test))]
 pub fn register_crdt_merge<T>()
 where
     T: borsh::BorshSerialize + borsh::BorshDeserialize + crate::collections::Mergeable + 'static,
@@ -229,24 +260,13 @@ pub fn clear_merge_registry() {
     with_registry_mut(|registry| registry.clear());
 }
 
-/// Result of attempting to merge using registered merge functions
-#[derive(Debug)]
-#[must_use]
-pub enum MergeRegistryResult {
-    /// A registered merge function succeeded
-    Success(Vec<u8>),
-    /// No merge functions are registered (I5 enforcement needed)
-    NoFunctionsRegistered,
-    /// Merge functions are registered but all failed (e.g., type mismatch)
-    AllFunctionsFailed,
-}
-
 /// Try to merge using registered merge function
 ///
 /// Returns:
 /// - `Success(merged)` if a merge function succeeded
 /// - `NoFunctionsRegistered` if no merge functions are registered (I5 violation)
 /// - `AllFunctionsFailed` if merge functions exist but none could merge the data
+#[cfg(any(target_arch = "wasm32", test))]
 pub fn try_merge_registered(
     existing: &[u8],
     incoming: &[u8],

@@ -33,6 +33,15 @@
 //!   entity metadata for correct dispatch.
 
 pub mod registry;
+
+// The registry is WASM/test-only — host production binaries can no
+// longer call `register_crdt_merge` (it doesn't exist) or pattern-match
+// on `MergeRegistryResult` (also gone). Host root-state merges route
+// through `merge_root_state_typed` via the WASM
+// `__calimero_merge_root_state` export +
+// `ContextClient::merge_root_state` — see
+// [`crate::merge::registry`] module docs for the rationale (core#2469).
+#[cfg(any(target_arch = "wasm32", test))]
 pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResult};
 
 #[cfg(test)]
@@ -164,9 +173,20 @@ pub fn merge_root_state(
 ) -> Result<Vec<u8>, MergeError> {
     // Try registered CRDT merge functions first.
     // This enables automatic nested CRDT merging when apps use `#[app::state]`.
-    match try_merge_registered(existing, incoming, existing_ts, incoming_ts) {
-        MergeRegistryResult::Success(merged) => Ok(merged),
-        MergeRegistryResult::NoFunctionsRegistered => {
+    //
+    // On host production builds the registry doesn't exist (deleted in
+    // the WASM-owns-merges architectural fix for core#2469) — the local
+    // closure below produces `NoFunctionsRegistered` directly so the
+    // bootstrap fast-path / I5 error path stay reachable for the
+    // (uncommon) host code paths that still call `merge_root_state`.
+    // WASM and test builds still consult the real registry.
+    #[cfg(any(target_arch = "wasm32", test))]
+    let dispatch_result = try_merge_registered(existing, incoming, existing_ts, incoming_ts);
+    #[cfg(not(any(target_arch = "wasm32", test)))]
+    let dispatch_result = registry::MergeRegistryResult::NoFunctionsRegistered;
+    match dispatch_result {
+        registry::MergeRegistryResult::Success(merged) => Ok(merged),
+        registry::MergeRegistryResult::NoFunctionsRegistered => {
             // Bootstrap-aware default.
             //
             // `existing_created_at == existing_ts` means the local entity
@@ -196,7 +216,7 @@ pub fn merge_root_state(
             // error pointing the developer at `#[app::state]`.
             Err(MergeError::NoMergeFunctionRegistered)
         }
-        MergeRegistryResult::AllFunctionsFailed => {
+        registry::MergeRegistryResult::AllFunctionsFailed => {
             // Merge functions are registered but none could merge the data.
             // This typically happens when:
             // - The data type doesn't match any registered type (test contamination)

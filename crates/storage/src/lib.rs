@@ -75,6 +75,10 @@ pub mod snapshot;
 pub mod store;
 
 // Re-export for convenience
+// `register_crdt_merge` is WASM/test-only — the registry it populates
+// no longer exists in host production builds. See `merge::registry`
+// module docs for the rationale (core#2469 architectural fix).
+#[cfg(any(target_arch = "wasm32", test))]
 pub use merge::register_crdt_merge;
 
 /// Re-exported types, mostly for use in macros (for convenience).
