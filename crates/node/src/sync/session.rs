@@ -278,8 +278,8 @@ impl SessionTracker {
     /// logged on this path — backtraces and peer-internal error
     /// text don't belong in a defensive observability surface.
     pub(super) fn apply_result(&mut self, result: SyncSessionResult) {
-        let _removed = self.last_dispatch_attempt.remove(&result.context_id);
-        let _removed = self.initiator_dispatched_at.remove(&result.context_id);
+        let _dispatch_attempt_removed = self.last_dispatch_attempt.remove(&result.context_id);
+        let _wedge_timer_removed = self.initiator_dispatched_at.remove(&result.context_id);
 
         let SyncSessionResult {
             context_id,
@@ -290,22 +290,25 @@ impl SessionTracker {
 
         match self.state.get_mut(&context_id) {
             None => {
-                // Log only the result discriminant — not the inner
-                // `eyre::Report` debug, which can carry backtraces /
-                // peer-internal error text and would leak into log
-                // aggregators on a path that's purely defensive. The
-                // three buckets are enough to triage which kind of
-                // inconsistency fired.
-                let result_variant = match &result {
-                    Ok(Ok(_)) => "success",
-                    Ok(Err(_)) => "sync_error",
-                    Err(_) => "timeout",
+                // Log the result discriminant + Display-only error
+                // summary — never the `eyre::Report` Debug, which
+                // can carry backtraces (`RUST_BACKTRACE=1`) and would
+                // leak into log aggregators on a path that's purely
+                // defensive. The discriminant tells the operator
+                // which arm fired; the Display string gives the
+                // top-level error message for the failure arms
+                // without dragging in the source chain.
+                let (result_variant, error_summary) = match &result {
+                    Ok(Ok(_)) => ("success", None),
+                    Ok(Err(err)) => ("sync_error", Some(err.to_string())),
+                    Err(timeout_err) => ("timeout", Some(timeout_err.to_string())),
                 };
                 warn!(
                     %context_id,
                     %peer_id,
                     ?took,
                     result_variant,
+                    error_summary = error_summary.as_deref(),
                     "SyncSessionResult arrived for context with no tracked SyncState — \
                      dispatch-tracking inconsistency or external state mutation (logic bug)"
                 );
