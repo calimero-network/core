@@ -551,15 +551,16 @@ fn test_independent_addresses_track_failures_separately() {
 }
 
 #[test]
-fn test_record_and_lookup_relay_listener() {
+fn test_take_relay_listener_returns_recorded_peer_and_removes_entry() {
     let mut state = DiscoveryState::default();
     let relay = PeerId::random();
     let listener = ListenerId::next();
 
-    assert_eq!(state.relay_peer_for_listener(&listener), None);
-
     state.record_relay_listener(listener, relay);
-    assert_eq!(state.relay_peer_for_listener(&listener), Some(relay));
+    assert_eq!(state.take_relay_listener(&listener), Some(relay));
+
+    // Second take returns None — the entry was removed.
+    assert_eq!(state.take_relay_listener(&listener), None);
 }
 
 #[test]
@@ -570,35 +571,20 @@ fn test_record_relay_listener_overwrites_existing_entry() {
     let listener = ListenerId::next();
 
     state.record_relay_listener(listener, relay_a);
-    // Same listener id reused (would be unusual in practice but the API
-    // must be consistent): the latest registration wins.
+    // Same listener id reused (unusual but the API must be consistent):
+    // the latest registration wins.
     state.record_relay_listener(listener, relay_b);
 
-    assert_eq!(state.relay_peer_for_listener(&listener), Some(relay_b));
+    assert_eq!(state.take_relay_listener(&listener), Some(relay_b));
 }
 
 #[test]
-fn test_forget_relay_listener_removes_entry() {
-    let mut state = DiscoveryState::default();
-    let relay = PeerId::random();
-    let listener = ListenerId::next();
-
-    state.record_relay_listener(listener, relay);
-    assert_eq!(state.relay_peer_for_listener(&listener), Some(relay));
-
-    state.forget_relay_listener(&listener);
-    assert_eq!(state.relay_peer_for_listener(&listener), None);
-}
-
-#[test]
-fn test_forget_relay_listener_is_noop_for_unknown_id() {
+fn test_take_relay_listener_is_noop_for_unknown_id() {
     let mut state = DiscoveryState::default();
     let unknown = ListenerId::next();
 
-    // Forgetting an id we never recorded must not panic and must leave
-    // the state unchanged.
-    state.forget_relay_listener(&unknown);
-    assert_eq!(state.relay_peer_for_listener(&unknown), None);
+    // Taking an id we never recorded must not panic and must return None.
+    assert_eq!(state.take_relay_listener(&unknown), None);
 }
 
 #[test]
@@ -612,11 +598,8 @@ fn test_multiple_listeners_map_to_distinct_relays() {
     state.record_relay_listener(listener_a, relay_a);
     state.record_relay_listener(listener_b, relay_b);
 
-    assert_eq!(state.relay_peer_for_listener(&listener_a), Some(relay_a));
-    assert_eq!(state.relay_peer_for_listener(&listener_b), Some(relay_b));
-
-    // Forgetting one leaves the other intact.
-    state.forget_relay_listener(&listener_a);
-    assert_eq!(state.relay_peer_for_listener(&listener_a), None);
-    assert_eq!(state.relay_peer_for_listener(&listener_b), Some(relay_b));
+    // Taking one leaves the other intact.
+    assert_eq!(state.take_relay_listener(&listener_a), Some(relay_a));
+    assert_eq!(state.take_relay_listener(&listener_a), None);
+    assert_eq!(state.take_relay_listener(&listener_b), Some(relay_b));
 }

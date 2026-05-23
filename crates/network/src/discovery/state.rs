@@ -278,18 +278,20 @@ impl DiscoveryState {
         let _ = self.relay_listeners.insert(listener_id, relay_peer);
     }
 
-    /// Look up the relay peer associated with a libp2p listener id.
-    /// Returns `None` if the listener wasn't registered by
-    /// `record_relay_listener` (e.g. a non-relay TCP/QUIC listener).
-    pub(crate) fn relay_peer_for_listener(&self, listener_id: &ListenerId) -> Option<PeerId> {
-        self.relay_listeners.get(listener_id).copied()
-    }
-
-    /// Drop the listener-id → relay-peer mapping. Called from
-    /// `ListenerClosed` once the recovery action has been queued, so the
-    /// map doesn't grow unbounded across many reservation cycles.
-    pub(crate) fn forget_relay_listener(&mut self, listener_id: &ListenerId) {
-        let _ = self.relay_listeners.remove(listener_id);
+    /// Remove and return the relay peer associated with a libp2p listener
+    /// id. Returns `None` if the listener wasn't registered (a non-relay
+    /// TCP/QUIC listener, or a relayed listener opened outside
+    /// `create_relay_reservation`).
+    ///
+    /// Combines lookup and cleanup in one call so the caller cannot
+    /// accidentally leave a stale entry behind on any code path. This
+    /// matters because the `ListenerClosed` handler falls through to an
+    /// addresses-iteration fallback when the lookup misses; a
+    /// lookup-then-conditional-forget shape would leak entries for
+    /// listeners that were registered but somehow took the fallback
+    /// path. With `take_relay_listener`, the map mutation always happens.
+    pub(crate) fn take_relay_listener(&mut self, listener_id: &ListenerId) -> Option<PeerId> {
+        self.relay_listeners.remove(listener_id)
     }
 
     pub(crate) fn update_relay_reservation_status(
