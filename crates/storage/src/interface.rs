@@ -2099,13 +2099,31 @@ impl<S: StorageAdaptor> Interface<S> {
         merged: &[u8],
         metadata: Metadata,
     ) -> Result<[u8; 32], StorageError> {
-        // Mirror the post-merge work in `save_internal` for `id.is_root()`:
-        // hash the merged bytes, update the Merkle index, write storage.
-        // `add_root` if no last_metadata exists yet — same as save_internal's
-        // "first time creating root entity" branch.
+        // Mirror the post-merge work in `save_internal` for the app
+        // root: hash the merged bytes, update the Merkle index, write
+        // storage. When this is the first time the receiver has seen
+        // the entity, the index doesn't exist yet — create it so
+        // `update_hash_for` doesn't fail with `IndexNotFound`.
+        //
+        // App root state covers TWO ids: `ROOT_ID` (the system root)
+        // and `ROOT_ENTRY_ID` (the `Root<T>` entry). Pre-fix only
+        // `id.is_root()` was checked, missing the latter — first-time
+        // merges for `Root<T>` entries would fail with `IndexNotFound`
+        // and the deferred WASM merge would be dropped, leaving the
+        // receiver's root entity permanently divergent.
         let last_metadata = <Index<S>>::get_metadata(id)?;
-        if last_metadata.is_none() && id.is_root() {
-            <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata.clone()))?;
+        if last_metadata.is_none() {
+            if id.is_root() {
+                <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata.clone()))?;
+            } else if crate::collections::is_app_root_entry(id) {
+                // `Root<T>` entry — attach as a child of the system
+                // root so the index hierarchy stays consistent with
+                // the layout `Root::new` produces locally.
+                <Index<S>>::add_child_to(
+                    Id::root(),
+                    ChildInfo::new(id, [0_u8; 32], metadata.clone()),
+                )?;
+            }
         }
 
         let own_hash: [u8; 32] = Sha256::digest(merged).into();

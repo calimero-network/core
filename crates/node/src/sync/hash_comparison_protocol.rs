@@ -74,7 +74,7 @@ const MAX_PENDING_NODES: usize = 10_000;
 /// emitting a leaf with this synthetic type is wire-format-stable and
 /// merge-equivalent to the `None` it stands in for. See
 /// `docs/superpowers/specs/2026-05-13-opaque-leaf-sync-design.md`.
-pub(super) const OPAQUE_LEAF_CRDT_TYPE_NAME: &str = "Opaque";
+pub(crate) const OPAQUE_LEAF_CRDT_TYPE_NAME: &str = "Opaque";
 
 /// Maximum depth allowed in TreeNodeRequest.
 pub const MAX_REQUEST_DEPTH: u8 = 16;
@@ -349,8 +349,20 @@ async fn run_initiator_impl<T: SyncTransport>(
                     // too so we can record the incoming bytes (the helper
                     // is sync and inside `with_runtime_env`, so it can't
                     // call into the runtime to do the merge itself).
+                    // Defer root entities with a real `crdt_type` for
+                    // WASM dispatch; opaque root entities (synthetic
+                    // `Opaque` LWW marker) fall through to
+                    // `apply_leaf_with_crdt_merge` which LWW-writes
+                    // them directly (no Mergeable to dispatch).
                     let entity_id = calimero_storage::address::Id::new(leaf_data.key);
-                    if calimero_storage::collections::is_app_root_entry(entity_id) {
+                    let is_opaque = matches!(
+                        &leaf_data.metadata.crdt_type,
+                        calimero_primitives::crdt::CrdtType::LwwRegister { inner_type }
+                            if inner_type == OPAQUE_LEAF_CRDT_TYPE_NAME
+                    );
+                    if calimero_storage::collections::is_app_root_entry(entity_id)
+                        && !is_opaque
+                    {
                         stats
                             .deferred_root_merges
                             .push((leaf_data.key, leaf_data.value.clone()));

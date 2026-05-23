@@ -153,6 +153,20 @@ pub fn is_leaf_currently_authorized(
     }
 }
 
+/// Detect the synthetic "opaque" CRDT type sync senders attach to leaves
+/// whose stored metadata has no `crdt_type` (typically the `Root<T>`
+/// entry for apps that don't use `#[app::state]`, plus test fixtures).
+/// The sender wraps these in `CrdtType::LwwRegister { inner_type:
+/// OPAQUE_LEAF_CRDT_TYPE_NAME }` so the wire never carries an absent
+/// type; the receiver uses this helper to recognise them and route to a
+/// direct LWW write rather than expecting WASM-side merge dispatch
+/// (which doesn't exist for entities without a `Mergeable` impl).
+fn is_opaque_crdt_type(crdt_type: &calimero_primitives::crdt::CrdtType) -> bool {
+    use calimero_primitives::crdt::CrdtType;
+    matches!(crdt_type, CrdtType::LwwRegister { inner_type }
+        if inner_type == crate::sync::hash_comparison_protocol::OPAQUE_LEAF_CRDT_TYPE_NAME)
+}
+
 /// Apply leaf data using CRDT merge (Invariant I5: No Silent Data Loss).
 ///
 /// This function must be called within a `with_runtime_env` scope.
@@ -172,8 +186,6 @@ pub fn is_leaf_currently_authorized(
 /// * `context_id` - The context being synchronized
 /// * `leaf` - The leaf data containing entity key, value, and CRDT metadata
 ///
-/// Apply leaf data using CRDT merge (Invariant I5: No Silent Data Loss).
-///
 /// # Errors
 ///
 /// Returns error if storage operations fail.
@@ -181,32 +193,44 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     let entity_id = Id::new(leaf.key);
     let root_id = Id::new(*context_id.as_ref());
 
-    // App root state — `ROOT_ID` or the `Root<T>` entry — needs CRDT
-    // merge against the app's typed `Mergeable` impl. That impl only
-    // exists inside the WASM module; the host's `merge_root_state` has
-    // never had a working dispatch table (the registry it consults is
-    // populated by the macro's `__calimero_register_merge` export,
-    // which writes to the WASM module's static memory, not the host's —
-    // separate address spaces, separate copies of `MERGE_REGISTRY`).
-    // Pre-pause the bootstrap fast-path masked it (`created == updated`
-    // accepts incoming unconditionally); post-pause divergence trips
-    // the post-bootstrap branch and the cascade in core#2469 fires.
+    // App root state — `ROOT_ID` or the `Root<T>` entry — needs the
+    // app's typed `Mergeable::merge`, which only exists inside the
+    // WASM module. The host's `merge_root_state` consults a
+    // `MERGE_REGISTRY` static that's never populated in production
+    // (the macro's `__calimero_register_merge` export writes the
+    // WASM module's copy, not the host's — separate address spaces).
+    // Two cases:
     //
-    // Until root-entity merges route through WASM via
-    // [`ContextClient::merge_root_state`] (the
-    // `__calimero_merge_root_state` export is in place; the dispatch
-    // plumbing through HC / snapshot / levelwise is a follow-up), skip
-    // them here. The root entity converges via the normal delta-sync
-    // path (`__calimero_sync_next`, which runs inside WASM where merge
-    // dispatch actually works). HC's `stats.root_hash_verified` reports
-    // `false` for this round; the sync manager handles that as a
-    // partial merge and the next tick retries via delta sync.
+    // * Root entity with `crdt_type: Some(_)` — real app state. Skip
+    //   here; the caller (HC initiator's DFS, `handle_entity_push`)
+    //   accumulates the bytes in `deferred_root_merges` and dispatches
+    //   via `ContextClient::merge_root_state` after the sync loop.
+    // * Root entity with `crdt_type: None` — opaque (no `Mergeable`
+    //   available). WASM dispatch can't help — there's no
+    //   `__calimero_merge_root_state` to invoke on a type with no
+    //   `Mergeable` impl. The only sensible behavior is direct LWW
+    //   write, which is what the old `AllFunctionsFailed` branch in
+    //   `merge_root_state` did. Fires in test fixtures and apps that
+    //   don't use `#[app::state]`; real apps always have a crdt_type
+    //   and take the deferred-dispatch path.
     if calimero_storage::collections::is_app_root_entry(entity_id) {
+        if is_opaque_crdt_type(&leaf.metadata.crdt_type) {
+            let mut md = Metadata::default();
+            md.created_at = leaf.metadata.created_at;
+            md.updated_at = leaf.metadata.hlc_timestamp.into();
+            calimero_storage::interface::Interface::<MainStorage>::write_pre_merged_root_state(
+                entity_id,
+                &leaf.value,
+                md,
+            )?;
+            return Ok(());
+        }
+        // Crdt-bearing root entity — caller defers.
         tracing::warn!(
             %context_id,
             entity_id = %entity_id,
             "HC apply: skipping root-entity merge on host (no host-side merge dispatch); \
-             root entity will converge via WASM-routed delta sync"
+             caller dispatches via ContextClient::merge_root_state"
         );
         return Ok(());
     }
@@ -441,8 +465,26 @@ pub fn handle_entity_push(
             // `dispatch_deferred_root_merges` in `protocol_selector`).
             // Defer to the caller, which has the `ContextClient` needed
             // to invoke `__calimero_merge_root_state` inside WASM.
+            //
+            // Exception: a root-entity leaf with `crdt_type: None`
+            // (no app-defined `Mergeable`) has nothing for WASM to
+            // dispatch to — `__calimero_merge_root_state` would error
+            // out, the deferred merge would be dropped, and the bytes
+            // would never land. For these opaque entities the only
+            // sensible behavior is LWW direct-write (matches the
+            // pre-rewrite `AllFunctionsFailed` fallback in
+            // `merge_root_state`). Fires in test fixtures + apps that
+            // don't use `#[app::state]`; real apps always have a
+            // `crdt_type` and go through the proper deferred dispatch.
+            // Root entities with a real `crdt_type` get deferred for
+            // WASM dispatch; opaque root entities (synthetic LWW marker
+            // tagged with `OPAQUE_LEAF_CRDT_TYPE_NAME`) are handled
+            // internally by `apply_leaf_with_crdt_merge` via direct LWW
+            // write — see the comment there.
             let entity_id = Id::new(leaf.key);
-            if calimero_storage::collections::is_app_root_entry(entity_id) {
+            if calimero_storage::collections::is_app_root_entry(entity_id)
+                && !is_opaque_crdt_type(&leaf.metadata.crdt_type)
+            {
                 deferred_root_merges.push((leaf.key, leaf.value.clone()));
                 continue;
             }

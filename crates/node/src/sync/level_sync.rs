@@ -386,13 +386,20 @@ async fn run_initiator_impl<T: SyncTransport>(
                         continue;
                     }
 
-                    // Defer root-entity merges; same rationale as HC's
-                    // initiator (the host has no merge dispatch table
-                    // for app-typed root state). `ProtocolSelector`
-                    // dispatches these through `ContextClient::merge_root_state`
-                    // after the sync completes.
+                    // Defer root entities with a real `crdt_type` for
+                    // WASM dispatch; opaque root entities (synthetic
+                    // `Opaque` LWW marker) fall through to
+                    // `apply_leaf_with_crdt_merge` which LWW-writes
+                    // them directly (no Mergeable to dispatch).
                     let entity_id = calimero_storage::address::Id::new(leaf_data.key);
-                    if calimero_storage::collections::is_app_root_entry(entity_id) {
+                    let is_opaque = matches!(
+                        &leaf_data.metadata.crdt_type,
+                        calimero_primitives::crdt::CrdtType::LwwRegister { inner_type }
+                            if inner_type == crate::sync::hash_comparison_protocol::OPAQUE_LEAF_CRDT_TYPE_NAME
+                    );
+                    if calimero_storage::collections::is_app_root_entry(entity_id)
+                        && !is_opaque
+                    {
                         stats
                             .deferred_root_merges
                             .push((leaf_data.key, leaf_data.value.clone()));
