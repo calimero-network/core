@@ -70,6 +70,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         events,
                         governance_position,
                         key_id,
+                        delta_signature,
                     } => {
                         info!(
                             %context_id,
@@ -104,6 +105,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                 events: events.map(|e| e.into_owned()),
                                 governance_position,
                                 key_id,
+                                delta_signature,
                             },
                         };
 

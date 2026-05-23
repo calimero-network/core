@@ -246,6 +246,7 @@ pub(crate) struct StateDeltaMessage {
     pub(crate) events: Option<Vec<u8>>,
     pub(crate) governance_position: Option<GovernancePosition>,
     pub(crate) key_id: [u8; 32],
+    pub(crate) delta_signature: Option<[u8; 64]>,
 }
 
 #[derive(Clone)]
@@ -542,6 +543,7 @@ fn state_delta_message_from_buffered(
         events: buffered.events,
         governance_position: buffered.governance_position,
         key_id: buffered.key_id,
+        delta_signature: buffered.delta_signature,
     }
 }
 
@@ -601,7 +603,40 @@ pub(crate) async fn apply_authorized_state_delta(
         events,
         governance_position,
         key_id,
+        delta_signature,
     } = message;
+
+    // Per-delta envelope signature verification. Closes the anti-
+    // impersonation gap on the delta envelope: even if the sender holds
+    // the current group key (so per-action signatures pass) and even if
+    // `membership_status_at(author, pos)` returns `Member`, they can't
+    // relabel a foreign delta as their own (or claim authorship of a
+    // delta someone else wrote) without holding `author_id`'s identity
+    // key. Sits BEFORE the cross-DAG check and ReadOnly check because
+    // those checks key off `author_id` — there's no point asking
+    // "is this author a member?" if we haven't yet established that
+    // the claim of authorship is genuine. `None` is currently tolerated
+    // because signing at the execute site is wired up in a follow-up
+    // (Wave 5 sub-commit B); once that lands, `None` becomes a hard
+    // reject and this branch tightens.
+    if let Some(ref sig) = delta_signature {
+        if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+            context_id,
+            delta_id,
+            author_id,
+            governance_position.as_ref(),
+            sig,
+        ) {
+            warn!(
+                %context_id,
+                %author_id,
+                delta_id = ?delta_id,
+                %err,
+                "Rejecting state delta — envelope signature verification failed"
+            );
+            return Ok(());
+        }
+    }
 
     let Some(context) = node_clients.context.get_context(&context_id)? else {
         bail!("context '{}' not found", context_id);
@@ -657,6 +692,7 @@ pub(crate) async fn apply_authorized_state_delta(
             source_peer: source,
             key_id,
             governance_position: governance_position.clone(),
+            delta_signature,
             governance_drain_attempts: 0,
         };
 
@@ -692,6 +728,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 source_peer: source,
                 key_id,
                 governance_position: governance_position.clone(),
+                delta_signature,
                 governance_drain_attempts: 0,
             };
 
@@ -1080,6 +1117,7 @@ pub async fn handle_state_delta(
         events,
         governance_position,
         key_id,
+        delta_signature,
     } = message;
 
     let Some(context) = node_clients.context.get_context(&context_id)? else {
@@ -1328,6 +1366,7 @@ pub async fn handle_state_delta(
                     source_peer: source,
                     key_id,
                     governance_position: governance_position.clone(),
+                    delta_signature,
                     governance_drain_attempts: 0,
                 };
                 node_state.buffer_governance_pending(context_id, buffered);
@@ -1371,6 +1410,7 @@ pub async fn handle_state_delta(
             events,
             governance_position,
             key_id,
+            delta_signature,
         },
     )
     .await

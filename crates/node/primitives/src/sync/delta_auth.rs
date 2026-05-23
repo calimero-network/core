@@ -70,3 +70,92 @@ pub fn delta_signature_payload(
     };
     borsh::to_vec(&payload)
 }
+
+/// Verify a per-delta envelope signature against the canonical payload.
+///
+/// Reconstructs the payload the author signed at send time
+/// (`delta_signature_payload`) and verifies the ed25519 signature with
+/// the claimed author's public key. Receivers call this on every apply
+/// path (gossip receive, DAG-catchup receive, snapshot-buffer replay)
+/// before the delta touches storage.
+///
+/// Returns `Ok(())` only on a valid signature. Any borsh-serialize
+/// failure on the payload, or signature mismatch, returns `Err`.
+///
+/// **Caller contract:** the `author_id` passed here MUST be the same
+/// author bound into the payload — verification doesn't check that
+/// invariant for you, it just verifies that `author_id`'s key signed
+/// THIS payload bytes. If you pass a different author for the
+/// verification key vs. the payload, you're checking the wrong thing.
+pub fn verify_delta_signature(
+    context_id: ContextId,
+    delta_id: [u8; 32],
+    author_id: PublicKey,
+    governance_position: Option<&GovernancePosition>,
+    signature: &[u8; 64],
+) -> eyre::Result<()> {
+    let payload =
+        delta_signature_payload(context_id, delta_id, author_id, governance_position)
+            .map_err(|err| eyre::eyre!("failed to serialize delta signature payload: {err}"))?;
+    author_id
+        .verify_raw_signature(&payload, signature)
+        .map_err(|err| eyre::eyre!("delta envelope signature verification failed: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calimero_primitives::identity::PrivateKey;
+
+    fn fixture() -> (ContextId, [u8; 32], PrivateKey, PublicKey) {
+        let private_key = PrivateKey::from([3u8; 32]);
+        let author_id = private_key.public_key();
+        let context_id = ContextId::from([7u8; 32]);
+        let delta_id = [9u8; 32];
+        (context_id, delta_id, private_key, author_id)
+    }
+
+    #[test]
+    fn sign_then_verify_roundtrip_no_position() {
+        let (context_id, delta_id, sk, pk) = fixture();
+        let payload = delta_signature_payload(context_id, delta_id, pk, None).unwrap();
+        let sig = sk.sign(&payload).unwrap().to_bytes();
+        assert!(verify_delta_signature(context_id, delta_id, pk, None, &sig).is_ok());
+    }
+
+    #[test]
+    fn verify_rejects_tampered_context_id() {
+        let (context_id, delta_id, sk, pk) = fixture();
+        let payload = delta_signature_payload(context_id, delta_id, pk, None).unwrap();
+        let sig = sk.sign(&payload).unwrap().to_bytes();
+        // Author signed for `context_id`; verifier reconstructs payload
+        // with a *different* context_id, so the bytes diverge and the
+        // signature should not verify. This is the anti-cross-context-
+        // replay property the payload buys us.
+        let other_context = ContextId::from([1u8; 32]);
+        assert!(verify_delta_signature(other_context, delta_id, pk, None, &sig).is_err());
+    }
+
+    #[test]
+    fn verify_rejects_tampered_author() {
+        let (context_id, delta_id, sk, pk) = fixture();
+        let payload = delta_signature_payload(context_id, delta_id, pk, None).unwrap();
+        let sig = sk.sign(&payload).unwrap().to_bytes();
+        // Same signature bytes, but a *different* author is claimed on
+        // the wire. `verify_raw_signature` uses the claimed author's key,
+        // which never signed this payload — must fail. This is the
+        // anti-impersonation property that gossip's
+        // `membership_status_at` check alone doesn't catch.
+        let other_pk = PrivateKey::from([4u8; 32]).public_key();
+        assert!(verify_delta_signature(context_id, delta_id, other_pk, None, &sig).is_err());
+    }
+
+    #[test]
+    fn verify_rejects_tampered_signature_bytes() {
+        let (context_id, delta_id, sk, pk) = fixture();
+        let payload = delta_signature_payload(context_id, delta_id, pk, None).unwrap();
+        let mut sig = sk.sign(&payload).unwrap().to_bytes();
+        sig[0] ^= 0xff;
+        assert!(verify_delta_signature(context_id, delta_id, pk, None, &sig).is_err());
+    }
+}

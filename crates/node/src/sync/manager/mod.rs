@@ -1693,6 +1693,36 @@ impl SyncManager {
                                          governance_position from peer: {e}"
                                     )
                                 })?;
+                            // Per-delta envelope signature verification —
+                            // parity with `apply_authorized_state_delta`'s
+                            // gossip-path check. Runs BEFORE the cross-DAG
+                            // membership check because that check keys off
+                            // `author`; we have to establish the authorship
+                            // claim is genuine before asking whether the
+                            // claimed author is authorized. `None` is
+                            // currently tolerated for the wire-up
+                            // transition (signing at execute lands in a
+                            // follow-up); once that lands, `None`
+                            // tightens to a hard reject.
+                            if let Some(ref sig) = response_delta_signature {
+                                if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+                                    context_id,
+                                    storage_delta.id,
+                                    author,
+                                    pos.as_ref(),
+                                    sig,
+                                ) {
+                                    warn!(
+                                        %context_id,
+                                        %author,
+                                        head_id = ?head_id,
+                                        %err,
+                                        "DAG-catchup: rejecting delta — envelope signature \
+                                         verification failed"
+                                    );
+                                    continue;
+                                }
+                            }
                             if let Some(ref pos) = pos {
                                 let datastore = self.context_client.datastore_handle().into_inner();
                                 use calimero_context::group_store::{

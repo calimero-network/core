@@ -496,7 +496,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let start = Instant::now();
 
-                let (outcome, causal_delta) = internal_execute(
+                let (outcome, causal_delta, delta_signature) = internal_execute(
                     datastore,
                     &node_client,
                     &context_client,
@@ -562,13 +562,13 @@ impl Handler<ExecuteRequest> for ContextManager {
                     "Execution outcome details"
                 );
 
-                Ok((guard, context, outcome, causal_delta))
+                Ok((guard, context, outcome, causal_delta, delta_signature))
             }
             .into_actor(act)
         });
 
         let external_task =
-            execute_task.and_then(move |(guard, context, outcome, causal_delta), act, _ctx| {
+            execute_task.and_then(move |(guard, context, outcome, causal_delta, delta_signature), act, _ctx| {
                 if let Some(cached_context) = act.contexts.get_mut(&context_id) {
                     debug!(
                         %context_id,
@@ -761,6 +761,13 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     events_data,
                                     governance_position,
                                     broadcast_key_id,
+                                    // Per-delta envelope signature computed
+                                    // inside `internal_execute` against the
+                                    // same `governance_position` used here
+                                    // (both helpers compute from the same
+                                    // store snapshot, see the persist site
+                                    // comment).
+                                    delta_signature,
                                 )
                                 .await?;
                         }
@@ -1214,7 +1221,7 @@ async fn internal_execute(
     input: Cow<'static, [u8]>,
     is_state_op: bool,
     identity_private_key: &PrivateKey,
-) -> eyre::Result<(Outcome, Option<CausalDelta>)> {
+) -> eyre::Result<(Outcome, Option<CausalDelta>, Option<[u8; 64]>)> {
     let executor_is_read_only = !is_state_op
         && crate::group_store::is_read_only_for_context(&datastore, &context.id, &executor)
             .unwrap_or(false);
@@ -1292,7 +1299,7 @@ async fn internal_execute(
             error = ?outcome.returns,
             "WASM execution returned error"
         );
-        return Ok((outcome, None));
+        return Ok((outcome, None, None));
     }
 
     'fine: {
@@ -1315,6 +1322,11 @@ async fn internal_execute(
     }
 
     let mut causal_delta = None;
+    // Populated when we sign the locally-produced delta envelope so the
+    // outer `execute` task can carry the same signature bytes into the
+    // gossip broadcast. Stays `None` when no delta was produced (e.g.,
+    // empty artifact) or signing wasn't applicable.
+    let mut delta_signature_for_broadcast: Option<[u8; 64]> = None;
 
     if executor_is_read_only && outcome.root_hash.is_some() {
         info!(
@@ -1326,7 +1338,7 @@ async fn internal_execute(
         outcome.root_hash = None;
         outcome.artifact.clear();
         outcome.xcalls.clear();
-        return Ok((outcome, None));
+        return Ok((outcome, None, None));
     }
 
     if executor_not_authorized_for_state_op && outcome.root_hash.is_some() {
@@ -1339,7 +1351,7 @@ async fn internal_execute(
         outcome.root_hash = None;
         outcome.artifact.clear();
         outcome.xcalls.clear();
-        return Ok((outcome, None));
+        return Ok((outcome, None, None));
     }
 
     // Always update root_hash if present (even if storage is empty)
@@ -1523,6 +1535,26 @@ async fn internal_execute(
                 .as_ref()
                 .and_then(|gp| borsh::to_vec(gp).ok());
 
+            // Sign the canonical envelope payload with the author's
+            // identity key. Signature binds `(context_id, delta_id,
+            // author_id, governance_position)` together so a current
+            // group-key holder can't relabel a foreign delta as their
+            // own (or vice versa) on the wire — receivers reject any
+            // mismatch via `verify_delta_signature`. The same signature
+            // is persisted on the row and passed back to the broadcast
+            // site so the gossip and DAG-catchup paths advertise the
+            // same bytes.
+            let signature_payload =
+                calimero_node_primitives::sync::delta_auth::delta_signature_payload(
+                    context.id,
+                    delta.id,
+                    executor,
+                    governance_position.as_ref(),
+                )?;
+            let delta_signature =
+                Some(identity_private_key.sign(&signature_payload)?.to_bytes());
+            delta_signature_for_broadcast = delta_signature;
+
             handle.put(
                 &key::ContextDagDelta::new(context.id, delta.id),
                 &types::ContextDagDelta {
@@ -1535,9 +1567,7 @@ async fn internal_execute(
                     events: None, // No events stored for locally created deltas
                     author_id: Some(executor),
                     governance_position_blob,
-                    // Per-delta envelope signature is scaffolded but not
-                    // yet populated end-to-end; tracked separately.
-                    delta_signature: None,
+                    delta_signature,
                 },
             )?;
 
@@ -1599,7 +1629,7 @@ async fn internal_execute(
         }))?;
     }
 
-    Ok((outcome, causal_delta))
+    Ok((outcome, causal_delta, delta_signature_for_broadcast))
 }
 
 pub async fn execute(
