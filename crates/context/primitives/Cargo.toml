@@ -29,6 +29,7 @@ calimero-context-config.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-node-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-storage.workspace = true
 calimero-utils-actix.workspace = true
 
 [dev-dependencies]

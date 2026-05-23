@@ -172,6 +172,8 @@ pub fn is_leaf_currently_authorized(
 /// * `context_id` - The context being synchronized
 /// * `leaf` - The leaf data containing entity key, value, and CRDT metadata
 ///
+/// Apply leaf data using CRDT merge (Invariant I5: No Silent Data Loss).
+///
 /// # Errors
 ///
 /// Returns error if storage operations fail.
@@ -190,10 +192,12 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     // accepts incoming unconditionally); post-pause divergence trips
     // the post-bootstrap branch and the cascade in core#2469 fires.
     //
-    // Until root-entity merges route through WASM via the new
-    // `__calimero_merge_root_state` export, skip them here. The root
-    // entity will converge via the normal delta-sync path
-    // (`__calimero_sync_next`, which runs inside WASM where merge
+    // Until root-entity merges route through WASM via
+    // [`ContextClient::merge_root_state`] (the
+    // `__calimero_merge_root_state` export is in place; the dispatch
+    // plumbing through HC / snapshot / levelwise is a follow-up), skip
+    // them here. The root entity converges via the normal delta-sync
+    // path (`__calimero_sync_next`, which runs inside WASM where merge
     // dispatch actually works). HC's `stats.root_hash_verified` reports
     // `false` for this round; the sync manager handles that as a
     // partial merge and the next tick retries via delta sync.
