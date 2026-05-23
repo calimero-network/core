@@ -261,68 +261,70 @@ impl SyncManager {
         let db_key = key::ContextDagDelta::new(context_id, delta_id);
 
         let response = if let Some(stored_delta) = handle.get(&db_key)? {
-            // Found in RocksDB - reconstruct CausalDelta with HLC
-            let actions: Vec<calimero_storage::interface::Action> =
-                borsh::from_slice(&stored_delta.actions)?;
+            // Found in RocksDB. If the stored row lacks an author
+            // claim (snapshot checkpoints, race-path persists that
+            // didn't carry author info), refuse to serve via this
+            // path — the initiator's check requires an author, and
+            // we won't bypass it. The initiator's fallback chain
+            // (DAG-catchup-None → snapshot) handles recovery.
+            match stored_delta.author_id {
+                None => {
+                    debug!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        "Delta found but stored without an author claim (likely a snapshot \
+                         checkpoint or pre-author-tracking row) — returning DeltaNotFound \
+                         so the initiator falls back to a verifiable path"
+                    );
+                    MessagePayload::DeltaNotFound
+                }
+                Some(author_id) => {
+                    let actions: Vec<calimero_storage::interface::Action> =
+                        borsh::from_slice(&stored_delta.actions)?;
 
-            let causal_delta = CausalDelta {
-                id: stored_delta.delta_id,
-                parents: stored_delta.parents,
-                actions,
-                hlc: stored_delta.hlc,
-                expected_root_hash: stored_delta.expected_root_hash,
-            };
+                    let causal_delta = CausalDelta {
+                        id: stored_delta.delta_id,
+                        parents: stored_delta.parents,
+                        actions,
+                        hlc: stored_delta.hlc,
+                        expected_root_hash: stored_delta.expected_root_hash,
+                    };
 
-            let serialized = borsh::to_vec(&causal_delta)?;
+                    let serialized = borsh::to_vec(&causal_delta)?;
 
-            debug!(
-                %context_id,
-                delta_id = ?delta_id,
-                size = serialized.len(),
-                source = "RocksDB",
-                author_present = stored_delta.author_id.is_some(),
-                governance_position_present = stored_delta.governance_position_blob.is_some(),
-                "Sending requested delta to peer"
-            );
+                    debug!(
+                        %context_id,
+                        delta_id = ?delta_id,
+                        size = serialized.len(),
+                        source = "RocksDB",
+                        governance_position_present =
+                            stored_delta.governance_position_blob.is_some(),
+                        "Sending requested delta to peer"
+                    );
 
-            MessagePayload::DeltaResponse {
-                delta: serialized.into(),
-                author_id: stored_delta.author_id,
-                governance_position_blob: stored_delta.governance_position_blob.map(Into::into),
+                    MessagePayload::DeltaResponse {
+                        delta: serialized.into(),
+                        author_id,
+                        governance_position_blob: stored_delta
+                            .governance_position_blob
+                            .map(Into::into),
+                    }
+                }
             }
         } else if let Some(delta_store) = self.state_access.delta_store(&context_id) {
-            // Not in RocksDB yet (race condition after broadcast), try DeltaStore
-            if let Some(dag_delta) = delta_store.get_delta(&delta_id).await {
-                // dag::CausalDelta now includes HLC, so we can directly convert
-                let causal_delta = CausalDelta {
-                    id: dag_delta.id,
-                    parents: dag_delta.parents,
-                    actions: dag_delta.payload,
-                    hlc: dag_delta.hlc,
-                    expected_root_hash: dag_delta.expected_root_hash,
-                };
-
-                let serialized = borsh::to_vec(&causal_delta)?;
-
+            // Not in RocksDB yet (race condition after broadcast). The
+            // in-memory `DeltaStore` doesn't carry author info, so we
+            // can't serve a verifiable response from there. Return
+            // DeltaNotFound and let the initiator re-fetch once the
+            // post-apply persist has settled (next sync tick).
+            if delta_store.get_delta(&delta_id).await.is_some() {
                 debug!(
                     %context_id,
                     delta_id = ?delta_id,
-                    size = serialized.len(),
-                    source = "DeltaStore",
-                    "Sending requested delta to peer"
+                    "Delta in in-memory DeltaStore but not yet persisted with author info — \
+                     returning DeltaNotFound; initiator will re-fetch after persist settles"
                 );
-
-                // In-memory DeltaStore doesn't carry author info (only
-                // RocksDB does, set at the post-apply persistence
-                // sites). Race-path serves without author claim; the
-                // initiator accepts it as legacy. Subsequent DAG-catchup
-                // calls for the same delta after the post-apply persist
-                // settles will carry the author info.
-                MessagePayload::DeltaResponse {
-                    delta: serialized.into(),
-                    author_id: None,
-                    governance_position_blob: None,
-                }
+                MessagePayload::DeltaNotFound
             } else {
                 warn!(
                     %context_id,

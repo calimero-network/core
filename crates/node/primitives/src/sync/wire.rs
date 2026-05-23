@@ -271,19 +271,20 @@ pub enum MessagePayload<'a> {
     DeltaResponse {
         /// The serialized delta data.
         delta: Cow<'a, [u8]>,
-        /// Signing identity of the node that authored this delta, if
-        /// the responder has it on file. Present when the delta was
-        /// persisted with the post-2457 schema (`author_id` column);
-        /// `None` for legacy rows. Initiator runs the cross-DAG
-        /// membership check when `Some` and accepts on `None` (legacy
-        /// rows have no claim to verify; the gossip path's check
-        /// remains the primary author-authorization gate for those).
-        author_id: Option<calimero_primitives::identity::PublicKey>,
+        /// Signing identity of the node that authored this delta.
+        /// Required — the responder only serves deltas that have a
+        /// recorded author (rows missing the field return
+        /// `DeltaNotFound`, forcing the initiator to fall back to
+        /// snapshot sync where the per-entity signature path applies).
+        /// Initiator runs `membership_status_at` against this author
+        /// unconditionally; there is no legacy-accept escape hatch.
+        author_id: calimero_primitives::identity::PublicKey,
         /// Serialized `calimero_context_config::types::GovernancePosition`
         /// (borsh bytes) at the delta's sign time. Pairs with
         /// `author_id` for the apply-time `membership_status_at` check.
-        /// `None` when the responder has no governance position recorded
-        /// for the delta (legacy rows OR non-group context).
+        /// `None` only for non-group contexts where the author has no
+        /// governance cut to cite — initiator skips the membership
+        /// check in that case (there's nothing to check against).
         governance_position_blob: Option<Cow<'a, [u8]>>,
     },
 
