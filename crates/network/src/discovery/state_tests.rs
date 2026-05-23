@@ -549,3 +549,57 @@ fn test_independent_addresses_track_failures_separately() {
     assert!(state.peers[&peer].addrs.contains_key(&addr_b));
     assert_eq!(state.peers[&peer].addrs[&addr_b], 0);
 }
+
+#[test]
+fn test_take_relay_listener_returns_recorded_peer_and_removes_entry() {
+    let mut state = DiscoveryState::default();
+    let relay = PeerId::random();
+    let listener = ListenerId::next();
+
+    state.record_relay_listener(listener, relay);
+    assert_eq!(state.take_relay_listener(&listener), Some(relay));
+
+    // Second take returns None — the entry was removed.
+    assert_eq!(state.take_relay_listener(&listener), None);
+}
+
+#[test]
+fn test_record_relay_listener_overwrites_existing_entry() {
+    let mut state = DiscoveryState::default();
+    let relay_a = PeerId::random();
+    let relay_b = PeerId::random();
+    let listener = ListenerId::next();
+
+    state.record_relay_listener(listener, relay_a);
+    // Same listener id reused (unusual but the API must be consistent):
+    // the latest registration wins.
+    state.record_relay_listener(listener, relay_b);
+
+    assert_eq!(state.take_relay_listener(&listener), Some(relay_b));
+}
+
+#[test]
+fn test_take_relay_listener_is_noop_for_unknown_id() {
+    let mut state = DiscoveryState::default();
+    let unknown = ListenerId::next();
+
+    // Taking an id we never recorded must not panic and must return None.
+    assert_eq!(state.take_relay_listener(&unknown), None);
+}
+
+#[test]
+fn test_multiple_listeners_map_to_distinct_relays() {
+    let mut state = DiscoveryState::default();
+    let relay_a = PeerId::random();
+    let relay_b = PeerId::random();
+    let listener_a = ListenerId::next();
+    let listener_b = ListenerId::next();
+
+    state.record_relay_listener(listener_a, relay_a);
+    state.record_relay_listener(listener_b, relay_b);
+
+    // Taking one leaves the other intact.
+    assert_eq!(state.take_relay_listener(&listener_a), Some(relay_a));
+    assert_eq!(state.take_relay_listener(&listener_a), None);
+    assert_eq!(state.take_relay_listener(&listener_b), Some(relay_b));
+}
