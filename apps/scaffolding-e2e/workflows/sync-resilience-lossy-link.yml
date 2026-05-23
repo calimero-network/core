@@ -1,34 +1,54 @@
 description: >
-  Sync-resilience smoke test: 50% packet loss sustained for 20 seconds
-  on one peer, with the other peer writing during the loss window.
-  Verifies that gossipsub + sync converge under a degraded channel
-  (not a partition — packets get through, just with significant loss).
+  Sync-resilience smoke test: burst-write many keys, then inject heavy
+  packet loss for an extended period so gossipsub propagation
+  struggles to deliver them, then verify the system catches up after
+  the loss clears.
 
-  Complement to sync-resilience-network-partition.yml: that one tests
-  full disconnection followed by reconnection (libp2p must redial and
-  the connection-recovery path fires); this one tests a degraded-but-
-  alive channel (the connection survives via TCP retransmits but
-  gossipsub propagation is slow). Both shapes show up in production
-  (full route failure vs flaky home Wi-Fi or congested cellular).
+  Test design constraint: `inject_network_fault` blocks the workflow
+  while the fault is held, so writes cannot happen *during* the loss
+  window. Instead, the writes happen *immediately before* the fault
+  starts, and gossipsub then has to deliver them through the lossy
+  channel for the duration of the fault. This is the strictest "lossy
+  link" shape buildable in a sequential workflow without out-of-band
+  write generation.
 
-  Why 50% / 20s:
-    - 50% loss is enough to noticeably degrade throughput but not
-      enough to break TCP (4-retry retransmits each succeed with
-      ~94% probability per cycle), so the connection survives.
-    - 20s is longer than libp2p's ping interval (~15s), so the
-      keepalive does cycle under loss; the test exercises both the
-      ping-survives-loss path and gossipsub's mesh-stability-under-
-      loss heuristics. A 30s window would arguably be more
-      stressful but also more CI time for no extra signal.
+  Three assertions of decreasing strictness:
 
-  Like the other sync-resilience workflows, this does NOT specifically
-  exercise the relay-reservation recovery in calimero-network/core#2446
-  (sibling nodes on the same Docker bridge reach each other directly,
-  no relay in the loop). A real NAT-topology version is tracked under
+    1. Diagnostic read (non-fatal): read the latest-written key on
+       node-2 immediately after the fault clears. The value is
+       captured and visible in CI logs. If the lossy window had
+       observable impact, this read returns the old/empty value;
+       if the system handled the loss with no observable impact,
+       it returns the latest value. We do NOT assert on this — at
+       90% loss for 20s the math is close enough to either outcome
+       that a strict assertion would flake.
+
+    2. Strict convergence: wait_for_sync with a 90s timeout must
+       succeed. This is the primary assertion. After 20s of heavy
+       loss + 20 queued writes, the system MUST converge to a
+       consistent root hash within a reasonable window. A failure
+       here means recovery doesn't actually work, not just that the
+       lossy window had no impact.
+
+    3. Strict value check: read all 20 keys on node-2 and assert each
+       contains its expected value. Catches the class of regression
+       where the DAG converges but the actual state doesn't (e.g. a
+       CRDT bug that drops events under retransmission).
+
+  Companion to sync-resilience-network-partition.yml (full
+  disconnect + recovery) — that one tests the connection-teardown
+  path; this tests the "degraded channel that survives via TCP
+  retransmits" path. Both shapes show up in production.
+
+  Like the other sync-resilience workflows this does NOT specifically
+  exercise the relay-reservation recovery code in
+  calimero-network/core#2446 (sibling nodes on the same Docker bridge
+  reach each other directly, no relay in the loop). A real
+  NAT-topology version is tracked under
   calimero-network/core#2467 / calimero-network/merobox#251.
 
-  mdns: false to keep the test honest about which discovery code path
-  is being exercised.
+  mdns: false to keep the test honest about which discovery code
+  path is being exercised.
 name: Sync Resilience — Lossy Link
 
 force_pull_image: false
@@ -87,7 +107,7 @@ steps:
     node: sync-resil-node-2
     context_id: '{{ctx_id}}'
 
-  # ---------- Baseline ----------
+  # ---------- Baseline: one write + sync to prove healthy channel ----------
 
   - name: Write baseline key on node-1
     type: call
@@ -122,65 +142,108 @@ steps:
     statements:
       - "contains({{baseline_n2}}, 'pre_loss')"
 
-  # ---------- Fault: 50% packet loss on node-2 for 20s ----------
+  # ---------- Burst: 20 writes on node-1 with no waiting between them ----------
   #
-  # inject_network_fault holds the fault for `duration` and clears it
-  # automatically. tc qdisc loss is applied to the container's egress
-  # interface — meaning packets sent FROM node-2 are dropped with the
-  # given probability. For this test that's fine: node-2's ACKs and
-  # any gossipsub propagation it tries to do back to node-1 get
-  # degraded. Inbound packets to node-2 also slow because TCP needs
-  # ACKs to make progress.
+  # `repeat` runs its inner steps sequentially but with no inserted
+  # wait_for_sync, so all 20 writes are issued in rapid succession.
+  # They land in node-1's gossipsub publish queue and start
+  # propagating to node-2 immediately. The fault step below then
+  # holds packet loss in place for the duration of the propagation
+  # window.
 
-  - name: Inject 50% packet loss on node-2 for 20s
+  - name: Burst-write 20 keys on node-1
+    type: repeat
+    count: 20
+    outputs:
+      iter: iteration
+    steps:
+      - name: Write iteration key
+        type: call
+        node: sync-resil-node-1
+        context_id: '{{ctx_id}}'
+        method: set
+        args:
+          key: "burst_{{iter}}"
+          value: "v_{{iter}}"
+
+  # ---------- Fault: 20 seconds of 90% packet loss on node-2 ----------
+  #
+  # 90% loss + 20s gives gossipsub a hard time delivering the 20
+  # queued writes (each gossipsub send has 10% per-attempt success;
+  # over the heartbeat-driven retries during the 20s window, message
+  # delivery is significantly slowed but not impossible).
+  #
+  # Why not 100% loss: that's a partition, covered by
+  # sync-resilience-network-partition.yml. The "lossy link" shape
+  # explicitly tests the degraded-but-alive channel that real flaky
+  # home Wi-Fi / congested cellular looks like.
+
+  - name: Inject 90% packet loss on node-2 for 20s
     type: inject_network_fault
     container: sync-resil-node-2
     fault: loss
-    percent: 50
+    percent: 90
     duration: 20
 
-  # The inject step blocks until the fault clears. By the time we get
-  # here the network is healthy again, but node-2 has just spent 20s
-  # exchanging packets through a lossy link.
+  # ---------- Diagnostic: read latest key right after fault clears ----------
+  #
+  # Captures whether node-2 caught up to burst_20 (the last-written
+  # key, most likely to still be in flight when the fault started).
+  # The value is logged for diagnostic visibility — NOT asserted on,
+  # because the math is too close to either outcome to assert
+  # strictly without flake.
 
-  - name: Write post-loss key on node-1
-    type: call
-    node: sync-resil-node-1
-    context_id: '{{ctx_id}}'
-    method: set
-    args:
-      key: post_loss
-      value: recovered
-
-  # ---------- Catch-up ----------
-
-  - name: Wait for sync to converge post-loss
-    type: wait_for_sync
-    context_id: '{{ctx_id}}'
-    nodes:
-      - sync-resil-node-1
-      - sync-resil-node-2
-    timeout: 120
-    trigger_sync: true
-
-  - name: Read post-loss key on node-2
+  - name: Diagnostic read of last-written key on node-2 right after fault
     type: call
     node: sync-resil-node-2
     context_id: '{{ctx_id}}'
     method: get
     args:
-      key: post_loss
+      key: burst_20
     outputs:
-      post_n2: result
+      diag_burst_20: result
 
-  - name: Assert post-loss write replicated
-    type: assert
-    statements:
-      - "contains({{post_n2}}, 'recovered')"
+  # ---------- Strict convergence: full catch-up within 90s ----------
 
-  # Re-read baseline on node-2 — catches state-corruption regressions
-  # where a lossy episode somehow re-initialises or trims state on
-  # the affected node.
+  - name: Wait for sync to converge after lossy window
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 90
+    trigger_sync: true
+
+  # ---------- Strict value check: all 20 keys present on node-2 ----------
+  #
+  # Reads each burst_i key in turn and asserts it contains the
+  # expected value. The convergence step above only proves the
+  # DAG/root-hash matches; this proves the per-key state actually
+  # contains the values we wrote, catching CRDT bugs that drop
+  # events under retransmission.
+
+  - name: Verify all 20 burst writes converged on node-2
+    type: repeat
+    count: 20
+    outputs:
+      iter: iteration
+    steps:
+      - name: Read burst key on node-2
+        type: call
+        node: sync-resil-node-2
+        context_id: '{{ctx_id}}'
+        method: get
+        args:
+          key: "burst_{{iter}}"
+        outputs:
+          burst_value: result
+
+      - name: Assert burst key contains expected value
+        type: assert
+        statements:
+          - "contains({{burst_value}}, 'v_{{iter}}')"
+
+  # ---------- Verify baseline survived the lossy window ----------
 
   - name: Read baseline key on node-2 post-loss
     type: call
