@@ -44,6 +44,66 @@ use crate::collections::crdt_meta::{CrdtType, MergeError, Mergeable};
 use crate::collections::{Counter, ReplicatedGrowableArray};
 use crate::store::MainStorage;
 
+/// Canonical wire format for a host→WASM root-state merge invocation.
+///
+/// The host can't deserialize an app's root-state type (it doesn't have
+/// the type at compile time), so when it needs to merge two root-state
+/// byte blobs it sends this payload into the WASM module, where the
+/// macro-generated `__calimero_merge_root_state` export knows the type
+/// and dispatches `Mergeable::merge`.
+///
+/// Borsh-serialized for symmetry with every other host↔WASM payload in
+/// the codebase.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct MergeRootStateRequest {
+    pub existing: Vec<u8>,
+    pub incoming: Vec<u8>,
+    pub existing_created_at: u64,
+    pub existing_ts: u64,
+    pub incoming_ts: u64,
+}
+
+/// Response from the WASM-side root-merge dispatcher.
+///
+/// `Ok(bytes)` carries the merged root-state bytes the host writes back
+/// into storage. `Err(message)` surfaces a merge failure (typically a
+/// deserialization or app-`Mergeable::merge` error) to the host without
+/// having to panic in WASM.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub enum MergeRootStateResponse {
+    Ok(Vec<u8>),
+    Err(String),
+}
+
+/// Typed root-state merge for use inside the WASM module's
+/// macro-generated `__calimero_merge_root_state` export.
+///
+/// Deserializes both sides as `T`, runs the app-provided
+/// `Mergeable::merge`, returns serialized merged bytes. Mirrors the
+/// closure built by `register_crdt_merge` (which is being deleted) but
+/// without the registry indirection — the macro knows `T` at compile
+/// time and calls this directly.
+///
+/// Wrapped in `with_merge_mode` to suppress timestamp generation during
+/// merge, matching the contract of the deleted registry path: every
+/// node must produce the same merged hash from the same inputs.
+pub fn merge_root_state_typed<T>(
+    existing: &[u8],
+    incoming: &[u8],
+) -> Result<Vec<u8>, MergeError>
+where
+    T: BorshSerialize + BorshDeserialize + Mergeable,
+{
+    let mut existing_state = borsh::from_slice::<T>(existing)
+        .map_err(|e| MergeError::SerializationError(format!("existing: {e}")))?;
+    let incoming_state = borsh::from_slice::<T>(incoming)
+        .map_err(|e| MergeError::SerializationError(format!("incoming: {e}")))?;
+
+    crate::env::with_merge_mode(|| existing_state.merge(&incoming_state))?;
+
+    borsh::to_vec(&existing_state).map_err(|e| MergeError::SerializationError(e.to_string()))
+}
+
 /// Attempts to merge two Borsh-serialized app state blobs using CRDT semantics.
 ///
 /// # When is This Called?

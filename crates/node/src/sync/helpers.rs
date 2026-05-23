@@ -179,6 +179,34 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     let entity_id = Id::new(leaf.key);
     let root_id = Id::new(*context_id.as_ref());
 
+    // App root state — `ROOT_ID` or the `Root<T>` entry — needs CRDT
+    // merge against the app's typed `Mergeable` impl. That impl only
+    // exists inside the WASM module; the host's `merge_root_state` has
+    // never had a working dispatch table (the registry it consults is
+    // populated by the macro's `__calimero_register_merge` export,
+    // which writes to the WASM module's static memory, not the host's —
+    // separate address spaces, separate copies of `MERGE_REGISTRY`).
+    // Pre-pause the bootstrap fast-path masked it (`created == updated`
+    // accepts incoming unconditionally); post-pause divergence trips
+    // the post-bootstrap branch and the cascade in core#2469 fires.
+    //
+    // Until root-entity merges route through WASM via the new
+    // `__calimero_merge_root_state` export, skip them here. The root
+    // entity will converge via the normal delta-sync path
+    // (`__calimero_sync_next`, which runs inside WASM where merge
+    // dispatch actually works). HC's `stats.root_hash_verified` reports
+    // `false` for this round; the sync manager handles that as a
+    // partial merge and the next tick retries via delta sync.
+    if calimero_storage::collections::is_app_root_entry(entity_id) {
+        tracing::warn!(
+            %context_id,
+            entity_id = %entity_id,
+            "HC apply: skipping root-entity merge on host (no host-side merge dispatch); \
+             root entity will converge via WASM-routed delta sync"
+        );
+        return Ok(());
+    }
+
     // Check if entity already exists
     let existing_index = Index::<MainStorage>::get_index(entity_id).ok().flatten();
 
