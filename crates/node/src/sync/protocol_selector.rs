@@ -117,13 +117,16 @@ impl ProtocolSelector {
     /// - `DeltaSync`: passed straight to `request_dag_heads_and_sync`,
     ///   which may consume it; indeterminate on return.
     /// - `HashComparison`: passed to `StreamTransport`, consumed by
-    ///   `HashComparisonProtocol::run_initiator`; the responder's
-    ///   state is well-defined on success (idle) and indeterminate on
-    ///   failure (see the HashComparison-fallback note below).
+    ///   `HashComparisonProtocol::run_initiator`; the fallback path
+    ///   opens a fresh stream because the responder dispatch is
+    ///   one-shot per stream — once the HashComparison handler
+    ///   returns the stream is dropped and can't carry a follow-up
+    ///   request.
     /// - `LevelWise`: passed to `StreamTransport`, consumed by
     ///   `LevelWiseProtocol::run_initiator`; the fallback path opens
-    ///   a fresh stream because the responder may be in a
-    ///   LevelWise-specific state.
+    ///   a fresh stream for the same one-shot-dispatch reason
+    ///   (responder is also locked into LevelWise-specific message
+    ///   types until the handler returns).
     ///
     /// Bottom line: `stream` should be treated as consumed after this
     /// call returns regardless of variant — the caller's drop runs
@@ -240,13 +243,30 @@ impl ProtocolSelector {
                             error = %e,
                             "HashComparison sync failed, falling back to DAG catchup"
                         );
-                        // Fall back to DAG heads request
+                        // Fall back to DAG heads request — open a fresh
+                        // stream. The HashComparison responder loop
+                        // gracefully exits on any non-TreeNodeRequest /
+                        // non-EntityPush message, but the responder
+                        // dispatch in `internal_handle_opened_stream` is
+                        // one-shot per stream: when the HashComparison
+                        // handler returns, the stream is dropped. So
+                        // sending a `DagHeadsRequest` on the same
+                        // `stream` here would either hit a closed pipe
+                        // or write into a buffer the responder will
+                        // never read. A fresh stream re-enters the
+                        // responder dispatch and gets routed to
+                        // `handle_dag_heads_request`. Same shape as the
+                        // LevelWise fallback below.
+                        let mut fallback_stream = dispatch
+                            .open_stream(chosen_peer)
+                            .await
+                            .wrap_err("open stream for hash-comparison fallback")?;
                         let result = dispatch
                             .request_dag_heads_and_sync(
                                 context_id,
                                 chosen_peer,
                                 our_identity,
-                                stream,
+                                &mut fallback_stream,
                             )
                             .await
                             .wrap_err("hash comparison fallback")?;
@@ -257,6 +277,11 @@ impl ProtocolSelector {
                                 %context_id,
                                 "DAG catchup failed, falling back to snapshot sync"
                             );
+                            // Drop the consumed fallback_stream before
+                            // opening fresh streams in snapshot sync
+                            // (fallback_stream is in indeterminate
+                            // state after DAG sync exchanges).
+                            drop(fallback_stream);
                             let result = dispatch
                                 .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
                                 .await
