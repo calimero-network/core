@@ -472,3 +472,96 @@ fn merge_unordered_set(_existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, Mer
 fn merge_vector(_existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError> {
     Ok(incoming.to_vec())
 }
+
+#[cfg(test)]
+mod typed_dispatch_tests {
+    use super::*;
+    use crate::collections::Counter;
+    use crate::env;
+    use serial_test::serial;
+
+    // Minimal Mergeable app type for the typed-dispatch test. Counter
+    // is the simplest Mergeable that produces an observably-different
+    // post-merge state from either input alone.
+    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Debug)]
+    struct DispatchTestApp {
+        counter: Counter,
+    }
+
+    impl Mergeable for DispatchTestApp {
+        fn merge(
+            &mut self,
+            other: &Self,
+        ) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.counter.merge(&other.counter)
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn merge_root_state_typed_combines_disjoint_executor_counts() {
+        env::reset_for_testing();
+
+        // Executor A: counter incremented twice — value 2.
+        env::set_executor_id([1; 32]);
+        let mut state_a = DispatchTestApp {
+            counter: Counter::new(),
+        };
+        state_a.counter.increment().unwrap();
+        state_a.counter.increment().unwrap();
+        let bytes_a = borsh::to_vec(&state_a).unwrap();
+
+        // Executor B: counter incremented once — value 1.
+        env::set_executor_id([2; 32]);
+        let mut state_b = DispatchTestApp {
+            counter: Counter::new(),
+        };
+        state_b.counter.increment().unwrap();
+        let bytes_b = borsh::to_vec(&state_b).unwrap();
+
+        // Typed merge: A receives B's increments. G-Counter union per
+        // executor → 2 + 1 = 3.
+        let merged_bytes = merge_root_state_typed::<DispatchTestApp>(&bytes_a, &bytes_b)
+            .expect("typed merge should succeed");
+        let merged: DispatchTestApp = borsh::from_slice(&merged_bytes).unwrap();
+        assert_eq!(merged.counter.value().unwrap(), 3);
+    }
+
+    #[test]
+    #[serial]
+    fn merge_root_state_typed_rejects_malformed_existing() {
+        env::reset_for_testing();
+
+        let valid_bytes = borsh::to_vec(&DispatchTestApp {
+            counter: Counter::new(),
+        })
+        .unwrap();
+        let bad = vec![0xff, 0xff, 0xff, 0xff];
+
+        let result = merge_root_state_typed::<DispatchTestApp>(&bad, &valid_bytes);
+        assert!(
+            matches!(result, Err(MergeError::SerializationError(_))),
+            "expected SerializationError, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn merge_root_state_typed_rejects_malformed_incoming() {
+        env::reset_for_testing();
+
+        let valid_bytes = borsh::to_vec(&DispatchTestApp {
+            counter: Counter::new(),
+        })
+        .unwrap();
+        let bad = vec![0xff, 0xff, 0xff, 0xff];
+
+        let result = merge_root_state_typed::<DispatchTestApp>(&valid_bytes, &bad);
+        assert!(
+            matches!(result, Err(MergeError::SerializationError(_))),
+            "expected SerializationError, got {:?}",
+            result
+        );
+    }
+}
