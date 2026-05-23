@@ -549,3 +549,74 @@ fn test_independent_addresses_track_failures_separately() {
     assert!(state.peers[&peer].addrs.contains_key(&addr_b));
     assert_eq!(state.peers[&peer].addrs[&addr_b], 0);
 }
+
+#[test]
+fn test_record_and_lookup_relay_listener() {
+    let mut state = DiscoveryState::default();
+    let relay = PeerId::random();
+    let listener = ListenerId::next();
+
+    assert_eq!(state.relay_peer_for_listener(&listener), None);
+
+    state.record_relay_listener(listener, relay);
+    assert_eq!(state.relay_peer_for_listener(&listener), Some(relay));
+}
+
+#[test]
+fn test_record_relay_listener_overwrites_existing_entry() {
+    let mut state = DiscoveryState::default();
+    let relay_a = PeerId::random();
+    let relay_b = PeerId::random();
+    let listener = ListenerId::next();
+
+    state.record_relay_listener(listener, relay_a);
+    // Same listener id reused (would be unusual in practice but the API
+    // must be consistent): the latest registration wins.
+    state.record_relay_listener(listener, relay_b);
+
+    assert_eq!(state.relay_peer_for_listener(&listener), Some(relay_b));
+}
+
+#[test]
+fn test_forget_relay_listener_removes_entry() {
+    let mut state = DiscoveryState::default();
+    let relay = PeerId::random();
+    let listener = ListenerId::next();
+
+    state.record_relay_listener(listener, relay);
+    assert_eq!(state.relay_peer_for_listener(&listener), Some(relay));
+
+    state.forget_relay_listener(&listener);
+    assert_eq!(state.relay_peer_for_listener(&listener), None);
+}
+
+#[test]
+fn test_forget_relay_listener_is_noop_for_unknown_id() {
+    let mut state = DiscoveryState::default();
+    let unknown = ListenerId::next();
+
+    // Forgetting an id we never recorded must not panic and must leave
+    // the state unchanged.
+    state.forget_relay_listener(&unknown);
+    assert_eq!(state.relay_peer_for_listener(&unknown), None);
+}
+
+#[test]
+fn test_multiple_listeners_map_to_distinct_relays() {
+    let mut state = DiscoveryState::default();
+    let relay_a = PeerId::random();
+    let relay_b = PeerId::random();
+    let listener_a = ListenerId::next();
+    let listener_b = ListenerId::next();
+
+    state.record_relay_listener(listener_a, relay_a);
+    state.record_relay_listener(listener_b, relay_b);
+
+    assert_eq!(state.relay_peer_for_listener(&listener_a), Some(relay_a));
+    assert_eq!(state.relay_peer_for_listener(&listener_b), Some(relay_b));
+
+    // Forgetting one leaves the other intact.
+    state.forget_relay_listener(&listener_a);
+    assert_eq!(state.relay_peer_for_listener(&listener_a), None);
+    assert_eq!(state.relay_peer_for_listener(&listener_b), Some(relay_b));
+}

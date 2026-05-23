@@ -7,13 +7,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
-/// Consecutive-failure threshold at which an address is evicted from a
-/// peer's address book. Three is chosen as a small magic number that
-/// tolerates transient flakiness (one bad TCP retransmit, one identify
-/// race) without keeping a permanently broken address around long enough
-/// to waste many rendezvous-tick dial attempts.
-pub(crate) const DIAL_FAILURE_EVICTION_THRESHOLD: u8 = 3;
-
+use libp2p::core::transport::ListenerId;
 use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::Cookie;
 use libp2p::{Multiaddr, PeerId, StreamProtocol};
@@ -23,6 +17,13 @@ use tracing::info;
 // The rendezvous protocol name is not public in libp2p, so we have to define it here.
 // source: https://github.com/libp2p/rust-libp2p/blob/a8888a7978f08ec9b8762207bf166193bf312b94/protocols/rendezvous/src/lib.rs#L50C12-L50C92
 const RENDEZVOUS_PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/rendezvous/1.0.0");
+
+/// Consecutive-failure threshold at which an address is evicted from a
+/// peer's address book. Three is chosen as a small magic number that
+/// tolerates transient flakiness (one bad TCP retransmit, one identify
+/// race) without keeping a permanently broken address around long enough
+/// to waste many rendezvous-tick dial attempts.
+pub(crate) const DIAL_FAILURE_EVICTION_THRESHOLD: u8 = 3;
 
 /// DiscoveryState is a struct that holds the state of the disovered peers.
 /// It holds the relay and rendezvous indexes to quickly check if a peer is a relay or rendezvous.
@@ -34,6 +35,14 @@ pub struct DiscoveryState {
     rendezvous_index: BTreeSet<PeerId>,
     autonat_index: BTreeSet<PeerId>,
     confirmed_external_addresses: HashSet<Multiaddr>,
+    /// Maps each libp2p relayed listener back to the relay peer it was
+    /// opened against. Populated by `create_relay_reservation` when it
+    /// calls `listen_on(<relay>/p2p-circuit/<self>)` and gets back a
+    /// `ListenerId`. Looked up by the `ListenerClosed` swarm handler so
+    /// it can route the recovery action even when the closed listener's
+    /// `addresses` list is empty (e.g. quota denial before address
+    /// allocation).
+    relay_listeners: HashMap<ListenerId, PeerId>,
     reachability_state: ReachabilityState,
 }
 
@@ -52,6 +61,7 @@ impl Default for DiscoveryState {
             rendezvous_index: BTreeSet::new(),
             autonat_index: BTreeSet::new(),
             confirmed_external_addresses: HashSet::new(),
+            relay_listeners: HashMap::new(),
             reachability_state: ReachabilityState::Unknown,
         }
     }
@@ -256,6 +266,30 @@ impl DiscoveryState {
             .peers
             .entry(*rendezvous_peer)
             .and_modify(|info| info.update_rendezvous_cookie(cookie.clone()));
+    }
+
+    /// Remember that `listener_id` was opened against `relay_peer` as a
+    /// relayed listener. The ListenerClosed handler uses this to route
+    /// recovery for the quota-denied case where libp2p tears the listener
+    /// down before any external address is ever attached — leaving
+    /// `addresses` empty in the event and the address-iteration fallback
+    /// with nothing to act on.
+    pub(crate) fn record_relay_listener(&mut self, listener_id: ListenerId, relay_peer: PeerId) {
+        let _ = self.relay_listeners.insert(listener_id, relay_peer);
+    }
+
+    /// Look up the relay peer associated with a libp2p listener id.
+    /// Returns `None` if the listener wasn't registered by
+    /// `record_relay_listener` (e.g. a non-relay TCP/QUIC listener).
+    pub(crate) fn relay_peer_for_listener(&self, listener_id: &ListenerId) -> Option<PeerId> {
+        self.relay_listeners.get(listener_id).copied()
+    }
+
+    /// Drop the listener-id → relay-peer mapping. Called from
+    /// `ListenerClosed` once the recovery action has been queued, so the
+    /// map doesn't grow unbounded across many reservation cycles.
+    pub(crate) fn forget_relay_listener(&mut self, listener_id: &ListenerId) {
+        let _ = self.relay_listeners.remove(listener_id);
     }
 
     pub(crate) fn update_relay_reservation_status(

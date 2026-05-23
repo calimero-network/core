@@ -197,22 +197,51 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 trace!("Expired listen address: {}", address);
             }
             SwarmEvent::ListenerClosed {
-                addresses, reason, ..
+                listener_id,
+                addresses,
+                reason,
+                ..
             } => {
-                trace!("Listener closed: {:?} {:?}", addresses, reason.err());
+                trace!(
+                    ?listener_id,
+                    ?addresses,
+                    error = ?reason.err(),
+                    "Listener closed"
+                );
 
-                // If a relayed listener closed, trigger recovery once per
-                // distinct relay peer. The swarm typically also emits an
-                // ExternalAddrExpired for the same address, so the second
-                // call into on_relay_reservation_lost will be a no-op
-                // (status already Expired).
-                for address in &addresses {
-                    if let Ok(relayed_addr) = RelayedMultiaddr::try_from(address) {
-                        let actions = self
-                            .discovery
-                            .state
-                            .on_relay_reservation_lost(relayed_addr.relay_peer_id());
-                        self.execute_reachability_actions(actions);
+                // Prefer the registered listener-id mapping: when
+                // create_relay_reservation calls listen_on, we record the
+                // returned ListenerId against the relay peer. This routes
+                // recovery correctly even when libp2p emits
+                // ListenerClosed with `addresses: []` — which it does when
+                // the relay denies a reservation before any external
+                // address gets allocated (e.g. quota wall, rate limit).
+                // The addresses-iteration fallback below would silently
+                // miss that case.
+                //
+                // Fall back to iterating addresses for listeners we did
+                // not register ourselves (defensive — covers any future
+                // code path that calls listen_on with a relayed multiaddr
+                // outside create_relay_reservation).
+                //
+                // The swarm typically also emits ExternalAddrExpired for
+                // the same address, so the second call into
+                // on_relay_reservation_lost will be a no-op (status
+                // already Expired).
+                if let Some(relay_peer) = self.discovery.state.relay_peer_for_listener(&listener_id)
+                {
+                    self.discovery.state.forget_relay_listener(&listener_id);
+                    let actions = self.discovery.state.on_relay_reservation_lost(&relay_peer);
+                    self.execute_reachability_actions(actions);
+                } else {
+                    for address in &addresses {
+                        if let Ok(relayed_addr) = RelayedMultiaddr::try_from(address) {
+                            let actions = self
+                                .discovery
+                                .state
+                                .on_relay_reservation_lost(relayed_addr.relay_peer_id());
+                            self.execute_reachability_actions(actions);
+                        }
                     }
                 }
             }
