@@ -230,8 +230,29 @@ impl ProtocolSelector {
                             nodes_compared = stats.nodes_compared,
                             entities_merged = stats.entities_merged,
                             nodes_skipped = stats.nodes_skipped,
+                            deferred_root_merges = stats.deferred_root_merges.len(),
                             "HashComparison sync completed successfully"
                         );
+
+                        // Dispatch any deferred root-entity merges through
+                        // the WASM module. HC's DFS can't merge root
+                        // entities on the host side (the merge registry
+                        // it would consult is populated inside WASM,
+                        // not here), so it accumulates them in
+                        // `stats.deferred_root_merges` and lets the
+                        // selector finish the job using
+                        // `ContextClient::merge_root_state`.
+                        if !stats.deferred_root_merges.is_empty() {
+                            dispatch_deferred_root_merges(
+                                &self.context_client,
+                                &store,
+                                context_id,
+                                our_identity,
+                                &stats.deferred_root_merges,
+                            )
+                            .await;
+                        }
+
                         Ok(Some(SyncProtocol::HashComparison {
                             root_hash,
                             divergent_subtrees: vec![],
@@ -400,6 +421,154 @@ impl ProtocolSelector {
                 }
             }
         }
+    }
+}
+
+/// Apply root-entity merges that HC's DFS deferred because the host can't
+/// dispatch the app's typed `Mergeable::merge` (the registry it would
+/// consult is populated inside WASM, separate address space). For each
+/// deferred `(entity_id, incoming_bytes)` pair:
+///
+/// 1. Read the locally-stored bytes + metadata for `entity_id`.
+/// 2. Build a [`MergeRootStateRequest`] from existing + incoming.
+/// 3. Invoke `ContextClient::merge_root_state` — calls into WASM via
+///    the macro-generated `__calimero_merge_root_state` export.
+/// 4. Write the merged bytes back via
+///    `Interface::write_pre_merged_root_state`, which updates the
+///    Merkle index + storage without re-running the merge step.
+///
+/// Errors per-entry are logged and the next entry is attempted —
+/// partial progress is preferable to dropping the whole batch on a
+/// single failure. The next sync tick will re-attempt anything that
+/// stays divergent.
+async fn dispatch_deferred_root_merges(
+    context_client: &ContextClient,
+    store: &calimero_store::Store,
+    context_id: ContextId,
+    our_identity: PublicKey,
+    deferred: &[([u8; 32], Vec<u8>)],
+) {
+    use calimero_storage::address::Id;
+    use calimero_storage::entities::Metadata;
+    use calimero_storage::env::with_runtime_env;
+    use calimero_storage::index::Index;
+    use calimero_storage::interface::Interface;
+    use calimero_storage::merge::MergeRootStateRequest;
+    use calimero_storage::store::{MainStorage, StorageAdaptor};
+
+    // Build a runtime env so storage callbacks resolve against the
+    // right context — mirrors what HC initiator does for its DFS.
+    let runtime_env = calimero_node_primitives::sync::create_runtime_env(
+        store,
+        context_id,
+        our_identity,
+    );
+
+    for (key, incoming) in deferred {
+        let entity_id = Id::new(*key);
+
+        // Read existing bytes + metadata under the runtime env so
+        // storage callbacks resolve. `get_metadata` returns `None` if
+        // the receiver has never seen the root entity — in that case
+        // existing is empty + timestamps are 0, and the WASM-side
+        // bootstrap fast-path (existing.created_at == existing.updated_at)
+        // accepts incoming unconditionally.
+        let read_result: eyre::Result<(Vec<u8>, Metadata)> =
+            with_runtime_env(runtime_env.clone(), || {
+                let meta = Index::<MainStorage>::get_index(entity_id)
+                    .map_err(|e| eyre::eyre!("get_index: {e}"))?
+                    .map(|idx| idx.metadata)
+                    .unwrap_or_default();
+                let existing = <MainStorage as StorageAdaptor>::storage_read(
+                    calimero_storage::store::Key::Entry(entity_id),
+                )
+                .unwrap_or_default();
+                Ok((existing, meta))
+            });
+
+        let (existing, existing_metadata) = match read_result {
+            Ok(pair) => pair,
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    %err,
+                    "deferred root merge: failed to read existing root state, skipping"
+                );
+                continue;
+            }
+        };
+
+        // Use the maximum of existing and incoming timestamps for the
+        // merged result's updated_at — convention matches LWW timestamp
+        // semantics and ensures the merged write strictly advances the
+        // local logical clock for this entity.
+        let existing_ts: u64 = (*existing_metadata.updated_at).into();
+        let incoming_ts: u64 = existing_ts.max(
+            // HC leaves don't carry an HLC-keyed update timestamp for
+            // the root entity (the leaf carries its own metadata, but
+            // that's per-leaf, not per-root-merge). Use existing_ts + 1
+            // as a synthetic monotonic tick; the merge IS the write so
+            // the local clock must advance.
+            existing_ts.saturating_add(1),
+        );
+
+        let request = MergeRootStateRequest {
+            existing,
+            incoming: incoming.clone(),
+            existing_created_at: existing_metadata.created_at,
+            existing_ts,
+            incoming_ts,
+        };
+
+        let merged = match context_client
+            .merge_root_state(&context_id, &our_identity, request)
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    ?err,
+                    "deferred root merge: WASM dispatch failed, skipping"
+                );
+                continue;
+            }
+        };
+
+        // Write merged bytes back. Bump `updated_at` to incoming_ts so the
+        // post-merge state is timestamped consistently for the next sync.
+        let mut new_metadata = existing_metadata.clone();
+        new_metadata.updated_at = incoming_ts.into();
+
+        let write_result = with_runtime_env(runtime_env.clone(), || {
+            Interface::<MainStorage>::write_pre_merged_root_state(
+                entity_id,
+                &merged,
+                new_metadata,
+            )
+            .map_err(|e| eyre::eyre!("write_pre_merged_root_state: {e}"))
+        });
+
+        match write_result {
+            Ok(_full_hash) => {
+                info!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    "deferred root merge: applied"
+                );
+            }
+            Err(err) => {
+                warn!(
+                    %context_id,
+                    entity_id = %hex::encode(key),
+                    %err,
+                    "deferred root merge: failed to write merged bytes back"
+                );
+            }
+        }
+
     }
 }
 

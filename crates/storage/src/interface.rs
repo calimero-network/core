@@ -2076,6 +2076,44 @@ impl<S: StorageAdaptor> Interface<S> {
         Ok(Some((is_new, full_hash)))
     }
 
+    /// Write a root-state byte blob that has *already* been CRDT-merged
+    /// by an external dispatcher (e.g. the WASM module via
+    /// `ContextClient::merge_root_state`). Bypasses the host-side
+    /// merge step entirely — the caller has guaranteed the merge has
+    /// happened — and just does the post-merge work: hash, Merkle
+    /// index update, storage write.
+    ///
+    /// Necessary because host-side `merge_root_state` can't dispatch the
+    /// app's typed `Mergeable::merge` (the registry it consults is only
+    /// populated inside WASM). The sync paths that encounter root-entity
+    /// divergence delegate the merge itself to WASM, then call this to
+    /// commit the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the index update fails or the storage
+    /// write fails. Does NOT enforce I5 — the caller IS the source of
+    /// the merged bytes and is responsible for I5 compliance.
+    pub fn write_pre_merged_root_state(
+        id: Id,
+        merged: &[u8],
+        metadata: Metadata,
+    ) -> Result<[u8; 32], StorageError> {
+        // Mirror the post-merge work in `save_internal` for `id.is_root()`:
+        // hash the merged bytes, update the Merkle index, write storage.
+        // `add_root` if no last_metadata exists yet — same as save_internal's
+        // "first time creating root entity" branch.
+        let last_metadata = <Index<S>>::get_metadata(id)?;
+        if last_metadata.is_none() && id.is_root() {
+            <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata.clone()))?;
+        }
+
+        let own_hash: [u8; 32] = Sha256::digest(merged).into();
+        let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
+        _ = S::storage_write(Key::Entry(id), merged);
+        Ok(full_hash)
+    }
+
     /// Attempt to merge two versions of data using CRDT semantics.
     ///
     /// Returns the merged data, or an error if merge fails.

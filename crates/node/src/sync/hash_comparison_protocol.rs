@@ -130,6 +130,17 @@ pub struct HashComparisonStats {
     /// merge did not converge the two peers — see #2407 for the
     /// failure mode this guards against.
     pub root_hash_verified: bool,
+    /// Root-state byte blobs the DFS encountered on remote leaves
+    /// that the host can't merge by itself (separate-address-space
+    /// merge registry — see [`crate::sync::helpers::apply_leaf_with_crdt_merge`]).
+    /// Each entry is `(entity_id_bytes, incoming_bytes)`. The caller
+    /// (`ProtocolSelector`) dispatches each one through
+    /// `ContextClient::merge_root_state` after the sync completes,
+    /// closing the loop on root-entity divergence that HC would
+    /// otherwise silently drop. Storing the entity id lets the caller
+    /// distinguish `ROOT_ID` from the `Root<T>` entry (both treated
+    /// as root by `is_app_root_entry`, both possible in HC leaves).
+    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>)>,
 }
 
 /// HashComparison sync protocol.
@@ -325,6 +336,24 @@ async fn run_initiator_impl<T: SyncTransport>(
                             key = %hex::encode(leaf_data.key),
                             "HC merge skipped: claimed author is not currently authorized for this context"
                         );
+                        continue;
+                    }
+
+                    // Root entity leaves can't be merged on the host
+                    // (the host's `merge_root_state` consults a registry
+                    // that's only populated inside WASM). Hand them off
+                    // to the caller, which dispatches each through
+                    // `ContextClient::merge_root_state` after the sync
+                    // session completes. `apply_leaf_with_crdt_merge`
+                    // also short-circuits root entities — we check here
+                    // too so we can record the incoming bytes (the helper
+                    // is sync and inside `with_runtime_env`, so it can't
+                    // call into the runtime to do the merge itself).
+                    let entity_id = calimero_storage::address::Id::new(leaf_data.key);
+                    if calimero_storage::collections::is_app_root_entry(entity_id) {
+                        stats
+                            .deferred_root_merges
+                            .push((leaf_data.key, leaf_data.value.clone()));
                         continue;
                     }
 
