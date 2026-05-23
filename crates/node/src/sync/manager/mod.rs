@@ -3,7 +3,6 @@
 //! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
 //! **Strategy**: Try delta sync first, fallback to state sync on failure.
 
-use std::pin::pin;
 use std::sync::Arc;
 
 use calimero_context_client::client::ContextClient;
@@ -25,20 +24,18 @@ use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{self, Instant, MissedTickBehavior};
+use tokio::time::{self, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::sync_session_bridge::{
-    SyncSessionJob, SyncSessionResult, SyncSessionSendError, SyncSessionSender,
-};
+use crate::sync_session_bridge::{SyncSessionResult, SyncSessionSender};
 use crate::utils::choose_stream;
 
 use super::config::SyncConfig;
-// SyncProtocol from primitives for protocol selection (7 variants, CIP §2.3).
-// `SyncState` + the `TrackingSyncProtocol` alias moved with the run-loop
-// session-tracking state to `super::session` as Phase 3 of #2313.
-use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtocol};
-use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
+// `SyncState` + the `TrackingSyncProtocol` alias moved to `super::session`
+// (Phase 3 of #2313). HashComparison + LevelWise initiator dispatch moved
+// to `super::protocol_selector` (Phase 4). The run-loop + select! body
+// moved to `super::driver` (Phase 5). `SyncProtocol` from primitives is
+// still referenced here for protocol-selection types.
 use calimero_node_primitives::sync::{
     build_handshake_from_raw, estimate_entity_count, estimate_max_depth, select_protocol,
     SyncHandshake, SyncProtocol,
@@ -407,38 +404,30 @@ impl SyncManager {
         build_handshake_from_raw(root_hash, entity_count, max_depth, peer_dag_heads.to_vec())
     }
 
+    /// Run the sync-manager actor loop until the input channels close.
+    ///
+    /// Thin shell after Phase 5 of #2313: takes the channel handles
+    /// off `self`, constructs a `SyncDriver` with the per-context
+    /// `SessionTracker`, and delegates the actor loop to
+    /// `SyncDriver::run`. The driver borrows `&self` for the
+    /// cross-actor dispatch callbacks (namespace sync, namespace
+    /// join, open-subgroup join) via the
+    /// [`super::driver::SyncDriverDispatch`] trait that `SyncManager`
+    /// implements.
     pub async fn start(mut self) {
-        let mut next_sync = time::interval(self.sync_config.frequency);
-
-        next_sync.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-        // All per-context session-tracking state — `SyncState` map,
-        // dispatch-attempt backoff, wedge-watchdog timer, and the
-        // mailbox-full rollup counters — lives on this struct. See
-        // `crate::sync::session::SessionTracker` for the per-field
-        // rationale. Extracted from the inline locals as Phase 3 of
-        // #2313.
-        let mut tracker = super::session::SessionTracker::new(
-            self.sync_config.session_deadline,
-            self.sync_config.interval,
-        );
-
-        let mut requested_ctx = None;
-        let mut requested_peer = None;
-
-        let Some(mut ctx_sync_rx) = self.ctx_sync_rx.take() else {
+        let Some(ctx_sync_rx) = self.ctx_sync_rx.take() else {
             error!("SyncManager can only be run once");
             return;
         };
-        let mut ns_sync_rx = self.ns_sync_rx.take().unwrap_or_else(|| {
+        let ns_sync_rx = self.ns_sync_rx.take().unwrap_or_else(|| {
             let (_tx, rx) = mpsc::channel(1);
             rx
         });
-        let mut ns_join_rx = self.ns_join_rx.take().unwrap_or_else(|| {
+        let ns_join_rx = self.ns_join_rx.take().unwrap_or_else(|| {
             let (_tx, rx) = mpsc::channel(1);
             rx
         });
-        let mut open_subgroup_join_rx = self.open_subgroup_join_rx.take().unwrap_or_else(|| {
+        let open_subgroup_join_rx = self.open_subgroup_join_rx.take().unwrap_or_else(|| {
             let (_tx, rx) = mpsc::channel(1);
             rx
         });
@@ -446,225 +435,30 @@ impl SyncManager {
             error!("SyncManager started without a SyncSessionActor handle (#2316)");
             return;
         };
-        let Some(mut session_result_rx) = self.session_result_rx.take() else {
+        let Some(session_result_rx) = self.session_result_rx.take() else {
             error!("SyncManager started without a SyncSessionActor result channel (#2316)");
             return;
         };
 
-        loop {
-            tokio::select! {
-                _ = next_sync.tick() => {
-                    debug!("Performing interval sync");
-                    // #2319: roll up rate-limited mailbox-full drops.
-                    if let Some(rollup) = tracker.tick_full_drops_summary() {
-                        info!(
-                            full_drops_in_window = rollup.drops,
-                            contexts_affected = rollup.contexts_affected,
-                            "SyncSession mailbox-full drop rollup (#2319)",
-                        );
-                    }
-                    // #2319 watchdog: synthesise a failure for any
-                    // context whose initiator hasn't produced a result
-                    // within `session_wedge_grace`. The tracker applies
-                    // `on_failure` on the returned contexts' state
-                    // entries; we emit the per-context warn.
-                    let grace = tracker.session_wedge_grace();
-                    for context_id in tracker.tick_wedge_watchdog() {
-                        warn!(
-                            %context_id,
-                            grace = ?grace,
-                            "SyncSession initiator produced no result within watchdog grace — assuming a wedged session/actor; failing it so periodic-sync retries (#2319)"
-                        );
-                    }
-                }
-                Some(result) = session_result_rx.recv() => {
-                    // `apply_result` clears the dispatch-attempt + wedge
-                    // timers for the context AND updates `SyncState` —
-                    // the per-arm logs are emitted from inside the
-                    // tracker so the existing log shapes stay byte-
-                    // identical to the pre-extraction text.
-                    tracker.apply_result(result);
-                    continue;
-                }
-                Some(namespace_id) = ns_sync_rx.recv() => {
-                    info!(
-                        namespace_id = %hex::encode(namespace_id),
-                        "Performing namespace governance sync"
-                    );
-                    self.sync_namespace_from_peer(namespace_id).await;
-                    continue;
-                }
-                Some((params, reply_tx)) = ns_join_rx.recv() => {
-                    info!(
-                        namespace_id = %hex::encode(params.namespace_id),
-                        "Processing namespace join request (initiator side)"
-                    );
-                    let result = self.initiate_namespace_join(params).await;
-                    let _ignored = reply_tx.send(result);
-                    continue;
-                }
-                Some((params, reply_tx)) = open_subgroup_join_rx.recv() => {
-                    info!(
-                        namespace_id = %hex::encode(params.namespace_id),
-                        subgroup_id = %hex::encode(params.subgroup_id),
-                        "Processing open-subgroup join request (initiator side)"
-                    );
-                    let result = self.initiate_open_subgroup_join(params).await;
-                    let _ignored = reply_tx.send(result);
-                    continue;
-                }
-                Some((ctx, peer)) = ctx_sync_rx.recv() => {
-                    info!(?ctx, ?peer, "Received sync request");
+        let tracker = super::session::SessionTracker::new(
+            self.sync_config.session_deadline,
+            self.sync_config.interval,
+        );
 
-                    requested_ctx = ctx;
-                    requested_peer = peer;
+        let driver = super::driver::SyncDriver::new(
+            tracker,
+            self.context_client.clone(),
+            ctx_sync_rx,
+            ns_sync_rx,
+            ns_join_rx,
+            open_subgroup_join_rx,
+            session_tx,
+            session_result_rx,
+            self.sync_config.frequency,
+            self.sync_config.interval,
+        );
 
-                    // CRITICAL FIX: Drain all other pending sync requests in the queue.
-                    // When multiple contexts join rapidly (common in E2E tests), they all
-                    // call sync() which queues requests in ctx_sync_rx. The old code only
-                    // processed ONE request per loop iteration, leaving contexts 2-N queued
-                    // indefinitely. This caused those contexts to never sync and remain
-                    // with dag_heads=[] and Uninitialized errors.
-                    //
-                    // Solution: Use try_recv() to drain all buffered requests immediately,
-                    // then trigger a full sync that will process all contexts.
-                    let mut drained_count = 0;
-                    while ctx_sync_rx.try_recv().is_ok() {
-                        drained_count += 1;
-                    }
-
-                    if drained_count > 0 {
-                        info!(drained_count, "Drained additional sync requests from queue, will sync all contexts");
-                        // Clear requested_ctx to force syncing ALL contexts
-                        // This ensures newly-joined contexts get synced even if they weren't first in queue
-                        requested_ctx = None;
-                        requested_peer = None;
-                    }
-                }
-            }
-
-            let requested_ctx = requested_ctx.take();
-            let requested_peer = requested_peer.take();
-
-            let contexts = requested_ctx
-                .is_none()
-                .then(|| self.context_client.get_context_ids(None));
-
-            let contexts = stream::iter(requested_ctx)
-                .map(Ok)
-                .chain(stream::iter(contexts).flatten());
-
-            let mut contexts = pin!(contexts);
-
-            while let Some(context_id) = contexts.next().await {
-                let context_id = match context_id {
-                    Ok(context_id) => context_id,
-                    Err(err) => {
-                        error!(%err, "Failed reading context id to sync");
-                        continue;
-                    }
-                };
-
-                // #2319: respect the dispatch-attempt backoff. After a
-                // `Full` mailbox we wait one `interval` before retrying
-                // Phase 1: read-only eligibility check. We must not
-                // mutate state here because a failed `try_send` below
-                // would leave `last_sync = None` with no future result
-                // to clear it — permanently stalling the context
-                // (Cursor bugbot #2317). The tracker rolls together
-                // the #2319 dispatch-attempt backoff and the recency
-                // check; `force` (explicit request) bypasses both.
-                let force = requested_ctx.is_some();
-                let is_first_sync = match tracker.dispatch_decision(&context_id, force) {
-                    super::session::DispatchDecision::Skip(reason) => {
-                        use super::session::SkipReason;
-                        match reason {
-                            SkipReason::DispatchRecentlyAttempted => debug!(
-                                %context_id,
-                                "Skipping sync — dispatch recently attempted, mailbox was full (#2319)"
-                            ),
-                            SkipReason::AlreadyInProgress => debug!(
-                                %context_id,
-                                "Sync already in progress"
-                            ),
-                            SkipReason::LastSyncTooRecent {
-                                time_since,
-                                minimum,
-                            } => debug!(
-                                %context_id,
-                                ?time_since,
-                                ?minimum,
-                                "Skipping sync, last one was too recent"
-                            ),
-                        }
-                        continue;
-                    }
-                    super::session::DispatchDecision::Eligible {
-                        is_first_sync,
-                        forced_despite_recency,
-                    } => {
-                        if let Some(time_since) = forced_despite_recency {
-                            debug!(
-                                %context_id,
-                                ?time_since,
-                                minimum = ?self.sync_config.interval,
-                                "Force syncing despite recency, due to explicit request"
-                            );
-                        }
-                        is_first_sync
-                    }
-                };
-
-                info!(%context_id, "Scheduled sync");
-
-                // Phase 2: dispatch BEFORE mutating state — so a
-                // `Full`/`Closed` outcome leaves the per-context
-                // tracking state untouched and the next interval
-                // tick (or heartbeat trigger) just retries.
-                let dispatched = match session_tx.try_send(SyncSessionJob::Initiator {
-                    context_id,
-                    peer_id: requested_peer,
-                }) {
-                    Ok(()) => true,
-                    Err(SyncSessionSendError::Full) => {
-                        match tracker.record_dispatch_full(context_id) {
-                            super::session::FullWarnHint::EmitWarn => warn!(
-                                %context_id,
-                                "SyncSession actor mailbox full — skipping initiator dispatch; backing off this context for {:?} (#2316/#2319)",
-                                self.sync_config.interval
-                            ),
-                            super::session::FullWarnHint::EmitDebug => debug!(
-                                %context_id,
-                                "SyncSession actor mailbox full — skipping (rate-limited; see periodic rollup) (#2319)"
-                            ),
-                        }
-                        false
-                    }
-                    Err(SyncSessionSendError::Closed) => {
-                        tracker.record_dispatch_closed(context_id);
-                        warn!(
-                            %context_id,
-                            "SyncSession actor closed — skipping initiator dispatch"
-                        );
-                        false
-                    }
-                };
-
-                if !dispatched {
-                    continue;
-                }
-
-                // Phase 3: dispatch succeeded — mark the context as
-                // in-flight. A `SyncSessionResult` will arrive on
-                // `session_result_rx` and call `on_success` /
-                // `on_failure` to clear the flag — or, if it never does,
-                // the #2319 watchdog above fails it after the grace.
-                if is_first_sync {
-                    info!(%context_id, "Syncing for the first time");
-                }
-                tracker.record_dispatch_succeeded(context_id, is_first_sync);
-            }
-        }
+        driver.run(&self).await;
     }
 
     pub(crate) async fn perform_interval_sync(
@@ -2893,6 +2687,30 @@ impl super::protocol_selector::ProtocolDispatch for SyncManager {
         chosen_peer: PeerId,
     ) -> eyre::Result<SyncProtocol> {
         SyncManager::fallback_to_snapshot_sync(self, context_id, our_identity, chosen_peer).await
+    }
+}
+
+// Driver-dispatch back into `SyncManager` for the cross-actor message
+// handlers the extracted `SyncDriver` needs to call. Same `?Send`
+// rationale as the prior dispatch impls.
+#[async_trait::async_trait(?Send)]
+impl super::driver::SyncDriverDispatch for SyncManager {
+    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) {
+        SyncManager::sync_namespace_from_peer(self, namespace_id).await
+    }
+
+    async fn initiate_namespace_join(
+        &self,
+        params: calimero_node_primitives::client::NamespaceJoinParams,
+    ) -> eyre::Result<calimero_node_primitives::join_bundle::JoinBundle> {
+        SyncManager::initiate_namespace_join(self, params).await
+    }
+
+    async fn initiate_open_subgroup_join(
+        &self,
+        params: calimero_node_primitives::client::OpenSubgroupJoinParams,
+    ) -> eyre::Result<Vec<u8>> {
+        SyncManager::initiate_open_subgroup_join(self, params).await
     }
 }
 
