@@ -933,6 +933,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 "Delta pending due to missing parents - requesting them from peer"
             );
 
+            let datastore_for_fetch = node_clients.context.datastore_handle().into_inner();
             match request_missing_deltas(
                 network_client,
                 sync_timeout,
@@ -941,6 +942,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 source,
                 our_identity,
                 delta_store_ref.clone(),
+                datastore_for_fetch,
             )
             .await
             {
@@ -2049,6 +2051,7 @@ async fn request_missing_deltas(
     source: PeerId,
     our_identity: PublicKey,
     delta_store: DeltaStore,
+    datastore: calimero_store::Store,
 ) -> Result<Vec<([u8; 32], Vec<u8>)>> {
     use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 
@@ -2060,9 +2063,20 @@ async fn request_missing_deltas(
     // Open stream to peer
     let mut stream = network_client.open_stream(source).await?;
 
-    // Fetch all missing ancestors, then add them in topological order (oldest first)
+    // Fetch all missing ancestors, then add them in topological order (oldest first).
+    // The tuple carries the wire-received author + governance position
+    // + envelope signature so the persist step writes them to the
+    // `ContextDagDelta` row (next DAG-catchup serves can pass them on)
+    // and the cross-DAG check + envelope verification fire before apply.
     let mut to_fetch = missing_ids;
-    let mut fetched_deltas: Vec<(calimero_dag::CausalDelta<Vec<Action>>, [u8; 32])> = Vec::new();
+    type ParentFetch = (
+        calimero_dag::CausalDelta<Vec<Action>>,
+        [u8; 32],                // delta_id (redundant with .id but kept for log clarity)
+        PublicKey,               // author_id from wire
+        Option<Vec<u8>>,         // governance_position_blob from wire
+        Option<[u8; 64]>,        // delta_signature from wire
+    );
+    let mut fetched_deltas: Vec<ParentFetch> = Vec::new();
     let mut fetch_count = 0;
     // Accumulated (delta_id, events_data) pairs from any cascades that
     // happen while adding peer-fetched parents below. Passed back to the
@@ -2105,7 +2119,13 @@ async fn request_missing_deltas(
             let timeout_budget = sync_timeout / 3;
             match crate::sync::stream::recv(&mut stream, None, timeout_budget).await? {
                 Some(StreamMessage::Message {
-                    payload: MessagePayload::DeltaResponse { delta, .. },
+                    payload:
+                        MessagePayload::DeltaResponse {
+                            delta,
+                            author_id: response_author,
+                            governance_position_blob,
+                            delta_signature: response_delta_signature,
+                        },
                     ..
                 }) => {
                     // Deserialize storage delta
@@ -2115,9 +2135,109 @@ async fn request_missing_deltas(
                     info!(
                         %context_id,
                         delta_id = ?missing_id,
+                        author = %response_author,
                         action_count = storage_delta.actions.len(),
                         "Received missing parent delta"
                     );
+
+                    // Decode governance_position once for both the
+                    // envelope-signature verification and the cross-
+                    // DAG membership check below.
+                    let governance_position: Option<
+                        calimero_context_config::types::GovernancePosition,
+                    > = match governance_position_blob
+                        .as_deref()
+                        .map(borsh::from_slice::<calimero_context_config::types::GovernancePosition>)
+                        .transpose()
+                    {
+                        Ok(pos) => pos,
+                        Err(err) => {
+                            warn!(
+                                %context_id,
+                                delta_id = ?missing_id,
+                                %err,
+                                "parent-fetch: failed to decode governance_position from \
+                                 peer; skipping this delta to avoid silent bypass"
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Envelope-signature verification (parity with the
+                    // gossip + DAG-catchup paths in
+                    // `apply_authorized_state_delta` / `request_dag_heads_and_sync`).
+                    // `None` is tolerated for the wire-up transition;
+                    // any present signature MUST verify.
+                    if let Some(ref sig) = response_delta_signature {
+                        if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+                            context_id,
+                            storage_delta.id,
+                            response_author,
+                            governance_position.as_ref(),
+                            sig,
+                        ) {
+                            warn!(
+                                %context_id,
+                                delta_id = ?missing_id,
+                                author = %response_author,
+                                %err,
+                                "parent-fetch: envelope signature verification failed, dropping"
+                            );
+                            continue;
+                        }
+                    }
+
+                    // Cross-DAG membership check: same as the
+                    // request_dag_heads_and_sync path. Reject deltas
+                    // whose author was removed at the cited cut.
+                    if let Some(ref pos) = governance_position {
+                        use calimero_context::group_store::{
+                            membership_status_at, MembershipStatus,
+                        };
+                        match membership_status_at(&datastore, &response_author, pos) {
+                            Ok(MembershipStatus::Member(_)) => {}
+                            Ok(MembershipStatus::Removed { last_role }) => {
+                                warn!(
+                                    %context_id,
+                                    delta_id = ?missing_id,
+                                    author = %response_author,
+                                    last_role = ?last_role,
+                                    "parent-fetch: author was removed at cited cut, dropping"
+                                );
+                                continue;
+                            }
+                            Ok(MembershipStatus::NeverMember) => {
+                                warn!(
+                                    %context_id,
+                                    delta_id = ?missing_id,
+                                    author = %response_author,
+                                    "parent-fetch: author never a member at cited cut, dropping"
+                                );
+                                continue;
+                            }
+                            Ok(MembershipStatus::Unknown { needed }) => {
+                                warn!(
+                                    %context_id,
+                                    delta_id = ?missing_id,
+                                    author = %response_author,
+                                    needed = ?needed,
+                                    "parent-fetch: governance cut not locally known, skipping"
+                                );
+                                continue;
+                            }
+                            Err(err) => {
+                                warn!(
+                                    %context_id,
+                                    delta_id = ?missing_id,
+                                    author = %response_author,
+                                    %err,
+                                    "parent-fetch: membership_status_at failed, dropping to \
+                                     avoid silent bypass"
+                                );
+                                continue;
+                            }
+                        }
+                    }
 
                     // Convert to DAG delta
                     let dag_delta = calimero_dag::CausalDelta {
@@ -2129,8 +2249,16 @@ async fn request_missing_deltas(
                         kind: calimero_dag::DeltaKind::Regular,
                     };
 
-                    // Store for later (don't add to DAG yet!)
-                    fetched_deltas.push((dag_delta, missing_id));
+                    // Store for later (don't add to DAG yet!) — carry
+                    // the verified wire fields so the persist step
+                    // can write them to the row.
+                    fetched_deltas.push((
+                        dag_delta,
+                        missing_id,
+                        response_author,
+                        governance_position_blob.as_ref().map(|c| c.to_vec()),
+                        response_delta_signature,
+                    ));
 
                     // Check what parents THIS delta needs
                     for parent_id in &storage_delta.parents {
@@ -2141,7 +2269,7 @@ async fn request_missing_deltas(
                         // Skip if we already have it or are about to fetch it
                         if !delta_store.has_delta(parent_id).await
                             && !to_fetch.contains(parent_id)
-                            && !fetched_deltas.iter().any(|(d, _)| d.id == *parent_id)
+                            && !fetched_deltas.iter().any(|(d, _, _, _, _)| d.id == *parent_id)
                         {
                             to_fetch.push(*parent_id);
                         }
@@ -2172,7 +2300,9 @@ async fn request_missing_deltas(
         // Reverse so oldest ancestors are added first
         fetched_deltas.reverse();
 
-        for (dag_delta, delta_id) in fetched_deltas {
+        for (dag_delta, delta_id, author_id, governance_position_blob, delta_signature)
+            in fetched_deltas
+        {
             // Use the events-aware entry point so we can forward any events
             // attached to *cascaded children* to the caller. The peer-fetched
             // parent itself has no events (the wire protocol doesn't carry
@@ -2180,17 +2310,20 @@ async fn request_missing_deltas(
             // but `add_delta_internal`'s internal `apply_pending` can cascade
             // children that were pre-persisted with events, and those need
             // to reach `execute_cascaded_events` at the caller.
-            // Parent-fetch path: the wire's `DeltaResponse` carries
-            // `author_id` and `governance_position_blob`, but they
-            // aren't yet threaded into `fetched_deltas` (the loop
-            // builds the dag_delta from the wire content only). Persist
-            // with `None` for now — this means DAG-catchup serves from
-            // this node for the missing-parent delta would return
-            // `DeltaNotFound` until the next gossip / catch-up populates
-            // the author info. Follow-up: extend `fetched_deltas` to
-            // capture author + position from the response.
+            //
+            // The wire-received author + governance position + envelope
+            // signature are persisted on the row so subsequent
+            // DAG-catchup serves from this node include the claim
+            // (responder filters out rows without an author claim, see
+            // `crates/node/src/sync/delta_request.rs`).
             match delta_store
-                .add_delta_with_events(dag_delta, None, None, None, None)
+                .add_delta_with_events(
+                    dag_delta,
+                    None,
+                    Some(author_id),
+                    governance_position_blob,
+                    delta_signature,
+                )
                 .await
             {
                 Ok(result) => {
@@ -2354,6 +2487,33 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     let _context = context_client
         .get_context(&context_id)?
         .ok_or_else(|| eyre::eyre!("context not found after snapshot sync"))?;
+
+    // Per-delta envelope signature verification, parity with the
+    // gossip + DAG-catchup + parent-fetch paths. The `BufferedDelta`
+    // carries the signature through snapshot-sync buffering precisely
+    // so a replayed delta is re-verified against the same payload the
+    // original sender signed (Wave 5). Without this gate, snapshot-
+    // sync replay would silently accept envelope-forged buffered
+    // deltas — the very class of attack the envelope signature
+    // exists to prevent.
+    if let Some(ref sig) = buffered.delta_signature {
+        if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+            context_id,
+            delta_id,
+            buffered.author_id,
+            buffered.governance_position.as_ref(),
+            sig,
+        ) {
+            warn!(
+                %context_id,
+                delta_id = ?delta_id,
+                author = %buffered.author_id,
+                %err,
+                "Rejecting buffered state delta — envelope signature verification failed"
+            );
+            return Ok(false);
+        }
+    }
 
     // ReadOnly check, parallel to `handle_state_delta` and
     // `apply_authorized_state_delta`. Snapshot-sync replay must enforce the

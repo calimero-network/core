@@ -1,12 +1,12 @@
 //! Merge registry for automatic CRDT merging — WASM-side only.
 //!
-//! This module provides a type registry the macro-generated
-//! `__calimero_register_merge` export populates so the WASM-side
-//! `Interface::save_internal` can dispatch root-state CRDT merges via
-//! the app's typed `Mergeable::merge`. The macro emits `register_crdt_merge`
-//! calls inside the WASM module's static-init; the registry then lives
-//! in WASM's static memory and is consulted by WASM-side
-//! `merge_root_state` whenever a root-entity action is applied.
+//! The `#[app::state]` macro emits a `__calimero_register_merge` WASM
+//! export the runtime calls at module-load time; that export calls
+//! `register_crdt_merge::<AppState>()` inside the WASM module, which
+//! writes a merge closure into this registry. WASM-side
+//! `merge_root_state` (called from `Interface::save_internal` when a
+//! root-entity action applies inside WASM) then consults the registry
+//! to dispatch the typed merge.
 //!
 //! ## Scope
 //!
