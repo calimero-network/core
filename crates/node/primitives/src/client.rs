@@ -422,6 +422,33 @@ impl NodeClient {
         Ok(())
     }
 
+    /// Publish raw payload on the namespace topic `ns/<hex(namespace_id)>`
+    /// immediately, without the "wait for mesh, then publish anyway" loop of
+    /// [`publish_on_namespace`](Self::publish_on_namespace).
+    ///
+    /// Returns the mesh peer count observed at publish time so a caller running
+    /// its own re-announce loop (e.g. the fleet-join admission wait) can tell a
+    /// publish into a live mesh apart from a publish into an empty mesh — the
+    /// latter is lost forever because gossipsub does not replay. Re-announcing
+    /// each poll cycle means a *later* mesh window still receives a fresh copy,
+    /// which a single up-front publish (the bug this fixes) never could.
+    ///
+    /// Kept separate from [`publish_on_namespace`](Self::publish_on_namespace)
+    /// so the up-front wait-then-publish semantics other callers rely on are
+    /// untouched; this is the opt-in, per-cycle building block.
+    pub async fn publish_on_namespace_now(
+        &self,
+        namespace_id: [u8; 32],
+        payload: Vec<u8>,
+    ) -> eyre::Result<usize> {
+        let topic_str = format!("ns/{}", hex::encode(namespace_id));
+        let topic = TopicHash::from_raw(topic_str);
+
+        let mesh_peers = self.network_client.mesh_peer_count(topic.clone()).await;
+        let _ignored = self.network_client.publish(topic, payload).await?;
+        Ok(mesh_peers)
+    }
+
     pub async fn get_peers_count(&self, context: Option<&ContextId>) -> usize {
         let Some(context) = context else {
             return self.network_client.peer_count().await;
@@ -729,5 +756,219 @@ impl NodeClient {
         self.sync_client
             .request_open_subgroup_join(namespace_id, subgroup_id, joiner_public_key)
             .await
+    }
+}
+
+#[cfg(test)]
+mod publish_on_namespace_now_tests {
+    //! Unit tests for the re-announce building block
+    //! [`NodeClient::publish_on_namespace_now`] and the re-announce-until-
+    //! admitted loop it powers in the fleet-join handler.
+    //!
+    //! The fleet-join admission wait lives in `calimero-server` (it needs the
+    //! `ctx_client` admission read, which this crate does not see), so the loop
+    //! itself is reproduced here against the same publish primitive. This is the
+    //! smallest real unit: a live `NetworkClient` backed by a stub network actor
+    //! that counts `Publish` messages and reports a settable mesh peer count —
+    //! no libp2p transport, no server crate. The full owner-side admission path
+    //! is covered by `calimero-node`'s `local_governance_node_e2e.rs`.
+    //!
+    //! Runs under `#[actix::test]` (single-threaded actix System) so the stub
+    //! actor's mailbox is pumped by the same runtime that drives the client's
+    //! `.await`s — `Actor::create` + `LazyRecipient::init`, the documented
+    //! pattern from `calimero-utils-actix`'s own `lazy_tests.rs`.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use actix::Actor;
+    use calimero_blobstore::config::BlobStoreConfig;
+    use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
+    use calimero_network_primitives::client::NetworkClient;
+    use calimero_network_primitives::messages::{MessageId, NetworkMessage};
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+    use calimero_utils_actix::LazyRecipient;
+    use tokio::sync::{broadcast, mpsc};
+
+    use super::{BlobManager, NodeClient, SyncClient};
+
+    /// Stub network actor: records how many times a `Publish` is requested and
+    /// reports whatever mesh peer count the test sets via the shared atomic.
+    /// Resolves `Publish`/`MeshPeerCount` outcomes so the awaiting client future
+    /// completes; every other variant is dropped (none are reached here).
+    struct CountingNetworkActor {
+        publish_count: Arc<AtomicUsize>,
+        mesh_peers: Arc<AtomicUsize>,
+    }
+
+    impl Actor for CountingNetworkActor {
+        type Context = actix::Context<Self>;
+    }
+
+    impl actix::Handler<NetworkMessage> for CountingNetworkActor {
+        type Result = ();
+
+        fn handle(&mut self, msg: NetworkMessage, _ctx: &mut Self::Context) -> Self::Result {
+            match msg {
+                NetworkMessage::MeshPeerCount { outcome, .. } => {
+                    let _ = outcome.send(self.mesh_peers.load(Ordering::SeqCst));
+                }
+                NetworkMessage::Publish { outcome, .. } => {
+                    let _prev = self.publish_count.fetch_add(1, Ordering::SeqCst);
+                    let _ = outcome.send(Ok(MessageId(b"stub".to_vec())));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Build a `NodeClient` whose `network_client` is wired to a freshly started
+    /// [`CountingNetworkActor`] on the current actix System. Only the network
+    /// path is exercised by `publish_on_namespace_now`; the remaining fields are
+    /// minimal real stubs. Returns the client plus the shared publish-count and
+    /// mesh-peer atomics for assertions. The `TempDir` is returned so the
+    /// caller keeps the blobstore filesystem alive for the test's duration.
+    async fn make_client() -> (
+        NodeClient,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+
+        let blob_cfg =
+            BlobStoreConfig::new(tmp.path().to_path_buf().try_into().expect("utf8 blob path"));
+        let fs = FileSystem::new(&blob_cfg).await.expect("blob fs");
+        let blob_manager = BlobManager::new(BlobStore::new(store.clone(), fs));
+
+        let network_recipient = LazyRecipient::<NetworkMessage>::new();
+        let network_client = NetworkClient::new(network_recipient.clone());
+
+        let publish_count = Arc::new(AtomicUsize::new(0));
+        let mesh_peers = Arc::new(AtomicUsize::new(0));
+
+        let actor = CountingNetworkActor {
+            publish_count: Arc::clone(&publish_count),
+            mesh_peers: Arc::clone(&mesh_peers),
+        };
+        let _addr = CountingNetworkActor::create(move |ctx| {
+            assert!(network_recipient.init(ctx), "network recipient init");
+            actor
+        });
+
+        let (event_sender, _) = broadcast::channel(16);
+        let (ctx_sync_tx, _ctx_sync_rx) = mpsc::channel(8);
+        let (ns_sync_tx, _ns_sync_rx) = mpsc::channel(8);
+        let (ns_join_tx, _ns_join_rx) = mpsc::channel(8);
+        let (open_subgroup_join_tx, _open_rx) = mpsc::channel(8);
+        let sync_client =
+            SyncClient::new(ctx_sync_tx, ns_sync_tx, ns_join_tx, open_subgroup_join_tx);
+
+        let node_client = NodeClient::new(
+            store,
+            blob_manager,
+            network_client,
+            LazyRecipient::new(),
+            event_sender,
+            sync_client,
+            String::new(),
+            None,
+        );
+
+        (node_client, publish_count, mesh_peers, tmp)
+    }
+
+    /// `publish_on_namespace_now` publishes exactly once per call and reports the
+    /// mesh peer count observed at publish time (here: 0 — the empty-mesh case
+    /// that silently dropped the one-shot announce before this fix).
+    #[actix::test]
+    async fn publishes_once_and_reports_empty_mesh() {
+        let (client, publish_count, _mesh, _tmp) = make_client().await;
+
+        let observed = client
+            .publish_on_namespace_now([0x11; 32], b"announce".to_vec())
+            .await
+            .expect("publish_on_namespace_now");
+
+        assert_eq!(observed, 0, "no mesh peers were set");
+        assert_eq!(
+            publish_count.load(Ordering::SeqCst),
+            1,
+            "exactly one publish per call"
+        );
+    }
+
+    /// `publish_on_namespace_now` surfaces a non-zero mesh peer count when one
+    /// is present — the signal a caller uses to know the announce landed in a
+    /// live mesh rather than an empty one.
+    #[actix::test]
+    async fn reports_live_mesh_peer_count() {
+        let (client, _publish_count, mesh, _tmp) = make_client().await;
+        mesh.store(2, Ordering::SeqCst);
+
+        let observed = client
+            .publish_on_namespace_now([0x33; 32], b"announce".to_vec())
+            .await
+            .expect("publish_on_namespace_now");
+
+        assert_eq!(observed, 2, "must report the live mesh peer count");
+    }
+
+    /// Locks in the P1 fix: a re-announce loop that publishes every cycle while
+    /// not admitted publishes MORE THAN ONCE over the wait window (the one-shot
+    /// bug published exactly once), and STOPS the moment admission is observed —
+    /// no further announces after admitted. This mirrors the integrated loop in
+    /// `crates/server/src/admin/handlers/tee/fleet_join.rs`.
+    #[actix::test]
+    async fn reannounce_loop_publishes_more_than_once_then_stops_on_admission() {
+        let (client, publish_count, _mesh, _tmp) = make_client().await;
+
+        // Mirror the fleet-join handler loop: publish up front, then on each
+        // not-yet-admitted cycle re-check admission, sleep, then re-publish
+        // (re-publish AFTER the sleep, as the handler does, so the first
+        // re-announce doesn't fire back-to-back with the up-front publish).
+        // Admission flips true after a few cycles; once true the loop must break
+        // BEFORE publishing again. A fast poll keeps the test sub-second.
+        const ADMIT_AFTER_CYCLES: usize = 3;
+        const POLL: Duration = Duration::from_millis(10);
+        const MAX_CYCLES: usize = 50; // hard safety bound
+
+        // First (up-front) announce, as the handler does before its loop.
+        let _ = client
+            .publish_on_namespace_now([0x22; 32], b"announce".to_vec())
+            .await
+            .expect("first announce");
+
+        let mut cycles = 0;
+        let mut admitted = false;
+        while cycles < MAX_CYCLES {
+            // Admission check FIRST so we never re-announce after admitted.
+            if cycles >= ADMIT_AFTER_CYCLES {
+                admitted = true;
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+            let _ = client
+                .publish_on_namespace_now([0x22; 32], b"announce".to_vec())
+                .await
+                .expect("re-announce");
+            cycles += 1;
+        }
+
+        assert!(admitted, "loop must observe admission");
+        let total = publish_count.load(Ordering::SeqCst);
+        assert!(
+            total > 1,
+            "re-announce must publish more than once over the wait window, got {total}"
+        );
+        // up-front (1) + one per not-yet-admitted cycle (ADMIT_AFTER_CYCLES).
+        assert_eq!(
+            total,
+            1 + ADMIT_AFTER_CYCLES,
+            "must stop announcing the instant admission is observed"
+        );
     }
 }
