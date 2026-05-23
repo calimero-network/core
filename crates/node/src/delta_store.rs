@@ -1115,15 +1115,25 @@ impl DeltaStore {
         &self,
         delta: CausalDelta<Vec<Action>>,
         events: Option<Vec<u8>>,
+        author_id: Option<calimero_primitives::identity::PublicKey>,
+        governance_position_blob: Option<Vec<u8>>,
     ) -> Result<AddDeltaResult> {
-        self.add_delta_internal(delta, events).await
+        self.add_delta_internal(delta, events, author_id, governance_position_blob)
+            .await
     }
 
     /// Add a delta to the store (without event data)
     ///
     /// Returns Ok(true) if applied immediately, Ok(false) if pending
-    pub async fn add_delta(&self, delta: CausalDelta<Vec<Action>>) -> Result<bool> {
-        let result = self.add_delta_internal(delta, None).await?;
+    pub async fn add_delta(
+        &self,
+        delta: CausalDelta<Vec<Action>>,
+        author_id: Option<calimero_primitives::identity::PublicKey>,
+        governance_position_blob: Option<Vec<u8>>,
+    ) -> Result<bool> {
+        let result = self
+            .add_delta_internal(delta, None, author_id, governance_position_blob)
+            .await?;
         Ok(result.applied)
     }
 
@@ -1258,6 +1268,8 @@ impl DeltaStore {
         &self,
         delta: CausalDelta<Vec<Action>>,
         events: Option<Vec<u8>>,
+        author_id: Option<calimero_primitives::identity::PublicKey>,
+        governance_position_blob: Option<Vec<u8>>,
     ) -> Result<AddDeltaResult> {
         let delta_id = delta.id;
         let expected_root_hash = delta.expected_root_hash;
@@ -1289,17 +1301,8 @@ impl DeltaStore {
                         applied: false, // Not applied yet, will update if it applies
                         expected_root_hash,
                         events: events.clone(), // Store events for potential cascade
-                        // Receive-side persistence: author / governance
-                        // position aren't threaded through this path yet
-                        // (followup to surface them from the gossip
-                        // envelope into `add_delta_internal`). Setting
-                        // None keeps DAG-catchup serving these deltas
-                        // without an author claim — initiator-side
-                        // membership check treats None as legacy and
-                        // accepts. Anti-impersonation parity for the
-                        // receive→serve path is its own follow-up.
-                        author_id: None,
-                        governance_position_blob: None,
+                        author_id,
+                        governance_position_blob: governance_position_blob.clone(),
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to pre-persist delta with events: {}", e))?;
@@ -1375,8 +1378,8 @@ impl DeltaStore {
                         applied: true,
                         expected_root_hash,
                         events: events.clone(),
-                        author_id: None,
-                        governance_position_blob: None,
+                        author_id,
+                        governance_position_blob: governance_position_blob.clone(),
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to update applied delta: {}", e))?;
@@ -1403,8 +1406,8 @@ impl DeltaStore {
                         applied: true,
                         expected_root_hash,
                         events: None,
-                        author_id: None,
-                        governance_position_blob: None,
+                        author_id,
+                        governance_position_blob,
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to persist applied delta: {}", e))?;

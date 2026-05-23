@@ -1693,8 +1693,7 @@ impl SyncManager {
                                     )
                                 })?;
                             if let Some(ref pos) = pos {
-                                let datastore =
-                                    self.context_client.datastore_handle().into_inner();
+                                let datastore = self.context_client.datastore_handle().into_inner();
                                 use calimero_context::group_store::{
                                     membership_status_at, MembershipStatus,
                                 };
@@ -1765,7 +1764,16 @@ impl SyncManager {
                                 kind: calimero_dag::DeltaKind::Regular,
                             };
 
-                            if let Err(e) = delta_store_ref.add_delta(dag_delta).await {
+                            // Persist with the wire-received author +
+                            // governance position so this node can in
+                            // turn serve verifiable DAG-catchup responses
+                            // to other peers that ask for the same delta.
+                            let persisted_gov_blob =
+                                governance_position_blob.as_ref().map(|c| c.to_vec());
+                            if let Err(e) = delta_store_ref
+                                .add_delta(dag_delta, Some(author), persisted_gov_blob)
+                                .await
+                            {
                                 warn!(
                                     ?e,
                                     %context_id,

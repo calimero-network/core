@@ -825,8 +825,21 @@ pub(crate) async fn apply_authorized_state_delta(
     )
     .await?;
 
+    // Thread the envelope's author + governance position into the
+    // delta store so the persisted `ContextDagDelta` row carries the
+    // claim. Subsequent DAG-catchup serves from this node will then
+    // include the author info, letting the receiving initiator run
+    // the same `membership_status_at` check the gossip path ran here.
+    let governance_position_blob = governance_position
+        .as_ref()
+        .and_then(|gp| borsh::to_vec(gp).ok());
     let add_result = delta_store_ref
-        .add_delta_with_events(delta, events.clone())
+        .add_delta_with_events(
+            delta,
+            events.clone(),
+            Some(author_id),
+            governance_position_blob.clone(),
+        )
         .await?;
     let mut applied = add_result.applied;
     let mut handlers_already_executed = false;
@@ -2126,7 +2139,19 @@ async fn request_missing_deltas(
             // but `add_delta_internal`'s internal `apply_pending` can cascade
             // children that were pre-persisted with events, and those need
             // to reach `execute_cascaded_events` at the caller.
-            match delta_store.add_delta_with_events(dag_delta, None).await {
+            // Parent-fetch path: the wire's `DeltaResponse` carries
+            // `author_id` and `governance_position_blob`, but they
+            // aren't yet threaded into `fetched_deltas` (the loop
+            // builds the dag_delta from the wire content only). Persist
+            // with `None` for now — this means DAG-catchup serves from
+            // this node for the missing-parent delta would return
+            // `DeltaNotFound` until the next gossip / catch-up populates
+            // the author info. Follow-up: extend `fetched_deltas` to
+            // capture author + position from the response.
+            match delta_store
+                .add_delta_with_events(dag_delta, None, None, None)
+                .await
+            {
                 Ok(result) => {
                     if !result.cascaded_events.is_empty() {
                         info!(
@@ -2582,9 +2607,21 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
             cascaded_events: vec![],
         }
     } else {
-        // Normal case: add delta to DAG with events for handler execution
+        // Normal case: add delta to DAG with events for handler execution.
+        // The buffered envelope carries author + governance_position
+        // captured at the original gossip receive; persist them with the
+        // row so subsequent DAG-catchup serves include the claim.
+        let buffered_gov_blob = buffered
+            .governance_position
+            .as_ref()
+            .and_then(|gp| borsh::to_vec(gp).ok());
         delta_store
-            .add_delta_with_events(delta.clone(), buffered.events.clone())
+            .add_delta_with_events(
+                delta.clone(),
+                buffered.events.clone(),
+                Some(buffered.author_id),
+                buffered_gov_blob,
+            )
             .await?
     };
 

@@ -124,7 +124,18 @@ impl SyncManager {
                         // There's no need for topological order insert.
                         // NOTE: currently delta store doesn't write the deltas on disk, that
                         // should be optionally enabled in the future for robustness.
-                        if let Err(e) = delta_store.add_delta(dag_delta).await {
+                        // Author + governance position from the wire
+                        // are returned by `request_delta` alongside the
+                        // delta itself — see the destructuring there.
+                        // For now this call site doesn't have them in
+                        // scope (request_delta returns only the bare
+                        // CausalDelta); persisting with None means
+                        // DAG-catchup serves from this node for these
+                        // deltas would return DeltaNotFound until
+                        // gossip or another catch-up populates the
+                        // author. Follow-up: thread author through
+                        // request_delta's return.
+                        if let Err(e) = delta_store.add_delta(dag_delta, None, None).await {
                             warn!(?e, %context_id, delta_id = ?missing_id, "Failed to persist fetched delta to DAG");
                             continue;
                         }
