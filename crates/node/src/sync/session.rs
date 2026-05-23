@@ -272,9 +272,11 @@ impl SessionTracker {
     /// delivered a result for the wrong `context_id`, or (c)
     /// external code cleared the state map mid-session. Without
     /// the warn, those bugs would be silently swallowed; with it,
-    /// operators see the inconsistency and the inner result variant
-    /// is included so they can correlate it back to the originating
-    /// dispatch.
+    /// operators see the inconsistency and a short discriminant
+    /// (`success` / `sync_error` / `timeout`) tells them which
+    /// arm fired. The inner `eyre::Report` is deliberately NOT
+    /// logged on this path — backtraces and peer-internal error
+    /// text don't belong in a defensive observability surface.
     pub(super) fn apply_result(&mut self, result: SyncSessionResult) {
         let _removed = self.last_dispatch_attempt.remove(&result.context_id);
         let _removed = self.initiator_dispatched_at.remove(&result.context_id);
@@ -288,11 +290,22 @@ impl SessionTracker {
 
         match self.state.get_mut(&context_id) {
             None => {
+                // Log only the result discriminant — not the inner
+                // `eyre::Report` debug, which can carry backtraces /
+                // peer-internal error text and would leak into log
+                // aggregators on a path that's purely defensive. The
+                // three buckets are enough to triage which kind of
+                // inconsistency fired.
+                let result_variant = match &result {
+                    Ok(Ok(_)) => "success",
+                    Ok(Err(_)) => "sync_error",
+                    Err(_) => "timeout",
+                };
                 warn!(
                     %context_id,
                     %peer_id,
                     ?took,
-                    ?result,
+                    result_variant,
                     "SyncSessionResult arrived for context with no tracked SyncState — \
                      dispatch-tracking inconsistency or external state mutation (logic bug)"
                 );
