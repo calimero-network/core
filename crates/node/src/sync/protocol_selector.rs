@@ -372,8 +372,24 @@ impl ProtocolSelector {
                             nodes_compared = stats.nodes_compared,
                             entities_merged = stats.entities_merged,
                             nodes_skipped = stats.nodes_skipped,
+                            deferred_root_merges = stats.deferred_root_merges.len(),
                             "LevelWise sync completed successfully"
                         );
+
+                        // Same deferred-root-merge dispatch as HC; the
+                        // BFS encounters root-entity leaves it can't
+                        // merge on the host.
+                        if !stats.deferred_root_merges.is_empty() {
+                            dispatch_deferred_root_merges(
+                                &self.context_client,
+                                &store,
+                                context_id,
+                                our_identity,
+                                &stats.deferred_root_merges,
+                            )
+                            .await;
+                        }
+
                         Ok(Some(SyncProtocol::LevelWise { max_depth }))
                     }
                     Err(e) => {

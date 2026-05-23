@@ -136,6 +136,12 @@ pub struct LevelWiseStats {
     ///
     /// If true, the sync may be incomplete and a follow-up sync might be needed.
     pub truncation_occurred: bool,
+    /// Root-state byte blobs the level-by-level walk encountered on
+    /// remote leaves that the host can't merge itself. Same shape +
+    /// rationale as `HashComparisonStats::deferred_root_merges`; the
+    /// caller (`ProtocolSelector`) dispatches them through
+    /// `ContextClient::merge_root_state` after the sync completes.
+    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>)>,
 }
 
 // =============================================================================
@@ -377,6 +383,19 @@ async fn run_initiator_impl<T: SyncTransport>(
                             key = %hex::encode(leaf_data.key),
                             "LevelWise merge skipped: claimed author is not currently authorized for this context"
                         );
+                        continue;
+                    }
+
+                    // Defer root-entity merges; same rationale as HC's
+                    // initiator (the host has no merge dispatch table
+                    // for app-typed root state). `ProtocolSelector`
+                    // dispatches these through `ContextClient::merge_root_state`
+                    // after the sync completes.
+                    let entity_id = calimero_storage::address::Id::new(leaf_data.key);
+                    if calimero_storage::collections::is_app_root_entry(entity_id) {
+                        stats
+                            .deferred_root_merges
+                            .push((leaf_data.key, leaf_data.value.clone()));
                         continue;
                     }
 
