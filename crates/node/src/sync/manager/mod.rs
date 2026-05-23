@@ -1648,12 +1648,114 @@ impl SyncManager {
 
                     match delta_response {
                         Some(StreamMessage::Message {
-                            payload: MessagePayload::DeltaResponse { delta },
+                            payload:
+                                MessagePayload::DeltaResponse {
+                                    delta,
+                                    author_id: response_author,
+                                    governance_position_blob,
+                                },
                             ..
                         }) => {
                             // Deserialize and add to DAG
                             let storage_delta: calimero_storage::delta::CausalDelta =
                                 borsh::from_slice(&delta)?;
+
+                            // Apply-time cross-DAG membership check —
+                            // parity with the gossip-path check in
+                            // `handle_state_delta`. The responder includes
+                            // its persisted `author_id` and serialized
+                            // `governance_position` so we can verify the
+                            // delta's author was a member at the cited
+                            // cut. Without this check, a revoked author's
+                            // post-revocation deltas would propagate via
+                            // DAG-catchup even though the gossip path
+                            // rejects them — exactly the gap that
+                            // `group-remove-from-root-revokes-inherited`
+                            // catches (the broken HC fallback was masking
+                            // it before this PR's fix).
+                            //
+                            // None on author_id (race-path serve from
+                            // in-memory DeltaStore, or pre-PR persisted
+                            // rows) falls through to legacy accept — the
+                            // post-apply persist will tighten it for
+                            // subsequent serves.
+                            if let Some(author) = response_author {
+                                let pos = governance_position_blob
+                                    .as_deref()
+                                    .map(borsh::from_slice::<
+                                        calimero_context_config::types::GovernancePosition,
+                                    >)
+                                    .transpose()
+                                    .map_err(|e| {
+                                        eyre::eyre!(
+                                            "DAG-catchup: failed to decode \
+                                             governance_position from peer: {e}"
+                                        )
+                                    })?;
+                                if let Some(ref pos) = pos {
+                                    let datastore =
+                                        self.context_client.datastore_handle().into_inner();
+                                    use calimero_context::group_store::{
+                                        membership_status_at, MembershipStatus,
+                                    };
+                                    match membership_status_at(&datastore, &author, pos) {
+                                        Ok(MembershipStatus::Member(_)) => {
+                                            // Authorized at the cited cut — proceed.
+                                        }
+                                        Ok(MembershipStatus::Removed { last_role }) => {
+                                            warn!(
+                                                %context_id,
+                                                %author,
+                                                head_id = ?head_id,
+                                                last_role = ?last_role,
+                                                "DAG-catchup: rejecting delta — author was \
+                                                 removed at the cited governance cut"
+                                            );
+                                            continue;
+                                        }
+                                        Ok(MembershipStatus::NeverMember) => {
+                                            warn!(
+                                                %context_id,
+                                                %author,
+                                                head_id = ?head_id,
+                                                "DAG-catchup: rejecting delta — author was \
+                                                 never a member at the cited governance cut"
+                                            );
+                                            continue;
+                                        }
+                                        Ok(MembershipStatus::Unknown { needed }) => {
+                                            // Buffering this delta the way the gossip path
+                                            // does would close the loop, but the DAG-catchup
+                                            // dispatch flow doesn't have the buffer plumbing
+                                            // wired yet. Skipping for now means the next sync
+                                            // tick will re-attempt once governance state has
+                                            // caught up via gossip; safer than admitting an
+                                            // unverified delta on the catch-up path.
+                                            warn!(
+                                                %context_id,
+                                                %author,
+                                                head_id = ?head_id,
+                                                needed = ?needed,
+                                                "DAG-catchup: skipping delta — governance \
+                                                 cut not locally known; will re-attempt on \
+                                                 next sync tick"
+                                            );
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                %context_id,
+                                                %author,
+                                                head_id = ?head_id,
+                                                error = %e,
+                                                "DAG-catchup: skipping delta — \
+                                                 membership_status_at failed"
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
 
                             let dag_delta = calimero_dag::CausalDelta {
                                 id: storage_delta.id,

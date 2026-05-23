@@ -271,6 +271,20 @@ pub enum MessagePayload<'a> {
     DeltaResponse {
         /// The serialized delta data.
         delta: Cow<'a, [u8]>,
+        /// Signing identity of the node that authored this delta, if
+        /// the responder has it on file. Present when the delta was
+        /// persisted with the post-2457 schema (`author_id` column);
+        /// `None` for legacy rows. Initiator runs the cross-DAG
+        /// membership check when `Some` and accepts on `None` (legacy
+        /// rows have no claim to verify; the gossip path's check
+        /// remains the primary author-authorization gate for those).
+        author_id: Option<calimero_primitives::identity::PublicKey>,
+        /// Serialized `calimero_context_config::types::GovernancePosition`
+        /// (borsh bytes) at the delta's sign time. Pairs with
+        /// `author_id` for the apply-time `membership_status_at` check.
+        /// `None` when the responder has no governance position recorded
+        /// for the delta (legacy rows OR non-group context).
+        governance_position_blob: Option<Cow<'a, [u8]>>,
     },
 
     /// Delta not found response.

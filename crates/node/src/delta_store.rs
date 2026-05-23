@@ -1289,6 +1289,17 @@ impl DeltaStore {
                         applied: false, // Not applied yet, will update if it applies
                         expected_root_hash,
                         events: events.clone(), // Store events for potential cascade
+                        // Receive-side persistence: author / governance
+                        // position aren't threaded through this path yet
+                        // (followup to surface them from the gossip
+                        // envelope into `add_delta_internal`). Setting
+                        // None keeps DAG-catchup serving these deltas
+                        // without an author claim — initiator-side
+                        // membership check treats None as legacy and
+                        // accepts. Anti-impersonation parity for the
+                        // receive→serve path is its own follow-up.
+                        author_id: None,
+                        governance_position_blob: None,
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to pre-persist delta with events: {}", e))?;
@@ -1364,6 +1375,8 @@ impl DeltaStore {
                         applied: true,
                         expected_root_hash,
                         events: events.clone(),
+                        author_id: None,
+                        governance_position_blob: None,
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to update applied delta: {}", e))?;
@@ -1390,6 +1403,8 @@ impl DeltaStore {
                         applied: true,
                         expected_root_hash,
                         events: None,
+                        author_id: None,
+                        governance_position_blob: None,
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to persist applied delta: {}", e))?;
@@ -1951,6 +1966,8 @@ impl DeltaStore {
                     applied: true,
                     expected_root_hash: applied_delta.expected_root_hash,
                     events: stored_events.clone(),
+                    author_id: None,
+                    governance_position_blob: None,
                 };
                 if let Err(e) = handle.put(&db_key, &record) {
                     warn!(
@@ -2221,6 +2238,11 @@ impl DeltaStore {
                         applied: true, // Checkpoints are always "applied"
                         expected_root_hash: checkpoint.expected_root_hash,
                         events: None,
+                        // Snapshot checkpoints are receiver-side derived
+                        // (boundary heads from a snapshot transfer), not
+                        // peer-authored deltas; no author claim to verify.
+                        author_id: None,
+                        governance_position_blob: None,
                     },
                 ) {
                     tracing::warn!(

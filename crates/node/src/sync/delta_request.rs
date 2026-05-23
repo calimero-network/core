@@ -197,7 +197,7 @@ impl SyncManager {
 
         match super::stream::recv(stream, None, timeout_budget).await? {
             Some(StreamMessage::Message {
-                payload: MessagePayload::DeltaResponse { delta },
+                payload: MessagePayload::DeltaResponse { delta, .. },
                 ..
             }) => {
                 // Deserialize delta
@@ -280,11 +280,15 @@ impl SyncManager {
                 delta_id = ?delta_id,
                 size = serialized.len(),
                 source = "RocksDB",
+                author_present = stored_delta.author_id.is_some(),
+                governance_position_present = stored_delta.governance_position_blob.is_some(),
                 "Sending requested delta to peer"
             );
 
             MessagePayload::DeltaResponse {
                 delta: serialized.into(),
+                author_id: stored_delta.author_id,
+                governance_position_blob: stored_delta.governance_position_blob.map(Into::into),
             }
         } else if let Some(delta_store) = self.state_access.delta_store(&context_id) {
             // Not in RocksDB yet (race condition after broadcast), try DeltaStore
@@ -308,8 +312,16 @@ impl SyncManager {
                     "Sending requested delta to peer"
                 );
 
+                // In-memory DeltaStore doesn't carry author info (only
+                // RocksDB does, set at the post-apply persistence
+                // sites). Race-path serves without author claim; the
+                // initiator accepts it as legacy. Subsequent DAG-catchup
+                // calls for the same delta after the post-apply persist
+                // settles will carry the author info.
                 MessagePayload::DeltaResponse {
                     delta: serialized.into(),
+                    author_id: None,
+                    governance_position_blob: None,
                 }
             } else {
                 warn!(

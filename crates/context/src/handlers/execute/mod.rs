@@ -1512,6 +1512,18 @@ async fn internal_execute(
         if let Some(ref delta) = causal_delta {
             let serialized_actions = borsh::to_vec(&delta.actions)?;
 
+            // Compute the governance position for the cross-DAG check
+            // that DAG-catchup responders advertise on the wire. Mirrors
+            // the position computed for the broadcast envelope above so
+            // peers that pull this delta via `request_dag_heads_and_sync`
+            // can run the same `membership_status_at` check the gossip
+            // path runs.
+            let governance_position =
+                compute_governance_position_for_context(&store, &context.id);
+            let governance_position_blob = governance_position
+                .as_ref()
+                .and_then(|gp| borsh::to_vec(gp).ok());
+
             handle.put(
                 &key::ContextDagDelta::new(context.id, delta.id),
                 &types::ContextDagDelta {
@@ -1522,6 +1534,8 @@ async fn internal_execute(
                     applied: true,
                     expected_root_hash: delta.expected_root_hash,
                     events: None, // No events stored for locally created deltas
+                    author_id: Some(executor),
+                    governance_position_blob,
                 },
             )?;
 

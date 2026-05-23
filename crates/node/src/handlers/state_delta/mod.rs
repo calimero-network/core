@@ -2051,7 +2051,7 @@ async fn request_missing_deltas(
             let timeout_budget = sync_timeout / 3;
             match crate::sync::stream::recv(&mut stream, None, timeout_budget).await? {
                 Some(StreamMessage::Message {
-                    payload: MessagePayload::DeltaResponse { delta },
+                    payload: MessagePayload::DeltaResponse { delta, .. },
                     ..
                 }) => {
                     // Deserialize storage delta
