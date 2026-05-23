@@ -1679,7 +1679,7 @@ impl SyncManager {
                             // signatures inside `apply_action` remain
                             // the auth primitive.
                             let author = response_author;
-                            let pos = governance_position_blob
+                            let pos = match governance_position_blob
                                 .as_deref()
                                 .map(
                                     borsh::from_slice::<
@@ -1687,12 +1687,27 @@ impl SyncManager {
                                     >,
                                 )
                                 .transpose()
-                                .map_err(|e| {
-                                    eyre::eyre!(
-                                        "DAG-catchup: failed to decode \
-                                         governance_position from peer: {e}"
-                                    )
-                                })?;
+                            {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    // Malformed governance_position
+                                    // blob on a single delta shouldn't
+                                    // poison the whole DAG-catchup
+                                    // batch — skip this delta and
+                                    // continue. Other deltas may still
+                                    // converge; this one will retry on
+                                    // the next sync tick.
+                                    warn!(
+                                        %context_id,
+                                        %author,
+                                        head_id = ?head_id,
+                                        %e,
+                                        "DAG-catchup: failed to decode governance_position \
+                                         from peer; skipping this delta and continuing"
+                                    );
+                                    continue;
+                                }
+                            };
                             // Per-delta envelope signature verification —
                             // parity with `apply_authorized_state_delta`'s
                             // gossip-path check. Runs BEFORE the cross-DAG
