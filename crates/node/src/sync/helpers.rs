@@ -364,6 +364,20 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
 /// The initiator batches at this limit; the responder truncates messages exceeding it.
 pub const MAX_ENTITIES_PER_PUSH: usize = 500;
 
+/// Outcome of an EntityPush batch.
+///
+/// `applied` is the count of leaves successfully written via the host
+/// CRDT apply path. `deferred_root_merges` collects root-entity leaves
+/// the host can't merge by itself (same rationale as
+/// [`HashComparisonStats::deferred_root_merges`](crate::sync::hash_comparison_protocol::HashComparisonStats::deferred_root_merges)) —
+/// the caller dispatches each through `ContextClient::merge_root_state`
+/// after the batch returns.
+#[derive(Debug, Default)]
+pub struct EntityPushOutcome {
+    pub applied: u32,
+    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>)>,
+}
+
 /// Handle an incoming `EntityPush` by applying CRDT merge for each entity.
 ///
 /// Shared between the production responder (`hash_comparison.rs`) and the
@@ -378,15 +392,15 @@ pub const MAX_ENTITIES_PER_PUSH: usize = 500;
 /// HC EntityPush authorization back door (gossip rejects a now-removed
 /// author's delta, but HC would re-import the same entity unverified).
 ///
-/// Returns the number of entities successfully applied (excludes dropped
-/// entities, whether dropped for invalidity, unauthorized author, or apply
-/// failure).
+/// Root-entity leaves are surfaced in `deferred_root_merges` for the
+/// caller to dispatch via `ContextClient::merge_root_state` — the host
+/// has no dispatch table for app-typed root state.
 pub fn handle_entity_push(
     store: &Store,
     runtime_env: &calimero_storage::env::RuntimeEnv,
     context_id: ContextId,
     entities: &[TreeLeafData],
-) -> u32 {
+) -> EntityPushOutcome {
     let entities = if entities.len() > MAX_ENTITIES_PER_PUSH {
         tracing::warn!(
             %context_id,
@@ -402,6 +416,7 @@ pub fn handle_entity_push(
     calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
         let mut applied = 0u32;
         let mut dropped_unauthorized = 0u32;
+        let mut deferred_root_merges: Vec<([u8; 32], Vec<u8>)> = Vec::new();
         for leaf in entities {
             if !leaf.is_valid() {
                 tracing::warn!(
@@ -419,6 +434,16 @@ pub fn handle_entity_push(
                     key = %hex::encode(leaf.key),
                     "pushed entity dropped: claimed author is not currently authorized for this context"
                 );
+                continue;
+            }
+            // Root-entity leaves can't be merged on the host (same
+            // reason as the HC / LevelWise initiator paths — see
+            // `dispatch_deferred_root_merges` in `protocol_selector`).
+            // Defer to the caller, which has the `ContextClient` needed
+            // to invoke `__calimero_merge_root_state` inside WASM.
+            let entity_id = Id::new(leaf.key);
+            if calimero_storage::collections::is_app_root_entry(entity_id) {
+                deferred_root_merges.push((leaf.key, leaf.value.clone()));
                 continue;
             }
             match apply_leaf_with_crdt_merge(context_id, leaf) {
@@ -440,7 +465,10 @@ pub fn handle_entity_push(
                 "EntityPush: dropped entities whose author is no longer authorized"
             );
         }
-        applied
+        EntityPushOutcome {
+            applied,
+            deferred_root_merges,
+        }
     })
 }
 

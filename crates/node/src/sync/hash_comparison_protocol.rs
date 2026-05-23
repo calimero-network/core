@@ -706,7 +706,27 @@ async fn run_responder_impl<T: SyncTransport>(
                 let entity_count = entities.len();
                 trace!(%context_id, entity_count, "Handling EntityPush from initiator");
 
-                let applied = handle_entity_push(store, &runtime_env, context_id, &entities);
+                let outcome = handle_entity_push(store, &runtime_env, context_id, &entities);
+                let applied = outcome.applied;
+
+                // This responder runs without a `ContextClient` in
+                // scope (trait signature limitation — see
+                // `SyncProtocolExecutor`), so it can't dispatch
+                // deferred root merges itself. The production
+                // responder in `hash_comparison.rs` does have
+                // `ContextClient` and dispatches. Surface the gap as
+                // a warn so persistent occurrences are visible; in
+                // practice the initiator's DFS catches the same root
+                // divergence and dispatches from there.
+                if !outcome.deferred_root_merges.is_empty() {
+                    warn!(
+                        %context_id,
+                        deferred = outcome.deferred_root_merges.len(),
+                        "EntityPush responder: dropped root-entity deferred merges \
+                         (protocol-trait responder lacks ContextClient — initiator-side \
+                         dispatch will pick up root divergence on next sync round)"
+                    );
+                }
 
                 let msg = StreamMessage::Message {
                     sequence_id,
@@ -723,6 +743,7 @@ async fn run_responder_impl<T: SyncTransport>(
                 info!(
                     %context_id,
                     applied,
+                    deferred_root_merges = outcome.deferred_root_merges.len(),
                     total = entity_count,
                     "Applied pushed entities via CRDT merge"
                 );

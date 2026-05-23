@@ -457,7 +457,7 @@ impl ProtocolSelector {
 /// partial progress is preferable to dropping the whole batch on a
 /// single failure. The next sync tick will re-attempt anything that
 /// stays divergent.
-async fn dispatch_deferred_root_merges(
+pub(crate) async fn dispatch_deferred_root_merges(
     context_client: &ContextClient,
     store: &calimero_store::Store,
     context_id: ContextId,

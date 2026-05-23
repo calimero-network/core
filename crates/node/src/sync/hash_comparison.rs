@@ -180,8 +180,26 @@ impl SyncManager {
                     let entity_count = entities.len();
                     trace!(%context_id, entity_count, "Handling EntityPush from initiator");
 
-                    let applied =
+                    let outcome =
                         handle_entity_push(&datastore, &runtime_env, context_id, &entities);
+                    let applied = outcome.applied;
+
+                    // Dispatch any deferred root-entity merges through
+                    // the WASM module before ACKing the push — keeps
+                    // the responder side symmetric with the initiator,
+                    // so a bidirectional push of root state still
+                    // converges. Identical helper to the one HC /
+                    // LevelWise initiators use.
+                    if !outcome.deferred_root_merges.is_empty() {
+                        super::protocol_selector::dispatch_deferred_root_merges(
+                            &self.context_client,
+                            &datastore,
+                            context_id,
+                            our_identity,
+                            &outcome.deferred_root_merges,
+                        )
+                        .await;
+                    }
 
                     let msg = StreamMessage::Message {
                         sequence_id: sqx.next(),
@@ -196,6 +214,7 @@ impl SyncManager {
                     info!(
                         %context_id,
                         applied,
+                        deferred_root_merges = outcome.deferred_root_merges.len(),
                         total = entity_count,
                         "Applied pushed entities via CRDT merge"
                     );
