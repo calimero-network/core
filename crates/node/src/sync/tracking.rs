@@ -101,6 +101,22 @@ impl SyncState {
         self.last_error = Some(error);
     }
 
+    /// Mark a sync attempt as completed without progress AND without
+    /// counting as a failure. Used when the peer responded that they
+    /// don't have the context yet (e.g. `PeerNotMaterialized`) — the
+    /// attempt is over but applying exponential backoff would punish
+    /// the context for picking the wrong peer, starving legitimate
+    /// sync against other peers behind 2s/4s/…/256s delays.
+    ///
+    /// Clears the in-progress marker (`last_sync` becomes `Some(_)`)
+    /// so the next dispatch tick can re-attempt against a different
+    /// peer without waiting for the wedge watchdog (which would
+    /// otherwise stall the context for `session_wedge_grace`).
+    /// `failure_count` and `last_error` are intentionally untouched.
+    pub(crate) fn on_not_materialized(&mut self) {
+        self.last_sync = Some(Instant::now());
+    }
+
     /// Calculate exponential backoff delay based on failure count
     pub(crate) fn backoff_delay(&self) -> time::Duration {
         // Exponential backoff: 2^failures seconds, max 5 minutes

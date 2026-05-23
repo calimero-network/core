@@ -343,6 +343,18 @@ impl SessionTracker {
                             "peer has not materialised this context — \
                              dropping for this round, not a failure"
                         );
+                        // Clear the in-progress marker without
+                        // bumping failure_count. Without this, the
+                        // context stays `last_sync = None` until the
+                        // wedge watchdog fires (~2× session_deadline,
+                        // 60s default) — wasted time on a path the
+                        // peer-selection filter should have skipped
+                        // before dispatch but can't always (residual
+                        // race: peer mid-materialisation, peer just
+                        // left, mixed-version cluster, etc.). Letting
+                        // the next tick pick a different peer is the
+                        // graceful recovery.
+                        s.on_not_materialized();
                         return;
                     }
                     s.on_failure(err.to_string());
@@ -749,6 +761,52 @@ mod tests {
             0,
             "PeerNotMaterialized must not count as failure"
         );
+    }
+
+    #[test]
+    fn apply_result_peer_not_materialized_clears_in_progress_marker() {
+        // The PeerNotMaterialized arm must reset `last_sync` to
+        // `Some(_)` so the next dispatch tick can re-attempt against
+        // a different peer immediately, without waiting for the wedge
+        // watchdog (~2× session_deadline). Without this clear, the
+        // context stays `Skip(AlreadyInProgress)` for the whole grace
+        // window — wasted time on a path that should just pick a
+        // different peer.
+        let mut t = tracker();
+        t.record_dispatch_succeeded(ctx(1), true);
+        assert!(
+            t.state.get(&ctx(1)).unwrap().last_sync().is_none(),
+            "precondition: record_dispatch_succeeded leaves last_sync = None (in-progress)"
+        );
+
+        t.apply_result(peer_not_materialized_result(ctx(1)));
+
+        let s = t.state.get(&ctx(1)).expect("state present");
+        assert!(
+            s.last_sync().is_some(),
+            "PeerNotMaterialized must clear the in-progress marker"
+        );
+        assert_eq!(s.failure_count(), 0, "and must NOT count as failure");
+    }
+
+    #[test]
+    fn dispatch_decision_after_peer_not_materialized_is_not_blocked_by_wedge() {
+        // Companion to the above: prove the contract holds end-to-end
+        // from the dispatch loop's perspective. After PeerNotMaterialized
+        // settles the state, the next `dispatch_decision` (with
+        // `force=true`, simulating an explicit request that bypasses
+        // the recency throttle) should return `Eligible`, NOT
+        // `Skip(AlreadyInProgress)`.
+        let mut t = tracker();
+        t.record_dispatch_succeeded(ctx(1), true);
+        t.apply_result(peer_not_materialized_result(ctx(1)));
+
+        match t.dispatch_decision(&ctx(1), true) {
+            DispatchDecision::Eligible { .. } => {}
+            other => panic!(
+                "expected Eligible after PeerNotMaterialized cleared the marker, got {other:?}"
+            ),
+        }
     }
 
     #[test]
