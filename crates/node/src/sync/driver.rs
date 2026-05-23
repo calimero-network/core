@@ -116,10 +116,16 @@ impl SyncDriver {
         }
     }
 
-    /// Run the sync-manager actor loop until the input channels close.
+    /// Run the sync-manager actor loop.
+    ///
     /// Multiplexes over the six receivers, dispatches sync sessions
     /// for pending contexts, and drives the per-interval bookkeeping
-    /// (full-drops rollup, wedge watchdog).
+    /// (full-drops rollup, wedge watchdog). The loop has no explicit
+    /// termination condition — `next_sync.tick()` keeps firing even
+    /// after every mpsc sender has been dropped, which matches the
+    /// pre-extraction `SyncManager::start` behaviour. The actor is
+    /// expected to live for the process's lifetime; shutdown happens
+    /// by the process exiting rather than by graceful loop exit.
     pub(super) async fn run<D: SyncDriverDispatch>(mut self, dispatch: &D) {
         let mut next_sync = time::interval(self.frequency);
         next_sync.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -233,6 +239,20 @@ impl SyncDriver {
     /// override the `ctx_sync_rx` arm captured: when present, `force`
     /// bypasses the dispatch-backoff and recency checks (but not
     /// `AlreadyInProgress` — see `dispatch_decision`'s contract).
+    ///
+    /// **Note on drain semantics:** when the `ctx_sync_rx` arm in
+    /// [`Self::run`] drains additional queued requests, it
+    /// deliberately clears `requested_ctx` / `requested_peer` to
+    /// `None` (the "CRITICAL FIX" comment in the arm body explains
+    /// the rationale: a full-context sweep is the only way to avoid
+    /// indefinitely stalling later-queued contexts). The side
+    /// effect, which is shared with the pre-extraction
+    /// `SyncManager::start`, is that the originally-explicit
+    /// context's force-bypass is dropped along with all the other
+    /// drained ones — every context goes through the tracker's
+    /// normal eligibility checks in that case. Trading a single
+    /// explicit context's targeted-sync precision for guaranteed
+    /// progress across the queue is intentional.
     async fn dispatch_pending_contexts(
         &mut self,
         requested_ctx: Option<ContextId>,
