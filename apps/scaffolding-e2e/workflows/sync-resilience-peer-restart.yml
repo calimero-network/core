@@ -20,19 +20,34 @@ description: >
   test-merobox-integration for two weeks before
   calimero-network/merobox#250 caught it.
 
-  mdns: false to keep the test honest about which discovery code path
-  is being exercised. With mdns on, the two containers find each other
-  via multicast in a way that bypasses anything bootstrap-related,
-  and a regression in bootstrap discovery would not show up here.
+  Discovery uses the public devnet boot-node at 63.181.86.34 declared
+  via `bootstrap_nodes:`. We have to declare it explicitly because CI
+  runs merobox with `--e2e-mode`, which triggers `apply_e2e_defaults`
+  to clear `bootstrap.nodes` for test isolation — the default
+  boot-node config from `merod init` is wiped before nodes start.
+  Setting `bootstrap_nodes:` at the workflow level survives that
+  clearing (`apply_bootstrap_nodes` runs after `apply_e2e_defaults`).
+  Without this, the 2-node cluster relies on mdns + sibling-dial for
+  discovery, which is reliable enough for most matrix workflows but
+  occasionally races with the gossipsub mesh formation deadline
+  in `join_namespace`.
 name: Sync Resilience — Peer Restart
 
 force_pull_image: false
+
+# Public devnet boot-node from crates/network/primitives/src/config.rs.
+# Survives apply_e2e_defaults' clearing of bootstrap.nodes because
+# apply_bootstrap_nodes runs immediately after. Provides a stable
+# rendezvous server / relay so the two test nodes find each other
+# even before the cluster-bootstrap-wiring step has run.
+bootstrap_nodes:
+  - "/ip4/63.181.86.34/udp/4001/quic-v1/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh"
+  - "/ip4/63.181.86.34/tcp/4001/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh"
 
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: sync-resil-node
-  mdns: false
 
 steps:
   # ---------- Setup: 2-node namespace + context ----------

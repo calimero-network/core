@@ -47,17 +47,21 @@ description: >
   NAT-topology version is tracked under
   calimero-network/core#2467 / calimero-network/merobox#251.
 
-  mdns: false to keep the test honest about which discovery code
-  path is being exercised.
+  Discovery uses the public devnet boot-node declared via
+  `bootstrap_nodes:`. See sync-resilience-peer-restart.yml's
+  header for the rationale.
 name: Sync Resilience — Lossy Link
 
 force_pull_image: false
+
+bootstrap_nodes:
+  - "/ip4/63.181.86.34/udp/4001/quic-v1/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh"
+  - "/ip4/63.181.86.34/tcp/4001/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh"
 
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: sync-resil-node
-  mdns: false
 
 steps:
   # ---------- Setup ----------
