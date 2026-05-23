@@ -1,0 +1,163 @@
+description: >
+  Sync-resilience smoke test: a transient packet-loss event on one peer
+  followed by a fresh write on the other peer; the dropped peer must
+  resync once the network clears.
+
+  Like the other sync-resilience workflows in this directory, this does
+  NOT meaningfully exercise the relay-reservation recovery in
+  calimero-network/core#2446 — the test topology has no relay in the
+  loop. It IS a useful smoke test for: gossipsub mesh stability under
+  transient loss, the connection-keepalive code path, and the
+  sync-protocol's ability to recover once packet delivery resumes.
+
+  inject_network_fault is set to loss=100% for 3 seconds — long enough
+  to drop any in-flight TCP frame and produce visible connection-state
+  changes, short enough not to balloon CI time. The fault clears
+  automatically when `duration` elapses.
+
+  mdns: false to keep the test honest about which discovery code path
+  is being exercised. With mdns on, multicast over the Docker bridge
+  is unaffected by `tc qdisc loss` on the egress interface, which
+  partially defeats the partition.
+name: Sync Resilience — Network Blip
+
+force_pull_image: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: sync-resil-node
+  mdns: false
+
+steps:
+  # ---------- Setup ----------
+
+  - name: Install application on node-1
+    type: install_application
+    node: sync-resil-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: sync-resil-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_node2: invitation
+
+  - name: Wait for namespace gossip
+    type: wait
+    seconds: 5
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: sync-resil-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_node2}}'
+
+  - name: Node-2 joins context via group membership
+    type: join_context
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+
+  # ---------- Baseline ----------
+
+  - name: Write baseline key on node-1
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: baseline
+      value: pre_blip
+
+  - name: Wait for baseline to converge
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read baseline on node-2 (sanity)
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n2: result
+
+  - name: Assert baseline replicated
+    type: assert
+    statements:
+      - "contains({{baseline_n2}}, 'pre_blip')"
+
+  # ---------- Fault: 3 seconds of 100% loss on node-2 ----------
+
+  - name: Inject 100% packet loss on node-2 for 3 seconds
+    type: inject_network_fault
+    container: sync-resil-node-2
+    fault: loss
+    percent: 100
+    duration: 3
+
+  # inject_network_fault returns control once `duration` elapses; the
+  # next write goes over a healthy network, but node-2's libp2p stack
+  # just saw a 3-second drop.
+
+  - name: Write post-blip key on node-1
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: post_blip
+      value: recovered
+
+  # ---------- Catch-up ----------
+
+  - name: Wait for sync to catch up post-blip
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 120
+    trigger_sync: true
+
+  - name: Read post-blip key on node-2
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: post_blip
+    outputs:
+      post_n2: result
+
+  - name: Assert post-blip write replicated
+    type: assert
+    statements:
+      - "contains({{post_n2}}, 'recovered')"
+
+stop_all_nodes: true

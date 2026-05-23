@@ -1,0 +1,163 @@
+description: >
+  Sync-resilience smoke test: a peer is restarted mid-session; writes
+  made after the restart must converge to the other peer.
+
+  In merobox's mesh model both nodes sit on the same Docker bridge and
+  reach each other directly over /ip4/.../tcp/.../p2p/<id> sibling
+  addresses — they don't go through a relay. So this workflow does NOT
+  meaningfully exercise the relay-reservation recovery code in
+  calimero-network/core#2446; that's covered by the unit tests in
+  crates/network/src/discovery/state_tests.rs and the MockRelay
+  integration tests in crates/network/tests/relay_recovery.rs. Issue
+  calimero-network/core#2453 tracks the multi-network NAT topology
+  needed to exercise the relay-recovery code path end-to-end here.
+
+  What this workflow IS good for is catching the class of integration
+  regressions that the unit-level tests can't see: sync-protocol
+  changes that break peer-restart recovery, gossipsub topic-rejoin
+  bugs, address-book staleness after a restart, and the
+  Borsh-deserialisation-mismatch class of bug that broke
+  test-merobox-integration for two weeks before
+  calimero-network/merobox#250 caught it.
+
+  mdns: false to keep the test honest about which discovery code path
+  is being exercised. With mdns on, the two containers find each other
+  via multicast in a way that bypasses anything bootstrap-related,
+  and a regression in bootstrap discovery would not show up here.
+name: Sync Resilience — Peer Restart
+
+force_pull_image: false
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: sync-resil-node
+  mdns: false
+
+steps:
+  # ---------- Setup: 2-node namespace + context ----------
+
+  - name: Install application on node-1
+    type: install_application
+    node: sync-resil-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: sync-resil-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_node2: invitation
+
+  - name: Wait for namespace gossip
+    type: wait
+    seconds: 5
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: sync-resil-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_node2}}'
+
+  - name: Node-2 joins context via group membership
+    type: join_context
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+
+  # ---------- Baseline: confirm sync works before the fault ----------
+
+  - name: Write baseline key on node-1
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: baseline
+      value: pre_restart
+
+  - name: Wait for baseline to converge
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read baseline on node-2 (sanity)
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n2: result
+
+  - name: Assert baseline replicated
+    type: assert
+    statements:
+      - "contains({{baseline_n2}}, 'pre_restart')"
+
+  # ---------- Fault: restart node-1 ----------
+
+  - name: Restart node-1 mid-session
+    type: restart_container
+    container: sync-resil-node-1
+    wait_healthy: true
+    timeout: 60
+
+  # ---------- Recovery: node-1 must come back and sync the next write ----------
+
+  - name: Write post-restart key on node-1
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: post_restart
+      value: recovered
+
+  - name: Wait for post-restart write to converge
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 120
+    trigger_sync: true
+
+  - name: Read post-restart key on node-2
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: post_restart
+    outputs:
+      post_n2: result
+
+  - name: Assert post-restart write replicated
+    type: assert
+    statements:
+      - "contains({{post_n2}}, 'recovered')"
+
+stop_all_nodes: true

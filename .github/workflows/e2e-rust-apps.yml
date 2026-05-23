@@ -286,6 +286,24 @@ jobs:
           - workflow: auto-follow-asymmetric-context-membership
             file: workflows/auto-follow/asymmetric-context-membership.yml
             app: scaffolding-e2e
+          # Sync-resilience smoke tests using merobox#249's fault-injection
+          # primitives. These verify the whole stack survives a peer
+          # restart, a peer pause, and a transient packet-loss event —
+          # useful for catching integration regressions (sync-protocol
+          # changes, gossipsub mesh issues, Borsh wire-format drift) that
+          # the unit tests can't see. They do NOT specifically exercise
+          # the relay-reservation recovery in #2446 (direct sibling
+          # addresses on the Docker bridge bypass the relay); that's
+          # tracked under #2453 for a real NAT-topology test.
+          - workflow: sync-resilience-peer-restart
+            file: workflows/sync-resilience-peer-restart.yml
+            app: scaffolding-e2e
+          - workflow: sync-resilience-peer-pause
+            file: workflows/sync-resilience-peer-pause.yml
+            app: scaffolding-e2e
+          - workflow: sync-resilience-network-blip
+            file: workflows/sync-resilience-network-blip.yml
+            app: scaffolding-e2e
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
