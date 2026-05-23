@@ -1518,8 +1518,7 @@ async fn internal_execute(
             // peers that pull this delta via `request_dag_heads_and_sync`
             // can run the same `membership_status_at` check the gossip
             // path runs.
-            let governance_position =
-                compute_governance_position_for_context(&store, &context.id);
+            let governance_position = compute_governance_position_for_context(&store, &context.id);
             let governance_position_blob = governance_position
                 .as_ref()
                 .and_then(|gp| borsh::to_vec(gp).ok());

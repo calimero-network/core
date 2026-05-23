@@ -1682,9 +1682,11 @@ impl SyncManager {
                             if let Some(author) = response_author {
                                 let pos = governance_position_blob
                                     .as_deref()
-                                    .map(borsh::from_slice::<
-                                        calimero_context_config::types::GovernancePosition,
-                                    >)
+                                    .map(
+                                        borsh::from_slice::<
+                                            calimero_context_config::types::GovernancePosition,
+                                        >,
+                                    )
                                     .transpose()
                                     .map_err(|e| {
                                         eyre::eyre!(
