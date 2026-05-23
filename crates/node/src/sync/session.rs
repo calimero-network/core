@@ -261,9 +261,30 @@ impl SessionTracker {
     /// updates `SyncState`. Logs preserved verbatim from the
     /// pre-extraction `apply_session_result` body so log-grep-based
     /// regression detection still works.
+    ///
+    /// Defensive: emits a `warn!` if no `SyncState` entry exists for
+    /// the result's `context_id`. This should never happen in
+    /// practice — `record_dispatch_succeeded` always inserts an
+    /// in-progress entry before a session can produce a result — so
+    /// a hit here indicates one of (a) the dispatch-tracking path
+    /// skipped `record_dispatch_succeeded`, (b) cross-actor routing
+    /// delivered a result for the wrong `context_id`, or (c)
+    /// external code cleared the state map mid-session. Without the
+    /// warn, those bugs are silently swallowed by `and_modify`'s
+    /// no-op-on-missing-entry behaviour.
     pub(super) fn apply_result(&mut self, result: SyncSessionResult) {
         let _removed = self.last_dispatch_attempt.remove(&result.context_id);
         let _removed = self.initiator_dispatched_at.remove(&result.context_id);
+
+        if !self.state.contains_key(&result.context_id) {
+            warn!(
+                context_id = %result.context_id,
+                peer_id = %result.peer_id,
+                took = ?result.took,
+                "SyncSessionResult arrived for context with no tracked SyncState — \
+                 dispatch-tracking inconsistency or external state mutation (logic bug, #2445)"
+            );
+        }
 
         let SyncSessionResult {
             context_id,
@@ -707,6 +728,37 @@ mod tests {
             0,
             "PeerNotMaterialized must not count as failure"
         );
+    }
+
+    #[test]
+    fn apply_result_with_missing_state_does_not_panic_or_create_entry() {
+        // #2445 defensive-warn invariant: a `SyncSessionResult`
+        // arriving for a context with no tracked `SyncState` must
+        // (a) not panic, (b) not silently create a state entry, and
+        // (c) clear any backoff / wedge timers that may exist for
+        // the context (they shouldn't either, but the clears are
+        // idempotent on absent keys).
+        //
+        // The accompanying `warn!` log fires inside `apply_result`
+        // and is the operator-visible signal that the dispatch-
+        // tracking invariant was violated; this test exercises the
+        // state side-effects.
+        let mut t = tracker();
+        assert!(
+            !t.state.contains_key(&ctx(1)),
+            "precondition: no state entry for ctx(1)"
+        );
+
+        t.apply_result(ok_result(ctx(1)));
+
+        assert!(
+            !t.state.contains_key(&ctx(1)),
+            "apply_result must NOT create a state entry on missing-state path \
+             (and_modify's behaviour must be preserved)"
+        );
+        // Timers are removed unconditionally; verify they're still absent.
+        assert!(!t.last_dispatch_attempt.contains_key(&ctx(1)));
+        assert!(!t.initiator_dispatched_at.contains_key(&ctx(1)));
     }
 
     // -----------------------------------------------------------------
