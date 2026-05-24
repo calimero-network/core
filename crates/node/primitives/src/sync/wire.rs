@@ -293,12 +293,16 @@ pub enum MessagePayload<'a> {
         /// foreign delta as their own (or vice versa) since
         /// `membership_status_at` would pass for both members.
         ///
-        /// `Option` for the transition: the storage schema and wire
-        /// carry the field, but signing isn't yet populated at the
-        /// `execute` site, so existing rows + freshly authored deltas
-        /// report `None` until that lands. Initiators that see `Some`
-        /// MUST verify; `None` is tolerated until the signing wire-up
-        /// is complete, then this tightens to required.
+        /// `Option` because legacy rows (deltas authored before the
+        /// envelope-signature feature landed) have no signature on
+        /// file — the responder forwards `None` for those rather than
+        /// withholding the delta entirely. Freshly-authored deltas
+        /// always carry `Some(_)` (`internal_execute` signs against
+        /// the same `governance_position` it persists on the row).
+        /// Initiators MUST verify any present signature; `None` is
+        /// tolerated only for that legacy-row case and will tighten
+        /// to required once those rows have aged out of every peer's
+        /// storage.
         delta_signature: Option<[u8; 64]>,
     },
 

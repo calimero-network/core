@@ -178,4 +178,41 @@ mod tests {
         sig[0] ^= 0xff;
         assert!(verify_delta_signature(context_id, delta_id, pk, None, &sig).is_err());
     }
+
+    #[test]
+    fn sign_then_verify_roundtrip_with_position() {
+        let (context_id, delta_id, sk, pk) = fixture();
+        let pos = calimero_context_config::types::GovernancePosition {
+            group_id: calimero_context_config::types::ContextGroupId::from([5u8; 32]),
+            governance_dag_heads: vec![[6u8; 32], [7u8; 32]],
+            group_state_hash: [8u8; 32],
+        };
+        let payload = delta_signature_payload(context_id, delta_id, pk, Some(&pos)).unwrap();
+        let sig = sk.sign(&payload).unwrap().to_bytes();
+        assert!(verify_delta_signature(context_id, delta_id, pk, Some(&pos), &sig).is_ok());
+    }
+
+    #[test]
+    fn verify_rejects_tampered_governance_position() {
+        let (context_id, delta_id, sk, pk) = fixture();
+        let pos_signed = calimero_context_config::types::GovernancePosition {
+            group_id: calimero_context_config::types::ContextGroupId::from([5u8; 32]),
+            governance_dag_heads: vec![[6u8; 32]],
+            group_state_hash: [8u8; 32],
+        };
+        let payload = delta_signature_payload(context_id, delta_id, pk, Some(&pos_signed)).unwrap();
+        let sig = sk.sign(&payload).unwrap().to_bytes();
+
+        // Verifier reconstructs payload with a different position
+        // (different `group_state_hash`); signature must not verify.
+        // This is the per-cut binding property — a signature for one
+        // governance cut can't be reused for a different cut even if
+        // every other field matches.
+        let pos_other = calimero_context_config::types::GovernancePosition {
+            group_id: pos_signed.group_id,
+            governance_dag_heads: pos_signed.governance_dag_heads.clone(),
+            group_state_hash: [99u8; 32],
+        };
+        assert!(verify_delta_signature(context_id, delta_id, pk, Some(&pos_other), &sig).is_err());
+    }
 }

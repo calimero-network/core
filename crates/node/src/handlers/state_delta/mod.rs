@@ -615,10 +615,10 @@ pub(crate) async fn apply_authorized_state_delta(
     // key. Sits BEFORE the cross-DAG check and ReadOnly check because
     // those checks key off `author_id` — there's no point asking
     // "is this author a member?" if we haven't yet established that
-    // the claim of authorship is genuine. `None` is currently tolerated
-    // because signing at the execute site is wired up in a follow-up
-    // (Wave 5 sub-commit B); once that lands, `None` becomes a hard
-    // reject and this branch tightens.
+    // the claim of authorship is genuine. `None` is tolerated only
+    // for legacy rows authored before envelope signing landed; all
+    // freshly-signed deltas (every output of `internal_execute`)
+    // carry `Some(_)` and MUST verify.
     if let Some(ref sig) = delta_signature {
         if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
             context_id,
@@ -2168,8 +2168,9 @@ async fn request_missing_deltas(
                     // Envelope-signature verification (parity with the
                     // gossip + DAG-catchup paths in
                     // `apply_authorized_state_delta` / `request_dag_heads_and_sync`).
-                    // `None` is tolerated for the wire-up transition;
-                    // any present signature MUST verify.
+                    // `None` is only tolerated for legacy rows
+                    // authored before envelope signing landed; any
+                    // present signature MUST verify.
                     if let Some(ref sig) = response_delta_signature {
                         if let Err(err) =
                             calimero_node_primitives::sync::delta_auth::verify_delta_signature(
