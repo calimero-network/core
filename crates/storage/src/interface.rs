@@ -2134,6 +2134,36 @@ impl<S: StorageAdaptor> Interface<S> {
         // and the deferred WASM merge would be dropped, leaving the
         // receiver's root entity permanently divergent.
         let last_metadata = <Index<S>>::get_metadata(id)?;
+
+        // LWW guard — same shape as `save_internal`'s LWW-by-HLC
+        // check. If the locally-stored state is already newer (e.g.
+        // gossip already applied the action and stored the entity
+        // with a newer `updated_at`), HC / LevelWise re-syncing the
+        // same root via this path would otherwise overwrite the
+        // metadata with the wire's older `updated_at` and regress
+        // the Merkle parent's full_hash. Root cause of the
+        // shared-storage e2e: gossip applied set_shared correctly,
+        // then HC re-pushed the root entity via this LWW path and
+        // the timestamp regression silently broke convergence.
+        //
+        // When the timestamps tie we still write — the bytes may
+        // differ (concurrent writes resolved differently). Strictly
+        // greater = newer here, equal = re-apply, older = no-op.
+        if let Some(ref existing) = last_metadata {
+            if existing.updated_at > metadata.updated_at {
+                let existing_full = <Index<S>>::get_hashes_for(id)?
+                    .map(|(full, _own)| full)
+                    .unwrap_or([0_u8; 32]);
+                tracing::debug!(
+                    %id,
+                    existing_ts = %*existing.updated_at,
+                    incoming_ts = %*metadata.updated_at,
+                    "write_pre_merged_root_state: local state is newer, skipping (LWW)"
+                );
+                return Ok(existing_full);
+            }
+        }
+
         if last_metadata.is_none() {
             if id.is_root() {
                 <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata.clone()))?;
