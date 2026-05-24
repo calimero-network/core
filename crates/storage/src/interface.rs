@@ -2091,6 +2091,13 @@ impl<S: StorageAdaptor> Interface<S> {
         // flake reproduced post-#2465. Writing the entry first means
         // readers see either (old hash + old entries) or
         // (new hash + new entries), never the inconsistent middle.
+        //
+        // `storage_write` returns `bool` meaning "evicted a previous
+        // value" (true) vs "inserted a new key" (false) — not
+        // success/failure. Actual write failures surface as `HostError`
+        // traps from the runtime (`KeyLengthOverflow`,
+        // `ValueLengthOverflow`, `InvalidMemoryAccess`), not as
+        // `Ok(false)`. Discard the bool.
         _ = S::storage_write(Key::Entry(id), &final_data);
 
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
@@ -2195,7 +2202,10 @@ impl<S: StorageAdaptor> Interface<S> {
         // updating the Merkle index first makes the new root hash
         // observable before the entry bytes are stored, so a concurrent
         // reader can see a converged root hash with missing children
-        // (the "Hello Wor" rga flake).
+        // (the "Hello Wor" rga flake). The discarded `bool` from
+        // `storage_write` is the eviction signal ("did a previous value
+        // exist under this key"), not a success/failure flag — write
+        // failures trap from the runtime as `HostError`, not `Ok(false)`.
         _ = S::storage_write(Key::Entry(id), merged);
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
         Ok(full_hash)

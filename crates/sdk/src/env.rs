@@ -453,8 +453,14 @@ pub fn storage_remove(key: &[u8]) -> bool {
 ///
 /// # Returns
 ///
-/// * `true` - If the write operation succeeded
-/// * `false` - If the write operation failed
+/// * `true` - A previous value existed under `key` and was evicted.
+/// * `false` - No previous value; a new entry was inserted.
+///
+/// The return value is **not** a success/failure indicator. The write
+/// itself either succeeds or traps the WASM module with a `HostError`
+/// (`KeyLengthOverflow`, `ValueLengthOverflow`, `InvalidMemoryAccess`),
+/// which propagates as a runtime error, not as `false`. Callers that
+/// don't care whether the key existed before can safely discard the bool.
 ///
 /// # Example
 ///
@@ -462,7 +468,9 @@ pub fn storage_remove(key: &[u8]) -> bool {
 /// use calimero_sdk::env;
 ///
 /// if env::storage_write(b"my_key", b"my_value") {
-///     println!("Value stored successfully");
+///     println!("Overwrote an existing value");
+/// } else {
+///     println!("Inserted a new entry");
 /// }
 /// ```
 #[inline]
