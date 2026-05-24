@@ -271,6 +271,39 @@ pub enum MessagePayload<'a> {
     DeltaResponse {
         /// The serialized delta data.
         delta: Cow<'a, [u8]>,
+        /// Signing identity of the node that authored this delta.
+        /// Required — the responder only serves deltas that have a
+        /// recorded author (rows missing the field return
+        /// `DeltaNotFound`, forcing the initiator to fall back to
+        /// snapshot sync where the per-entity signature path applies).
+        /// Initiator runs `membership_status_at` against this author
+        /// unconditionally; there is no legacy-accept escape hatch.
+        author_id: calimero_primitives::identity::PublicKey,
+        /// Serialized `calimero_context_config::types::GovernancePosition`
+        /// (borsh bytes) at the delta's sign time. Pairs with
+        /// `author_id` for the apply-time `membership_status_at` check.
+        /// `None` only for non-group contexts where the author has no
+        /// governance cut to cite — initiator skips the membership
+        /// check in that case (there's nothing to check against).
+        governance_position_blob: Option<Cow<'a, [u8]>>,
+        /// Ed25519 signature by `author_id`'s identity key over the
+        /// canonical [`super::delta_auth::DeltaSignaturePayload`].
+        /// Closes the anti-impersonation gap on the delta envelope:
+        /// without this, a current group-key holder could relabel a
+        /// foreign delta as their own (or vice versa) since
+        /// `membership_status_at` would pass for both members.
+        ///
+        /// `Option` because legacy rows (deltas authored before the
+        /// envelope-signature feature landed) have no signature on
+        /// file — the responder forwards `None` for those rather than
+        /// withholding the delta entirely. Freshly-authored deltas
+        /// always carry `Some(_)` (`internal_execute` signs against
+        /// the same `governance_position` it persists on the row).
+        /// Initiators MUST verify any present signature; `None` is
+        /// tolerated only for that legacy-row case and will tighten
+        /// to required once those rows have aged out of every peer's
+        /// storage.
+        delta_signature: Option<[u8; 64]>,
     },
 
     /// Delta not found response.

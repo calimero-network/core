@@ -994,6 +994,93 @@ impl ContextClient {
         receiver.await.expect("Mailbox not to be dropped")
     }
 
+    /// Invoke the app's typed root-state CRDT merge inside WASM and return
+    /// the merged bytes.
+    ///
+    /// The host can't deserialize the app's root state (it doesn't have
+    /// the type at compile time), so any sync path that needs to merge
+    /// two root-state byte blobs sends them into the WASM module via the
+    /// macro-generated `__calimero_merge_root_state` export, which knows
+    /// the type and dispatches `Mergeable::merge`. This is the
+    /// receive-side counterpart to per-action signature verification:
+    /// where signatures verify "did this writer authorize this byte
+    /// blob," `merge_root_state` answers "what does the app's CRDT say
+    /// these two byte blobs combine to."
+    ///
+    /// Returns the merged bytes on success. Returns
+    /// `ExecuteError::InternalError` if the WASM merge function returned
+    /// an error variant, the payload didn't round-trip through the wire
+    /// format, or the WASM module doesn't export the entry point (which
+    /// means the app didn't use `#[app::state]` — an upgrade gate
+    /// concern, not a runtime sync concern).
+    pub async fn merge_root_state(
+        &self,
+        context_id: &ContextId,
+        executor: &PublicKey,
+        request: calimero_storage::merge::MergeRootStateRequest,
+    ) -> Result<Vec<u8>, ExecuteError> {
+        let payload = borsh::to_vec(&request).map_err(|err| {
+            tracing::error!(
+                %context_id,
+                %err,
+                "merge_root_state: failed to serialize MergeRootStateRequest"
+            );
+            ExecuteError::InternalError
+        })?;
+
+        let response = self
+            .execute(
+                context_id,
+                executor,
+                "__calimero_merge_root_state".to_owned(),
+                payload,
+                vec![],
+                None,
+            )
+            .await?;
+
+        let return_bytes = match response.returns {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                tracing::error!(
+                    %context_id,
+                    "merge_root_state: WASM export returned no bytes"
+                );
+                return Err(ExecuteError::InternalError);
+            }
+            Err(err) => {
+                tracing::error!(
+                    %context_id,
+                    ?err,
+                    "merge_root_state: WASM export reported a function-call error"
+                );
+                return Err(ExecuteError::InternalError);
+            }
+        };
+
+        let response: calimero_storage::merge::MergeRootStateResponse =
+            borsh::from_slice(&return_bytes).map_err(|err| {
+                tracing::error!(
+                    %context_id,
+                    %err,
+                    "merge_root_state: failed to deserialize MergeRootStateResponse"
+                );
+                ExecuteError::InternalError
+            })?;
+
+        match response {
+            calimero_storage::merge::MergeRootStateResponse::Ok(bytes) => Ok(bytes),
+            calimero_storage::merge::MergeRootStateResponse::Err(msg) => {
+                tracing::error!(
+                    %context_id,
+                    error = %msg,
+                    "merge_root_state: WASM Mergeable::merge returned an error"
+                );
+                Err(ExecuteError::InternalError)
+            }
+        }
+    }
+
     /// Sends a request to update the application for a given context.
     /// This is an asynchronous operation handled by the `ContextManager` actor.
     ///

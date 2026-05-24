@@ -40,7 +40,7 @@
 
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, generate_nonce, get_local_root_hash_for_context,
-    handle_entity_push, MAX_ENTITIES_PER_PUSH,
+    handle_entity_push, is_leaf_currently_authorized, MAX_ENTITIES_PER_PUSH,
 };
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
@@ -74,7 +74,7 @@ const MAX_PENDING_NODES: usize = 10_000;
 /// emitting a leaf with this synthetic type is wire-format-stable and
 /// merge-equivalent to the `None` it stands in for. See
 /// `docs/superpowers/specs/2026-05-13-opaque-leaf-sync-design.md`.
-pub(super) const OPAQUE_LEAF_CRDT_TYPE_NAME: &str = "Opaque";
+pub(crate) const OPAQUE_LEAF_CRDT_TYPE_NAME: &str = "Opaque";
 
 /// Maximum depth allowed in TreeNodeRequest.
 pub const MAX_REQUEST_DEPTH: u8 = 16;
@@ -130,6 +130,20 @@ pub struct HashComparisonStats {
     /// merge did not converge the two peers — see #2407 for the
     /// failure mode this guards against.
     pub root_hash_verified: bool,
+    /// Root-state byte blobs the DFS encountered on remote leaves
+    /// that the host can't merge by itself (separate-address-space
+    /// merge registry — see [`crate::sync::helpers::apply_leaf_with_crdt_merge`]).
+    /// Each entry is `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)`.
+    /// The caller (`ProtocolSelector`) dispatches each one through
+    /// `ContextClient::merge_root_state` after the sync completes,
+    /// closing the loop on root-entity divergence that HC would
+    /// otherwise silently drop. Storing the entity id lets the caller
+    /// distinguish `ROOT_ID` from the `Root<T>` entry (both treated
+    /// as root by `is_app_root_entry`, both possible in HC leaves);
+    /// the timestamp is the leaf's wire-carried `hlc_timestamp` so
+    /// the dispatch uses the actual remote write time instead of a
+    /// synthetic value.
+    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
 }
 
 /// HashComparison sync protocol.
@@ -308,6 +322,55 @@ async fn run_initiator_impl<T: SyncTransport>(
                         key = %hex::encode(leaf_data.key),
                         "Merging leaf entity"
                     );
+
+                    // Authorization gate, parity with `handle_entity_push`.
+                    // Without this, the initiator's per-leaf merge in the
+                    // DFS would re-import entities whose claimed author has
+                    // been removed from the context's group — the same back
+                    // door batched EntityPush had before the helper-level
+                    // filter landed. Skipping silently here is fine because
+                    // the leaf will simply remain "missing locally," and
+                    // `root_hash_verified` will report `false` so the
+                    // session is treated as a partial merge rather than a
+                    // successful convergence.
+                    if !is_leaf_currently_authorized(store, &context_id, leaf_data) {
+                        warn!(
+                            %context_id,
+                            key = %hex::encode(leaf_data.key),
+                            "HC merge skipped: claimed author is not currently authorized for this context"
+                        );
+                        continue;
+                    }
+
+                    // Root entity leaves can't be merged on the host
+                    // (the host's `merge_root_state` consults a registry
+                    // that's only populated inside WASM). Hand them off
+                    // to the caller, which dispatches each through
+                    // `ContextClient::merge_root_state` after the sync
+                    // session completes. `apply_leaf_with_crdt_merge`
+                    // also short-circuits root entities — we check here
+                    // too so we can record the incoming bytes (the helper
+                    // is sync and inside `with_runtime_env`, so it can't
+                    // call into the runtime to do the merge itself).
+                    // Defer root entities with a real `crdt_type` for
+                    // WASM dispatch; opaque root entities (synthetic
+                    // `Opaque` LWW marker) fall through to
+                    // `apply_leaf_with_crdt_merge` which LWW-writes
+                    // them directly (no Mergeable to dispatch).
+                    let entity_id = calimero_storage::address::Id::new(leaf_data.key);
+                    let is_opaque = matches!(
+                        &leaf_data.metadata.crdt_type,
+                        calimero_primitives::crdt::CrdtType::LwwRegister { inner_type }
+                            if inner_type == OPAQUE_LEAF_CRDT_TYPE_NAME
+                    );
+                    if calimero_storage::collections::is_app_root_entry(entity_id) && !is_opaque {
+                        stats.deferred_root_merges.push((
+                            leaf_data.key,
+                            leaf_data.value.clone(),
+                            leaf_data.metadata.hlc_timestamp,
+                        ));
+                        continue;
+                    }
 
                     with_runtime_env(runtime_env.clone(), || {
                         apply_leaf_with_crdt_merge(context_id, leaf_data)
@@ -658,7 +721,27 @@ async fn run_responder_impl<T: SyncTransport>(
                 let entity_count = entities.len();
                 trace!(%context_id, entity_count, "Handling EntityPush from initiator");
 
-                let applied = handle_entity_push(&runtime_env, context_id, &entities);
+                let outcome = handle_entity_push(store, &runtime_env, context_id, &entities);
+                let applied = outcome.applied;
+
+                // This responder runs without a `ContextClient` in
+                // scope (trait signature limitation — see
+                // `SyncProtocolExecutor`), so it can't dispatch
+                // deferred root merges itself. The production
+                // responder in `hash_comparison.rs` does have
+                // `ContextClient` and dispatches. Surface the gap as
+                // a warn so persistent occurrences are visible; in
+                // practice the initiator's DFS catches the same root
+                // divergence and dispatches from there.
+                if !outcome.deferred_root_merges.is_empty() {
+                    warn!(
+                        %context_id,
+                        deferred = outcome.deferred_root_merges.len(),
+                        "EntityPush responder: dropped root-entity deferred merges \
+                         (protocol-trait responder lacks ContextClient — initiator-side \
+                         dispatch will pick up root divergence on next sync round)"
+                    );
+                }
 
                 let msg = StreamMessage::Message {
                     sequence_id,
@@ -675,6 +758,7 @@ async fn run_responder_impl<T: SyncTransport>(
                 info!(
                     %context_id,
                     applied,
+                    deferred_root_merges = outcome.deferred_root_merges.len(),
                     total = entity_count,
                     "Applied pushed entities via CRDT merge"
                 );

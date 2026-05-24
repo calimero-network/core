@@ -33,6 +33,7 @@
 
 pub mod bloom_filter;
 pub mod delta;
+pub mod delta_auth;
 pub mod handshake;
 pub mod hash_comparison;
 pub mod levelwise;
