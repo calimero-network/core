@@ -139,14 +139,30 @@ pub fn is_leaf_currently_authorized(
     match calimero_context::group_store::is_currently_authorized_for_context(
         store, context_id, &author,
     ) {
-        Ok(authorized) => authorized,
+        Ok(true) => true,
+        Ok(false) => {
+            // Expected outcome under churn (post-removal authorship,
+            // ReadOnly role); track separately from lookup errors so
+            // operators can tell normal churn-driven drops from
+            // I/O-driven drops at a glance. See `record_hc_leaf_drop`
+            // for the ratio semantics.
+            crate::node_metrics::record_hc_leaf_drop("unauthorized");
+            false
+        }
         Err(err) => {
-            tracing::warn!(
+            // Storage layer raised — drop the leaf rather than risk a
+            // silent bypass, but escalate to ERROR (not WARN) so the
+            // signal isn't lost in routine sync chatter, and emit the
+            // counter so the operator dashboard reflects a non-trivial
+            // rate of I/O trouble even if individual log lines get
+            // dropped under load.
+            tracing::error!(
                 %context_id,
                 %author,
                 error = %err,
                 "is_leaf_currently_authorized: membership lookup failed; dropping entity to avoid silent bypass"
             );
+            crate::node_metrics::record_hc_leaf_drop("lookup_error");
             false
         }
     }

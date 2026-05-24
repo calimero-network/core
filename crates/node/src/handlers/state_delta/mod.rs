@@ -138,11 +138,16 @@ async fn lookup_group_key_with_wait(
 /// Each call site translates the outcome to its local error handling
 /// (warn-message wording, return-value shape, metric labels).
 ///
-/// Module-private: every consumer lives in this same file. Keeping the
-/// surface narrow means any future caller has to come through the same
-/// module that owns the TOCTOU and forward-only invariants; reducing
-/// the blast radius for accidental misuse.
-enum GroupIdCheck {
+/// `pub(crate)` because the DAG-catchup paths in `sync::manager` and
+/// `sync::delta_request` now share the same anti-bypass logic — a
+/// single source of truth for "does the claimed governance position's
+/// group match this context's owning group?". A copy-paste of the
+/// match table across modules drifted in review (the DAG-catchup
+/// head-pull was running `membership_status_at` without first checking
+/// the group_id, leaving the bypass gap open); centralising fixes that
+/// for good. New consumers must respect the TOCTOU and forward-only
+/// invariants documented on `verify_position_group_id_matches_context`.
+pub(crate) enum GroupIdCheck {
     /// Non-group context with no claimed group on the position. Legacy
     /// path: no enforcement applies. Fall through to apply.
     NonGroupOk,
@@ -214,7 +219,7 @@ impl std::fmt::Debug for GroupIdCheck {
 /// invariant that mitigates the TOCTOU window; if that ever changes,
 /// the check needs to be promoted to a snapshot read across both
 /// lookups.
-fn verify_position_group_id_matches_context(
+pub(crate) fn verify_position_group_id_matches_context(
     store: &calimero_store::Store,
     context_id: &ContextId,
     claimed_group_id: Option<calimero_context_config::types::ContextGroupId>,
@@ -870,13 +875,19 @@ pub(crate) async fn apply_authorized_state_delta(
     let governance_position_blob = governance_position
         .as_ref()
         .and_then(|gp| borsh::to_vec(gp).ok());
+    // Persist the wire-received `delta_signature` (verified above)
+    // so subsequent DAG-catchup serves from this node include the
+    // envelope signature. Without this, the anti-impersonation
+    // property the signature provides only holds for the originating
+    // node — every relay would drop the signature and downstream
+    // peers couldn't verify.
     let add_result = delta_store_ref
         .add_delta_with_events(
             delta,
             events.clone(),
             Some(author_id),
             governance_position_blob.clone(),
-            None,
+            delta_signature,
         )
         .await?;
     let mut applied = add_result.applied;
@@ -2829,7 +2840,7 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 buffered.events.clone(),
                 Some(buffered.author_id),
                 buffered_gov_blob,
-                None,
+                buffered.delta_signature,
             )
             .await?
     };

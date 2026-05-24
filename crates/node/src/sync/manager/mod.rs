@@ -1622,6 +1622,21 @@ impl SyncManager {
                 }
 
                 // Phase 1: Request and add ALL DAG heads
+                //
+                // Count outcomes so we can detect the silent-no-op case:
+                // a peer advertised N heads, every one was rejected by
+                // the signature/membership/group-id checks, and we
+                // therefore added zero deltas. Without the
+                // counters below, `missing_ids` would be empty after
+                // the loop and the fast-return at 1979 would claim
+                // success despite no progress — the divergence would
+                // persist and the caller would back off as if it had
+                // already converged. `heads_attempted` excludes the
+                // DeltaNotFound case (peer doesn't have it, not a
+                // rejection); `heads_admitted` includes the
+                // successful `add_delta` path only.
+                let mut heads_attempted: u32 = 0;
+                let mut heads_admitted: u32 = 0;
                 for head_id in &dag_heads {
                     info!(
                         %context_id,
@@ -1653,10 +1668,17 @@ impl SyncManager {
                                     delta,
                                     author_id: response_author,
                                     governance_position_blob,
+                                    // Peer claimed to have the delta; count the
+                                    // attempt regardless of whether the verify
+                                    // chain ultimately accepts it. The
+                                    // DeltaNotFound arm below is *not* an
+                                    // attempt — the peer simply doesn't have
+                                    // it, so it can't be a "rejection".
                                     delta_signature: response_delta_signature,
                                 },
                             ..
                         }) => {
+                            heads_attempted = heads_attempted.saturating_add(1);
                             // Deserialize and add to DAG
                             let storage_delta: calimero_storage::delta::CausalDelta =
                                 borsh::from_slice(&delta)?;
@@ -1715,10 +1737,13 @@ impl SyncManager {
                             // `author`; we have to establish the authorship
                             // claim is genuine before asking whether the
                             // claimed author is authorized. `None` is
-                            // currently tolerated for the wire-up
-                            // transition (signing at execute lands in a
-                            // follow-up); once that lands, `None`
-                            // tightens to a hard reject.
+                            // tolerated only for legacy rows authored
+                            // before envelope signing landed and for
+                            // snapshot checkpoints / genesis rows that
+                            // have no author signature to record; every
+                            // freshly-authored delta (every output of
+                            // `internal_execute`) carries `Some(_)` and
+                            // MUST verify.
                             if let Some(ref sig) = response_delta_signature {
                                 if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
                                     context_id,
@@ -1738,6 +1763,91 @@ impl SyncManager {
                                     continue;
                                 }
                             }
+
+                            // Anti-bypass parity with the gossip path: before
+                            // running `membership_status_at`, confirm the
+                            // claimed governance position's `group_id`
+                            // actually matches the context's owning group
+                            // (or, for non-group contexts, that no position
+                            // is claimed). Without this:
+                            //   * `GroupContextNoPosition` — a group context
+                            //     would accept a delta with no position at
+                            //     all, silently skipping the membership check
+                            //     entirely (the `if let Some(pos)` branch
+                            //     below would just fall through).
+                            //   * `Mismatch` — an attacker could sign a
+                            //     position for a group they're a member of
+                            //     and attach it to a delta targeted at a
+                            //     different context owned by a different
+                            //     group, and `membership_status_at` would
+                            //     still pass against the spoofed group.
+                            //   * `NonGroupContextWithPosition` — symmetric.
+                            // The gossip path catches all three via
+                            // `verify_position_group_id_matches_context`; we
+                            // share the same helper so the match table
+                            // stays in lockstep across the two code paths.
+                            {
+                                use crate::handlers::state_delta::{
+                                    verify_position_group_id_matches_context, GroupIdCheck,
+                                };
+                                let datastore = self.context_client.datastore_handle().into_inner();
+                                match verify_position_group_id_matches_context(
+                                    &datastore,
+                                    &context_id,
+                                    pos.as_ref().map(|p| p.group_id),
+                                ) {
+                                    GroupIdCheck::Match | GroupIdCheck::NonGroupOk => {}
+                                    GroupIdCheck::GroupContextNoPosition { owning } => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            owning_group = ?owning,
+                                            "DAG-catchup: rejecting delta — context is owned \
+                                             by a group but delta carries no \
+                                             governance_position (parity gap with gossip path)"
+                                        );
+                                        continue;
+                                    }
+                                    GroupIdCheck::NonGroupContextWithPosition { claimed } => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            claimed_group = ?claimed,
+                                            "DAG-catchup: rejecting delta — delta claims a \
+                                             governance position but context is not in any \
+                                             group"
+                                        );
+                                        continue;
+                                    }
+                                    GroupIdCheck::Mismatch { owning, claimed } => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            owning_group = ?owning,
+                                            claimed_group = ?claimed,
+                                            "DAG-catchup: rejecting delta — governance_position \
+                                             references a different group than the context's \
+                                             owning group"
+                                        );
+                                        continue;
+                                    }
+                                    GroupIdCheck::LookupError(err) => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            %err,
+                                            "DAG-catchup: skipping delta — group lookup failed \
+                                             during anti-bypass check"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+
                             if let Some(ref pos) = pos {
                                 let datastore = self.context_client.datastore_handle().into_inner();
                                 use calimero_context::group_store::{
@@ -1832,6 +1942,7 @@ impl SyncManager {
                                     "Failed to add DAG head delta"
                                 );
                             } else {
+                                heads_admitted = heads_admitted.saturating_add(1);
                                 info!(
                                     %context_id,
                                     head_id = ?head_id,
@@ -1872,6 +1983,28 @@ impl SyncManager {
                             warn!(%context_id, head_id = ?head_id, "Unexpected response to delta request");
                         }
                     }
+                }
+
+                // Detect "all-rejected" silent no-op: the peer advertised
+                // heads, every single one was rejected by the verify chain
+                // (signature / group-id / membership), and so we admitted
+                // zero deltas. If we let the code fall through to the
+                // `missing_ids.is_empty()` fast-return below, catchup would
+                // claim `Ok(DeltaSync { missing_delta_ids: vec![] })` —
+                // i.e. "success" — even though the divergence remains.
+                // Bail loudly here so the caller knows to back off and
+                // either try another peer or escalate to snapshot sync,
+                // matching how the rest of `handle_dag_sync`'s error paths
+                // propagate.
+                if heads_attempted > 0 && heads_admitted == 0 {
+                    bail!(
+                        "DAG-catchup made no progress against peer {peer_id}: \
+                         all {heads_attempted} advertised head deltas were rejected \
+                         by the apply-time verify chain (signature / group-id / \
+                         membership). Reporting as failure rather than claiming \
+                         convergence — caller should back off and retry against \
+                         another peer or fall back to snapshot sync."
+                    );
                 }
 
                 // Phase 2: Now check for missing parents and fetch them recursively

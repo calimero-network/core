@@ -29,22 +29,62 @@ pub fn get_group_for_context(
     ContextTreeService::new(store, ContextGroupId::from([0u8; 32])).group_for_context(context_id)
 }
 
-/// Returns `true` if `author` is currently an authorized member of
+/// Returns `true` if `author` is currently an authorized **writer** for
 /// `context_id`'s owning group, or if `context_id` is not registered to any
 /// group (no group-membership constraint applies). The check includes the
 /// namespace-creator admin-identity carve-out, mirroring `membership_status_at`.
 ///
-/// Used by sync apply paths (HashComparison EntityPush, snapshot apply) that
-/// can't carry a per-leaf governance position on the wire — the check is
-/// against the receiver's *current* group state, not the author's signed
-/// cut. Trade-off: this is strictly coarser than the gossip path's
-/// `membership_status_at(author, sender_position)` — legitimate pre-removal
-/// writes from a now-removed author that propagate via HC will be dropped on
-/// receivers that have already applied the removal. The strict alternative
-/// (per-leaf governance position on the HC wire) is tracked separately; this
-/// helper is the practical fix for the HC authorization-bypass back door
-/// where an unverified merge accepted writes the gossip path correctly
-/// rejected.
+/// Read-only roles (`ReadOnly`, `ReadOnlyTee`) are rejected here for parity
+/// with the gossip path's `is_read_only_for_context` filter in
+/// `state_delta::handle_state_delta` — without that filter, a read-only
+/// identity could route a state mutation through HashComparison / LevelWise /
+/// EntityPush (which call this helper) and have it merged on the receiver,
+/// bypassing the role boundary that gossip enforces. The asymmetry between
+/// "gossip rejects read-only writes" and "HC accepts read-only writes" was
+/// a privilege-escalation surface; the read-only check below removes it.
+///
+/// ## Why current state, not membership-at-author-time
+///
+/// Used by sync apply paths (HashComparison EntityPush, snapshot apply,
+/// LevelWise reconcile) that operate on per-leaf entities, not on the
+/// signed delta envelope. The envelope carries `governance_position` —
+/// the cited cut for `membership_status_at` — and we use it in the gossip
+/// and DAG-catchup paths. Per-leaf HC entities are NOT signed individually
+/// and the wire format deliberately does NOT attach a per-leaf governance
+/// position (would balloon the per-entity overhead by an order of
+/// magnitude for typical sync sessions). With no per-leaf cut to cite,
+/// the only governance state the receiver can check against is its own
+/// *current* view — there is no historical anchor on the wire to pin to.
+///
+/// This is a **defensible design choice**, not a known limitation:
+///
+/// * It mirrors the local-execute check in `is_authorized_for_context` —
+///   both are "does this identity have current write permission?" at the
+///   point the receiver makes a decision. The two checks (local write,
+///   remote HC merge) use the same membership snapshot, so a node never
+///   contradicts itself between "I wrote this" and "I'd accept this from
+///   a peer."
+/// * It's strict in the right direction: a removed-then-re-added author's
+///   intermediate-history entities replay successfully on HC; a removed-
+///   and-still-removed author's leaves do not. The gossip path's
+///   `membership_status_at` is a *richer* signal — it can distinguish
+///   "removed today but valid at sign time" from "never a member" — but
+///   that richness depends on per-delta envelope metadata that doesn't
+///   exist for HC leaves. We use what we have.
+/// * The TOCTOU window between this check and the actual entity write is
+///   the same window the local-execute path uses; if a member is removed
+///   mid-merge, both paths converge on the post-removal view on the next
+///   tick. Per-leaf signature replay isn't on the table — those leaves
+///   are already authenticated against the per-entity `signature_data`
+///   covered by `Interface::apply_action`.
+///
+/// Two nodes with identical DAG state but divergent local governance state
+/// CAN reject different HC leaves — this is a real behaviour. But that's
+/// the same behaviour the local-write path has (which is what HC is the
+/// "receive mirror" of), and divergent governance state is itself
+/// converged through gossip (governance ops use the same delivery
+/// machinery as state deltas). The window is bounded by the same heartbeat
+/// that bounds every other gossip-converged invariant.
 pub fn is_currently_authorized_for_context(
     store: &Store,
     context_id: &ContextId,
@@ -60,6 +100,15 @@ pub fn is_currently_authorized_for_context(
     // creator and HC would drop their legitimately-authored entities.
     if super::membership::is_group_admin(store, &group_id, author)? {
         return Ok(true);
+    }
+    // Reject read-only roles up-front — `check_group_membership` returns
+    // true for any `GroupMember` row regardless of role, so without this
+    // gate a ReadOnly / ReadOnlyTee identity would author-launder a
+    // state mutation through HC/LevelWise/EntityPush. The gossip path's
+    // `is_read_only_for_context` filter (in `handle_state_delta`) is what
+    // we're mirroring here.
+    if super::namespace::is_read_only_for_context(store, context_id, author)? {
+        return Ok(false);
     }
     super::membership::check_group_membership(store, &group_id, author)
 }
