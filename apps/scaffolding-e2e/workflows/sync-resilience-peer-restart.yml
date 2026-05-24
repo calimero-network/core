@@ -2,52 +2,50 @@ description: >
   Sync-resilience smoke test: a peer is restarted mid-session; writes
   made after the restart must converge to the other peer.
 
-  In merobox's mesh model both nodes sit on the same Docker bridge and
-  reach each other directly over /ip4/.../tcp/.../p2p/<id> sibling
-  addresses — they don't go through a relay. So this workflow does NOT
-  meaningfully exercise the relay-reservation recovery code in
-  calimero-network/core#2446; that's covered by the unit tests in
-  crates/network/src/discovery/state_tests.rs and the MockRelay
-  integration tests in crates/network/tests/relay_recovery.rs. Issue
-  calimero-network/core#2453 tracks the multi-network NAT topology
-  needed to exercise the relay-recovery code path end-to-end here.
+  Discovery + routing setup
+  -------------------------
 
-  What this workflow IS good for is catching the class of integration
-  regressions that the unit-level tests can't see: sync-protocol
-  changes that break peer-restart recovery, gossipsub topic-rejoin
-  bugs, address-book staleness after a restart, and the
-  Borsh-deserialisation-mismatch class of bug that broke
-  test-merobox-integration for two weeks before
+  This workflow now exercises the relay/rendezvous recovery path
+  end-to-end. Two settings:
+
+    * `preserve_default_bootstrap: true` keeps the public devnet
+      boot-node from `merod init` in `bootstrap.nodes` under
+      `--e2e-mode`. That boot-node doubles as the relay server.
+
+    * `mdns: false` disables local discovery. Without this, both
+      nodes on the same Docker bridge would find each other via
+      mDNS and the relay path would be dead code in CI — the very
+      thing #2446's regression coverage is supposed to catch
+      against.
+
+  Catches the class of integration regressions that the unit-level
+  tests can't see: sync-protocol changes that break peer-restart
+  recovery, gossipsub topic-rejoin bugs, address-book staleness
+  after a restart, and the Borsh-deserialisation-mismatch class of
+  bug that broke test-merobox-integration for two weeks before
   calimero-network/merobox#250 caught it.
 
-  Discovery uses the public devnet boot-node at 63.181.86.34 declared
-  via `bootstrap_nodes:`. We have to declare it explicitly because CI
-  runs merobox with `--e2e-mode`, which triggers `apply_e2e_defaults`
-  to clear `bootstrap.nodes` for test isolation — the default
-  boot-node config from `merod init` is wiped before nodes start.
-  Setting `bootstrap_nodes:` at the workflow level survives that
-  clearing (`apply_bootstrap_nodes` runs after `apply_e2e_defaults`).
-  Without this, the 2-node cluster relies on mdns + sibling-dial for
-  discovery, which is reliable enough for most matrix workflows but
-  occasionally races with the gossipsub mesh formation deadline
-  in `join_namespace`.
+  A multi-network NAT-topology version (where both nodes physically
+  cannot dial each other directly) is still tracked under
+  calimero-network/core#2467 / calimero-network/merobox#251. The
+  same-bridge limit here means a node that keeps a cached sibling
+  address might still race a direct dial against the relay path on
+  reconnect; multi-network closes that gap.
 name: Sync Resilience — Peer Restart
 
 force_pull_image: false
 
-# Public devnet boot-node from crates/network/primitives/src/config.rs.
-# Survives apply_e2e_defaults' clearing of bootstrap.nodes because
-# apply_bootstrap_nodes runs immediately after. Provides a stable
-# rendezvous server / relay so the two test nodes find each other
-# even before the cluster-bootstrap-wiring step has run.
-bootstrap_nodes:
-  - "/ip4/63.181.86.34/udp/4001/quic-v1/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh"
-  - "/ip4/63.181.86.34/tcp/4001/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh"
+# Keep `merod init`'s default boot-node (public devnet from
+# `crates/network/primitives/src/config.rs`); see header for why.
+preserve_default_bootstrap: true
 
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: sync-resil-node
+  # See header — required to force routing through the boot-node /
+  # relay rather than the Docker bridge's mDNS shortcut.
+  mdns: false
 
 steps:
   # ---------- Setup: 2-node namespace + context ----------

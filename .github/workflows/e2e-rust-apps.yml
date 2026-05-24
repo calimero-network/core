@@ -287,32 +287,30 @@ jobs:
             file: workflows/auto-follow/asymmetric-context-membership.yml
             app: scaffolding-e2e
           # Sync-resilience smoke tests using the docker fault-injection
-          # primitives. These verify the whole stack survives a peer
-          # restart, a peer pause, and a transient packet-loss event —
-          # useful for catching integration regressions (sync-protocol
-          # changes, gossipsub mesh issues, Borsh wire-format drift) that
-          # the unit tests can't see. They do NOT specifically exercise
-          # the relay-reservation recovery code path (direct sibling
-          # addresses on the Docker bridge bypass the relay); that's
-          # tracked under #2453 for a real NAT-topology test.
+          # primitives. Each workflow YAML now sets
+          # `preserve_default_bootstrap: true` (keeps the public devnet
+          # boot-node from `merod init` as the cluster's sole stable
+          # rendezvous server) and `mdns: false` on its nodes (kills the
+          # Docker-bridge mDNS shortcut). Together these force every
+          # post-fault reconnect through the relay/rendezvous path —
+          # exactly the code path #2446's recovery work fixed and the
+          # path these tests are meant to regress against. Previously
+          # the workflows shared the bridge with mDNS on, so peers
+          # found each other directly and the relay code never ran;
+          # only the libp2p TCP/QUIC reconnect timing was exercised.
+          #
+          # A true multi-network NAT-topology version (where direct
+          # dial is physically impossible, not just discovery-blocked)
+          # is still tracked under #2467 / merobox#251.
           - workflow: sync-resilience-network-partition
             file: workflows/sync-resilience-network-partition.yml
             app: scaffolding-e2e
-          # Two additional sync-resilience workflows ship in this
-          # repository but are NOT in the matrix yet:
-          #
-          #   - sync-resilience-peer-restart.yml
-          #   - sync-resilience-peer-pause.yml
-          #
-          # Both reliably fail at the post-fault wait_for_sync step:
-          # the syncing node logs "DAG catchup failed" and "Sync
-          # session cancelled - discarding buffered deltas" in a loop
-          # for 120s. The companion network-partition workflow (above)
-          # uses the same scaffolding-e2e app and passes, so the
-          # failure is specific to the restart/pause fault shape, not
-          # the app or the workflow scaffolding. Tracked under #2469;
-          # workflows re-enter the matrix once that's fixed.
-          #
+          - workflow: sync-resilience-peer-restart
+            file: workflows/sync-resilience-peer-restart.yml
+            app: scaffolding-e2e
+          - workflow: sync-resilience-peer-pause
+            file: workflows/sync-resilience-peer-pause.yml
+            app: scaffolding-e2e
           # sync-resilience-lossy-link.yml is tracked separately under
           # #2468; it needs a custom merod image with iproute2 (`tc`)
           # installed before it can land in CI. Adding it now would

@@ -3,35 +3,45 @@ description: >
   a long sleep / container freeze / host migration), writes happen on
   the other peer, then the paused peer is unpaused and must catch up.
 
-  Like sync-resilience-peer-restart.yml, this does NOT meaningfully
-  exercise calimero-network/core#2446's relay-reservation recovery —
-  the two nodes are on the same Docker bridge and reach each other
-  directly, not through a relay. See that file's description for the
-  framing.
+  Discovery + routing setup
+  -------------------------
 
-  Where this workflow earns its keep: catching regressions in
-  pause/unpause recovery — buffered-delta replay (the sync::manager
-  swallowed-error path noted in calimero-network/core's relay-recovery
-  memory entry), gossipsub mesh re-formation after a long pause, and
-  any sync-state-machine bug that breaks when one peer comes back
-  after losing the connection.
+  This workflow exercises the relay/rendezvous recovery path
+  end-to-end via:
 
-  Discovery uses the public devnet boot-node declared via
-  `bootstrap_nodes:`. See sync-resilience-peer-restart.yml's
-  header for the rationale (CI's `--e2e-mode` flag clears the
-  default boot-node config; declaring it explicitly survives that).
+    * `preserve_default_bootstrap: true` keeps the public devnet
+      boot-node from `merod init` in `bootstrap.nodes` under
+      `--e2e-mode`; the boot-node doubles as the relay server.
+
+    * `mdns: false` disables local discovery so the post-unpause
+      reconnect is forced through the relay path rather than the
+      Docker bridge's mDNS shortcut.
+
+  Catches regressions in pause/unpause recovery — buffered-delta
+  replay (the `sync::manager` swallowed-error path called out in
+  the relay-recovery memory entry), gossipsub mesh re-formation
+  after a long pause, and any sync-state-machine bug that breaks
+  when one peer comes back after losing the connection.
+
+  Same single-bridge caveat as `sync-resilience-peer-restart.yml`:
+  multi-network NAT-topology (#2467 / merobox#251) is the eventual
+  thorough version; for now the test is best-effort against the
+  relay path given the shared bridge.
 name: Sync Resilience — Peer Pause
 
 force_pull_image: false
 
-bootstrap_nodes:
-  - "/ip4/63.181.86.34/udp/4001/quic-v1/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh"
-  - "/ip4/63.181.86.34/tcp/4001/p2p/12D3KooWR5V4zmisVtVdGE6i8jfFwtgRNq5t8eDGxfckKuhXu7Eh"
+# Keep `merod init`'s default boot-node (public devnet from
+# `crates/network/primitives/src/config.rs`); see header for why.
+preserve_default_bootstrap: true
 
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: sync-resil-node
+  # See header — required to force routing through the boot-node /
+  # relay rather than the Docker bridge's mDNS shortcut.
+  mdns: false
 
 steps:
   # ---------- Setup ----------
