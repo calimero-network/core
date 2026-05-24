@@ -2082,8 +2082,12 @@ async fn request_missing_deltas(
     let mut to_fetch = missing_ids;
     type ParentFetch = (
         calimero_dag::CausalDelta<Vec<Action>>,
-        [u8; 32],         // delta_id (redundant with .id but kept for log clarity)
-        PublicKey,        // author_id from wire
+        [u8; 32], // delta_id (redundant with .id but kept for log clarity)
+        // `None` for genesis (matches what `create_context` persists
+        // — the row's existence + parents=[[0;32]] is what the
+        // responder's carve-out keys off, NOT the sentinel author id).
+        // `Some(author)` for every other delta.
+        Option<PublicKey>,
         Option<Vec<u8>>,  // governance_position_blob from wire
         Option<[u8; 64]>, // delta_signature from wire
     );
@@ -2178,8 +2182,9 @@ async fn request_missing_deltas(
                         // responder's existing genesis carve-out
                         // (`stored_delta.author_id is None &&
                         // parents == [[0;32]]`) fires and re-wraps
-                        // with the sentinel for the next hop.
-                        fetched_deltas.push((dag_delta, missing_id, response_author, None, None));
+                        // with the sentinel for the next hop. Matches
+                        // what `create_context` originally persists.
+                        fetched_deltas.push((dag_delta, missing_id, None, None, None));
                         continue;
                     }
 
@@ -2403,7 +2408,7 @@ async fn request_missing_deltas(
                     fetched_deltas.push((
                         dag_delta,
                         missing_id,
-                        response_author,
+                        Some(response_author),
                         governance_position_blob.as_ref().map(|c| c.to_vec()),
                         response_delta_signature,
                     ));
@@ -2470,7 +2475,7 @@ async fn request_missing_deltas(
                 .add_delta_with_events(
                     dag_delta,
                     None,
-                    Some(author_id),
+                    author_id,
                     governance_position_blob,
                     delta_signature,
                 )
