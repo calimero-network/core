@@ -2203,6 +2203,82 @@ async fn request_missing_deltas(
                         }
                     }
 
+                    // Sanity check: peer returned the delta we
+                    // requested. A malicious or buggy peer could send
+                    // a different delta's body in response to our
+                    // request; the envelope signature we verified
+                    // above bound `storage_delta.id`, not
+                    // `missing_id`, so a body-id mismatch would slip
+                    // an unrelated authorized delta into our DAG.
+                    if storage_delta.id != missing_id {
+                        warn!(
+                            %context_id,
+                            requested = ?missing_id,
+                            received = ?storage_delta.id,
+                            "parent-fetch: peer returned a different delta id than requested, dropping"
+                        );
+                        continue;
+                    }
+
+                    // Group-id parity check: same as the gossip apply
+                    // path. Without this, a delta whose author signed
+                    // a position citing a *different* group's
+                    // governance could pass the membership check
+                    // (`membership_status_at` walks the cited group's
+                    // DAG, not this context's owning group) and slip
+                    // through. Match the `GroupIdCheck` branches
+                    // `verify_position_group_id_matches_context`
+                    // returns to apply identical reject/skip rules.
+                    match verify_position_group_id_matches_context(
+                        &datastore,
+                        &context_id,
+                        governance_position.as_ref().map(|p| p.group_id),
+                    ) {
+                        GroupIdCheck::NonGroupOk | GroupIdCheck::Match => {
+                            // ok — fall through to membership check
+                        }
+                        GroupIdCheck::GroupContextNoPosition { owning } => {
+                            warn!(
+                                %context_id,
+                                delta_id = ?missing_id,
+                                author = %response_author,
+                                owning_group = ?owning,
+                                "parent-fetch: group context but no governance_position, dropping"
+                            );
+                            continue;
+                        }
+                        GroupIdCheck::NonGroupContextWithPosition { claimed } => {
+                            warn!(
+                                %context_id,
+                                delta_id = ?missing_id,
+                                author = %response_author,
+                                claimed_group = ?claimed,
+                                "parent-fetch: non-group context but position claims a group, dropping"
+                            );
+                            continue;
+                        }
+                        GroupIdCheck::Mismatch { owning, claimed } => {
+                            warn!(
+                                %context_id,
+                                delta_id = ?missing_id,
+                                author = %response_author,
+                                owning_group = ?owning,
+                                claimed_group = ?claimed,
+                                "parent-fetch: governance_position cites a different group than context owns, dropping"
+                            );
+                            continue;
+                        }
+                        GroupIdCheck::LookupError(err) => {
+                            warn!(
+                                %context_id,
+                                delta_id = ?missing_id,
+                                %err,
+                                "parent-fetch: get_group_for_context failed, dropping to avoid silent bypass"
+                            );
+                            continue;
+                        }
+                    }
+
                     // Cross-DAG membership check: same as the
                     // request_dag_heads_and_sync path. Reject deltas
                     // whose author was removed at the cited cut.

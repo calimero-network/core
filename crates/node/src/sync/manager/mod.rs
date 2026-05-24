@@ -1637,6 +1637,14 @@ impl SyncManager {
                 // successful `add_delta` path only.
                 let mut heads_attempted: u32 = 0;
                 let mut heads_admitted: u32 = 0;
+                // Hoist the datastore handle outside the loop —
+                // `datastore_handle().into_inner()` clones an `Arc`
+                // and can take a brief lock; per-iteration creation
+                // showed up in reviewer profiling as redundant since
+                // every head reuses the same handle. The handle is
+                // borrowed read-only by the membership check and the
+                // group-id parity check; both can share.
+                let datastore_for_heads = self.context_client.datastore_handle().into_inner();
                 for head_id in &dag_heads {
                     info!(
                         %context_id,
@@ -1790,9 +1798,8 @@ impl SyncManager {
                                 use crate::handlers::state_delta::{
                                     verify_position_group_id_matches_context, GroupIdCheck,
                                 };
-                                let datastore = self.context_client.datastore_handle().into_inner();
                                 match verify_position_group_id_matches_context(
-                                    &datastore,
+                                    &datastore_for_heads,
                                     &context_id,
                                     pos.as_ref().map(|p| p.group_id),
                                 ) {
@@ -1849,11 +1856,10 @@ impl SyncManager {
                             }
 
                             if let Some(ref pos) = pos {
-                                let datastore = self.context_client.datastore_handle().into_inner();
                                 use calimero_context::group_store::{
                                     membership_status_at, MembershipStatus,
                                 };
-                                match membership_status_at(&datastore, &author, pos) {
+                                match membership_status_at(&datastore_for_heads, &author, pos) {
                                     Ok(MembershipStatus::Member(_)) => {
                                         // Authorized at the cited cut — proceed.
                                     }
