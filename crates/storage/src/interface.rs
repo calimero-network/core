@@ -2079,6 +2079,20 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let own_hash: [u8; 32] = Sha256::digest(&final_data).into();
 
+        // Write the entry bytes BEFORE updating the Merkle index. The
+        // index update propagates the new own_hash up the parent chain,
+        // making the new state observable via the root-hash poll path
+        // (`compute_root_hash`). Readers that iterate a collection's
+        // children silently drop entries whose `Key::Entry` lookup
+        // returns `None` (`UnorderedMap::entries` → `flatten().fuse()`
+        // swallows the `NotFound` Err), so an admin-server reader hit
+        // mid-write would otherwise see a converged root hash with
+        // missing children — the "Hello Wor" vs "Hello World" rga
+        // flake reproduced post-#2465. Writing the entry first means
+        // readers see either (old hash + old entries) or
+        // (new hash + new entries), never the inconsistent middle.
+        _ = S::storage_write(Key::Entry(id), &final_data);
+
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
 
         if id.is_root() {
@@ -2090,8 +2104,6 @@ impl<S: StorageAdaptor> Interface<S> {
                 "ROOT MERGE: Final hashes after Merkle tree update"
             );
         }
-
-        _ = S::storage_write(Key::Entry(id), &final_data);
 
         let is_new = metadata.created_at == *metadata.updated_at;
 
@@ -2179,8 +2191,13 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         let own_hash: [u8; 32] = Sha256::digest(merged).into();
-        let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
+        // Entry-before-index ordering — same rationale as `save_internal`:
+        // updating the Merkle index first makes the new root hash
+        // observable before the entry bytes are stored, so a concurrent
+        // reader can see a converged root hash with missing children
+        // (the "Hello Wor" rga flake).
         _ = S::storage_write(Key::Entry(id), merged);
+        let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
         Ok(full_hash)
     }
 
