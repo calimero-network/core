@@ -1729,6 +1729,52 @@ impl SyncManager {
                             // signatures inside `apply_action` remain
                             // the auth primitive.
                             let author = response_author;
+
+                            // Genesis carve-out: the responder serves
+                            // the genesis delta with the all-zeros
+                            // sentinel `author_id` because the wire
+                            // requires an author but genesis predates
+                            // any governance op. Skip every
+                            // author-keyed check — none of them apply
+                            // to genesis. Persist directly via the
+                            // same add_delta path; gossip never sees
+                            // genesis (it's installed at context
+                            // creation), so the only way late joiners
+                            // backfill it is via this catchup path.
+                            if crate::sync::delta_request::is_genesis_author_sentinel(&author) {
+                                debug!(
+                                    %context_id,
+                                    head_id = ?head_id,
+                                    "DAG head pull: accepting genesis delta via author sentinel"
+                                );
+                                let dag_delta = calimero_dag::CausalDelta {
+                                    id: storage_delta.id,
+                                    parents: storage_delta.parents.clone(),
+                                    payload: storage_delta.actions,
+                                    hlc: storage_delta.hlc,
+                                    expected_root_hash: storage_delta.expected_root_hash,
+                                    kind: calimero_dag::DeltaKind::Regular,
+                                };
+                                if let Err(e) =
+                                    delta_store_ref.add_delta(dag_delta, None, None, None).await
+                                {
+                                    warn!(
+                                        ?e,
+                                        %context_id,
+                                        head_id = ?head_id,
+                                        "Failed to add genesis DAG head delta"
+                                    );
+                                } else {
+                                    heads_admitted = heads_admitted.saturating_add(1);
+                                    info!(
+                                        %context_id,
+                                        head_id = ?head_id,
+                                        "Successfully added genesis DAG head delta"
+                                    );
+                                }
+                                continue;
+                            }
+
                             let pos = match governance_position_blob
                                 .as_deref()
                                 .map(

@@ -2151,6 +2151,38 @@ async fn request_missing_deltas(
                         "Received missing parent delta"
                     );
 
+                    // Genesis carve-out: the responder serves the
+                    // genesis delta with the all-zeros sentinel
+                    // `author_id` because the wire requires an author
+                    // but genesis predates any governance op. Skip
+                    // every author-keyed check, persist directly with
+                    // `None` author info so subsequent serves see it
+                    // as the genesis row and use the same sentinel
+                    // dispatch.
+                    if crate::sync::delta_request::is_genesis_author_sentinel(&response_author) {
+                        debug!(
+                            %context_id,
+                            delta_id = ?missing_id,
+                            "parent-fetch: accepting genesis delta via author sentinel"
+                        );
+                        let dag_delta = calimero_dag::CausalDelta {
+                            id: storage_delta.id,
+                            parents: storage_delta.parents.clone(),
+                            payload: storage_delta.actions,
+                            hlc: storage_delta.hlc,
+                            expected_root_hash: storage_delta.expected_root_hash,
+                            kind: calimero_dag::DeltaKind::Regular,
+                        };
+                        // Persist with `author_id: None` so when this
+                        // node later serves the genesis row, the
+                        // responder's existing genesis carve-out
+                        // (`stored_delta.author_id is None &&
+                        // parents == [[0;32]]`) fires and re-wraps
+                        // with the sentinel for the next hop.
+                        fetched_deltas.push((dag_delta, missing_id, response_author, None, None));
+                        continue;
+                    }
+
                     // Decode governance_position once for both the
                     // envelope-signature verification and the cross-
                     // DAG membership check below.

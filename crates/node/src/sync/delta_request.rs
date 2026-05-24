@@ -22,6 +22,34 @@ const MAX_DELTA_FETCH_LIMIT: usize = 3000;
 const DELTA_WARN_LIMIT: usize = 1000;
 const GENESIS_DELTA_ID: [u8; 32] = [0u8; 32];
 
+/// Sentinel `author_id` the DAG-catchup responder uses to serve the
+/// genesis delta on the wire. `create_context` persists the genesis
+/// row with `author_id: None` (genesis predates any governance op so
+/// there's no real author to verify), but the wire format requires
+/// `author_id: PublicKey`. The all-zeros pubkey is never a valid
+/// signing key, so it can't collide with a real author claim;
+/// receivers detect it via [`is_genesis_author_sentinel`] and skip
+/// every author-keyed check (signature verify, `is_read_only`,
+/// `membership_status_at`, `GroupIdCheck`) that doesn't apply to
+/// genesis. Without this carve-out late joiners stall on missing
+/// genesis ancestors.
+pub(crate) const GENESIS_AUTHOR_SENTINEL: [u8; 32] = [0u8; 32];
+
+/// Construct the genesis sentinel as a `PublicKey` for the responder.
+pub(crate) fn genesis_author_sentinel() -> PublicKey {
+    PublicKey::from(GENESIS_AUTHOR_SENTINEL)
+}
+
+/// Receivers use this to bail out of author-keyed checks before
+/// running them — a positive result means the delta on the wire is
+/// the genesis ancestor and the checks below either don't apply (no
+/// author to verify) or would always reject (sentinel isn't a real
+/// member of any group).
+pub(crate) fn is_genesis_author_sentinel(author: &PublicKey) -> bool {
+    let bytes: &[u8; 32] = author.as_ref();
+    bytes == &GENESIS_AUTHOR_SENTINEL
+}
+
 /// What `request_delta` returns when the peer had the delta: the
 /// payload plus the envelope metadata the caller needs to run the same
 /// anti-impersonation + cross-DAG membership check that the head-pull
@@ -68,6 +96,19 @@ fn verify_fetched_parent(
 ) -> VerifiedParent {
     use calimero_context::group_store::{membership_status_at, MembershipStatus};
     use calimero_context_config::types::GovernancePosition;
+
+    // Genesis carve-out: the responder serves the genesis delta with
+    // the all-zeros sentinel `author_id` because the wire requires an
+    // author but genesis predates any governance op. Skip every
+    // author-keyed check — none of them apply to genesis.
+    if is_genesis_author_sentinel(&fetched.author_id) {
+        debug!(
+            %context_id,
+            delta_id = ?delta_id,
+            "DAG-catchup parent-pull: accepting genesis delta via author sentinel"
+        );
+        return VerifiedParent::Apply { position: None };
+    }
 
     let pos = match fetched
         .governance_position_blob
@@ -542,7 +583,25 @@ impl SyncManager {
             // path — the initiator's check requires an author, and
             // we won't bypass it. The initiator's fallback chain
             // (DAG-catchup-None → snapshot) handles recovery.
-            match stored_delta.author_id {
+            // Genesis carve-out: `create_context` persists the
+            // genesis delta with `author_id: None` (it predates any
+            // governance op so there's no real author to verify). The
+            // wire requires an author, so we serve genesis with the
+            // sentinel `PublicKey::from([0; 32])` and the initiator
+            // recognizes the sentinel via `is_genesis_author_sentinel`
+            // and skips the membership / signature / ReadOnly checks
+            // that don't apply to genesis. Without this carve-out a
+            // late-joining peer that needed to backfill the genesis
+            // delta via DAG-catchup would get `DeltaNotFound` and
+            // stall — the same failure mode any other ancestor pull
+            // hits without an author.
+            let is_genesis_delta = stored_delta.parents == vec![[0u8; 32]];
+            let effective_author = match (stored_delta.author_id, is_genesis_delta) {
+                (Some(a), _) => Some(a),
+                (None, true) => Some(genesis_author_sentinel()),
+                (None, false) => None,
+            };
+            match effective_author {
                 None => {
                     debug!(
                         %context_id,
