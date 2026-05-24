@@ -494,8 +494,13 @@ fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>
 
             let response = match ::calimero_storage::merge::merge_root_state_typed::<
                 #ident #ty_generics,
-            >(&request.existing, &request.incoming)
-            {
+            >(
+                &request.existing,
+                &request.incoming,
+                request.existing_created_at,
+                request.existing_ts,
+                request.incoming_ts,
+            ) {
                 ::core::result::Result::Ok(bytes) => {
                     ::calimero_storage::merge::MergeRootStateResponse::Ok(bytes)
                 }

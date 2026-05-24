@@ -92,27 +92,43 @@ pub enum MergeRootStateResponse {
 /// Typed root-state merge for use inside the WASM module's
 /// macro-generated `__calimero_merge_root_state` export.
 ///
-/// Deserializes both sides as `T`, runs the app-provided
-/// `Mergeable::merge`, returns serialized merged bytes. Mirrors the
-/// closure built by `register_crdt_merge` but without the registry
-/// indirection — the macro knows `T` at compile time and calls this
-/// directly.
+/// Implements the same two-tier dispatch the pre-rewrite host-side
+/// `merge_root_state` provided:
 ///
-/// Wrapped in `with_merge_mode` to suppress timestamp generation during
-/// merge: every node must produce the same merged hash from the same
-/// inputs.
+/// 1. **Bootstrap fast-path** — when `existing_created_at == existing_ts`,
+///    the local entity was created but has never been explicitly
+///    updated since (the freshly-materialised default state on a
+///    joiner). In that case `incoming` carries the only real history
+///    and must be accepted unconditionally. Plain CRDT merge would
+///    treat the local defaults as a competing branch and produce a
+///    union-like result that drops parts of the remote's writes —
+///    exactly the regression `kv-store-with-shared-storage` exposes.
+///
+/// 2. **Typed merge** — deserialize both sides as `T`, run
+///    `Mergeable::merge` (wrapped in `with_merge_mode` so timestamp
+///    generation is suppressed and the merged hash is deterministic),
+///    return serialized bytes.
 ///
 /// # Errors
 ///
 /// Returns `MergeError::SerializationError` if either input bytes
 /// fail to deserialize as `T`, or if the merged state fails to
 /// re-serialize. Returns whatever error variant
-/// `<T as Mergeable>::merge` produces if the app's merge logic fails
-/// (typically a `MergeError`).
-pub fn merge_root_state_typed<T>(existing: &[u8], incoming: &[u8]) -> Result<Vec<u8>, MergeError>
+/// `<T as Mergeable>::merge` produces if the app's merge logic fails.
+pub fn merge_root_state_typed<T>(
+    existing: &[u8],
+    incoming: &[u8],
+    existing_created_at: u64,
+    existing_ts: u64,
+    _incoming_ts: u64,
+) -> Result<Vec<u8>, MergeError>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable,
 {
+    if existing_created_at == existing_ts {
+        return Ok(incoming.to_vec());
+    }
+
     let mut existing_state = borsh::from_slice::<T>(existing)
         .map_err(|e| MergeError::SerializationError(format!("existing: {e}")))?;
     let incoming_state = borsh::from_slice::<T>(incoming)
@@ -546,12 +562,40 @@ mod typed_dispatch_tests {
         state_b.counter.increment().unwrap();
         let bytes_b = borsh::to_vec(&state_b).unwrap();
 
-        // Typed merge: A receives B's increments. G-Counter union per
-        // executor → 2 + 1 = 3.
-        let merged_bytes = merge_root_state_typed::<DispatchTestApp>(&bytes_a, &bytes_b)
-            .expect("typed merge should succeed");
+        // Typed merge with non-bootstrap timestamps (existing was
+        // written, so we want the real CRDT merge, not the fast-path).
+        // A receives B's increments. G-Counter union per executor → 2 + 1 = 3.
+        let merged_bytes = merge_root_state_typed::<DispatchTestApp>(
+            &bytes_a, &bytes_b, /* created_at */ 50, /* existing_ts */ 100,
+            /* incoming_ts */ 200,
+        )
+        .expect("typed merge should succeed");
         let merged: DispatchTestApp = borsh::from_slice(&merged_bytes).unwrap();
         assert_eq!(merged.counter.value().unwrap(), 3);
+    }
+
+    #[test]
+    #[serial]
+    fn merge_root_state_typed_bootstrap_returns_incoming_verbatim() {
+        env::reset_for_testing();
+
+        // Bootstrap shape: existing was created but never written
+        // (`created_at == existing_ts`). The fast-path must accept
+        // incoming bytes verbatim, regardless of whether they'd
+        // deserialize as the typed `T` — this is the joiner-bootstrap
+        // case the kv-store-with-shared-storage regression exposed.
+        let some_bytes = vec![9, 9, 9, 9];
+        let incoming = vec![1, 2, 3, 4];
+
+        let out = merge_root_state_typed::<DispatchTestApp>(
+            &some_bytes,
+            &incoming,
+            /* created_at */ 100,
+            /* existing_ts */ 100,
+            /* incoming_ts */ 50,
+        )
+        .expect("bootstrap fast-path must succeed");
+        assert_eq!(out, incoming, "bootstrap must return incoming verbatim");
     }
 
     #[test]
@@ -565,7 +609,15 @@ mod typed_dispatch_tests {
         .unwrap();
         let bad = vec![0xff, 0xff, 0xff, 0xff];
 
-        let result = merge_root_state_typed::<DispatchTestApp>(&bad, &valid_bytes);
+        // Post-bootstrap timestamps to avoid the fast-path so the
+        // typed deserialize is reached.
+        let result = merge_root_state_typed::<DispatchTestApp>(
+            &bad,
+            &valid_bytes,
+            /* created_at */ 50,
+            /* existing_ts */ 100,
+            /* incoming_ts */ 200,
+        );
         assert!(
             matches!(result, Err(MergeError::SerializationError(_))),
             "expected SerializationError, got {:?}",
@@ -584,7 +636,13 @@ mod typed_dispatch_tests {
         .unwrap();
         let bad = vec![0xff, 0xff, 0xff, 0xff];
 
-        let result = merge_root_state_typed::<DispatchTestApp>(&valid_bytes, &bad);
+        let result = merge_root_state_typed::<DispatchTestApp>(
+            &valid_bytes,
+            &bad,
+            /* created_at */ 50,
+            /* existing_ts */ 100,
+            /* incoming_ts */ 200,
+        );
         assert!(
             matches!(result, Err(MergeError::SerializationError(_))),
             "expected SerializationError, got {:?}",
