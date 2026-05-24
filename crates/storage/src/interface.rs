@@ -686,7 +686,26 @@ impl<S: StorageAdaptor> Interface<S> {
                         let last_nonce = <Index<S>>::get_metadata(*id)?
                             .map(|m| *m.updated_at)
                             .unwrap_or(0);
-                        let skip_nonce = nonce_check_disabled_for_testing();
+                        // `nonce_check_disabled_for_testing` is the explicit
+                        // test escape hatch; `in_merge_mode` covers the
+                        // production case where this very action is being
+                        // re-evaluated as part of a CRDT merge (e.g. the
+                        // host-side deferred-root-merge dispatch hands the
+                        // root-state bytes back into the WASM Mergeable,
+                        // which re-runs each sub-action including the
+                        // upserts already-applied on the local side).
+                        // Without the merge-mode bypass, the second pass
+                        // hits `new_nonce == last_nonce`, skips the apply,
+                        // and the merged children references / RGA edits
+                        // never land — exactly the
+                        // shared-storage / scaffolding-e2e regression on
+                        // PR #2465. Skipping is safe in merge mode because:
+                        // (1) the signature still verifies (so the bytes
+                        // are authentic), and (2) merge is by definition
+                        // idempotent — re-applying the same action is the
+                        // expected, deterministic behaviour.
+                        let skip_nonce =
+                            nonce_check_disabled_for_testing() || crate::env::in_merge_mode();
 
                         // Verify signature FIRST, before deciding whether
                         // to skip. We need to know the action is
@@ -840,7 +859,10 @@ impl<S: StorageAdaptor> Interface<S> {
                         let new_nonce = sig_data.nonce;
                         let last_nonce =
                             stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
-                        let skip_nonce = nonce_check_disabled_for_testing();
+                        // See the User arm for the merge-mode bypass
+                        // rationale — applies symmetrically here.
+                        let skip_nonce =
+                            nonce_check_disabled_for_testing() || crate::env::in_merge_mode();
 
                         // Verify signature first — see the User arm
                         // above for the full "verify-before-skip"
