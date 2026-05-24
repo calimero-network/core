@@ -1875,6 +1875,29 @@ impl SyncManager {
                                 }
                             }
 
+                            // ReadOnly check — parity with the gossip
+                            // apply path. `membership_status_at` treats
+                            // ReadOnly as `Member(ReadOnly)`, so a
+                            // ReadOnly identity's delta would slip past
+                            // the cross-DAG check on the catchup path
+                            // even though gossip rejects it. Mirror the
+                            // gate `apply_authorized_state_delta` uses.
+                            if calimero_context::group_store::is_read_only_for_context(
+                                &datastore_for_heads,
+                                &context_id,
+                                &author,
+                            )
+                            .unwrap_or(false)
+                            {
+                                warn!(
+                                    %context_id,
+                                    %author,
+                                    head_id = ?head_id,
+                                    "DAG-catchup: rejecting delta from ReadOnly member"
+                                );
+                                continue;
+                            }
+
                             if let Some(ref pos) = pos {
                                 use calimero_context::group_store::{
                                     membership_status_at, MembershipStatus,

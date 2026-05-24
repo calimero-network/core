@@ -2279,6 +2279,30 @@ async fn request_missing_deltas(
                         }
                     }
 
+                    // ReadOnly check — parity with the gossip apply
+                    // path in `apply_authorized_state_delta`.
+                    // `membership_status_at` treats ReadOnly as
+                    // `Member(ReadOnly)`, so without a separate
+                    // `is_read_only_for_context` gate a delta authored
+                    // by a ReadOnly / ReadOnlyTee identity passes the
+                    // membership check on the catchup path even
+                    // though gossip rejects the same envelope.
+                    if calimero_context::group_store::is_read_only_for_context(
+                        &datastore,
+                        &context_id,
+                        &response_author,
+                    )
+                    .unwrap_or(false)
+                    {
+                        warn!(
+                            %context_id,
+                            delta_id = ?missing_id,
+                            author = %response_author,
+                            "parent-fetch: rejecting delta from ReadOnly member"
+                        );
+                        continue;
+                    }
+
                     // Cross-DAG membership check: same as the
                     // request_dag_heads_and_sync path. Reject deltas
                     // whose author was removed at the cited cut.
