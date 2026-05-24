@@ -1622,6 +1622,29 @@ impl SyncManager {
                 }
 
                 // Phase 1: Request and add ALL DAG heads
+                //
+                // Count outcomes so we can detect the silent-no-op case:
+                // a peer advertised N heads, every one was rejected by
+                // the signature/membership/group-id checks, and we
+                // therefore added zero deltas. Without the
+                // counters below, `missing_ids` would be empty after
+                // the loop and the fast-return at 1979 would claim
+                // success despite no progress — the divergence would
+                // persist and the caller would back off as if it had
+                // already converged. `heads_attempted` excludes the
+                // DeltaNotFound case (peer doesn't have it, not a
+                // rejection); `heads_admitted` includes the
+                // successful `add_delta` path only.
+                let mut heads_attempted: u32 = 0;
+                let mut heads_admitted: u32 = 0;
+                // Hoist the datastore handle outside the loop —
+                // `datastore_handle().into_inner()` clones an `Arc`
+                // and can take a brief lock; per-iteration creation
+                // showed up in reviewer profiling as redundant since
+                // every head reuses the same handle. The handle is
+                // borrowed read-only by the membership check and the
+                // group-id parity check; both can share.
+                let datastore_for_heads = self.context_client.datastore_handle().into_inner();
                 for head_id in &dag_heads {
                     info!(
                         %context_id,
@@ -1648,12 +1671,340 @@ impl SyncManager {
 
                     match delta_response {
                         Some(StreamMessage::Message {
-                            payload: MessagePayload::DeltaResponse { delta },
+                            payload:
+                                MessagePayload::DeltaResponse {
+                                    delta,
+                                    author_id: response_author,
+                                    governance_position_blob,
+                                    // Peer claimed to have the delta; count the
+                                    // attempt regardless of whether the verify
+                                    // chain ultimately accepts it. The
+                                    // DeltaNotFound arm below is *not* an
+                                    // attempt — the peer simply doesn't have
+                                    // it, so it can't be a "rejection".
+                                    delta_signature: response_delta_signature,
+                                },
                             ..
                         }) => {
+                            heads_attempted = heads_attempted.saturating_add(1);
                             // Deserialize and add to DAG
                             let storage_delta: calimero_storage::delta::CausalDelta =
                                 borsh::from_slice(&delta)?;
+
+                            // Sanity check: peer returned the head we
+                            // requested. A buggy or malicious peer
+                            // could substitute a different authorized
+                            // delta in response. The envelope signature
+                            // binds `storage_delta.id`, not `head_id`,
+                            // so without this guard a peer could swap
+                            // a valid delta for another and slip it
+                            // into our DAG under the wrong slot —
+                            // parity with the parent-fetch path's
+                            // sanity check, same security rationale.
+                            if storage_delta.id != *head_id {
+                                warn!(
+                                    %context_id,
+                                    requested = ?head_id,
+                                    received = ?storage_delta.id,
+                                    "DAG head pull: peer returned a different delta id than requested, dropping"
+                                );
+                                continue;
+                            }
+
+                            // Apply-time cross-DAG membership check —
+                            // parity with the gossip-path check in
+                            // `handle_state_delta`. `response_author` is
+                            // required on the wire (the responder filters
+                            // out rows without an author claim, returning
+                            // `DeltaNotFound` so the initiator can fall
+                            // back to a verifiable path). No legacy-accept
+                            // escape hatch here.
+                            //
+                            // `governance_position` is `Option` because
+                            // non-group contexts legitimately have no
+                            // cut to cite. In that case the membership
+                            // check is skipped (nothing to verify against
+                            // — context isn't governed by a group
+                            // membership DAG), and the per-action
+                            // signatures inside `apply_action` remain
+                            // the auth primitive.
+                            let author = response_author;
+
+                            // Genesis carve-out: the responder serves
+                            // the genesis delta with the all-zeros
+                            // sentinel `author_id` because the wire
+                            // requires an author but genesis predates
+                            // any governance op. Skip every
+                            // author-keyed check — none of them apply
+                            // to genesis. Persist directly via the
+                            // same add_delta path; gossip never sees
+                            // genesis (it's installed at context
+                            // creation), so the only way late joiners
+                            // backfill it is via this catchup path.
+                            if crate::sync::delta_request::is_genesis_author_sentinel(&author) {
+                                debug!(
+                                    %context_id,
+                                    head_id = ?head_id,
+                                    "DAG head pull: accepting genesis delta via author sentinel"
+                                );
+                                let dag_delta = calimero_dag::CausalDelta {
+                                    id: storage_delta.id,
+                                    parents: storage_delta.parents.clone(),
+                                    payload: storage_delta.actions,
+                                    hlc: storage_delta.hlc,
+                                    expected_root_hash: storage_delta.expected_root_hash,
+                                    kind: calimero_dag::DeltaKind::Regular,
+                                };
+                                if let Err(e) =
+                                    delta_store_ref.add_delta(dag_delta, None, None, None).await
+                                {
+                                    warn!(
+                                        ?e,
+                                        %context_id,
+                                        head_id = ?head_id,
+                                        "Failed to add genesis DAG head delta"
+                                    );
+                                } else {
+                                    heads_admitted = heads_admitted.saturating_add(1);
+                                    info!(
+                                        %context_id,
+                                        head_id = ?head_id,
+                                        "Successfully added genesis DAG head delta"
+                                    );
+                                }
+                                continue;
+                            }
+
+                            let pos = match governance_position_blob
+                                .as_deref()
+                                .map(
+                                    borsh::from_slice::<
+                                        calimero_context_config::types::GovernancePosition,
+                                    >,
+                                )
+                                .transpose()
+                            {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    // Malformed governance_position
+                                    // blob on a single delta shouldn't
+                                    // poison the whole DAG-catchup
+                                    // batch — skip this delta and
+                                    // continue. Other deltas may still
+                                    // converge; this one will retry on
+                                    // the next sync tick.
+                                    warn!(
+                                        %context_id,
+                                        %author,
+                                        head_id = ?head_id,
+                                        %e,
+                                        "DAG-catchup: failed to decode governance_position \
+                                         from peer; skipping this delta and continuing"
+                                    );
+                                    continue;
+                                }
+                            };
+                            // Per-delta envelope signature verification —
+                            // parity with `apply_authorized_state_delta`'s
+                            // gossip-path check. Runs BEFORE the cross-DAG
+                            // membership check because that check keys off
+                            // `author`; we have to establish the authorship
+                            // claim is genuine before asking whether the
+                            // claimed author is authorized. `None` is
+                            // tolerated only for legacy rows authored
+                            // before envelope signing landed and for
+                            // snapshot checkpoints / genesis rows that
+                            // have no author signature to record; every
+                            // freshly-authored delta (every output of
+                            // `internal_execute`) carries `Some(_)` and
+                            // MUST verify.
+                            if let Some(ref sig) = response_delta_signature {
+                                if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+                                    context_id,
+                                    storage_delta.id,
+                                    author,
+                                    pos.as_ref(),
+                                    sig,
+                                ) {
+                                    warn!(
+                                        %context_id,
+                                        %author,
+                                        head_id = ?head_id,
+                                        %err,
+                                        "DAG-catchup: rejecting delta — envelope signature \
+                                         verification failed"
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            // Anti-bypass parity with the gossip path: before
+                            // running `membership_status_at`, confirm the
+                            // claimed governance position's `group_id`
+                            // actually matches the context's owning group
+                            // (or, for non-group contexts, that no position
+                            // is claimed). Without this:
+                            //   * `GroupContextNoPosition` — a group context
+                            //     would accept a delta with no position at
+                            //     all, silently skipping the membership check
+                            //     entirely (the `if let Some(pos)` branch
+                            //     below would just fall through).
+                            //   * `Mismatch` — an attacker could sign a
+                            //     position for a group they're a member of
+                            //     and attach it to a delta targeted at a
+                            //     different context owned by a different
+                            //     group, and `membership_status_at` would
+                            //     still pass against the spoofed group.
+                            //   * `NonGroupContextWithPosition` — symmetric.
+                            // The gossip path catches all three via
+                            // `verify_position_group_id_matches_context`; we
+                            // share the same helper so the match table
+                            // stays in lockstep across the two code paths.
+                            {
+                                use crate::handlers::state_delta::{
+                                    verify_position_group_id_matches_context, GroupIdCheck,
+                                };
+                                match verify_position_group_id_matches_context(
+                                    &datastore_for_heads,
+                                    &context_id,
+                                    pos.as_ref().map(|p| p.group_id),
+                                ) {
+                                    GroupIdCheck::Match | GroupIdCheck::NonGroupOk => {}
+                                    GroupIdCheck::GroupContextNoPosition { owning } => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            owning_group = ?owning,
+                                            "DAG-catchup: rejecting delta — context is owned \
+                                             by a group but delta carries no \
+                                             governance_position (parity gap with gossip path)"
+                                        );
+                                        continue;
+                                    }
+                                    GroupIdCheck::NonGroupContextWithPosition { claimed } => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            claimed_group = ?claimed,
+                                            "DAG-catchup: rejecting delta — delta claims a \
+                                             governance position but context is not in any \
+                                             group"
+                                        );
+                                        continue;
+                                    }
+                                    GroupIdCheck::Mismatch { owning, claimed } => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            owning_group = ?owning,
+                                            claimed_group = ?claimed,
+                                            "DAG-catchup: rejecting delta — governance_position \
+                                             references a different group than the context's \
+                                             owning group"
+                                        );
+                                        continue;
+                                    }
+                                    GroupIdCheck::LookupError(err) => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            %err,
+                                            "DAG-catchup: skipping delta — group lookup failed \
+                                             during anti-bypass check"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            // ReadOnly check — parity with the gossip
+                            // apply path. `membership_status_at` treats
+                            // ReadOnly as `Member(ReadOnly)`, so a
+                            // ReadOnly identity's delta would slip past
+                            // the cross-DAG check on the catchup path
+                            // even though gossip rejects it. Mirror the
+                            // gate `apply_authorized_state_delta` uses.
+                            if calimero_context::group_store::is_read_only_for_context(
+                                &datastore_for_heads,
+                                &context_id,
+                                &author,
+                            )
+                            .unwrap_or(false)
+                            {
+                                warn!(
+                                    %context_id,
+                                    %author,
+                                    head_id = ?head_id,
+                                    "DAG-catchup: rejecting delta from ReadOnly member"
+                                );
+                                continue;
+                            }
+
+                            if let Some(ref pos) = pos {
+                                use calimero_context::group_store::{
+                                    membership_status_at, MembershipStatus,
+                                };
+                                match membership_status_at(&datastore_for_heads, &author, pos) {
+                                    Ok(MembershipStatus::Member(_)) => {
+                                        // Authorized at the cited cut — proceed.
+                                    }
+                                    Ok(MembershipStatus::Removed { last_role }) => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            last_role = ?last_role,
+                                            "DAG-catchup: rejecting delta — author was \
+                                             removed at the cited governance cut"
+                                        );
+                                        continue;
+                                    }
+                                    Ok(MembershipStatus::NeverMember) => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            "DAG-catchup: rejecting delta — author was \
+                                             never a member at the cited governance cut"
+                                        );
+                                        continue;
+                                    }
+                                    Ok(MembershipStatus::Unknown { needed }) => {
+                                        // Buffering this delta the way the gossip path
+                                        // does would close the loop, but the DAG-catchup
+                                        // dispatch flow doesn't have the buffer plumbing
+                                        // wired yet. Skipping for now means the next sync
+                                        // tick will re-attempt once governance state has
+                                        // caught up via gossip; safer than admitting an
+                                        // unverified delta on the catch-up path.
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            needed = ?needed,
+                                            "DAG-catchup: skipping delta — governance \
+                                             cut not locally known; will re-attempt on \
+                                             next sync tick"
+                                        );
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            error = %e,
+                                            "DAG-catchup: skipping delta — \
+                                             membership_status_at failed"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
 
                             let dag_delta = calimero_dag::CausalDelta {
                                 id: storage_delta.id,
@@ -1664,7 +2015,21 @@ impl SyncManager {
                                 kind: calimero_dag::DeltaKind::Regular,
                             };
 
-                            if let Err(e) = delta_store_ref.add_delta(dag_delta).await {
+                            // Persist with the wire-received author +
+                            // governance position so this node can in
+                            // turn serve verifiable DAG-catchup responses
+                            // to other peers that ask for the same delta.
+                            let persisted_gov_blob =
+                                governance_position_blob.as_ref().map(|c| c.to_vec());
+                            if let Err(e) = delta_store_ref
+                                .add_delta(
+                                    dag_delta,
+                                    Some(author),
+                                    persisted_gov_blob,
+                                    response_delta_signature,
+                                )
+                                .await
+                            {
                                 warn!(
                                     ?e,
                                     %context_id,
@@ -1672,6 +2037,7 @@ impl SyncManager {
                                     "Failed to add DAG head delta"
                                 );
                             } else {
+                                heads_admitted = heads_admitted.saturating_add(1);
                                 info!(
                                     %context_id,
                                     head_id = ?head_id,
@@ -1712,6 +2078,28 @@ impl SyncManager {
                             warn!(%context_id, head_id = ?head_id, "Unexpected response to delta request");
                         }
                     }
+                }
+
+                // Detect "all-rejected" silent no-op: the peer advertised
+                // heads, every single one was rejected by the verify chain
+                // (signature / group-id / membership), and so we admitted
+                // zero deltas. If we let the code fall through to the
+                // `missing_ids.is_empty()` fast-return below, catchup would
+                // claim `Ok(DeltaSync { missing_delta_ids: vec![] })` —
+                // i.e. "success" — even though the divergence remains.
+                // Bail loudly here so the caller knows to back off and
+                // either try another peer or escalate to snapshot sync,
+                // matching how the rest of `handle_dag_sync`'s error paths
+                // propagate.
+                if heads_attempted > 0 && heads_admitted == 0 {
+                    bail!(
+                        "DAG-catchup made no progress against peer {peer_id}: \
+                         all {heads_attempted} advertised head deltas were rejected \
+                         by the apply-time verify chain (signature / group-id / \
+                         membership). Reporting as failure rather than claiming \
+                         convergence — caller should back off and retry against \
+                         another peer or fall back to snapshot sync."
+                    );
                 }
 
                 // Phase 2: Now check for missing parents and fetch them recursively

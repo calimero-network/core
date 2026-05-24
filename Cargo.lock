@@ -1261,6 +1261,7 @@ dependencies = [
  "calimero-network-primitives",
  "calimero-node-primitives",
  "calimero-primitives",
+ "calimero-storage",
  "calimero-store",
  "calimero-utils-actix",
  "ed25519-dalek",

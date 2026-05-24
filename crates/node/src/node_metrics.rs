@@ -60,6 +60,18 @@ pub(crate) struct GovernanceDrainLabels {
     pub(crate) outcome: String,
 }
 
+/// Outcome label for HC / LevelWise / EntityPush per-leaf drops in
+/// `sync::helpers::is_leaf_currently_authorized`. Separates "author is
+/// not currently a member" (an expected, common outcome under churn)
+/// from "the store lookup itself failed" (rare, indicates I/O trouble
+/// — should never approach the rate of the former).
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub(crate) struct LeafDropLabels {
+    /// One of: `unauthorized` (membership check returned `false`),
+    /// `lookup_error` (storage layer raised).
+    pub(crate) reason: String,
+}
+
 /// Snapshot of all node-level metric handles.
 ///
 /// Clone-friendly: the families and counters are wrapped in `Arc` by
@@ -90,6 +102,9 @@ pub(crate) struct NodeMetrics {
     pub(crate) delta_outcomes_total: Family<DeltaApplyLabels, Counter>,
     pub(crate) delta_cascade_size: Histogram,
     pub(crate) delta_missing_parents_total: Counter,
+
+    // HC / LevelWise / EntityPush per-leaf authorization drops.
+    pub(crate) hc_leaf_drops_total: Family<LeafDropLabels, Counter>,
 
     // Governance-pending drain outcomes (B2 buffer-on-unknown lifecycle).
     pub(crate) governance_drain_outcomes_total: Family<GovernanceDrainLabels, Counter>,
@@ -204,6 +219,14 @@ impl NodeMetrics {
             delta_missing_parents_total.clone(),
         );
 
+        let hc_leaf_drops_total: Family<LeafDropLabels, Counter> = Family::default();
+        registry.register(
+            "hc_leaf_drops_total",
+            "HC / LevelWise / EntityPush leaves dropped by the apply-time \
+             current-membership check, labelled by reason",
+            hc_leaf_drops_total.clone(),
+        );
+
         let governance_drain_outcomes_total: Family<GovernanceDrainLabels, Counter> =
             Family::default();
         registry.register(
@@ -252,6 +275,7 @@ impl NodeMetrics {
             delta_outcomes_total,
             delta_cascade_size,
             delta_missing_parents_total,
+            hc_leaf_drops_total,
             governance_drain_outcomes_total,
             process_resident_memory_bytes,
             process_virtual_memory_bytes,
@@ -509,6 +533,28 @@ pub(crate) fn record_governance_drain_outcome(outcome: &str) {
         m.governance_drain_outcomes_total
             .get_or_create(&GovernanceDrainLabels {
                 outcome: outcome.to_owned(),
+            })
+            .inc();
+    }
+}
+
+/// Bump the HC leaf-drop counter. `reason` is one of:
+///
+/// * `"unauthorized"` — the current-membership check returned `false`;
+///   author was either never a member or has been removed.
+/// * `"lookup_error"` — the underlying store lookup raised; receiver
+///   dropped the leaf defensively rather than risking a silent bypass.
+///
+/// Operators care about the *ratio* between these two: a steady stream
+/// of `unauthorized` under churn is normal (legitimate post-removal
+/// rejection); a non-trivial rate of `lookup_error` is an I/O signal
+/// that warrants investigation, since each one is a silently-dropped
+/// entity.
+pub(crate) fn record_hc_leaf_drop(reason: &str) {
+    if let Some(m) = global() {
+        m.hc_leaf_drops_total
+            .get_or_create(&LeafDropLabels {
+                reason: reason.to_owned(),
             })
             .inc();
     }

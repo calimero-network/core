@@ -702,6 +702,20 @@ pub enum BroadcastMessage<'a> {
         /// delta. Receivers look up the corresponding key from their local
         /// `GroupKeyEntry` store to decrypt.
         key_id: [u8; 32],
+
+        /// Ed25519 signature by `author_id`'s identity key over the
+        /// canonical [`super::delta_auth::DeltaSignaturePayload`]
+        /// `(context_id, delta_id, author_id, governance_position)`.
+        /// Closes the anti-impersonation gap on the delta envelope: a
+        /// current group-key holder can no longer relabel a foreign
+        /// delta as their own (or vice versa) — `membership_status_at`
+        /// alone would accept both since both are members.
+        ///
+        /// `Option` for the wire-up transition. The schema is in place
+        /// and receivers verify when `Some`; signing at the `execute`
+        /// site is wired up in a follow-up, after which this tightens
+        /// to required and `None` becomes a hard reject.
+        delta_signature: Option<[u8; 64]>,
     },
 
     /// Hash heartbeat for divergence detection

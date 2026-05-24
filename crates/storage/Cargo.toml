@@ -39,4 +39,21 @@ calimero-sdk.workspace = true
 
 [features]
 default = []
-testing = []  # Exposes test utilities for dependent crates
+# Exposes the WASM-side merge registry to host-build test code so
+# integration tests can exercise the dispatch shape without a real
+# WASM runtime. Required by the registry integration tests; dependent
+# crates that want to mock registered merge functions enable this too.
+testing = []
+
+# Registry tests live in `tests/` as separate integration binaries
+# rather than `src/tests/` unit modules so they exercise the production
+# `RwLock`-backed registry path instead of the `#[cfg(test)]`
+# thread-local one. They need the registry to be callable from outside
+# `cfg(test)`, which is what the `testing` feature unlocks.
+[[test]]
+name = "merge_registry_concurrent"
+required-features = ["testing"]
+
+[[test]]
+name = "merge_registry_integration"
+required-features = ["testing"]

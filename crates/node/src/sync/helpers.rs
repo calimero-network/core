@@ -5,11 +5,13 @@
 use calimero_node_primitives::sync::TreeLeafData;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use calimero_storage::address::Id;
-use calimero_storage::entities::{ChildInfo, Metadata};
+use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
 use calimero_storage::index::Index;
 use calimero_storage::interface::{Action, ApplyContext, Interface};
 use calimero_storage::store::MainStorage;
+use calimero_store::Store;
 use eyre::{bail, Result};
 use rand::Rng;
 
@@ -75,13 +77,109 @@ pub fn generate_nonce() -> calimero_crypto::Nonce {
 pub fn wire_authorization_for(
     metadata: &Metadata,
 ) -> Option<calimero_storage::entities::StorageType> {
-    use calimero_storage::entities::StorageType;
     match &metadata.storage_type {
         StorageType::Public | StorageType::Frozen => None,
         StorageType::Shared { .. } | StorageType::User { .. } => {
             Some(metadata.storage_type.clone())
         }
     }
+}
+
+/// Extract the claimed author of a sync'd leaf from its wire-carried
+/// authorization, when the storage type admits one.
+///
+/// * `User { owner, .. }` → `owner` is the author by definition.
+/// * `Shared { signature_data: Some(SignatureData { signer: Some(pk), .. }), .. }`
+///   → the per-action signature carries the explicit signer. When `signer`
+///   is `None` (older actions without the hint), returns `None` — the
+///   author can't be identified without scanning the writer set, and the
+///   caller treats this as "don't enforce membership here, defer to the
+///   per-action signature check inside `apply_action`."
+/// * `Public` / `Frozen` / authorization absent → `None`; no author to
+///   check (the per-action signature path verifies what's verifiable).
+fn extract_author_from_leaf_authorization(
+    authorization: Option<&StorageType>,
+) -> Option<PublicKey> {
+    match authorization? {
+        StorageType::User { owner, .. } => Some(*owner),
+        StorageType::Shared { signature_data, .. } => {
+            signature_data.as_ref().and_then(|sd| sd.signer)
+        }
+        StorageType::Public | StorageType::Frozen => None,
+    }
+}
+
+/// Authorization gate for sync apply paths that don't carry a per-leaf
+/// governance position on the wire (HashComparison EntityPush, snapshot
+/// apply). Mirrors `state_delta_bridge`'s cross-DAG `membership_status_at`
+/// check, coarsened to the receiver's *current* group state.
+///
+/// Returns `true` iff the entity should be applied:
+/// * No identifiable author → applied (Public / Frozen / Shared without
+///   `signer` hint; the per-action signature inside `apply_action`
+///   remains the verifier).
+/// * Author identified + currently a member of `context_id`'s owning
+///   group → applied.
+/// * Author identified + NOT currently a member (or lookup error) →
+///   dropped. Closes the HC back door where a now-removed author's
+///   entities entered storage without re-running the membership check
+///   that the gossip path runs unconditionally. The trade-off (over-
+///   rejection of legitimate pre-removal writes that propagate via HC)
+///   is documented on
+///   [`calimero_context::group_store::is_currently_authorized_for_context`].
+pub fn is_leaf_currently_authorized(
+    store: &Store,
+    context_id: &ContextId,
+    leaf: &TreeLeafData,
+) -> bool {
+    let Some(author) = extract_author_from_leaf_authorization(leaf.metadata.authorization.as_ref())
+    else {
+        return true;
+    };
+    match calimero_context::group_store::is_currently_authorized_for_context(
+        store, context_id, &author,
+    ) {
+        Ok(true) => true,
+        Ok(false) => {
+            // Expected outcome under churn (post-removal authorship,
+            // ReadOnly role); track separately from lookup errors so
+            // operators can tell normal churn-driven drops from
+            // I/O-driven drops at a glance. See `record_hc_leaf_drop`
+            // for the ratio semantics.
+            crate::node_metrics::record_hc_leaf_drop("unauthorized");
+            false
+        }
+        Err(err) => {
+            // Storage layer raised — drop the leaf rather than risk a
+            // silent bypass, but escalate to ERROR (not WARN) so the
+            // signal isn't lost in routine sync chatter, and emit the
+            // counter so the operator dashboard reflects a non-trivial
+            // rate of I/O trouble even if individual log lines get
+            // dropped under load.
+            tracing::error!(
+                %context_id,
+                %author,
+                error = %err,
+                "is_leaf_currently_authorized: membership lookup failed; dropping entity to avoid silent bypass"
+            );
+            crate::node_metrics::record_hc_leaf_drop("lookup_error");
+            false
+        }
+    }
+}
+
+/// Detect the synthetic "opaque" CRDT type sync senders attach to leaves
+/// whose stored metadata has no `crdt_type` (typically the `Root<T>`
+/// entry for apps that don't use `#[app::state]`, plus test fixtures).
+/// The sender wraps these in `CrdtType::LwwRegister { inner_type:
+/// OPAQUE_LEAF_CRDT_TYPE_NAME }` so the wire never carries an absent
+/// type; the receiver uses this helper to recognise them and route to a
+/// direct LWW write rather than expecting WASM-side merge dispatch
+/// (which doesn't exist for entities without a `Mergeable` impl).
+fn is_opaque_crdt_type(crdt_type: &calimero_primitives::crdt::CrdtType) -> bool {
+    use calimero_primitives::crdt::CrdtType;
+    matches!(crdt_type, CrdtType::LwwRegister { inner_type }
+        if inner_type == crate::sync::hash_comparison_protocol::OPAQUE_LEAF_CRDT_TYPE_NAME)
 }
 
 /// Apply leaf data using CRDT merge (Invariant I5: No Silent Data Loss).
@@ -109,6 +207,48 @@ pub fn wire_authorization_for(
 pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) -> Result<()> {
     let entity_id = Id::new(leaf.key);
     let root_id = Id::new(*context_id.as_ref());
+
+    // App root state — `ROOT_ID` or the `Root<T>` entry — needs the
+    // app's typed `Mergeable::merge`, which only exists inside the
+    // WASM module. The host's `merge_root_state` consults a
+    // `MERGE_REGISTRY` static that's never populated in production
+    // (the macro's `__calimero_register_merge` export writes the
+    // WASM module's copy, not the host's — separate address spaces).
+    // Two cases:
+    //
+    // * Root entity with `crdt_type: Some(_)` — real app state. Skip
+    //   here; the caller (HC initiator's DFS, `handle_entity_push`)
+    //   accumulates the bytes in `deferred_root_merges` and dispatches
+    //   via `ContextClient::merge_root_state` after the sync loop.
+    // * Root entity with `crdt_type: None` — opaque (no `Mergeable`
+    //   available). WASM dispatch can't help — there's no
+    //   `__calimero_merge_root_state` to invoke on a type with no
+    //   `Mergeable` impl. The only sensible behavior is direct LWW
+    //   write, which is what the old `AllFunctionsFailed` branch in
+    //   `merge_root_state` did. Fires in test fixtures and apps that
+    //   don't use `#[app::state]`; real apps always have a crdt_type
+    //   and take the deferred-dispatch path.
+    if calimero_storage::collections::is_app_root_entry(entity_id) {
+        if is_opaque_crdt_type(&leaf.metadata.crdt_type) {
+            let mut md = Metadata::default();
+            md.created_at = leaf.metadata.created_at;
+            md.updated_at = leaf.metadata.hlc_timestamp.into();
+            calimero_storage::interface::Interface::<MainStorage>::write_pre_merged_root_state(
+                entity_id,
+                &leaf.value,
+                md,
+            )?;
+            return Ok(());
+        }
+        // Crdt-bearing root entity — caller defers.
+        tracing::warn!(
+            %context_id,
+            entity_id = %entity_id,
+            "HC apply: skipping root-entity merge on host (no host-side merge dispatch); \
+             caller dispatches via ContextClient::merge_root_state"
+        );
+        return Ok(());
+    }
 
     // Check if entity already exists
     let existing_index = Index::<MainStorage>::get_index(entity_id).ok().flatten();
@@ -263,6 +403,24 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
 /// The initiator batches at this limit; the responder truncates messages exceeding it.
 pub const MAX_ENTITIES_PER_PUSH: usize = 500;
 
+/// Outcome of an EntityPush batch.
+///
+/// `applied` is the count of leaves successfully written via the host
+/// CRDT apply path. `deferred_root_merges` collects root-entity leaves
+/// the host can't merge by itself (same rationale as
+/// [`HashComparisonStats::deferred_root_merges`](crate::sync::hash_comparison_protocol::HashComparisonStats::deferred_root_merges)) —
+/// the caller dispatches each through `ContextClient::merge_root_state`
+/// after the batch returns.
+#[derive(Debug, Default)]
+pub struct EntityPushOutcome {
+    pub applied: u32,
+    /// `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)` — same
+    /// shape as [`crate::sync::hash_comparison_protocol::HashComparisonStats::deferred_root_merges`].
+    /// Carrying the leaf's HLC timestamp lets the dispatcher use the
+    /// actual remote write time instead of a synthetic value.
+    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
+}
+
 /// Handle an incoming `EntityPush` by applying CRDT merge for each entity.
 ///
 /// Shared between the production responder (`hash_comparison.rs`) and the
@@ -271,12 +429,21 @@ pub const MAX_ENTITIES_PER_PUSH: usize = 500;
 /// Must be called within a `with_runtime_env` scope for each entity.
 /// Truncates to `MAX_ENTITIES_PER_PUSH` entities per message for DoS protection.
 ///
-/// Returns the number of entities successfully applied.
+/// Each leaf is first run through [`is_leaf_currently_authorized`] — entities
+/// whose claimed author is not currently an authorized member of the
+/// context's group are dropped before they touch storage. This closes the
+/// HC EntityPush authorization back door (gossip rejects a now-removed
+/// author's delta, but HC would re-import the same entity unverified).
+///
+/// Root-entity leaves are surfaced in `deferred_root_merges` for the
+/// caller to dispatch via `ContextClient::merge_root_state` — the host
+/// has no dispatch table for app-typed root state.
 pub fn handle_entity_push(
+    store: &Store,
     runtime_env: &calimero_storage::env::RuntimeEnv,
     context_id: ContextId,
     entities: &[TreeLeafData],
-) -> u32 {
+) -> EntityPushOutcome {
     let entities = if entities.len() > MAX_ENTITIES_PER_PUSH {
         tracing::warn!(
             %context_id,
@@ -291,6 +458,8 @@ pub fn handle_entity_push(
 
     calimero_storage::env::with_runtime_env(runtime_env.clone(), || {
         let mut applied = 0u32;
+        let mut dropped_unauthorized = 0u32;
+        let mut deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)> = Vec::new();
         for leaf in entities {
             if !leaf.is_valid() {
                 tracing::warn!(
@@ -299,6 +468,47 @@ pub fn handle_entity_push(
                     len = leaf.value.len(),
                     "pushed entity failed TreeLeafData::is_valid(), skipping"
                 );
+                continue;
+            }
+            if !is_leaf_currently_authorized(store, &context_id, leaf) {
+                dropped_unauthorized += 1;
+                tracing::warn!(
+                    %context_id,
+                    key = %hex::encode(leaf.key),
+                    "pushed entity dropped: claimed author is not currently authorized for this context"
+                );
+                continue;
+            }
+            // Root-entity leaves can't be merged on the host (same
+            // reason as the HC / LevelWise initiator paths — see
+            // `dispatch_deferred_root_merges` in `protocol_selector`).
+            // Defer to the caller, which has the `ContextClient` needed
+            // to invoke `__calimero_merge_root_state` inside WASM.
+            //
+            // Exception: a root-entity leaf with `crdt_type: None`
+            // (no app-defined `Mergeable`) has nothing for WASM to
+            // dispatch to — `__calimero_merge_root_state` would error
+            // out, the deferred merge would be dropped, and the bytes
+            // would never land. For these opaque entities the only
+            // sensible behavior is LWW direct-write (matches the
+            // pre-rewrite `AllFunctionsFailed` fallback in
+            // `merge_root_state`). Fires in test fixtures + apps that
+            // don't use `#[app::state]`; real apps always have a
+            // `crdt_type` and go through the proper deferred dispatch.
+            // Root entities with a real `crdt_type` get deferred for
+            // WASM dispatch; opaque root entities (synthetic LWW marker
+            // tagged with `OPAQUE_LEAF_CRDT_TYPE_NAME`) are handled
+            // internally by `apply_leaf_with_crdt_merge` via direct LWW
+            // write — see the comment there.
+            let entity_id = Id::new(leaf.key);
+            if calimero_storage::collections::is_app_root_entry(entity_id)
+                && !is_opaque_crdt_type(&leaf.metadata.crdt_type)
+            {
+                deferred_root_merges.push((
+                    leaf.key,
+                    leaf.value.clone(),
+                    leaf.metadata.hlc_timestamp,
+                ));
                 continue;
             }
             match apply_leaf_with_crdt_merge(context_id, leaf) {
@@ -313,7 +523,17 @@ pub fn handle_entity_push(
                 }
             }
         }
-        applied
+        if dropped_unauthorized > 0 {
+            tracing::info!(
+                %context_id,
+                dropped_unauthorized,
+                "EntityPush: dropped entities whose author is no longer authorized"
+            );
+        }
+        EntityPushOutcome {
+            applied,
+            deferred_root_merges,
+        }
     })
 }
 
@@ -403,4 +623,73 @@ mod tests {
     // (via `with_runtime_env`). It is tested indirectly through the sync_sim
     // integration tests which set up `SimStorage` with proper storage backends.
     // See: crates/node/tests/sync_sim/
+
+    use calimero_storage::entities::{SignatureData, StorageType};
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn extract_author_user_returns_owner() {
+        let owner = PublicKey::from([7u8; 32]);
+        let st = StorageType::User {
+            owner,
+            signature_data: None,
+        };
+        assert_eq!(
+            extract_author_from_leaf_authorization(Some(&st)),
+            Some(owner),
+        );
+    }
+
+    #[test]
+    fn extract_author_shared_with_signer_hint_returns_signer() {
+        let signer = PublicKey::from([9u8; 32]);
+        let st = StorageType::Shared {
+            writers: BTreeSet::from([signer]),
+            signature_data: Some(SignatureData {
+                signer: Some(signer),
+                signature: [0u8; 64],
+                nonce: 0,
+            }),
+        };
+        assert_eq!(
+            extract_author_from_leaf_authorization(Some(&st)),
+            Some(signer),
+        );
+    }
+
+    #[test]
+    fn extract_author_shared_without_signer_hint_returns_none() {
+        // Older actions can omit the signer hint — caller treats `None`
+        // as "defer to per-action signature verification inside apply_action."
+        let st = StorageType::Shared {
+            writers: BTreeSet::from([PublicKey::from([1u8; 32])]),
+            signature_data: Some(SignatureData {
+                signer: None,
+                signature: [0u8; 64],
+                nonce: 0,
+            }),
+        };
+        assert_eq!(extract_author_from_leaf_authorization(Some(&st)), None);
+    }
+
+    #[test]
+    fn extract_author_public_returns_none() {
+        assert_eq!(
+            extract_author_from_leaf_authorization(Some(&StorageType::Public)),
+            None,
+        );
+    }
+
+    #[test]
+    fn extract_author_frozen_returns_none() {
+        assert_eq!(
+            extract_author_from_leaf_authorization(Some(&StorageType::Frozen)),
+            None,
+        );
+    }
+
+    #[test]
+    fn extract_author_no_authorization_returns_none() {
+        assert_eq!(extract_author_from_leaf_authorization(None), None);
+    }
 }

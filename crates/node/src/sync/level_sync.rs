@@ -76,6 +76,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, generate_nonce, get_local_root_hash_for_context,
+    is_leaf_currently_authorized,
 };
 
 // =============================================================================
@@ -135,6 +136,13 @@ pub struct LevelWiseStats {
     ///
     /// If true, the sync may be incomplete and a follow-up sync might be needed.
     pub truncation_occurred: bool,
+    /// Root-state byte blobs the level-by-level walk encountered on
+    /// remote leaves that the host can't merge itself. Same shape +
+    /// rationale as `HashComparisonStats::deferred_root_merges`; the
+    /// caller (`ProtocolSelector`) dispatches them through
+    /// `ContextClient::merge_root_state` after the sync completes.
+    /// Each entry is `(entity_id_bytes, incoming_bytes, incoming_hlc_ts)`.
+    pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
 }
 
 // =============================================================================
@@ -362,6 +370,42 @@ async fn run_initiator_impl<T: SyncTransport>(
                         key = %hex::encode(leaf_data.key),
                         "Merging leaf entity"
                     );
+
+                    // Authorization gate, parity with HashComparison's
+                    // per-leaf check. LevelWise is a fallback the manager
+                    // selects when HC isn't a good fit (wide/shallow
+                    // trees), and it walks the same leaf-merge path —
+                    // without this check, a revoked author's writes that
+                    // gossip rejected could re-enter via LevelWise the
+                    // same way they did via HC.
+                    if !is_leaf_currently_authorized(store, &context_id, leaf_data) {
+                        warn!(
+                            %context_id,
+                            key = %hex::encode(leaf_data.key),
+                            "LevelWise merge skipped: claimed author is not currently authorized for this context"
+                        );
+                        continue;
+                    }
+
+                    // Defer root entities with a real `crdt_type` for
+                    // WASM dispatch; opaque root entities (synthetic
+                    // `Opaque` LWW marker) fall through to
+                    // `apply_leaf_with_crdt_merge` which LWW-writes
+                    // them directly (no Mergeable to dispatch).
+                    let entity_id = calimero_storage::address::Id::new(leaf_data.key);
+                    let is_opaque = matches!(
+                        &leaf_data.metadata.crdt_type,
+                        calimero_primitives::crdt::CrdtType::LwwRegister { inner_type }
+                            if inner_type == crate::sync::hash_comparison_protocol::OPAQUE_LEAF_CRDT_TYPE_NAME
+                    );
+                    if calimero_storage::collections::is_app_root_entry(entity_id) && !is_opaque {
+                        stats.deferred_root_merges.push((
+                            leaf_data.key,
+                            leaf_data.value.clone(),
+                            leaf_data.metadata.hlc_timestamp,
+                        ));
+                        continue;
+                    }
 
                     with_runtime_env(runtime_env.clone(), || {
                         apply_leaf_with_crdt_merge(context_id, leaf_data)

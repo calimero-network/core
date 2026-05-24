@@ -116,6 +116,13 @@ pub struct BufferedDelta {
     /// every delta that happened to arrive during a sync. `None` for
     /// legacy non-group contexts that have no governance DAG.
     pub governance_position: Option<GovernancePosition>,
+    /// Per-delta envelope signature carried alongside `author_id` /
+    /// `governance_position`, used by the receiver to verify the
+    /// envelope before applying. `None` for legacy deltas that
+    /// predate the signing wire-up. Must survive snapshot-sync
+    /// buffering so a replayed delta is verified against the same
+    /// payload the original sender signed.
+    pub delta_signature: Option<[u8; 64]>,
     /// Number of times the governance-pending drain has re-buffered this
     /// delta because its governance heads are still unknown locally.
     /// Bounded by `MAX_GOVERNANCE_DRAIN_ATTEMPTS` — after that, the drain
@@ -317,6 +324,7 @@ mod tests {
             source_peer: libp2p::PeerId::random(),
             key_id: [0; 32],
             governance_position: None,
+            delta_signature: None,
             governance_drain_attempts: 0,
         }
     }
