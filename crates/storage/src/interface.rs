@@ -2100,6 +2100,22 @@ impl<S: StorageAdaptor> Interface<S> {
         // `Ok(false)`. Discard the bool.
         _ = S::storage_write(Key::Entry(id), &final_data);
 
+        // If `update_hash_for` errors below after the entry write above
+        // succeeded, the entry bytes remain in storage with no index
+        // entry pointing at them — an "orphan." This is unavoidable
+        // without a transactional storage layer, and it's the lesser
+        // evil compared to the inverse (index advertising bytes that
+        // aren't there) because:
+        //   * The orphan is unreachable via the normal read path:
+        //     `find_by_id` consults the index first (line 1689,
+        //     1702) and bails when the index entry is missing or
+        //     deleted.
+        //   * The next successful `apply_action` for the same id
+        //     overwrites the orphan bytes, so the storage cost is
+        //     transient.
+        // The pre-fix ordering (index-then-entry) had the symmetric
+        // problem with much worse user-visible behavior — the rga
+        // "Hello Wor" flake described above.
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
 
         if id.is_root() {
@@ -2206,6 +2222,17 @@ impl<S: StorageAdaptor> Interface<S> {
         // `storage_write` is the eviction signal ("did a previous value
         // exist under this key"), not a success/failure flag — write
         // failures trap from the runtime as `HostError`, not `Ok(false)`.
+        //
+        // Same orphan trade-off as `save_internal`: if `update_hash_for`
+        // errors below, the merged bytes are persisted but the index
+        // isn't updated. The orphan is unreachable via the normal read
+        // path (`find_by_id` bails on missing index) and will be
+        // overwritten by the next successful merge for this id. We
+        // don't re-check the LWW guard after the entry write because
+        // the only thing that could invalidate it is a concurrent
+        // writer for the same id, and the storage layer doesn't
+        // serialize concurrent writes anyway — re-checking would just
+        // narrow the race window without closing it.
         _ = S::storage_write(Key::Entry(id), merged);
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
         Ok(full_hash)
