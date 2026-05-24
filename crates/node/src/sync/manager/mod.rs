@@ -1691,6 +1691,26 @@ impl SyncManager {
                             let storage_delta: calimero_storage::delta::CausalDelta =
                                 borsh::from_slice(&delta)?;
 
+                            // Sanity check: peer returned the head we
+                            // requested. A buggy or malicious peer
+                            // could substitute a different authorized
+                            // delta in response. The envelope signature
+                            // binds `storage_delta.id`, not `head_id`,
+                            // so without this guard a peer could swap
+                            // a valid delta for another and slip it
+                            // into our DAG under the wrong slot —
+                            // parity with the parent-fetch path's
+                            // sanity check, same security rationale.
+                            if storage_delta.id != *head_id {
+                                warn!(
+                                    %context_id,
+                                    requested = ?head_id,
+                                    received = ?storage_delta.id,
+                                    "DAG head pull: peer returned a different delta id than requested, dropping"
+                                );
+                                continue;
+                            }
+
                             // Apply-time cross-DAG membership check —
                             // parity with the gossip-path check in
                             // `handle_state_delta`. `response_author` is
