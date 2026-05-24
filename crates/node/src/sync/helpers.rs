@@ -394,7 +394,27 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     // bytes come from a peer who already verified them. Empty ctx →
     // verifier falls back to v2 stored-writers, which is the safe
     // semantic for already-verified replicated state.
-    Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())?;
+    //
+    // Wrapped in `with_merge_mode` so the per-action nonce staleness
+    // check inside `save_internal` bypasses for this sync-apply path
+    // (`skip_nonce = nonce_check_disabled || in_merge_mode()`). HC's
+    // leaf apply re-runs actions a peer has already gossiped — the
+    // local node may already be at the same nonce, and the
+    // nonce-staleness skip would silently no-op the apply. That
+    // no-op was the smoking-gun "Shared upsert: stale-or-equal nonce"
+    // warning in the shared-storage + scaffolding-e2e failures on
+    // PR #2465: gossip + HC race meant HC re-applied gossip's
+    // entities at the same nonce, hit the skip, and the action's
+    // structural effects (children references, RGA characters) never
+    // landed — even though the underlying bytes were correct.
+    //
+    // Safety: signature verification still runs before the skip
+    // check, so forgeries are still rejected. Merge mode only stops
+    // the skip from misreading sync re-application as replay attacks
+    // of themselves.
+    calimero_storage::env::with_merge_mode(|| {
+        Interface::<MainStorage>::apply_action(action, &ApplyContext::empty())
+    })?;
     Ok(())
 }
 
