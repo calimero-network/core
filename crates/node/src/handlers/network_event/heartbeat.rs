@@ -44,6 +44,16 @@ pub(super) fn handle_hash_heartbeat(
             // either the peer's hash or our prior cache, refresh the
             // cache and skip the false-positive divergence event; only
             // a *post-refresh* hash mismatch is a real divergence.
+            //
+            // Residual TOCTOU: a concurrent apply landing between
+            // `compute_root_hash` and `force_root_hash` can leave the
+            // cache transiently stale again. This doesn't eliminate
+            // the false-positive class — it narrows the window from
+            // "until the next WASM execution" to "until the next
+            // heartbeat tick" (also when the next ContextMeta write
+            // happens). The next heartbeat self-heals via this same
+            // branch, so we accept the residual window rather than
+            // double-reading.
             let our_hash = match context_client.compute_root_hash(&context_id) {
                 Ok(live) => {
                     let live_hash = calimero_primitives::hash::Hash::from(live);
