@@ -1235,12 +1235,43 @@ impl<S: StorageAdaptor> Interface<S> {
                     <Index<S>>::add_child_to(parent.id(), this.clone())?;
                 }
 
-                // For new entities, create a minimal index entry first to avoid orphan errors
+                // For new entities, create a minimal index entry first to avoid orphan errors.
+                //
+                // ENTRY-BEFORE-PARENT ordering (#2319 root cause): the
+                // `add_child_to` call below inserts `id` into the
+                // parent's `children` list. A reader that iterates the
+                // parent's children (`UnorderedMap::entries()` etc.)
+                // would then see `id` and try `find_by_id(id)` →
+                // `storage_read(Key::Entry(id))` → `None` (entry not
+                // yet written by `save_internal` below). The collection
+                // iterator's `.flatten().fuse()` silently drops the
+                // `NotFound` Err, producing a partial child list — the
+                // "Hello Wor" rga flake. PR #2470 swapped the order
+                // inside `save_internal` (entry-then-index) but missed
+                // this `apply_action` pre-creation path, which
+                // advertises the child in the parent BEFORE
+                // `save_internal` is reached at all.
+                //
+                // Fix: write `Key::Entry(id)` here, before the
+                // placeholder `add_child_to`, so by the time the
+                // parent advertises this child, the entry already
+                // exists. `save_internal` below will go through the
+                // "concurrent update" path (`last_metadata.updated_at
+                // == metadata.updated_at` since the placeholder we
+                // create carries the same metadata) and produce the
+                // same final bytes for non-root non-merging cases — a
+                // redundant overwrite that's the price of closing the
+                // window.
                 if !<Index<S>>::has_index(id) {
                     if id.is_root() {
                         debug!(%id, "Creating root index entry for entity");
                         <Index<S>>::add_root(ChildInfo::new(id, [0; 32], metadata.clone()))?;
                     } else if let Some(parent) = parent {
+                        // Pre-write the entry bytes so the parent's
+                        // children list never advertises an id without
+                        // a backing `Key::Entry`. See the
+                        // ENTRY-BEFORE-PARENT comment above.
+                        let _ignored = S::storage_write(Key::Entry(id), &data);
                         // Create minimal index entry with placeholder hash
                         let placeholder_hash = Sha256::digest(&data).into();
                         debug!(
