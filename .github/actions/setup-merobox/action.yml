@@ -6,11 +6,21 @@ runs:
   steps:
     - name: Install merobox (apt)
       shell: bash
+      # Each network step gets its own bounded timeout. Without these, a
+      # stalled curl / apt-get on a slow Azure runner can wedge the job
+      # for the runner-wide 6h limit — one such hang on PR #2472 ran 90
+      # min in this step alone. Use `timeout` for the GNU-coreutils
+      # bound + `--connect-timeout` / `apt -o` so each tool's own
+      # network retries are also bounded.
       run: |
-        curl -fsSL https://calimero-network.github.io/merobox/gpg.key \
+        set -euo pipefail
+        timeout 60 curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 \
+          https://calimero-network.github.io/merobox/gpg.key \
           | sudo tee /usr/share/keyrings/merobox.gpg > /dev/null
         echo "deb [signed-by=/usr/share/keyrings/merobox.gpg] https://calimero-network.github.io/merobox stable main" \
           | sudo tee /etc/apt/sources.list.d/merobox.list
-        sudo apt-get update
-        sudo apt-get install -y merobox
+        timeout 120 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+          -o Acquire::https::Timeout=20 update
+        timeout 180 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+          -o Acquire::https::Timeout=20 install -y merobox
         merobox --version
