@@ -453,8 +453,19 @@ pub fn storage_remove(key: &[u8]) -> bool {
 ///
 /// # Returns
 ///
-/// * `true` - If the write operation succeeded
-/// * `false` - If the write operation failed
+/// * `true` - A previous value existed under `key` and was evicted.
+/// * `false` - No previous value; a new entry was inserted.
+///
+/// The return value is **not** a success/failure indicator. The write
+/// itself either succeeds or traps the WASM module with a `HostError`
+/// (`KeyLengthOverflow`, `ValueLengthOverflow`, `InvalidMemoryAccess`),
+/// which propagates as a runtime error, not as `false`. Callers that
+/// don't care whether the key existed before can safely discard the bool.
+///
+/// **Note:** [`private_storage_write`] uses a different return-value
+/// convention (true = succeeded, false = private storage unavailable)
+/// because that backend can be absent at runtime, unlike main storage
+/// which is always available.
 ///
 /// # Example
 ///
@@ -462,7 +473,9 @@ pub fn storage_remove(key: &[u8]) -> bool {
 /// use calimero_sdk::env;
 ///
 /// if env::storage_write(b"my_key", b"my_value") {
-///     println!("Value stored successfully");
+///     println!("Overwrote an existing value");
+/// } else {
+///     println!("Inserted a new entry");
 /// }
 /// ```
 #[inline]
@@ -554,8 +567,20 @@ pub fn private_storage_remove(key: &[u8]) -> bool {
 ///
 /// # Returns
 ///
-/// * `true` - If the write operation succeeded
-/// * `false` - If the write operation failed or private storage is not available
+/// * `true` - The write succeeded (a new entry was inserted, or an
+///   existing entry was overwritten).
+/// * `false` - Private storage is not available on this node (the
+///   backend is optional and may be absent at runtime; the write
+///   was a no-op).
+///
+/// Other failure modes (`KeyLengthOverflow`, `ValueLengthOverflow`,
+/// `InvalidMemoryAccess`) trap the WASM module via `HostError` rather
+/// than returning `false`.
+///
+/// **Note:** [`storage_write`] uses a different return-value
+/// convention (true = previous value evicted, false = new key
+/// inserted) because main storage is always available, so a
+/// success/failure bool would be tautological.
 ///
 /// # Example
 ///
@@ -564,6 +589,8 @@ pub fn private_storage_remove(key: &[u8]) -> bool {
 ///
 /// if env::private_storage_write(b"my_secret", b"secret_value") {
 ///     println!("Private value stored successfully");
+/// } else {
+///     println!("Private storage is not available on this node");
 /// }
 /// ```
 #[inline]

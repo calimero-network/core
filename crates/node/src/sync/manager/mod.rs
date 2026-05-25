@@ -3,8 +3,6 @@
 //! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
 //! **Strategy**: Try delta sync first, fallback to state sync on failure.
 
-use std::collections::HashMap;
-use std::pin::pin;
 use std::sync::Arc;
 
 use calimero_context_client::client::ContextClient;
@@ -26,25 +24,21 @@ use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{self, Instant, MissedTickBehavior};
+use tokio::time::{self, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::sync_session_bridge::{
-    SyncSessionJob, SyncSessionResult, SyncSessionSendError, SyncSessionSender,
-};
+use crate::sync_session_bridge::{SyncSessionResult, SyncSessionSender};
 use crate::utils::choose_stream;
 
 use super::config::SyncConfig;
-use super::tracking::SyncState;
-// Internal SyncProtocol for metrics (3 variants)
-use super::tracking::SyncProtocol as TrackingSyncProtocol;
-// Full SyncProtocol from primitives for protocol selection (7 variants, CIP §2.3)
-// Uses shared state machine types for consistent behavior with simulation
-use super::hash_comparison_protocol::{HashComparisonConfig, HashComparisonProtocol};
-use super::level_sync::{LevelWiseConfig, LevelWiseProtocol};
+// `SyncState` + the `TrackingSyncProtocol` alias moved to `super::session`
+// (Phase 3 of #2313). HashComparison + LevelWise initiator dispatch moved
+// to `super::protocol_selector` (Phase 4). The run-loop + select! body
+// moved to `super::driver` (Phase 5). `SyncProtocol` from primitives is
+// still referenced here for protocol-selection types.
 use calimero_node_primitives::sync::{
     build_handshake_from_raw, estimate_entity_count, estimate_max_depth, select_protocol,
-    SyncHandshake, SyncProtocol, SyncProtocolExecutor,
+    SyncHandshake, SyncProtocol,
 };
 
 /// Typed marker returned by [`SyncManager::recv`] when the responder
@@ -156,6 +150,11 @@ pub struct SyncManager {
     /// for [`Self::reconcile_after_divergence`]; that method is a thin
     /// forwarder. See `sync::reconciler`.
     pub(super) reconciler: super::reconciler::Reconciler,
+
+    /// Protocol-dispatch for the initiator side of a sync session.
+    /// Called from `handle_dag_sync` after `select_protocol` has
+    /// chosen the protocol to run. See `sync::protocol_selector`.
+    pub(super) protocol_selector: super::protocol_selector::ProtocolSelector,
 }
 
 impl std::fmt::Debug for SyncManager {
@@ -195,53 +194,18 @@ impl Clone for SyncManager {
             // cheap and clones share the same state_access/sync_network
             // surfaces as the parent.
             reconciler: self.reconciler.clone(),
+            // ProtocolSelector holds an `Arc<dyn SyncNetwork>` + a
+            // `ContextClient`; cloning is cheap and shares the same
+            // surfaces as the parent.
+            protocol_selector: self.protocol_selector.clone(),
         }
     }
 }
 
-/// True if `context_id` had a dispatch attempt recorded in `map` less
-/// than `interval` ago.
-///
-/// Used in [`SyncManager::start`] to stop the every-tick re-attempt
-/// storm after the `SyncSessionActor` mailbox returns `Full` (#2319): a
-/// dropped dispatch records `Instant::now()` here, and we skip the
-/// context until `interval` has elapsed. Distinct from `SyncState`'s
-/// `last_sync` — touching that on a dropped dispatch is what #2317
-/// forbids, since it would leave the context "in progress" forever with
-/// no result to clear it.
-pub(crate) fn dispatch_recently_attempted(
-    map: &HashMap<ContextId, time::Instant>,
-    context_id: &ContextId,
-    interval: time::Duration,
-) -> bool {
-    map.get(context_id)
-        .is_some_and(|attempted| attempted.elapsed() < interval)
-}
-
-/// True if an initiator dispatched for `context_id` looks wedged: its
-/// dispatch was recorded in `dispatched_at` more than `grace` ago and
-/// the context's [`SyncState`] still shows it "in progress"
-/// (`last_sync == None`), i.e. no `SyncSessionResult` ever cleared it.
-///
-/// The #2319 watchdog in [`SyncManager::start`] uses this to detect a
-/// `SyncSessionActor` whose single arbiter thread is stuck in a
-/// synchronous merkle/CRDT-merge loop the per-session
-/// `tokio::time::timeout` can't preempt — when it returns true the
-/// manager synthesises an `on_failure` so the context is eligible for a
-/// fresh dispatch rather than logging "Sync already in progress" forever.
-pub(crate) fn session_dispatch_wedged(
-    dispatched_at: &HashMap<ContextId, time::Instant>,
-    state: &HashMap<ContextId, SyncState>,
-    context_id: &ContextId,
-    grace: time::Duration,
-) -> bool {
-    dispatched_at
-        .get(context_id)
-        .is_some_and(|dispatched| dispatched.elapsed() >= grace)
-        && state
-            .get(context_id)
-            .is_some_and(|s| s.last_sync().is_none())
-}
+// Run-loop session-tracking moved to `crate::sync::session::SessionTracker`
+// as Phase 3 of #2313. The free-fn predicates that used to live here
+// (`dispatch_recently_attempted`, `session_dispatch_wedged`) and the
+// nested `apply_session_result` helper now live alongside that struct.
 
 impl SyncManager {
     pub(crate) fn new(
@@ -273,6 +237,8 @@ impl SyncManager {
             Arc::clone(&sync_network),
             context_client.clone(),
         );
+        let protocol_selector =
+            super::protocol_selector::ProtocolSelector::new(context_client.clone());
         Self {
             sync_config,
             node_client,
@@ -289,6 +255,7 @@ impl SyncManager {
             session_result_rx: None,
             metrics: None,
             reconciler,
+            protocol_selector,
         }
     }
 
@@ -298,10 +265,11 @@ impl SyncManager {
     /// `sync_network` from the concrete `NetworkClient` automatically.
     /// Tests use this to swap in a `MockSyncNetwork` after construction.
     ///
-    /// Also rebuilds the [`super::reconciler::Reconciler`] field so it
-    /// observes the swapped network too. Without this, the reconciler
-    /// keeps the construction-time `Arc` and `mesh_peers` calls on the
-    /// reconcile path bypass the mock.
+    /// Also rebuilds the [`super::reconciler::Reconciler`] and
+    /// [`super::protocol_selector::ProtocolSelector`] fields so they
+    /// observe the swapped network too. Without this, those components
+    /// keep the construction-time `Arc` and their network calls on the
+    /// reconcile / protocol-dispatch paths bypass the mock.
     #[cfg(test)]
     pub(crate) fn set_sync_network(&mut self, sync_network: Arc<dyn super::network::SyncNetwork>) {
         self.sync_network = Arc::clone(&sync_network);
@@ -310,6 +278,11 @@ impl SyncManager {
             sync_network,
             self.context_client.clone(),
         );
+        // `ProtocolSelector` doesn't hold a `sync_network` — the
+        // dispatch trait's `open_stream` routes through `SyncManager`
+        // (which now points at the swapped mock via `self.sync_network`).
+        self.protocol_selector =
+            super::protocol_selector::ProtocolSelector::new(self.context_client.clone());
     }
 
     /// Wire the `SyncSessionActor` handles onto the original
@@ -431,68 +404,30 @@ impl SyncManager {
         build_handshake_from_raw(root_hash, entity_count, max_depth, peer_dag_heads.to_vec())
     }
 
+    /// Run the sync-manager actor loop until the input channels close.
+    ///
+    /// Thin shell after Phase 5 of #2313: takes the channel handles
+    /// off `self`, constructs a `SyncDriver` with the per-context
+    /// `SessionTracker`, and delegates the actor loop to
+    /// `SyncDriver::run`. The driver borrows `&self` for the
+    /// cross-actor dispatch callbacks (namespace sync, namespace
+    /// join, open-subgroup join) via the
+    /// [`super::driver::SyncDriverDispatch`] trait that `SyncManager`
+    /// implements.
     pub async fn start(mut self) {
-        let mut next_sync = time::interval(self.sync_config.frequency);
-
-        next_sync.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-        let mut state = HashMap::<_, SyncState>::new();
-
-        // #2319: per-context "last dispatch attempt" instants. When a
-        // `try_send` to the `SyncSessionActor` returns `Full`/`Closed`
-        // we record the context here and skip re-dispatching it until
-        // `sync_config.interval` has elapsed — otherwise every interval
-        // tick (and every heartbeat-driven re-trigger) re-attempts and
-        // re-drops, which is the wedge in #2319. A real
-        // `SyncSessionResult` clears the entry. Distinct from
-        // `SyncState.last_sync`, which #2317 forbids touching on a
-        // dropped dispatch.
-        let mut last_dispatch_attempt = HashMap::<ContextId, time::Instant>::new();
-
-        // #2319: watchdog. Once an initiator is dispatched (Phase 3
-        // below clears the context's `last_sync` to `None`), a
-        // `SyncSessionResult` is supposed to arrive and call
-        // `on_success`/`on_failure` to clear it. If the `SyncSessionActor`
-        // wedges — its single arbiter thread stuck in a synchronous
-        // merkle/CRDT-merge loop that the per-session `tokio::time::timeout`
-        // can't preempt, or its mailbox saturated by such sessions — that
-        // result never comes and the context stays "in progress" forever
-        // ("Sync already in progress" on every tick, never converging
-        // again). Record when we dispatched; if no result has cleared
-        // the entry within `SESSION_WEDGE_GRACE` we synthesise an
-        // `on_failure` so the context becomes eligible again and the
-        // periodic loop retries with a fresh dispatch. The entry is
-        // cleared by the real result on `session_result_rx`.
-        const SESSION_WEDGE_GRACE_MULTIPLIER: u32 = 2;
-        let session_wedge_grace =
-            self.sync_config.session_deadline * SESSION_WEDGE_GRACE_MULTIPLIER;
-        let mut initiator_dispatched_at = HashMap::<ContextId, time::Instant>::new();
-
-        // #2319: rate-limit the "mailbox full" warn to ≤1 per context
-        // per `MAILBOX_FULL_SUMMARY_WINDOW`; the rest roll up into one
-        // info line per window so the wedge is still visible without
-        // drowning the log.
-        const MAILBOX_FULL_SUMMARY_WINDOW: time::Duration = time::Duration::from_secs(60);
-        let mut last_full_warn = HashMap::<ContextId, time::Instant>::new();
-        let mut full_drops_in_window: u64 = 0;
-        let mut full_window_started = time::Instant::now();
-
-        let mut requested_ctx = None;
-        let mut requested_peer = None;
-
-        let Some(mut ctx_sync_rx) = self.ctx_sync_rx.take() else {
+        let Some(ctx_sync_rx) = self.ctx_sync_rx.take() else {
             error!("SyncManager can only be run once");
             return;
         };
-        let mut ns_sync_rx = self.ns_sync_rx.take().unwrap_or_else(|| {
+        let ns_sync_rx = self.ns_sync_rx.take().unwrap_or_else(|| {
             let (_tx, rx) = mpsc::channel(1);
             rx
         });
-        let mut ns_join_rx = self.ns_join_rx.take().unwrap_or_else(|| {
+        let ns_join_rx = self.ns_join_rx.take().unwrap_or_else(|| {
             let (_tx, rx) = mpsc::channel(1);
             rx
         });
-        let mut open_subgroup_join_rx = self.open_subgroup_join_rx.take().unwrap_or_else(|| {
+        let open_subgroup_join_rx = self.open_subgroup_join_rx.take().unwrap_or_else(|| {
             let (_tx, rx) = mpsc::channel(1);
             rx
         });
@@ -500,331 +435,30 @@ impl SyncManager {
             error!("SyncManager started without a SyncSessionActor handle (#2316)");
             return;
         };
-        let Some(mut session_result_rx) = self.session_result_rx.take() else {
+        let Some(session_result_rx) = self.session_result_rx.take() else {
             error!("SyncManager started without a SyncSessionActor result channel (#2316)");
             return;
         };
 
-        // Apply a session result to per-context tracking state. Mirrors
-        // the body of the legacy `advance` helper, which read from a
-        // local `FuturesUnordered<futs>` before #2316 moved session
-        // execution onto a dedicated arbiter.
-        fn apply_session_result(
-            state: &mut HashMap<ContextId, SyncState>,
-            result: SyncSessionResult,
-        ) {
-            let SyncSessionResult {
-                context_id,
-                peer_id,
-                took,
-                result,
-            } = result;
+        let tracker = super::session::SessionTracker::new(
+            self.sync_config.session_deadline,
+            self.sync_config.interval,
+        );
 
-            let _ignored = state.entry(context_id).and_modify(|state| match result {
-                Ok(Ok(ref protocol)) => {
-                    state.on_success(peer_id, TrackingSyncProtocol::from(protocol));
-                    info!(
-                        %context_id,
-                        ?took,
-                        ?protocol,
-                        success_count = state.success_count,
-                        "Sync finished successfully"
-                    );
-                }
-                Ok(Err(ref err)) => {
-                    // #2422 Option 4: PeerNotMaterialized is benign —
-                    // the responder told us they're a valid namespace
-                    // peer that simply hasn't joined this context. Do
-                    // not increment failure_count or apply backoff —
-                    // doing so starves legitimate sync against other
-                    // peers behind 256s exponential delays. The peer
-                    // selection filter in peers.rs::namespace-fallback
-                    // already excludes non-followers up-front; this
-                    // arm catches the residual race (peer in flight
-                    // of materialising, mixed-version cluster, etc.).
-                    if err.downcast_ref::<PeerNotMaterialized>().is_some() {
-                        debug!(
-                            %context_id,
-                            ?took,
-                            %peer_id,
-                            "peer has not materialised this context — \
-                             dropping for this round, not a failure"
-                        );
-                        return;
-                    }
-                    state.on_failure(err.to_string());
-                    warn!(
-                        %context_id,
-                        ?took,
-                        error = %err,
-                        failure_count = state.failure_count(),
-                        backoff_secs = state.backoff_delay().as_secs(),
-                        "Sync failed, applying exponential backoff"
-                    );
-                }
-                Err(ref timeout_err) => {
-                    state.on_failure(timeout_err.to_string());
-                    warn!(
-                        %context_id,
-                        ?took,
-                        failure_count = state.failure_count(),
-                        backoff_secs = state.backoff_delay().as_secs(),
-                        "Sync timed out, applying exponential backoff"
-                    );
-                }
-            });
-        }
+        let driver = super::driver::SyncDriver::new(
+            tracker,
+            self.context_client.clone(),
+            ctx_sync_rx,
+            ns_sync_rx,
+            ns_join_rx,
+            open_subgroup_join_rx,
+            session_tx,
+            session_result_rx,
+            self.sync_config.frequency,
+            self.sync_config.interval,
+        );
 
-        loop {
-            tokio::select! {
-                _ = next_sync.tick() => {
-                    debug!("Performing interval sync");
-                    // #2319: roll up rate-limited mailbox-full drops.
-                    if full_window_started.elapsed() >= MAILBOX_FULL_SUMMARY_WINDOW {
-                        if full_drops_in_window > 0 {
-                            info!(
-                                full_drops_in_window,
-                                contexts_affected = last_full_warn.len(),
-                                "SyncSession mailbox-full drop rollup (last {:?}) (#2319)",
-                                MAILBOX_FULL_SUMMARY_WINDOW
-                            );
-                        }
-                        full_drops_in_window = 0;
-                        full_window_started = time::Instant::now();
-                        last_full_warn.retain(|_, t| t.elapsed() < MAILBOX_FULL_SUMMARY_WINDOW);
-                    }
-                    // #2319 watchdog: any context whose initiator was
-                    // dispatched longer than `session_wedge_grace` ago
-                    // and is still flagged "in progress" — its session
-                    // (or the whole `SyncSessionActor`) is wedged and no
-                    // `SyncSessionResult` is coming. Synthesise a
-                    // failure so the context is eligible again; the
-                    // dispatch loop below will retry it this tick.
-                    let wedged: Vec<ContextId> = initiator_dispatched_at
-                        .keys()
-                        .copied()
-                        .filter(|context_id| {
-                            session_dispatch_wedged(
-                                &initiator_dispatched_at,
-                                &state,
-                                context_id,
-                                session_wedge_grace,
-                            )
-                        })
-                        .collect();
-                    // Drop the dispatch record either way once past grace
-                    // (a still-in-progress entry that's been there >grace
-                    // is what we just failed; a no-longer-in-progress one
-                    // already got a result that removed it, but be tidy).
-                    initiator_dispatched_at
-                        .retain(|_, dispatched_at| dispatched_at.elapsed() < session_wedge_grace);
-                    for context_id in wedged {
-                        warn!(
-                            %context_id,
-                            grace = ?session_wedge_grace,
-                            "SyncSession initiator produced no result within watchdog grace — assuming a wedged session/actor; failing it so periodic-sync retries (#2319)"
-                        );
-                        if let Some(s) = state.get_mut(&context_id) {
-                            s.on_failure(
-                                "sync session wedged — no SyncSessionResult within watchdog grace (#2319)"
-                                    .to_owned(),
-                            );
-                        }
-                    }
-                }
-                Some(result) = session_result_rx.recv() => {
-                    // #2319: a real result means this context is no
-                    // longer wedged behind a full mailbox — drop the
-                    // dispatch-attempt backoff so it isn't throttled —
-                    // and the watchdog timer for it is satisfied.
-                    let _removed = last_dispatch_attempt.remove(&result.context_id);
-                    let _removed = initiator_dispatched_at.remove(&result.context_id);
-                    apply_session_result(&mut state, result);
-                    continue;
-                }
-                Some(namespace_id) = ns_sync_rx.recv() => {
-                    info!(
-                        namespace_id = %hex::encode(namespace_id),
-                        "Performing namespace governance sync"
-                    );
-                    self.sync_namespace_from_peer(namespace_id).await;
-                    continue;
-                }
-                Some((params, reply_tx)) = ns_join_rx.recv() => {
-                    info!(
-                        namespace_id = %hex::encode(params.namespace_id),
-                        "Processing namespace join request (initiator side)"
-                    );
-                    let result = self.initiate_namespace_join(params).await;
-                    let _ignored = reply_tx.send(result);
-                    continue;
-                }
-                Some((params, reply_tx)) = open_subgroup_join_rx.recv() => {
-                    info!(
-                        namespace_id = %hex::encode(params.namespace_id),
-                        subgroup_id = %hex::encode(params.subgroup_id),
-                        "Processing open-subgroup join request (initiator side)"
-                    );
-                    let result = self.initiate_open_subgroup_join(params).await;
-                    let _ignored = reply_tx.send(result);
-                    continue;
-                }
-                Some((ctx, peer)) = ctx_sync_rx.recv() => {
-                    info!(?ctx, ?peer, "Received sync request");
-
-                    requested_ctx = ctx;
-                    requested_peer = peer;
-
-                    // CRITICAL FIX: Drain all other pending sync requests in the queue.
-                    // When multiple contexts join rapidly (common in E2E tests), they all
-                    // call sync() which queues requests in ctx_sync_rx. The old code only
-                    // processed ONE request per loop iteration, leaving contexts 2-N queued
-                    // indefinitely. This caused those contexts to never sync and remain
-                    // with dag_heads=[] and Uninitialized errors.
-                    //
-                    // Solution: Use try_recv() to drain all buffered requests immediately,
-                    // then trigger a full sync that will process all contexts.
-                    let mut drained_count = 0;
-                    while ctx_sync_rx.try_recv().is_ok() {
-                        drained_count += 1;
-                    }
-
-                    if drained_count > 0 {
-                        info!(drained_count, "Drained additional sync requests from queue, will sync all contexts");
-                        // Clear requested_ctx to force syncing ALL contexts
-                        // This ensures newly-joined contexts get synced even if they weren't first in queue
-                        requested_ctx = None;
-                        requested_peer = None;
-                    }
-                }
-            }
-
-            let requested_ctx = requested_ctx.take();
-            let requested_peer = requested_peer.take();
-
-            let contexts = requested_ctx
-                .is_none()
-                .then(|| self.context_client.get_context_ids(None));
-
-            let contexts = stream::iter(requested_ctx)
-                .map(Ok)
-                .chain(stream::iter(contexts).flatten());
-
-            let mut contexts = pin!(contexts);
-
-            while let Some(context_id) = contexts.next().await {
-                let context_id = match context_id {
-                    Ok(context_id) => context_id,
-                    Err(err) => {
-                        error!(%err, "Failed reading context id to sync");
-                        continue;
-                    }
-                };
-
-                // #2319: respect the dispatch-attempt backoff. After a
-                // `Full` mailbox we wait one `interval` before retrying
-                // this context rather than re-attempting (and re-dropping)
-                // on every tick. Explicit requests bypass it, same as the
-                // recency override below.
-                if requested_ctx.is_none()
-                    && dispatch_recently_attempted(
-                        &last_dispatch_attempt,
-                        &context_id,
-                        self.sync_config.interval,
-                    )
-                {
-                    debug!(%context_id, "Skipping sync — dispatch recently attempted, mailbox was full (#2319)");
-                    continue;
-                }
-
-                // Phase 1: read-only eligibility check. We must not
-                // mutate `state` here because a failed `try_send`
-                // below would leave `last_sync = None` with no future
-                // result to clear it — permanently stalling the
-                // context (Cursor bugbot #2317).
-                let is_first_sync = match state.get(&context_id) {
-                    Some(existing) => {
-                        let Some(last_sync) = existing.last_sync() else {
-                            debug!(%context_id, "Sync already in progress");
-                            continue;
-                        };
-
-                        let minimum = self.sync_config.interval;
-                        let time_since = last_sync.elapsed();
-
-                        if time_since < minimum {
-                            if requested_ctx.is_none() {
-                                debug!(%context_id, ?time_since, ?minimum, "Skipping sync, last one was too recent");
-                                continue;
-                            }
-
-                            debug!(%context_id, ?time_since, ?minimum, "Force syncing despite recency, due to explicit request");
-                        }
-                        false
-                    }
-                    None => true,
-                };
-
-                info!(%context_id, "Scheduled sync");
-
-                // Phase 2: dispatch BEFORE mutating state — so a
-                // `Full`/`Closed` outcome leaves the per-context
-                // tracking state untouched and the next interval
-                // tick (or heartbeat trigger) just retries.
-                let dispatched = match session_tx.try_send(SyncSessionJob::Initiator {
-                    context_id,
-                    peer_id: requested_peer,
-                }) {
-                    Ok(()) => true,
-                    Err(SyncSessionSendError::Full) => {
-                        full_drops_in_window += 1;
-                        let warn_now = last_full_warn
-                            .get(&context_id)
-                            .is_none_or(|t| t.elapsed() >= MAILBOX_FULL_SUMMARY_WINDOW);
-                        if warn_now {
-                            warn!(
-                                %context_id,
-                                "SyncSession actor mailbox full — skipping initiator dispatch; backing off this context for {:?} (#2316/#2319)",
-                                self.sync_config.interval
-                            );
-                            let _prev = last_full_warn.insert(context_id, time::Instant::now());
-                        } else {
-                            debug!(%context_id, "SyncSession actor mailbox full — skipping (rate-limited; see periodic rollup) (#2319)");
-                        }
-                        false
-                    }
-                    Err(SyncSessionSendError::Closed) => {
-                        warn!(
-                            %context_id,
-                            "SyncSession actor closed — skipping initiator dispatch"
-                        );
-                        false
-                    }
-                };
-
-                if !dispatched {
-                    // #2319: record the failed attempt so the next
-                    // interval tick backs off instead of re-dropping.
-                    let _prev = last_dispatch_attempt.insert(context_id, time::Instant::now());
-                    continue;
-                }
-
-                // Phase 3: dispatch succeeded — mark the context as
-                // in-flight. A `SyncSessionResult` will arrive on
-                // `session_result_rx` and call `on_success` /
-                // `on_failure` to clear the flag — or, if it never does,
-                // the #2319 watchdog above fails it after the grace.
-                let _prev = initiator_dispatched_at.insert(context_id, time::Instant::now());
-                if is_first_sync {
-                    info!(%context_id, "Syncing for the first time");
-                    let mut new_state = SyncState::new();
-                    new_state.start();
-                    let _ignored = state.insert(context_id, new_state);
-                } else if let Some(existing) = state.get_mut(&context_id) {
-                    let _ignored = existing.take_last_sync();
-                }
-            }
-        }
+        driver.run(&self).await;
     }
 
     pub(crate) async fn perform_interval_sync(
@@ -1688,242 +1322,19 @@ impl SyncManager {
                 "Protocol selected"
             );
 
-            // Dispatch based on selected protocol
-            match selection.protocol {
-                SyncProtocol::None => {
-                    debug!(
-                        %context_id,
-                        %chosen_peer,
-                        root_hash = %context.root_hash,
-                        reason = %selection.reason,
-                        "No sync needed: {}",
-                        selection.reason
-                    );
-                    return Ok(None);
-                }
-                SyncProtocol::Snapshot { compressed, .. } => {
-                    // Snapshot sync - use existing handler
-                    info!(
-                        %context_id,
-                        %chosen_peer,
-                        compressed,
-                        reason = %selection.reason,
-                        "Initiating snapshot sync"
-                    );
-                    let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
-                        .await
-                        .wrap_err("snapshot sync")?;
-                    return Ok(Some(result));
-                }
-                SyncProtocol::DeltaSync { .. } => {
-                    // Delta sync - use existing DAG heads request mechanism
-                    info!(
-                        %context_id,
-                        %chosen_peer,
-                        reason = %selection.reason,
-                        "Initiating delta sync via DAG heads request"
-                    );
-                    let result = self
-                        .request_dag_heads_and_sync(context_id, chosen_peer, our_identity, stream)
-                        .await
-                        .wrap_err("delta sync")?;
-
-                    if matches!(result, SyncProtocol::None) {
-                        bail!("Peer has no data for this context");
-                    }
-
-                    return Ok(Some(result));
-                }
-                SyncProtocol::HashComparison { root_hash, .. } => {
-                    // Execute HashComparison sync (CIP §4)
-                    info!(
-                        %context_id,
-                        reason = %selection.reason,
-                        "Starting HashComparison sync"
-                    );
-
-                    // Wrap stream in transport abstraction
-                    let mut transport = super::stream::StreamTransport::new(stream);
-
-                    // Get store for protocol execution
-                    let store = self.context_client.datastore_handle().into_inner();
-                    let config = HashComparisonConfig {
-                        remote_root_hash: root_hash,
-                    };
-
-                    match HashComparisonProtocol::run_initiator(
-                        &mut transport,
-                        &store,
-                        context_id,
-                        our_identity,
-                        config,
-                    )
-                    .await
-                    {
-                        Ok(stats) => {
-                            info!(
-                                %context_id,
-                                nodes_compared = stats.nodes_compared,
-                                entities_merged = stats.entities_merged,
-                                nodes_skipped = stats.nodes_skipped,
-                                "HashComparison sync completed successfully"
-                            );
-                            return Ok(Some(SyncProtocol::HashComparison {
-                                root_hash,
-                                divergent_subtrees: vec![],
-                            }));
-                        }
-                        Err(e) => {
-                            warn!(
-                                %context_id,
-                                error = %e,
-                                "HashComparison sync failed, falling back to DAG catchup"
-                            );
-                            // Fall back to DAG heads request
-                            let result = self
-                                .request_dag_heads_and_sync(
-                                    context_id,
-                                    chosen_peer,
-                                    our_identity,
-                                    stream,
-                                )
-                                .await
-                                .wrap_err("hash comparison fallback")?;
-
-                            if matches!(result, SyncProtocol::None) {
-                                // If DAG catchup doesn't work, try snapshot as last resort
-                                info!(
-                                    %context_id,
-                                    "DAG catchup failed, falling back to snapshot sync"
-                                );
-                                let result = self
-                                    .fallback_to_snapshot_sync(
-                                        context_id,
-                                        our_identity,
-                                        chosen_peer,
-                                    )
-                                    .await
-                                    .wrap_err("snapshot fallback")?;
-                                return Ok(Some(result));
-                            }
-
-                            return Ok(Some(result));
-                        }
-                    }
-                }
-                SyncProtocol::BloomFilter { .. } => {
-                    warn!(
-                        %context_id,
-                        reason = %selection.reason,
-                        "BloomFilter not yet implemented, falling back to snapshot"
-                    );
-                    let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
-                        .await
-                        .wrap_err("bloom filter fallback")?;
-                    return Ok(Some(result));
-                }
-                SyncProtocol::SubtreePrefetch { .. } => {
-                    warn!(
-                        %context_id,
-                        reason = %selection.reason,
-                        "SubtreePrefetch not yet implemented, falling back to snapshot"
-                    );
-                    let result = self
-                        .fallback_to_snapshot_sync(context_id, our_identity, chosen_peer)
-                        .await
-                        .wrap_err("subtree prefetch fallback")?;
-                    return Ok(Some(result));
-                }
-                SyncProtocol::LevelWise { max_depth } => {
-                    // Execute LevelWise sync (CIP Appendix B)
-                    info!(
-                        %context_id,
-                        max_depth,
-                        reason = %selection.reason,
-                        "Starting LevelWise sync"
-                    );
-
-                    // Wrap stream in transport abstraction
-                    let mut transport = super::stream::StreamTransport::new(stream);
-
-                    // Get store for protocol execution
-                    let store = self.context_client.datastore_handle().into_inner();
-                    let config = LevelWiseConfig {
-                        remote_root_hash: *peer_root_hash,
-                        max_depth,
-                    };
-
-                    match LevelWiseProtocol::run_initiator(
-                        &mut transport,
-                        &store,
-                        context_id,
-                        our_identity,
-                        config,
-                    )
-                    .await
-                    {
-                        Ok(stats) => {
-                            info!(
-                                %context_id,
-                                levels_synced = stats.levels_synced,
-                                nodes_compared = stats.nodes_compared,
-                                entities_merged = stats.entities_merged,
-                                nodes_skipped = stats.nodes_skipped,
-                                "LevelWise sync completed successfully"
-                            );
-                            return Ok(Some(SyncProtocol::LevelWise { max_depth }));
-                        }
-                        Err(e) => {
-                            warn!(
-                                %context_id,
-                                error = %e,
-                                "LevelWise sync failed, falling back to DAG catchup"
-                            );
-                            // Fall back to DAG heads request - open a new stream since the
-                            // LevelWise protocol may have left the peer's responder in a state
-                            // where it expects LevelWiseRequest messages, not DagHeadsRequest.
-                            let mut fallback_stream = self
-                                .sync_network
-                                .open_stream(chosen_peer)
-                                .await
-                                .wrap_err("open stream for level-wise fallback")?;
-                            let result = self
-                                .request_dag_heads_and_sync(
-                                    context_id,
-                                    chosen_peer,
-                                    our_identity,
-                                    &mut fallback_stream,
-                                )
-                                .await
-                                .wrap_err("level-wise fallback")?;
-
-                            if matches!(result, SyncProtocol::None) {
-                                // If DAG catchup doesn't work, try snapshot as last resort
-                                info!(
-                                    %context_id,
-                                    "DAG catchup insufficient, attempting snapshot"
-                                );
-                                // Drop the consumed fallback_stream before opening fresh streams
-                                // in snapshot sync (fallback_stream is in indeterminate state
-                                // after DAG sync exchanges)
-                                drop(fallback_stream);
-                                let snapshot_result = self
-                                    .fallback_to_snapshot_sync(
-                                        context_id,
-                                        our_identity,
-                                        chosen_peer,
-                                    )
-                                    .await
-                                    .wrap_err("level-wise snapshot fallback")?;
-                                return Ok(Some(snapshot_result));
-                            }
-                            return Ok(Some(result));
-                        }
-                    }
-                }
-            }
+            return self
+                .protocol_selector
+                .execute(
+                    self,
+                    selection,
+                    context_id,
+                    chosen_peer,
+                    our_identity,
+                    &context.root_hash,
+                    &peer_root_hash,
+                    stream,
+                )
+                .await;
         }
 
         Ok(None)
@@ -2211,6 +1622,29 @@ impl SyncManager {
                 }
 
                 // Phase 1: Request and add ALL DAG heads
+                //
+                // Count outcomes so we can detect the silent-no-op case:
+                // a peer advertised N heads, every one was rejected by
+                // the signature/membership/group-id checks, and we
+                // therefore added zero deltas. Without the
+                // counters below, `missing_ids` would be empty after
+                // the loop and the fast-return at 1979 would claim
+                // success despite no progress — the divergence would
+                // persist and the caller would back off as if it had
+                // already converged. `heads_attempted` excludes the
+                // DeltaNotFound case (peer doesn't have it, not a
+                // rejection); `heads_admitted` includes the
+                // successful `add_delta` path only.
+                let mut heads_attempted: u32 = 0;
+                let mut heads_admitted: u32 = 0;
+                // Hoist the datastore handle outside the loop —
+                // `datastore_handle().into_inner()` clones an `Arc`
+                // and can take a brief lock; per-iteration creation
+                // showed up in reviewer profiling as redundant since
+                // every head reuses the same handle. The handle is
+                // borrowed read-only by the membership check and the
+                // group-id parity check; both can share.
+                let datastore_for_heads = self.context_client.datastore_handle().into_inner();
                 for head_id in &dag_heads {
                     info!(
                         %context_id,
@@ -2237,12 +1671,340 @@ impl SyncManager {
 
                     match delta_response {
                         Some(StreamMessage::Message {
-                            payload: MessagePayload::DeltaResponse { delta },
+                            payload:
+                                MessagePayload::DeltaResponse {
+                                    delta,
+                                    author_id: response_author,
+                                    governance_position_blob,
+                                    // Peer claimed to have the delta; count the
+                                    // attempt regardless of whether the verify
+                                    // chain ultimately accepts it. The
+                                    // DeltaNotFound arm below is *not* an
+                                    // attempt — the peer simply doesn't have
+                                    // it, so it can't be a "rejection".
+                                    delta_signature: response_delta_signature,
+                                },
                             ..
                         }) => {
+                            heads_attempted = heads_attempted.saturating_add(1);
                             // Deserialize and add to DAG
                             let storage_delta: calimero_storage::delta::CausalDelta =
                                 borsh::from_slice(&delta)?;
+
+                            // Sanity check: peer returned the head we
+                            // requested. A buggy or malicious peer
+                            // could substitute a different authorized
+                            // delta in response. The envelope signature
+                            // binds `storage_delta.id`, not `head_id`,
+                            // so without this guard a peer could swap
+                            // a valid delta for another and slip it
+                            // into our DAG under the wrong slot —
+                            // parity with the parent-fetch path's
+                            // sanity check, same security rationale.
+                            if storage_delta.id != *head_id {
+                                warn!(
+                                    %context_id,
+                                    requested = ?head_id,
+                                    received = ?storage_delta.id,
+                                    "DAG head pull: peer returned a different delta id than requested, dropping"
+                                );
+                                continue;
+                            }
+
+                            // Apply-time cross-DAG membership check —
+                            // parity with the gossip-path check in
+                            // `handle_state_delta`. `response_author` is
+                            // required on the wire (the responder filters
+                            // out rows without an author claim, returning
+                            // `DeltaNotFound` so the initiator can fall
+                            // back to a verifiable path). No legacy-accept
+                            // escape hatch here.
+                            //
+                            // `governance_position` is `Option` because
+                            // non-group contexts legitimately have no
+                            // cut to cite. In that case the membership
+                            // check is skipped (nothing to verify against
+                            // — context isn't governed by a group
+                            // membership DAG), and the per-action
+                            // signatures inside `apply_action` remain
+                            // the auth primitive.
+                            let author = response_author;
+
+                            // Genesis carve-out: the responder serves
+                            // the genesis delta with the all-zeros
+                            // sentinel `author_id` because the wire
+                            // requires an author but genesis predates
+                            // any governance op. Skip every
+                            // author-keyed check — none of them apply
+                            // to genesis. Persist directly via the
+                            // same add_delta path; gossip never sees
+                            // genesis (it's installed at context
+                            // creation), so the only way late joiners
+                            // backfill it is via this catchup path.
+                            if crate::sync::delta_request::is_genesis_author_sentinel(&author) {
+                                debug!(
+                                    %context_id,
+                                    head_id = ?head_id,
+                                    "DAG head pull: accepting genesis delta via author sentinel"
+                                );
+                                let dag_delta = calimero_dag::CausalDelta {
+                                    id: storage_delta.id,
+                                    parents: storage_delta.parents.clone(),
+                                    payload: storage_delta.actions,
+                                    hlc: storage_delta.hlc,
+                                    expected_root_hash: storage_delta.expected_root_hash,
+                                    kind: calimero_dag::DeltaKind::Regular,
+                                };
+                                if let Err(e) =
+                                    delta_store_ref.add_delta(dag_delta, None, None, None).await
+                                {
+                                    warn!(
+                                        ?e,
+                                        %context_id,
+                                        head_id = ?head_id,
+                                        "Failed to add genesis DAG head delta"
+                                    );
+                                } else {
+                                    heads_admitted = heads_admitted.saturating_add(1);
+                                    info!(
+                                        %context_id,
+                                        head_id = ?head_id,
+                                        "Successfully added genesis DAG head delta"
+                                    );
+                                }
+                                continue;
+                            }
+
+                            let pos = match governance_position_blob
+                                .as_deref()
+                                .map(
+                                    borsh::from_slice::<
+                                        calimero_context_config::types::GovernancePosition,
+                                    >,
+                                )
+                                .transpose()
+                            {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    // Malformed governance_position
+                                    // blob on a single delta shouldn't
+                                    // poison the whole DAG-catchup
+                                    // batch — skip this delta and
+                                    // continue. Other deltas may still
+                                    // converge; this one will retry on
+                                    // the next sync tick.
+                                    warn!(
+                                        %context_id,
+                                        %author,
+                                        head_id = ?head_id,
+                                        %e,
+                                        "DAG-catchup: failed to decode governance_position \
+                                         from peer; skipping this delta and continuing"
+                                    );
+                                    continue;
+                                }
+                            };
+                            // Per-delta envelope signature verification —
+                            // parity with `apply_authorized_state_delta`'s
+                            // gossip-path check. Runs BEFORE the cross-DAG
+                            // membership check because that check keys off
+                            // `author`; we have to establish the authorship
+                            // claim is genuine before asking whether the
+                            // claimed author is authorized. `None` is
+                            // tolerated only for legacy rows authored
+                            // before envelope signing landed and for
+                            // snapshot checkpoints / genesis rows that
+                            // have no author signature to record; every
+                            // freshly-authored delta (every output of
+                            // `internal_execute`) carries `Some(_)` and
+                            // MUST verify.
+                            if let Some(ref sig) = response_delta_signature {
+                                if let Err(err) = calimero_node_primitives::sync::delta_auth::verify_delta_signature(
+                                    context_id,
+                                    storage_delta.id,
+                                    author,
+                                    pos.as_ref(),
+                                    sig,
+                                ) {
+                                    warn!(
+                                        %context_id,
+                                        %author,
+                                        head_id = ?head_id,
+                                        %err,
+                                        "DAG-catchup: rejecting delta — envelope signature \
+                                         verification failed"
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            // Anti-bypass parity with the gossip path: before
+                            // running `membership_status_at`, confirm the
+                            // claimed governance position's `group_id`
+                            // actually matches the context's owning group
+                            // (or, for non-group contexts, that no position
+                            // is claimed). Without this:
+                            //   * `GroupContextNoPosition` — a group context
+                            //     would accept a delta with no position at
+                            //     all, silently skipping the membership check
+                            //     entirely (the `if let Some(pos)` branch
+                            //     below would just fall through).
+                            //   * `Mismatch` — an attacker could sign a
+                            //     position for a group they're a member of
+                            //     and attach it to a delta targeted at a
+                            //     different context owned by a different
+                            //     group, and `membership_status_at` would
+                            //     still pass against the spoofed group.
+                            //   * `NonGroupContextWithPosition` — symmetric.
+                            // The gossip path catches all three via
+                            // `verify_position_group_id_matches_context`; we
+                            // share the same helper so the match table
+                            // stays in lockstep across the two code paths.
+                            {
+                                use crate::handlers::state_delta::{
+                                    verify_position_group_id_matches_context, GroupIdCheck,
+                                };
+                                match verify_position_group_id_matches_context(
+                                    &datastore_for_heads,
+                                    &context_id,
+                                    pos.as_ref().map(|p| p.group_id),
+                                ) {
+                                    GroupIdCheck::Match | GroupIdCheck::NonGroupOk => {}
+                                    GroupIdCheck::GroupContextNoPosition { owning } => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            owning_group = ?owning,
+                                            "DAG-catchup: rejecting delta — context is owned \
+                                             by a group but delta carries no \
+                                             governance_position (parity gap with gossip path)"
+                                        );
+                                        continue;
+                                    }
+                                    GroupIdCheck::NonGroupContextWithPosition { claimed } => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            claimed_group = ?claimed,
+                                            "DAG-catchup: rejecting delta — delta claims a \
+                                             governance position but context is not in any \
+                                             group"
+                                        );
+                                        continue;
+                                    }
+                                    GroupIdCheck::Mismatch { owning, claimed } => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            owning_group = ?owning,
+                                            claimed_group = ?claimed,
+                                            "DAG-catchup: rejecting delta — governance_position \
+                                             references a different group than the context's \
+                                             owning group"
+                                        );
+                                        continue;
+                                    }
+                                    GroupIdCheck::LookupError(err) => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            %err,
+                                            "DAG-catchup: skipping delta — group lookup failed \
+                                             during anti-bypass check"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            // ReadOnly check — parity with the gossip
+                            // apply path. `membership_status_at` treats
+                            // ReadOnly as `Member(ReadOnly)`, so a
+                            // ReadOnly identity's delta would slip past
+                            // the cross-DAG check on the catchup path
+                            // even though gossip rejects it. Mirror the
+                            // gate `apply_authorized_state_delta` uses.
+                            if calimero_context::group_store::is_read_only_for_context(
+                                &datastore_for_heads,
+                                &context_id,
+                                &author,
+                            )
+                            .unwrap_or(false)
+                            {
+                                warn!(
+                                    %context_id,
+                                    %author,
+                                    head_id = ?head_id,
+                                    "DAG-catchup: rejecting delta from ReadOnly member"
+                                );
+                                continue;
+                            }
+
+                            if let Some(ref pos) = pos {
+                                use calimero_context::group_store::{
+                                    membership_status_at, MembershipStatus,
+                                };
+                                match membership_status_at(&datastore_for_heads, &author, pos) {
+                                    Ok(MembershipStatus::Member(_)) => {
+                                        // Authorized at the cited cut — proceed.
+                                    }
+                                    Ok(MembershipStatus::Removed { last_role }) => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            last_role = ?last_role,
+                                            "DAG-catchup: rejecting delta — author was \
+                                             removed at the cited governance cut"
+                                        );
+                                        continue;
+                                    }
+                                    Ok(MembershipStatus::NeverMember) => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            "DAG-catchup: rejecting delta — author was \
+                                             never a member at the cited governance cut"
+                                        );
+                                        continue;
+                                    }
+                                    Ok(MembershipStatus::Unknown { needed }) => {
+                                        // Buffering this delta the way the gossip path
+                                        // does would close the loop, but the DAG-catchup
+                                        // dispatch flow doesn't have the buffer plumbing
+                                        // wired yet. Skipping for now means the next sync
+                                        // tick will re-attempt once governance state has
+                                        // caught up via gossip; safer than admitting an
+                                        // unverified delta on the catch-up path.
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            needed = ?needed,
+                                            "DAG-catchup: skipping delta — governance \
+                                             cut not locally known; will re-attempt on \
+                                             next sync tick"
+                                        );
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            %context_id,
+                                            %author,
+                                            head_id = ?head_id,
+                                            error = %e,
+                                            "DAG-catchup: skipping delta — \
+                                             membership_status_at failed"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
 
                             let dag_delta = calimero_dag::CausalDelta {
                                 id: storage_delta.id,
@@ -2253,7 +2015,21 @@ impl SyncManager {
                                 kind: calimero_dag::DeltaKind::Regular,
                             };
 
-                            if let Err(e) = delta_store_ref.add_delta(dag_delta).await {
+                            // Persist with the wire-received author +
+                            // governance position so this node can in
+                            // turn serve verifiable DAG-catchup responses
+                            // to other peers that ask for the same delta.
+                            let persisted_gov_blob =
+                                governance_position_blob.as_ref().map(|c| c.to_vec());
+                            if let Err(e) = delta_store_ref
+                                .add_delta(
+                                    dag_delta,
+                                    Some(author),
+                                    persisted_gov_blob,
+                                    response_delta_signature,
+                                )
+                                .await
+                            {
                                 warn!(
                                     ?e,
                                     %context_id,
@@ -2261,6 +2037,7 @@ impl SyncManager {
                                     "Failed to add DAG head delta"
                                 );
                             } else {
+                                heads_admitted = heads_admitted.saturating_add(1);
                                 info!(
                                     %context_id,
                                     head_id = ?head_id,
@@ -2301,6 +2078,28 @@ impl SyncManager {
                             warn!(%context_id, head_id = ?head_id, "Unexpected response to delta request");
                         }
                     }
+                }
+
+                // Detect "all-rejected" silent no-op: the peer advertised
+                // heads, every single one was rejected by the verify chain
+                // (signature / group-id / membership), and so we admitted
+                // zero deltas. If we let the code fall through to the
+                // `missing_ids.is_empty()` fast-return below, catchup would
+                // claim `Ok(DeltaSync { missing_delta_ids: vec![] })` —
+                // i.e. "success" — even though the divergence remains.
+                // Bail loudly here so the caller knows to back off and
+                // either try another peer or escalate to snapshot sync,
+                // matching how the rest of `handle_dag_sync`'s error paths
+                // propagate.
+                if heads_attempted > 0 && heads_admitted == 0 {
+                    bail!(
+                        "DAG-catchup made no progress against peer {peer_id}: \
+                         all {heads_attempted} advertised head deltas were rejected \
+                         by the apply-time verify chain (signature / group-id / \
+                         membership). Reporting as failure rather than claiming \
+                         convergence — caller should back off and retry against \
+                         another peer or fall back to snapshot sync."
+                    );
                 }
 
                 // Phase 2: Now check for missing parents and fetch them recursively
@@ -3243,6 +3042,63 @@ impl super::reconciler::ReconcileSyncDispatch for SyncManager {
         peer: PeerId,
     ) -> eyre::Result<(PeerId, SyncProtocol)> {
         SyncManager::initiate_sync(self, context_id, peer).await
+    }
+}
+
+// Protocol-dispatch back into `SyncManager` for the methods the
+// extracted `ProtocolSelector` needs to call. Same `?Send` rationale
+// as the reconciler dispatch above.
+#[async_trait::async_trait(?Send)]
+impl super::protocol_selector::ProtocolDispatch for SyncManager {
+    async fn open_stream(&self, peer: PeerId) -> eyre::Result<Stream> {
+        self.sync_network
+            .open_stream(peer)
+            .await
+            .wrap_err("open stream")
+    }
+
+    async fn request_dag_heads_and_sync(
+        &self,
+        context_id: ContextId,
+        chosen_peer: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
+    ) -> eyre::Result<SyncProtocol> {
+        SyncManager::request_dag_heads_and_sync(self, context_id, chosen_peer, our_identity, stream)
+            .await
+    }
+
+    async fn fallback_to_snapshot_sync(
+        &self,
+        context_id: ContextId,
+        our_identity: PublicKey,
+        chosen_peer: PeerId,
+    ) -> eyre::Result<SyncProtocol> {
+        SyncManager::fallback_to_snapshot_sync(self, context_id, our_identity, chosen_peer).await
+    }
+}
+
+// Driver-dispatch back into `SyncManager` for the cross-actor message
+// handlers the extracted `SyncDriver` needs to call. Same `?Send`
+// rationale as the prior dispatch impls.
+#[async_trait::async_trait(?Send)]
+impl super::driver::SyncDriverDispatch for SyncManager {
+    async fn sync_namespace_from_peer(&self, namespace_id: [u8; 32]) {
+        SyncManager::sync_namespace_from_peer(self, namespace_id).await
+    }
+
+    async fn initiate_namespace_join(
+        &self,
+        params: calimero_node_primitives::client::NamespaceJoinParams,
+    ) -> eyre::Result<calimero_node_primitives::join_bundle::JoinBundle> {
+        SyncManager::initiate_namespace_join(self, params).await
+    }
+
+    async fn initiate_open_subgroup_join(
+        &self,
+        params: calimero_node_primitives::client::OpenSubgroupJoinParams,
+    ) -> eyre::Result<Vec<u8>> {
+        SyncManager::initiate_open_subgroup_join(self, params).await
     }
 }
 

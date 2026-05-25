@@ -423,27 +423,109 @@ fn generate_mergeable_impl(
     }
 }
 
-/// Generate registration hook for automatic merge during sync
+/// Generate the WASM exports the host + WASM runtime call for root-state CRDT merge.
+///
+/// Two exports are emitted:
+///
+/// 1. `__calimero_register_merge` — called by the WASM runtime at
+///    module-load time. Populates the WASM-side `MERGE_REGISTRY`
+///    static so that `Interface::save_internal` (running inside WASM
+///    during normal delta apply via `__calimero_sync_next`) can
+///    dispatch the typed merge. This is the WASM-internal dispatch
+///    path and is load-bearing — without it, every WASM-side root
+///    entity merge fails with `NoMergeFunctionRegistered`.
+///
+/// 2. `__calimero_merge_root_state` — called by the host (via
+///    `ContextClient::merge_root_state`) when HC / LevelWise sync
+///    needs to merge a root entity. The host can't dispatch the
+///    typed merge itself (separate address space), so it hands the
+///    bytes to this export, which deserializes as `T`, runs
+///    `Mergeable::merge`, returns serialized bytes.
 fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>) -> TokenStream {
     quote! {
         // ============================================================================
-        // AUTO-GENERATED WASM Export for Merge Registration
+        // AUTO-GENERATED WASM Export — WASM-Internal Registration Hook
         // ============================================================================
         //
-        // This function is called ONCE when the WASM module is loaded by the node runtime.
-        // It registers the app's merge function so that sync can automatically call it.
-        //
-        // Lifecycle:
-        // 1. WASM loads → runtime calls __calimero_register_merge()
-        // 2. Registration → stores merge function in global registry
-        // 3. Sync → automatically uses registered merge
-        //
-        // Developer impact: ZERO - this is completely automatic!
+        // Called by the runtime at WASM module load. Populates the
+        // WASM-side `MERGE_REGISTRY` so the WASM `Interface::save_internal`
+        // can dispatch root-entity merges via the app's typed
+        // `Mergeable::merge`. Required for normal `__calimero_sync_next`
+        // delta apply when the delta touches the root entity.
         //
         #[cfg(target_arch = "wasm32")]
         #[no_mangle]
         pub extern "C" fn __calimero_register_merge() {
             ::calimero_storage::register_crdt_merge::<#ident #ty_generics>();
+        }
+
+        // ============================================================================
+        // AUTO-GENERATED WASM Export — Host-Initiated Root-State Merge
+        // ============================================================================
+        //
+        // The host invokes this export whenever it needs to merge two root-state
+        // byte blobs (HC sync apply, LevelWise sync apply, anywhere a sync
+        // path on the host encounters root-entity divergence). The host
+        // can't deserialize the app's root type — only the WASM module
+        // can, since the type only exists here.
+        //
+        // Input: borsh-serialized `MergeRootStateRequest` via `env::input()`.
+        // Output: borsh-serialized `MergeRootStateResponse` via `env::value_return()`.
+        //
+        // Developer impact: ZERO — the macro hides the export entirely.
+        //
+        #[cfg(target_arch = "wasm32")]
+        #[no_mangle]
+        pub extern "C" fn __calimero_merge_root_state() {
+            ::calimero_sdk::env::setup_panic_hook();
+
+            let Some(args) = ::calimero_sdk::env::input() else {
+                ::calimero_sdk::env::panic_str(
+                    "Expected MergeRootStateRequest payload for __calimero_merge_root_state",
+                )
+            };
+
+            let request: ::calimero_storage::merge::MergeRootStateRequest =
+                ::calimero_sdk::borsh::from_slice(&args).unwrap_or_else(|err| {
+                    ::calimero_sdk::env::panic_str(&::std::format!(
+                        "Failed to deserialize MergeRootStateRequest: {err}",
+                    ))
+                });
+
+            let response = match ::calimero_storage::merge::merge_root_state_typed::<
+                #ident #ty_generics,
+            >(
+                &request.existing,
+                &request.incoming,
+                request.existing_created_at,
+                request.existing_ts,
+                request.incoming_ts,
+            ) {
+                ::core::result::Result::Ok(bytes) => {
+                    ::calimero_storage::merge::MergeRootStateResponse::Ok(bytes)
+                }
+                ::core::result::Result::Err(err) => {
+                    ::calimero_storage::merge::MergeRootStateResponse::Err(::std::format!(
+                        "{err:?}",
+                    ))
+                }
+            };
+
+            let serialized = ::calimero_sdk::borsh::to_vec(&response).unwrap_or_else(|err| {
+                ::calimero_sdk::env::panic_str(&::std::format!(
+                    "Failed to serialize MergeRootStateResponse: {err}",
+                ))
+            });
+
+            // `value_return` wraps the bytes in a `Result` discriminant
+            // on the wire — match the convention every other generated
+            // export uses (see migration.rs:96 / method.rs:149). The
+            // success / error semantics of the merge itself live inside
+            // the `MergeRootStateResponse` payload, not the wire wrapper.
+            ::calimero_sdk::env::value_return(&::core::result::Result::<
+                ::std::vec::Vec<u8>,
+                ::std::vec::Vec<u8>,
+            >::Ok(serialized));
         }
     }
 }

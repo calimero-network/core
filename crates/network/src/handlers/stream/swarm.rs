@@ -2,7 +2,7 @@ use actix::StreamHandler;
 use calimero_network_primitives::messages::NetworkEvent;
 use eyre::eyre;
 use libp2p::core::ConnectedPoint;
-use libp2p::swarm::SwarmEvent;
+use libp2p::swarm::{DialError, SwarmEvent};
 use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
 use tracing::{debug, info, trace, warn};
@@ -83,11 +83,26 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 peer_id, endpoint, ..
             } => {
                 debug!(%peer_id, ?endpoint, "Connection established");
-                if let ConnectedPoint::Dialer { .. } = endpoint {
-                    self.discovery
-                        .state
-                        .add_peer_addr(peer_id, endpoint.get_remote_address());
 
+                // Record the remote address for both inbound and outbound
+                // connections. The previous version only recorded for the
+                // Dialer endpoint, which meant a peer that dialed us first
+                // never made it into our address book until rendezvous
+                // happened to surface them later. That left the rendezvous-
+                // tick re-dial loop with nothing to iterate on
+                // ConnectionClosed.
+                //
+                // Skip relayed multiaddrs (`/p2p-circuit/`) — those aren't
+                // useful as direct-dial entries for the peer, and storing
+                // them would pollute the book with addresses that always
+                // fail to dial directly.
+                let remote = endpoint.get_remote_address();
+                let is_relayed = remote.iter().any(|p| matches!(p, Protocol::P2pCircuit));
+                if !is_relayed {
+                    self.discovery.state.add_peer_addr(peer_id, remote);
+                }
+
+                if let ConnectedPoint::Dialer { .. } = endpoint {
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
                         let _ignored = sender.send(Ok(()));
                     }
@@ -110,20 +125,58 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                     "Connection closed",
                 );
 
-                if !self.swarm.is_connected(&peer_id)
-                    && !self.discovery.state.is_peer_relay(&peer_id)
-                    && !self.discovery.state.is_peer_rendezvous(&peer_id)
-                    && !self
-                        .discovery
-                        .state
-                        .is_peer_discovered_via(&peer_id, PeerDiscoveryMechanism::Mdns)
-                {
-                    self.discovery.state.remove_peer(&peer_id);
+                if !self.swarm.is_connected(&peer_id) {
+                    // If this was the last connection to a known relay,
+                    // any reservation we held with it is gone with the
+                    // control connection. ExternalAddrExpired/ListenerClosed
+                    // usually follow, but they are not guaranteed to fire
+                    // for every disconnect cause (e.g. abrupt TCP reset),
+                    // so handle it here as well. on_relay_reservation_lost
+                    // is idempotent for already-Expired peers.
+                    if self.discovery.state.is_peer_relay(&peer_id) {
+                        let actions = self.discovery.state.on_relay_reservation_lost(&peer_id);
+                        self.execute_reachability_actions(actions);
+                    }
+
+                    if !self.discovery.state.is_peer_relay(&peer_id)
+                        && !self.discovery.state.is_peer_rendezvous(&peer_id)
+                        && !self
+                            .discovery
+                            .state
+                            .is_peer_discovered_via(&peer_id, PeerDiscoveryMechanism::Mdns)
+                    {
+                        self.discovery.state.remove_peer(&peer_id);
+                    }
                 }
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 debug!(?peer_id, %error, "Outgoing connection error");
+
+                // Attribute the failure to specific addresses where DialError
+                // gives us that detail. Three variants carry addresses:
+                //   - LocalPeerId { address }: we dialed our own peer id at
+                //     that address; whoever advertised it for this peer was
+                //     wrong, so evict.
+                //   - WrongPeerId { address, .. }: the peer at that address
+                //     turned out to have a different identity; same idea.
+                //   - Transport(Vec<(addr, err)>): each address we tried in
+                //     this dial, with the transport-level error per attempt.
+                // Other variants (NoAddresses, Aborted, Denied, DialPeer
+                // ConditionFalse) don't pin the failure to an address, so
+                // there's nothing to attribute.
                 if let Some(peer_id) = peer_id {
+                    let failed_addrs: Vec<&Multiaddr> = match &error {
+                        DialError::LocalPeerId { address }
+                        | DialError::WrongPeerId { address, .. } => vec![address],
+                        DialError::Transport(attempts) => {
+                            attempts.iter().map(|(addr, _)| addr).collect()
+                        }
+                        _ => vec![],
+                    };
+                    for addr in failed_addrs {
+                        let _ = self.discovery.state.record_dial_failure(&peer_id, addr);
+                    }
+
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
                         let _ignored = sender.send(Err(eyre!(error)));
                     }
@@ -144,8 +197,59 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 trace!("Expired listen address: {}", address);
             }
             SwarmEvent::ListenerClosed {
-                addresses, reason, ..
-            } => trace!("Listener closed: {:?} {:?}", addresses, reason.err()),
+                listener_id,
+                addresses,
+                reason,
+                ..
+            } => {
+                trace!(
+                    ?listener_id,
+                    ?addresses,
+                    error = ?reason.err(),
+                    "Listener closed"
+                );
+
+                // Prefer the registered listener-id mapping: when
+                // create_relay_reservation calls listen_on, we record the
+                // returned ListenerId against the relay peer. This routes
+                // recovery correctly even when libp2p emits
+                // ListenerClosed with `addresses: []` — which it does when
+                // the relay denies a reservation before any external
+                // address gets allocated (e.g. quota wall, rate limit).
+                // The addresses-iteration fallback below would silently
+                // miss that case.
+                //
+                // `take_relay_listener` removes the entry as it returns
+                // the peer, so the map cannot leak entries across
+                // reservation cycles regardless of which branch handles
+                // the close event.
+                //
+                // The fallback iterates addresses for listeners we did
+                // not register ourselves (defensive — covers any future
+                // code path that calls listen_on with a relayed multiaddr
+                // outside create_relay_reservation). It does not need to
+                // clean the map: by definition the map had no entry to
+                // clean.
+                //
+                // The swarm typically also emits ExternalAddrExpired for
+                // the same address, so the second call into
+                // on_relay_reservation_lost will be a no-op (status
+                // already Expired).
+                if let Some(relay_peer) = self.discovery.state.take_relay_listener(&listener_id) {
+                    let actions = self.discovery.state.on_relay_reservation_lost(&relay_peer);
+                    self.execute_reachability_actions(actions);
+                } else {
+                    for address in &addresses {
+                        if let Ok(relayed_addr) = RelayedMultiaddr::try_from(address) {
+                            let actions = self
+                                .discovery
+                                .state
+                                .on_relay_reservation_lost(relayed_addr.relay_peer_id());
+                            self.execute_reachability_actions(actions);
+                        }
+                    }
+                }
+            }
             SwarmEvent::ListenerError { error, .. } => trace!("Listener error: {:?}", error),
             SwarmEvent::NewExternalAddrCandidate { address } => {
                 trace!("New external address candidate: {}", address);
@@ -178,22 +282,19 @@ impl StreamHandler<FromSwarm> for NetworkManager {
             SwarmEvent::ExternalAddrExpired { address } => {
                 info!("Swarm: External address expired: {}", address);
 
-                // Check if this is a relay address and update relay metadata
-                let is_relay_address =
-                    if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
-                        self.discovery.state.update_relay_reservation_status(
-                            relayed_addr.relay_peer_id(),
-                            RelayReservationStatus::Expired,
-                        );
-                        true
-                    } else {
-                        false
-                    };
-
-                // Only update reachability state for direct (non-relay) addresses
-                // CRITICAL: Must handle here due to libp2p bug #6203
-                // AutoNAT won't retest expired addresses
-                if !is_relay_address {
+                if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
+                    // Relay reservation lapsed (renewal failed, relay disconnected,
+                    // or max_circuit_duration exceeded). Mark Expired and queue a
+                    // re-request so we don't sit silently unreachable until restart.
+                    let actions = self
+                        .discovery
+                        .state
+                        .on_relay_reservation_lost(relayed_addr.relay_peer_id());
+                    self.execute_reachability_actions(actions);
+                } else {
+                    // Direct (non-relay) address: update reachability state.
+                    // Must handle here due to libp2p bug #6203 — AutoNAT does not
+                    // retest expired addresses.
                     let actions = self.discovery.state.on_address_removed(&address);
                     self.execute_reachability_actions(actions);
                 }

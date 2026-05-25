@@ -1115,15 +1115,39 @@ impl DeltaStore {
         &self,
         delta: CausalDelta<Vec<Action>>,
         events: Option<Vec<u8>>,
+        author_id: Option<calimero_primitives::identity::PublicKey>,
+        governance_position_blob: Option<Vec<u8>>,
+        delta_signature: Option<[u8; 64]>,
     ) -> Result<AddDeltaResult> {
-        self.add_delta_internal(delta, events).await
+        self.add_delta_internal(
+            delta,
+            events,
+            author_id,
+            governance_position_blob,
+            delta_signature,
+        )
+        .await
     }
 
     /// Add a delta to the store (without event data)
     ///
     /// Returns Ok(true) if applied immediately, Ok(false) if pending
-    pub async fn add_delta(&self, delta: CausalDelta<Vec<Action>>) -> Result<bool> {
-        let result = self.add_delta_internal(delta, None).await?;
+    pub async fn add_delta(
+        &self,
+        delta: CausalDelta<Vec<Action>>,
+        author_id: Option<calimero_primitives::identity::PublicKey>,
+        governance_position_blob: Option<Vec<u8>>,
+        delta_signature: Option<[u8; 64]>,
+    ) -> Result<bool> {
+        let result = self
+            .add_delta_internal(
+                delta,
+                None,
+                author_id,
+                governance_position_blob,
+                delta_signature,
+            )
+            .await?;
         Ok(result.applied)
     }
 
@@ -1258,6 +1282,9 @@ impl DeltaStore {
         &self,
         delta: CausalDelta<Vec<Action>>,
         events: Option<Vec<u8>>,
+        author_id: Option<calimero_primitives::identity::PublicKey>,
+        governance_position_blob: Option<Vec<u8>>,
+        delta_signature: Option<[u8; 64]>,
     ) -> Result<AddDeltaResult> {
         let delta_id = delta.id;
         let expected_root_hash = delta.expected_root_hash;
@@ -1289,6 +1316,9 @@ impl DeltaStore {
                         applied: false, // Not applied yet, will update if it applies
                         expected_root_hash,
                         events: events.clone(), // Store events for potential cascade
+                        author_id,
+                        governance_position_blob: governance_position_blob.clone(),
+                        delta_signature,
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to pre-persist delta with events: {}", e))?;
@@ -1364,6 +1394,9 @@ impl DeltaStore {
                         applied: true,
                         expected_root_hash,
                         events: events.clone(),
+                        author_id,
+                        governance_position_blob: governance_position_blob.clone(),
+                        delta_signature,
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to update applied delta: {}", e))?;
@@ -1390,6 +1423,9 @@ impl DeltaStore {
                         applied: true,
                         expected_root_hash,
                         events: None,
+                        author_id,
+                        governance_position_blob,
+                        delta_signature,
                     },
                 )
                 .map_err(|e| eyre::eyre!("Failed to persist applied delta: {}", e))?;
@@ -1951,6 +1987,9 @@ impl DeltaStore {
                     applied: true,
                     expected_root_hash: applied_delta.expected_root_hash,
                     events: stored_events.clone(),
+                    author_id: None,
+                    governance_position_blob: None,
+                    delta_signature: None,
                 };
                 if let Err(e) = handle.put(&db_key, &record) {
                     warn!(
@@ -2221,6 +2260,12 @@ impl DeltaStore {
                         applied: true, // Checkpoints are always "applied"
                         expected_root_hash: checkpoint.expected_root_hash,
                         events: None,
+                        // Snapshot checkpoints are receiver-side derived
+                        // (boundary heads from a snapshot transfer), not
+                        // peer-authored deltas; no author claim to verify.
+                        author_id: None,
+                        governance_position_blob: None,
+                        delta_signature: None,
                     },
                 ) {
                     tracing::warn!(

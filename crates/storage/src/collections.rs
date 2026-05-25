@@ -43,6 +43,7 @@ pub mod user;
 pub use user::UserStorage;
 pub mod shared;
 pub use shared::SharedStorage;
+mod authored_common;
 pub mod authored_map;
 pub use authored_map::AuthoredMap;
 pub mod authored_vector;
@@ -179,7 +180,7 @@ pub(crate) const ROOT_ENTRY_ID: Id = Id::new([118; 32]);
 /// happens to carry a later HLC (which it usually does, since it was
 /// constructed after the remote's writes).
 #[inline]
-pub(crate) fn is_app_root_entry(id: Id) -> bool {
+pub fn is_app_root_entry(id: Id) -> bool {
     id.is_root() || id == ROOT_ENTRY_ID
 }
 

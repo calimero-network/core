@@ -496,20 +496,21 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let start = Instant::now();
 
-                let (outcome, causal_delta) = internal_execute(
-                    datastore,
-                    &node_client,
-                    &context_client,
-                    module,
-                    &guard,
-                    &mut context,
-                    executor,
-                    method.clone().into(),
-                    payload.into(),
-                    is_state_op,
-                    &private_key,
-                )
-                .await?;
+                let (outcome, causal_delta, delta_signature, signing_governance_position) =
+                    internal_execute(
+                        datastore,
+                        &node_client,
+                        &context_client,
+                        module,
+                        &guard,
+                        &mut context,
+                        executor,
+                        method.clone().into(),
+                        payload.into(),
+                        is_state_op,
+                        &private_key,
+                    )
+                    .await?;
 
                 let duration = start.elapsed().as_secs_f64();
                 let status = outcome
@@ -562,13 +563,20 @@ impl Handler<ExecuteRequest> for ContextManager {
                     "Execution outcome details"
                 );
 
-                Ok((guard, context, outcome, causal_delta))
+                Ok((
+                    guard,
+                    context,
+                    outcome,
+                    causal_delta,
+                    delta_signature,
+                    signing_governance_position,
+                ))
             }
             .into_actor(act)
         });
 
         let external_task =
-            execute_task.and_then(move |(guard, context, outcome, causal_delta), act, _ctx| {
+            execute_task.and_then(move |(guard, context, outcome, causal_delta, delta_signature, signing_governance_position), act, _ctx| {
                 if let Some(cached_context) = act.contexts.get_mut(&context_id) {
                     debug!(
                         %context_id,
@@ -584,7 +592,13 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 let node_client = act.node_client.clone();
                 let context_client = act.context_client.clone();
-                let datastore_for_broadcast = act.datastore.clone();
+                // `datastore_for_broadcast` used to recompute the
+                // governance position at broadcast time — that recompute
+                // produced the persist-vs-broadcast signature mismatch
+                // documented on `governance_position_for_broadcast`.
+                // The threaded value from `internal_execute` is the
+                // single source of truth now, so no fresh store
+                // snapshot is needed here.
 
                 async move {
                     if outcome.returns.is_err() {
@@ -739,15 +753,18 @@ impl Handler<ExecuteRequest> for ContextManager {
                                 Some(serialized)
                             };
 
-                            // Cross-DAG reference: names the governance cut
-                            // this delta was signed against. `None` for legacy
-                            // non-group contexts. Read failures are logged but
-                            // not fatal — the receiver-side membership check
-                            // will reject if the position is missing or stale.
-                            let governance_position = compute_governance_position_for_context(
-                                &datastore_for_broadcast,
-                                &context.id,
-                            );
+                            // Cross-DAG reference: the EXACT governance cut
+                            // `delta_signature` was bound to inside
+                            // `internal_execute`. We reuse that captured
+                            // value (`signing_governance_position`) instead
+                            // of recomputing from `datastore_for_broadcast`
+                            // because the local governance state can advance
+                            // between the persist and broadcast points
+                            // (member added/removed, namespace op landed).
+                            // A fresh computation would silently diverge
+                            // from the signed payload and receivers would
+                            // reject the delta on signature mismatch.
+                            let governance_position = signing_governance_position.clone();
 
                             node_client
                                 .broadcast(
@@ -761,6 +778,10 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     events_data,
                                     governance_position,
                                     broadcast_key_id,
+                                    // Pre-signed envelope bytes — paired with
+                                    // the exact `signing_governance_position`
+                                    // above, see the comment there.
+                                    delta_signature,
                                 )
                                 .await?;
                         }
@@ -1214,7 +1235,12 @@ async fn internal_execute(
     input: Cow<'static, [u8]>,
     is_state_op: bool,
     identity_private_key: &PrivateKey,
-) -> eyre::Result<(Outcome, Option<CausalDelta>)> {
+) -> eyre::Result<(
+    Outcome,
+    Option<CausalDelta>,
+    Option<[u8; 64]>,
+    Option<GovernancePosition>,
+)> {
     let executor_is_read_only = !is_state_op
         && crate::group_store::is_read_only_for_context(&datastore, &context.id, &executor)
             .unwrap_or(false);
@@ -1292,7 +1318,7 @@ async fn internal_execute(
             error = ?outcome.returns,
             "WASM execution returned error"
         );
-        return Ok((outcome, None));
+        return Ok((outcome, None, None, None));
     }
 
     'fine: {
@@ -1315,6 +1341,22 @@ async fn internal_execute(
     }
 
     let mut causal_delta = None;
+    // Populated when we sign the locally-produced delta envelope so the
+    // outer `execute` task can carry the same signature bytes into the
+    // gossip broadcast. Stays `None` when no delta was produced (e.g.,
+    // empty artifact) or signing wasn't applicable.
+    let mut delta_signature_for_broadcast: Option<[u8; 64]> = None;
+    // Captured alongside the signature: the EXACT
+    // `governance_position` the signature was computed against. The
+    // outer broadcast site MUST reuse this value rather than
+    // recomputing from a fresh store snapshot — between the persist
+    // and broadcast points the local governance state can advance
+    // (a member is added/removed, a namespace op lands), and
+    // recomputing would produce a different position that no longer
+    // matches the signed payload, so receivers would reject the
+    // delta on signature mismatch. This single source of truth
+    // collapses that race window.
+    let mut governance_position_for_broadcast: Option<GovernancePosition> = None;
 
     if executor_is_read_only && outcome.root_hash.is_some() {
         info!(
@@ -1326,7 +1368,7 @@ async fn internal_execute(
         outcome.root_hash = None;
         outcome.artifact.clear();
         outcome.xcalls.clear();
-        return Ok((outcome, None));
+        return Ok((outcome, None, None, None));
     }
 
     if executor_not_authorized_for_state_op && outcome.root_hash.is_some() {
@@ -1339,7 +1381,7 @@ async fn internal_execute(
         outcome.root_hash = None;
         outcome.artifact.clear();
         outcome.xcalls.clear();
-        return Ok((outcome, None));
+        return Ok((outcome, None, None, None));
     }
 
     // Always update root_hash if present (even if storage is empty)
@@ -1512,6 +1554,41 @@ async fn internal_execute(
         if let Some(ref delta) = causal_delta {
             let serialized_actions = borsh::to_vec(&delta.actions)?;
 
+            // Compute the governance position for the cross-DAG check
+            // that DAG-catchup responders advertise on the wire. Mirrors
+            // the position computed for the broadcast envelope above so
+            // peers that pull this delta via `request_dag_heads_and_sync`
+            // can run the same `membership_status_at` check the gossip
+            // path runs.
+            let governance_position = compute_governance_position_for_context(&store, &context.id);
+            let governance_position_blob = governance_position
+                .as_ref()
+                .and_then(|gp| borsh::to_vec(gp).ok());
+
+            // Sign the canonical envelope payload with the author's
+            // identity key. Signature binds `(context_id, delta_id,
+            // author_id, governance_position)` together so a current
+            // group-key holder can't relabel a foreign delta as their
+            // own (or vice versa) on the wire — receivers reject any
+            // mismatch via `verify_delta_signature`. The same signature
+            // is persisted on the row and passed back to the broadcast
+            // site so the gossip and DAG-catchup paths advertise the
+            // same bytes.
+            let signature_payload =
+                calimero_node_primitives::sync::delta_auth::delta_signature_payload(
+                    context.id,
+                    delta.id,
+                    executor,
+                    governance_position.as_ref(),
+                )?;
+            let delta_signature = Some(identity_private_key.sign(&signature_payload)?.to_bytes());
+            delta_signature_for_broadcast = delta_signature;
+            // Pin the exact position the signature was bound to so
+            // the broadcast site can advertise it verbatim instead of
+            // recomputing (see `governance_position_for_broadcast`'s
+            // declaration for why recomputation is unsafe).
+            governance_position_for_broadcast = governance_position.clone();
+
             handle.put(
                 &key::ContextDagDelta::new(context.id, delta.id),
                 &types::ContextDagDelta {
@@ -1522,6 +1599,9 @@ async fn internal_execute(
                     applied: true,
                     expected_root_hash: delta.expected_root_hash,
                     events: None, // No events stored for locally created deltas
+                    author_id: Some(executor),
+                    governance_position_blob,
+                    delta_signature,
                 },
             )?;
 
@@ -1583,7 +1663,12 @@ async fn internal_execute(
         }))?;
     }
 
-    Ok((outcome, causal_delta))
+    Ok((
+        outcome,
+        causal_delta,
+        delta_signature_for_broadcast,
+        governance_position_for_broadcast,
+    ))
 }
 
 pub async fn execute(

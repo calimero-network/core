@@ -4,9 +4,10 @@ mod tests;
 
 use core::time::Duration;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
+use libp2p::core::transport::ListenerId;
 use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::Cookie;
 use libp2p::{Multiaddr, PeerId, StreamProtocol};
@@ -16,6 +17,13 @@ use tracing::info;
 // The rendezvous protocol name is not public in libp2p, so we have to define it here.
 // source: https://github.com/libp2p/rust-libp2p/blob/a8888a7978f08ec9b8762207bf166193bf312b94/protocols/rendezvous/src/lib.rs#L50C12-L50C92
 const RENDEZVOUS_PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/rendezvous/1.0.0");
+
+/// Consecutive-failure threshold at which an address is evicted from a
+/// peer's address book. Three is chosen as a small magic number that
+/// tolerates transient flakiness (one bad TCP retransmit, one identify
+/// race) without keeping a permanently broken address around long enough
+/// to waste many rendezvous-tick dial attempts.
+pub(crate) const DIAL_FAILURE_EVICTION_THRESHOLD: u8 = 3;
 
 /// DiscoveryState is a struct that holds the state of the disovered peers.
 /// It holds the relay and rendezvous indexes to quickly check if a peer is a relay or rendezvous.
@@ -27,6 +35,14 @@ pub struct DiscoveryState {
     rendezvous_index: BTreeSet<PeerId>,
     autonat_index: BTreeSet<PeerId>,
     confirmed_external_addresses: HashSet<Multiaddr>,
+    /// Maps each libp2p relayed listener back to the relay peer it was
+    /// opened against. Populated by `create_relay_reservation` when it
+    /// calls `listen_on(<relay>/p2p-circuit/<self>)` and gets back a
+    /// `ListenerId`. Looked up by the `ListenerClosed` swarm handler so
+    /// it can route the recovery action even when the closed listener's
+    /// `addresses` list is empty (e.g. quota denial before address
+    /// allocation).
+    relay_listeners: HashMap<ListenerId, PeerId>,
     reachability_state: ReachabilityState,
 }
 
@@ -45,6 +61,7 @@ impl Default for DiscoveryState {
             rendezvous_index: BTreeSet::new(),
             autonat_index: BTreeSet::new(),
             confirmed_external_addresses: HashSet::new(),
+            relay_listeners: HashMap::new(),
             reachability_state: ReachabilityState::Unknown,
         }
     }
@@ -147,13 +164,44 @@ impl DiscoveryState {
         }
     }
 
+    /// Record an address for a peer, or reset its failure counter to zero if
+    /// it already exists. Called from successful connection events (the
+    /// address obviously works), from identify (the peer told us it
+    /// listens there), and from the rendezvous discovery path.
+    ///
+    /// Addresses are stored as supplied, without normalization. The caller
+    /// is responsible for filtering out forms we don't want to dial
+    /// directly — most notably relayed multiaddrs (`/p2p-circuit/`) for
+    /// inbound connection records.
     pub(crate) fn add_peer_addr(&mut self, peer_id: PeerId, addr: &Multiaddr) {
         let _ = self
             .peers
             .entry(peer_id)
             .or_default()
             .addrs
-            .insert(addr.clone());
+            .insert(addr.clone(), 0);
+    }
+
+    /// Mark a dial failure for `addr` under `peer_id`. Increments the
+    /// per-address counter; if it reaches
+    /// [`DIAL_FAILURE_EVICTION_THRESHOLD`], evicts the address and returns
+    /// true. No-op if the peer or address is not in the book (we don't
+    /// add entries for addresses we never planned to keep).
+    pub(crate) fn record_dial_failure(&mut self, peer_id: &PeerId, addr: &Multiaddr) -> bool {
+        let Some(peer_info) = self.peers.get_mut(peer_id) else {
+            return false;
+        };
+        let Some(count) = peer_info.addrs.get_mut(addr) else {
+            return false;
+        };
+
+        *count = count.saturating_add(1);
+        if *count >= DIAL_FAILURE_EVICTION_THRESHOLD {
+            let _ = peer_info.addrs.remove(addr);
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn remove_peer(&mut self, peer_id: &PeerId) {
@@ -204,7 +252,7 @@ impl DiscoveryState {
                 let _ = discoveries.insert(mechanism);
 
                 let _ = entry.insert(PeerInfo {
-                    addrs: HashSet::default(),
+                    addrs: HashMap::default(),
                     discoveries,
                     relay: None,
                     rendezvous: None,
@@ -220,6 +268,32 @@ impl DiscoveryState {
             .and_modify(|info| info.update_rendezvous_cookie(cookie.clone()));
     }
 
+    /// Remember that `listener_id` was opened against `relay_peer` as a
+    /// relayed listener. The ListenerClosed handler uses this to route
+    /// recovery for the quota-denied case where libp2p tears the listener
+    /// down before any external address is ever attached — leaving
+    /// `addresses` empty in the event and the address-iteration fallback
+    /// with nothing to act on.
+    pub(crate) fn record_relay_listener(&mut self, listener_id: ListenerId, relay_peer: PeerId) {
+        let _ = self.relay_listeners.insert(listener_id, relay_peer);
+    }
+
+    /// Remove and return the relay peer associated with a libp2p listener
+    /// id. Returns `None` if the listener wasn't registered (a non-relay
+    /// TCP/QUIC listener, or a relayed listener opened outside
+    /// `create_relay_reservation`).
+    ///
+    /// Combines lookup and cleanup in one call so the caller cannot
+    /// accidentally leave a stale entry behind on any code path. This
+    /// matters because the `ListenerClosed` handler falls through to an
+    /// addresses-iteration fallback when the lookup misses; a
+    /// lookup-then-conditional-forget shape would leak entries for
+    /// listeners that were registered but somehow took the fallback
+    /// path. With `take_relay_listener`, the map mutation always happens.
+    pub(crate) fn take_relay_listener(&mut self, listener_id: &ListenerId) -> Option<PeerId> {
+        self.relay_listeners.remove(listener_id)
+    }
+
     pub(crate) fn update_relay_reservation_status(
         &mut self,
         relay_peer: &PeerId,
@@ -229,6 +303,65 @@ impl DiscoveryState {
             .peers
             .entry(*relay_peer)
             .and_modify(|info| info.update_relay_reservation_status(status));
+    }
+
+    /// Called when a relay reservation is lost — relayed listen address
+    /// expired, listener closed, or the control connection to the relay
+    /// dropped.
+    ///
+    /// A single disconnect typically produces several of these events in
+    /// quick succession (ConnectionClosed, then ListenerClosed for the dead
+    /// listener, then ExternalAddrExpired for the dead address). The first
+    /// one finds the peer in `Accepted`, marks `Expired`, and queues
+    /// recovery; the downstream call to `create_relay_reservation` flips
+    /// status to `Requested` and starts a new libp2p listener. Without
+    /// further care, the next event in the burst would see `Requested`,
+    /// treat it as "active", and queue another `listen_on`, producing
+    /// duplicate listeners (and looping in the quota-denial case).
+    ///
+    /// To prevent that, only the `Accepted -> Expired` transition queues a
+    /// recovery. From `Requested` we still flip to `Expired` (state stays
+    /// authoritative), but we do not queue: either the request itself
+    /// failed (queuing would loop on a deliberate denial) or this is a
+    /// stale event from a prior disconnect whose recovery is already in
+    /// flight (queuing would duplicate it). The in-flight libp2p listener
+    /// is untouched and, when its reservation completes, ExternalAddrConfirmed
+    /// will set status back to `Accepted`.
+    ///
+    /// The downstream [`crate::NetworkManager::create_relay_reservation`]
+    /// still gates on the configured registrations limit, so this only
+    /// enqueues intent; it does not unconditionally dial.
+    pub(crate) fn on_relay_reservation_lost(&mut self, relay_peer: &PeerId) -> ReachabilityActions {
+        let prior_status = self
+            .get_peer_info(relay_peer)
+            .and_then(|info| info.relay())
+            .map(|info| info.reservation_status());
+
+        match prior_status {
+            // Lost an Accepted reservation — the case recovery is for.
+            Some(RelayReservationStatus::Accepted) => {
+                self.update_relay_reservation_status(relay_peer, RelayReservationStatus::Expired);
+
+                if !self.relay_index.contains(relay_peer) {
+                    return ReachabilityActions::none();
+                }
+
+                ReachabilityActions {
+                    relay_reservations: vec![*relay_peer],
+                    ..ReachabilityActions::none()
+                }
+            }
+            // Pending request failed, or stale event for a prior loss whose
+            // recovery is in flight. Mark Expired but do not queue.
+            Some(RelayReservationStatus::Requested) => {
+                self.update_relay_reservation_status(relay_peer, RelayReservationStatus::Expired);
+                ReachabilityActions::none()
+            }
+            // Already-Expired or never-tracked peer. Nothing to do.
+            Some(RelayReservationStatus::Expired | RelayReservationStatus::Discovered) | None => {
+                ReachabilityActions::none()
+            }
+        }
     }
 
     pub(crate) fn update_rendezvous_registration_status(
@@ -316,9 +449,18 @@ impl DiscoveryState {
 
 /// PeerInfo is a struct that holds information about a peer.
 /// It offers immutable methods for accessing the information.
+///
+/// `addrs` maps each known address to the number of consecutive dial
+/// failures observed for it. The counter is reset on every successful
+/// connection (or on a fresh identify push that re-introduces the
+/// address) and incremented on `OutgoingConnectionError`. An address is
+/// evicted entirely once the count reaches
+/// [`DIAL_FAILURE_EVICTION_THRESHOLD`]. This bounds growth without
+/// penalising stable long-online peers — a working address keeps its
+/// counter at zero indefinitely.
 #[derive(Clone, Debug, Default)]
 pub struct PeerInfo {
-    addrs: HashSet<Multiaddr>,
+    addrs: HashMap<Multiaddr, u8>,
     discoveries: HashSet<PeerDiscoveryMechanism>,
     relay: Option<PeerRelayInfo>,
     rendezvous: Option<PeerRendezvousInfo>,
@@ -326,18 +468,18 @@ pub struct PeerInfo {
 
 impl PeerInfo {
     pub(crate) fn addrs(&self) -> impl Iterator<Item = &Multiaddr> {
-        self.addrs.iter()
+        self.addrs.keys()
     }
 
     pub(crate) fn get_preferred_addr(&self) -> Option<&Multiaddr> {
         let udp_addrs: Vec<&Multiaddr> = self
             .addrs
-            .iter()
+            .keys()
             .filter(|addr| addr.iter().any(|p| matches!(p, Protocol::Udp(_))))
             .collect();
 
         match udp_addrs.len() {
-            0 => self.addrs.iter().next(),
+            0 => self.addrs.keys().next(),
             _ => Some(udp_addrs[0]),
         }
     }

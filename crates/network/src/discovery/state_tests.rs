@@ -11,7 +11,7 @@ fn test_get_preferred_addr() {
 
     assert_eq!(peer_info.get_preferred_addr(), None);
 
-    let _ = peer_info.addrs.insert(tcp_addr_1);
+    let _ = peer_info.addrs.insert(tcp_addr_1, 0);
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -22,7 +22,7 @@ fn test_get_preferred_addr() {
         Protocol::Tcp(4001)
     );
 
-    let _ = peer_info.addrs.insert(quic_addr);
+    let _ = peer_info.addrs.insert(quic_addr, 0);
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -33,7 +33,7 @@ fn test_get_preferred_addr() {
         Protocol::Udp(4001)
     );
 
-    let _ = peer_info.addrs.insert(tcp_addr_2);
+    let _ = peer_info.addrs.insert(tcp_addr_2, 0);
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -242,8 +242,8 @@ fn test_state_mutations() {
     state.add_peer_addr(peer_id, &tcp_addr);
     assert_eq!(state.peers.len(), 1);
     assert_eq!(state.peers[&peer_id].addrs.len(), 2);
-    assert!(state.peers[&peer_id].addrs.contains(&tcp_addr));
-    assert!(state.peers[&peer_id].addrs.contains(&quic_addr));
+    assert!(state.peers[&peer_id].addrs.contains_key(&tcp_addr));
+    assert!(state.peers[&peer_id].addrs.contains_key(&quic_addr));
 
     state.add_peer_discovery_mechanism(&peer_id, mdns_discovery);
     state.add_peer_discovery_mechanism(&peer_id, rendezvous_discovery);
@@ -285,4 +285,321 @@ fn test_state_mutations() {
     assert_eq!(state.peers.len(), 0);
     assert_eq!(state.relay_index.len(), 0);
     assert_eq!(state.rendezvous_index.len(), 0);
+}
+
+#[test]
+fn test_on_relay_reservation_lost_marks_expired_and_queues_recovery() {
+    let mut state = DiscoveryState::default();
+    let relay_peer = PeerId::random();
+
+    state.update_peer_protocols(&relay_peer, &[HOP_PROTOCOL_NAME]);
+    state.update_relay_reservation_status(&relay_peer, RelayReservationStatus::Accepted);
+
+    let actions = state.on_relay_reservation_lost(&relay_peer);
+
+    assert_eq!(
+        state.peers[&relay_peer]
+            .relay
+            .as_ref()
+            .unwrap()
+            .reservation_status(),
+        RelayReservationStatus::Expired,
+        "lost reservation should transition to Expired"
+    );
+    assert_eq!(
+        actions.relay_reservations,
+        vec![relay_peer],
+        "recovery action should queue the relay peer for re-request"
+    );
+    assert!(
+        actions.has_actions(),
+        "loss of an Accepted reservation must produce a non-empty action set"
+    );
+}
+
+#[test]
+fn test_on_relay_reservation_lost_from_requested_does_not_queue() {
+    let mut state = DiscoveryState::default();
+    let relay_peer = PeerId::random();
+
+    state.update_peer_protocols(&relay_peer, &[HOP_PROTOCOL_NAME]);
+    state.update_relay_reservation_status(&relay_peer, RelayReservationStatus::Requested);
+
+    let actions = state.on_relay_reservation_lost(&relay_peer);
+
+    // From Requested, status flips to Expired but no recovery is queued.
+    // Requested means either a pending request that just failed (queuing
+    // would loop on a deliberate denial) or a stale event for a prior loss
+    // whose recovery is already in flight (queuing would duplicate it).
+    assert!(actions.relay_reservations.is_empty());
+    assert_eq!(
+        state.peers[&relay_peer]
+            .relay
+            .as_ref()
+            .unwrap()
+            .reservation_status(),
+        RelayReservationStatus::Expired,
+        "status flips to Expired even when no recovery is queued"
+    );
+}
+
+#[test]
+fn test_on_relay_reservation_lost_is_idempotent_under_event_burst() {
+    let mut state = DiscoveryState::default();
+    let relay_peer = PeerId::random();
+
+    state.update_peer_protocols(&relay_peer, &[HOP_PROTOCOL_NAME]);
+    state.update_relay_reservation_status(&relay_peer, RelayReservationStatus::Accepted);
+
+    // Burst simulating one disconnect: ConnectionClosed -> ListenerClosed ->
+    // ExternalAddrExpired arrive in quick succession. Between the first
+    // event and the next, NetworkManager's execute_reachability_actions
+    // calls create_relay_reservation, which flips Expired -> Requested for
+    // the in-flight new reservation.
+    let after_connection_closed = state.on_relay_reservation_lost(&relay_peer);
+    assert_eq!(
+        after_connection_closed.relay_reservations,
+        vec![relay_peer],
+        "first event of the burst queues exactly one recovery"
+    );
+
+    // Simulate create_relay_reservation completing successfully and setting
+    // status to Requested on its new libp2p listener.
+    state.update_relay_reservation_status(&relay_peer, RelayReservationStatus::Requested);
+
+    let after_listener_closed = state.on_relay_reservation_lost(&relay_peer);
+    assert!(
+        after_listener_closed.relay_reservations.is_empty(),
+        "second event in the burst (ListenerClosed for the dead listener) \
+         must not queue another listen_on; the recovery is already in flight"
+    );
+
+    // After the second event, status is back to Expired (the in-flight
+    // libp2p listener keeps running until ExternalAddrConfirmed lands).
+    let after_external_addr_expired = state.on_relay_reservation_lost(&relay_peer);
+    assert!(
+        after_external_addr_expired.relay_reservations.is_empty(),
+        "third event in the burst is also a no-op"
+    );
+}
+
+#[test]
+fn test_on_relay_reservation_lost_for_discovered_peer_is_noop() {
+    let mut state = DiscoveryState::default();
+    let relay_peer = PeerId::random();
+
+    state.update_peer_protocols(&relay_peer, &[HOP_PROTOCOL_NAME]);
+    // Discovered means we know the peer speaks the hop protocol but never
+    // asked it for a reservation. Losing "nothing" should be a no-op and
+    // leave status untouched — there is nothing to mark Expired.
+
+    let actions = state.on_relay_reservation_lost(&relay_peer);
+
+    assert!(actions.relay_reservations.is_empty());
+    assert_eq!(
+        state.peers[&relay_peer]
+            .relay
+            .as_ref()
+            .unwrap()
+            .reservation_status(),
+        RelayReservationStatus::Discovered,
+        "status stays Discovered; nothing to mark Expired"
+    );
+}
+
+#[test]
+fn test_on_relay_reservation_lost_for_non_relay_peer_is_noop() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // Peer is not in relay_index — e.g. a rendezvous-only peer.
+    state.update_peer_protocols(&peer, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    let actions = state.on_relay_reservation_lost(&peer);
+
+    assert!(actions.relay_reservations.is_empty());
+    assert!(!actions.has_actions());
+}
+
+#[test]
+fn test_on_relay_reservation_lost_multiple_relays_queue_independently() {
+    let mut state = DiscoveryState::default();
+    let relay_a = PeerId::random();
+    let relay_b = PeerId::random();
+
+    state.update_peer_protocols(&relay_a, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&relay_b, &[HOP_PROTOCOL_NAME]);
+    state.update_relay_reservation_status(&relay_a, RelayReservationStatus::Accepted);
+    state.update_relay_reservation_status(&relay_b, RelayReservationStatus::Accepted);
+
+    let actions_a = state.on_relay_reservation_lost(&relay_a);
+    assert_eq!(actions_a.relay_reservations, vec![relay_a]);
+
+    // Losing the second relay should still produce a recovery action, even
+    // though the first is already Expired. Each relay is tracked independently.
+    let actions_b = state.on_relay_reservation_lost(&relay_b);
+    assert_eq!(actions_b.relay_reservations, vec![relay_b]);
+}
+
+#[test]
+fn test_add_peer_addr_initialises_failure_counter_to_zero() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+
+    state.add_peer_addr(peer, &addr);
+    assert_eq!(state.peers[&peer].addrs[&addr], 0);
+}
+
+#[test]
+fn test_add_peer_addr_resets_failure_counter_when_address_already_present() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+
+    state.add_peer_addr(peer, &addr);
+    let _ = state.record_dial_failure(&peer, &addr);
+    let _ = state.record_dial_failure(&peer, &addr);
+    assert_eq!(state.peers[&peer].addrs[&addr], 2);
+
+    // A re-addition (successful identify push, fresh dial, etc.) treats
+    // the address as healthy again and resets the counter.
+    state.add_peer_addr(peer, &addr);
+    assert_eq!(state.peers[&peer].addrs[&addr], 0);
+}
+
+#[test]
+fn test_record_dial_failure_evicts_at_threshold() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+
+    state.add_peer_addr(peer, &addr);
+    for _ in 0..(DIAL_FAILURE_EVICTION_THRESHOLD - 1) {
+        assert!(
+            !state.record_dial_failure(&peer, &addr),
+            "address must not evict before reaching the threshold"
+        );
+    }
+    assert!(state.peers[&peer].addrs.contains_key(&addr));
+
+    // The threshold-th failure evicts.
+    let evicted = state.record_dial_failure(&peer, &addr);
+    assert!(evicted, "reaching the threshold must evict");
+    assert!(!state.peers[&peer].addrs.contains_key(&addr));
+}
+
+#[test]
+fn test_record_dial_failure_is_noop_for_unknown_peer_or_address() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+    let other_addr: Multiaddr = "/ip4/127.0.0.1/tcp/4002".parse().unwrap();
+
+    // Unknown peer: no-op.
+    assert!(!state.record_dial_failure(&peer, &addr));
+    assert!(!state.peers.contains_key(&peer));
+
+    // Known peer, unknown address: no-op (don't speculatively insert an
+    // address we never planned to keep).
+    state.add_peer_addr(peer, &addr);
+    assert!(!state.record_dial_failure(&peer, &other_addr));
+    assert!(!state.peers[&peer].addrs.contains_key(&other_addr));
+}
+
+#[test]
+fn test_dial_success_after_failures_resets_counter() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+
+    state.add_peer_addr(peer, &addr);
+    let _ = state.record_dial_failure(&peer, &addr);
+    let _ = state.record_dial_failure(&peer, &addr);
+    assert_eq!(state.peers[&peer].addrs[&addr], 2);
+
+    // ConnectionEstablished re-records the address, resetting the counter.
+    // The address now needs another full threshold of consecutive
+    // failures before eviction.
+    state.add_peer_addr(peer, &addr);
+    assert_eq!(state.peers[&peer].addrs[&addr], 0);
+
+    for _ in 0..(DIAL_FAILURE_EVICTION_THRESHOLD - 1) {
+        assert!(!state.record_dial_failure(&peer, &addr));
+    }
+    assert!(state.peers[&peer].addrs.contains_key(&addr));
+}
+
+#[test]
+fn test_independent_addresses_track_failures_separately() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    let addr_a: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+    let addr_b: Multiaddr = "/ip4/127.0.0.1/tcp/4002".parse().unwrap();
+
+    state.add_peer_addr(peer, &addr_a);
+    state.add_peer_addr(peer, &addr_b);
+
+    // Fail addr_a to the threshold; addr_b is untouched.
+    for _ in 0..DIAL_FAILURE_EVICTION_THRESHOLD {
+        let _ = state.record_dial_failure(&peer, &addr_a);
+    }
+
+    assert!(!state.peers[&peer].addrs.contains_key(&addr_a));
+    assert!(state.peers[&peer].addrs.contains_key(&addr_b));
+    assert_eq!(state.peers[&peer].addrs[&addr_b], 0);
+}
+
+#[test]
+fn test_take_relay_listener_returns_recorded_peer_and_removes_entry() {
+    let mut state = DiscoveryState::default();
+    let relay = PeerId::random();
+    let listener = ListenerId::next();
+
+    state.record_relay_listener(listener, relay);
+    assert_eq!(state.take_relay_listener(&listener), Some(relay));
+
+    // Second take returns None — the entry was removed.
+    assert_eq!(state.take_relay_listener(&listener), None);
+}
+
+#[test]
+fn test_record_relay_listener_overwrites_existing_entry() {
+    let mut state = DiscoveryState::default();
+    let relay_a = PeerId::random();
+    let relay_b = PeerId::random();
+    let listener = ListenerId::next();
+
+    state.record_relay_listener(listener, relay_a);
+    // Same listener id reused (unusual but the API must be consistent):
+    // the latest registration wins.
+    state.record_relay_listener(listener, relay_b);
+
+    assert_eq!(state.take_relay_listener(&listener), Some(relay_b));
+}
+
+#[test]
+fn test_take_relay_listener_is_noop_for_unknown_id() {
+    let mut state = DiscoveryState::default();
+    let unknown = ListenerId::next();
+
+    // Taking an id we never recorded must not panic and must return None.
+    assert_eq!(state.take_relay_listener(&unknown), None);
+}
+
+#[test]
+fn test_multiple_listeners_map_to_distinct_relays() {
+    let mut state = DiscoveryState::default();
+    let relay_a = PeerId::random();
+    let relay_b = PeerId::random();
+    let listener_a = ListenerId::next();
+    let listener_b = ListenerId::next();
+
+    state.record_relay_listener(listener_a, relay_a);
+    state.record_relay_listener(listener_b, relay_b);
+
+    // Taking one leaves the other intact.
+    assert_eq!(state.take_relay_listener(&listener_a), Some(relay_a));
+    assert_eq!(state.take_relay_listener(&listener_a), None);
+    assert_eq!(state.take_relay_listener(&listener_b), Some(relay_b));
 }

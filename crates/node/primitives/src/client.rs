@@ -444,6 +444,7 @@ impl NodeClient {
         events: Option<Vec<u8>>,
         governance_position: Option<GovernancePosition>,
         key_id: [u8; 32],
+        delta_signature: Option<[u8; 64]>,
     ) -> eyre::Result<()> {
         info!(
             context_id=%context.id,
@@ -481,6 +482,7 @@ impl NodeClient {
             events: events.map(Cow::from),
             governance_position,
             key_id,
+            delta_signature,
         };
 
         let payload = borsh::to_vec(&payload)?;

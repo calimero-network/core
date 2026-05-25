@@ -146,19 +146,7 @@ pub async fn start(
         .layer(axum::middleware::from_fn(crate::metrics::track_request))
         .layer(Extension(http_metrics));
 
-    app = app.layer(
-        CorsLayer::new()
-            .allow_origin(Any)
-            .allow_headers(Any)
-            .allow_methods([
-                Method::POST,
-                Method::GET,
-                Method::DELETE,
-                Method::PUT,
-                Method::OPTIONS,
-            ])
-            .allow_private_network(true),
-    );
+    app = app.layer(build_cors_layer());
 
     let mut set = JoinSet::new();
 
@@ -174,7 +162,180 @@ pub async fn start(
     Ok(())
 }
 
+/// CORS layer applied to every mounted route.
+///
+/// **Critical:** `expose_headers` MUST include `x-auth-error`. Cross-origin
+/// clients (Tauri webview, browser SPAs) cannot read response headers that
+/// aren't on this list. The auth middleware signals refreshable expiry via
+/// `X-Auth-Error: token_expired`; mero-js's automatic refresh-on-401 flow
+/// reads that header to decide whether to refresh. If the header is hidden
+/// by CORS, every access-token expiry surfaces as a hard logout for the user
+/// instead of a transparent refresh. See `cors_tests` for the regression
+/// guard.
+///
+/// **`allow_credentials` is intentionally not set.** It is incompatible with
+/// `allow_origin(Any)` per the CORS spec, so adding it here would be a no-op
+/// for browsers in the current configuration. If credentialed requests
+/// (cookies, TLS client certs) ever become required, `allow_origin(Any)`
+/// must first be replaced with an explicit allow-list of trusted origins.
+fn build_cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_headers(Any)
+        .allow_methods([
+            Method::POST,
+            Method::GET,
+            Method::DELETE,
+            Method::PUT,
+            Method::OPTIONS,
+        ])
+        .expose_headers([
+            axum::http::HeaderName::from_static("x-auth-error"),
+            axum::http::HeaderName::from_static("x-auth-user"),
+            axum::http::HeaderName::from_static("x-auth-permissions"),
+        ])
+        .allow_private_network(true)
+}
+
 #[cfg(test)]
 mod integration_tests_package_usage {
     use {color_eyre as _, tracing_subscriber as _};
+}
+
+#[cfg(test)]
+mod cors_tests {
+    //! Regression tests for the CORS layer.
+    //!
+    //! These exist because of a real prod incident: without `expose_headers`
+    //! listing `x-auth-error`, the Tauri webview (cross-origin to the local
+    //! merod) could not read the `X-Auth-Error: token_expired` response
+    //! header, so mero-js never triggered its refresh-on-401 flow and users
+    //! were logged out roughly once per access-token TTL (~1h).
+    //!
+    //! Do not delete `expose_headers` without also breaking these tests.
+
+    use axum::body::Body;
+    use axum::http::{header, HeaderValue, Request, StatusCode};
+    use axum::response::Response;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use super::build_cors_layer;
+
+    /// Origin header the Tauri desktop webview presents in production.
+    const TAURI_ORIGIN: &str = "http://tauri.localhost";
+
+    async fn ok_handler() -> Response {
+        Response::new(Body::from("ok"))
+    }
+
+    async fn token_expired_401_handler() -> Response {
+        let mut resp = Response::new(Body::from("unauthorized"));
+        *resp.status_mut() = StatusCode::UNAUTHORIZED;
+        resp.headers_mut().insert(
+            axum::http::HeaderName::from_static("x-auth-error"),
+            HeaderValue::from_static("token_expired"),
+        );
+        resp
+    }
+
+    fn cors_only_router<F, Fut>(handler: F) -> Router
+    where
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Response> + Send + 'static,
+    {
+        Router::new()
+            .route("/x", get(handler))
+            .layer(build_cors_layer())
+    }
+
+    /// Direct guard against the original CORS misconfiguration: a
+    /// cross-origin request must come back with `Access-Control-Expose-
+    /// Headers` listing `x-auth-error`, otherwise no JS-based client can see
+    /// the header even when the server sets it.
+    #[tokio::test]
+    async fn cors_layer_exposes_x_auth_error_to_cross_origin_clients() {
+        let app = cors_only_router(ok_handler);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/x")
+                    .header(header::ORIGIN, TAURI_ORIGIN)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router service call should not fail");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let exposed = resp
+            .headers()
+            .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing Access-Control-Expose-Headers — JS cross-origin clients \
+                     will not see X-Auth-Error: token_expired, breaking automatic \
+                     token refresh in the Tauri desktop app"
+                )
+            })
+            .to_str()
+            .expect("header value must be ASCII")
+            .to_ascii_lowercase();
+
+        assert!(
+            exposed.contains("x-auth-error"),
+            "Access-Control-Expose-Headers must include `x-auth-error`; got: {exposed}"
+        );
+    }
+
+    /// Full pipeline check: when the upstream handler returns a 401 with
+    /// `X-Auth-Error: token_expired` (mimicking what the auth middleware
+    /// emits when a JWT has expired), the CORS layer must not strip the
+    /// header from the response AND must expose it to JS via
+    /// `Access-Control-Expose-Headers`. This is the assertion mero-js's
+    /// `web-client.ts` automatic-refresh logic depends on.
+    #[tokio::test]
+    async fn cors_preserves_and_exposes_token_expired_signal_on_401() {
+        let app = cors_only_router(token_expired_401_handler);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/x")
+                    .header(header::ORIGIN, TAURI_ORIGIN)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router service call should not fail");
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // The header itself must survive the CORS layer.
+        assert_eq!(
+            resp.headers()
+                .get("x-auth-error")
+                .map(|v| v.to_str().unwrap()),
+            Some("token_expired"),
+            "CORS layer must not strip X-Auth-Error from upstream responses"
+        );
+
+        // And it must be in the expose list so cross-origin JS can read it.
+        let exposed = resp
+            .headers()
+            .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+            .expect("Access-Control-Expose-Headers must be set on 401 too")
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(
+            exposed.contains("x-auth-error"),
+            "X-Auth-Error must be exposed to JS even on error responses; got: {exposed}"
+        );
+    }
 }

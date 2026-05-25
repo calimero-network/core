@@ -686,7 +686,26 @@ impl<S: StorageAdaptor> Interface<S> {
                         let last_nonce = <Index<S>>::get_metadata(*id)?
                             .map(|m| *m.updated_at)
                             .unwrap_or(0);
-                        let skip_nonce = nonce_check_disabled_for_testing();
+                        // `nonce_check_disabled_for_testing` is the explicit
+                        // test escape hatch; `in_merge_mode` covers the
+                        // production case where this very action is being
+                        // re-evaluated as part of a CRDT merge (e.g. the
+                        // host-side deferred-root-merge dispatch hands the
+                        // root-state bytes back into the WASM Mergeable,
+                        // which re-runs each sub-action including the
+                        // upserts already-applied on the local side).
+                        // Without the merge-mode bypass, the second pass
+                        // hits `new_nonce == last_nonce`, skips the apply,
+                        // and the merged children references / RGA edits
+                        // never land — exactly the
+                        // shared-storage / scaffolding-e2e regression on
+                        // PR #2465. Skipping is safe in merge mode because:
+                        // (1) the signature still verifies (so the bytes
+                        // are authentic), and (2) merge is by definition
+                        // idempotent — re-applying the same action is the
+                        // expected, deterministic behaviour.
+                        let skip_nonce =
+                            nonce_check_disabled_for_testing() || crate::env::in_merge_mode();
 
                         // Verify signature FIRST, before deciding whether
                         // to skip. We need to know the action is
@@ -840,7 +859,10 @@ impl<S: StorageAdaptor> Interface<S> {
                         let new_nonce = sig_data.nonce;
                         let last_nonce =
                             stored_metadata.as_ref().map(|m| *m.updated_at).unwrap_or(0);
-                        let skip_nonce = nonce_check_disabled_for_testing();
+                        // See the User arm for the merge-mode bypass
+                        // rationale — applies symmetrically here.
+                        let skip_nonce =
+                            nonce_check_disabled_for_testing() || crate::env::in_merge_mode();
 
                         // Verify signature first — see the User arm
                         // above for the full "verify-before-skip"
@@ -2057,6 +2079,58 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let own_hash: [u8; 32] = Sha256::digest(&final_data).into();
 
+        // Write the entry bytes BEFORE updating the Merkle index. The
+        // index update propagates the new own_hash up the parent chain,
+        // making the new state observable via the root-hash poll path
+        // (`compute_root_hash`). Readers that iterate a collection's
+        // children silently drop entries whose `Key::Entry` lookup
+        // returns `None` (`UnorderedMap::entries` → `flatten().fuse()`
+        // swallows the `NotFound` Err), so an admin-server reader hit
+        // mid-write would otherwise see a converged root hash with
+        // missing children — the "Hello Wor" vs "Hello World" rga
+        // flake reproduced post-#2465. Writing the entry first means
+        // readers see either (old hash + old entries) or
+        // (new hash + new entries), never the inconsistent middle.
+        //
+        // `storage_write` returns `bool` meaning "evicted a previous
+        // value" (true) vs "inserted a new key" (false) — not
+        // success/failure. Actual write failures surface as `HostError`
+        // traps from the runtime (`KeyLengthOverflow`,
+        // `ValueLengthOverflow`, `InvalidMemoryAccess`), not as
+        // `Ok(false)`. Discard the bool — `let _ignored = ...` matches
+        // the style used at the `storage_remove` site (line 1448).
+        let _ignored = S::storage_write(Key::Entry(id), &final_data);
+
+        // If `update_hash_for` errors below after the entry write above
+        // succeeded, the entry bytes remain in storage with no index
+        // entry pointing at them — an "orphan." This is unavoidable
+        // without a transactional storage layer, and it's the lesser
+        // evil compared to the inverse (index advertising bytes that
+        // aren't there) because:
+        //   * `find_by_id` consults the index first (line 1689, 1702)
+        //     and bails when the index entry is missing or deleted —
+        //     so the read path used by collections (`Collection::get`,
+        //     `Collection::entries`) silently skips the orphan.
+        //   * `find_by_id_raw` does NOT consult the index — it returns
+        //     raw bytes whenever `Key::Entry(id)` is present. In
+        //     principle this exposes the orphan, but every production
+        //     caller (`compare_trees` and its sync-layer cousins in
+        //     `hash_comparison{,_protocol}.rs`, `level_sync.rs`)
+        //     reaches `find_by_id_raw` only after iterating a parent's
+        //     index-derived child list — and the orphan's id is, by
+        //     definition, not in any parent's index. `compare_trees`
+        //     called directly with the orphan's id also bails: line
+        //     1525 returns `IndexNotFound` from the `local_metadata`
+        //     check before the orphan bytes can become an `Action`.
+        //   * The next successful `apply_action` for the same id
+        //     overwrites the orphan bytes, so the storage cost is
+        //     transient.
+        // The pre-fix ordering (index-then-entry) had the symmetric
+        // problem with much worse user-visible behavior — the rga
+        // "Hello Wor" flake described above — because the read path
+        // *does* propagate index-advertised entries through every
+        // production caller, so a "hash exists, bytes don't"
+        // inconsistency surfaces immediately as a wrong-content read.
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
 
         if id.is_root() {
@@ -2069,11 +2143,118 @@ impl<S: StorageAdaptor> Interface<S> {
             );
         }
 
-        _ = S::storage_write(Key::Entry(id), &final_data);
-
         let is_new = metadata.created_at == *metadata.updated_at;
 
         Ok(Some((is_new, full_hash)))
+    }
+
+    /// Write a root-state byte blob that has *already* been CRDT-merged
+    /// by an external dispatcher (e.g. the WASM module via
+    /// `ContextClient::merge_root_state`). Bypasses the host-side
+    /// merge step entirely — the caller has guaranteed the merge has
+    /// happened — and just does the post-merge work: hash, Merkle
+    /// index update, storage write.
+    ///
+    /// Necessary because host-side `merge_root_state` can't dispatch the
+    /// app's typed `Mergeable::merge` (the registry it consults is only
+    /// populated inside WASM). The sync paths that encounter root-entity
+    /// divergence delegate the merge itself to WASM, then call this to
+    /// commit the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the index update fails or the storage
+    /// write fails. Does NOT enforce I5 — the caller IS the source of
+    /// the merged bytes and is responsible for I5 compliance.
+    pub fn write_pre_merged_root_state(
+        id: Id,
+        merged: &[u8],
+        metadata: Metadata,
+    ) -> Result<[u8; 32], StorageError> {
+        // Mirror the post-merge work in `save_internal` for the app
+        // root: hash the merged bytes, update the Merkle index, write
+        // storage. When this is the first time the receiver has seen
+        // the entity, the index doesn't exist yet — create it so
+        // `update_hash_for` doesn't fail with `IndexNotFound`.
+        //
+        // App root state covers TWO ids: `ROOT_ID` (the system root)
+        // and `ROOT_ENTRY_ID` (the `Root<T>` entry). Pre-fix only
+        // `id.is_root()` was checked, missing the latter — first-time
+        // merges for `Root<T>` entries would fail with `IndexNotFound`
+        // and the deferred WASM merge would be dropped, leaving the
+        // receiver's root entity permanently divergent.
+        let last_metadata = <Index<S>>::get_metadata(id)?;
+
+        // LWW guard — same shape as `save_internal`'s LWW-by-HLC
+        // check. If the locally-stored state is already newer (e.g.
+        // gossip already applied the action and stored the entity
+        // with a newer `updated_at`), HC / LevelWise re-syncing the
+        // same root via this path would otherwise overwrite the
+        // metadata with the wire's older `updated_at` and regress
+        // the Merkle parent's full_hash. Root cause of the
+        // shared-storage e2e: gossip applied set_shared correctly,
+        // then HC re-pushed the root entity via this LWW path and
+        // the timestamp regression silently broke convergence.
+        //
+        // When the timestamps tie we still write — the bytes may
+        // differ (concurrent writes resolved differently). Strictly
+        // greater = newer here, equal = re-apply, older = no-op.
+        if let Some(ref existing) = last_metadata {
+            if existing.updated_at > metadata.updated_at {
+                let existing_full = <Index<S>>::get_hashes_for(id)?
+                    .map(|(full, _own)| full)
+                    .unwrap_or([0_u8; 32]);
+                tracing::debug!(
+                    %id,
+                    existing_ts = %*existing.updated_at,
+                    incoming_ts = %*metadata.updated_at,
+                    "write_pre_merged_root_state: local state is newer, skipping (LWW)"
+                );
+                return Ok(existing_full);
+            }
+        }
+
+        if last_metadata.is_none() {
+            if id.is_root() {
+                <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata.clone()))?;
+            } else if crate::collections::is_app_root_entry(id) {
+                // `Root<T>` entry — attach as a child of the system
+                // root so the index hierarchy stays consistent with
+                // the layout `Root::new` produces locally.
+                <Index<S>>::add_child_to(
+                    Id::root(),
+                    ChildInfo::new(id, [0_u8; 32], metadata.clone()),
+                )?;
+            }
+        }
+
+        let own_hash: [u8; 32] = Sha256::digest(merged).into();
+        // Entry-before-index ordering — same rationale as `save_internal`:
+        // updating the Merkle index first makes the new root hash
+        // observable before the entry bytes are stored, so a concurrent
+        // reader can see a converged root hash with missing children
+        // (the "Hello Wor" rga flake). The discarded `bool` from
+        // `storage_write` is the eviction signal ("did a previous value
+        // exist under this key"), not a success/failure flag — write
+        // failures trap from the runtime as `HostError`, not `Ok(false)`.
+        //
+        // Same orphan trade-off as `save_internal` (see the longer
+        // comment there): if `update_hash_for` errors below, the
+        // merged bytes are persisted but the index isn't updated.
+        // `find_by_id` bails on the missing index; `find_by_id_raw`
+        // would expose the orphan in principle, but every production
+        // caller reaches it only via an index-derived child list that
+        // the orphan isn't in. The next successful merge for this id
+        // overwrites the orphan bytes.
+        //
+        // We don't re-check the LWW guard after the entry write
+        // because the only thing that could invalidate it is a
+        // concurrent writer for the same id, and the storage layer
+        // doesn't serialize concurrent writes anyway — re-checking
+        // would just narrow the race window without closing it.
+        let _ignored = S::storage_write(Key::Entry(id), merged);
+        let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
+        Ok(full_hash)
     }
 
     /// Attempt to merge two versions of data using CRDT semantics.

@@ -34,7 +34,8 @@
 
 mod blobs;
 mod config;
-mod delta_request;
+pub(crate) mod delta_request;
+pub(crate) mod driver;
 mod hash_comparison;
 pub mod hash_comparison_protocol;
 pub(crate) mod helpers;
@@ -45,8 +46,10 @@ pub(crate) mod network;
 pub(crate) mod parent_pull;
 pub(crate) mod peers;
 pub mod prometheus_metrics;
+pub(crate) mod protocol_selector;
 pub(crate) mod reconciler;
 pub mod rotation_log_reader;
+pub(crate) mod session;
 mod snapshot;
 pub(crate) mod state_access;
 #[cfg(test)]

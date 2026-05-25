@@ -309,7 +309,15 @@ impl NetworkManager {
             }
         };
 
-        let _ = self.swarm.listen_on(relayed_addr)?;
+        let listener_id = self.swarm.listen_on(relayed_addr)?;
+
+        // Record the listener id so the ListenerClosed handler can route
+        // recovery back to this relay peer even if the close event comes
+        // with an empty `addresses` list (the quota-denied-before-address-
+        // allocation case).
+        self.discovery
+            .state
+            .record_relay_listener(listener_id, *relay_peer);
 
         self.discovery
             .state

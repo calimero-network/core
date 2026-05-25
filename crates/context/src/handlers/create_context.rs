@@ -431,6 +431,12 @@ async fn create_context(
             expected_root_hash: root_hash,
             // Genesis delta has no events
             events: None,
+            // Genesis predates any governance op; no author claim to
+            // verify on the DAG-catchup path.
+            author_id: None,
+            governance_position_blob: None,
+            // Genesis has no author signature to record.
+            delta_signature: None,
         };
 
         debug!(
