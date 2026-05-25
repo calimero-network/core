@@ -33,6 +33,51 @@ pub(super) fn handle_hash_heartbeat(
                 dag_heads = ?their_dag_heads,
                 "DIVERGENCE DETECTED: Same DAG heads but different root hash!"
             );
+            // #2319 triage aid — dump ROOT's children list so a future
+            // flake can be triaged by diffing the two peers' dumps to
+            // pinpoint the divergent subtree. Without this, the only
+            // observable signal is the two opaque root hashes and the
+            // remaining investigation requires re-running with more
+            // logging. Keep the dump rate-bounded by the heartbeat
+            // cadence (one DIVERGENCE event per peer per heartbeat).
+            match context_client.dump_root_children(&context_id) {
+                Ok(children) => {
+                    // Emit one event per child so log search/filter
+                    // tools can group by `entity_id`. The whole list
+                    // could also be emitted as `?children` but
+                    // structured single-row events grep + diff better.
+                    for c in &children {
+                        warn!(
+                            target: "sync::divergence_dump",
+                            %context_id,
+                            ?source,
+                            entity_id = %hex::encode(c.id),
+                            merkle_hash = %hex::encode(c.merkle_hash),
+                            created_at = c.created_at,
+                            updated_at = c.updated_at,
+                            crdt_type = ?c.crdt_type,
+                            field_name = ?c.field_name,
+                            "DIVERGENCE DUMP: ROOT child entry"
+                        );
+                    }
+                    warn!(
+                        target: "sync::divergence_dump",
+                        %context_id,
+                        ?source,
+                        child_count = children.len(),
+                        "DIVERGENCE DUMP: ROOT children list emitted"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        target: "sync::divergence_dump",
+                        %context_id,
+                        ?source,
+                        error = %e,
+                        "DIVERGENCE DUMP: failed to read ROOT children list"
+                    );
+                }
+            }
             warn!(
                 %context_id,
                 ?source,

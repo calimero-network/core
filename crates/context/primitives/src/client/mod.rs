@@ -67,6 +67,22 @@ pub struct ContextRegistry {
     datastore: Store,
 }
 
+/// One row of [`ContextRegistry::dump_root_children`] — a child entry in
+/// the context root's Merkle index. Exported for the divergence
+/// diagnostic in `handle_hash_heartbeat` (#2319): a flake of "same DAG
+/// heads, different root hash" can be triaged by diffing the two peers'
+/// dumps to find the divergent child. Field names are stable for
+/// `tracing` consumption (json output keys).
+#[derive(Debug, Clone)]
+pub struct RootChildDump {
+    pub id: [u8; 32],
+    pub merkle_hash: [u8; 32],
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub crdt_type: Option<calimero_primitives::crdt::CrdtType>,
+    pub field_name: Option<String>,
+}
+
 impl ContextRegistry {
     #[must_use]
     pub const fn new(datastore: Store) -> Self {
@@ -497,6 +513,99 @@ impl ContextRegistry {
         Ok(())
     }
 
+    /// Returns ROOT's children list for a context — diagnostic dump.
+    ///
+    /// Reads the EntityIndex for `Id::root()` from RocksDB and decodes
+    /// just the `children` slice (id + merkle_hash + key metadata
+    /// fields). Used by the hash-heartbeat handler when it detects
+    /// "Same DAG heads but different root hash" (#2319): logging this
+    /// dump from both peers lets us diff the child sets and pinpoint
+    /// the divergent subtree without re-running the failure.
+    ///
+    /// Returns an empty Vec if ROOT has no index entry (empty state).
+    pub fn dump_root_children(
+        &self,
+        context_id: &ContextId,
+    ) -> eyre::Result<Vec<RootChildDump>> {
+        use calimero_primitives::crdt::CrdtType;
+
+        let root_id: [u8; 32] = **context_id;
+        let mut key_bytes = [0u8; 33];
+        key_bytes[0] = 0;
+        key_bytes[1..33].copy_from_slice(&root_id);
+        let state_key: [u8; 32] = Sha256::digest(key_bytes).into();
+
+        let handle = self.datastore.handle();
+        let db_key = key::ContextState::new(*context_id, state_key);
+        let Some(data) = handle.get(&db_key)? else {
+            return Ok(Vec::new());
+        };
+        let bytes: Vec<u8> = data.as_ref().to_vec();
+        drop(data);
+
+        // Minimal-layout structs mirroring `calimero_storage::index::EntityIndex`
+        // + `entities::ChildInfo`/`Metadata`/`StorageType`/`SignatureData`. Same
+        // layout-compat caveat as `compute_root_hash_via_borsh` above —
+        // touched when those structs change.
+        #[derive(BorshDeserialize)]
+        struct EntityIndexDump {
+            _id: [u8; 32],
+            _parent_id: Option<[u8; 32]>,
+            children: Option<Vec<ChildInfoDump>>,
+        }
+        #[derive(BorshDeserialize)]
+        struct ChildInfoDump {
+            id: [u8; 32],
+            merkle_hash: [u8; 32],
+            metadata: MetadataDump,
+        }
+        #[derive(BorshDeserialize)]
+        struct MetadataDump {
+            created_at: u64,
+            updated_at: u64,
+            _storage_type: StorageTypeDump,
+            crdt_type: Option<CrdtType>,
+            field_name: Option<String>,
+        }
+        #[derive(BorshDeserialize)]
+        #[allow(dead_code, reason = "borsh layout-faithful")]
+        enum StorageTypeDump {
+            Public,
+            User {
+                owner: [u8; 32],
+                signature_data: Option<SignatureDataDump>,
+            },
+            Frozen,
+            Shared {
+                writers: std::collections::BTreeSet<[u8; 32]>,
+                signature_data: Option<SignatureDataDump>,
+            },
+        }
+        #[derive(BorshDeserialize)]
+        struct SignatureDataDump {
+            _signature: [u8; 64],
+            _nonce: u64,
+            _signer: Option<[u8; 32]>,
+        }
+
+        let mut reader: &[u8] = &bytes;
+        let index = EntityIndexDump::deserialize_reader(&mut reader)
+            .map_err(|e| eyre::eyre!("dump_root_children: failed to deserialize EntityIndex: {e}"))?;
+
+        let children = index.children.unwrap_or_default();
+        Ok(children
+            .into_iter()
+            .map(|c| RootChildDump {
+                id: c.id,
+                merkle_hash: c.merkle_hash,
+                created_at: c.metadata.created_at,
+                updated_at: c.metadata.updated_at,
+                crdt_type: c.metadata.crdt_type,
+                field_name: c.metadata.field_name,
+            })
+            .collect())
+    }
+
     /// Returns a stream of all context IDs stored locally.
     ///
     /// # Arguments
@@ -918,6 +1027,15 @@ impl ContextClient {
         claimed_hash: [u8; 32],
     ) -> eyre::Result<()> {
         self.registry.verify_root_hash(context_id, claimed_hash)
+    }
+
+    /// Diagnostic — dump ROOT's children list for a context. See
+    /// [`ContextRegistry::dump_root_children`] for the rationale.
+    pub fn dump_root_children(
+        &self,
+        context_id: &ContextId,
+    ) -> eyre::Result<Vec<RootChildDump>> {
+        self.registry.dump_root_children(context_id)
     }
 
     /// Returns a stream of all context IDs stored locally.
