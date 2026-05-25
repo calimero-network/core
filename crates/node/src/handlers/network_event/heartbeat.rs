@@ -6,6 +6,13 @@ use tracing::{debug, error, info, warn};
 
 use crate::NodeManager;
 
+/// Cap on per-child `warn!` events emitted from the divergence dump.
+/// A wide context (e.g. UnorderedMap with hundreds of entries) could
+/// otherwise produce a log burst that overwhelms aggregation
+/// pipelines on every divergence tick. The summary row below the
+/// loop reports the full count regardless.
+const MAX_DUMP_CHILDREN: usize = 64;
+
 pub(super) fn handle_hash_heartbeat(
     manager: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
@@ -37,7 +44,7 @@ pub(super) fn handle_hash_heartbeat(
             // either the peer's hash or our prior cache, refresh the
             // cache and skip the false-positive divergence event; only
             // a *post-refresh* hash mismatch is a real divergence.
-            match context_client.compute_root_hash(&context_id) {
+            let our_hash = match context_client.compute_root_hash(&context_id) {
                 Ok(live) => {
                     let live_hash = calimero_primitives::hash::Hash::from(live);
                     if live_hash != our_context.root_hash {
@@ -48,12 +55,23 @@ pub(super) fn handle_hash_heartbeat(
                             live_hash = ?live_hash,
                             "Heartbeat divergence: cache stale vs live index, refreshing"
                         );
-                        let _ignored = context_client.force_root_hash(&context_id, live_hash);
+                        if let Err(err) = context_client.force_root_hash(&context_id, live_hash) {
+                            debug!(
+                                %context_id,
+                                ?source,
+                                %err,
+                                "Heartbeat divergence: failed to refresh cached root hash"
+                            );
+                        }
                         if live_hash == their_root_hash {
                             return;
                         }
-                        // Continue with live hash as the comparison value.
                     }
+                    // Use live_hash as the authoritative "our hash" — the
+                    // cached value may be stale (and the refresh above
+                    // may itself have failed); the live index is the
+                    // truth we want in the divergence log for triage.
+                    live_hash
                 }
                 Err(err) => {
                     debug!(
@@ -62,8 +80,9 @@ pub(super) fn handle_hash_heartbeat(
                         %err,
                         "Heartbeat divergence: failed to read live root hash; using cache"
                     );
+                    our_context.root_hash
                 }
-            }
+            };
 
             // #2319: surface divergence as a metric (`sync_root_hash_divergence_detected_total`)
             // so vmagent can alert on the rate without grepping logs —
@@ -72,26 +91,26 @@ pub(super) fn handle_hash_heartbeat(
             error!(
                 %context_id,
                 ?source,
-                our_hash = ?our_context.root_hash,
+                our_hash = ?our_hash,
                 their_hash = ?their_root_hash,
                 dag_heads = ?their_dag_heads,
                 "DIVERGENCE DETECTED: Same DAG heads but different root hash!"
             );
-            // #2319 triage aid — dump ROOT's children list so a future
-            // flake can be triaged by diffing the two peers' dumps to
-            // pinpoint the divergent subtree. Without this, the only
-            // observable signal is the two opaque root hashes and the
-            // remaining investigation requires re-running with more
-            // logging. Keep the dump rate-bounded by the heartbeat
-            // cadence (one DIVERGENCE event per peer per heartbeat).
+            // #2319 triage aid — dump ROOT's self summary + children
+            // list so a future flake can be triaged by diffing the two
+            // peers' dumps. Without this, the only observable signal
+            // is the two opaque root hashes and the remaining
+            // investigation requires re-running with more logging.
+            // Bounded by the heartbeat cadence (one DIVERGENCE event
+            // per peer per heartbeat) and by MAX_DUMP_CHILDREN.
             //
-            // Dump ROOT's own_hash/full_hash first so the diff order
-            // matches the analysis flow: identical children + different
-            // own_hash points at ROOT-entity write-path divergence
-            // (the pattern we saw on PR #2472 attempt 1, all 20
-            // children matched).
-            match context_client.dump_root_self(&context_id) {
-                Ok(Some(self_dump)) => {
+            // Self summary is logged before children so the diff order
+            // matches the analysis flow: identical children +
+            // different own_hash points at ROOT-entity write-path
+            // divergence (the pattern we saw on PR #2472 attempt 1,
+            // all 20 children matched).
+            match context_client.dump_root(&context_id) {
+                Ok(Some((self_dump, children))) => {
                     warn!(
                         target: "sync::divergence_dump",
                         %context_id,
@@ -103,32 +122,12 @@ pub(super) fn handle_hash_heartbeat(
                         children_count = self_dump.children_count,
                         "DIVERGENCE DUMP: ROOT self"
                     );
-                }
-                Ok(None) => {
-                    warn!(
-                        target: "sync::divergence_dump",
-                        %context_id,
-                        ?source,
-                        "DIVERGENCE DUMP: ROOT self — no index entry"
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        target: "sync::divergence_dump",
-                        %context_id,
-                        ?source,
-                        error = %e,
-                        "DIVERGENCE DUMP: failed to read ROOT self"
-                    );
-                }
-            }
-            match context_client.dump_root_children(&context_id) {
-                Ok(children) => {
+                    let child_count = children.len();
                     // Emit one event per child so log search/filter
-                    // tools can group by `entity_id`. The whole list
-                    // could also be emitted as `?children` but
-                    // structured single-row events grep + diff better.
-                    for c in &children {
+                    // tools can group by `entity_id`. Cap the per-child
+                    // emission at MAX_DUMP_CHILDREN — the summary row
+                    // below reports the full count regardless.
+                    for c in children.iter().take(MAX_DUMP_CHILDREN) {
                         warn!(
                             target: "sync::divergence_dump",
                             %context_id,
@@ -142,12 +141,30 @@ pub(super) fn handle_hash_heartbeat(
                             "DIVERGENCE DUMP: ROOT child entry"
                         );
                     }
+                    if child_count > MAX_DUMP_CHILDREN {
+                        warn!(
+                            target: "sync::divergence_dump",
+                            %context_id,
+                            ?source,
+                            emitted = MAX_DUMP_CHILDREN,
+                            total = child_count,
+                            "DIVERGENCE DUMP: ROOT children truncated"
+                        );
+                    }
                     warn!(
                         target: "sync::divergence_dump",
                         %context_id,
                         ?source,
-                        child_count = children.len(),
+                        child_count,
                         "DIVERGENCE DUMP: ROOT children list emitted"
+                    );
+                }
+                Ok(None) => {
+                    warn!(
+                        target: "sync::divergence_dump",
+                        %context_id,
+                        ?source,
+                        "DIVERGENCE DUMP: ROOT — no index entry"
                     );
                 }
                 Err(e) => {
@@ -156,7 +173,7 @@ pub(super) fn handle_hash_heartbeat(
                         %context_id,
                         ?source,
                         error = %e,
-                        "DIVERGENCE DUMP: failed to read ROOT children list"
+                        "DIVERGENCE DUMP: failed to read ROOT"
                     );
                 }
             }
