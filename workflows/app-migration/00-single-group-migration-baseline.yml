@@ -121,14 +121,23 @@ steps:
     node: app-migration-baseline-1
     group_id: "{{group_id}}"
 
-  - name: Assert Migrated event observed (v1 → v2)
+  # Three log patterns prove the migration ran end-to-end:
+  #   1. "Executing migration" — update_application handler entered the migrate path.
+  #   2. "method=migrate_v1_to_v2" — the right migrate function was invoked.
+  #   3. "Migrated state written successfully" — write_migration_state hit the
+  #      post-fix success log. Pre-fix (#2433 regression) this line is absent
+  #      and "Failed to write migrated state" fires instead, so this pattern is
+  #      the actual regression guard. The Event::Migrated payload itself does
+  #      NOT appear in stdout (borsh-encoded binary on the event stream, not a
+  #      log line) — that's why we anchor on the handler's INFO/DEBUG output.
+  - name: Assert migration handler ran and state written
     type: assert_log_present
     nodes:
       - app-migration-baseline-1
     patterns:
-      - "Migrated"
-      - "1.0.0"
-      - "2.0.0"
+      - "Executing migration"
+      - "method=migrate_v1_to_v2"
+      - "Migrated state written successfully"
     min_matches: 1
 
   - name: Read post-migration schema_info
