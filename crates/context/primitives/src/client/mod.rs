@@ -523,10 +523,7 @@ impl ContextRegistry {
     /// the divergent subtree without re-running the failure.
     ///
     /// Returns an empty Vec if ROOT has no index entry (empty state).
-    pub fn dump_root_children(
-        &self,
-        context_id: &ContextId,
-    ) -> eyre::Result<Vec<RootChildDump>> {
+    pub fn dump_root_children(&self, context_id: &ContextId) -> eyre::Result<Vec<RootChildDump>> {
         use calimero_primitives::crdt::CrdtType;
 
         let root_id: [u8; 32] = **context_id;
@@ -589,8 +586,9 @@ impl ContextRegistry {
         }
 
         let mut reader: &[u8] = &bytes;
-        let index = EntityIndexDump::deserialize_reader(&mut reader)
-            .map_err(|e| eyre::eyre!("dump_root_children: failed to deserialize EntityIndex: {e}"))?;
+        let index = EntityIndexDump::deserialize_reader(&mut reader).map_err(|e| {
+            eyre::eyre!("dump_root_children: failed to deserialize EntityIndex: {e}")
+        })?;
 
         let children = index.children.unwrap_or_default();
         Ok(children
@@ -1031,10 +1029,7 @@ impl ContextClient {
 
     /// Diagnostic — dump ROOT's children list for a context. See
     /// [`ContextRegistry::dump_root_children`] for the rationale.
-    pub fn dump_root_children(
-        &self,
-        context_id: &ContextId,
-    ) -> eyre::Result<Vec<RootChildDump>> {
+    pub fn dump_root_children(&self, context_id: &ContextId) -> eyre::Result<Vec<RootChildDump>> {
         self.registry.dump_root_children(context_id)
     }
 
