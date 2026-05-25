@@ -21,6 +21,50 @@ pub(super) fn handle_hash_heartbeat(
         let their_heads_set: HashSet<_> = their_dag_heads.iter().collect();
 
         if our_heads_set == their_heads_set && our_context.root_hash != their_root_hash {
+            // #2319 — before reporting a real divergence, reconcile the
+            // cached `ContextMeta.root_hash` with the live index. The
+            // cache is populated from the WASM-returned root_hash at the
+            // end of each method execution; a concurrent sync apply
+            // (HashComparison `EntityPush`, level-sync leaf push, etc.)
+            // can advance the actual index right after WASM returns but
+            // before the cache is written, leaving the cache pointing
+            // at a pre-recalc full_hash while the index has already
+            // moved on. The two nodes still converge in storage, but
+            // the heartbeat sees the stale caches and fires
+            // DIVERGENCE.
+            //
+            // Re-read the live full_hash from the index. If it matches
+            // either the peer's hash or our prior cache, refresh the
+            // cache and skip the false-positive divergence event; only
+            // a *post-refresh* hash mismatch is a real divergence.
+            match context_client.compute_root_hash(&context_id) {
+                Ok(live) => {
+                    let live_hash = calimero_primitives::hash::Hash::from(live);
+                    if live_hash != our_context.root_hash {
+                        debug!(
+                            %context_id,
+                            ?source,
+                            cached_hash = ?our_context.root_hash,
+                            live_hash = ?live_hash,
+                            "Heartbeat divergence: cache stale vs live index, refreshing"
+                        );
+                        let _ignored = context_client.force_root_hash(&context_id, live_hash);
+                        if live_hash == their_root_hash {
+                            return;
+                        }
+                        // Continue with live hash as the comparison value.
+                    }
+                }
+                Err(err) => {
+                    debug!(
+                        %context_id,
+                        ?source,
+                        %err,
+                        "Heartbeat divergence: failed to read live root hash; using cache"
+                    );
+                }
+            }
+
             // #2319: surface divergence as a metric (`sync_root_hash_divergence_detected_total`)
             // so vmagent can alert on the rate without grepping logs —
             // with the determinism fixes this should stay near zero.
