@@ -8,6 +8,35 @@ use crate::handlers::{specialized_node_invite, tee_attestation_admission};
 use crate::run::NodeMode;
 use crate::NodeManager;
 
+/// Why a gossipsub topic was rejected as a `TeeAttestationAnnounce`
+/// namespace-governance topic.
+#[derive(Debug, PartialEq, Eq)]
+enum NamespaceTopicError {
+    /// Topic did not carry the `ns/` namespace-governance prefix. Fleet
+    /// TEE nodes publish on `ns/<hex(namespace_id)>` via
+    /// `NodeClient::publish_on_namespace`, so anything else is not an
+    /// admission announce.
+    NotNamespaceTopic,
+    /// Topic had the `ns/` prefix but the suffix was not a 32-byte hex id.
+    MalformedHex,
+}
+
+/// Parse a `TeeAttestationAnnounce` gossipsub topic into its namespace id.
+///
+/// Fleet TEE nodes announce on `ns/<hex(namespace_id)>` (the namespace
+/// governance topic — see `NodeClient::publish_on_namespace`,
+/// `governance_broadcast::ns_topic`, and the `ns/` handling in
+/// `subscriptions.rs`). The namespace IS its root group, so the returned
+/// 32-byte id is used directly as the admission group id.
+fn parse_namespace_announce_topic(topic_str: &str) -> Result<[u8; 32], NamespaceTopicError> {
+    let hex = topic_str
+        .strip_prefix("ns/")
+        .ok_or(NamespaceTopicError::NotNamespaceTopic)?;
+    let mut bytes = [0u8; 32];
+    hex::decode_to_slice(hex, &mut bytes).map_err(|_| NamespaceTopicError::MalformedHex)?;
+    Ok(bytes)
+}
+
 pub(super) fn handle_specialized_broadcast(
     this: &mut NodeManager,
     ctx: &mut actix::Context<NodeManager>,
@@ -81,24 +110,26 @@ pub(super) fn handle_specialized_broadcast(
             node_type: _,
         } => {
             let topic_str = topic.as_str();
-            let group_id_bytes = match topic_str.strip_prefix("group/") {
-                Some(hex) => {
-                    let mut bytes = [0u8; 32];
-                    if hex::decode_to_slice(hex, &mut bytes).is_err() {
-                        warn!(
-                            %source,
-                            topic = %topic_str,
-                            "Invalid group topic hex in TeeAttestationAnnounce"
-                        );
-                        return true;
-                    }
-                    bytes
-                }
-                None => {
+            // Fleet TEE nodes announce on the namespace governance topic
+            // `ns/<hex(namespace_id)>` (see `NodeClient::publish_on_namespace`
+            // and the `ns/` convention in `subscriptions.rs` /
+            // `governance_broadcast::ns_topic`). The namespace IS its root
+            // group, so the parsed namespace id is the admission group id.
+            let namespace_id_bytes = match parse_namespace_announce_topic(topic_str) {
+                Ok(bytes) => bytes,
+                Err(NamespaceTopicError::MalformedHex) => {
                     warn!(
                         %source,
                         topic = %topic_str,
-                        "TeeAttestationAnnounce received on non-group topic"
+                        "Invalid namespace topic hex in TeeAttestationAnnounce"
+                    );
+                    return true;
+                }
+                Err(NamespaceTopicError::NotNamespaceTopic) => {
+                    warn!(
+                        %source,
+                        topic = %topic_str,
+                        "TeeAttestationAnnounce received on non-namespace topic"
                     );
                     return true;
                 }
@@ -108,8 +139,8 @@ pub(super) fn handle_specialized_broadcast(
                 %source,
                 %public_key,
                 nonce = %hex::encode(*nonce),
-                group_id = %hex::encode(group_id_bytes),
-                "Received TEE attestation announce on group topic"
+                namespace_id = %hex::encode(namespace_id_bytes),
+                "Received TEE attestation announce on namespace topic"
             );
 
             let context_client = this.clients.context.clone();
@@ -124,7 +155,7 @@ pub(super) fn handle_specialized_broadcast(
                         quote_bytes,
                         public_key,
                         nonce,
-                        group_id_bytes,
+                        namespace_id_bytes,
                     )
                     .await
                     {
@@ -274,5 +305,71 @@ pub(super) fn handle_specialized_network_event(
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_namespace_announce_topic, NamespaceTopicError};
+
+    /// Regression test for the `ns/` vs `group/` topic mismatch (PR #2096):
+    /// fleet TEE nodes announce `TeeAttestationAnnounce` on
+    /// `ns/<hex(namespace_id)>`, but the dispatcher used to strip
+    /// `group/`, so the announce fell into the "non-namespace topic" arm
+    /// and was dropped — `handle_tee_attestation_announce` / `admit_tee_node`
+    /// never ran, and fleet TEE nodes were never admitted to the namespace
+    /// group. The dispatcher must resolve an `ns/` topic to its namespace id
+    /// and route it into the admission path.
+    #[test]
+    fn ns_announce_topic_resolves_to_namespace_id_for_admission() {
+        let namespace_id = [0x42u8; 32];
+        let topic = format!("ns/{}", hex::encode(namespace_id));
+
+        let parsed = parse_namespace_announce_topic(&topic)
+            .expect("ns/<hex> announce topic must route into the admission path, not be dropped");
+
+        // The resolved id is what gets handed to
+        // `handle_tee_attestation_announce` → `admit_tee_node` as the
+        // admission group id (the namespace is its own root group).
+        assert_eq!(parsed, namespace_id);
+    }
+
+    /// The old (buggy) `group/<hex>` topic must NOT match this path anymore.
+    /// `group/` is not how TEE announces are published (publish uses
+    /// `publish_on_namespace` → `ns/`), so a `group/` topic here is a
+    /// non-namespace topic and is correctly rejected rather than admitted.
+    #[test]
+    fn legacy_group_topic_is_not_a_namespace_announce_topic() {
+        let topic = format!("group/{}", hex::encode([0x42u8; 32]));
+        assert_eq!(
+            parse_namespace_announce_topic(&topic),
+            Err(NamespaceTopicError::NotNamespaceTopic),
+        );
+    }
+
+    /// A non-prefixed topic (e.g. a raw context id) is not a namespace
+    /// announce topic.
+    #[test]
+    fn unprefixed_topic_is_not_a_namespace_announce_topic() {
+        assert_eq!(
+            parse_namespace_announce_topic("some-context-id"),
+            Err(NamespaceTopicError::NotNamespaceTopic),
+        );
+    }
+
+    /// An `ns/` topic with a malformed (non-hex / wrong-length) suffix is
+    /// reported distinctly so the dispatcher can warn precisely instead of
+    /// silently treating it as the wrong kind of topic.
+    #[test]
+    fn ns_topic_with_malformed_hex_is_rejected_as_malformed() {
+        assert_eq!(
+            parse_namespace_announce_topic("ns/not-hex"),
+            Err(NamespaceTopicError::MalformedHex),
+        );
+        // Right prefix, valid hex, wrong length (16 bytes, not 32).
+        assert_eq!(
+            parse_namespace_announce_topic(&format!("ns/{}", hex::encode([0u8; 16]))),
+            Err(NamespaceTopicError::MalformedHex),
+        );
     }
 }

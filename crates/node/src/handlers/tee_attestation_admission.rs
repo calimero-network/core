@@ -1,6 +1,7 @@
 //! TEE attestation-based admission handler.
 //!
-//! When a fleet TEE node broadcasts `TeeAttestationAnnounce` on a group topic,
+//! When a fleet TEE node broadcasts `TeeAttestationAnnounce` on the namespace
+//! governance topic (`ns/<hex>`; the namespace is its own root group),
 //! existing peers verify the TDX quote against the group's `TeeAdmissionPolicy`
 //! and, if valid, admit the node via a `MemberJoinedViaTeeAttestation` governance op.
 //!
@@ -13,7 +14,7 @@ use calimero_tee_attestation::{is_mock_quote, verify_attestation, verify_mock_at
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
-/// Handle a `TeeAttestationAnnounce` broadcast on a group gossip topic.
+/// Handle a `TeeAttestationAnnounce` broadcast on a namespace gossip topic.
 ///
 /// Verifies the TDX quote, checks measurements against the group's TEE admission
 /// policy, and publishes a `MemberJoinedViaTeeAttestation` governance op if valid.
