@@ -119,9 +119,17 @@ pub async fn handler(
         .into_response();
     }
 
+    // Fire the first announce up front. A single publish at fleet-join time is
+    // lost forever if it lands in an empty gossipsub mesh (no replay), which is
+    // the common case for a NAT'd/relay owner whose mesh forms only
+    // intermittently. The admission loop below therefore RE-announces every
+    // poll cycle until admitted or the deadline, so a *later* mesh window still
+    // receives a fresh copy. If even this first publish errors at the transport
+    // level we bail (subscription with no announce is useless); a publish into
+    // an empty mesh is *not* an error and is expected to be retried below.
     if let Err(err) = state
         .node_client
-        .publish_on_namespace(group_id_bytes, payload)
+        .publish_on_namespace_now(group_id_bytes, payload.clone())
         .await
     {
         warn!(error=?err, "Failed to broadcast, unsubscribing from namespace");
@@ -139,29 +147,65 @@ pub async fn handler(
     info!(
         group_id = %req.group_id,
         %our_public_key,
-        "TeeAttestationAnnounce broadcast; waiting for admission then joining contexts"
+        "TeeAttestationAnnounce broadcast; re-announcing until admission then joining contexts"
     );
 
-    // Poll for group admission, then auto-join all contexts in the namespace
+    // Poll for group admission, then auto-join all contexts in the namespace.
+    //
+    // Re-announce strategy: this loop both (a) checks for admission and (b)
+    // re-publishes the announce each cycle the node is not yet admitted. The
+    // re-announce is request-scoped (bounded by `MAX_ADMISSION_WAIT`) rather
+    // than a long-lived background task: the mdma sidecar already re-polls
+    // should-join and re-invokes fleet-join, so each call covering one mesh
+    // window is sufficient, and a request-scoped loop needs no extra actor /
+    // lifecycle management. See the handler-level rationale comment.
     let mut contexts_joined = Vec::new();
     let mut admitted = false;
     let mut auto_follow_enabled = false;
 
+    // Overall bound for one fleet-join call. The sidecar re-invokes across a
+    // larger window, so this only needs to cover a single mesh-formation
+    // attempt comfortably.
     const MAX_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+    // Interval between admission checks AND between re-announces — short enough
+    // that a transient mesh window (mesh peers appear, then vanish) is hit by a
+    // fresh publish, but not so tight it spams the topic.
     const ADMISSION_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
     let deadline = tokio::time::Instant::now() + MAX_ADMISSION_WAIT;
 
-    while tokio::time::Instant::now() < deadline {
-        match state
-            .ctx_client
-            .list_group_contexts(ListGroupContextsRequest {
-                group_id,
-                offset: 0,
-                limit: 100,
-            })
-            .await
-        {
+    // `loop {}` (not `while now < deadline`) so the deadline is only checked
+    // *after* an admission check, never right after a sleep — otherwise an
+    // admission that completes during the final sleep would be lost to a false
+    // "timed out" / `admitted:false`. The deadline break lives in the `Err`
+    // arm below, immediately after the (failed) admission check.
+    loop {
+        // Bound each admission check so a stuck context-manager actor can't
+        // extend the handler past MAX_ADMISSION_WAIT: a check that exceeds the
+        // poll interval is mapped to a (retriable) error and handled by the
+        // `Err` arm below, exactly like a not-yet-admitted result. A
+        // slow-but-not-stuck actor whose check nears ADMISSION_POLL makes the
+        // effective cycle up to ~2x ADMISSION_POLL; that's acceptable, and we
+        // keep the budget at ADMISSION_POLL (rather than shrinking it) so a
+        // normally-fast actor isn't spuriously timed out. The overall deadline
+        // still bounds total wall-clock either way.
+        let admission = tokio::time::timeout(
+            ADMISSION_POLL,
+            state
+                .ctx_client
+                .list_group_contexts(ListGroupContextsRequest {
+                    group_id,
+                    offset: 0,
+                    limit: 100,
+                }),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(eyre::eyre!(
+                "list_group_contexts exceeded the admission poll budget"
+            ))
+        });
+        match admission {
             Ok(entries) => {
                 info!(
                     group_id = %req.group_id,
@@ -239,7 +283,47 @@ pub async fn handler(
             }
             Err(err) => {
                 tracing::debug!(error=?err, "Admission check not yet successful, retrying...");
-                tokio::time::sleep(ADMISSION_POLL).await;
+
+                // Stop once past the deadline — but only here, AFTER the
+                // admission check above, so an admission that landed during the
+                // previous sleep is observed on this iteration instead of being
+                // lost to a false "timed out".
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+
+                // Cap the poll sleep to the remaining budget so the loop wakes
+                // for its final admission check right at the deadline rather
+                // than up to ADMISSION_POLL past it.
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                tokio::time::sleep(remaining.min(ADMISSION_POLL)).await;
+
+                // Re-announce AFTER the poll sleep, and only if we're still
+                // before the deadline. Doing it here (rather than before the
+                // sleep) avoids both a duplicate publish fired back-to-back with
+                // the up-front one at t=0 and a wasted publish right as we give
+                // up. A single up-front publish is lost if the mesh was empty at
+                // fleet-join (gossipsub does not replay), so re-publishing each
+                // cycle delivers a fresh copy to a mesh window that opens later.
+                // Best effort — a transport error here is logged, not fatal.
+                if tokio::time::Instant::now() < deadline {
+                    match state
+                        .node_client
+                        .publish_on_namespace_now(group_id_bytes, payload.clone())
+                        .await
+                    {
+                        Ok(mesh_peers) => tracing::debug!(
+                            group_id = %req.group_id,
+                            mesh_peers,
+                            "re-announced TeeAttestationAnnounce while awaiting admission"
+                        ),
+                        Err(reannounce_err) => warn!(
+                            group_id = %req.group_id,
+                            error = ?reannounce_err,
+                            "re-announce publish failed; will retry next cycle"
+                        ),
+                    }
+                }
             }
         }
     }
