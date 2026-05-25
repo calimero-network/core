@@ -3821,6 +3821,171 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     );
 }
 
+/// Replica op-log dedup must survive head pruning (PR #2473, finding 4).
+///
+/// The replica apply path (`apply_group_op_inner`) appends every handled op to
+/// the group op-log and guards against a re-received duplicate. The guard used
+/// to consult the op-head's `dag_heads` — but `dag_heads` is only the CURRENT
+/// DAG frontier: once a later op supersedes an earlier one, the earlier op's
+/// content hash is pruned out of the head set. A `dag_heads`-based check would
+/// then miss a superseded-then-replayed op (gossip dup / backfill replay during
+/// a retry that never advanced the per-signer nonce) and append a SECOND log
+/// entry, double-counting it in every log scan (`read_tee_admission_policy`,
+/// `is_quote_hash_used`, `is_tee_admitted_identity`).
+///
+/// The fix dedups against the PERSISTED op-log
+/// (`local_state::op_log_contains_content_hash`), which is monotonic. This test:
+///   1. applies op A (policy set, nonce 1) and op B (policy set, nonce 2, with A
+///      as its parent) via the real `NamespaceGovernance::apply_signed_op` path,
+///   2. asserts A's content hash is PRUNED from the op-head's `dag_heads` (the
+///      condition that broke the old check) yet `op_log_contains_content_hash`
+///      still reports A as logged,
+///   3. re-drives op A through the full apply path under the exact retry/backfill
+///      condition the guard exists for (its per-signer nonce reset to 0, and its
+///      namespace op-log entry removed so the namespace-level dedup does not
+///      short-circuit first), and asserts the GROUP op-log still holds exactly
+///      two entries — no duplicate.
+///
+/// With the old `dag_heads.contains` check step 3 appends a third entry and the
+/// final assertion fails.
+#[test]
+fn replica_op_log_dedup_survives_head_pruning() {
+    use calimero_context_client::local_governance::{
+        NamespaceOp, SignedGroupOp, SignedNamespaceOp, SIGNED_GROUP_OP_SCHEMA_VERSION,
+    };
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    let signer_sk = PrivateKey::random(&mut rng);
+    let signer_pk = signer_sk.public_key();
+
+    let namespace_id = [0xC4u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    // Replica bootstrap state: namespace meta with the signer as admin + the
+    // group key so the encrypted ops decrypt.
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(signer_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &signer_pk, GroupMemberRole::Admin).unwrap();
+    let group_key = [0x5Au8; 32];
+    let key_id = store_group_key(&store, &ns_gid, &group_key).unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Helper: build the SignedGroupOp exactly as `decrypt_and_apply_group_op`
+    // reconstructs it from a namespace op, so we can compute its content hash.
+    let group_op_content_hash = |ns_op: &SignedNamespaceOp, inner: &GroupOp| -> [u8; 32] {
+        SignedGroupOp {
+            version: SIGNED_GROUP_OP_SCHEMA_VERSION,
+            group_id: namespace_id,
+            parent_op_hashes: ns_op.parent_op_hashes.clone(),
+            state_hash: ns_op.state_hash,
+            signer: ns_op.signer,
+            nonce: ns_op.nonce,
+            op: inner.clone(),
+            signature: ns_op.signature,
+        }
+        .content_hash()
+        .unwrap()
+    };
+
+    let make_policy_op = |mrtd: &str| GroupOp::TeeAdmissionPolicySet {
+        allowed_mrtd: vec![mrtd.to_owned()],
+        allowed_rtmr0: vec![],
+        allowed_rtmr1: vec![],
+        allowed_rtmr2: vec![],
+        allowed_rtmr3: vec![],
+        allowed_tcb_statuses: vec!["ok".to_owned()],
+        accept_mock: true,
+    };
+
+    // ---- Op A (nonce 1). ----
+    let inner_a = make_policy_op("mA");
+    let op_a = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: namespace_id,
+            key_id,
+            encrypted: encrypt_group_op(&group_key, &inner_a).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    let hash_a = group_op_content_hash(&op_a, &inner_a);
+    gov.apply_signed_op(&op_a).expect("apply op A");
+
+    // After A: log has one entry, head frontier is [hash_a].
+    assert_eq!(read_op_log_after(&store, &ns_gid, 0, 10).unwrap().len(), 1);
+    assert!(get_op_head(&store, &ns_gid)
+        .unwrap()
+        .unwrap()
+        .dag_heads
+        .contains(&hash_a));
+
+    // ---- Op B (nonce 2) supersedes A by listing A's group-op hash as parent.
+    // This prunes hash_a out of the op-head's dag_heads. ----
+    let inner_b = make_policy_op("mB");
+    let op_b = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![hash_a],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: namespace_id,
+            key_id,
+            encrypted: encrypt_group_op(&group_key, &inner_b).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    gov.apply_signed_op(&op_b).expect("apply op B");
+
+    // After B: log has two entries; hash_a is PRUNED from dag_heads (the old
+    // `dag_heads.contains` check would now report A as not-logged) but the
+    // persisted-log check still sees A.
+    assert_eq!(read_op_log_after(&store, &ns_gid, 0, 10).unwrap().len(), 2);
+    assert!(
+        !get_op_head(&store, &ns_gid)
+            .unwrap()
+            .unwrap()
+            .dag_heads
+            .contains(&hash_a),
+        "op A's hash must be pruned from dag_heads once B supersedes it"
+    );
+    assert!(
+        super::local_state::op_log_contains_content_hash(&store, &ns_gid, &hash_a).unwrap(),
+        "the persisted-log dedup must still see superseded op A"
+    );
+
+    // ---- Re-drive op A through the FULL apply path under the retry/backfill
+    // condition the dedup exists for: nonce un-advanced + namespace-level dedup
+    // not short-circuiting. ----
+    set_local_gov_nonce(&store, &ns_gid, &signer_pk, 0).unwrap();
+    {
+        let mut handle = store.handle();
+        let key =
+            calimero_store::key::NamespaceGovOp::new(namespace_id, op_a.content_hash().unwrap());
+        handle.delete(&key).unwrap();
+    }
+    gov.apply_signed_op(&op_a).expect("re-apply op A");
+
+    // The decisive assertion: NO duplicate log entry was appended.
+    assert_eq!(
+        read_op_log_after(&store, &ns_gid, 0, 10).unwrap().len(),
+        2,
+        "re-applying superseded op A must NOT append a duplicate op-log entry"
+    );
+}
+
 fn append_tee_policy_op(store: &Store, group: &ContextGroupId, seq: u64, mrtd: &str) {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;

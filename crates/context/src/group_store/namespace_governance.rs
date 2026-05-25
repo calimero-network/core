@@ -820,6 +820,44 @@ impl<'a> NamespaceGovernance<'a> {
     ///   authoritative copy and this is a no-op;
     /// - `target_application_id` is left zero and self-heals on the first
     ///   `ContextRegistered` apply (same contract as `join_group`).
+    ///
+    /// THREAT MODEL — trust-on-first-use limitation (PR #2473 finding 3):
+    /// `KeyDelivery` carries no signer-authority check on apply
+    /// (`apply_root_op` returns `Ok(())` for it; the side-effect only checks
+    /// `envelope.recipient == our namespace identity`). To mint a `KeyDelivery`
+    /// the signer must merely HOLD the group key — i.e. be ANY current member
+    /// of this namespace, not necessarily the owner/admin. So if a non-owner
+    /// member races the owner and their `KeyDelivery` lands first, this seeds
+    /// the WRONG `admin_identity`/`owner_identity` locally.
+    ///
+    /// Blast radius is bounded and local-only:
+    /// - NOT a cross-node privilege escalation — the seeded meta is node-local
+    ///   state, never gossiped; no peer trusts it.
+    /// - Effect is a LOCAL DoS on this one bootstrapping replica: subsequent
+    ///   authority-checked ops from the true owner (`require_namespace_admin`)
+    ///   are rejected. It does NOT self-heal: the meta-exists guard above turns
+    ///   a later correct `KeyDelivery` into a no-op, and there is no root-admin
+    ///   `AdminChanged` to overwrite it — recovery requires a namespace teardown
+    ///   + re-sync.
+    ///
+    /// Why this is not tightened to "seed only from a DAG-shown admin": the
+    /// namespace ROOT's founding admin/owner is never recorded as a replayable
+    /// governance op (`execute_group_created` rejects a self-parent and notes
+    /// "namespace roots are created via a different path … no GroupCreated op";
+    /// `RootOp` has no namespace-genesis variant). At bootstrap the replica has
+    /// applied NO authority-bearing root op yet — every owner-authored op is
+    /// itself buffered behind this seed (chicken-and-egg). So there is no local,
+    /// DAG-derived admin signal to validate the `KeyDelivery` signer against,
+    /// which is exactly why TOFU is used at all.
+    ///
+    /// RECOMMENDED FOLLOW-UP (correct root-of-trust, deferred — it is a
+    /// wire-protocol change, not a contained fix): add a replayable
+    /// `RootOp::NamespaceCreated { founder }` (or equivalent genesis op) emitted
+    /// by `handlers/create_group.rs` at namespace creation, so a bootstrapping
+    /// replica derives the founding admin/owner authoritatively from the synced
+    /// governance DAG genesis and drops the `KeyDelivery`-signer TOFU entirely.
+    /// That touches the `RootOp` borsh discriminant set and must be coordinated
+    /// as a versioned schema change.
     fn seed_bootstrap_admin_if_absent(
         &self,
         group_id: [u8; 32],
@@ -1050,9 +1088,21 @@ impl<'a> NamespaceGovernance<'a> {
             // re-receive; this content-hash check covers the retry path,
             // which re-applies via `decrypt_and_apply_group_op` (bypassing
             // the nonce guard's `set_local_gov_nonce` on first apply).
-            let already_logged = head
-                .as_ref()
-                .is_some_and(|h| h.dag_heads.contains(&content_hash));
+            //
+            // Dedup against the PERSISTED op-log, not the op-head's
+            // `dag_heads`. `dag_heads` is only the current DAG frontier:
+            // when a later op supersedes this one, this op's `content_hash`
+            // is pruned out of the head set (`filter(!parent_set.contains)`
+            // below), so a `dag_heads.contains` check would miss a
+            // superseded-then-replayed op and append a duplicate — skewing
+            // the very log scans (`is_quote_hash_used`, policy replay,
+            // `read_tee_admission_policy`) this entry feeds. Scanning the log
+            // is monotonic: an op that was ever logged stays deduped.
+            let already_logged = super::local_state::op_log_contains_content_hash(
+                self.store,
+                group_id,
+                &content_hash,
+            )?;
             if !already_logged {
                 let next_seq = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
                 let op_bytes =

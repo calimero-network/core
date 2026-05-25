@@ -1,3 +1,4 @@
+use calimero_context_client::local_governance::SignedGroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
@@ -118,6 +119,32 @@ pub(crate) fn append_op_log_entry(
 /// [`persist_group_governance_progress`] instead, which also writes the
 /// nonce in the same batch. Keeping these separate avoids the
 /// namespace-governance path double-writing the nonce.
+///
+/// CRASH-SAFETY INVARIANT (no atomic multi-key write available):
+/// `calimero-store` has no transactional batch — `StoreBatch` commits each
+/// `put` immediately (see `crates/store/src/batch.rs`) and `Store::handle()`
+/// writes straight through to the backend. So the two `put`s below are NOT
+/// atomic; a crash can land between them. The write ORDER is therefore
+/// chosen to be crash-safe: the op-log ENTRY is written first, the
+/// `GroupOpHead` second.
+///
+/// - Crash after entry, before head: an ORPHAN log entry exists at
+///   `sequence` while the head still points at `sequence - 1`. This is
+///   benign — every reader scans the log directly (`read_op_log_after`,
+///   `read_tee_admission_policy`, `is_quote_hash_used`), so the entry is
+///   already visible; the next apply re-derives `next_seq` from the stale
+///   head and overwrites the orphan at the same `(group_id, sequence)` key.
+/// - The reverse order (head first) would be UNSAFE: a crash would leave a
+///   head whose `sequence` references a log entry that was never written,
+///   so `read_op_log_after` would silently skip the gap and the op-head's
+///   `dag_heads` would advertise a frontier op nobody can read back.
+///
+/// This mirrors the entry-then-head ordering the authoring side uses
+/// (`persist_group_governance_progress` below) and the head-advance /
+/// store-operation ordering note in
+/// `namespace_governance::apply_signed_op`. Replacing this with a real
+/// single-batch atomic write is deferred to the codebase-wide store-batch
+/// work tracked alongside the cascade-delete atomicity discussion.
 pub(crate) fn persist_group_op_log_entry(
     store: &Store,
     group_id: &ContextGroupId,
@@ -128,6 +155,8 @@ pub(crate) fn persist_group_op_log_entry(
     let gid = group_id.to_bytes();
     let mut handle = store.handle();
 
+    // Entry first (see CRASH-SAFETY INVARIANT above): an orphan entry is
+    // benign; a head referencing a missing entry is not.
     let op_log_key = GroupOpLog::new(gid, sequence);
     handle.put(&op_log_key, &op_bytes.to_vec())?;
 
@@ -143,6 +172,17 @@ pub(crate) fn persist_group_op_log_entry(
     Ok(())
 }
 
+/// Authoring-side variant of [`persist_group_op_log_entry`] that ALSO advances
+/// the per-(group, signer) nonce in the same call.
+///
+/// The two paths share the op-log entry + head write (delegated to
+/// [`persist_group_op_log_entry`]) but differ in nonce handling: the authoring
+/// path owns the nonce here, whereas the namespace-governance apply path
+/// manages it separately via `set_local_gov_nonce` (it advances the nonce only
+/// AFTER the full op apply succeeds — see the invariant comment in
+/// `apply_group_op_inner`). The nonce `put` runs LAST so the same crash-safety
+/// ordering holds: entry → head → nonce. An un-advanced nonce after a crash
+/// just replays the (idempotent) op; it never skips one.
 pub(crate) fn persist_group_governance_progress(
     store: &Store,
     group_id: &ContextGroupId,
@@ -152,22 +192,10 @@ pub(crate) fn persist_group_governance_progress(
     dag_heads: Vec<[u8; 32]>,
     op_bytes: &[u8],
 ) -> EyreResult<()> {
-    let gid = group_id.to_bytes();
+    persist_group_op_log_entry(store, group_id, sequence, dag_heads, op_bytes)?;
+
     let mut handle = store.handle();
-
-    let op_log_key = GroupOpLog::new(gid, sequence);
-    handle.put(&op_log_key, &op_bytes.to_vec())?;
-
-    let head_key = GroupOpHead::new(gid);
-    handle.put(
-        &head_key,
-        &GroupOpHeadValue {
-            sequence,
-            dag_heads,
-        },
-    )?;
-
-    let nonce_key = GroupLocalGovNonce::new(gid, *signer);
+    let nonce_key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
     handle.put(&nonce_key, &nonce)?;
 
     Ok(())
@@ -198,6 +226,46 @@ pub fn read_op_log_after(
     }
 
     Ok(results)
+}
+
+/// Whether the group op-log already holds an entry whose op has the given
+/// `content_hash`.
+///
+/// This is the durable dedup signal for the replica apply path
+/// (`namespace_governance::apply_group_op_inner`). It scans the persisted
+/// op-log — the same column the readers (`read_tee_admission_policy`,
+/// `is_quote_hash_used`, `is_tee_admitted_identity`) scan — rather than
+/// consulting the op-head's `dag_heads`. `dag_heads` only tracks the CURRENT
+/// frontier: once a later op supersedes an earlier one, the earlier op's
+/// content hash is pruned from the head set, so a head-based check would
+/// wrongly report a superseded-then-re-received op as "not yet logged" and
+/// append a second copy — skewing every log scan. Keying the check on the
+/// persisted log makes it monotonic: an op that was ever logged stays logged.
+///
+/// Cost is an O(n) scan over the group's governance op-log (governance ops
+/// only — not state-DAG traffic), matching what the readers already pay; the
+/// per-(group, signer) nonce guard in `apply_group_op_inner` short-circuits
+/// the common re-receive before this is reached, so this is the backstop for
+/// the retry/backfill path that re-applies without having advanced the nonce.
+pub(crate) fn op_log_contains_content_hash(
+    store: &Store,
+    group_id: &ContextGroupId,
+    content_hash: &[u8; 32],
+) -> EyreResult<bool> {
+    let entries = read_op_log_after(store, group_id, 0, usize::MAX)?;
+    for (_seq, bytes) in &entries {
+        let Ok(op) = borsh::from_slice::<SignedGroupOp>(bytes) else {
+            continue;
+        };
+        if op
+            .content_hash()
+            .map(|h| h == *content_hash)
+            .unwrap_or(false)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn delete_op_log_and_head(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
