@@ -56,7 +56,14 @@ pub(super) fn handle_hash_heartbeat(
                             "Heartbeat divergence: cache stale vs live index, refreshing"
                         );
                         if let Err(err) = context_client.force_root_hash(&context_id, live_hash) {
-                            debug!(
+                            // `warn`, not `debug`: a single failure here
+                            // is usually a benign concurrent context
+                            // delete, but a *persistent* failure leaves
+                            // the cache stale and produces a stream of
+                            // false-positive DIVERGENCE events on every
+                            // heartbeat. Surface it where ops can see it
+                            // without log filtering.
+                            warn!(
                                 %context_id,
                                 ?source,
                                 %err,

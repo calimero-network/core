@@ -997,15 +997,19 @@ mod hashing {
 }
 
 /// Guard against borsh layout drift between the real `EntityIndex` (and its
-/// nested types) and the "Minimal" mirror structs used in
-/// `calimero-context-primitives/src/client.rs::compute_root_hash_via_borsh`.
+/// nested types) and the mirror structs used in
+/// `calimero-context-client/src/client/mod.rs::borsh_layout`.
 ///
-/// If any field is added/removed/reordered in the real types, this test will
-/// fail and remind the developer to update the minimal structs too.
+/// Validates that every field the mirror actually consumes round-trips
+/// correctly: `full_hash`, `own_hash`, and the children list including
+/// each child's `id`, `merkle_hash`, and metadata sub-fields
+/// (`created_at`, `updated_at`, `crdt_type`, `field_name`). If any
+/// field is added/removed/reordered in the real types, this test fails
+/// and reminds the developer to update the mirror too.
 ///
-/// **SYNC NOTE**: The minimal structs below are an identical copy of those in
-/// `calimero-context-primitives/src/client.rs::compute_root_hash_via_borsh`.
-/// When modifying either copy, update the other to keep them in sync.
+/// **SYNC NOTE**: The mirror structs below MUST match those in
+/// `calimero-context-client/src/client/mod.rs::borsh_layout`. When
+/// modifying either copy, update the other to keep them in sync.
 mod minimal_struct_layout_compat {
     use borsh::BorshDeserialize;
     use calimero_primitives::crdt::CrdtType;
@@ -1015,30 +1019,31 @@ mod minimal_struct_layout_compat {
     use crate::entities::{ChildInfo, Metadata, SignatureData, StorageType};
     use crate::index::EntityIndex;
 
-    // ---- Minimal mirror structs (must match client.rs) ----
+    // ---- Mirror structs (must match borsh_layout in client/mod.rs) ----
 
     #[derive(BorshDeserialize)]
     struct EntityIndexMinimal {
         _id: [u8; 32],
         _parent_id: Option<[u8; 32]>,
-        _children: Option<Vec<ChildInfoMinimal>>,
+        children: Option<Vec<ChildInfoMinimal>>,
         full_hash: [u8; 32],
+        own_hash: [u8; 32],
     }
 
     #[derive(BorshDeserialize)]
     struct ChildInfoMinimal {
-        _id: [u8; 32],
-        _merkle_hash: [u8; 32],
-        _metadata: MetadataMinimal,
+        id: [u8; 32],
+        merkle_hash: [u8; 32],
+        metadata: MetadataMinimal,
     }
 
     #[derive(BorshDeserialize)]
     struct MetadataMinimal {
-        _created_at: u64,
-        _updated_at: u64,
+        created_at: u64,
+        updated_at: u64,
         _storage_type: StorageTypeMinimal,
-        _crdt_type: Option<CrdtType>,
-        _field_name: Option<String>,
+        crdt_type: Option<CrdtType>,
+        field_name: Option<String>,
     }
 
     #[derive(BorshDeserialize)]
@@ -1091,11 +1096,51 @@ mod minimal_struct_layout_compat {
         let mut reader: &[u8] = &bytes;
         let minimal = EntityIndexMinimal::deserialize_reader(&mut reader)
             .expect("deserialize with minimal structs — layout may have drifted");
+
         assert_eq!(
             minimal.full_hash,
             index.full_hash(),
             "full_hash mismatch after round-trip"
         );
+        assert_eq!(
+            minimal.own_hash, index.own_hash,
+            "own_hash mismatch after round-trip — layout may have drifted"
+        );
+
+        // Validate children round-trip if present: id, merkle_hash, and
+        // the metadata sub-fields the mirror in `borsh_layout` actually
+        // reads (created_at, updated_at, crdt_type, field_name).
+        match (&minimal.children, &index.children) {
+            (Some(decoded), Some(real)) => {
+                assert_eq!(
+                    decoded.len(),
+                    real.len(),
+                    "children count mismatch after round-trip"
+                );
+                for (d, r) in decoded.iter().zip(real.iter()) {
+                    assert_eq!(&d.id, r.id().as_bytes(), "child id mismatch");
+                    assert_eq!(d.merkle_hash, r.merkle_hash(), "child merkle_hash mismatch");
+                    assert_eq!(
+                        d.metadata.created_at, r.metadata.created_at,
+                        "child metadata.created_at mismatch"
+                    );
+                    assert_eq!(
+                        d.metadata.updated_at, *r.metadata.updated_at,
+                        "child metadata.updated_at mismatch"
+                    );
+                    assert_eq!(
+                        d.metadata.crdt_type, r.metadata.crdt_type,
+                        "child metadata.crdt_type mismatch"
+                    );
+                    assert_eq!(
+                        d.metadata.field_name, r.metadata.field_name,
+                        "child metadata.field_name mismatch"
+                    );
+                }
+            }
+            (None, None) => {}
+            _ => panic!("children Option discriminant mismatch after round-trip"),
+        }
     }
 
     #[test]
