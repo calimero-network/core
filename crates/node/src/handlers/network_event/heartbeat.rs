@@ -40,6 +40,44 @@ pub(super) fn handle_hash_heartbeat(
             // remaining investigation requires re-running with more
             // logging. Keep the dump rate-bounded by the heartbeat
             // cadence (one DIVERGENCE event per peer per heartbeat).
+            //
+            // Dump ROOT's own_hash/full_hash first so the diff order
+            // matches the analysis flow: identical children + different
+            // own_hash points at ROOT-entity write-path divergence
+            // (the pattern we saw on PR #2472 attempt 1, all 20
+            // children matched).
+            match context_client.dump_root_self(&context_id) {
+                Ok(Some(self_dump)) => {
+                    warn!(
+                        target: "sync::divergence_dump",
+                        %context_id,
+                        ?source,
+                        root_own_hash = %hex::encode(self_dump.own_hash),
+                        root_full_hash = %hex::encode(self_dump.full_hash),
+                        root_entry_bytes_hash = ?self_dump.entry_bytes_hash.map(hex::encode),
+                        root_entry_bytes_len = self_dump.entry_bytes_len,
+                        children_count = self_dump.children_count,
+                        "DIVERGENCE DUMP: ROOT self"
+                    );
+                }
+                Ok(None) => {
+                    warn!(
+                        target: "sync::divergence_dump",
+                        %context_id,
+                        ?source,
+                        "DIVERGENCE DUMP: ROOT self — no index entry"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        target: "sync::divergence_dump",
+                        %context_id,
+                        ?source,
+                        error = %e,
+                        "DIVERGENCE DUMP: failed to read ROOT self"
+                    );
+                }
+            }
             match context_client.dump_root_children(&context_id) {
                 Ok(children) => {
                     // Emit one event per child so log search/filter
