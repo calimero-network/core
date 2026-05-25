@@ -3643,6 +3643,184 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
     assert!(!is_quote_hash_used(&store, &gid, &quote_b).unwrap());
 }
 
+/// Replica-side TEE bootstrap regression guard (PR #2473, finding B).
+///
+/// This is the REPLICA counterpart to the owner-side coverage in
+/// `crates/node/src/local_governance_node_e2e.rs::
+/// ns_announce_admits_announcer_as_read_only_tee_member`. It exercises the
+/// exact apply path a freshly-admitted ReadOnlyTee fleet node (B) takes when
+/// its post-KeyDelivery retry batch replays the namespace's governance ops
+/// that it did NOT author: a `TeeAdmissionPolicySet` (nonce 1) followed by a
+/// `MemberJoinedViaTeeAttestation` (nonce 2), both arriving as encrypted
+/// `NamespaceOp::Group` ops through `NamespaceGovernance::apply_signed_op`.
+///
+/// The membership op's apply reads the admission policy via
+/// `read_required_tee_admission_policy`, which reconstructs the policy purely
+/// by scanning the local group op-log (`group_store/tee.rs`). Before the fix,
+/// a replica applied an op's state mutation but never wrote its op-log entry —
+/// only the authoring node did — so the just-applied policy op was invisible
+/// to the membership op and the apply was rejected with
+/// "no TeeAdmissionPolicySet exists for group". The node then never recorded
+/// its own membership.
+///
+/// The fix (`apply_group_op_inner` in `namespace_governance.rs`) persists each
+/// handled op to the replica's op-log, so within the single retry batch the
+/// policy op (nonce 1) commits its log entry before the membership op (nonce 2)
+/// reads it back. This test FAILS (membership apply errors with
+/// "no TeeAdmissionPolicySet exists") if that op-log persistence is removed.
+#[test]
+fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    // The verifier (owner/admin of the namespace) AUTHORS both ops. On the
+    // replica this is a remote signer — the node under test is NOT the author.
+    let verifier_sk = PrivateKey::random(&mut rng);
+    let verifier_pk = verifier_sk.public_key();
+
+    // The TEE node being admitted as a ReadOnlyTee member.
+    let tee_member = PublicKey::from([0xD3; 32]);
+    let quote_hash = [0xE1; 32];
+
+    // Namespace root group (policy ops are namespace-scoped: must be the root).
+    let namespace_id = [0xA7u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    // Replica bootstrap state: namespace meta + the verifier recorded as an
+    // admin member (so `require_tee_attestation_verifier_membership` passes —
+    // in the real fleet-join flow this row is seeded from the KeyDelivery
+    // signer by `seed_bootstrap_admin_if_absent`), plus the group key the
+    // replica received via KeyDelivery so it can decrypt the group ops.
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(verifier_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &verifier_pk, GroupMemberRole::Admin).unwrap();
+    let group_key = [0x97u8; 32];
+    let key_id = store_group_key(&store, &ns_gid, &group_key).unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // Sanity: before any op is applied the replica has no policy and the TEE
+    // node is not yet a member.
+    assert!(
+        read_tee_admission_policy(&store, &ns_gid)
+            .unwrap()
+            .is_none(),
+        "no policy should exist before any op is applied on the replica"
+    );
+
+    // ---- Op 1 (nonce 1): TeeAdmissionPolicySet, authored by the verifier. ----
+    // `accept_mock` with allowlists that match the join op's mock measurements
+    // (empty RTMR lists allow all; mrtd/tcb_status are matched explicitly).
+    let policy_op = encrypt_group_op(
+        &group_key,
+        &GroupOp::TeeAdmissionPolicySet {
+            allowed_mrtd: vec!["m1".to_owned()],
+            allowed_rtmr0: vec![],
+            allowed_rtmr1: vec![],
+            allowed_rtmr2: vec![],
+            allowed_rtmr3: vec![],
+            allowed_tcb_statuses: vec!["ok".to_owned()],
+            accept_mock: true,
+        },
+    )
+    .unwrap();
+    let policy_ns_op = SignedNamespaceOp::sign(
+        &verifier_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: namespace_id,
+            key_id,
+            encrypted: policy_op,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    gov.apply_signed_op(&policy_ns_op)
+        .expect("replica must apply TeeAdmissionPolicySet");
+
+    // After the policy op, a log-scanning reader on the REPLICA must see it —
+    // this is the read the membership op depends on. Without the op-log
+    // persistence fix the policy op leaves no log entry here.
+    let policy = read_tee_admission_policy(&store, &ns_gid)
+        .unwrap()
+        .expect("policy must be visible on the replica after applying it");
+    assert_eq!(policy.allowed_mrtd, vec!["m1".to_owned()]);
+    assert!(policy.accept_mock);
+
+    // ---- Op 2 (nonce 2): MemberJoinedViaTeeAttestation, authored by the
+    // verifier — applied next, exactly as in the retry batch. Its apply reads
+    // the policy from the op-log; with the fix that read succeeds. ----
+    let join_op = encrypt_group_op(
+        &group_key,
+        &GroupOp::MemberJoinedViaTeeAttestation {
+            member: tee_member,
+            quote_hash,
+            mrtd: "m1".to_owned(),
+            rtmr0: "r0".to_owned(),
+            rtmr1: "r1".to_owned(),
+            rtmr2: "r2".to_owned(),
+            rtmr3: "r3".to_owned(),
+            tcb_status: "ok".to_owned(),
+            role: GroupMemberRole::ReadOnlyTee,
+        },
+    )
+    .unwrap();
+    let join_ns_op = SignedNamespaceOp::sign(
+        &verifier_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: namespace_id,
+            key_id,
+            encrypted: join_op,
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    gov.apply_signed_op(&join_ns_op).expect(
+        "replica must apply MemberJoinedViaTeeAttestation — the just-applied \
+         TeeAdmissionPolicySet must be visible in its op-log (PR #2473 fix)",
+    );
+
+    // (a) policy still resolves; (b) the ReadOnlyTee member row exists and the
+    // op-log records the admission; (c) the member count reflects it (verifier
+    // admin + the newly admitted TEE node).
+    assert!(
+        read_tee_admission_policy(&store, &ns_gid)
+            .unwrap()
+            .is_some(),
+        "policy must remain readable after the membership op applies"
+    );
+    assert_eq!(
+        get_group_member_role(&store, &ns_gid, &tee_member).unwrap(),
+        Some(GroupMemberRole::ReadOnlyTee),
+        "the TEE node must be recorded as a ReadOnlyTee member on the replica"
+    );
+    assert!(
+        is_tee_admitted_identity(&store, &ns_gid, &tee_member).unwrap(),
+        "the admission op must be visible in the replica's op-log"
+    );
+    assert!(
+        is_quote_hash_used(&store, &ns_gid, &quote_hash).unwrap(),
+        "the admission quote hash must be recorded in the replica's op-log"
+    );
+    assert_eq!(
+        count_group_members(&store, &ns_gid).unwrap(),
+        2,
+        "verifier admin + newly admitted ReadOnlyTee member"
+    );
+}
+
 fn append_tee_policy_op(store: &Store, group: &ContextGroupId, seq: u64, mrtd: &str) {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
