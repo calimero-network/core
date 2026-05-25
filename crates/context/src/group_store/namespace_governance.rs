@@ -233,6 +233,44 @@ impl<'a> NamespaceGovernance<'a> {
                                                 group_id: *group_id,
                                                 recipient: recipient_sk.public_key(),
                                             });
+                                            // Bootstrap the founding admin/owner
+                                            // for a node that joined WITHOUT an
+                                            // invitation (the TEE fleet-join
+                                            // path). The invited-join flow seeds
+                                            // this from the invitation's inviter
+                                            // identity (`handlers/join_group.rs`),
+                                            // but a TEE node has no invitation —
+                                            // so it would replay A's encrypted
+                                            // governance ops and reject every one
+                                            // ("verifier must be a group member",
+                                            // "only admin can register a
+                                            // context") because it never recorded
+                                            // who the namespace admin is. The
+                                            // KeyDelivery signer is precisely that
+                                            // trust anchor: only an existing
+                                            // key-holding member of THIS namespace
+                                            // can mint a KeyDelivery for us, and
+                                            // for the bootstrap case that member
+                                            // is the namespace owner that just
+                                            // admitted us. Seed only when (a) the
+                                            // delivery is for the namespace root
+                                            // group and (b) we have no group meta
+                                            // yet — so the invited-join path
+                                            // (which already wrote meta) is never
+                                            // touched, and a node already holding
+                                            // meta keeps its authoritative copy.
+                                            // The retry below then applies A's
+                                            // membership/context ops cleanly.
+                                            if let Err(e) = self.seed_bootstrap_admin_if_absent(
+                                                *group_id, &op.signer,
+                                            ) {
+                                                tracing::warn!(
+                                                    group_id = %hex::encode(group_id),
+                                                    error = %format!("{e:#}"),
+                                                    "failed to seed bootstrap admin from KeyDelivery \
+                                                     signer; encrypted-op retry may reject"
+                                                );
+                                            }
                                             let retry_divergence = self
                                                 .retry_encrypted_ops_for_group(*group_id)
                                                 .map_err(|e| {
@@ -761,6 +799,64 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(report)
     }
 
+    /// Seed the founding admin/owner of the namespace root group from the
+    /// trust anchor that bootstrapped us (the KeyDelivery signer), when no
+    /// group meta exists locally.
+    ///
+    /// This closes the no-invitation bootstrap gap for TEE fleet-join: the
+    /// founding owner/admin row is written purely locally at namespace
+    /// creation (`handlers/create_group.rs`) and is NOT a replayable
+    /// governance op, so a node that replays the namespace DAG never learns
+    /// who the admin is and rejects every authority-checked op. The invited
+    /// path recovers this from the invitation; the TEE path has none, so we
+    /// take the KeyDelivery signer — which can only be an existing member of
+    /// this namespace (they hold the group key), and for the bootstrap case
+    /// is the owner that admitted us.
+    ///
+    /// Strictly gated and idempotent:
+    /// - only acts when `group_id` is the namespace root (`== namespace_id`);
+    /// - only acts when no `GroupMetaValue` is stored yet, so an established
+    ///   node (invited joiner, or a node that already synced meta) keeps its
+    ///   authoritative copy and this is a no-op;
+    /// - `target_application_id` is left zero and self-heals on the first
+    ///   `ContextRegistered` apply (same contract as `join_group`).
+    fn seed_bootstrap_admin_if_absent(
+        &self,
+        group_id: [u8; 32],
+        founder: &PublicKey,
+    ) -> EyreResult<()> {
+        if group_id != self.namespace_id {
+            return Ok(());
+        }
+        let gid = ContextGroupId::from(group_id);
+        if load_group_meta(self.store, &gid)?.is_some() {
+            return Ok(());
+        }
+
+        let meta = calimero_store::key::GroupMetaValue {
+            app_key: [0u8; 32],
+            target_application_id: calimero_primitives::application::ApplicationId::from([0u8; 32]),
+            upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
+            created_at: 0,
+            admin_identity: (*founder).into(),
+            owner_identity: (*founder).into(),
+            migration: None,
+            auto_join: true,
+        };
+        save_group_meta(self.store, &gid, &meta)?;
+
+        if super::get_group_member_role(self.store, &gid, founder)?.is_none() {
+            add_group_member(self.store, &gid, founder, GroupMemberRole::Admin)?;
+        }
+
+        tracing::info!(
+            namespace_id = %hex::encode(group_id),
+            %founder,
+            "seeded founding namespace admin from KeyDelivery signer (TEE bootstrap)"
+        );
+        Ok(())
+    }
+
     fn retry_encrypted_ops_for_group(
         &self,
         group_id: [u8; 32],
@@ -817,7 +913,7 @@ impl<'a> NamespaceGovernance<'a> {
                     record_namespace_retry_event("failed");
                     tracing::warn!(
                         group_id = %hex::encode(group_id),
-                        ?e,
+                        error = %format!("{e:#}"),
                         "failed to retry encrypted op after KeyDelivery"
                     );
                 }
@@ -851,16 +947,17 @@ impl<'a> NamespaceGovernance<'a> {
             signature: ns_op.signature,
         };
 
-        self.apply_group_op_inner(group_id, &ns_op.signer, ns_op.nonce, &signed_group_op.op)
+        self.apply_group_op_inner(group_id, &signed_group_op)
     }
 
     fn apply_group_op_inner(
         &self,
         group_id: &ContextGroupId,
-        signer: &PublicKey,
-        nonce: u64,
-        op: &GroupOp,
+        signed_group_op: &SignedGroupOp,
     ) -> EyreResult<Option<super::DivergenceReport>> {
+        let signer = &signed_group_op.signer;
+        let nonce = signed_group_op.nonce;
+        let op = &signed_group_op.op;
         let last = get_local_gov_nonce(self.store, group_id, signer)?.unwrap_or(0);
         if nonce <= last {
             tracing::debug!(
@@ -923,6 +1020,80 @@ impl<'a> NamespaceGovernance<'a> {
             );
         }
 
+        // Append the decrypted op to the local group op-log, mirroring the
+        // authoring node's `apply_local_signed_group_op`. Several readers
+        // reconstruct namespace-scoped state from this log rather than from
+        // dedicated tables — notably `read_tee_admission_policy`,
+        // `is_quote_hash_used`, and `is_tee_admitted_identity`
+        // (`group_store/tee.rs`). Before this, the op-log was only ever
+        // written on the node that *authored* an op, so a replica that
+        // received the same op via the namespace governance DAG could apply
+        // its state mutation but could NOT later read it back through these
+        // log-scanning helpers. That left a freshly-admitted TEE replica
+        // unable to validate (and therefore apply) its own
+        // `MemberJoinedViaTeeAttestation` op — the policy that admission
+        // requires is read from this very log. Persisting here makes the
+        // replica's op-log symmetric with the author's, so policy / quote /
+        // admitted-identity lookups resolve on every member. The op-log
+        // sequence is node-local (not part of consensus), so a divergent
+        // sequence between nodes is fine. Only persist a *handled* op — an
+        // unhandled variant is intentionally skeleton-only.
+        if handled {
+            let content_hash = signed_group_op
+                .content_hash()
+                .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+            let head = super::get_op_head(self.store, group_id)?;
+            // Idempotency: a re-received op (gossip duplicate, backfill
+            // replay) must not append a second log entry — that would
+            // duplicate policy/quote rows and skew the node-local sequence.
+            // The nonce guard above already short-circuits the common
+            // re-receive; this content-hash check covers the retry path,
+            // which re-applies via `decrypt_and_apply_group_op` (bypassing
+            // the nonce guard's `set_local_gov_nonce` on first apply).
+            let already_logged = head
+                .as_ref()
+                .is_some_and(|h| h.dag_heads.contains(&content_hash));
+            if !already_logged {
+                let next_seq = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
+                let op_bytes =
+                    borsh::to_vec(signed_group_op).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+                let parent_set: std::collections::HashSet<[u8; 32]> =
+                    signed_group_op.parent_op_hashes.iter().copied().collect();
+                let mut new_heads: Vec<[u8; 32]> = head
+                    .map(|h| h.dag_heads)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|h| !parent_set.contains(h))
+                    .collect();
+                new_heads.push(content_hash);
+                super::local_state::persist_group_op_log_entry(
+                    self.store, group_id, next_seq, new_heads, &op_bytes,
+                )?;
+            }
+        }
+
+        // INVARIANT: the per-(group, signer) nonce only advances AFTER the op
+        // has been fully applied above — i.e. `apply_group_op_mutations`
+        // returned `Ok` and (for handled ops) the op-log entry is durably
+        // written. Any precondition failure inside `apply_group_op_mutations`
+        // (e.g. `MemberJoinedViaTeeAttestation` reading a not-yet-visible
+        // `TeeAdmissionPolicySet`, or a verifier-membership check that depends
+        // on an earlier op) returns `Err` via the `?` above and short-circuits
+        // BEFORE this line, so the nonce is left unadvanced and the op is
+        // re-attempted on the next sync/retry pass once its predecessor op is
+        // durable. This is what lets a freshly-admitted TEE replica recover:
+        // within a single retry batch the policy op (nonce N) commits its
+        // op-log entry (the store is unbuffered, so the write is immediately
+        // readable), and the membership op (nonce N+1) — applied next because
+        // candidates are sorted by (signer, nonce) — sees it. Were the policy
+        // ever not-yet-visible, the membership op would `Err` here and NOT burn
+        // its nonce, so a later round retries it rather than skipping it
+        // forever as "already-processed". Conversely a genuinely-applied op
+        // (or an unhandled skeleton variant) reaches this line and advances the
+        // nonce so it is not replayed. We deliberately do NOT advance the nonce
+        // for a deferrable precondition failure, and we deliberately DO advance
+        // it for a successful apply — the security check against the policy is
+        // never skipped, only made visible in time.
         set_local_gov_nonce(self.store, group_id, signer, nonce)?;
         Ok(divergence)
     }

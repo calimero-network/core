@@ -323,6 +323,34 @@ pub async fn handler(
                             "re-announce publish failed; will retry next cycle"
                         ),
                     }
+
+                    // Bootstrap pull: a bare announcer holds NO namespace
+                    // governance state (it only `subscribe_namespace`'d to send
+                    // the announce). Once the verifier admits it, the verifier
+                    // publishes the membership op (encrypted with the namespace
+                    // group key) plus a `KeyDelivery` wrapping that key for this
+                    // node — but both ride the namespace governance DAG, which
+                    // this node has not pulled yet. The beacon-driven anti-entropy
+                    // path deliberately skips a node with no local DAG head (it
+                    // would race the bootstrap and pull undecryptable skeletons),
+                    // so nothing pulls the DAG for us automatically. Trigger the
+                    // pull ourselves each cycle: it fetches the full namespace
+                    // governance DAG from a mesh peer, applies the `KeyDelivery`
+                    // (decryptable with our namespace identity SK alone), then
+                    // retries the previously-undecryptable membership op now that
+                    // the group key is present. After that the `list_group_contexts`
+                    // self-confirm above resolves and we join + replicate contexts.
+                    // Best-effort: a missing mesh peer is logged inside
+                    // `sync_namespace` and retried next cycle. Guarded by the same
+                    // `now < deadline` check as the re-announce because it is a
+                    // network op that should not run past the deadline.
+                    if let Err(sync_err) = state.node_client.sync_namespace(group_id_bytes).await {
+                        tracing::debug!(
+                            group_id = %req.group_id,
+                            error = ?sync_err,
+                            "namespace governance bootstrap pull failed; will retry next cycle"
+                        );
+                    }
                 }
             }
         }

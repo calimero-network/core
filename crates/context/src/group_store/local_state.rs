@@ -109,6 +109,40 @@ pub(crate) fn append_op_log_entry(
     Ok(())
 }
 
+/// Append an op to the group op-log and advance the op head, WITHOUT
+/// touching the per-signer nonce.
+///
+/// Used by the namespace-governance apply path
+/// (`namespace_governance::apply_group_op_inner`), which manages the nonce
+/// itself via `set_local_gov_nonce`. The authoring path uses
+/// [`persist_group_governance_progress`] instead, which also writes the
+/// nonce in the same batch. Keeping these separate avoids the
+/// namespace-governance path double-writing the nonce.
+pub(crate) fn persist_group_op_log_entry(
+    store: &Store,
+    group_id: &ContextGroupId,
+    sequence: u64,
+    dag_heads: Vec<[u8; 32]>,
+    op_bytes: &[u8],
+) -> EyreResult<()> {
+    let gid = group_id.to_bytes();
+    let mut handle = store.handle();
+
+    let op_log_key = GroupOpLog::new(gid, sequence);
+    handle.put(&op_log_key, &op_bytes.to_vec())?;
+
+    let head_key = GroupOpHead::new(gid);
+    handle.put(
+        &head_key,
+        &GroupOpHeadValue {
+            sequence,
+            dag_heads,
+        },
+    )?;
+
+    Ok(())
+}
+
 pub(crate) fn persist_group_governance_progress(
     store: &Store,
     group_id: &ContextGroupId,
