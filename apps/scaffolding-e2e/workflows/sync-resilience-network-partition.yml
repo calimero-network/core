@@ -55,6 +55,19 @@ name: Sync Resilience — Network Partition
 
 force_pull_image: false
 
+# Selects merobox's `run_multiple_nodes` startup path, which is the
+# one that triggers `_wire_cluster_bootstrap_peers` to populate each
+# node's `bootstrap.nodes` with the sibling's bridge address — on top
+# of the preserved devnet boot-node, per the cluster-wiring fix in
+# merobox PR #253. Without `restart: true`, merobox starts each node
+# individually via the no-restart loop, the wiring step never runs,
+# and with `mdns: false` below the two nodes have no way to find each
+# other — `join_namespace` fails at the setup phase with "could not
+# open a namespace-join stream to any mesh peer". Fresh-CI nodes are
+# always cold-started, so "restart" here is a no-op for the lifecycle
+# and just selects the right code path.
+restart: true
+
 # Keep `merod init`'s default boot-node (the public devnet from
 # `crates/network/primitives/src/config.rs`); see header for why.
 preserve_default_bootstrap: true

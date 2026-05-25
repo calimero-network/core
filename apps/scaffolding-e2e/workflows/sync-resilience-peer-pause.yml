@@ -31,6 +31,13 @@ name: Sync Resilience — Peer Pause
 
 force_pull_image: false
 
+# Triggers merobox's `_wire_cluster_bootstrap_peers` so each node's
+# `bootstrap.nodes` is populated with the sibling's bridge address.
+# Without this + `mdns: false`, the two nodes can't find each other
+# at setup time. See sync-resilience-network-partition.yml for the
+# full rationale.
+restart: true
+
 # Keep `merod init`'s default boot-node (public devnet from
 # `crates/network/primitives/src/config.rs`); see header for why.
 preserve_default_bootstrap: true
