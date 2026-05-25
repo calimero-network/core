@@ -732,53 +732,52 @@ fn write_migration_state(
 
     let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
     let result = with_runtime_env(runtime_env, || -> Result<_, StorageError> {
-        let write_result = (|| -> Result<_, StorageError> {
-            // Write the entry — this updates the entry's Index and propagates hashes
-            // up to the Merkle tree root via recalculate_ancestor_hashes_for.
-            let save_result =
-                Interface::<MainStorage>::save_raw(root_entry_id, entry_bytes, metadata)?;
+        let write_result = (|| -> Result<[u8; 32], StorageError> {
+            // Write the migrated root state via the pre-merged primitive
+            // introduced by #2465. The caller (this function) is the
+            // source of truth for the new bytes — the wasm migrate
+            // function already produced fully-resolved v2-shaped state,
+            // so there is no host-side merge to dispatch and no app-type
+            // entry in the host's merge registry (which lives in the
+            // wasm runtime since #2465's host/WASM split). Using
+            // `save_raw` here hit `MergeFailure(NoMergeFunctionRegistered)`
+            // because save_raw expects a registered Mergeable for
+            // root-class entries — that's the #2433 regression this
+            // function existed to trigger.
+            let _entry_own_hash = Interface::<MainStorage>::write_pre_merged_root_state(
+                root_entry_id,
+                &entry_bytes,
+                metadata,
+            )?;
 
-            if save_result.is_none() {
-                return Ok(None);
-            }
-
-            // Read the Merkle tree root hash — same as the normal execution flow
-            // save_raw returns the *entry node's* full_hash, not the tree root's.
+            // Read the Merkle tree root hash — write_pre_merged_root_state
+            // returns the *entry node's* full_hash, but the migration
+            // caller (system.rs's normal execution flow analogue) needs
+            // the tree root hash for ContextMeta.root_hash.
             let root_hash = Index::<MainStorage>::get_hashes_for(Id::root())?
                 .map(|(full_hash, _)| full_hash)
                 .unwrap_or([0; 32]);
 
-            Ok(Some(root_hash))
+            Ok(root_hash)
         })();
 
-        // `save_raw` pushes sync actions into thread-local DELTA_CONTEXT. This
-        // migration path does not emit a delta artifact, so explicitly discard
-        // pending actions to avoid contaminating subsequent operations on the
-        // same runtime thread.
+        // The storage-write path pushes sync actions into thread-local
+        // DELTA_CONTEXT. This migration path does not emit a delta artifact,
+        // so explicitly discard pending actions to avoid contaminating
+        // subsequent operations on the same runtime thread.
         clear_pending_delta();
 
         write_result
     });
 
     match result {
-        Ok(Some(root_hash)) => {
+        Ok(root_hash) => {
             debug!(
                 %context_id,
                 root_hash = ?root_hash,
                 "Migrated state written successfully with Index update"
             );
             Ok(root_hash)
-        }
-        Ok(None) => {
-            error!(
-                %context_id,
-                "Migration state write was unexpectedly skipped - timestamp conflict"
-            );
-            bail!(
-                "Migration state write was unexpectedly skipped - timestamp conflict. \
-                 This indicates a concurrent update conflict that prevented the migration \
-                 state from being written. The migration must be retried."
-            )
         }
         Err(e) => {
             error!(

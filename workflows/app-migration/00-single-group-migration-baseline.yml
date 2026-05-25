@@ -1,0 +1,198 @@
+name: 00 — Single-group migration baseline (v1 → v2)
+description: >
+  Single-node, single-group end-to-end migration. Installs
+  migration-suite-v1, creates a context, writes v1 state, installs
+  migration-suite-v2-add-field, runs upgrade_group with
+  migrate_v1_to_v2. Asserts the Migrated event + v2 schema shape.
+
+  Acts as the regression guard for #2433: that PR changed Root<T>
+  merge semantics, breaking write_migration_state's save_raw call
+  with MergeFailure(NoMergeFunctionRegistered). Pre-fix this
+  workflow fails at the upgrade_group step; post-fix it passes.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-baseline
+  base_port: 9220
+  base_rpc_port: 9320
+
+steps:
+  - name: Install migration-suite-v1
+    type: install_application
+    node: app-migration-baseline-1
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install migration-suite-v2-add-field
+    type: install_application
+    node: app-migration-baseline-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Create namespace
+    type: create_namespace
+    node: app-migration-baseline-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-baseline-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup
+    type: create_group_in_namespace
+    node: app-migration-baseline-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "baseline-migration"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-baseline-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Set description (v1)
+    type: call
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "set-before-migration"
+
+  - name: Increment counter (v1)
+    type: call
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Read v1 schema_info (sanity)
+    type: call
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema before migration
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "description": "set-before-migration", "counter": "1"}})'
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-baseline-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade with migrate_v1_to_v2
+    type: upgrade_group
+    node: app-migration-baseline-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  - name: Wait for upgrade + migration to apply
+    type: wait
+    seconds: 8
+
+  - name: Read upgrade status
+    type: get_group_upgrade_status
+    node: app-migration-baseline-1
+    group_id: "{{group_id}}"
+
+  - name: Assert Migrated event observed (v1 → v2)
+    type: assert_log_present
+    nodes:
+      - app-migration-baseline-1
+    patterns:
+      - "Migrated"
+      - "1.0.0"
+      - "2.0.0"
+    min_matches: 1
+
+  - name: Read post-migration schema_info
+    type: call
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 schema after migration
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"description": "set-before-migration", "counter": "1"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"notes": "added in v2"}})'
+
+  - name: Call v2-only setter set_notes
+    type: call
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    method: set_notes
+    args:
+      notes: "written-post-migration"
+
+  - name: Read notes via v2 getter
+    type: call
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    method: get_notes
+    outputs:
+      notes_after: result
+
+  - name: Assert v2 setter/getter round-tripped
+    type: json_assert
+    statements:
+      - 'json_equal({{notes_after}}, {"output": "written-post-migration"})'
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-baseline-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-baseline-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-baseline-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-baseline-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-baseline-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
