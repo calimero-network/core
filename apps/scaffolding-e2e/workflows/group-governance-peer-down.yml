@@ -113,8 +113,17 @@ steps:
     wait_timeout: 60
 
   - name: Wait for node-2 to catch up
+    # `context_id` polls WASM-root convergence; `group_id` polls
+    # `groupStateHash` convergence. The next step reads
+    # `get_member_capabilities` — a governance-store lookup that
+    # depends on the namespace governance DAG, NOT the WASM root.
+    # Without the `group_id` poll, this step trivially passes because
+    # the WASM root never changed (governance ops don't touch it), and
+    # the assertion fires before node-2 has applied the missed
+    # governance ops. See the post-#2470 flake on this same job.
     type: wait_for_sync
     context_id: '{{ctx_id}}'
+    group_id: '{{namespace_id}}'
     nodes:
       - e2e-node-1
       - e2e-node-2
