@@ -2106,16 +2106,30 @@ impl<S: StorageAdaptor> Interface<S> {
         // without a transactional storage layer, and it's the lesser
         // evil compared to the inverse (index advertising bytes that
         // aren't there) because:
-        //   * The orphan is unreachable via the normal read path:
-        //     `find_by_id` consults the index first (line 1689,
-        //     1702) and bails when the index entry is missing or
-        //     deleted.
+        //   * `find_by_id` consults the index first (line 1689, 1702)
+        //     and bails when the index entry is missing or deleted —
+        //     so the read path used by collections (`Collection::get`,
+        //     `Collection::entries`) silently skips the orphan.
+        //   * `find_by_id_raw` does NOT consult the index — it returns
+        //     raw bytes whenever `Key::Entry(id)` is present. In
+        //     principle this exposes the orphan, but every production
+        //     caller (`compare_trees` and its sync-layer cousins in
+        //     `hash_comparison{,_protocol}.rs`, `level_sync.rs`)
+        //     reaches `find_by_id_raw` only after iterating a parent's
+        //     index-derived child list — and the orphan's id is, by
+        //     definition, not in any parent's index. `compare_trees`
+        //     called directly with the orphan's id also bails: line
+        //     1525 returns `IndexNotFound` from the `local_metadata`
+        //     check before the orphan bytes can become an `Action`.
         //   * The next successful `apply_action` for the same id
         //     overwrites the orphan bytes, so the storage cost is
         //     transient.
         // The pre-fix ordering (index-then-entry) had the symmetric
         // problem with much worse user-visible behavior — the rga
-        // "Hello Wor" flake described above.
+        // "Hello Wor" flake described above — because the read path
+        // *does* propagate index-advertised entries through every
+        // production caller, so a "hash exists, bytes don't"
+        // inconsistency surfaces immediately as a wrong-content read.
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
 
         if id.is_root() {
@@ -2223,16 +2237,20 @@ impl<S: StorageAdaptor> Interface<S> {
         // exist under this key"), not a success/failure flag — write
         // failures trap from the runtime as `HostError`, not `Ok(false)`.
         //
-        // Same orphan trade-off as `save_internal`: if `update_hash_for`
-        // errors below, the merged bytes are persisted but the index
-        // isn't updated. The orphan is unreachable via the normal read
-        // path (`find_by_id` bails on missing index) and will be
-        // overwritten by the next successful merge for this id. We
-        // don't re-check the LWW guard after the entry write because
-        // the only thing that could invalidate it is a concurrent
-        // writer for the same id, and the storage layer doesn't
-        // serialize concurrent writes anyway — re-checking would just
-        // narrow the race window without closing it.
+        // Same orphan trade-off as `save_internal` (see the longer
+        // comment there): if `update_hash_for` errors below, the
+        // merged bytes are persisted but the index isn't updated.
+        // `find_by_id` bails on the missing index; `find_by_id_raw`
+        // would expose the orphan in principle, but every production
+        // caller reaches it only via an index-derived child list that
+        // the orphan isn't in. The next successful merge for this id
+        // overwrites the orphan bytes.
+        //
+        // We don't re-check the LWW guard after the entry write
+        // because the only thing that could invalidate it is a
+        // concurrent writer for the same id, and the storage layer
+        // doesn't serialize concurrent writes anyway — re-checking
+        // would just narrow the race window without closing it.
         _ = S::storage_write(Key::Entry(id), merged);
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
         Ok(full_hash)
