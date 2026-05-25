@@ -3986,6 +3986,198 @@ fn replica_op_log_dedup_survives_head_pruning() {
     );
 }
 
+/// A stale op-head (crash between the entry `put` and the head `put`) must not
+/// let a later op overwrite the orphan entry (PR #2473, finding B1).
+///
+/// `persist_group_op_log_entry` writes the op-log entry first, then the head
+/// (non-atomic — `calimero-store` has no batch). A crash in between leaves an
+/// ORPHAN entry at sequence N while the head still points at N-1. Deriving the
+/// next op's sequence from `GroupOpHeadValue.sequence` would then reuse N and
+/// silently overwrite the orphan (e.g. clobbering a `TeeAdmissionPolicySet`
+/// that a later membership op depends on). The fix derives `next_seq` from the
+/// ACTUAL max op-log sequence, so the next op always lands strictly above every
+/// persisted entry.
+///
+/// This test:
+///   1. applies op A (nonce 1) via the real apply path — entry + head at seq 1,
+///   2. simulates the crash by rewinding the head to seq 0 (the entry stays),
+///   3. applies a DIFFERENT op B (nonce 2) and asserts the op-log now holds
+///      TWO entries (A preserved at seq 1, B appended at seq 2) — i.e. B did
+///      not overwrite the orphan.
+#[test]
+fn replica_stale_head_does_not_overwrite_orphan_entry() {
+    use calimero_context_client::local_governance::{
+        NamespaceOp, SignedGroupOp, SignedNamespaceOp, SIGNED_GROUP_OP_SCHEMA_VERSION,
+    };
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    let signer_sk = PrivateKey::random(&mut rng);
+    let signer_pk = signer_sk.public_key();
+
+    let namespace_id = [0xC5u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(signer_pk)).unwrap();
+    add_group_member(&store, &ns_gid, &signer_pk, GroupMemberRole::Admin).unwrap();
+    let group_key = [0x5Bu8; 32];
+    let key_id = store_group_key(&store, &ns_gid, &group_key).unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    let group_op_content_hash = |ns_op: &SignedNamespaceOp, inner: &GroupOp| -> [u8; 32] {
+        SignedGroupOp {
+            version: SIGNED_GROUP_OP_SCHEMA_VERSION,
+            group_id: namespace_id,
+            parent_op_hashes: ns_op.parent_op_hashes.clone(),
+            state_hash: ns_op.state_hash,
+            signer: ns_op.signer,
+            nonce: ns_op.nonce,
+            op: inner.clone(),
+            signature: ns_op.signature,
+        }
+        .content_hash()
+        .unwrap()
+    };
+
+    let make_policy_op = |mrtd: &str| GroupOp::TeeAdmissionPolicySet {
+        allowed_mrtd: vec![mrtd.to_owned()],
+        allowed_rtmr0: vec![],
+        allowed_rtmr1: vec![],
+        allowed_rtmr2: vec![],
+        allowed_rtmr3: vec![],
+        allowed_tcb_statuses: vec!["ok".to_owned()],
+        accept_mock: true,
+    };
+
+    // ---- Op A (nonce 1): entry + head land at seq 1. ----
+    let inner_a = make_policy_op("mA");
+    let op_a = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: namespace_id,
+            key_id,
+            encrypted: encrypt_group_op(&group_key, &inner_a).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    let hash_a = group_op_content_hash(&op_a, &inner_a);
+    gov.apply_signed_op(&op_a).expect("apply op A");
+    assert_eq!(read_op_log_after(&store, &ns_gid, 0, 10).unwrap().len(), 1);
+    assert_eq!(get_op_head(&store, &ns_gid).unwrap().unwrap().sequence, 1);
+
+    // ---- Crash simulation: the orphan condition. Entry at seq 1 survives,
+    // but the head is rewound to seq 0 as if the head `put` never committed. ----
+    set_op_head(&store, &ns_gid, 0, vec![]).unwrap();
+
+    // ---- Op B (nonce 2), different content. With a stale-head-derived
+    // sequence it would reuse seq 1 and clobber A. ----
+    let inner_b = make_policy_op("mB");
+    let op_b = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        2,
+        NamespaceOp::Group {
+            group_id: namespace_id,
+            key_id,
+            encrypted: encrypt_group_op(&group_key, &inner_b).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+    let hash_b = group_op_content_hash(&op_b, &inner_b);
+    gov.apply_signed_op(&op_b).expect("apply op B");
+
+    // The decisive assertions: A's orphan entry is preserved (still at seq 1),
+    // B appended at seq 2, and both content hashes are present.
+    let entries = read_op_log_after(&store, &ns_gid, 0, 10).unwrap();
+    assert_eq!(
+        entries.len(),
+        2,
+        "op B must NOT overwrite the orphan entry left by the simulated crash"
+    );
+    assert_eq!(entries[0].0, 1, "op A stays at seq 1");
+    assert_eq!(entries[1].0, 2, "op B appended at seq 2, above the orphan");
+    assert!(
+        super::local_state::op_log_contains_content_hash(&store, &ns_gid, &hash_a).unwrap(),
+        "op A's content must survive"
+    );
+    assert!(
+        super::local_state::op_log_contains_content_hash(&store, &ns_gid, &hash_b).unwrap(),
+        "op B's content must be logged"
+    );
+}
+
+/// A partial bootstrap seed (meta written, admin member row missing) must be
+/// repaired by a later seed call, not skipped forever (PR #2473, finding C).
+///
+/// `seed_bootstrap_admin_if_absent` writes two non-atomic rows: group meta and
+/// the admin member row. A crash between them leaves meta present but the member
+/// row missing. Gating the whole seed on `load_group_meta(..).is_some()` would
+/// return early forever and never add the member row, so encrypted replay keeps
+/// failing the verifier-membership check with no way to self-repair. The fix
+/// gates each row on its own presence and always ensures the member row exists,
+/// so a later `KeyDelivery` re-entry repairs the partial seed.
+#[test]
+fn seed_bootstrap_admin_repairs_missing_member_row() {
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::namespace_governance::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    let founder_sk = PrivateKey::random(&mut rng);
+    let founder = founder_sk.public_key();
+
+    let namespace_id = [0xC6u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    // ---- First seed: both meta and the admin member row are written. ----
+    gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
+        .expect("initial seed");
+    assert!(load_group_meta(&store, &ns_gid).unwrap().is_some());
+    assert_eq!(
+        get_group_member_role(&store, &ns_gid, &founder).unwrap(),
+        Some(GroupMemberRole::Admin),
+        "first seed must add the admin member row"
+    );
+
+    // ---- Simulate the partial-seed crash: meta survives, member row lost. ----
+    remove_group_member(&store, &ns_gid, &founder).unwrap();
+    assert!(load_group_meta(&store, &ns_gid).unwrap().is_some());
+    assert_eq!(
+        get_group_member_role(&store, &ns_gid, &founder).unwrap(),
+        None,
+        "member row is gone, only meta remains (partial seed)"
+    );
+
+    // ---- Re-seed (later KeyDelivery re-entry): the OLD code returned early on
+    // the meta gate and never repaired the member row. ----
+    gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
+        .expect("repair seed");
+    assert_eq!(
+        get_group_member_role(&store, &ns_gid, &founder).unwrap(),
+        Some(GroupMemberRole::Admin),
+        "re-seed must repair the missing admin member row"
+    );
+}
+
 fn append_tee_policy_op(store: &Store, group: &ContextGroupId, seq: u64, mrtd: &str) {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;

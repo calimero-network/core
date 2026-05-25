@@ -858,7 +858,10 @@ impl<'a> NamespaceGovernance<'a> {
     /// governance DAG genesis and drops the `KeyDelivery`-signer TOFU entirely.
     /// That touches the `RootOp` borsh discriminant set and must be coordinated
     /// as a versioned schema change.
-    fn seed_bootstrap_admin_if_absent(
+    // `pub(crate)` (not private) so the repair/idempotency invariant below is
+    // directly exercisable from `group_store::tests` without driving a full
+    // `KeyDelivery` apply; it is not part of any published surface.
+    pub(crate) fn seed_bootstrap_admin_if_absent(
         &self,
         group_id: [u8; 32],
         founder: &PublicKey,
@@ -867,31 +870,54 @@ impl<'a> NamespaceGovernance<'a> {
             return Ok(());
         }
         let gid = ContextGroupId::from(group_id);
-        if load_group_meta(self.store, &gid)?.is_some() {
-            return Ok(());
+
+        // Repairable / idempotent seed. The seed writes two independent rows —
+        // group meta and the admin member row — and `calimero-store` has no
+        // atomic multi-key write (see the CRASH-SAFETY INVARIANT in
+        // `local_state::persist_group_op_log_entry`), so a crash (or a transient
+        // error) between the two `put`s can leave meta present but the admin
+        // member row missing. Gating the WHOLE seed on `load_group_meta(..)
+        // .is_some()` would then return early forever, never adding the member
+        // row, and encrypted replay would keep failing the verifier-membership
+        // check with no way to self-repair.
+        //
+        // Instead, gate each row on its OWN presence: only write meta if absent,
+        // and ALWAYS ensure the admin member row exists. A later `KeyDelivery`
+        // re-enters here and repairs whichever half a previous partial seed left
+        // behind. Both writes are individually idempotent, so re-running is safe.
+        let meta_existed = load_group_meta(self.store, &gid)?.is_some();
+        if !meta_existed {
+            let meta = calimero_store::key::GroupMetaValue {
+                app_key: [0u8; 32],
+                target_application_id: calimero_primitives::application::ApplicationId::from(
+                    [0u8; 32],
+                ),
+                upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
+                created_at: 0,
+                admin_identity: (*founder).into(),
+                owner_identity: (*founder).into(),
+                migration: None,
+                auto_join: true,
+            };
+            save_group_meta(self.store, &gid, &meta)?;
         }
 
-        let meta = calimero_store::key::GroupMetaValue {
-            app_key: [0u8; 32],
-            target_application_id: calimero_primitives::application::ApplicationId::from([0u8; 32]),
-            upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
-            created_at: 0,
-            admin_identity: (*founder).into(),
-            owner_identity: (*founder).into(),
-            migration: None,
-            auto_join: true,
-        };
-        save_group_meta(self.store, &gid, &meta)?;
-
-        if super::get_group_member_role(self.store, &gid, founder)?.is_none() {
+        let member_existed = super::get_group_member_role(self.store, &gid, founder)?.is_some();
+        if !member_existed {
             add_group_member(self.store, &gid, founder, GroupMemberRole::Admin)?;
         }
 
-        tracing::info!(
-            namespace_id = %hex::encode(group_id),
-            %founder,
-            "seeded founding namespace admin from KeyDelivery signer (TEE bootstrap)"
-        );
+        // Nothing to do (and nothing to log) if both halves were already
+        // present — the common steady-state re-entry.
+        if !meta_existed || !member_existed {
+            tracing::info!(
+                namespace_id = %hex::encode(group_id),
+                %founder,
+                meta_seeded = !meta_existed,
+                member_seeded = !member_existed,
+                "seeded/repaired founding namespace admin from KeyDelivery signer (TEE bootstrap)"
+            );
+        }
         Ok(())
     }
 
@@ -1080,7 +1106,18 @@ impl<'a> NamespaceGovernance<'a> {
             let content_hash = signed_group_op
                 .content_hash()
                 .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
-            let head = super::get_op_head(self.store, group_id)?;
+            // CONCURRENCY ASSUMPTION (single-threaded per-group apply): the
+            // read-then-write of the op-log below (max-sequence scan + persist)
+            // is NOT individually atomic, so it is only correct if applies for a
+            // given group never interleave. They don't: every receive-path apply
+            // runs inside `ContextManager`'s actix actor, which processes its
+            // mailbox sequentially, so all `apply_signed_op` →
+            // `apply_group_op_inner` calls for one namespace/group are
+            // serialized. The authoring path (`apply_local_signed_group_op`)
+            // documents the same "callers must serialize per `group_id`"
+            // contract. Concurrent applies for the SAME group would be unsafe
+            // (duplicate/overwritten sequences); cross-group concurrency is fine.
+            //
             // Idempotency: a re-received op (gossip duplicate, backfill
             // replay) must not append a second log entry — that would
             // duplicate policy/quote rows and skew the node-local sequence.
@@ -1090,32 +1127,44 @@ impl<'a> NamespaceGovernance<'a> {
             // the nonce guard's `set_local_gov_nonce` on first apply).
             //
             // Dedup against the PERSISTED op-log, not the op-head's
-            // `dag_heads`. `dag_heads` is only the current DAG frontier:
-            // when a later op supersedes this one, this op's `content_hash`
-            // is pruned out of the head set (`filter(!parent_set.contains)`
-            // below), so a `dag_heads.contains` check would miss a
-            // superseded-then-replayed op and append a duplicate — skewing
+            // `dag_heads`: scanning the log is monotonic, so an op that was
+            // ever logged stays deduped, whereas a head-based check would miss
+            // a superseded-then-replayed op and append a duplicate — skewing
             // the very log scans (`is_quote_hash_used`, policy replay,
-            // `read_tee_admission_policy`) this entry feeds. Scanning the log
-            // is monotonic: an op that was ever logged stays deduped.
+            // `read_tee_admission_policy`) this entry feeds.
             let already_logged = super::local_state::op_log_contains_content_hash(
                 self.store,
                 group_id,
                 &content_hash,
             )?;
             if !already_logged {
-                let next_seq = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
+                // Derive `next_seq` from the ACTUAL max op-log sequence, not
+                // from `GroupOpHeadValue.sequence`. The head can lag the log
+                // after a crash that landed between the entry `put` and the
+                // head `put` in `persist_group_op_log_entry`: a stale head
+                // would make a different op reuse the orphan's sequence and
+                // silently overwrite it (e.g. losing a `TeeAdmissionPolicySet`
+                // that a later membership op depends on). Scanning the log is
+                // self-healing — the next op always lands strictly above every
+                // persisted entry. This also removes any reliance on a possibly
+                // stale `get_op_head` snapshot for sequencing.
+                let next_seq = super::local_state::max_op_log_sequence(self.store, group_id)?
+                    .map_or(1, |max| max.saturating_add(1));
                 let op_bytes =
                     borsh::to_vec(signed_group_op).map_err(|e| eyre::eyre!("borsh: {e}"))?;
-                let parent_set: std::collections::HashSet<[u8; 32]> =
-                    signed_group_op.parent_op_hashes.iter().copied().collect();
-                let mut new_heads: Vec<[u8; 32]> = head
-                    .map(|h| h.dag_heads)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|h| !parent_set.contains(h))
-                    .collect();
-                new_heads.push(content_hash);
+                // The group op-log is a node-local LINEAR append-only sequence;
+                // its op-head's `dag_heads` is a purely-local frontier that
+                // never escapes the node (all wire/heartbeat/readiness positions
+                // read `NamespaceGovHead.dag_heads`, a different key). Set the
+                // head to exactly the just-logged op's hash. The previous
+                // append-then-prune used `signed_group_op.parent_op_hashes`,
+                // which on this replica path are the reconstructed NAMESPACE op's
+                // DAG parents (see `decrypt_and_apply_group_op`), NOT group-op
+                // hashes — so the prune `filter` never matched and `dag_heads`
+                // grew without bound. A linear single-element head is correct for
+                // the only remaining group-op-head reader (the authoring path's
+                // `parent_op_hashes`, also node-local) and bounded by design.
+                let new_heads = vec![content_hash];
                 super::local_state::persist_group_op_log_entry(
                     self.store, group_id, next_seq, new_heads, &op_bytes,
                 )?;

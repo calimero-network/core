@@ -132,8 +132,13 @@ pub(crate) fn append_op_log_entry(
 ///   `sequence` while the head still points at `sequence - 1`. This is
 ///   benign — every reader scans the log directly (`read_op_log_after`,
 ///   `read_tee_admission_policy`, `is_quote_hash_used`), so the entry is
-///   already visible; the next apply re-derives `next_seq` from the stale
-///   head and overwrites the orphan at the same `(group_id, sequence)` key.
+///   already visible; and the replica apply path derives `next_seq` from
+///   [`max_op_log_sequence`] (the actual max persisted sequence), NOT from
+///   this possibly-stale head, so the next op lands strictly above the orphan
+///   and never overwrites it. (The authoring side still derives `next_seq`
+///   from the head, but a crash there leaves an entry this node authored with
+///   its nonce un-advanced, so the next authored op re-derives the identical
+///   op and an overwrite is an idempotent self-replay.)
 /// - The reverse order (head first) would be UNSAFE: a crash would leave a
 ///   head whose `sequence` references a log entry that was never written,
 ///   so `read_op_log_after` would silently skip the gap and the op-head's
@@ -226,6 +231,32 @@ pub fn read_op_log_after(
     }
 
     Ok(results)
+}
+
+/// The highest sequence number present in the group's op-log, or `None` if the
+/// log is empty.
+///
+/// Derived by scanning the persisted op-log rather than reading
+/// `GroupOpHeadValue.sequence`, so it is correct even when the head is stale
+/// relative to the log — e.g. after a crash that landed between the entry `put`
+/// and the head `put` in [`persist_group_op_log_entry`] (see the CRASH-SAFETY
+/// INVARIANT there). The replica apply path uses this to derive `next_seq` so a
+/// new op never reuses a sequence already occupied by an orphan entry, which
+/// would silently overwrite it.
+///
+/// Keys are big-endian on the sequence component, so the op-log iterates in
+/// ascending order and the last entry carries the max; cost is the same O(n)
+/// governance-only scan the other log readers already pay.
+pub(crate) fn max_op_log_sequence(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<u64>> {
+    let gid = group_id.to_bytes();
+    let keys =
+        collect_keys_with_prefix(store, GroupOpLog::new(gid, 1), GROUP_OP_LOG_PREFIX, |k| {
+            k.group_id() == gid
+        })?;
+    Ok(keys.last().map(GroupOpLog::sequence))
 }
 
 /// Whether the group op-log already holds an entry whose op has the given
