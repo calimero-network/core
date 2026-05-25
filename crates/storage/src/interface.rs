@@ -2097,8 +2097,9 @@ impl<S: StorageAdaptor> Interface<S> {
         // success/failure. Actual write failures surface as `HostError`
         // traps from the runtime (`KeyLengthOverflow`,
         // `ValueLengthOverflow`, `InvalidMemoryAccess`), not as
-        // `Ok(false)`. Discard the bool.
-        _ = S::storage_write(Key::Entry(id), &final_data);
+        // `Ok(false)`. Discard the bool — `let _ignored = ...` matches
+        // the style used at the `storage_remove` site (line 1448).
+        let _ignored = S::storage_write(Key::Entry(id), &final_data);
 
         // If `update_hash_for` errors below after the entry write above
         // succeeded, the entry bytes remain in storage with no index
@@ -2251,7 +2252,7 @@ impl<S: StorageAdaptor> Interface<S> {
         // concurrent writer for the same id, and the storage layer
         // doesn't serialize concurrent writes anyway — re-checking
         // would just narrow the race window without closing it.
-        _ = S::storage_write(Key::Entry(id), merged);
+        let _ignored = S::storage_write(Key::Entry(id), merged);
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
         Ok(full_hash)
     }
