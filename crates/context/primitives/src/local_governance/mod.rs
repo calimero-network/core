@@ -39,3 +39,9 @@ pub use calimero_governance_types::{
 // file; preserve that.
 #[deprecated(note = "use calimero_governance_types::wire::* directly")]
 pub use calimero_governance_types::wire::SignableReadinessBeacon;
+
+// Preserve the `local_governance::wire` module path itself for callers
+// who used the qualified form (e.g. `local_governance::wire::SomeType`).
+// Same deprecation nudge as the flat re-exports above.
+#[deprecated(note = "use calimero_governance_types::wire directly")]
+pub use calimero_governance_types::wire;

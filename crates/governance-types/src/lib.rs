@@ -551,6 +551,16 @@ pub struct SignableNamespaceOp {
     pub version: u8,
     pub namespace_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
+    /// Convergence claim about the group-meta state at sign-time.
+    ///
+    /// **Zero-value bypass**: `[0u8; 32]` disables the staleness
+    /// check on apply (used by genesis ops where there is no prior
+    /// state to claim against). Non-zero values are verified against
+    /// the receiver's locally-computed state hash and trigger a
+    /// rejection (group ops) or divergence warning (namespace ops)
+    /// on mismatch. Callers that aren't genesis MUST pass a real
+    /// hash — leaving `state_hash` zeroed for a mid-DAG op silently
+    /// bypasses convergence detection.
     pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
@@ -563,6 +573,16 @@ pub struct SignedNamespaceOp {
     pub version: u8,
     pub namespace_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
+    /// Convergence claim about the group-meta state at sign-time.
+    ///
+    /// **Zero-value bypass**: `[0u8; 32]` disables the staleness
+    /// check on apply (used by genesis ops where there is no prior
+    /// state to claim against). Non-zero values are verified against
+    /// the receiver's locally-computed state hash and trigger a
+    /// rejection (group ops) or divergence warning (namespace ops)
+    /// on mismatch. Callers that aren't genesis MUST pass a real
+    /// hash — leaving `state_hash` zeroed for a mid-DAG op silently
+    /// bypasses convergence detection.
     pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
@@ -632,6 +652,18 @@ impl SignedNamespaceOp {
     }
 
     /// Verify schema version and Ed25519 signature.
+    ///
+    /// **Cryptographic integrity only.** A successful return means
+    /// `self.signature` is a valid signature over the canonical bytes
+    /// produced from `self.signer`'s public key — nothing more. It
+    /// does **not** verify that `self.signer` is an authorized
+    /// member, admin, or current namespace participant. Callers MUST
+    /// check membership/role authorization separately before
+    /// accepting the op (the apply path in `calimero-context` does
+    /// this via `membership_status_at` / `is_group_admin` /
+    /// `is_authoritative_namespace_identity`). Treating this method
+    /// as an authorization check would accept ops signed by revoked
+    /// or never-admitted keys.
     pub fn verify_signature(&self) -> Result<(), GovernanceError> {
         if self.version != SIGNED_NAMESPACE_OP_SCHEMA_VERSION {
             return Err(GovernanceError::SchemaVersion {
@@ -703,6 +735,16 @@ pub struct SignableGroupOp {
     pub version: u8,
     pub group_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
+    /// Convergence claim about the group-meta state at sign-time.
+    ///
+    /// **Zero-value bypass**: `[0u8; 32]` disables the staleness
+    /// check on apply (used by genesis ops where there is no prior
+    /// state to claim against). Non-zero values are verified against
+    /// the receiver's locally-computed state hash and trigger a
+    /// rejection (group ops) or divergence warning (namespace ops)
+    /// on mismatch. Callers that aren't genesis MUST pass a real
+    /// hash — leaving `state_hash` zeroed for a mid-DAG op silently
+    /// bypasses convergence detection.
     pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
@@ -719,6 +761,16 @@ pub struct SignedGroupOp {
     pub version: u8,
     pub group_id: [u8; 32],
     pub parent_op_hashes: Vec<[u8; 32]>,
+    /// Convergence claim about the group-meta state at sign-time.
+    ///
+    /// **Zero-value bypass**: `[0u8; 32]` disables the staleness
+    /// check on apply (used by genesis ops where there is no prior
+    /// state to claim against). Non-zero values are verified against
+    /// the receiver's locally-computed state hash and trigger a
+    /// rejection (group ops) or divergence warning (namespace ops)
+    /// on mismatch. Callers that aren't genesis MUST pass a real
+    /// hash — leaving `state_hash` zeroed for a mid-DAG op silently
+    /// bypasses convergence detection.
     pub state_hash: [u8; 32],
     pub signer: PublicKey,
     pub nonce: u64,
@@ -791,6 +843,16 @@ impl SignedGroupOp {
     }
 
     /// Verify schema version and Ed25519 signature.
+    ///
+    /// **Cryptographic integrity only.** A successful return means
+    /// `self.signature` is a valid signature over the canonical bytes
+    /// produced from `self.signer`'s public key — nothing more. It
+    /// does **not** verify that `self.signer` is an authorized
+    /// member, admin, or current group participant. Callers MUST
+    /// check membership/role authorization separately before
+    /// accepting the op (the apply path in `calimero-context` does
+    /// this via `membership_status_at`, `is_group_admin`, and the
+    /// per-op permission checks).
     pub fn verify_signature(&self) -> Result<(), GovernanceError> {
         if self.version != SIGNED_GROUP_OP_SCHEMA_VERSION {
             return Err(GovernanceError::SchemaVersion {
