@@ -14,6 +14,7 @@
 //! [`ReadinessCache::await_first_fresh_beacon`], plus `join_namespace`
 //! / `await_namespace_ready`) lives in Phase 8, partially in this
 //! module and partially in [`crate::join_namespace`].
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};

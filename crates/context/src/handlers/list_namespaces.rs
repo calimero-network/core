@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
+
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{ListNamespacesRequest, NamespaceSummary};
 use calimero_context_config::types::ContextGroupId;

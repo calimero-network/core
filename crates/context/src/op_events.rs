@@ -15,6 +15,7 @@
 //! specialized for `ContextRegistered`; this module is its general-
 //! purpose peer covering all op variants that downstream handlers care
 //! about.
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use std::sync::OnceLock;
 

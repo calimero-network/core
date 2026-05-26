@@ -19,6 +19,7 @@
 //! functions in this module so `SyncStateAccess`'s production impl in
 //! `crate::state` and the reconciler itself share a single source of
 //! truth. The fns are independently unit-testable.
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

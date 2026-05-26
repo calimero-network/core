@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
+
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{DeleteNamespaceRequest, DeleteNamespaceResponse};
 use eyre::bail;

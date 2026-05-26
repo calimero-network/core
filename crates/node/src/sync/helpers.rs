@@ -1,6 +1,7 @@
 //! Common helper functions for sync protocols.
 //!
 //! **DRY Principle**: Extract repeated logic from protocol implementations.
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use calimero_node_primitives::sync::TreeLeafData;
 use calimero_primitives::application::ApplicationId;

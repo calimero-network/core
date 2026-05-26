@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
+
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use tracing::{info, warn};
 

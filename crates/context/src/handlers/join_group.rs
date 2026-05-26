@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: per-handler Repository migration deferred to follow-up
+
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;

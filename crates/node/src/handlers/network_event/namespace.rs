@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
+
 use std::collections::HashSet;
 
 use actix::{AsyncContext, WrapFuture};

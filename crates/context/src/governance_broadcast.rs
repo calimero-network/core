@@ -9,6 +9,7 @@
 //!
 //! Tasks 3.2 — 3.4 add `verify_ack`, `assert_transport_ready`, and
 //! `publish_and_await_ack` on top of this skeleton.
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use std::time::{Duration, Instant};
 

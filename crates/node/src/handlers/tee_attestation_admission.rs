@@ -7,6 +7,7 @@
 //!
 //! The heavy lifting (policy lookup, governance op signing, DAG interaction) is
 //! delegated to `calimero_context::group_store` via the `ContextClient`.
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;

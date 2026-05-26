@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
+
 use std::collections::{btree_map, BTreeMap};
 use std::mem;
 use std::sync::Arc;

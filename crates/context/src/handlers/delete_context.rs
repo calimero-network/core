@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
+
 use core::error::Error;
 use std::sync::Arc;
 

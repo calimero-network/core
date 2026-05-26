@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
+
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_client::group::{RetryGroupUpgradeRequest, UpgradeGroupResponse};
 use calimero_context_client::messages::MigrationParams;

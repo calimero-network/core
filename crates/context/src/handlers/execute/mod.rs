@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
+
 use std::borrow::Cow;
 use std::collections::btree_map;
 // Removed: NonZeroUsize (replaced with CausalDelta)

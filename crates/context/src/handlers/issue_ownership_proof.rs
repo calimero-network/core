@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorResponse, Handler, Message};

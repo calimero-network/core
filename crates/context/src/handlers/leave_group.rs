@@ -11,6 +11,7 @@
 //! forward-secrecy rationale (briefly: the leaver cannot generate the
 //! new key without retaining it; proper two-phase rotation is a
 //! deferred follow-up).
+#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
 
 use std::sync::Arc;
 

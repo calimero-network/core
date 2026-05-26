@@ -2,6 +2,7 @@
 //!
 //! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
 //! **Strategy**: Try delta sync first, fallback to state sync on failure.
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use std::sync::Arc;
 

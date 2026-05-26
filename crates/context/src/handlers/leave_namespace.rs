@@ -13,6 +13,7 @@
 //! (left as a follow-up — current behavior is "soft": no purge,
 //! membership rows removed but encrypted blobs and keys remain on the
 //! local node).
+#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
 
 use std::sync::Arc;
 

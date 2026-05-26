@@ -34,6 +34,7 @@
 //! a follow-up: for `ReadOnlyTee` it will reuse the TDX attestation
 //! flow from `fleet_join.rs`; for regular roles it requires a new
 //! admission op since existing `MemberAdded` must be admin-signed.
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
+
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{GetGroupInfoRequest, GroupInfoResponse};
 use eyre::bail;

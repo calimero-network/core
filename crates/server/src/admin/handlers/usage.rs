@@ -4,6 +4,7 @@
 //! breakdown (state, private_state, delta, governance). Bytes come from
 //! `Store::approximate_size`, which for RocksDB samples SST metadata (no
 //! scan). Sufficient for plan enforcement in MDMA; not exact.
+#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
 
 use std::sync::Arc;
 

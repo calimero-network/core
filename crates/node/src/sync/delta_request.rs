@@ -2,6 +2,7 @@
 //!
 //! When a node receives a delta with missing parents, it uses this protocol
 //! to request the missing deltas from peers.
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;

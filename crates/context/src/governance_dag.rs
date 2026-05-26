@@ -1,5 +1,6 @@
 //! DAG-based governance: applies [`SignedGroupOp`] and [`SignedNamespaceOp`]
 //! in causal order.
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use std::sync::{Arc, Mutex};
 

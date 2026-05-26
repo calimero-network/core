@@ -1,6 +1,7 @@
 //! `ContextClient::apply_signed_group_op` → `group_store`.
 //!
 //! Complements `calimero-context` store-only tests and `calimero-network` gossipsub tests.
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use std::sync::Arc;
 use std::time::Duration;

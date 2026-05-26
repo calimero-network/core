@@ -1,3 +1,5 @@
+#![allow(deprecated)] // #2303: per-handler Repository migration deferred to follow-up
+
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};

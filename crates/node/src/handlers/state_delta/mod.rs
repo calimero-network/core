@@ -1,6 +1,7 @@
 //! State delta handling for BroadcastMessage::StateDelta
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use calimero_context::group_store::{membership_status_at, MembershipStatus};
 use calimero_context_client::client::ContextClient;

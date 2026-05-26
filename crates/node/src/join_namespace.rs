@@ -12,6 +12,7 @@
 //! free-function form takes the cache/notify as explicit args and is
 //! callable from any holder of those Arcs (server handlers, tests,
 //! [`NodeManager`] internals).
+#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
