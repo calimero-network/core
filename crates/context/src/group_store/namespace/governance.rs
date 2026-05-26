@@ -1370,8 +1370,8 @@ impl<'a> NamespaceGovernance<'a> {
         self.require_namespace_admin(&op.signer)?;
         let child = ContextGroupId::from(child_group_id);
         let new_parent = ContextGroupId::from(new_parent_id);
-        match super::reparent_group(self.store, &child, &new_parent)? {
-            super::ReparentOutcome::Reparented { old_parent } => {
+        match super::core::reparent_group(self.store, &child, &new_parent)? {
+            super::core::ReparentOutcome::Reparented { old_parent } => {
                 notify_op_event(OpEvent::SubgroupReparented {
                     namespace_id: self.namespace_id,
                     old_parent_group_id: old_parent.to_bytes(),
@@ -1383,7 +1383,7 @@ impl<'a> NamespaceGovernance<'a> {
             // event — downstream subscribers would see a "reparent" with
             // identical old/new parents, falsely implying a structural
             // change occurred.
-            super::ReparentOutcome::Unchanged => {}
+            super::core::ReparentOutcome::Unchanged => {}
         }
         Ok(())
     }
@@ -1456,7 +1456,7 @@ impl<'a> NamespaceGovernance<'a> {
         // a group NOT in payload, the check fails (correct rejection).
         // Contexts are always set-compared (order-insensitive) with the same
         // subset rule.
-        let local_payload = super::collect_subtree_for_cascade(self.store, &root_gid)?;
+        let local_payload = super::core::collect_subtree_for_cascade(self.store, &root_gid)?;
         let local_groups: std::collections::BTreeSet<[u8; 32]> = local_payload
             .descendant_groups
             .iter()
@@ -1528,7 +1528,7 @@ impl<'a> NamespaceGovernance<'a> {
             // Capture parent before delete_group_local_rows runs (it deletes
             // GroupMeta but leaves parent edges; we still need them to clean
             // up the child-index entry on the parent below).
-            let parent_for_cleanup = super::get_parent_group(self.store, &gid)?;
+            let parent_for_cleanup = super::core::get_parent_group(self.store, &gid)?;
             super::super::delete_group_local_rows(self.store, &gid)?;
             if let Some(parent) = parent_for_cleanup {
                 let mut handle = self.store.handle();
@@ -1613,7 +1613,7 @@ impl<'a> NamespaceGovernance<'a> {
         // op is being applied in namespace A. Pin `gid` to this
         // namespace — matches the implicit assumption in the sibling
         // `MemberJoined` apply path.
-        let resolved_ns = super::resolve_namespace(self.store, &gid)?;
+        let resolved_ns = super::core::resolve_namespace(self.store, &gid)?;
         if resolved_ns.to_bytes() != self.namespace_id {
             eyre::bail!(
                 "MemberJoinedOpen rejected: group_id {:?} resolves to namespace {:?}, \
