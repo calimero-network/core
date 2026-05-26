@@ -47,6 +47,15 @@ impl EventHandler<Event> for NetworkManager {
                 }
             }
 
+            // Branch 1: observed-address → external-address promotion.
+            //
+            // Only relevant for operators who configured the node with
+            // `advertise_address: true` AND have at least one listen
+            // address — that's the only case `self.discovery.advertise`
+            // is `Some(_)`. If the peer reports it observed us on an
+            // address that matches our advertised IP+port pair, we
+            // treat that as confirmation that we're publicly dialable
+            // there and promote it to a swarm external address.
             if let Some(advertise_address) = &self.discovery.advertise {
                 let is_external_addr = observed_addr
                     .iter()
@@ -81,7 +90,30 @@ impl EventHandler<Event> for NetworkManager {
                     );
                     self.swarm.add_external_address(observed_addr);
                 }
-            } else if self.discovery.state.is_peer_relay(&peer_id) {
+            }
+
+            // Branch 2: opportunistic relay-reservation request.
+            //
+            // If the just-identified peer offers `/libp2p/circuit/-
+            // relay/0.2.0/hop`, kick off a reservation request against
+            // it. This MUST run independently of branch 1: a node
+            // configured with `advertise_address: true` can still be
+            // behind a NAT (the `advertise_address.ip` field reflects
+            // what `api.ipify.org` returned, not what's actually
+            // dialable). Without an opportunistic reservation it would
+            // sit forever assuming reachability that AutoNAT later
+            // disproves — and by the time autonat reports failure,
+            // there's no event-driven path that retries relay setup.
+            //
+            // Cost is bounded: `create_relay_reservation` short-
+            // circuits via `is_relay_reservation_required(limit)` once
+            // `relay_config.registrations_limit` accepted+pending
+            // reservations are already in flight. So a publicly-
+            // reachable node ends up with at most `registrations_limit`
+            // (default: 3) idle relay slots — a fine price for the
+            // fallback path being warm if the direct dial later
+            // breaks.
+            if self.discovery.state.is_peer_relay(&peer_id) {
                 if let Err(err) = self.create_relay_reservation(&peer_id) {
                     error!(%err, "Failed to handle relay reservation");
                 }
