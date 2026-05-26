@@ -83,7 +83,39 @@ jobs:
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
 
+      # Detect whether the installed merobox version implements the
+      # cascade-step types introduced in merobox#255. PR-2 (cascade
+      # engine) adds workflows 01/04/05 which depend on those step
+      # types; until merobox publishes them we must skip those
+      # workflows rather than fail CI. Workflow 00 has no cascade
+      # dependency and always runs.
+      #
+      # REQUIRED is a placeholder of 0.7.0 — bump this to the actual
+      # published version once merobox#255 lands and publishes.
+      - name: Check merobox version supports cascade steps
+        id: merobox_version
+        run: |
+          set -euo pipefail
+          MEROBOX_VERSION=$(pip show merobox 2>/dev/null | awk '/^Version:/ {print $2}')
+          if [ -z "$MEROBOX_VERSION" ]; then
+            # apt-installed merobox may not be visible to pip; fall
+            # back to `merobox --version` which prints `merobox X.Y.Z`.
+            MEROBOX_VERSION=$(merobox --version 2>/dev/null | awk '{print $NF}')
+          fi
+          REQUIRED="0.7.0"  # bump once merobox#255 publishes
+          echo "Detected merobox version: ${MEROBOX_VERSION:-<unknown>}"
+          echo "Required for cascade workflows: $REQUIRED"
+          if [ -n "$MEROBOX_VERSION" ] && \
+             [ "$(printf '%s\n%s\n' "$REQUIRED" "$MEROBOX_VERSION" | sort -V | head -1)" = "$REQUIRED" ]; then
+            echo "supports_cascade=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "supports_cascade=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::merobox ${MEROBOX_VERSION:-<unknown>} is below $REQUIRED — skipping cascade workflows 01/04/05 (depends on merobox#255)"
+          fi
+
       - name: Run app-migration workflows
+        env:
+          SUPPORTS_CASCADE: ${{ steps.merobox_version.outputs.supports_cascade }}
         run: |
           mkdir -p docker-logs
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"
@@ -106,10 +138,26 @@ jobs:
           ) &
           WATCHER_PID=$!
 
+          # Baseline workflow 00 has no cascade-step dependency and
+          # always runs. Cascade workflows 01/04/05 require merobox
+          # support for the cascade step types (merobox#255) — they
+          # are appended only when the version guard reported
+          # supports_cascade=true.
+          WORKFLOWS=("workflows/app-migration/00-single-group-migration-baseline.yml")
+          if [ "$SUPPORTS_CASCADE" = "true" ]; then
+              WORKFLOWS+=( \
+                "workflows/app-migration/01-single-namespace-cascade.yml" \
+                "workflows/app-migration/04-cascade-skip-heterogeneous.yml" \
+                "workflows/app-migration/05-cascade-chain-v1-to-v3.yml" \
+              )
+          else
+              echo "::warning::Skipping cascade workflows 01/04/05 — installed merobox lacks cascade-step support (depends on merobox#255)"
+          fi
+
           set +e
           set -o pipefail
           overall_exit=0
-          for wf in workflows/app-migration/*.yml; do
+          for wf in "${WORKFLOWS[@]}"; do
               name=$(basename "$wf" .yml | tr -cd 'A-Za-z0-9_-')
               echo "::group::Running $name"
               merobox bootstrap run "$wf" \
