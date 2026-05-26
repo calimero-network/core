@@ -196,17 +196,43 @@ steps:
     statements:
       - "contains({{baseline_n2_post}}, 'awake')"
 
-  # Regression guard: assert the relay path was the carrier.
-  - name: Confirm node-1 used the relay circuit
+  # Three-layer relay-path regression guard (same structure as
+  # the restart-symmetric variant — see that file's header for
+  # the rationale):
+  #
+  #   1. `/p2p-circuit/` in the recent tail (`tail_lines: 200`)
+  #      proves post-fault traffic stayed on the relay.
+  #   2. `ReservationReqAccepted` proves the reservation was
+  #      actually re-acquired after the unpause, not just that
+  #      the setup-phase circuit address still echoes in old log
+  #      lines.
+  #   3. `direct-connection upgrade succeeded` is ABSENT — if
+  #      `--random-fully` silently fell back to plain MASQUERADE,
+  #      DCUtR would succeed and the test would be running cone
+  #      semantics under a symmetric label. Better to fail-fast.
+
+  - name: Confirm node-1 used the relay circuit post-unpause
     type: assert_log_present
     nodes: [sync-resil-node-1]
+    tail_lines: 200
     patterns:
       - "/p2p-circuit/"
+      - "ReservationReqAccepted"
 
-  - name: Confirm node-2 used the relay circuit
+  - name: Confirm node-2 used the relay circuit post-unpause
     type: assert_log_present
     nodes: [sync-resil-node-2]
+    tail_lines: 200
     patterns:
       - "/p2p-circuit/"
+      - "ReservationReqAccepted"
+
+  - name: Confirm DCUtR did NOT upgrade (symmetric mode invariant)
+    type: assert_log_absent
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    patterns:
+      - "direct-connection upgrade succeeded"
 
 stop_all_nodes: true

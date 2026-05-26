@@ -287,17 +287,21 @@ jobs:
             file: workflows/auto-follow/asymmetric-context-membership.yml
             app: scaffolding-e2e
           # Sync-resilience smoke tests using the docker fault-injection
-          # primitives. Each workflow YAML now sets
-          # `preserve_default_bootstrap: true` (keeps the public devnet
-          # boot-node from `merod init` as the cluster's sole stable
-          # rendezvous server) and `mdns: false` on its nodes (kills the
-          # Docker-bridge mDNS shortcut). Together these force every
-          # post-fault reconnect through the relay/rendezvous path —
-          # exactly the code path #2446's recovery work fixed and the
-          # path these tests are meant to regress against. Previously
-          # the workflows shared the bridge with mDNS on, so peers
-          # found each other directly and the relay code never ran;
-          # only the libp2p TCP/QUIC reconnect timing was exercised.
+          # primitives. Each workflow YAML uses
+          # `topology: { type: nat }` from merobox 0.6.19+ —
+          # peers sit on an internal LAN bridge behind a NAT
+          # gateway, with no direct path between siblings. The only
+          # way to reach the boot-node (which doubles as the relay
+          # server) is via the gateway's MASQUERADE; Docker's
+          # `DOCKER-ISOLATION-STAGE-2` chain plus the client-side
+          # default-route override at the gateway make direct dial
+          # physically impossible. Every cross-client packet either
+          # uses the boot-node's relay circuit, or — in cone mode —
+          # gets upgraded to a direct one by DCUtR after the
+          # initial rendezvous lands. The previous incarnation of
+          # these workflows used `preserve_default_bootstrap: true` +
+          # `mdns: false` on a single Docker bridge, which gave
+          # "hopeful" relay coverage rather than enforced.
           #
           # NAT-topology coverage (merobox 0.6.19+ `topology:
           # { type: nat }`):

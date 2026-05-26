@@ -145,9 +145,19 @@ steps:
       key: during_partition
       value: written_while_partitioned_via_relay
 
-  - name: Hold the partition (allow libp2p to mark connection dead)
+  # libp2p's ping behaviour marks a connection dead after the
+  # default keepalive timeout, which is ~30s for the swarm-level
+  # ping + ~15s for yamux. Holding the partition for 35s
+  # guarantees BOTH timers fire — without this, a 15s hold could
+  # let the relay-circuit connection silently survive as
+  # buffered retransmits (no traffic, no failures, no fault
+  # detection), and the "recovery" would just be the resumed
+  # circuit rather than a fresh reservation. Symmetric mode
+  # cares more than cone because there's no direct-path fallback
+  # to mask a missed reservation refresh.
+  - name: Hold the partition (libp2p ping timeout is ~30s)
     type: wait
-    seconds: 15
+    seconds: 35
 
   - name: Reconnect node-2 to the LAN bridge
     type: connect_node
@@ -201,18 +211,43 @@ steps:
     statements:
       - "contains({{baseline_n2_post}}, 'pre_partition')"
 
-  # Regression guard: assert the relay path was the carrier
-  # both before and after the partition.
-  - name: Confirm node-1 used the relay circuit
+  # Three-layer relay-path regression guard (same structure as
+  # the restart-symmetric variant — see that file's header for
+  # the rationale). Partition is the harshest stressor:
+  #
+  #   1. `/p2p-circuit/` in the recent tail (`tail_lines: 200`)
+  #      proves post-partition traffic uses the relay.
+  #   2. `ReservationReqAccepted` proves a FRESH reservation
+  #      was acquired after node-2's reattach — the boot-node
+  #      had >35s without a keepalive, so the old reservation
+  #      should be evicted by the time node-2 redials.
+  #   3. `direct-connection upgrade succeeded` is ABSENT — if
+  #      `--random-fully` silently fell back, DCUtR would
+  #      succeed and the test would be running cone semantics
+  #      under a symmetric label.
+
+  - name: Confirm node-1 used the relay circuit post-partition
     type: assert_log_present
     nodes: [sync-resil-node-1]
+    tail_lines: 200
     patterns:
       - "/p2p-circuit/"
+      - "ReservationReqAccepted"
 
-  - name: Confirm node-2 used the relay circuit
+  - name: Confirm node-2 used the relay circuit post-partition
     type: assert_log_present
     nodes: [sync-resil-node-2]
+    tail_lines: 200
     patterns:
       - "/p2p-circuit/"
+      - "ReservationReqAccepted"
+
+  - name: Confirm DCUtR did NOT upgrade (symmetric mode invariant)
+    type: assert_log_absent
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    patterns:
+      - "direct-connection upgrade succeeded"
 
 stop_all_nodes: true

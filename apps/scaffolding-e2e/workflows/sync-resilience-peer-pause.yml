@@ -202,4 +202,27 @@ steps:
     statements:
       - "contains({{baseline_n2_post}}, 'awake')"
 
+  # Cone mode allows DCUtR to upgrade the relayed connection
+  # post-rendezvous, but the reservation handshake itself still
+  # has to complete BOTH pre- and post-unpause for the recovery
+  # to land. `tail_lines: 200` scopes the check to recent
+  # activity so a setup-phase reservation can't mask a failed
+  # post-unpause re-acquisition. node-2 is the one that paused;
+  # asserting on both nodes' tails covers the symmetric
+  # reservation each one holds.
+
+  - name: Confirm node-1 still has its relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-1]
+    tail_lines: 200
+    patterns:
+      - "ReservationReqAccepted"
+
+  - name: Confirm node-2 re-acquired its relay reservation post-unpause
+    type: assert_log_present
+    nodes: [sync-resil-node-2]
+    tail_lines: 200
+    patterns:
+      - "ReservationReqAccepted"
+
 stop_all_nodes: true

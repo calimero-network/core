@@ -204,4 +204,27 @@ steps:
     statements:
       - "contains({{baseline_n1_post}}, 'pre_restart')"
 
+  # Even in cone mode where DCUtR may upgrade to direct after the
+  # initial relay handshake, the reservation flow still has to
+  # complete BOTH pre- and post-restart. Assert
+  # `ReservationReqAccepted` appears in EACH client's recent log
+  # tail — proves the relay handshake actually ran after the
+  # fault, not just during setup. Without `tail_lines: 200` the
+  # check would match the setup-phase reservation and silently
+  # pass even if post-restart relay recovery is broken.
+
+  - name: Confirm node-1 re-acquired its relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-1]
+    tail_lines: 200
+    patterns:
+      - "ReservationReqAccepted"
+
+  - name: Confirm node-2 still has its relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-2]
+    tail_lines: 200
+    patterns:
+      - "ReservationReqAccepted"
+
 stop_all_nodes: true
