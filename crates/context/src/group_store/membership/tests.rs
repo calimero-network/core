@@ -19,7 +19,8 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupMetaValue;
 
 use super::super::test_fixtures::{
-    nest_for_test, sample_meta_with_admin, test_group_id, test_meta, test_store,
+    nest_for_test, nest_for_test_unchecked, sample_meta_with_admin, test_group_id, test_meta,
+    test_store,
 };
 use super::super::*;
 
@@ -881,7 +882,7 @@ fn enumerate_inherited_members_bails_on_depth_overflow() {
         let mut bytes = [0x41u8; 32];
         bytes[..2].copy_from_slice(&(i as u16).to_le_bytes());
         let next = ContextGroupId::from(bytes);
-        nest_for_test(&store, &prev, &next);
+        nest_for_test_unchecked(&store, &prev, &next);
         CapabilitiesRepository::new(&store)
             .set_subgroup_visibility(&next, VisibilityMode::Open)
             .unwrap();

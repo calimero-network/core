@@ -72,10 +72,10 @@ impl<'a> MembershipRepository<'a> {
         drop(handle);
 
         if !is_admin {
-            if let Some(defaults) = get_member_default_capabilities(self.store, group_id)? {
+            let capabilities = CapabilitiesRepository::new(self.store);
+            if let Some(defaults) = capabilities.default_capabilities(group_id)? {
                 if defaults != 0 {
-                    CapabilitiesRepository::new(self.store)
-                        .set_member_capability(group_id, identity, defaults)?;
+                    capabilities.set_member_capability(group_id, identity, defaults)?;
                 }
             }
         }
@@ -584,13 +584,6 @@ fn get_direct_member_role(
     let handle = store.handle();
     let key = GroupMember::new(group_id.to_bytes(), *identity);
     Ok(handle.get(&key)?.map(|v: GroupMemberValue| v.role))
-}
-
-fn get_member_default_capabilities(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<u32>> {
-    CapabilitiesRepository::new(store).default_capabilities(group_id)
 }
 
 /// Repository-API smoke tests. Membership-feature coverage (path walks,

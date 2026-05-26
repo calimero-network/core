@@ -11,8 +11,8 @@ use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue}
 use calimero_store::Store;
 
 use super::test_fixtures::{
-    dummy_member_removed_op, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
-    test_store,
+    dummy_member_removed_op, nest_for_test, nest_for_test_unchecked, sample_meta_with_admin,
+    test_group_id, test_meta, test_store,
 };
 use super::*;
 
@@ -1479,7 +1479,7 @@ fn is_open_chain_to_namespace_bails_on_depth_overflow() {
     let mut prev = ns;
     for i in 0..(MAX_NAMESPACE_DEPTH + 2) {
         let next = ContextGroupId::from([0xD0u8.wrapping_add(i as u8); 32]);
-        nest_for_test(&store, &prev, &next);
+        nest_for_test_unchecked(&store, &prev, &next);
         CapabilitiesRepository::new(&store)
             .set_subgroup_visibility(&next, VisibilityMode::Open)
             .unwrap();

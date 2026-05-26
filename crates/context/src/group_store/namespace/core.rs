@@ -155,8 +155,12 @@ impl<'a> NamespaceRepository<'a> {
                 bail!("nesting would create a cycle");
             }
             depth += 1;
-            if depth > 256 {
-                bail!("nesting depth exceeds 256, possible data corruption");
+            if depth > MAX_NAMESPACE_DEPTH {
+                bail!(
+                    "nesting depth exceeds MAX_NAMESPACE_DEPTH ({MAX_NAMESPACE_DEPTH}); \
+                     a tree this deep would also be unwalkable by every other \
+                     parent-chain operation (resolve, check_path, is_descendant_of)"
+                );
             }
             current = ancestor;
         }

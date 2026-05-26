@@ -202,20 +202,11 @@ impl<'a> MetadataRepository<'a> {
             return Ok(None);
         }
 
-        let name = self
-            .group_metadata(group_id)
-            .ok()
-            .flatten()
-            .and_then(|r| r.name);
-        let member_count = MembershipRepository::new(self.store)
-            .count(group_id)
-            .unwrap_or(0);
-        let context_count = enumerate_group_contexts(self.store, group_id, 0, usize::MAX)
-            .unwrap_or_default()
-            .len();
+        let name = self.group_metadata(group_id)?.and_then(|r| r.name);
+        let member_count = MembershipRepository::new(self.store).count(group_id)?;
+        let context_count = enumerate_group_contexts(self.store, group_id, 0, usize::MAX)?.len();
         let subgroup_count = NamespaceRepository::new(self.store)
-            .list_children(group_id)
-            .unwrap_or_default()
+            .list_children(group_id)?
             .len();
 
         Ok(Some(calimero_context_client::group::NamespaceSummary {

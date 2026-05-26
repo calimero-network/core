@@ -14,7 +14,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::db::InMemoryDB;
-use calimero_store::key::GroupMetaValue;
+use calimero_store::key::{GroupMetaValue, GroupParentRef};
 use calimero_store::Store;
 pub(super) fn test_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
@@ -71,4 +71,22 @@ pub(super) fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
 /// `membership/tests.rs`.
 pub(super) fn nest_for_test(store: &Store, parent: &ContextGroupId, child: &ContextGroupId) {
     NamespaceRepository::new(store).nest(parent, child).unwrap();
+}
+
+/// Like [`nest_for_test`] but writes the parent edge directly to the
+/// store, bypassing `NamespaceRepository::nest`'s `MAX_NAMESPACE_DEPTH`
+/// guard. Used by tests that need to construct chains longer than the
+/// walkers tolerate (depth-overflow regression tests for
+/// `enumerate_inherited`, `is_open_chain_to_namespace`, etc.). The
+/// resulting tree is intentionally malformed from the production API's
+/// perspective — only the walker bail-out path should ever observe it.
+pub(super) fn nest_for_test_unchecked(
+    store: &Store,
+    parent: &ContextGroupId,
+    child: &ContextGroupId,
+) {
+    let mut handle = store.handle();
+    handle
+        .put(&GroupParentRef::new(child.to_bytes()), &parent.to_bytes())
+        .unwrap();
 }
