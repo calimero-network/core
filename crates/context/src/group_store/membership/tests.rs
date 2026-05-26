@@ -1882,8 +1882,12 @@ fn subgroup_visible_to_restricted_child_visible_to_its_member() {
 
 #[test]
 fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
+    use calimero_context_client::local_governance::SignedGroupOp;
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
     let store = test_store();
-    let mut rng = rand::thread_rng();
+    let mut rng = OsRng;
     let namespace_id = [0xAA; 32];
     let gid = ContextGroupId::from(namespace_id);
     let owner = PublicKey::from([0x01; 32]);
