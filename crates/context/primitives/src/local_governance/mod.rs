@@ -18,10 +18,11 @@
 mod ack_router;
 pub use ack_router::AckRouter;
 
-// Curated re-exports — one #[deprecated] entry per item so callers
-// see a migration nudge on each symbol they use, rather than a
-// single warning on the wildcard. Match exactly the set previously
-// re-exported from this module's old `mod.rs`.
+// Curated re-exports — explicit symbol list (not a wildcard) so
+// the set is reviewable, and a single `#[deprecated]` attribute on
+// the `use` item triggers a migration warning at every import site
+// that resolves any of these names. Matches exactly the set
+// previously re-exported from this module's old `mod.rs`.
 
 #[deprecated(note = "use calimero_governance_types::* directly")]
 pub use calimero_governance_types::{

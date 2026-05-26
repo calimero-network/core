@@ -2,6 +2,15 @@
 //!
 //! See `docs/context-management/LOCAL-GROUP-GOVERNANCE.md`.
 //!
+//! ## Provenance
+//!
+//! Previously located at `calimero_context_client::local_governance`.
+//! Extracted to its own leaf crate (#2479, part of epic #2300) so the
+//! to-be-created `calimero-governance-store` (#2307) can depend on
+//! these op types without transitively re-acquiring `actix` through
+//! `calimero-context-client`. A `#[deprecated]` re-export shim at the
+//! old path keeps existing callers compiling.
+//!
 //! ## Namespace governance model
 //!
 //! A **namespace** has a single governance DAG. Operations in the DAG are
