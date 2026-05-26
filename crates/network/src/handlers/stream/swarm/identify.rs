@@ -85,7 +85,7 @@ impl EventHandler<Event> for NetworkManager {
                         self.swarm.external_addresses().collect::<Vec<&Multiaddr>>()
                     );
                     debug!(
-                        "Add observed address to external adresses: {:?}",
+                        "Add observed address to external addresses: {:?}",
                         observed_addr
                     );
                     self.swarm.add_external_address(observed_addr);
