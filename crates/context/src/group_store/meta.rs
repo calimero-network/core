@@ -236,3 +236,75 @@ pub fn snapshot_context_state_hashes(
 ) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
     MetaRepository::new(store).snapshot_context_state_hashes(group_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::group_store::test_fixtures::{test_group_id, test_meta, test_store};
+
+    #[test]
+    fn load_returns_none_when_unset() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        assert!(repo.load(&test_group_id()).unwrap().is_none());
+    }
+
+    #[test]
+    fn save_then_load_round_trip() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        let gid = test_group_id();
+        let meta = test_meta();
+
+        repo.save(&gid, &meta).unwrap();
+        let loaded = repo.load(&gid).unwrap().expect("meta must round-trip");
+        assert_eq!(loaded.app_key, meta.app_key);
+        assert_eq!(loaded.admin_identity, meta.admin_identity);
+    }
+
+    #[test]
+    fn delete_clears_existing_meta() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        let gid = test_group_id();
+        repo.save(&gid, &test_meta()).unwrap();
+        repo.delete(&gid).unwrap();
+        assert!(repo.load(&gid).unwrap().is_none());
+    }
+
+    #[test]
+    fn enumerate_all_returns_saved_groups() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        let gid_a = test_group_id();
+        let gid_b = ContextGroupId::from([0xBB; 32]);
+        repo.save(&gid_a, &test_meta()).unwrap();
+        repo.save(&gid_b, &test_meta()).unwrap();
+
+        let all = repo.enumerate_all(0, usize::MAX).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn compute_state_hash_is_deterministic() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        let gid = test_group_id();
+        repo.save(&gid, &test_meta()).unwrap();
+
+        let hash_1 = repo.compute_state_hash(&gid).unwrap();
+        let hash_2 = repo.compute_state_hash(&gid).unwrap();
+        assert_eq!(
+            hash_1, hash_2,
+            "state hash must be deterministic across calls"
+        );
+    }
+
+    #[test]
+    fn compute_state_hash_bails_when_meta_missing() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        let err = repo.compute_state_hash(&test_group_id()).unwrap_err();
+        assert!(format!("{err}").contains("group not found"));
+    }
+}

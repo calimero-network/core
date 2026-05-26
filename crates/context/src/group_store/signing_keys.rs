@@ -164,3 +164,71 @@ pub fn resolve_group_signing_key(
 pub fn delete_all_group_signing_keys(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     SigningKeysRepository::new(store).delete_all_for_group(group_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::group_store::test_fixtures::{test_group_id, test_store};
+
+    #[test]
+    fn get_key_returns_none_when_unset() {
+        let store = test_store();
+        let repo = SigningKeysRepository::new(&store);
+        let pk = PublicKey::from([0x01; 32]);
+        assert!(repo.get_key(&test_group_id(), &pk).unwrap().is_none());
+    }
+
+    #[test]
+    fn store_then_get_key_round_trip() {
+        let store = test_store();
+        let repo = SigningKeysRepository::new(&store);
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x01; 32]);
+        let sk = [0xAB; 32];
+
+        repo.store_key(&gid, &pk, &sk).unwrap();
+        assert_eq!(repo.get_key(&gid, &pk).unwrap(), Some(sk));
+    }
+
+    #[test]
+    fn require_key_bails_when_absent() {
+        let store = test_store();
+        let repo = SigningKeysRepository::new(&store);
+        let pk = PublicKey::from([0x01; 32]);
+        let err = repo.require_key(&test_group_id(), &pk).unwrap_err();
+        assert!(
+            format!("{err}").contains("NoSigningKey")
+                || format!("{err}").to_lowercase().contains("signing")
+        );
+    }
+
+    #[test]
+    fn delete_key_is_idempotent() {
+        let store = test_store();
+        let repo = SigningKeysRepository::new(&store);
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x01; 32]);
+        // Deleting an absent key is a no-op, not an error.
+        repo.delete_key(&gid, &pk).unwrap();
+        repo.store_key(&gid, &pk, &[0xAB; 32]).unwrap();
+        repo.delete_key(&gid, &pk).unwrap();
+        assert!(repo.get_key(&gid, &pk).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_all_for_group_clears_only_that_group() {
+        let store = test_store();
+        let repo = SigningKeysRepository::new(&store);
+        let gid_a = test_group_id();
+        let gid_b = ContextGroupId::from([0xBB; 32]);
+        let pk = PublicKey::from([0x01; 32]);
+
+        repo.store_key(&gid_a, &pk, &[0xAA; 32]).unwrap();
+        repo.store_key(&gid_b, &pk, &[0xBB; 32]).unwrap();
+
+        repo.delete_all_for_group(&gid_a).unwrap();
+
+        assert!(repo.get_key(&gid_a, &pk).unwrap().is_none());
+        assert_eq!(repo.get_key(&gid_b, &pk).unwrap(), Some([0xBB; 32]));
+    }
+}

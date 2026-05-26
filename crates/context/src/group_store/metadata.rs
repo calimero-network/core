@@ -347,3 +347,105 @@ pub fn delete_context_metadata(
 pub fn delete_all_member_metadata(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     MetadataRepository::new(store).delete_all_members(group_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::group_store::test_fixtures::{test_group_id, test_store};
+
+    fn ctx_id(seed: u8) -> ContextId {
+        ContextId::from([seed; 32])
+    }
+
+    fn record(name: &str) -> MetadataRecord {
+        MetadataRecord {
+            name: Some(name.to_owned()),
+            data: std::collections::BTreeMap::new(),
+            updated_at: 1_700_000_000,
+            updated_by: PublicKey::from([0x01; 32]),
+        }
+    }
+
+    #[test]
+    fn group_metadata_returns_none_when_unset() {
+        let store = test_store();
+        let repo = MetadataRepository::new(&store);
+        assert!(repo.group_metadata(&test_group_id()).unwrap().is_none());
+    }
+
+    #[test]
+    fn set_then_get_group_metadata_round_trip() {
+        let store = test_store();
+        let repo = MetadataRepository::new(&store);
+        let gid = test_group_id();
+
+        repo.set_group(&gid, &record("alpha")).unwrap();
+        let loaded = repo
+            .group_metadata(&gid)
+            .unwrap()
+            .expect("metadata must round-trip");
+        assert_eq!(loaded.name.as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn set_then_get_context_metadata_round_trip() {
+        let store = test_store();
+        let repo = MetadataRepository::new(&store);
+        let gid = test_group_id();
+        let ctx = ctx_id(1);
+
+        repo.set_context(&gid, &ctx, &record("ctx-1")).unwrap();
+        let loaded = repo
+            .context_metadata(&gid, &ctx)
+            .unwrap()
+            .expect("must round-trip");
+        assert_eq!(loaded.name.as_deref(), Some("ctx-1"));
+    }
+
+    #[test]
+    fn set_then_get_member_metadata_round_trip() {
+        let store = test_store();
+        let repo = MetadataRepository::new(&store);
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x01; 32]);
+
+        repo.set_member(&gid, &pk, &record("alice")).unwrap();
+        let loaded = repo
+            .member_metadata(&gid, &pk)
+            .unwrap()
+            .expect("must round-trip");
+        assert_eq!(loaded.name.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn delete_member_clears_only_that_member() {
+        let store = test_store();
+        let repo = MetadataRepository::new(&store);
+        let gid = test_group_id();
+        let pk_a = PublicKey::from([0x01; 32]);
+        let pk_b = PublicKey::from([0x02; 32]);
+
+        repo.set_member(&gid, &pk_a, &record("a")).unwrap();
+        repo.set_member(&gid, &pk_b, &record("b")).unwrap();
+
+        repo.delete_member(&gid, &pk_a).unwrap();
+
+        assert!(repo.member_metadata(&gid, &pk_a).unwrap().is_none());
+        assert!(repo.member_metadata(&gid, &pk_b).unwrap().is_some());
+    }
+
+    #[test]
+    fn enumerate_members_returns_set_records() {
+        let store = test_store();
+        let repo = MetadataRepository::new(&store);
+        let gid = test_group_id();
+        let pk_a = PublicKey::from([0x01; 32]);
+        let pk_b = PublicKey::from([0x02; 32]);
+
+        repo.set_member(&gid, &pk_a, &record("alice")).unwrap();
+        repo.set_member(&gid, &pk_b, &record("bob")).unwrap();
+
+        let members = repo.enumerate_members(&gid).unwrap();
+        assert_eq!(members.len(), 2);
+    }
+}

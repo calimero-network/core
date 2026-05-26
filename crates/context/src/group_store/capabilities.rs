@@ -321,3 +321,94 @@ pub fn get_context_member_capability(
 ) -> EyreResult<Option<u8>> {
     CapabilitiesRepository::new(store).context_member_capability(group_id, context_id, member)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::group_store::test_fixtures::{test_group_id, test_store};
+
+    #[test]
+    fn member_capability_returns_none_when_unset() {
+        let store = test_store();
+        let repo = CapabilitiesRepository::new(&store);
+        let pk = PublicKey::from([0x01; 32]);
+        assert!(repo
+            .member_capability(&test_group_id(), &pk)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn set_then_get_member_capability_round_trip() {
+        let store = test_store();
+        let repo = CapabilitiesRepository::new(&store);
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x01; 32]);
+
+        repo.set_member_capability(&gid, &pk, 0b1010_0101).unwrap();
+        assert_eq!(
+            repo.member_capability(&gid, &pk).unwrap(),
+            Some(0b1010_0101)
+        );
+    }
+
+    #[test]
+    fn default_capabilities_round_trip() {
+        let store = test_store();
+        let repo = CapabilitiesRepository::new(&store);
+        let gid = test_group_id();
+
+        assert!(repo.default_capabilities(&gid).unwrap().is_none());
+        repo.set_default_capabilities(&gid, 0xFF).unwrap();
+        assert_eq!(repo.default_capabilities(&gid).unwrap(), Some(0xFF));
+    }
+
+    #[test]
+    fn subgroup_visibility_defaults_to_restricted() {
+        let store = test_store();
+        let repo = CapabilitiesRepository::new(&store);
+        // An absent visibility key MUST be treated as Restricted — that's the
+        // safer default and the membership-walk's wall semantic depends on it.
+        assert_eq!(
+            repo.subgroup_visibility(&test_group_id()).unwrap(),
+            VisibilityMode::Restricted,
+        );
+    }
+
+    #[test]
+    fn set_then_get_subgroup_visibility_round_trip() {
+        let store = test_store();
+        let repo = CapabilitiesRepository::new(&store);
+        let gid = test_group_id();
+
+        repo.set_subgroup_visibility(&gid, VisibilityMode::Open)
+            .unwrap();
+        assert_eq!(
+            repo.subgroup_visibility(&gid).unwrap(),
+            VisibilityMode::Open
+        );
+        repo.set_subgroup_visibility(&gid, VisibilityMode::Restricted)
+            .unwrap();
+        assert_eq!(
+            repo.subgroup_visibility(&gid).unwrap(),
+            VisibilityMode::Restricted
+        );
+    }
+
+    #[test]
+    fn enumerate_members_returns_set_caps() {
+        let store = test_store();
+        let repo = CapabilitiesRepository::new(&store);
+        let gid = test_group_id();
+        let pk_a = PublicKey::from([0x01; 32]);
+        let pk_b = PublicKey::from([0x02; 32]);
+
+        repo.set_member_capability(&gid, &pk_a, 1).unwrap();
+        repo.set_member_capability(&gid, &pk_b, 2).unwrap();
+
+        let members = repo.enumerate_members(&gid).unwrap();
+        assert_eq!(members.len(), 2);
+        assert!(members.iter().any(|(pk, c)| *pk == pk_a && *c == 1));
+        assert!(members.iter().any(|(pk, c)| *pk == pk_b && *c == 2));
+    }
+}

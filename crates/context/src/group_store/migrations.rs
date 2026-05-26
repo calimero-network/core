@@ -110,3 +110,84 @@ pub fn delete_all_context_last_migrations(
 ) -> EyreResult<()> {
     MigrationsRepository::new(store).delete_all_for_group(group_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_primitives::context::ContextId;
+
+    use super::*;
+    use crate::group_store::test_fixtures::{test_group_id, test_store};
+
+    fn ctx_id(seed: u8) -> ContextId {
+        ContextId::from([seed; 32])
+    }
+
+    #[test]
+    fn last_migration_returns_none_when_unset() {
+        let store = test_store();
+        let repo = MigrationsRepository::new(&store);
+        assert!(repo
+            .last_migration(&test_group_id(), &ctx_id(1))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn set_then_last_migration_round_trip() {
+        let store = test_store();
+        let repo = MigrationsRepository::new(&store);
+        let gid = test_group_id();
+        let ctx = ctx_id(1);
+
+        repo.set_last_migration(&gid, &ctx, "migrate_v1_to_v2")
+            .unwrap();
+        assert_eq!(
+            repo.last_migration(&gid, &ctx).unwrap().as_deref(),
+            Some("migrate_v1_to_v2"),
+        );
+    }
+
+    #[test]
+    fn set_last_migration_overwrites_prior_value() {
+        let store = test_store();
+        let repo = MigrationsRepository::new(&store);
+        let gid = test_group_id();
+        let ctx = ctx_id(1);
+
+        repo.set_last_migration(&gid, &ctx, "v1_to_v2").unwrap();
+        repo.set_last_migration(&gid, &ctx, "v2_to_v3").unwrap();
+        assert_eq!(
+            repo.last_migration(&gid, &ctx).unwrap().as_deref(),
+            Some("v2_to_v3"),
+        );
+    }
+
+    #[test]
+    fn delete_all_for_group_clears_only_that_group() {
+        let store = test_store();
+        let repo = MigrationsRepository::new(&store);
+        let gid_a = test_group_id();
+        let gid_b = ContextGroupId::from([0xBB; 32]);
+        let ctx = ctx_id(1);
+
+        repo.set_last_migration(&gid_a, &ctx, "v1_to_v2").unwrap();
+        repo.set_last_migration(&gid_b, &ctx, "v2_to_v3").unwrap();
+
+        repo.delete_all_for_group(&gid_a).unwrap();
+
+        assert!(repo.last_migration(&gid_a, &ctx).unwrap().is_none());
+        assert_eq!(
+            repo.last_migration(&gid_b, &ctx).unwrap().as_deref(),
+            Some("v2_to_v3"),
+            "delete_all_for_group must not affect sibling groups",
+        );
+    }
+
+    #[test]
+    fn delete_all_for_group_is_idempotent_when_empty() {
+        let store = test_store();
+        let repo = MigrationsRepository::new(&store);
+        // No prior writes; delete_all should succeed as a no-op.
+        repo.delete_all_for_group(&test_group_id()).unwrap();
+    }
+}

@@ -118,3 +118,84 @@ pub fn enumerate_in_progress_upgrades(
 ) -> EyreResult<Vec<(ContextGroupId, GroupUpgradeValue)>> {
     UpgradesRepository::new(store).enumerate_in_progress()
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_primitives::identity::PublicKey;
+
+    use super::*;
+    use crate::group_store::test_fixtures::{test_group_id, test_store};
+
+    fn sample_upgrade(status: GroupUpgradeStatus) -> GroupUpgradeValue {
+        GroupUpgradeValue {
+            from_version: "1.0.0".to_owned(),
+            to_version: "2.0.0".to_owned(),
+            migration: None,
+            initiated_at: 1_700_000_000,
+            initiated_by: PublicKey::from([0x01; 32]),
+            status,
+        }
+    }
+
+    #[test]
+    fn load_returns_none_when_unset() {
+        let store = test_store();
+        let repo = UpgradesRepository::new(&store);
+        assert!(repo.load(&test_group_id()).unwrap().is_none());
+    }
+
+    #[test]
+    fn save_then_load_round_trip() {
+        let store = test_store();
+        let repo = UpgradesRepository::new(&store);
+        let gid = test_group_id();
+        let upgrade = sample_upgrade(GroupUpgradeStatus::InProgress {
+            total: 5,
+            completed: 0,
+            failed: 0,
+        });
+        repo.save(&gid, &upgrade).unwrap();
+        let loaded = repo.load(&gid).unwrap().expect("upgrade must round-trip");
+        assert_eq!(loaded.from_version, upgrade.from_version);
+        assert_eq!(loaded.to_version, upgrade.to_version);
+    }
+
+    #[test]
+    fn delete_clears_existing_upgrade() {
+        let store = test_store();
+        let repo = UpgradesRepository::new(&store);
+        let gid = test_group_id();
+        repo.save(
+            &gid,
+            &sample_upgrade(GroupUpgradeStatus::Completed { completed_at: None }),
+        )
+        .unwrap();
+        repo.delete(&gid).unwrap();
+        assert!(repo.load(&gid).unwrap().is_none());
+    }
+
+    #[test]
+    fn enumerate_in_progress_filters_by_status() {
+        let store = test_store();
+        let repo = UpgradesRepository::new(&store);
+        let gid_progress = test_group_id();
+        let gid_completed = ContextGroupId::from([0xCC; 32]);
+        repo.save(
+            &gid_progress,
+            &sample_upgrade(GroupUpgradeStatus::InProgress {
+                total: 5,
+                completed: 0,
+                failed: 0,
+            }),
+        )
+        .unwrap();
+        repo.save(
+            &gid_completed,
+            &sample_upgrade(GroupUpgradeStatus::Completed { completed_at: None }),
+        )
+        .unwrap();
+        let in_progress = repo.enumerate_in_progress().unwrap();
+        assert_eq!(in_progress.len(), 1);
+        assert_eq!(in_progress[0].0, gid_progress);
+    }
+}

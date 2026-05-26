@@ -762,3 +762,109 @@ pub fn get_or_create_namespace_identity_bundle(
 ) -> EyreResult<ResolvedNamespaceIdentity> {
     NamespaceRepository::new(store).get_or_create_identity_bundle(group_id)
 }
+
+/// Repository-API smoke tests. Topology + namespace-feature coverage
+/// (recursive remove, visible-descendant walks, cascade, reparent
+/// cycle detection, etc.) lives in the cluster-level
+/// `namespace/tests.rs`; this module is the thin "Repository surface
+/// dispatches correctly" check.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::group_store::test_fixtures::test_store;
+
+    fn gid(seed: u8) -> ContextGroupId {
+        ContextGroupId::from([seed; 32])
+    }
+
+    #[test]
+    fn parent_returns_none_for_unrooted_group() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+        assert!(repo.parent(&gid(1)).unwrap().is_none());
+    }
+
+    #[test]
+    fn nest_then_parent_round_trip() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+        let parent = gid(1);
+        let child = gid(2);
+        repo.nest(&parent, &child).unwrap();
+        assert_eq!(repo.parent(&child).unwrap(), Some(parent));
+    }
+
+    #[test]
+    fn list_children_after_nest() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+        let parent = gid(1);
+        repo.nest(&parent, &gid(2)).unwrap();
+        repo.nest(&parent, &gid(3)).unwrap();
+        let children = repo.list_children(&parent).unwrap();
+        assert_eq!(children.len(), 2);
+    }
+
+    #[test]
+    fn resolve_walks_to_root() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+        let root = gid(1);
+        let middle = gid(2);
+        let leaf = gid(3);
+        repo.nest(&root, &middle).unwrap();
+        repo.nest(&middle, &leaf).unwrap();
+        assert_eq!(repo.resolve(&leaf).unwrap(), root);
+        assert_eq!(repo.resolve(&middle).unwrap(), root);
+        assert_eq!(repo.resolve(&root).unwrap(), root);
+    }
+
+    #[test]
+    fn is_descendant_of_recognises_chain() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+        let root = gid(1);
+        let middle = gid(2);
+        let leaf = gid(3);
+        repo.nest(&root, &middle).unwrap();
+        repo.nest(&middle, &leaf).unwrap();
+        assert!(repo.is_descendant_of(&leaf, &root).unwrap());
+        assert!(repo.is_descendant_of(&leaf, &middle).unwrap());
+        assert!(!repo.is_descendant_of(&root, &leaf).unwrap());
+        assert!(!repo.is_descendant_of(&root, &root).unwrap());
+    }
+
+    #[test]
+    fn nest_rejects_self_loop() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+        let g = gid(1);
+        assert!(repo.nest(&g, &g).is_err());
+    }
+
+    #[test]
+    fn identity_returns_none_when_unset() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+        assert!(repo.identity(&gid(1)).unwrap().is_none());
+    }
+
+    #[test]
+    fn store_then_identity_round_trip() {
+        let store = test_store();
+        let repo = NamespaceRepository::new(&store);
+        let ns_id = gid(1);
+        let pk = PublicKey::from([0x42; 32]);
+        let sk = [0xAB; 32];
+        let sender = [0xCD; 32];
+
+        repo.store_identity(&ns_id, &pk, &sk, &sender).unwrap();
+        let (loaded_pk, loaded_sk, loaded_sender) = repo
+            .identity(&ns_id)
+            .unwrap()
+            .expect("identity must round-trip");
+        assert_eq!(loaded_pk, pk);
+        assert_eq!(loaded_sk, sk);
+        assert_eq!(loaded_sender, sender);
+    }
+}

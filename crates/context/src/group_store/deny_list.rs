@@ -192,3 +192,80 @@ pub fn is_author_denied_for_context(
 pub fn clear_all_denied(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
     DenyListRepository::new(store).clear_all_for_group(group_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::group_store::test_fixtures::{test_group_id, test_store};
+
+    #[test]
+    fn is_denied_returns_false_when_unset() {
+        let store = test_store();
+        let repo = DenyListRepository::new(&store);
+        let pk = PublicKey::from([0x01; 32]);
+        assert!(!repo.is_denied(&test_group_id(), &pk).unwrap());
+    }
+
+    #[test]
+    fn mark_then_is_denied_round_trip() {
+        let store = test_store();
+        let repo = DenyListRepository::new(&store);
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x01; 32]);
+
+        // Skip the debug_assert (member must be absent from materialized set
+        // — already true since we never added them) and call mark directly.
+        repo.mark(&gid, &pk).unwrap();
+        assert!(repo.is_denied(&gid, &pk).unwrap());
+    }
+
+    #[test]
+    fn clear_after_mark_returns_to_not_denied() {
+        let store = test_store();
+        let repo = DenyListRepository::new(&store);
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x01; 32]);
+
+        repo.mark(&gid, &pk).unwrap();
+        repo.clear(&gid, &pk).unwrap();
+        assert!(!repo.is_denied(&gid, &pk).unwrap());
+    }
+
+    #[test]
+    fn clear_is_idempotent_when_unset() {
+        let store = test_store();
+        let repo = DenyListRepository::new(&store);
+        let pk = PublicKey::from([0x01; 32]);
+        // Clearing an absent entry must succeed silently.
+        repo.clear(&test_group_id(), &pk).unwrap();
+    }
+
+    #[test]
+    fn mark_is_idempotent_on_already_denied() {
+        let store = test_store();
+        let repo = DenyListRepository::new(&store);
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x01; 32]);
+
+        repo.mark(&gid, &pk).unwrap();
+        repo.mark(&gid, &pk).unwrap();
+        assert!(repo.is_denied(&gid, &pk).unwrap());
+    }
+
+    #[test]
+    fn clear_all_for_group_clears_only_that_group() {
+        let store = test_store();
+        let repo = DenyListRepository::new(&store);
+        let gid_a = test_group_id();
+        let gid_b = ContextGroupId::from([0xBB; 32]);
+        let pk = PublicKey::from([0x01; 32]);
+
+        repo.mark(&gid_a, &pk).unwrap();
+        repo.mark(&gid_b, &pk).unwrap();
+
+        repo.clear_all_for_group(&gid_a).unwrap();
+
+        assert!(!repo.is_denied(&gid_a, &pk).unwrap());
+        assert!(repo.is_denied(&gid_b, &pk).unwrap());
+    }
+}

@@ -806,3 +806,102 @@ pub fn has_direct_group_member(
 ) -> EyreResult<bool> {
     MembershipRepository::new(store).has_direct_member(group_id, identity)
 }
+
+/// Repository-API smoke tests. Membership-feature coverage (path walks,
+/// inheritance, deny-list interaction, anchor caps, namespace pubkeys)
+/// lives in the cluster-level `membership/tests.rs`; this module is
+/// just a thin set of "the Repository surface dispatches correctly"
+/// checks so the API contract is self-documented next to the
+/// implementation.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::group_store::test_fixtures::{test_group_id, test_meta, test_store};
+    use crate::group_store::MetaRepository;
+
+    #[test]
+    fn role_of_returns_none_when_not_a_member() {
+        let store = test_store();
+        let repo = MembershipRepository::new(&store);
+        let pk = PublicKey::from([0x01; 32]);
+        assert!(repo.role_of(&test_group_id(), &pk).unwrap().is_none());
+    }
+
+    #[test]
+    fn add_then_role_of_round_trip() {
+        let store = test_store();
+        let repo = MembershipRepository::new(&store);
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x01; 32]);
+
+        repo.add_member(&gid, &pk, GroupMemberRole::Admin).unwrap();
+        assert_eq!(
+            repo.role_of(&gid, &pk).unwrap(),
+            Some(GroupMemberRole::Admin)
+        );
+    }
+
+    #[test]
+    fn remove_member_clears_the_row() {
+        let store = test_store();
+        let repo = MembershipRepository::new(&store);
+        let gid = test_group_id();
+        let pk = PublicKey::from([0x01; 32]);
+
+        repo.add_member(&gid, &pk, GroupMemberRole::Member).unwrap();
+        repo.remove_member(&gid, &pk).unwrap();
+        assert!(repo.role_of(&gid, &pk).unwrap().is_none());
+    }
+
+    #[test]
+    fn is_admin_recognises_meta_admin_identity() {
+        let store = test_store();
+        let mut meta = test_meta();
+        meta.admin_identity = PublicKey::from([0xAA; 32]);
+        MetaRepository::new(&store)
+            .save(&test_group_id(), &meta)
+            .unwrap();
+
+        let repo = MembershipRepository::new(&store);
+        // The meta `admin_identity` is admin even without a stored member row.
+        assert!(repo
+            .is_admin(&test_group_id(), &meta.admin_identity)
+            .unwrap());
+    }
+
+    #[test]
+    fn count_admins_counts_admin_rows_only() {
+        let store = test_store();
+        let repo = MembershipRepository::new(&store);
+        let gid = test_group_id();
+        let admin_a = PublicKey::from([0x01; 32]);
+        let admin_b = PublicKey::from([0x02; 32]);
+        let member = PublicKey::from([0x03; 32]);
+
+        repo.add_member(&gid, &admin_a, GroupMemberRole::Admin)
+            .unwrap();
+        repo.add_member(&gid, &admin_b, GroupMemberRole::Admin)
+            .unwrap();
+        repo.add_member(&gid, &member, GroupMemberRole::Member)
+            .unwrap();
+
+        assert_eq!(repo.count_admins(&gid).unwrap(), 2);
+        assert_eq!(repo.count(&gid).unwrap(), 3);
+    }
+
+    #[test]
+    fn list_paginates() {
+        let store = test_store();
+        let repo = MembershipRepository::new(&store);
+        let gid = test_group_id();
+        for i in 0..5 {
+            let pk = PublicKey::from([i as u8; 32]);
+            repo.add_member(&gid, &pk, GroupMemberRole::Member).unwrap();
+        }
+        let page_1 = repo.list(&gid, 0, 2).unwrap();
+        let page_2 = repo.list(&gid, 2, 2).unwrap();
+        assert_eq!(page_1.len(), 2);
+        assert_eq!(page_2.len(), 2);
+        assert_eq!(repo.list(&gid, 0, usize::MAX).unwrap().len(), 5);
+    }
+}
