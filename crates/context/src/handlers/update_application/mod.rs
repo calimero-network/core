@@ -756,6 +756,11 @@ fn write_migration_state(
                 }
             }
 
+            // Capture the intended updated_at before `metadata` is moved
+            // into write_pre_merged_root_state below — the post-write
+            // verification compares against this.
+            let intended_updated_at = metadata.updated_at;
+
             // Write the migrated root state via the pre-merged primitive
             // introduced by #2465. The caller (this function) is the
             // source of truth for the new bytes — the wasm migrate
@@ -772,6 +777,19 @@ fn write_migration_state(
                 &entry_bytes,
                 metadata,
             )?;
+
+            // Post-write verification closes the TOCTOU window where a
+            // racing writer slipped a newer `updated_at` between our
+            // pre-flight check above and this call: the primitive's
+            // own internal LWW guard would then have silently returned
+            // the existing hash without applying our bytes. If that
+            // happened the stored `updated_at` will differ from what
+            // we passed in. Treat that as a skip and bail.
+            if let Some(after_index) = <Index<MainStorage>>::get_index(root_entry_id)? {
+                if after_index.metadata.updated_at != intended_updated_at {
+                    return Ok(None);
+                }
+            }
 
             // Read the Merkle tree root hash — write_pre_merged_root_state
             // returns the *entry node's* full_hash, but the migration
