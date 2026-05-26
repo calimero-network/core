@@ -32,7 +32,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 use super::super::group_keys::{decrypt_group_op, load_group_key_by_id};
-use super::super::namespace_op_log::NamespaceOpLogService;
+use super::super::NamespaceOpLogService;
 
 /// Maximum number of governance ops the prefix walk will visit before
 /// bailing. Bounds memory + CPU for the BFS even on very deep DAGs and
@@ -199,7 +199,7 @@ pub fn membership_status_at(
     }
 
     let namespace_id = super::super::namespace::resolve_namespace(store, &group_id)?;
-    let dag = super::super::namespace_dag::NamespaceDagService::new(store, namespace_id.to_bytes());
+    let dag = super::super::NamespaceDagService::new(store, namespace_id.to_bytes());
     let local_heads = dag.read_head_record()?.parent_hashes;
 
     // Branch 1 — heads match local state exactly. Use the materialized
