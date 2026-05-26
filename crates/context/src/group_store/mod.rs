@@ -86,6 +86,8 @@ pub use self::metadata::{
     get_group_metadata, get_member_metadata, set_context_metadata, set_group_metadata,
     set_member_metadata,
 };
+pub use self::migrations::MigrationsRepository;
+#[allow(deprecated)]
 pub use self::migrations::{
     delete_all_context_last_migrations, get_context_last_migration, set_context_last_migration,
 };
@@ -112,6 +114,8 @@ pub use self::signing_keys::{
 pub use self::tee::{
     is_quote_hash_used, is_tee_admitted_identity, read_tee_admission_policy, TeeAdmissionPolicy,
 };
+pub use self::upgrades::UpgradesRepository;
+#[allow(deprecated)]
 pub use self::upgrades::{
     delete_group_upgrade, enumerate_in_progress_upgrades, load_group_upgrade, save_group_upgrade,
 };
