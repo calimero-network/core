@@ -1258,6 +1258,7 @@ dependencies = [
  "borsh",
  "calimero-blobstore",
  "calimero-context-config",
+ "calimero-governance-types",
  "calimero-network-primitives",
  "calimero-node-primitives",
  "calimero-primitives",
@@ -1316,6 +1317,20 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "calimero-governance-types"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "borsh",
+ "calimero-context-config",
+ "calimero-primitives",
+ "ed25519-dalek",
+ "rand 0.8.5",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
