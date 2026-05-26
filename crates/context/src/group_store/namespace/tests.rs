@@ -15,11 +15,11 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_store::Store;
 
-use super::super::*;
 use super::super::test_fixtures::{
     dummy_member_removed_op, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
     test_store,
 };
+use super::super::*;
 
 #[test]
 fn namespace_dag_service_store_operation_rejects_namespace_mismatch() {
@@ -2403,4 +2403,3 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         .expect("CAN_DELETE_SUBGROUP holder can delete a subgroup");
     assert!(load_group_meta(&store, &s3_gid).unwrap().is_none());
 }
-

@@ -17,11 +17,6 @@ use crate::governance_broadcast::{
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
 use crate::op_events::{notify as notify_op_event, OpEvent};
 
-use super::core::get_namespace_identity_record;
-use super::dag::{NamespaceDagService, NamespaceHead};
-use super::membership::NamespaceMembershipService;
-use super::op_log::NamespaceOpLogService;
-use super::retry::NamespaceRetryService;
 use super::super::{
     add_group_member, apply_group_op_mutations, clear_denied, decrypt_group_op,
     get_local_gov_nonce, is_group_admin, is_group_admin_or_has_capability,
@@ -29,6 +24,11 @@ use super::super::{
     restore_member_context_identities, save_group_meta, set_local_gov_nonce, store_group_key,
     unwrap_group_key, PermissionChecker,
 };
+use super::core::get_namespace_identity_record;
+use super::dag::{NamespaceDagService, NamespaceHead};
+use super::membership::NamespaceMembershipService;
+use super::op_log::NamespaceOpLogService;
+use super::retry::NamespaceRetryService;
 
 /// Side effect returned by namespace-op application when an existing
 /// member should deliver the group key to a joiner.
@@ -197,104 +197,107 @@ impl<'a> NamespaceGovernance<'a> {
                         // call. Without this, "Unexpected length of input"
                         // is ambiguous between the identity read, the key
                         // store, or the retry walk.
-                        let mut apply_kd = || -> EyreResult<Option<super::super::DivergenceReport>> {
-                            if let Some(identity) =
-                                get_namespace_identity_record(self.store, &ns_id).map_err(|e| {
-                                    eyre::eyre!("get_namespace_identity_record: {e}")
-                                })?
-                            {
-                                let recipient_sk = PrivateKey::from(identity.private_key);
-                                if envelope.recipient == recipient_sk.public_key() {
-                                    match unwrap_group_key(&recipient_sk, envelope) {
-                                        Ok(group_key) => {
-                                            let gid = ContextGroupId::from(*group_id);
-                                            let key_id =
-                                                store_group_key(self.store, &gid, &group_key)
-                                                    .map_err(|e| {
+                        let mut apply_kd =
+                            || -> EyreResult<Option<super::super::DivergenceReport>> {
+                                if let Some(identity) = get_namespace_identity_record(
+                                    self.store, &ns_id,
+                                )
+                                .map_err(|e| eyre::eyre!("get_namespace_identity_record: {e}"))?
+                                {
+                                    let recipient_sk = PrivateKey::from(identity.private_key);
+                                    if envelope.recipient == recipient_sk.public_key() {
+                                        match unwrap_group_key(&recipient_sk, envelope) {
+                                            Ok(group_key) => {
+                                                let gid = ContextGroupId::from(*group_id);
+                                                let key_id =
+                                                    store_group_key(self.store, &gid, &group_key)
+                                                        .map_err(|e| {
                                                         eyre::eyre!("store_group_key: {e}")
                                                     })?;
-                                            tracing::info!(
-                                                group_id = %hex::encode(group_id),
-                                                key_id = %hex::encode(key_id),
-                                                "received group key via KeyDelivery"
-                                            );
-                                            // Wake any `join_group` future
-                                            // waiting on the gossip-fallback
-                                            // path. The apply path already
-                                            // filtered by
-                                            // `envelope.recipient ==
-                                            // recipient_sk.public_key()`, so
-                                            // this only fires for our own
-                                            // identity. Emit *before*
-                                            // `retry_encrypted_ops_for_group`
-                                            // so the wake-up isn't blocked
-                                            // by a slow retry pass.
-                                            notify_op_event(OpEvent::GroupKeyDelivered {
-                                                group_id: *group_id,
-                                                recipient: recipient_sk.public_key(),
-                                            });
-                                            // Bootstrap the founding admin/owner
-                                            // for a node that joined WITHOUT an
-                                            // invitation (the TEE fleet-join
-                                            // path). The invited-join flow seeds
-                                            // this from the invitation's inviter
-                                            // identity (`handlers/join_group.rs`),
-                                            // but a TEE node has no invitation —
-                                            // so it would replay A's encrypted
-                                            // governance ops and reject every one
-                                            // ("verifier must be a group member",
-                                            // "only admin can register a
-                                            // context") because it never recorded
-                                            // who the namespace admin is. The
-                                            // KeyDelivery signer is precisely that
-                                            // trust anchor: only an existing
-                                            // key-holding member of THIS namespace
-                                            // can mint a KeyDelivery for us, and
-                                            // for the bootstrap case that member
-                                            // is the namespace owner that just
-                                            // admitted us. Seed only when (a) the
-                                            // delivery is for the namespace root
-                                            // group and (b) we have no group meta
-                                            // yet — so the invited-join path
-                                            // (which already wrote meta) is never
-                                            // touched, and a node already holding
-                                            // meta keeps its authoritative copy.
-                                            // The retry below then applies A's
-                                            // membership/context ops cleanly.
-                                            if let Err(e) = self.seed_bootstrap_admin_if_absent(
-                                                *group_id, &op.signer,
-                                            ) {
-                                                tracing::warn!(
+                                                tracing::info!(
                                                     group_id = %hex::encode(group_id),
-                                                    error = %format!("{e:#}"),
-                                                    "failed to seed bootstrap admin from KeyDelivery \
-                                                     signer; encrypted-op retry may reject"
+                                                    key_id = %hex::encode(key_id),
+                                                    "received group key via KeyDelivery"
                                                 );
+                                                // Wake any `join_group` future
+                                                // waiting on the gossip-fallback
+                                                // path. The apply path already
+                                                // filtered by
+                                                // `envelope.recipient ==
+                                                // recipient_sk.public_key()`, so
+                                                // this only fires for our own
+                                                // identity. Emit *before*
+                                                // `retry_encrypted_ops_for_group`
+                                                // so the wake-up isn't blocked
+                                                // by a slow retry pass.
+                                                notify_op_event(OpEvent::GroupKeyDelivered {
+                                                    group_id: *group_id,
+                                                    recipient: recipient_sk.public_key(),
+                                                });
+                                                // Bootstrap the founding admin/owner
+                                                // for a node that joined WITHOUT an
+                                                // invitation (the TEE fleet-join
+                                                // path). The invited-join flow seeds
+                                                // this from the invitation's inviter
+                                                // identity (`handlers/join_group.rs`),
+                                                // but a TEE node has no invitation —
+                                                // so it would replay A's encrypted
+                                                // governance ops and reject every one
+                                                // ("verifier must be a group member",
+                                                // "only admin can register a
+                                                // context") because it never recorded
+                                                // who the namespace admin is. The
+                                                // KeyDelivery signer is precisely that
+                                                // trust anchor: only an existing
+                                                // key-holding member of THIS namespace
+                                                // can mint a KeyDelivery for us, and
+                                                // for the bootstrap case that member
+                                                // is the namespace owner that just
+                                                // admitted us. Seed only when (a) the
+                                                // delivery is for the namespace root
+                                                // group and (b) we have no group meta
+                                                // yet — so the invited-join path
+                                                // (which already wrote meta) is never
+                                                // touched, and a node already holding
+                                                // meta keeps its authoritative copy.
+                                                // The retry below then applies A's
+                                                // membership/context ops cleanly.
+                                                if let Err(e) = self.seed_bootstrap_admin_if_absent(
+                                                    *group_id, &op.signer,
+                                                ) {
+                                                    tracing::warn!(
+                                                        group_id = %hex::encode(group_id),
+                                                        error = %format!("{e:#}"),
+                                                        "failed to seed bootstrap admin from KeyDelivery \
+                                                         signer; encrypted-op retry may reject"
+                                                    );
+                                                }
+                                                let retry_divergence = self
+                                                    .retry_encrypted_ops_for_group(*group_id)
+                                                    .map_err(|e| {
+                                                        eyre::eyre!(
+                                                            "retry_encrypted_ops_for_group: {e}"
+                                                        )
+                                                    })?;
+                                                return Ok(retry_divergence);
                                             }
-                                            let retry_divergence = self
-                                                .retry_encrypted_ops_for_group(*group_id)
-                                                .map_err(|e| {
-                                                    eyre::eyre!(
-                                                        "retry_encrypted_ops_for_group: {e}"
-                                                    )
-                                                })?;
-                                            return Ok(retry_divergence);
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                ?e,
-                                                "failed to unwrap KeyDelivery envelope"
-                                            );
-                                            result.key_unwrap_failures.push(KeyUnwrapFailure {
-                                                group_id: *group_id,
-                                                reason: format!("KeyDelivery unwrap failed: {e}"),
-                                            });
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    ?e,
+                                                    "failed to unwrap KeyDelivery envelope"
+                                                );
+                                                result.key_unwrap_failures.push(KeyUnwrapFailure {
+                                                    group_id: *group_id,
+                                                    reason: format!(
+                                                        "KeyDelivery unwrap failed: {e}"
+                                                    ),
+                                                });
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            Ok(None)
-                        };
+                                Ok(None)
+                            };
                         match apply_kd() {
                             Ok(retry_divergence) => {
                                 if retry_divergence.is_some() {
@@ -902,7 +905,8 @@ impl<'a> NamespaceGovernance<'a> {
             save_group_meta(self.store, &gid, &meta)?;
         }
 
-        let member_existed = super::super::get_group_member_role(self.store, &gid, founder)?.is_some();
+        let member_existed =
+            super::super::get_group_member_role(self.store, &gid, founder)?.is_some();
         if !member_existed {
             add_group_member(self.store, &gid, founder, GroupMemberRole::Admin)?;
         }
@@ -1148,8 +1152,9 @@ impl<'a> NamespaceGovernance<'a> {
                 // self-healing — the next op always lands strictly above every
                 // persisted entry. This also removes any reliance on a possibly
                 // stale `get_op_head` snapshot for sequencing.
-                let next_seq = super::super::local_state::max_op_log_sequence(self.store, group_id)?
-                    .map_or(1, |max| max.saturating_add(1));
+                let next_seq =
+                    super::super::local_state::max_op_log_sequence(self.store, group_id)?
+                        .map_or(1, |max| max.saturating_add(1));
                 let op_bytes =
                     borsh::to_vec(signed_group_op).map_err(|e| eyre::eyre!("borsh: {e}"))?;
                 // The group op-log is a node-local LINEAR append-only sequence;

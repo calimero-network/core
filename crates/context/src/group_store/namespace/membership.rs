@@ -7,10 +7,10 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 use sha2::Digest;
 
-use super::core::resolve_namespace;
 use super::super::{
     add_group_member, has_direct_group_member, is_group_admin, is_group_admin_or_has_capability,
 };
+use super::core::resolve_namespace;
 
 /// Namespace-scoped service for handling `RootOp::MemberJoined`.
 pub struct NamespaceMembershipService<'a> {

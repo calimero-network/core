@@ -528,7 +528,12 @@ pub fn collect_subtree_for_cascade(
     root: &ContextGroupId,
 ) -> EyreResult<CascadePayload> {
     let mut contexts: Vec<ContextId> = Vec::new();
-    contexts.extend(super::super::enumerate_group_contexts(store, root, 0, usize::MAX)?);
+    contexts.extend(super::super::enumerate_group_contexts(
+        store,
+        root,
+        0,
+        usize::MAX,
+    )?);
 
     // DFS pre-order traversal. Push children onto a LIFO stack; each iteration
     // pops one and recurses into its subtree before backtracking. After the
