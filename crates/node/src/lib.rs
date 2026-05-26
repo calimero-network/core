@@ -43,6 +43,8 @@ pub(crate) use state::{CachedBlob, NodeClients, NodeManagers, NodeState};
 pub use sync::SyncManager;
 
 #[cfg(test)]
+mod cascade_dispatch_e2e;
+#[cfg(test)]
 mod delta_store_head_hashes_test;
 #[cfg(test)]
 mod local_governance_node_e2e;
