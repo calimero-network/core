@@ -6075,16 +6075,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "migration-suite-v3-add-list"
-version = "0.0.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "calimero-wasm-abi",
- "serde_json",
-]
-
-[[package]]
 name = "migration-suite-v3-remove-field"
 version = "0.0.0"
 dependencies = [
