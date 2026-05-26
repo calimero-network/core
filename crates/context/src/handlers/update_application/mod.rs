@@ -732,18 +732,69 @@ fn write_migration_state(
 
     let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
     let result = with_runtime_env(runtime_env, || -> Result<_, StorageError> {
-        let write_result = (|| -> Result<_, StorageError> {
-            // Write the entry — this updates the entry's Index and propagates hashes
-            // up to the Merkle tree root via recalculate_ancestor_hashes_for.
-            let save_result =
-                Interface::<MainStorage>::save_raw(root_entry_id, entry_bytes, metadata)?;
-
-            if save_result.is_none() {
-                return Ok(None);
+        let write_result = (|| -> Result<Option<[u8; 32]>, StorageError> {
+            // Pre-flight LWW check. `write_pre_merged_root_state` has a
+            // built-in LWW guard: if the locally-stored root entry already
+            // has `updated_at > metadata.updated_at`, it silently returns
+            // the existing hash and does NOT apply our migrated bytes.
+            //
+            // For migration that is unsafe — the surrounding
+            // `update_application_id` flow still persists the new
+            // `application_id` regardless of what happened here, so a
+            // silent skip would leave the v2 binary running against
+            // un-migrated v1-shaped state (data corruption class). The
+            // pre-#2433 `save_raw` path surfaced this case via an
+            // `Ok(None)` return; we restore the same safety net here by
+            // checking the metadata ourselves and signalling skip as
+            // `Ok(None)`, which the outer match arm bails on.
+            //
+            // First-time migrations (no existing entry yet) skip the
+            // guard and proceed normally.
+            if let Some(existing_index) = <Index<MainStorage>>::get_index(root_entry_id)? {
+                if existing_index.metadata.updated_at > metadata.updated_at {
+                    return Ok(None);
+                }
             }
 
-            // Read the Merkle tree root hash — same as the normal execution flow
-            // save_raw returns the *entry node's* full_hash, not the tree root's.
+            // Capture the intended updated_at before `metadata` is moved
+            // into write_pre_merged_root_state below — the post-write
+            // verification compares against this.
+            let intended_updated_at = metadata.updated_at;
+
+            // Write the migrated root state via the pre-merged primitive
+            // introduced by #2465. The caller (this function) is the
+            // source of truth for the new bytes — the wasm migrate
+            // function already produced fully-resolved v2-shaped state,
+            // so there is no host-side merge to dispatch and no app-type
+            // entry in the host's merge registry (which lives in the
+            // wasm runtime since #2465's host/WASM split). Using
+            // `save_raw` here hit `MergeFailure(NoMergeFunctionRegistered)`
+            // because save_raw expects a registered Mergeable for
+            // root-class entries — that's the #2433 regression this
+            // function existed to trigger.
+            let _entry_own_hash = Interface::<MainStorage>::write_pre_merged_root_state(
+                root_entry_id,
+                &entry_bytes,
+                metadata,
+            )?;
+
+            // Post-write verification closes the TOCTOU window where a
+            // racing writer slipped a newer `updated_at` between our
+            // pre-flight check above and this call: the primitive's
+            // own internal LWW guard would then have silently returned
+            // the existing hash without applying our bytes. If that
+            // happened the stored `updated_at` will differ from what
+            // we passed in. Treat that as a skip and bail.
+            if let Some(after_index) = <Index<MainStorage>>::get_index(root_entry_id)? {
+                if after_index.metadata.updated_at != intended_updated_at {
+                    return Ok(None);
+                }
+            }
+
+            // Read the Merkle tree root hash — write_pre_merged_root_state
+            // returns the *entry node's* full_hash, but the migration
+            // caller (system.rs's normal execution flow analogue) needs
+            // the tree root hash for ContextMeta.root_hash.
             let root_hash = Index::<MainStorage>::get_hashes_for(Id::root())?
                 .map(|(full_hash, _)| full_hash)
                 .unwrap_or([0; 32]);
@@ -751,10 +802,10 @@ fn write_migration_state(
             Ok(Some(root_hash))
         })();
 
-        // `save_raw` pushes sync actions into thread-local DELTA_CONTEXT. This
-        // migration path does not emit a delta artifact, so explicitly discard
-        // pending actions to avoid contaminating subsequent operations on the
-        // same runtime thread.
+        // The storage-write path pushes sync actions into thread-local
+        // DELTA_CONTEXT. This migration path does not emit a delta artifact,
+        // so explicitly discard pending actions to avoid contaminating
+        // subsequent operations on the same runtime thread.
         clear_pending_delta();
 
         write_result
@@ -772,12 +823,15 @@ fn write_migration_state(
         Ok(None) => {
             error!(
                 %context_id,
-                "Migration state write was unexpectedly skipped - timestamp conflict"
+                "Migration state write skipped by LWW guard — local root metadata \
+                 is newer than the migration's deterministic timestamp"
             );
             bail!(
-                "Migration state write was unexpectedly skipped - timestamp conflict. \
-                 This indicates a concurrent update conflict that prevented the migration \
-                 state from being written. The migration must be retried."
+                "Migration state write was skipped by the LWW guard: local root \
+                 metadata has a newer `updated_at` than the migration's. Persisting \
+                 the new application_id without writing the migrated bytes would \
+                 leave the v2 binary running against v1-shaped state. The migration \
+                 must be retried."
             )
         }
         Err(e) => {
