@@ -8,8 +8,8 @@ use calimero_store::key::{AutoFollowFlags, GroupMember, GroupMemberValue, GROUP_
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::namespace::{get_parent_group, MAX_NAMESPACE_DEPTH};
-use super::{
+use super::super::namespace::{get_parent_group, MAX_NAMESPACE_DEPTH};
+use super::super::{
     collect_keys_with_prefix, collect_keys_with_prefix_paginated, count_keys_with_prefix,
     delete_member_metadata, get_member_capability, get_subgroup_visibility, is_denied,
     load_group_meta, set_member_capability, GroupStoreError,
@@ -803,7 +803,7 @@ pub fn is_authoritative_namespace_identity(
         return Ok(true);
     }
 
-    super::tee::is_tee_admitted_identity(store, &gid, identity)
+    super::super::tee::is_tee_admitted_identity(store, &gid, identity)
 }
 
 pub fn count_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
@@ -855,5 +855,5 @@ fn get_member_default_capabilities(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<Option<u32>> {
-    super::get_default_capabilities(store, group_id)
+    super::super::get_default_capabilities(store, group_id)
 }

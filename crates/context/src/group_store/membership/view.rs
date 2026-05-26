@@ -4,7 +4,9 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::{check_group_membership, get_group_member_role, is_group_admin, list_group_members};
+use super::core::{
+    check_group_membership, get_group_member_role, is_group_admin, list_group_members,
+};
 
 /// Read-model for group membership lookups and derived checks.
 pub struct GroupMembershipView<'a> {
