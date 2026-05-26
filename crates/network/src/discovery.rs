@@ -3,7 +3,7 @@ use core::time::Duration;
 use std::collections::HashSet;
 
 use calimero_network_primitives::config::{AutonatConfig, RelayConfig, RendezvousConfig};
-use eyre::{bail, ContextCompat, Result as EyreResult};
+use eyre::{bail, ContextCompat, Result as EyreResult, WrapErr as _};
 use libp2p::rendezvous::client::RegisterError;
 use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
@@ -298,8 +298,36 @@ impl NetworkManager {
             .get_preferred_addr()
             .wrap_err("Failed to get preferred addr for relay peer")?;
 
-        let relayed_addr = match preferred_addr
-            .clone()
+        // libp2p's relay-client transport requires the relay address to
+        // be the FULL form:
+        //   /<transport>/p2p/<relay-peer>/p2p-circuit/p2p/<self-peer>
+        //
+        // The `/p2p/<relay-peer>` segment between the transport and
+        // `/p2p-circuit` is how the relay-client knows which peer is
+        // serving the circuit. Without it, `listen_on` rejects the
+        // multiaddr with a near-empty transport-level error and the
+        // reservation flow silently fails.
+        //
+        // Why this would land on an incomplete addr: `peer_info.addrs`
+        // is populated from two sources — `update_peer_protocols` (the
+        // Identify protocols block, which carries no addresses) and the
+        // listen_addrs loop in identify.rs which adds the peer's raw
+        // listen_addrs. The peer's listen_addrs are bare network
+        // endpoints (`/ip4/.../udp/.../quic-v1`) with no `/p2p/`
+        // suffix. `get_preferred_addr` prefers UDP, which means it
+        // returns the bare endpoint and the constructed relayed addr
+        // ends up missing the relay-peer segment.
+        //
+        // Fix: append `/p2p/<relay-peer>` to the base only if it isn't
+        // already present (some entries in `peer_info.addrs` are
+        // populated from connection-established events and DO carry
+        // the `/p2p/`).
+        let mut base_addr = preferred_addr.clone();
+        if !base_addr.iter().any(|p| matches!(p, Protocol::P2p(_))) {
+            base_addr.push(Protocol::P2p(*relay_peer));
+        }
+
+        let relayed_addr = match base_addr
             .with(Protocol::P2pCircuit)
             .with_p2p(*self.swarm.local_peer_id())
         {
@@ -309,7 +337,17 @@ impl NetworkManager {
             }
         };
 
-        let listener_id = self.swarm.listen_on(relayed_addr)?;
+        // Wrap `listen_on` with context — its underlying error type
+        // (libp2p's swarm::ListenError → TransportError) renders to
+        // an unhelpfully terse string when propagated raw via `?`, and
+        // the identify handler's `error!(%err, ...)` printout above
+        // this call site reduces to `err=` with no Display content.
+        // That made the previous incarnation of this bug
+        // (relayed_addr missing /p2p/<relay-peer>) invisible in logs.
+        let listener_id = self
+            .swarm
+            .listen_on(relayed_addr.clone())
+            .wrap_err_with(|| format!("Failed to listen on relayed addr {}", relayed_addr))?;
 
         // Record the listener id so the ListenerClosed handler can route
         // recovery back to this relay peer even if the close event comes
