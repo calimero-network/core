@@ -73,10 +73,15 @@ impl<'a> DenyListRepository<'a> {
     /// It is compiled out in release so the production cost is zero —
     /// the assertion exists to catch misuse during development.
     pub fn mark(&self, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<()> {
+        // `unwrap_or(false)` so a store I/O error doesn't masquerade as a
+        // contract violation — the assertion is meant to catch caller misuse
+        // (marking before remove_group_member), not transient read failures.
+        // If the read fails, treat the member as absent (assertion passes);
+        // the real I/O error will surface from the put below.
         debug_assert!(
             !MembershipRepository::new(self.store)
                 .has_direct_member(group_id, member)
-                .unwrap_or(true),
+                .unwrap_or(false),
             "DenyListRepository::mark: member {member:?} is still in the materialized set \
              for group {group_id:?} — callers must invoke remove_group_member first \
              (see caller contract)"

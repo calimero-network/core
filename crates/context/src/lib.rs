@@ -1,4 +1,3 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 

@@ -80,6 +80,13 @@ pub(super) fn nest_for_test(store: &Store, parent: &ContextGroupId, child: &Cont
 /// `enumerate_inherited`, `is_open_chain_to_namespace`, etc.). The
 /// resulting tree is intentionally malformed from the production API's
 /// perspective — only the walker bail-out path should ever observe it.
+///
+/// **Asymmetric edge.** Only writes the child→parent `GroupParentRef`
+/// edge. The parent→child `GroupChildIndex` edge that real `nest`
+/// writes is *not* set, so `list_children` / `collect_descendants` /
+/// any downward walk will not see these synthetic edges. Use this
+/// helper only for tests that walk upward (resolve, check_path,
+/// is_open_chain_to_namespace, enumerate_inherited).
 pub(super) fn nest_for_test_unchecked(
     store: &Store,
     parent: &ContextGroupId,

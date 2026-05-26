@@ -8,7 +8,6 @@
 //! continue to see the same symbol set at `calimero_context::group_store::*`.
 //!
 //! Issue #2480 / epic #2300. Mirror of #2306 for the namespace side.
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
 mod core;
 mod dag;
 mod governance;
