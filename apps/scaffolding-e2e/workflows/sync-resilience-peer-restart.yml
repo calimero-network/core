@@ -2,57 +2,51 @@ description: >
   Sync-resilience smoke test: a peer is restarted mid-session; writes
   made after the restart must converge to the other peer.
 
-  Discovery + routing setup
-  -------------------------
+  Topology
+  --------
 
-  This workflow now exercises the relay/rendezvous recovery path
-  end-to-end. Two settings:
+  Uses `topology: { type: nat, nat_mode: cone }` from
+  merobox 0.6.19+. Both peers sit on an internal LAN bridge behind a
+  NAT-gateway container; the only path to the public-bridge boot-node
+  is via the gateway's MASQUERADE. After the restart, node-1 has to
+  re-register its relay reservation with the boot-node — the exact
+  code path #2446's recovery work fixed — before node-2 can reach
+  it through the circuit. There is no direct-dial fallback because
+  Docker's `DOCKER-ISOLATION-STAGE-2` chain DROPs cross-bridge
+  traffic that doesn't transit the gateway, AND the clients'
+  default routes point at the gateway (no other path exists).
 
-    * `preserve_default_bootstrap: true` keeps the public devnet
-      boot-node from `merod init` in `bootstrap.nodes` under
-      `--e2e-mode`. That boot-node doubles as the relay server.
+  Why cone (not symmetric): cone NAT preserves source-port across
+  destinations, so DCUtR hole-punching has a chance to upgrade the
+  circuit-relayed connection to a direct one after the initial
+  rendezvous lands. The test still exercises the relay-reservation
+  path on the way up; the post-upgrade direct path is a bonus and
+  matches what most real-world consumer NATs do.
 
-    * `mdns: false` disables local discovery. Without this, both
-      nodes on the same Docker bridge would find each other via
-      mDNS and the relay path would be dead code in CI — the very
-      thing #2446's regression coverage is supposed to catch
-      against.
+  See `sync-resilience-peer-restart-symmetric.yml` for the strict
+  variant where MASQUERADE `--random-fully` blocks DCUtR and every
+  packet stays on the relay.
 
   Catches the class of integration regressions that the unit-level
   tests can't see: sync-protocol changes that break peer-restart
   recovery, gossipsub topic-rejoin bugs, address-book staleness
-  after a restart, and the Borsh-deserialisation-mismatch class of
-  bug that broke test-merobox-integration for two weeks before
-  calimero-network/merobox#250 caught it.
-
-  A multi-network NAT-topology version (where both nodes physically
-  cannot dial each other directly) is still tracked under
-  calimero-network/core#2467 / calimero-network/merobox#251. The
-  same-bridge limit here means a node that keeps a cached sibling
-  address might still race a direct dial against the relay path on
-  reconnect; multi-network closes that gap.
-name: Sync Resilience — Peer Restart
+  after a restart, Borsh-deserialisation-mismatch class of bug that
+  broke test-merobox-integration for two weeks before
+  calimero-network/merobox#250 caught it, and the relay-reservation
+  re-registration the recovery work in
+  `crates/network/src/discovery/state.rs` exists for.
+name: Sync Resilience — Peer Restart (NAT cone)
 
 force_pull_image: false
 
-# Triggers merobox's `_wire_cluster_bootstrap_peers` so each node's
-# `bootstrap.nodes` is populated with the sibling's bridge address.
-# Without this + `mdns: false`, the two nodes can't find each other
-# at setup time. See sync-resilience-network-partition.yml for the
-# full rationale.
-restart: true
-
-# Keep `merod init`'s default boot-node (public devnet from
-# `crates/network/primitives/src/config.rs`); see header for why.
-preserve_default_bootstrap: true
+topology:
+  type: nat
+  nat_mode: cone
 
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: sync-resil-node
-  # See header — required to force routing through the boot-node /
-  # relay rather than the Docker bridge's mDNS shortcut.
-  mdns: false
 
 steps:
   # ---------- Setup: 2-node namespace + context ----------
@@ -145,15 +139,16 @@ steps:
     wait_healthy: true
     timeout: 60
 
-  # wait_healthy confirms merod's admin endpoint is back up; it does NOT
-  # confirm that libp2p has re-dialled node-2 and the gossipsub mesh
-  # has reformed for this context. A 10s buffer lets that happen
-  # before the next write, so the test exercises the mesh-rejoin path
-  # rather than relying on wait_for_sync's pull-based fallback to mask
-  # a race.
-  - name: Wait for libp2p mesh to reform after restart
+  # wait_healthy confirms merod's admin endpoint is back up; it does
+  # NOT confirm that libp2p has re-dialled the boot-node, refreshed
+  # its relay reservation, and rejoined the gossipsub mesh for this
+  # context. The reservation alone is typically <500ms, mesh rejoin
+  # adds ~5s under NAT, and DCUtR upgrade (if it happens) needs both
+  # peers to exchange Connect messages over the relay first. 15s is
+  # the empirical settled-state ceiling on a CI runner.
+  - name: Wait for libp2p + relay reservation to re-form after restart
     type: wait
-    seconds: 10
+    seconds: 15
 
   # ---------- Recovery: node-1 must come back and sync the next write ----------
 
@@ -190,9 +185,9 @@ steps:
     statements:
       - "contains({{post_n2}}, 'recovered')"
 
-  # Re-read the baseline key on node-1 post-restart. Catches the class
-  # of regression where the restarted node loses pre-restart state
-  # (storage persistence bug, fsck during restart, etc.).
+  # Re-read the baseline key on node-1 post-restart. Catches the
+  # class of regression where the restarted node loses pre-restart
+  # state (storage persistence bug, fsck during restart, etc.).
 
   - name: Read baseline key on node-1 post-restart
     type: call

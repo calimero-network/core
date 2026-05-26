@@ -1,84 +1,83 @@
 description: >
   Sync-resilience smoke test: one peer is fully partitioned from the
-  Docker bridge for ~15 seconds while the other peer writes, then the
+  LAN bridge for ~15 seconds while the other peer writes, then the
   partition is healed and the partitioned peer must catch up.
 
-  This file previously used `inject_network_fault loss=100% duration=3s`,
-  but a 3-second packet-loss window is shorter than libp2p's
-  connection-keepalive timeout (yamux ping ~30s, ping behaviour ~15s),
-  so the TCP connection survived the loss as buffered retransmits and
-  the test exercised gossipsub message loss rather than connection
-  teardown + recovery. `tc qdisc loss` is also egress-only by default,
-  so the partition was actually asymmetric (node-1's writes still
-  arrived at node-2's NIC, just node-2's outbound ACKs were dropped).
+  Fault primitive
+  ---------------
+
+  This file previously used `inject_network_fault loss=100%
+  duration=3s`, but a 3-second packet-loss window is shorter than
+  libp2p's connection-keepalive timeout (yamux ping ~30s, ping
+  behaviour ~15s), so the TCP connection survived the loss as
+  buffered retransmits and the test exercised gossipsub message
+  loss rather than connection teardown + recovery. `tc qdisc loss`
+  is also egress-only by default, so the partition was actually
+  asymmetric (node-1's writes still arrived at node-2's NIC, just
+  node-2's outbound ACKs were dropped).
 
   `disconnect_node` + `connect_node` instead use Docker's network
-  detach/attach to produce a real, symmetric partition: when node-2 is
-  detached, its libp2p connections are torn down immediately. The 15s
-  pause is long enough for libp2p's ping behaviour to mark the
-  connection dead (typically ~15-30s), which exercises the connection
-  recovery path on reattach — the same code path a flaky home Wi-Fi or
-  brief route change would trigger in production.
+  detach/attach to produce a real, symmetric partition: when
+  node-2 is detached from the LAN bridge, its libp2p connections
+  are torn down immediately AND its route to the NAT gateway
+  vanishes. The 15s pause is long enough for libp2p's ping
+  behaviour to mark the connection dead, exercising the
+  connection-recovery + relay-reservation re-registration path
+  on reattach.
 
-  Discovery + routing setup
-  -------------------------
+  Topology
+  --------
 
-  This workflow DOES exercise the relay/rendezvous recovery path
-  (the code path #2446 fixed). Two settings make that happen:
+  Uses `topology: { type: nat, nat_mode: cone }` from
+  merobox 0.6.19+. Both peers sit behind a NAT-gateway container
+  on an internal LAN bridge; the only path to the boot-node (which
+  serves as the relay) is via the gateway's MASQUERADE. There is
+  no direct route between siblings. Docker's
+  DOCKER-ISOLATION-STAGE-2 chain prevents cross-bridge traffic
+  from going through the host even if the gateway weren't there,
+  and the clients' default routes are explicitly pinned at the
+  gateway's LAN IP via merobox's post-startup route injection.
 
-    * `preserve_default_bootstrap: true` keeps the public devnet
-      boot-node from `merod init` in `bootstrap.nodes` even under
-      `--e2e-mode`. That boot-node also acts as the relay server.
+  Detach + reattach considerations
+  --------------------------------
 
-    * `mdns: false` kills the local-discovery shortcut. Without
-      this, both nodes on the same Docker bridge would find each
-      other directly via mDNS, the relay path would be dead code,
-      and the test would only exercise libp2p's TCP/QUIC reconnect
-      handling — not the relay-reservation recovery we want to
-      regress against.
+  When `disconnect_node` removes node-2 from the LAN bridge:
+    * node-2's eth0 (the LAN veth) is destroyed.
+    * node-2 still has its container netns with the routing
+      table — `default via <gateway-lan-ip>` — but the next-hop
+      is now unreachable.
+    * libp2p inside node-2 sees the connection drop on next
+      keepalive failure.
 
-  With both settings in place, after `disconnect_node` removes
-  node-2 from the bridge there is no direct route to node-1; the
-  only way for node-2 to find node-1 again on reconnect is to redial
-  the boot-node and route through the relay. That's exactly the path
-  the recovery code in `crates/network/src/discovery/state.rs`
-  handles, and the path this test exists to catch regressions on.
+  On `connect_node`, Docker re-attaches the LAN bridge:
+    * eth0 is recreated (with potentially a different IP from
+      the LAN IPAM pool — Docker may or may not reuse the
+      previous one).
+    * The default route in the routing table still points at
+      the pinned gateway LAN IP, which is still on the bridge.
+      ARP re-resolves on the first outbound packet.
+    * libp2p has to redial the boot-node (the cached
+      connection is gone) and refresh its relay reservation
+      before sync can resume — the exact recovery path #2446
+      fixed.
 
-  A true multi-network NAT-topology version is still tracked under
-  calimero-network/core#2467 / calimero-network/merobox#251 — both
-  nodes share the same Docker bridge here, so a node that keeps a
-  cached sibling address in its address book might still race a
-  direct dial against the relay path. The single-bridge limit is the
-  same constraint the relay-recovery unit tests have; multi-network
-  closes that final gap.
-name: Sync Resilience — Network Partition
+  Why cone: cone NAT allows DCUtR to upgrade the relayed
+  connection to a direct one once both peers are re-rendezvoused.
+  The recovery still goes through the relay on the way up. See
+  `sync-resilience-network-partition-symmetric.yml` for the
+  strict variant where every packet stays on the relay.
+name: Sync Resilience — Network Partition (NAT cone)
 
 force_pull_image: false
 
-# Selects merobox's `run_multiple_nodes` startup path, which is the
-# one that triggers `_wire_cluster_bootstrap_peers` to populate each
-# node's `bootstrap.nodes` with the sibling's bridge address — on top
-# of the preserved devnet boot-node, per the cluster-wiring fix in
-# merobox PR #253. Without `restart: true`, merobox starts each node
-# individually via the no-restart loop, the wiring step never runs,
-# and with `mdns: false` below the two nodes have no way to find each
-# other — `join_namespace` fails at the setup phase with "could not
-# open a namespace-join stream to any mesh peer". Fresh-CI nodes are
-# always cold-started, so "restart" here is a no-op for the lifecycle
-# and just selects the right code path.
-restart: true
-
-# Keep `merod init`'s default boot-node (the public devnet from
-# `crates/network/primitives/src/config.rs`); see header for why.
-preserve_default_bootstrap: true
+topology:
+  type: nat
+  nat_mode: cone
 
 nodes:
   count: 2
   image: ghcr.io/calimero-network/merod:edge
   prefix: sync-resil-node
-  # See header — required to force routing through the boot-node /
-  # relay rather than the Docker bridge's mDNS shortcut.
-  mdns: false
 
 steps:
   # ---------- Setup ----------
@@ -163,9 +162,9 @@ steps:
     statements:
       - "contains({{baseline_n2}}, 'pre_partition')"
 
-  # ---------- Fault: detach node-2 from the bridge ----------
+  # ---------- Fault: detach node-2 from the LAN bridge ----------
 
-  - name: Disconnect node-2 from the bridge
+  - name: Disconnect node-2 from the LAN bridge
     type: disconnect_node
     node: sync-resil-node-2
 
@@ -182,16 +181,17 @@ steps:
     type: wait
     seconds: 15
 
-  - name: Reconnect node-2 to the bridge
+  - name: Reconnect node-2 to the LAN bridge
     type: connect_node
     node: sync-resil-node-2
 
   # Reattaching the network doesn't instantly restore libp2p
-  # connections; the swarm needs to redial. Give it room before
-  # trigger_sync fires.
-  - name: Wait for libp2p to redial after reconnect
+  # connections; the swarm needs to redial the boot-node and
+  # refresh its relay reservation. 15s buffer covers ARP
+  # re-resolution + dial + relay-reservation re-register.
+  - name: Wait for libp2p to redial + reservation to refresh
     type: wait
-    seconds: 10
+    seconds: 15
 
   # ---------- Catch-up ----------
 
@@ -220,9 +220,8 @@ steps:
       - "contains({{during_n2}}, 'written_while_partitioned')"
 
   # Re-read the baseline key on node-2 post-reconnect. Catches the
-  # class of regression where the partitioned node loses pre-partition
-  # state on reconnect (e.g. a state-machine bug that re-initialises
-  # the context on re-establishing the connection).
+  # class of regression where the partitioned node loses
+  # pre-partition state on reconnect.
 
   - name: Read baseline key on node-2 post-partition
     type: call

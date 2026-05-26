@@ -1,0 +1,220 @@
+description: >
+  Strict counterpart to `sync-resilience-peer-restart.yml`. Same
+  scenario (restart node-1 mid-session, recover), same assertions,
+  but the NAT gateway runs `iptables MASQUERADE --random-fully` so
+  the outbound port is randomised per destination. DCUtR
+  hole-punching can't predict a consistent port for direct upgrade,
+  so every cross-client packet stays on the boot-node's relay
+  circuit — both before AND after the restart.
+
+  Why this exists in addition to the cone variant
+  -----------------------------------------------
+
+  Cone NAT lets DCUtR succeed, which means the circuit-relayed
+  connection silently upgrades to a direct one shortly after the
+  first relay handshake. The recovery assertions still fire (the
+  reservation re-registration on restart IS exercised), but the
+  cone variant cannot detect a regression where post-restart
+  traffic is staying on the relay because the direct upgrade
+  ALSO works and masks the relay path.
+
+  Symmetric mode removes that masking: if a write doesn't make it
+  via `/p2p-circuit/`, it doesn't make it at all. A regression
+  that breaks relay-mediated sync — gossipsub circuit-aware
+  routing, RPC-over-relay framing, or the relay-client behaviour
+  itself — surfaces here as a hard test failure, where the cone
+  variant would silently fall back to DCUtR-direct.
+
+  Kernel requirement: `--random-fully` needs iptables-extensions
+  with that flag, which Alpine 3.19's iptables build supports.
+  The gateway entrypoint probes for it on startup and falls back
+  to plain MASQUERADE with a warning if unavailable — in that
+  case the test will run but in cone-mode semantics. CI runners
+  on modern Ubuntu kernels reliably support the extension.
+name: Sync Resilience — Peer Restart (NAT symmetric)
+
+force_pull_image: false
+
+topology:
+  type: nat
+  nat_mode: symmetric
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: sync-resil-node
+
+steps:
+  # Steps mirror the cone variant exactly. Setup → baseline → fault
+  # (restart node-1) → recovery → assert post-restart write
+  # replicated. Timeouts bumped modestly because symmetric NAT
+  # forces every hop through the relay, which adds ~50-100ms
+  # per request-response on CI runners.
+
+  - name: Install application on node-1
+    type: install_application
+    node: sync-resil-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: sync-resil-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_node2: invitation
+
+  # Bumped from 5s → 10s: symmetric mode is slower to converge
+  # because there's no direct-dial shortcut.
+  - name: Wait for namespace gossip (via relay)
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: sync-resil-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_node2}}'
+
+  - name: Node-2 joins context via group membership
+    type: join_context
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+
+  # ---------- Baseline ----------
+
+  - name: Write baseline key on node-1
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: baseline
+      value: pre_restart
+
+  - name: Wait for baseline to converge (via relay)
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Read baseline on node-2 (sanity)
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n2: result
+
+  - name: Assert baseline replicated
+    type: assert
+    statements:
+      - "contains({{baseline_n2}}, 'pre_restart')"
+
+  # ---------- Fault: restart node-1 ----------
+
+  - name: Restart node-1 mid-session
+    type: restart_container
+    container: sync-resil-node-1
+    wait_healthy: true
+    timeout: 60
+
+  # Symmetric: 20s buffer (vs 15s on the cone variant). The
+  # reservation re-registration plus mesh-via-relay rejoin takes
+  # longer when there's no DCUtR fallback. Picked from the
+  # merobox#254 smoke-test runs on a CI runner under load.
+  - name: Wait for relay reservation to re-register after restart
+    type: wait
+    seconds: 20
+
+  # ---------- Recovery ----------
+
+  - name: Write post-restart key on node-1
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: post_restart
+      value: recovered_via_relay
+
+  - name: Wait for post-restart write to converge (via relay)
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 150
+    trigger_sync: true
+
+  - name: Read post-restart key on node-2
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: post_restart
+    outputs:
+      post_n2: result
+
+  - name: Assert post-restart write replicated (proves relay path lives)
+    type: assert
+    statements:
+      - "contains({{post_n2}}, 'recovered_via_relay')"
+
+  - name: Read baseline key on node-1 post-restart
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n1_post: result
+
+  - name: Assert node-1 retained baseline across restart
+    type: assert
+    statements:
+      - "contains({{baseline_n1_post}}, 'pre_restart')"
+
+  # The whole point of symmetric mode is that traffic must use
+  # the relay. Confirm at least one `/p2p-circuit/` address shows
+  # up in each client's log — regression guard against a future
+  # libp2p change that silently disables DCUtR fallback
+  # detection.
+
+  - name: Confirm node-1 used the relay circuit
+    type: assert_log_present
+    nodes: [sync-resil-node-1]
+    patterns:
+      - "/p2p-circuit/"
+
+  - name: Confirm node-2 used the relay circuit
+    type: assert_log_present
+    nodes: [sync-resil-node-2]
+    patterns:
+      - "/p2p-circuit/"
+
+stop_all_nodes: true

@@ -1,39 +1,43 @@
 description: >
-  Sync-resilience smoke test: a peer is paused mid-session (simulating
-  a long sleep / container freeze / host migration), writes happen on
-  the other peer, then the paused peer is unpaused and must catch up.
+  Strict counterpart to `sync-resilience-peer-pause.yml`. Same
+  scenario (pause node-2 for ~60s while node-1 writes, then
+  unpause and verify catch-up), same assertions, but the NAT
+  gateway runs `iptables MASQUERADE --random-fully` so DCUtR
+  hole-punching can't predict a consistent port for direct
+  upgrade. Every cross-client packet stays on the boot-node's
+  relay circuit.
 
-  Topology
-  --------
+  Why this exists in addition to the cone variant
+  -----------------------------------------------
 
-  Uses `topology: { type: nat, nat_mode: cone }` from
-  merobox 0.6.19+. Both peers behind a NAT-gateway; the only path
-  to the boot-node (which serves as the relay) is via the gateway's
-  MASQUERADE. When node-2 is paused, its TCP stack is frozen too;
-  on unpause it must re-dial the boot-node, refresh its relay
-  reservation, and rejoin the gossipsub mesh — the same path the
-  recovery work in #2446/#2459 fixed.
+  Cone NAT lets DCUtR succeed shortly after the initial relay
+  handshake. The recovery assertions still fire (the reservation
+  re-registration on unpause IS exercised), but the cone variant
+  cannot detect a regression where post-unpause traffic is
+  staying on the relay because the direct upgrade ALSO works and
+  masks the issue.
 
-  Why cone (not symmetric): cone NAT preserves source-port across
-  destinations, so DCUtR hole-punching can upgrade the
-  circuit-relayed connection to a direct one after the initial
-  rendezvous. The post-pause recovery still goes through the relay
-  on the way up; the direct upgrade just happens after.
-  `sync-resilience-peer-pause-symmetric.yml` is the strict variant
-  that blocks DCUtR and forces every packet through the relay.
+  Symmetric mode removes that masking: if a write doesn't make
+  it via `/p2p-circuit/`, it doesn't make it at all. Regressions
+  in relay-mediated sync (gossipsub circuit-aware routing,
+  RPC-over-relay framing, relay-client behaviour) surface here
+  as test failures; the cone variant would silently use the
+  DCUtR-direct path instead.
 
-  Catches regressions in pause/unpause recovery — buffered-delta
-  replay (the `sync::manager` swallowed-error path called out in
-  the relay-recovery memory entry), gossipsub mesh re-formation
-  after a long pause, and any sync-state-machine bug that breaks
-  when one peer comes back after losing the connection.
-name: Sync Resilience — Peer Pause (NAT cone)
+  Pause is a worse stressor than restart for this code: the
+  client's relay reservation hasn't been explicitly torn down by
+  the boot-node — it's just become unreachable. On unpause, the
+  client side of the reservation may still think it's live while
+  the boot-node has expired it. That mismatch is what #2446's
+  recovery path was built to repair, and symmetric mode ensures
+  the repair is what actually carries the post-unpause traffic.
+name: Sync Resilience — Peer Pause (NAT symmetric)
 
 force_pull_image: false
 
 topology:
   type: nat
-  nat_mode: cone
+  nat_mode: symmetric
 
 nodes:
   count: 2
@@ -41,8 +45,6 @@ nodes:
   prefix: sync-resil-node
 
 steps:
-  # ---------- Setup ----------
-
   - name: Install application on node-1
     type: install_application
     node: sync-resil-node-1
@@ -73,9 +75,9 @@ steps:
     outputs:
       invitation_node2: invitation
 
-  - name: Wait for namespace gossip
+  - name: Wait for namespace gossip (via relay)
     type: wait
-    seconds: 5
+    seconds: 10
 
   - name: Node-2 joins namespace
     type: join_namespace
@@ -99,13 +101,13 @@ steps:
       key: baseline
       value: awake
 
-  - name: Wait for baseline to converge
+  - name: Wait for baseline to converge (via relay)
     type: wait_for_sync
     context_id: '{{ctx_id}}'
     nodes:
       - sync-resil-node-1
       - sync-resil-node-2
-    timeout: 60
+    timeout: 90
     trigger_sync: true
 
   - name: Read baseline on node-2 (sanity)
@@ -123,7 +125,7 @@ steps:
     statements:
       - "contains({{baseline_n2}}, 'awake')"
 
-  # ---------- Fault: pause node-2 for a minute ----------
+  # ---------- Fault: pause node-2 ----------
 
   - name: Pause node-2 (simulate long sleep)
     type: pause_container
@@ -136,7 +138,7 @@ steps:
     method: set
     args:
       key: during_pause
-      value: written_while_paused
+      value: written_while_paused_via_relay
 
   - name: Wait while node-2 is paused (60s)
     type: wait
@@ -146,25 +148,22 @@ steps:
     type: unpause_container
     container: sync-resil-node-2
 
-  # The paused container's TCP stack was frozen too; on unpause,
-  # libp2p has to redial the boot-node, refresh the relay
-  # reservation, and rejoin the gossipsub mesh before sync can
-  # resume. trigger_sync before that completes would race the
-  # recovery sequence. 15s ceiling: reservation handshake is
-  # sub-second, mesh rejoin is the long pole.
-  - name: Wait for libp2p + relay reservation to re-form after unpause
+  # Symmetric: 20s buffer (vs 15s cone). Reservation re-register
+  # + mesh-via-relay rejoin take longer without the DCUtR
+  # fallback.
+  - name: Wait for relay reservation to re-form after unpause
     type: wait
-    seconds: 15
+    seconds: 20
 
   # ---------- Catch-up ----------
 
-  - name: Wait for node-2 to catch up post-unpause
+  - name: Wait for node-2 to catch up post-unpause (via relay)
     type: wait_for_sync
     context_id: '{{ctx_id}}'
     nodes:
       - sync-resil-node-1
       - sync-resil-node-2
-    timeout: 120
+    timeout: 150
     trigger_sync: true
 
   - name: Read during-pause key on node-2
@@ -177,15 +176,10 @@ steps:
     outputs:
       during_n2: result
 
-  - name: Assert node-2 caught up to the during-pause write
+  - name: Assert node-2 caught up via the relay
     type: assert
     statements:
-      - "contains({{during_n2}}, 'written_while_paused')"
-
-  # Re-read the baseline key on node-2 post-unpause. Catches the
-  # class of regression where the paused node loses pre-pause
-  # state on wake (e.g. a state-machine bug that re-initialises
-  # the context on reconnect).
+      - "contains({{during_n2}}, 'written_while_paused_via_relay')"
 
   - name: Read baseline key on node-2 post-unpause
     type: call
@@ -201,5 +195,18 @@ steps:
     type: assert
     statements:
       - "contains({{baseline_n2_post}}, 'awake')"
+
+  # Regression guard: assert the relay path was the carrier.
+  - name: Confirm node-1 used the relay circuit
+    type: assert_log_present
+    nodes: [sync-resil-node-1]
+    patterns:
+      - "/p2p-circuit/"
+
+  - name: Confirm node-2 used the relay circuit
+    type: assert_log_present
+    nodes: [sync-resil-node-2]
+    patterns:
+      - "/p2p-circuit/"
 
 stop_all_nodes: true
