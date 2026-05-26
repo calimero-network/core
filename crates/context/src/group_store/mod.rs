@@ -2155,29 +2155,6 @@ pub async fn sign_apply_and_publish_removal(
         .await
 }
 
-/// Cascade `target_application_id` and `app_key` to all descendant subgroups
-/// starting from `group_id` downward (breadth-first, bounded by
-/// `MAX_NAMESPACE_DEPTH`).
-///
-/// Called when a group's application is upgraded via governance. Each
-/// descendant's metadata is updated in a separate write. If the process is
-/// interrupted mid-cascade, some descendants may still reference the old
-/// application -- the next upgrade attempt will bring them up to date.
-// ---------------------------------------------------------------------------
-// Invitation commitment helpers
-// ---------------------------------------------------------------------------
-
-/// In the namespace model, application cascading to child groups is handled
-/// at the namespace governance level rather than via tree traversal.
-fn cascade_target_application(
-    _store: &Store,
-    _group_id: &ContextGroupId,
-    _target_application_id: &calimero_primitives::application::ApplicationId,
-    _app_key: &[u8; 32],
-) -> EyreResult<()> {
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Context service name (multi-service bundles)
 // ---------------------------------------------------------------------------

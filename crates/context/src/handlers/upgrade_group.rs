@@ -816,13 +816,6 @@ fn dispatch_cascade(
     }
 
     let has_migration = migration.is_some();
-    if signing_key.is_none() {
-        if let Err(err) =
-            group_store::require_group_signing_key(&actor.datastore, &group_id, &requester)
-        {
-            return ActorResponse::reply(Err(err));
-        }
-    }
 
     if let Some(existing) = match group_store::load_group_upgrade(&actor.datastore, &group_id) {
         Ok(v) => v,
@@ -885,11 +878,25 @@ fn dispatch_cascade(
         }
     }
 
-    let effective_signing_key = signing_key.or_else(|| {
-        group_store::get_group_signing_key(&actor.datastore, &group_id, &requester)
-            .ok()
-            .flatten()
-    });
+    // Resolve the signing key once (prefer caller-passed key, fall back
+    // to the stored per-requester key) and validate the result with a
+    // single `ok_or_else`. The prior split — `require_group_signing_key`
+    // only when `signing_key.is_none()`, then `.or(...)` + later
+    // `ok_or_else` inside `publish_task` — could fall through validation
+    // when `signing_key` was `Some` but the stored key was absent,
+    // surfacing as a less clear failure deep in publish.
+    let effective_signing_key = match signing_key {
+        Some(sk) => sk,
+        None => match group_store::get_group_signing_key(&actor.datastore, &group_id, &requester) {
+            Ok(Some(sk)) => sk,
+            Ok(None) => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "local group upgrade requires a signing key for the requester"
+                )));
+            }
+            Err(err) => return ActorResponse::reply(Err(err)),
+        },
+    };
 
     // --- Capture matched descendants BEFORE emitting the cascade op ---
     // After `sign_apply_and_publish` runs, the apply arm rewrites
@@ -952,9 +959,7 @@ fn dispatch_cascade(
     let migration_bytes_for_publish = migration_bytes.clone();
 
     let publish_task = async move {
-        let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
-            eyre::eyre!("local group upgrade requires a signing key for the requester")
-        })?);
+        let sk = PrivateKey::from(effective_signing_key);
 
         let report = group_store::sign_apply_and_publish(
             &datastore_for_publish,

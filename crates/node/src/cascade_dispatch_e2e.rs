@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use calimero_context::group_store::{
     add_group_member, count_group_contexts, load_group_meta, load_group_upgrade, nest_group,
-    register_context_in_group, save_group_meta, store_group_signing_key,
+    register_context_in_group, save_group_meta, save_group_upgrade, store_group_signing_key,
 };
 use calimero_context_client::group::UpgradeGroupRequest;
 use calimero_context_client::messages::MigrationParams;
@@ -31,7 +31,7 @@ use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     self, ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey, GroupMetaValue,
-    GroupUpgradeStatus,
+    GroupUpgradeStatus, GroupUpgradeValue,
 };
 use calimero_store::types::{ApplicationMeta, ContextMeta};
 use calimero_store::Store;
@@ -362,22 +362,22 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
 }
 
 /// Test 2 — write-gate refuses user `ExecuteRequest` against a
-/// context in an `InProgress` group.
+/// context whose owning group has `GroupUpgradeStatus::InProgress`.
 ///
-/// Sequenced on top of the Test 1 fixture: after `dispatch_cascade`
-/// returns, the per-descendant `GroupUpgradeValue::InProgress` rows
-/// are persisted (synchronously inside the actor's `.map()`
-/// continuation). A `context_client.execute` for a context in `G1`
-/// must surface `ExecuteError::UpgradeInProgress { group_id: g1 }`.
+/// Scope: this test verifies ONLY the write-gate's behavior given a
+/// pre-set `InProgress` status row. It is intentionally decoupled
+/// from the cascade dispatch path — the cascade emission flow is
+/// already covered by Test 1 (`cascade_dispatch_e2e_single_node_emitter`).
 ///
-/// The propagator running in the background can't transition G1 to
-/// `Completed` on the fixture's first iteration — `propagate_upgrade`
-/// calls `find_local_signing_identity` per context, which returns
-/// `None` here (no `ContextIdentity` row is provisioned), so every
-/// context falls into the `failed += 1; next_pending.push(...)`
-/// branch and the status stays `InProgress { failed > 0 }` for the
-/// retry window. The gate's condition `matches!(status, InProgress
-/// { .. })` therefore fires deterministically.
+/// We use the canonical fixture (namespace + subgroup G1 + 1
+/// registered context) but bypass `upgrade_group` entirely: the
+/// `GroupUpgradeValue::InProgress` row for G1 is written directly via
+/// `save_group_upgrade`. This guarantees the gate fires on a known
+/// status without racing the propagator (whose internals may evolve)
+/// or depending on `propagate_upgrade` failing for the right reason.
+///
+/// A `context_client.execute` for the context in `G1` must surface
+/// `ExecuteError::UpgradeInProgress { group_id: g1 }`.
 #[tokio::test]
 async fn cascade_dispatch_e2e_write_gate_blocks_user_calls() {
     let node = boot_test_node().await;
@@ -385,30 +385,26 @@ async fn cascade_dispatch_e2e_write_gate_blocks_user_calls() {
     let admin_sk = PrivateKey::random(&mut rng);
     let fx = provision_namespace(&node.store, &admin_sk, APP_KEY_V1);
 
-    node.context_client
-        .upgrade_group(UpgradeGroupRequest {
-            group_id: fx.ns,
-            target_application_id: app_id_v2(),
-            requester: Some(fx.admin_pk),
-            migration: Some(MigrationParams {
-                method: "migrate_v1_to_v2".to_owned(),
-            }),
-            cascade: true,
-        })
-        .await
-        .expect("cascade upgrade should succeed");
-
-    // Sanity: G1's status row was written and is InProgress (or
-    // freshly Completed if the propagator already drained). The
-    // gate distinguishes between the two on the read path.
-    assert!(
-        wait_until(|| load_group_upgrade(&node.store, &fx.g1)
-            .ok()
-            .flatten()
-            .is_some())
-        .await,
-        "G1 upgrade row must be persisted before execute() is gated"
-    );
+    // Directly pin G1's status to InProgress — no cascade dispatch,
+    // no propagator involvement. The gate reads this row at
+    // execute-time and must refuse.
+    save_group_upgrade(
+        &node.store,
+        &fx.g1,
+        &GroupUpgradeValue {
+            from_version: "0.1.0".to_owned(),
+            to_version: "0.2.0".to_owned(),
+            migration: None,
+            initiated_at: 1_700_000_000,
+            initiated_by: fx.admin_pk,
+            status: GroupUpgradeStatus::InProgress {
+                total: 1,
+                completed: 0,
+                failed: 0,
+            },
+        },
+    )
+    .expect("save_group_upgrade InProgress for G1");
 
     let err = node
         .context_client
@@ -421,7 +417,7 @@ async fn cascade_dispatch_e2e_write_gate_blocks_user_calls() {
             None,
         )
         .await
-        .expect_err("execute must be refused while cascade upgrade is InProgress");
+        .expect_err("execute must be refused while G1 is InProgress");
 
     use calimero_context_client::messages::ExecuteError;
     match err {
@@ -433,7 +429,7 @@ async fn cascade_dispatch_e2e_write_gate_blocks_user_calls() {
         }
         other => panic!(
             "expected ExecuteError::UpgradeInProgress, got {other:?} — \
-             write-gate is not firing on cascade dispatch"
+             write-gate is not firing on a pre-set InProgress status"
         ),
     }
 }
