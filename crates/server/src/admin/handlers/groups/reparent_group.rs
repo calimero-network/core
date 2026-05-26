@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use calimero_context::group_store::NamespaceRepository;
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -45,18 +44,16 @@ pub async fn handler(
     // a child that has a parent — i.e. NOT the namespace root — so the walk
     // always terminates at a real namespace identity (no orphan path).
     let namespace_anchor_group_id =
-        match calimero_context::group_store::resolve_namespace(&state.store, &child_group_id) {
+        match NamespaceRepository::new(&state.store).resolve(&child_group_id) {
             Ok(id) => id,
             Err(err) => return parse_api_error(err).into_response(),
         };
-    let (namespace_id, signer_pk, sk_bytes, _sender) =
-        match calimero_context::group_store::get_or_create_namespace_identity(
-            &state.store,
-            &namespace_anchor_group_id,
-        ) {
-            Ok(result) => result,
-            Err(err) => return parse_api_error(err).into_response(),
-        };
+    let (namespace_id, signer_pk, sk_bytes, _sender) = match NamespaceRepository::new(&state.store)
+        .get_or_create_identity(&namespace_anchor_group_id)
+    {
+        Ok(result) => result,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
 
     if let Some(requester) = requester {
         if requester != signer_pk {
@@ -81,7 +78,7 @@ pub async fn handler(
     // local store is sufficient — if the local view says "already there",
     // the no-op will replicate as a no-op everywhere.)
     let was_already_there = matches!(
-        calimero_context::group_store::get_parent_group(&state.store, &child_group_id),
+        NamespaceRepository::new(&state.store).parent(&child_group_id),
         Ok(Some(p)) if p == new_parent_id,
     );
 

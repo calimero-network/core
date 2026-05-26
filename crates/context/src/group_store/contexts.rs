@@ -1,5 +1,4 @@
-#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
-
+use crate::group_store::{MembershipRepository, NamespaceRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -100,7 +99,7 @@ pub fn is_currently_authorized_for_context(
     // `GroupMeta::admin_identity` rather than a `GroupMember` row. Without
     // this short-circuit, `check_group_membership` returns false for the
     // creator and HC would drop their legitimately-authored entities.
-    if super::membership::is_group_admin(store, &group_id, author)? {
+    if MembershipRepository::new(store).is_admin(&group_id, author)? {
         return Ok(true);
     }
     // Reject read-only roles up-front — `check_group_membership` returns
@@ -109,10 +108,10 @@ pub fn is_currently_authorized_for_context(
     // state mutation through HC/LevelWise/EntityPush. The gossip path's
     // `is_read_only_for_context` filter (in `handle_state_delta`) is what
     // we're mirroring here.
-    if super::namespace::is_read_only_for_context(store, context_id, author)? {
+    if NamespaceRepository::new(store).is_read_only_for_context(context_id, author)? {
         return Ok(false);
     }
-    super::membership::check_group_membership(store, &group_id, author)
+    MembershipRepository::new(store).is_member(&group_id, author)
 }
 
 pub fn enumerate_group_contexts(
@@ -213,9 +212,9 @@ pub fn restore_member_context_identities(
     // rejoiner's own node holds the namespace identity bytes for
     // `member`; on every other peer this resolves to a different pk
     // (or `None`) and the function is a no-op.
-    let namespace_id = super::resolve_namespace(store, group_id)?;
+    let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
     let Some((local_pk, private_key, _sender_key)) =
-        super::get_namespace_identity(store, &namespace_id)?
+        NamespaceRepository::new(store).identity(&namespace_id)?
     else {
         return Ok(());
     };

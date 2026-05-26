@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::CapabilitiesRepository;
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::StoreMemberCapabilityRequest;
 
@@ -17,8 +16,11 @@ impl Handler<StoreMemberCapabilityRequest> for ContextManager {
         }: StoreMemberCapabilityRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result =
-            group_store::set_member_capability(&self.datastore, &group_id, &member, capabilities);
+        let result = CapabilitiesRepository::new(&self.datastore).set_member_capability(
+            &group_id,
+            &member,
+            capabilities,
+        );
         ActorResponse::reply(result)
     }
 }

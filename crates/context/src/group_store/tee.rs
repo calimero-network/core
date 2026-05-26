@@ -1,12 +1,11 @@
-#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
-
+use crate::group_store::NamespaceRepository;
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use super::{read_op_log_after, resolve_namespace};
+use super::read_op_log_after;
 
 /// Reconstructed TEE admission policy from the governance DAG.
 #[derive(Debug)]
@@ -32,7 +31,7 @@ pub fn read_tee_admission_policy(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<Option<TeeAdmissionPolicy>> {
-    let root = resolve_namespace(store, group_id)?;
+    let root = NamespaceRepository::new(store).resolve(group_id)?;
     let entries = read_op_log_after(store, &root, 0, usize::MAX)?;
     let mut latest: Option<TeeAdmissionPolicy> = None;
 

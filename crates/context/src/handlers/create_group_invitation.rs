@@ -1,5 +1,6 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{
+    MembershipRepository, MetaRepository, MetadataRepository, SigningKeysRepository,
+};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{CreateGroupInvitationRequest, CreateGroupInvitationResponse};
 use calimero_context_config::types::{
@@ -40,34 +41,30 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
 
         if let Some((node_pk, node_sk)) = node_identity {
             if requester == node_pk {
-                let _ = group_store::store_group_signing_key(
-                    &self.datastore,
-                    &group_id,
-                    &requester,
-                    &node_sk,
-                );
+                let _ = SigningKeysRepository::new(&self.datastore)
+                    .store_key(&group_id, &requester, &node_sk);
             }
         }
 
         let datastore = self.datastore.clone();
 
         let result = (|| -> eyre::Result<_> {
-            let meta = group_store::load_group_meta(&datastore, &group_id)?
+            let meta = MetaRepository::new(&datastore)
+                .load(&group_id)?
                 .ok_or_else(|| eyre::eyre!("group not found"))?;
 
-            group_store::require_group_admin_or_capability(
-                &datastore,
+            MembershipRepository::new(&datastore).require_admin_or_capability(
                 &group_id,
                 &requester,
                 MemberCapabilities::CAN_INVITE_MEMBERS,
                 "create group invitation",
             )?;
 
-            group_store::require_group_signing_key(&datastore, &group_id, &requester)?;
+            SigningKeysRepository::new(&datastore).require_key(&group_id, &requester)?;
 
-            let signing_key_bytes =
-                group_store::get_group_signing_key(&datastore, &group_id, &requester)?
-                    .ok_or_else(|| eyre::eyre!("signing key not found for requester"))?;
+            let signing_key_bytes = SigningKeysRepository::new(&datastore)
+                .get_key(&group_id, &requester)?
+                .ok_or_else(|| eyre::eyre!("signing key not found for requester"))?;
             let private_key = PrivateKey::from(signing_key_bytes);
 
             let mut rng = rand::thread_rng();
@@ -98,8 +95,9 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                 .map_err(|e| eyre::eyre!("signing failed: {e}"))?;
             let inviter_signature = hex::encode(signature.to_bytes());
 
-            let group_name =
-                group_store::get_group_metadata(&datastore, &group_id)?.and_then(|r| r.name);
+            let group_name = MetadataRepository::new(&datastore)
+                .group_metadata(&group_id)?
+                .and_then(|r| r.name);
 
             Ok((
                 SignedGroupOpenInvitation {

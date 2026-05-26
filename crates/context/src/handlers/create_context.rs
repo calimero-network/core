@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{MembershipRepository, MetaRepository};
 use std::collections::{btree_map, BTreeMap};
 use std::mem;
 use std::sync::Arc;
@@ -178,20 +177,20 @@ impl Prepared<'_> {
         };
 
         let mut effective_app_id = *application_id;
-        let meta =
-            group_store::load_group_meta(datastore, &group_id)?.ok_or_eyre("group not found")?;
+        let meta = MetaRepository::new(datastore)
+            .load(&group_id)?
+            .ok_or_eyre("group not found")?;
 
         let identity_pk = identity_secret
             .as_ref()
             .ok_or_eyre("identity_secret required for group context creation")?
             .public_key();
 
-        if !group_store::check_group_membership(datastore, &group_id, &identity_pk)? {
+        if !MembershipRepository::new(datastore).is_member(&group_id, &identity_pk)? {
             bail!("identity is not a member of group '{group_id:?}'");
         }
 
-        if !group_store::is_group_admin_or_has_capability(
-            datastore,
+        if !MembershipRepository::new(datastore).is_admin_or_has_capability(
             &group_id,
             &identity_pk,
             MemberCapabilities::CAN_CREATE_CONTEXT,

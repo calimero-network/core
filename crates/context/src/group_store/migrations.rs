@@ -76,41 +76,6 @@ impl<'a> MigrationsRepository<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Deprecated free-function wrappers.
-//
-// Preserved for one release cycle so existing callers compile unchanged.
-// Each wrapper constructs a transient `MigrationsRepository` and delegates.
-// New code should use `MigrationsRepository::new(store).method(...)`.
-// ---------------------------------------------------------------------------
-
-#[deprecated(note = "use MigrationsRepository::new(store).last_migration(...)")]
-pub fn get_context_last_migration(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-) -> EyreResult<Option<String>> {
-    MigrationsRepository::new(store).last_migration(group_id, context_id)
-}
-
-#[deprecated(note = "use MigrationsRepository::new(store).set_last_migration(...)")]
-pub fn set_context_last_migration(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-    method: &str,
-) -> EyreResult<()> {
-    MigrationsRepository::new(store).set_last_migration(group_id, context_id, method)
-}
-
-#[deprecated(note = "use MigrationsRepository::new(store).delete_all_for_group(...)")]
-pub fn delete_all_context_last_migrations(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<()> {
-    MigrationsRepository::new(store).delete_all_for_group(group_id)
-}
-
 #[cfg(test)]
 mod tests {
     use calimero_primitives::context::ContextId;

@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::CapabilitiesRepository;
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::StoreDefaultCapabilitiesRequest;
 
@@ -16,8 +15,8 @@ impl Handler<StoreDefaultCapabilitiesRequest> for ContextManager {
         }: StoreDefaultCapabilitiesRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result =
-            group_store::set_default_capabilities(&self.datastore, &group_id, capabilities);
+        let result = CapabilitiesRepository::new(&self.datastore)
+            .set_default_capabilities(&group_id, capabilities);
         ActorResponse::reply(result)
     }
 }

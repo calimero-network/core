@@ -5,6 +5,7 @@
 //! without duplicating fixtures. Crate-internal: visible to all
 //! submodules under `group_store/`, invisible outside.
 
+use super::NamespaceRepository;
 use std::sync::Arc;
 
 use calimero_context_client::local_governance::GroupOp;
@@ -15,9 +16,6 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::db::InMemoryDB;
 use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
-
-use super::nest_group;
-
 pub(super) fn test_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
@@ -72,5 +70,5 @@ pub(super) fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
 /// the result. Used by membership-path tests across both `tests.rs` and
 /// `membership/tests.rs`.
 pub(super) fn nest_for_test(store: &Store, parent: &ContextGroupId, child: &ContextGroupId) {
-    nest_group(store, parent, child).unwrap();
+    NamespaceRepository::new(store).nest(parent, child).unwrap();
 }

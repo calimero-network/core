@@ -1,5 +1,4 @@
-#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
-
+use crate::group_store::MembershipRepository;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
@@ -7,7 +6,6 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
 use super::super::{read_tee_admission_policy, GroupStoreError, TeeAdmissionPolicy};
-use super::core::add_group_member;
 use super::policy_rules::{
     validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
     TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_RTMR0, TEE_REJECT_RTMR1, TEE_REJECT_RTMR2,
@@ -138,7 +136,11 @@ impl<'a> MembershipPolicy<'a> {
         role: &GroupMemberRole,
     ) -> EyreResult<()> {
         if !self.membership.is_member(member)? {
-            add_group_member(self.store, &self.group_id, member, role.clone())?;
+            MembershipRepository::new(self.store).add_member(
+                &self.group_id,
+                member,
+                role.clone(),
+            )?;
         }
         Ok(())
     }

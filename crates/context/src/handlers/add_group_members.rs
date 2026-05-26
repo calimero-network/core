@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-handler Repository migration deferred to follow-up
-
+use crate::group_store::{GroupKeyring, NamespaceRepository};
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -53,10 +52,10 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                     report.observe("add_group_members", "MemberAdded");
 
                     if let Some((_key_id, group_key)) =
-                        group_store::load_current_group_key(&datastore, &group_id)?
+                        GroupKeyring::new(&datastore, group_id).load_current_key()?
                     {
-                        let ns_id = group_store::resolve_namespace(&datastore, &group_id)?;
-                        match group_store::wrap_group_key_for_member(&sk, identity, &group_key) {
+                        let ns_id = NamespaceRepository::new(&datastore).resolve(&group_id)?;
+                        match GroupKeyring::wrap_for_member(&sk, identity, &group_key) {
                             Ok(envelope) => {
                                 let delivery_op = NamespaceOp::Root(RootOp::KeyDelivery {
                                     group_id: group_id.to_bytes(),

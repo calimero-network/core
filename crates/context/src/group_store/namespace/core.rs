@@ -1,3 +1,4 @@
+use crate::group_store::{MembershipRepository, MetaRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -13,7 +14,6 @@ use sha2::Digest;
 
 use super::super::{
     cascade_remove_member_from_group_tree, collect_keys_with_prefix, get_group_for_context,
-    get_group_member_role, remove_group_member,
 };
 
 pub(crate) const MAX_NAMESPACE_DEPTH: usize = 16;
@@ -82,7 +82,7 @@ impl<'a> NamespaceRepository<'a> {
         let Some(group_id) = get_group_for_context(self.store, context_id)? else {
             return Ok(false);
         };
-        match get_group_member_role(self.store, &group_id, identity)? {
+        match MembershipRepository::new(self.store).role_of(&group_id, identity)? {
             Some(
                 calimero_primitives::context::GroupMemberRole::ReadOnly
                 | calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
@@ -104,11 +104,11 @@ impl<'a> NamespaceRepository<'a> {
             return Ok(true);
         };
 
-        if super::super::membership::is_group_admin(self.store, &group_id, executor)? {
+        if MembershipRepository::new(self.store).is_admin(&group_id, executor)? {
             return Ok(true);
         }
 
-        if let Some(role) = get_group_member_role(self.store, &group_id, executor)? {
+        if let Some(role) = MembershipRepository::new(self.store).role_of(&group_id, executor)? {
             return Ok(matches!(
                 role,
                 calimero_primitives::context::GroupMemberRole::Admin
@@ -116,9 +116,7 @@ impl<'a> NamespaceRepository<'a> {
             ));
         }
 
-        match super::super::membership::check_group_membership_path(
-            self.store, &group_id, executor,
-        )? {
+        match MembershipRepository::new(self.store).check_path(&group_id, executor)? {
             super::super::membership::MembershipPath::Direct => Ok(true),
             super::super::membership::MembershipPath::Inherited { .. } => Ok(true),
             super::super::membership::MembershipPath::None => Ok(false),
@@ -237,7 +235,7 @@ impl<'a> NamespaceRepository<'a> {
 
         while let Some(current) = stack.pop() {
             for child in self.list_children(&current)? {
-                if !super::super::check_group_membership(self.store, &child, viewer)? {
+                if !MembershipRepository::new(self.store).is_member(&child, viewer)? {
                     continue;
                 }
                 descendants.push(child);
@@ -295,7 +293,7 @@ impl<'a> NamespaceRepository<'a> {
                 .sign(&hash)
                 .map_err(|e| eyre::eyre!("signing: {e}"))?;
 
-            let application_id = match super::super::load_group_meta(self.store, &gid)? {
+            let application_id = match MetaRepository::new(self.store).load(&gid)? {
                 Some(meta) => Some(*meta.target_application_id.as_ref()),
                 None => {
                     tracing::warn!(
@@ -332,8 +330,11 @@ impl<'a> NamespaceRepository<'a> {
 
         let mut removed_from = Vec::new();
         for gid in &groups {
-            if get_group_member_role(self.store, gid, member)?.is_some() {
-                remove_group_member(self.store, gid, member)?;
+            if MembershipRepository::new(self.store)
+                .role_of(gid, member)?
+                .is_some()
+            {
+                MembershipRepository::new(self.store).remove_member(gid, member)?;
                 cascade_remove_member_from_group_tree(self.store, gid, member)?;
                 removed_from.push(*gid);
             }
@@ -404,7 +405,7 @@ impl<'a> NamespaceRepository<'a> {
             return Ok(ReparentOutcome::Unchanged);
         }
 
-        if super::super::load_group_meta(self.store, new_parent)?.is_none() {
+        if MetaRepository::new(self.store).load(new_parent)?.is_none() {
             eyre::bail!("new parent group '{new_parent:?}' not found in this namespace");
         }
 
@@ -561,206 +562,6 @@ impl<'a> NamespaceRepository<'a> {
             },
         })
     }
-}
-
-// ---------------------------------------------------------------------------
-// Deprecated free-function wrappers.
-// ---------------------------------------------------------------------------
-
-#[deprecated(note = "use NamespaceRepository::new(store).is_read_only_for_context(...)")]
-pub fn is_read_only_for_context(
-    store: &Store,
-    context_id: &ContextId,
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    NamespaceRepository::new(store).is_read_only_for_context(context_id, identity)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).is_authorized_for_context_state_op(...)")]
-pub fn is_authorized_for_context_state_op(
-    store: &Store,
-    context_id: &ContextId,
-    executor: &PublicKey,
-) -> EyreResult<bool> {
-    NamespaceRepository::new(store).is_authorized_for_context_state_op(context_id, executor)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).parent(...)")]
-pub fn get_parent_group(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<ContextGroupId>> {
-    NamespaceRepository::new(store).parent(group_id)
-}
-
-#[doc(hidden)]
-#[deprecated(note = "use NamespaceRepository::new(store).nest(...)")]
-pub fn nest_group(
-    store: &Store,
-    parent_group_id: &ContextGroupId,
-    child_group_id: &ContextGroupId,
-) -> EyreResult<()> {
-    NamespaceRepository::new(store).nest(parent_group_id, child_group_id)
-}
-
-#[doc(hidden)]
-#[deprecated(note = "use NamespaceRepository::new(store).unnest(...)")]
-pub fn unnest_group(
-    store: &Store,
-    parent_group_id: &ContextGroupId,
-    child_group_id: &ContextGroupId,
-) -> EyreResult<()> {
-    NamespaceRepository::new(store).unnest(parent_group_id, child_group_id)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).list_children(...)")]
-pub fn list_child_groups(
-    store: &Store,
-    parent_group_id: &ContextGroupId,
-) -> EyreResult<Vec<ContextGroupId>> {
-    NamespaceRepository::new(store).list_children(parent_group_id)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).collect_descendants(...)")]
-pub fn collect_descendant_groups(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Vec<ContextGroupId>> {
-    NamespaceRepository::new(store).collect_descendants(group_id)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).collect_visible_descendants(...)")]
-pub fn collect_visible_descendant_groups(
-    store: &Store,
-    group_id: &ContextGroupId,
-    viewer: &PublicKey,
-) -> EyreResult<Vec<ContextGroupId>> {
-    NamespaceRepository::new(store).collect_visible_descendants(group_id, viewer)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).create_recursive_invitations(...)")]
-pub fn create_recursive_invitations(
-    store: &Store,
-    root_group_id: &ContextGroupId,
-    inviter_sk: &PrivateKey,
-    expiration_secs: u64,
-    invited_role: u8,
-) -> EyreResult<
-    Vec<(
-        ContextGroupId,
-        calimero_context_config::types::SignedGroupOpenInvitation,
-    )>,
-> {
-    NamespaceRepository::new(store).create_recursive_invitations(
-        root_group_id,
-        inviter_sk,
-        expiration_secs,
-        invited_role,
-    )
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).recursive_remove_member(...)")]
-pub fn recursive_remove_member(
-    store: &Store,
-    root_group_id: &ContextGroupId,
-    member: &PublicKey,
-) -> EyreResult<Vec<ContextGroupId>> {
-    NamespaceRepository::new(store).recursive_remove_member(root_group_id, member)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).resolve(...)")]
-pub fn resolve_namespace(store: &Store, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
-    NamespaceRepository::new(store).resolve(group_id)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).collect_subtree_for_cascade(...)")]
-pub fn collect_subtree_for_cascade(
-    store: &Store,
-    root: &ContextGroupId,
-) -> EyreResult<CascadePayload> {
-    NamespaceRepository::new(store).collect_subtree_for_cascade(root)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).reparent(...)")]
-pub fn reparent_group(
-    store: &Store,
-    child: &ContextGroupId,
-    new_parent: &ContextGroupId,
-) -> EyreResult<ReparentOutcome> {
-    NamespaceRepository::new(store).reparent(child, new_parent)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).is_descendant_of(...)")]
-pub fn is_descendant_of(
-    store: &Store,
-    candidate: &ContextGroupId,
-    potential_ancestor: &ContextGroupId,
-) -> EyreResult<bool> {
-    NamespaceRepository::new(store).is_descendant_of(candidate, potential_ancestor)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).identity(...)")]
-pub fn get_namespace_identity(
-    store: &Store,
-    namespace_id: &ContextGroupId,
-) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
-    NamespaceRepository::new(store).identity(namespace_id)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).identity_record(...)")]
-pub fn get_namespace_identity_record(
-    store: &Store,
-    namespace_id: &ContextGroupId,
-) -> EyreResult<Option<NamespaceIdentityRecord>> {
-    NamespaceRepository::new(store).identity_record(namespace_id)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).store_identity(...)")]
-pub fn store_namespace_identity(
-    store: &Store,
-    namespace_id: &ContextGroupId,
-    public_key: &PublicKey,
-    private_key: &[u8; 32],
-    sender_key: &[u8; 32],
-) -> EyreResult<()> {
-    NamespaceRepository::new(store).store_identity(
-        namespace_id,
-        public_key,
-        private_key,
-        sender_key,
-    )
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).resolve_identity(...)")]
-pub fn resolve_namespace_identity(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
-    NamespaceRepository::new(store).resolve_identity(group_id)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).resolve_identity_record(...)")]
-pub fn resolve_namespace_identity_record(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<NamespaceIdentityRecord>> {
-    NamespaceRepository::new(store).resolve_identity_record(group_id)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).get_or_create_identity(...)")]
-pub fn get_or_create_namespace_identity(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
-    NamespaceRepository::new(store).get_or_create_identity(group_id)
-}
-
-#[deprecated(note = "use NamespaceRepository::new(store).get_or_create_identity_bundle(...)")]
-pub fn get_or_create_namespace_identity_bundle(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<ResolvedNamespaceIdentity> {
-    NamespaceRepository::new(store).get_or_create_identity_bundle(group_id)
 }
 
 /// Repository-API smoke tests. Topology + namespace-feature coverage

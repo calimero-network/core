@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::MembershipRepository;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -38,7 +37,7 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
 
         // Single DB read for current role.
         let current_role =
-            match group_store::get_group_member_role(&self.datastore, &group_id, &identity) {
+            match MembershipRepository::new(&self.datastore).role_of(&group_id, &identity) {
                 Ok(Some(role)) => role,
                 Ok(None) => {
                     return ActorResponse::reply(Err(eyre::eyre!(
@@ -53,7 +52,7 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
         }
 
         if current_role == GroupMemberRole::Admin && new_role == GroupMemberRole::Member {
-            match group_store::count_group_admins(&self.datastore, &group_id) {
+            match MembershipRepository::new(&self.datastore).count_admins(&group_id) {
                 Ok(count) if count <= 1 => {
                     return ActorResponse::reply(Err(eyre::eyre!(
                         "cannot demote the last admin of group '{group_id:?}'"

@@ -1,5 +1,7 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{
+    CapabilitiesRepository, MembershipRepository, MetaRepository, MetadataRepository,
+    UpgradesRepository,
+};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{GetGroupInfoRequest, GroupInfoResponse};
 use eyre::bail;
@@ -16,14 +18,14 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let Some(meta) = group_store::load_group_meta(&self.datastore, &group_id)? else {
+            let Some(meta) = MetaRepository::new(&self.datastore).load(&group_id)? else {
                 bail!("group '{group_id:?}' not found");
             };
 
             let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
                 bail!("node has no group identity configured");
             };
-            if !group_store::check_group_membership(&self.datastore, &group_id, &node_identity)? {
+            if !MembershipRepository::new(&self.datastore).is_member(&group_id, &node_identity)? {
                 bail!("node is not a member of group '{group_id:?}'");
             }
 
@@ -40,28 +42,32 @@ impl Handler<GetGroupInfoRequest> for ContextManager {
             // chain walk bounded by `MAX_NAMESPACE_DEPTH`. This is minor
             // next to `compute_group_state_hash` below, which already
             // scans the full group state on every call.
-            let member_count = (group_store::count_group_members(&self.datastore, &group_id)?
-                + group_store::enumerate_inherited_members(&self.datastore, &group_id)?.len())
-                as u64;
+            let member_count = (MembershipRepository::new(&self.datastore).count(&group_id)?
+                + MembershipRepository::new(&self.datastore)
+                    .enumerate_inherited(&group_id)?
+                    .len()) as u64;
 
             let context_count =
-                group_store::count_group_contexts(&self.datastore, &group_id)? as u64;
+                MetadataRepository::new(&self.datastore).count_contexts(&group_id)? as u64;
 
-            let active_upgrade =
-                group_store::load_group_upgrade(&self.datastore, &group_id)?.map(Into::into);
+            let active_upgrade = UpgradesRepository::new(&self.datastore)
+                .load(&group_id)?
+                .map(Into::into);
 
-            let default_capabilities =
-                group_store::get_default_capabilities(&self.datastore, &group_id)?.unwrap_or(0);
+            let default_capabilities = CapabilitiesRepository::new(&self.datastore)
+                .default_capabilities(&group_id)?
+                .unwrap_or(0);
 
-            let subgroup_visibility =
-                match group_store::get_subgroup_visibility(&self.datastore, &group_id)? {
-                    calimero_context_config::VisibilityMode::Open => "open".to_owned(),
-                    calimero_context_config::VisibilityMode::Restricted => "restricted".to_owned(),
-                };
+            let subgroup_visibility = match CapabilitiesRepository::new(&self.datastore)
+                .subgroup_visibility(&group_id)?
+            {
+                calimero_context_config::VisibilityMode::Open => "open".to_owned(),
+                calimero_context_config::VisibilityMode::Restricted => "restricted".to_owned(),
+            };
 
-            let metadata = group_store::get_group_metadata(&self.datastore, &group_id)?;
+            let metadata = MetadataRepository::new(&self.datastore).group_metadata(&group_id)?;
 
-            let state_hash = group_store::compute_group_state_hash(&self.datastore, &group_id)?;
+            let state_hash = MetaRepository::new(&self.datastore).compute_state_hash(&group_id)?;
 
             Ok(GroupInfoResponse {
                 group_id,

@@ -1,5 +1,6 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{
+    MembershipRepository, MetaRepository, MetadataRepository, UpgradesRepository,
+};
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_client::group::{RetryGroupUpgradeRequest, UpgradeGroupResponse};
 use calimero_context_client::messages::MigrationParams;
@@ -35,9 +36,10 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
 
         // Validate
         let result = (|| {
-            group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
+            MembershipRepository::new(&self.datastore).require_admin(&group_id, &requester)?;
 
-            let upgrade = group_store::load_group_upgrade(&self.datastore, &group_id)?
+            let upgrade = UpgradesRepository::new(&self.datastore)
+                .load(&group_id)?
                 .ok_or_else(|| eyre::eyre!("no upgrade found for this group"))?;
 
             match upgrade.status {
@@ -50,7 +52,8 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
                 }
             };
 
-            let meta = group_store::load_group_meta(&self.datastore, &group_id)?
+            let meta = MetaRepository::new(&self.datastore)
+                .load(&group_id)?
                 .ok_or_else(|| eyre::eyre!("group not found"))?;
 
             let migration = upgrade
@@ -61,7 +64,7 @@ impl Handler<RetryGroupUpgradeRequest> for ContextManager {
 
             // Use current context count rather than stored total which may be stale
             let current_total =
-                group_store::count_group_contexts(&self.datastore, &group_id)? as u32;
+                MetadataRepository::new(&self.datastore).count_contexts(&group_id)? as u32;
 
             Ok((meta.target_application_id, migration, current_total))
         })();

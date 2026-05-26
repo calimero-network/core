@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::MembershipRepository;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -33,7 +32,8 @@ impl Handler<SetMemberAutoFollowRequest> for ContextManager {
 
         // Surface the membership check up-front for a clearer error than the
         // generic apply-path "target is not a member" bail.
-        if group_store::get_group_member_role(&self.datastore, &group_id, &target)
+        if MembershipRepository::new(&self.datastore)
+            .role_of(&group_id, &target)
             .ok()
             .flatten()
             .is_none()

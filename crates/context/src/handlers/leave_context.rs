@@ -28,8 +28,6 @@
 //! state. A dedicated `Column::ContextLocal` makes the node-local-ness
 //! explicit at the storage layer. (Reviewed-and-decided choice — the
 //! design doc § 4 reflects this.)
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -39,6 +37,7 @@ use eyre::{bail, eyre, WrapErr};
 use tracing::{info, warn};
 
 use crate::group_store;
+use crate::group_store::NamespaceRepository;
 use crate::ContextManager;
 
 impl Handler<LeaveContextRequest> for ContextManager {
@@ -87,7 +86,7 @@ impl Handler<LeaveContextRequest> for ContextManager {
                                         context_id
                                     )
                                 })?;
-                        match group_store::resolve_namespace_identity(&datastore, &group_id)? {
+                        match NamespaceRepository::new(&datastore).resolve_identity(&group_id)? {
                             Some((pk, _, _)) => pk,
                             None => bail!(
                                 "no local identity for context {}; nothing to leave",

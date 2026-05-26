@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
-
+use calimero_context::group_store::{GroupKeyring, NamespaceRepository};
 use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 use tracing::{info, warn};
 
@@ -30,26 +29,24 @@ pub async fn maybe_publish_key_delivery(
 
     let store = context_client.datastore_handle().into_inner();
 
-    let Some((_pk, sk_bytes, _)) =
-        calimero_context::group_store::get_namespace_identity(&store, &ns_id)
-            .ok()
-            .flatten()
+    let Some((_pk, sk_bytes, _)) = NamespaceRepository::new(&store)
+        .identity(&ns_id)
+        .ok()
+        .flatten()
     else {
         return;
     };
 
-    let Some((_key_id, group_key)) =
-        calimero_context::group_store::load_current_group_key(&store, &group_id)
-            .ok()
-            .flatten()
+    let Some((_key_id, group_key)) = GroupKeyring::new(&store, group_id)
+        .load_current_key()
+        .ok()
+        .flatten()
     else {
         return;
     };
 
     let sender_sk = calimero_primitives::identity::PrivateKey::from(sk_bytes);
-    let envelope = match calimero_context::group_store::wrap_group_key_for_member(
-        &sender_sk, &member, &group_key,
-    ) {
+    let envelope = match GroupKeyring::wrap_for_member(&sender_sk, &member, &group_key) {
         Ok(env) => env,
         Err(e) => {
             warn!(?e, "failed to wrap group key for joiner");

@@ -1,11 +1,10 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context::governance_broadcast::ObserveDelivery;
 use calimero_context::group_store;
+use calimero_context::group_store::NamespaceRepository;
 use calimero_context_client::group::{JoinContextRequest, ListGroupContextsRequest};
 use calimero_context_config::types::ContextGroupId;
 use calimero_network_primitives::specialized_node_invite::SpecializedNodeType;
@@ -48,7 +47,7 @@ pub async fn handler(
 
     // Use namespace identity (per-root-group keypair) instead of a throwaway identity
     let (ns_id, our_public_key, our_sk, _sender) =
-        match group_store::get_or_create_namespace_identity(&state.store, &group_id) {
+        match NamespaceRepository::new(&state.store).get_or_create_identity(&group_id) {
             Ok(result) => result,
             Err(err) => {
                 error!(error=?err, "Failed to resolve namespace identity");

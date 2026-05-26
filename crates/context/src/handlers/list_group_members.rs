@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{MembershipRepository, MetadataRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{
     GroupMemberEntry, ListGroupMembersRequest, ListGroupMembersResponse,
@@ -25,7 +24,7 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
             let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
                 bail!("node has no group identity configured");
             };
-            if !group_store::check_group_membership(&self.datastore, &group_id, &node_identity)? {
+            if !MembershipRepository::new(&self.datastore).is_member(&group_id, &node_identity)? {
                 bail!("node is not a member of group '{group_id:?}'");
             }
 
@@ -50,22 +49,20 @@ impl Handler<ListGroupMembersRequest> for ContextManager {
             // excludes direct members of `group_id`), so no dedup is
             // needed.
             let mut members =
-                group_store::list_group_members(&self.datastore, &group_id, 0, usize::MAX)?;
-            members.extend(group_store::enumerate_inherited_members(
-                &self.datastore,
-                &group_id,
-            )?);
+                MembershipRepository::new(&self.datastore).list(&group_id, 0, usize::MAX)?;
+            members
+                .extend(MembershipRepository::new(&self.datastore).enumerate_inherited(&group_id)?);
 
             let entries = members
                 .into_iter()
                 .skip(offset)
                 .take(limit)
                 .map(|(identity, role)| {
-                    let name =
-                        group_store::get_member_metadata(&self.datastore, &group_id, &identity)
-                            .ok()
-                            .flatten()
-                            .and_then(|r| r.name);
+                    let name = MetadataRepository::new(&self.datastore)
+                        .member_metadata(&group_id, &identity)
+                        .ok()
+                        .flatten()
+                        .and_then(|r| r.name);
                     GroupMemberEntry {
                         identity,
                         role,

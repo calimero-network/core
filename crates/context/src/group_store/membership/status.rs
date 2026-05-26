@@ -19,8 +19,7 @@
 //! Collapsing these into `Option<GroupMemberRole>` (as the legacy
 //! `get_member_role` API does) makes "forgot to check" a silent runtime bug;
 //! [`MembershipStatus`] makes it a non-exhaustive-match warning.
-#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
-
+use crate::group_store::{GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository};
 use std::collections::{HashSet, VecDeque};
 
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
@@ -32,7 +31,6 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use super::super::group_keys::{decrypt_group_op, load_group_key_by_id};
 use super::super::NamespaceOpLogService;
 
 /// Maximum number of governance ops the prefix walk will visit before
@@ -193,13 +191,13 @@ pub fn membership_status_at(
     // that mutates `admin_identity`; `TransferOwnership` is a
     // separate op that touches `owner_identity` and does not affect
     // this carve-out.
-    if super::core::is_group_admin(store, &group_id, signer)? {
+    if MembershipRepository::new(store).is_admin(&group_id, signer)? {
         return Ok(MembershipStatus::Member(
             calimero_primitives::context::GroupMemberRole::Admin,
         ));
     }
 
-    let namespace_id = super::super::namespace::resolve_namespace(store, &group_id)?;
+    let namespace_id = NamespaceRepository::new(store).resolve(&group_id)?;
     let dag = super::super::NamespaceDagService::new(store, namespace_id.to_bytes());
     let local_heads = dag.read_head_record()?.parent_hashes;
 
@@ -211,7 +209,7 @@ pub fn membership_status_at(
         // of the same materialized state — divergence here signals
         // tampering or local corruption that the rest of the pipeline
         // can't detect on its own.
-        let local_state_hash = super::super::meta::compute_group_state_hash(store, &group_id)?;
+        let local_state_hash = MetaRepository::new(store).compute_state_hash(&group_id)?;
         if local_state_hash != position.group_state_hash {
             eyre::bail!(
                 "membership_status_at: group_state_hash mismatch — \
@@ -224,7 +222,7 @@ pub fn membership_status_at(
         }
         // Direct membership (GroupMember row at the named group) — the
         // common case for Restricted subgroups and for explicit-add flows.
-        if let Some(role) = super::core::get_group_member_role(store, &group_id, signer)? {
+        if let Some(role) = MembershipRepository::new(store).role_of(&group_id, signer)? {
             return Ok(MembershipStatus::Member(role));
         }
         // Inherited membership — the signer doesn't have a `GroupMember`
@@ -239,7 +237,7 @@ pub fn membership_status_at(
         // We fold Inherited → Member(Member). The actor's effective role
         // in this subgroup is the inherited one from `check_group_*`;
         // we don't have a more precise role at the cross-DAG layer.
-        return match super::core::check_group_membership_path(store, &group_id, signer)? {
+        return match MembershipRepository::new(store).check_path(&group_id, signer)? {
             super::core::MembershipPath::Direct => {
                 // Practically unreachable: `check_group_membership_path`
                 // returns `Direct` iff `has_direct_member` returned
@@ -483,7 +481,7 @@ fn prefix_walk_membership(
                 if *op_gid != group_id.to_bytes() {
                     continue;
                 }
-                let key_bytes = match load_group_key_by_id(store, &group_id, key_id)? {
+                let key_bytes = match GroupKeyring::new(store, group_id).load_key_by_id(key_id)? {
                     Some(k) => k,
                     None => {
                         tracing::debug!(
@@ -494,7 +492,7 @@ fn prefix_walk_membership(
                         continue;
                     }
                 };
-                let group_op = match decrypt_group_op(&key_bytes, encrypted) {
+                let group_op = match GroupKeyring::decrypt_op(&key_bytes, encrypted) {
                     Ok(op) => op,
                     Err(err) => {
                         tracing::debug!(
@@ -1077,7 +1075,8 @@ mod tests {
             migration: None,
             auto_join: false,
         };
-        super::super::super::meta::save_group_meta(&store, &group_id, &meta)
+        MetaRepository::new(&store)
+            .save(&group_id, &meta)
             .expect("save_group_meta");
 
         // Any well-formed position will do — the admin carve-out short-

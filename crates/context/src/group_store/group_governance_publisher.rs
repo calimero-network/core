@@ -1,5 +1,6 @@
-#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
-
+use crate::group_store::{
+    CapabilitiesRepository, GroupKeyring, MetaRepository, NamespaceRepository,
+};
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -8,11 +9,7 @@ use eyre::Result as EyreResult;
 use rand::{rngs::OsRng, Rng};
 
 use super::namespace::classify_report_readiness;
-use super::{
-    build_key_rotation, encrypt_group_op, get_namespace_identity_record, get_parent_group,
-    is_open_chain_to_namespace, load_current_group_key_record, resolve_namespace,
-    sign_apply_local_group_op_borsh, store_group_key, NamespaceGovernance,
-};
+use super::{sign_apply_local_group_op_borsh, NamespaceGovernance};
 use crate::governance_broadcast::{ns_topic, DeliveryReport};
 use crate::metrics::record_governance_publish_mesh_peers;
 
@@ -65,13 +62,10 @@ impl<'a> GroupGovernancePublisher<'a> {
         // (compute → sign → apply locally) avoids needing transactional
         // rollback in the local apply pipeline — the hashes are pure
         // functions of pre-apply state and a deterministic op effect.
-        let expected_group_state_hash = super::compute_group_state_hash_after_remove(
-            self.store,
-            &self.group_id,
-            removed_member,
-        )?;
+        let expected_group_state_hash = MetaRepository::new(self.store)
+            .compute_state_hash_after_remove(&self.group_id, removed_member)?;
         let expected_context_state_hashes =
-            super::snapshot_context_state_hashes(self.store, &self.group_id)?;
+            MetaRepository::new(self.store).snapshot_context_state_hashes(&self.group_id)?;
 
         self.sign_apply_and_publish_inner(
             ack_router,
@@ -101,7 +95,7 @@ impl<'a> GroupGovernancePublisher<'a> {
         // best-effort-readiness design doc. `mesh` / `known` are still
         // sampled here — `mesh` feeds the cleartext-labelled metric below
         // and both are handed to `sign_and_publish_post_gate`.
-        let namespace_id = resolve_namespace(self.store, &self.group_id)?;
+        let namespace_id = NamespaceRepository::new(self.store).resolve(&self.group_id)?;
         let namespace_bytes = namespace_id.to_bytes();
         let topic = ns_topic(namespace_bytes);
         let mesh = self
@@ -113,7 +107,8 @@ impl<'a> GroupGovernancePublisher<'a> {
         let _output =
             sign_apply_local_group_op_borsh(self.store, &self.group_id, signer_sk, op.clone())?;
 
-        let Some(namespace_identity) = get_namespace_identity_record(self.store, &namespace_id)?
+        let Some(namespace_identity) =
+            NamespaceRepository::new(self.store).identity_record(&namespace_id)?
         else {
             tracing::debug!(
                 group_id = %hex::encode(self.group_id.to_bytes()),
@@ -177,15 +172,17 @@ impl<'a> GroupGovernancePublisher<'a> {
         //   namespace key. The parent chain is trivially Open.
         let parent_chain_open = match &op {
             GroupOp::SubgroupVisibilitySet { .. } => {
-                match get_parent_group(self.store, &self.group_id)? {
+                match NamespaceRepository::new(self.store).parent(&self.group_id)? {
                     Some(parent) => {
                         parent == namespace_id
-                            || is_open_chain_to_namespace(self.store, &parent, &namespace_id)?
+                            || CapabilitiesRepository::new(self.store)
+                                .is_open_chain_to_namespace(&parent, &namespace_id)?
                     }
                     None => false,
                 }
             }
-            _ => is_open_chain_to_namespace(self.store, &self.group_id, &namespace_id)?,
+            _ => CapabilitiesRepository::new(self.store)
+                .is_open_chain_to_namespace(&self.group_id, &namespace_id)?,
         };
         let encrypting_group_id = if parent_chain_open {
             namespace_id
@@ -193,7 +190,8 @@ impl<'a> GroupGovernancePublisher<'a> {
             self.group_id
         };
 
-        let Some(stored_key) = load_current_group_key_record(self.store, &encrypting_group_id)?
+        let Some(stored_key) =
+            GroupKeyring::new(self.store, encrypting_group_id).load_current_key_record()?
         else {
             tracing::debug!(
                 group_id = %hex::encode(self.group_id.to_bytes()),
@@ -203,7 +201,7 @@ impl<'a> GroupGovernancePublisher<'a> {
             return Ok(None);
         };
 
-        let encrypted = encrypt_group_op(&stored_key.group_key, &op)?;
+        let encrypted = GroupKeyring::encrypt_op(&stored_key.group_key, &op)?;
 
         // Key rotation on member-removal:
         //
@@ -232,10 +230,8 @@ impl<'a> GroupGovernancePublisher<'a> {
         let key_rotation = if let Some(removed) = removed_member {
             if encrypting_group_id == self.group_id {
                 let new_group_key: [u8; 32] = OsRng.gen();
-                let _ = store_group_key(self.store, &self.group_id, &new_group_key)?;
-                Some(build_key_rotation(
-                    self.store,
-                    &self.group_id,
+                let _ = GroupKeyring::new(self.store, self.group_id).store_key(&new_group_key)?;
+                Some(GroupKeyring::new(self.store, self.group_id).build_rotation(
                     &new_group_key,
                     signer_sk,
                     Some(removed),

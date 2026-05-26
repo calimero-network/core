@@ -84,41 +84,6 @@ pub fn extract_application_id(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Deprecated free-function wrappers.
-//
-// See `migrations.rs` for the deprecation strategy.
-// ---------------------------------------------------------------------------
-
-#[deprecated(note = "use UpgradesRepository::new(store).save(...)")]
-pub fn save_group_upgrade(
-    store: &Store,
-    group_id: &ContextGroupId,
-    upgrade: &GroupUpgradeValue,
-) -> EyreResult<()> {
-    UpgradesRepository::new(store).save(group_id, upgrade)
-}
-
-#[deprecated(note = "use UpgradesRepository::new(store).load(...)")]
-pub fn load_group_upgrade(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<GroupUpgradeValue>> {
-    UpgradesRepository::new(store).load(group_id)
-}
-
-#[deprecated(note = "use UpgradesRepository::new(store).delete(...)")]
-pub fn delete_group_upgrade(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    UpgradesRepository::new(store).delete(group_id)
-}
-
-#[deprecated(note = "use UpgradesRepository::new(store).enumerate_in_progress(...)")]
-pub fn enumerate_in_progress_upgrades(
-    store: &Store,
-) -> EyreResult<Vec<(ContextGroupId, GroupUpgradeValue)>> {
-    UpgradesRepository::new(store).enumerate_in_progress()
-}
-
 #[cfg(test)]
 mod tests {
     use calimero_primitives::identity::PublicKey;

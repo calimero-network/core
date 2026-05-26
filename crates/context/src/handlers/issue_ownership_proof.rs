@@ -1,5 +1,3 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use actix::{ActorResponse, Handler, Message};
@@ -15,6 +13,7 @@ use serde::Serialize;
 
 use crate::group_store;
 use crate::group_store::MAX_NAMESPACE_DEPTH;
+use crate::group_store::{MembershipRepository, NamespaceRepository, SigningKeysRepository};
 use crate::ContextManager;
 
 /// Domain-separation tag prepended to the serialized payload before signing.
@@ -71,7 +70,7 @@ pub(crate) fn build_ownership_proof(
     requested_expires_at_ms: u64,
     now_ms: u64,
 ) -> eyre::Result<OwnershipProofBuildOutput> {
-    if !group_store::is_direct_group_admin(store, &group_id, &node_identity)? {
+    if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_identity)? {
         bail!("node is not a direct admin of this group");
     }
 
@@ -86,7 +85,7 @@ pub(crate) fn build_ownership_proof(
         if contained {
             break;
         }
-        match group_store::get_parent_group(store, &current)? {
+        match NamespaceRepository::new(store).parent(&current)? {
             Some(parent) => {
                 current = parent;
                 contained = current == group_id;
@@ -99,7 +98,7 @@ pub(crate) fn build_ownership_proof(
     }
 
     let Some(signing_key_bytes) =
-        group_store::resolve_group_signing_key(store, &group_id, &node_identity)?
+        SigningKeysRepository::new(store).resolve(&group_id, &node_identity)?
     else {
         bail!("no signing key registered for self-identity in this group");
     };
@@ -167,7 +166,7 @@ pub(crate) fn build_namespace_ownership_proof(
     requested_expires_at_ms: u64,
     now_ms: u64,
 ) -> eyre::Result<OwnershipProofBuildOutput> {
-    if !group_store::is_direct_group_admin(store, &group_id, &node_identity)? {
+    if !MembershipRepository::new(store).is_direct_admin(&group_id, &node_identity)? {
         bail!("node is not a direct admin of this group");
     }
 
@@ -178,12 +177,12 @@ pub(crate) fn build_namespace_ownership_proof(
     // subgroup must not yield a namespace-wide claim. Same check & API as the
     // server-side precedent in
     // `crates/server/src/admin/handlers/namespaces/create_group_in_namespace.rs`.
-    if group_store::get_parent_group(store, &group_id)?.is_some() {
+    if NamespaceRepository::new(store).parent(&group_id)?.is_some() {
         bail!("group_id must reference a namespace root group");
     }
 
     let Some(signing_key_bytes) =
-        group_store::resolve_group_signing_key(store, &group_id, &node_identity)?
+        SigningKeysRepository::new(store).resolve(&group_id, &node_identity)?
     else {
         bail!("no signing key registered for self-identity in this group");
     };
@@ -319,6 +318,7 @@ mod tests {
 
     use super::{build_namespace_ownership_proof, build_ownership_proof, OWNERSHIP_PROOF_DOMAIN};
     use crate::group_store;
+    use crate::group_store::{MembershipRepository, NamespaceRepository, SigningKeysRepository};
 
     const NOW_MS: u64 = 1_700_000_000_000;
 
@@ -334,9 +334,11 @@ mod tests {
         let signing_priv = PrivateKey::from([0x33; 32]);
         let signing_pub = signing_priv.public_key();
 
-        group_store::add_group_member(&store, &group_id, &signing_pub, GroupMemberRole::Admin)
+        MembershipRepository::new(&store)
+            .add_member(&group_id, &signing_pub, GroupMemberRole::Admin)
             .expect("add admin");
-        group_store::store_group_signing_key(&store, &group_id, &signing_pub, &signing_priv)
+        SigningKeysRepository::new(&store)
+            .store_key(&group_id, &signing_pub, &signing_priv)
             .expect("store signing key");
         group_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
@@ -420,7 +422,8 @@ mod tests {
         let identity = PublicKey::from([0x44; 32]);
 
         // Admin row exists and context is registered, but no signing key.
-        group_store::add_group_member(&store, &group_id, &identity, GroupMemberRole::Admin)
+        MembershipRepository::new(&store)
+            .add_member(&group_id, &identity, GroupMemberRole::Admin)
             .expect("add admin");
         group_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
@@ -494,13 +497,17 @@ mod tests {
 
         // Admin + signing key registered at the root (resolve_group_signing_key
         // walks up from the requested group, so a root key is reachable).
-        group_store::add_group_member(&store, &root, &signing_pub, GroupMemberRole::Admin)
+        MembershipRepository::new(&store)
+            .add_member(&root, &signing_pub, GroupMemberRole::Admin)
             .expect("add admin");
-        group_store::store_group_signing_key(&store, &root, &signing_pub, &signing_priv)
+        SigningKeysRepository::new(&store)
+            .store_key(&root, &signing_pub, &signing_priv)
             .expect("store signing key");
 
         // Context lives in `child`, which is nested under `root`.
-        group_store::nest_group(&store, &root, &child).expect("nest child under root");
+        NamespaceRepository::new(&store)
+            .nest(&root, &child)
+            .expect("nest child under root");
         group_store::register_context_in_group(&store, &child, &context_id)
             .expect("register context in subgroup");
 
@@ -578,9 +585,11 @@ mod tests {
             "scenario requires node_identity != derived signing pubkey"
         );
 
-        group_store::add_group_member(&store, &group_id, &node_identity, GroupMemberRole::Admin)
+        MembershipRepository::new(&store)
+            .add_member(&group_id, &node_identity, GroupMemberRole::Admin)
             .expect("add admin");
-        group_store::store_group_signing_key(&store, &group_id, &node_identity, &real_priv)
+        SigningKeysRepository::new(&store)
+            .store_key(&group_id, &node_identity, &real_priv)
             .expect("store signing key keyed by node_identity");
         group_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
@@ -629,9 +638,11 @@ mod tests {
         let signing_priv = PrivateKey::from([0x33; 32]);
         let signing_pub = signing_priv.public_key();
 
-        group_store::add_group_member(&store, &group_id, &signing_pub, GroupMemberRole::Admin)
+        MembershipRepository::new(&store)
+            .add_member(&group_id, &signing_pub, GroupMemberRole::Admin)
             .expect("add admin");
-        group_store::store_group_signing_key(&store, &group_id, &signing_pub, &signing_priv)
+        SigningKeysRepository::new(&store)
+            .store_key(&group_id, &signing_pub, &signing_priv)
             .expect("store signing key");
 
         let out = build_namespace_ownership_proof(
@@ -705,14 +716,18 @@ mod tests {
         // the `is_direct_group_admin` gate passes for `child` — the only
         // thing standing between the caller and a namespace proof is the
         // namespace-root check.
-        group_store::add_group_member(&store, &child, &signing_pub, GroupMemberRole::Admin)
+        MembershipRepository::new(&store)
+            .add_member(&child, &signing_pub, GroupMemberRole::Admin)
             .expect("add admin at child");
-        group_store::store_group_signing_key(&store, &child, &signing_pub, &signing_priv)
+        SigningKeysRepository::new(&store)
+            .store_key(&child, &signing_pub, &signing_priv)
             .expect("store signing key at child");
 
         // `child` is nested under the namespace root `root`, so
-        // `get_parent_group(child)` is `Some(root)`.
-        group_store::nest_group(&store, &root, &child).expect("nest child under root");
+        // `NamespaceRepository::new(child).parent()` is `Some(root)`.
+        NamespaceRepository::new(&store)
+            .nest(&root, &child)
+            .expect("nest child under root");
 
         let err = build_namespace_ownership_proof(
             &store,

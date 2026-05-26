@@ -1,5 +1,4 @@
-#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
-
+use crate::group_store::MembershipRepository;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::MemberCapabilities;
 use calimero_primitives::context::GroupMemberRole;
@@ -7,7 +6,6 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::membership::{is_group_admin_or_has_capability, is_inherited_admin};
 use super::GroupStoreError;
 
 /// Authorization service for group governance operations.
@@ -35,7 +33,7 @@ impl<'a> PermissionChecker<'a> {
         // non-admin `Member` row — which would suppress inherited
         // admin authority for parent admins who happen to also be
         // explicit subgroup members.
-        is_inherited_admin(self.store, &self.group_id, identity)
+        MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, identity)
     }
 
     pub fn require_admin(&self, identity: &PublicKey) -> EyreResult<()> {
@@ -163,7 +161,11 @@ impl<'a> PermissionChecker<'a> {
         identity: &PublicKey,
         capability_bit: u32,
     ) -> EyreResult<bool> {
-        if is_group_admin_or_has_capability(self.store, &self.group_id, identity, capability_bit)? {
+        if MembershipRepository::new(self.store).is_admin_or_has_capability(
+            &self.group_id,
+            identity,
+            capability_bit,
+        )? {
             return Ok(true);
         }
         // Only admin-inherited authority crosses the parent boundary;
@@ -174,7 +176,7 @@ impl<'a> PermissionChecker<'a> {
         // as any direct membership row exists in the target subgroup,
         // which would mask inherited admin authority for a parent
         // admin who is also an explicit non-admin subgroup member.
-        is_inherited_admin(self.store, &self.group_id, identity)
+        MembershipRepository::new(self.store).is_inherited_admin(&self.group_id, identity)
     }
 
     pub fn require_admin_to_add_admin(

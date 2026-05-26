@@ -9,8 +9,7 @@
 //!
 //! Tasks 3.2 — 3.4 add `verify_ack`, `assert_transport_ready`, and
 //! `publish_and_await_ack` on top of this skeleton.
-#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
-
+use crate::group_store::MembershipRepository;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -25,8 +24,6 @@ use libp2p::gossipsub::{PublishError, TopicHash};
 use thiserror::Error;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
-
-use crate::group_store::namespace_member_pubkeys;
 
 /// Default `min_acks` for governance publishes — at least one peer must
 /// ack before we consider the op delivered. Spec §6.2. Callers that
@@ -165,7 +162,8 @@ pub fn verify_ack(
     if ack.verify_signature().is_err() {
         return false;
     }
-    namespace_member_pubkeys(store, namespace_id)
+    MembershipRepository::new(store)
+        .namespace_pubkeys(namespace_id)
         .map(|members| members.contains(&ack.signer_pubkey))
         .unwrap_or(false)
 }
@@ -194,7 +192,8 @@ pub fn verify_readiness_beacon(store: &Store, beacon: &SignedReadinessBeacon) ->
     if beacon.verify_signature().is_err() {
         return false;
     }
-    namespace_member_pubkeys(store, beacon.namespace_id)
+    MembershipRepository::new(store)
+        .namespace_pubkeys(beacon.namespace_id)
         .map(|members| members.contains(&beacon.peer_pubkey))
         .unwrap_or(false)
 }

@@ -1,3 +1,4 @@
+use crate::group_store::MembershipRepository;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
@@ -6,7 +7,7 @@ use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
 use sha2::{Digest, Sha256};
 
-use super::{collect_keys_with_prefix_paginated, enumerate_group_contexts, list_group_members};
+use super::{collect_keys_with_prefix_paginated, enumerate_group_contexts};
 
 /// Typed Repository for `GroupMetaValue` rows + the derived
 /// state-hash computation that gates SignedGroupOp apply.
@@ -91,7 +92,7 @@ impl<'a> MetaRepository<'a> {
             .load(group_id)?
             .ok_or_else(|| eyre!("group not found for state hash computation"))?;
 
-        let mut members = list_group_members(self.store, group_id, 0, usize::MAX)?;
+        let mut members = MembershipRepository::new(self.store).list(group_id, 0, usize::MAX)?;
         members.sort_by(|a, b| a.0.cmp(&b.0));
         // Defensive dedup against the theoretical case of duplicate
         // `GroupMember` rows (store corruption only).
@@ -117,7 +118,7 @@ impl<'a> MetaRepository<'a> {
             .load(group_id)?
             .ok_or_else(|| eyre!("group not found for state hash computation"))?;
 
-        let mut members = list_group_members(self.store, group_id, 0, usize::MAX)?;
+        let mut members = MembershipRepository::new(self.store).list(group_id, 0, usize::MAX)?;
         members.retain(|(pk, _role)| pk != removed_member);
         members.sort_by(|a, b| a.0.cmp(&b.0));
         members.dedup_by(|a, b| a.0 == b.0);
@@ -178,63 +179,6 @@ fn hash_group_state(
         hasher.update(&role_bytes);
     }
     Ok(hasher.finalize().into())
-}
-
-// ---------------------------------------------------------------------------
-// Deprecated free-function wrappers.
-// ---------------------------------------------------------------------------
-
-#[deprecated(note = "use MetaRepository::new(store).load(...)")]
-pub fn load_group_meta(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<GroupMetaValue>> {
-    MetaRepository::new(store).load(group_id)
-}
-
-#[deprecated(note = "use MetaRepository::new(store).save(...)")]
-pub fn save_group_meta(
-    store: &Store,
-    group_id: &ContextGroupId,
-    meta: &GroupMetaValue,
-) -> EyreResult<()> {
-    MetaRepository::new(store).save(group_id, meta)
-}
-
-#[deprecated(note = "use MetaRepository::new(store).delete(...)")]
-pub fn delete_group_meta(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    MetaRepository::new(store).delete(group_id)
-}
-
-#[deprecated(note = "use MetaRepository::new(store).enumerate_all(...)")]
-pub fn enumerate_all_groups(
-    store: &Store,
-    offset: usize,
-    limit: usize,
-) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
-    MetaRepository::new(store).enumerate_all(offset, limit)
-}
-
-#[deprecated(note = "use MetaRepository::new(store).compute_state_hash(...)")]
-pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> EyreResult<[u8; 32]> {
-    MetaRepository::new(store).compute_state_hash(group_id)
-}
-
-#[deprecated(note = "use MetaRepository::new(store).compute_state_hash_after_remove(...)")]
-pub fn compute_group_state_hash_after_remove(
-    store: &Store,
-    group_id: &ContextGroupId,
-    removed_member: &PublicKey,
-) -> EyreResult<[u8; 32]> {
-    MetaRepository::new(store).compute_state_hash_after_remove(group_id, removed_member)
-}
-
-#[deprecated(note = "use MetaRepository::new(store).snapshot_context_state_hashes(...)")]
-pub fn snapshot_context_state_hashes(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
-    MetaRepository::new(store).snapshot_context_state_hashes(group_id)
 }
 
 #[cfg(test)]

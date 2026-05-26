@@ -1,3 +1,4 @@
+use crate::group_store::NamespaceRepository;
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::context::ContextId;
@@ -140,7 +141,7 @@ impl<'a> CapabilitiesRepository<'a> {
             if self.subgroup_visibility(&current)? != VisibilityMode::Open {
                 return Ok(false);
             }
-            let Some(parent) = super::namespace::get_parent_group(self.store, &current)? else {
+            let Some(parent) = NamespaceRepository::new(self.store).parent(&current)? else {
                 return Ok(false);
             };
             if &parent == namespace_id {
@@ -205,121 +206,6 @@ impl<'a> CapabilitiesRepository<'a> {
         let key = GroupContextMemberCap::new(group_id.to_bytes(), *context_id, *member);
         Ok(handle.get(&key)?)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Deprecated free-function wrappers.
-// ---------------------------------------------------------------------------
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).member_capability(...)")]
-pub fn get_member_capability(
-    store: &Store,
-    group_id: &ContextGroupId,
-    member: &PublicKey,
-) -> EyreResult<Option<u32>> {
-    CapabilitiesRepository::new(store).member_capability(group_id, member)
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).set_member_capability(...)")]
-pub fn set_member_capability(
-    store: &Store,
-    group_id: &ContextGroupId,
-    member: &PublicKey,
-    caps: u32,
-) -> EyreResult<()> {
-    CapabilitiesRepository::new(store).set_member_capability(group_id, member, caps)
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).enumerate_members(...)")]
-pub fn enumerate_member_capabilities(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Vec<(PublicKey, u32)>> {
-    CapabilitiesRepository::new(store).enumerate_members(group_id)
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).default_capabilities(...)")]
-pub fn get_default_capabilities(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<u32>> {
-    CapabilitiesRepository::new(store).default_capabilities(group_id)
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).set_default_capabilities(...)")]
-pub fn set_default_capabilities(
-    store: &Store,
-    group_id: &ContextGroupId,
-    caps: u32,
-) -> EyreResult<()> {
-    CapabilitiesRepository::new(store).set_default_capabilities(group_id, caps)
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).subgroup_visibility(...)")]
-pub fn get_subgroup_visibility(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<VisibilityMode> {
-    CapabilitiesRepository::new(store).subgroup_visibility(group_id)
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).is_open_chain_to_namespace(...)")]
-pub fn is_open_chain_to_namespace(
-    store: &Store,
-    group_id: &ContextGroupId,
-    namespace_id: &ContextGroupId,
-) -> EyreResult<bool> {
-    CapabilitiesRepository::new(store).is_open_chain_to_namespace(group_id, namespace_id)
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).set_subgroup_visibility(...)")]
-pub fn set_subgroup_visibility(
-    store: &Store,
-    group_id: &ContextGroupId,
-    mode: VisibilityMode,
-) -> EyreResult<()> {
-    CapabilitiesRepository::new(store).set_subgroup_visibility(group_id, mode)
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).delete_default(...)")]
-pub fn delete_default_capabilities(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    CapabilitiesRepository::new(store).delete_default(group_id)
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).delete_subgroup_visibility(...)")]
-pub fn delete_subgroup_visibility(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    CapabilitiesRepository::new(store).delete_subgroup_visibility(group_id)
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).delete_all_member_caps(...)")]
-pub fn delete_all_member_capabilities(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    CapabilitiesRepository::new(store).delete_all_member_caps(group_id)
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).set_context_member(...)")]
-pub fn set_context_member_capability(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-    member: &PublicKey,
-    capabilities: u8,
-) -> EyreResult<()> {
-    CapabilitiesRepository::new(store).set_context_member(
-        group_id,
-        context_id,
-        member,
-        capabilities,
-    )
-}
-
-#[deprecated(note = "use CapabilitiesRepository::new(store).context_member_capability(...)")]
-pub fn get_context_member_capability(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-    member: &PublicKey,
-) -> EyreResult<Option<u8>> {
-    CapabilitiesRepository::new(store).context_member_capability(group_id, context_id, member)
 }
 
 #[cfg(test)]

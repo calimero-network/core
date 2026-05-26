@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::MetadataRepository;
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::StoreContextMetadataRequest;
 
@@ -18,7 +17,7 @@ impl Handler<StoreContextMetadataRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result =
-            group_store::set_context_metadata(&self.datastore, &group_id, &context_id, &record);
+            MetadataRepository::new(&self.datastore).set_context(&group_id, &context_id, &record);
         ActorResponse::reply(result)
     }
 }

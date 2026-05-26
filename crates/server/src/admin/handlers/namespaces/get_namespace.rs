@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use calimero_context::group_store::{MetaRepository, MetadataRepository};
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -47,7 +46,7 @@ pub async fn handler(
 
     info!(namespace_id=%namespace_id_str, "Getting namespace summary");
 
-    let meta = match calimero_context::group_store::load_group_meta(&state.store, &group_id) {
+    let meta = match MetaRepository::new(&state.store).load(&group_id) {
         Ok(Some(meta)) => meta,
         Ok(None) => {
             return ApiError {
@@ -66,12 +65,8 @@ pub async fn handler(
         }
     };
 
-    match calimero_context::group_store::build_namespace_summary(
-        &state.store,
-        &group_id,
-        &meta,
-        &node_pk,
-    ) {
+    match MetadataRepository::new(&state.store).build_namespace_summary(&group_id, &meta, &node_pk)
+    {
         Ok(Some(ns)) => ApiResponse {
             payload: calimero_server_primitives::admin::GetNamespaceApiResponse {
                 data: calimero_server_primitives::admin::NamespaceApiResponse {

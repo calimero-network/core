@@ -2,8 +2,7 @@
 //!
 //! When a node receives a delta with missing parents, it uses this protocol
 //! to request the missing deltas from peers.
-#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
-
+use calimero_context::group_store::NamespaceRepository;
 use calimero_crypto::Nonce;
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
@@ -220,12 +219,9 @@ fn verify_fetched_parent(
     // so a ReadOnly identity's delta would slip past the cross-DAG
     // check on the catchup path even though gossip rejects it.
     // Mirror the gate `apply_authorized_state_delta` uses.
-    if calimero_context::group_store::is_read_only_for_context(
-        datastore,
-        &context_id,
-        &fetched.author_id,
-    )
-    .unwrap_or(false)
+    if NamespaceRepository::new(datastore)
+        .is_read_only_for_context(&context_id, &fetched.author_id)
+        .unwrap_or(false)
     {
         warn!(
             %context_id,

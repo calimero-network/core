@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{MetaRepository, MetadataRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{ListNamespacesRequest, NamespaceSummary};
 use calimero_context_config::types::ContextGroupId;
@@ -64,14 +63,13 @@ impl Handler<ListNamespacesRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let entries = group_store::enumerate_all_groups(&self.datastore, 0, usize::MAX)?;
+            let entries = MetaRepository::new(&self.datastore).enumerate_all(0, usize::MAX)?;
             let namespaces = collect_namespace_summaries(
                 entries,
                 None,
                 |group_id| self.node_namespace_identity(group_id),
                 |group_id, meta, node_identity| {
-                    group_store::build_namespace_summary(
-                        &self.datastore,
+                    MetadataRepository::new(&self.datastore).build_namespace_summary(
                         group_id,
                         meta,
                         node_identity,
@@ -99,7 +97,10 @@ mod tests {
     use calimero_store::Store;
 
     use super::{collect_namespace_summaries, paginate_namespaces};
-    use crate::group_store::GroupStoreError;
+    use crate::group_store::{
+        GroupStoreError, MembershipRepository, MetaRepository, MetadataRepository,
+        NamespaceRepository,
+    };
 
     fn test_summary(namespace_id: [u8; 32]) -> NamespaceSummary {
         NamespaceSummary {
@@ -214,48 +215,56 @@ mod tests {
             auto_join: true,
         };
 
-        crate::group_store::save_group_meta(&store, &group_id_with_membership, &meta)
+        MetaRepository::new(&store)
+            .save(&group_id_with_membership, &meta)
             .expect("save group meta with membership");
-        crate::group_store::save_group_meta(&store, &group_id_without_membership, &meta)
+        MetaRepository::new(&store)
+            .save(&group_id_without_membership, &meta)
             .expect("save group meta without membership");
 
-        crate::group_store::store_namespace_identity(
-            &store,
-            &group_id_with_membership,
-            &node_identity_pk,
-            &*node_identity_sk,
-            &sender_key,
-        )
-        .expect("store namespace identity for first namespace");
-        crate::group_store::store_namespace_identity(
-            &store,
-            &group_id_without_membership,
-            &node_identity_pk,
-            &*node_identity_sk,
-            &sender_key,
-        )
-        .expect("store namespace identity for second namespace");
+        NamespaceRepository::new(&store)
+            .store_identity(
+                &group_id_with_membership,
+                &node_identity_pk,
+                &*node_identity_sk,
+                &sender_key,
+            )
+            .expect("store namespace identity for first namespace");
+        NamespaceRepository::new(&store)
+            .store_identity(
+                &group_id_without_membership,
+                &node_identity_pk,
+                &*node_identity_sk,
+                &sender_key,
+            )
+            .expect("store namespace identity for second namespace");
 
-        crate::group_store::add_group_member(
-            &store,
-            &group_id_with_membership,
-            &node_identity_pk,
-            calimero_primitives::context::GroupMemberRole::Admin,
-        )
-        .expect("add node identity to first namespace group");
+        MembershipRepository::new(&store)
+            .add_member(
+                &group_id_with_membership,
+                &node_identity_pk,
+                calimero_primitives::context::GroupMemberRole::Admin,
+            )
+            .expect("add node identity to first namespace group");
 
-        let entries =
-            crate::group_store::enumerate_all_groups(&store, 0, usize::MAX).expect("enumerate");
+        let entries = MetaRepository::new(&store)
+            .enumerate_all(0, usize::MAX)
+            .expect("enumerate");
         let namespaces = collect_namespace_summaries(
             entries,
             None,
             |group_id| {
-                crate::group_store::resolve_namespace_identity(&store, group_id)
+                NamespaceRepository::new(&store)
+                    .resolve_identity(group_id)
                     .expect("resolve namespace identity")
                     .map(|(pk, sk, _sender)| (pk, sk))
             },
             |group_id, meta, node_identity| {
-                crate::group_store::build_namespace_summary(&store, group_id, meta, node_identity)
+                MetadataRepository::new(&store).build_namespace_summary(
+                    group_id,
+                    meta,
+                    node_identity,
+                )
             },
         )
         .expect("collect summaries");

@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{DeleteNamespaceRequest, DeleteNamespaceResponse};
 use eyre::bail;
@@ -41,7 +40,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
 
         let result = (|| -> eyre::Result<(usize, usize)> {
             // Only a namespace root is a valid target — resolve and compare.
-            let resolved = group_store::resolve_namespace(&self.datastore, &namespace_id)?;
+            let resolved = NamespaceRepository::new(&self.datastore).resolve(&namespace_id)?;
             if resolved != namespace_id {
                 bail!(
                     "group '{namespace_id:?}' is not a namespace root; \
@@ -49,15 +48,19 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                 );
             }
 
-            if group_store::load_group_meta(&self.datastore, &namespace_id)?.is_none() {
+            if MetaRepository::new(&self.datastore)
+                .load(&namespace_id)?
+                .is_none()
+            {
                 bail!("namespace '{namespace_id:?}' not found");
             }
 
             // Admin authorization against the namespace root.
-            group_store::require_group_admin(&self.datastore, &namespace_id, &requester)?;
+            MembershipRepository::new(&self.datastore).require_admin(&namespace_id, &requester)?;
 
             // Enumerate the full subtree so we can tear down children-first.
-            let payload = group_store::collect_subtree_for_cascade(&self.datastore, &namespace_id)?;
+            let payload = NamespaceRepository::new(&self.datastore)
+                .collect_subtree_for_cascade(&namespace_id)?;
             let total_groups = payload.descendant_groups.len() + 1;
             let total_contexts = payload.contexts.len();
 
@@ -78,7 +81,7 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                 {
                     group_store::unregister_context_from_group(&self.datastore, &gid, &ctx)?;
                 }
-                let parent_for_cleanup = group_store::get_parent_group(&self.datastore, &gid)?;
+                let parent_for_cleanup = NamespaceRepository::new(&self.datastore).parent(&gid)?;
                 group_store::delete_group_local_rows(&self.datastore, &gid)?;
                 if let Some(parent) = parent_for_cleanup {
                     let mut handle = self.datastore.handle();

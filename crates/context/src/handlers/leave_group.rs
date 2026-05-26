@@ -11,8 +11,6 @@
 //! forward-secrecy rationale (briefly: the leaver cannot generate the
 //! new key without retaining it; proper two-phase rotation is a
 //! deferred follow-up).
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -21,6 +19,7 @@ use tracing::info;
 
 use crate::governance_broadcast::observe_handler_delivery;
 use crate::group_store;
+use crate::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use crate::ContextManager;
 
 impl Handler<LeaveGroupRequest> for ContextManager {
@@ -41,7 +40,7 @@ impl Handler<LeaveGroupRequest> for ContextManager {
         // be in other groups under the same namespace). For a namespace
         // leave, the proper handler is `leave_namespace`, which both
         // applies the cascade AND unsubscribes from gossipsub.
-        match group_store::resolve_namespace(&self.datastore, &group_id) {
+        match NamespaceRepository::new(&self.datastore).resolve(&group_id) {
             Ok(ns) if ns == group_id => {
                 return ActorResponse::reply(Err(eyre::eyre!(
                     "{:?} is a namespace (root group); use leave_namespace, \
@@ -69,7 +68,7 @@ impl Handler<LeaveGroupRequest> for ContextManager {
         // Pre-flight direct-row check so we surface a friendly error
         // instead of going through publish-then-apply-fail. Apply will
         // re-validate this anyway on every receiver.
-        match group_store::get_group_member_role(&self.datastore, &group_id, &member_public_key) {
+        match MembershipRepository::new(&self.datastore).role_of(&group_id, &member_public_key) {
             Ok(Some(_)) => {}
             Ok(None) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
@@ -88,16 +87,14 @@ impl Handler<LeaveGroupRequest> for ContextManager {
         // Sign-time hash precomputation, mirroring `MemberRemoved`. The
         // leaver simulates the post-leave state so receivers can detect
         // divergence.
-        let expected_group_state_hash = match group_store::compute_group_state_hash_after_remove(
-            &self.datastore,
-            &group_id,
-            &member_public_key,
-        ) {
+        let expected_group_state_hash = match MetaRepository::new(&self.datastore)
+            .compute_state_hash_after_remove(&group_id, &member_public_key)
+        {
             Ok(h) => h,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
         let expected_context_state_hashes =
-            match group_store::snapshot_context_state_hashes(&self.datastore, &group_id) {
+            match MetaRepository::new(&self.datastore).snapshot_context_state_hashes(&group_id) {
                 Ok(v) => v,
                 Err(err) => return ActorResponse::reply(Err(err)),
             };

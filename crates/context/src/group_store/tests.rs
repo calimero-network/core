@@ -1,3 +1,8 @@
+use super::{
+    CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
+    MetadataRepository, MigrationsRepository, NamespaceRepository, SigningKeysRepository,
+    UpgradesRepository,
+};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
@@ -21,15 +26,15 @@ fn save_load_delete_group_meta() {
     let gid = test_group_id();
     let meta = test_meta();
 
-    assert!(load_group_meta(&store, &gid).unwrap().is_none());
+    assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 
-    save_group_meta(&store, &gid, &meta).unwrap();
-    let loaded = load_group_meta(&store, &gid).unwrap().unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    let loaded = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
     assert_eq!(loaded.app_key, meta.app_key);
     assert_eq!(loaded.target_application_id, meta.target_application_id);
 
-    delete_group_meta(&store, &gid).unwrap();
-    assert!(load_group_meta(&store, &gid).unwrap().is_none());
+    MetaRepository::new(&store).delete(&gid).unwrap();
+    assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
 
 // -----------------------------------------------------------------------
@@ -44,8 +49,12 @@ fn permission_checker_enforces_admin_and_capability_rules() {
     let member = PublicKey::from([0x11; 32]);
     let outsider = PublicKey::from([0x12; 32]);
 
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member, GroupMemberRole::Member)
+        .unwrap();
 
     let checker = PermissionChecker::new(&store, gid);
     assert!(checker.require_admin(&admin).is_ok());
@@ -57,26 +66,26 @@ fn permission_checker_enforces_admin_and_capability_rules() {
     assert!(checker
         .require_manage_members(&member, "manage members")
         .is_err());
-    set_member_capability(
-        &store,
-        &gid,
-        &member,
-        calimero_context_config::MemberCapabilities::MANAGE_MEMBERS,
-    )
-    .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &gid,
+            &member,
+            calimero_context_config::MemberCapabilities::MANAGE_MEMBERS,
+        )
+        .unwrap();
     assert!(checker
         .require_manage_members(&member, "manage members")
         .is_ok());
 
     assert!(checker.require_can_create_context(&admin).is_ok());
     assert!(checker.require_can_create_context(&member).is_err());
-    set_member_capability(
-        &store,
-        &gid,
-        &member,
-        calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
-    )
-    .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &gid,
+            &member,
+            calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+        )
+        .unwrap();
     assert!(checker.require_can_create_context(&member).is_ok());
 
     assert!(checker.require_admin_or_self(&member, &member).is_ok());
@@ -92,9 +101,15 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
     let member = PublicKey::from([0x22; 32]);
     let app_id = ApplicationId::from([0x23; 32]);
 
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member, GroupMemberRole::Member)
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
 
     let settings = GroupSettingsService::new(&store, gid);
 
@@ -105,49 +120,61 @@ fn group_settings_service_enforces_permissions_and_persists_values() {
         .set_subgroup_visibility(&admin, calimero_context_config::VisibilityMode::Restricted)
         .unwrap();
     assert_eq!(
-        get_subgroup_visibility(&store, &gid).unwrap(),
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&gid)
+            .unwrap(),
         calimero_context_config::VisibilityMode::Restricted
     );
 
     settings.set_default_capabilities(&admin, 0b101).unwrap();
-    assert_eq!(get_default_capabilities(&store, &gid).unwrap(), Some(0b101));
+    assert_eq!(
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&gid)
+            .unwrap(),
+        Some(0b101)
+    );
 
     assert!(settings
         .set_group_migration(&member, &Some(vec![1, 2, 3]))
         .is_err());
-    set_member_capability(
-        &store,
-        &gid,
-        &member,
-        calimero_context_config::MemberCapabilities::MANAGE_APPLICATION,
-    )
-    .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &gid,
+            &member,
+            calimero_context_config::MemberCapabilities::MANAGE_APPLICATION,
+        )
+        .unwrap();
     settings
         .set_group_migration(&member, &Some(vec![1, 2, 3]))
         .unwrap();
     assert_eq!(
-        load_group_meta(&store, &gid).unwrap().unwrap().migration,
+        MetaRepository::new(&store)
+            .load(&gid)
+            .unwrap()
+            .unwrap()
+            .migration,
         Some(vec![1, 2, 3])
     );
 
     settings
         .set_target_application(&member, &[0xAB; 32], &app_id)
         .unwrap();
-    let meta = load_group_meta(&store, &gid).unwrap().unwrap();
+    let meta = MetaRepository::new(&store).load(&gid).unwrap().unwrap();
     assert_eq!(meta.app_key, [0xAB; 32]);
     assert_eq!(meta.target_application_id, app_id);
 
-    set_group_metadata(
-        &store,
-        &gid,
-        &calimero_primitives::metadata::MetadataRecord {
-            name: Some("group-main".to_owned()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    MetadataRepository::new(&store)
+        .set_group(
+            &gid,
+            &calimero_primitives::metadata::MetadataRecord {
+                name: Some("group-main".to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     assert_eq!(
-        get_group_metadata(&store, &gid)
+        MetadataRepository::new(&store)
+            .group_metadata(&gid)
             .unwrap()
             .and_then(|r| r.name)
             .as_deref(),
@@ -165,19 +192,23 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
     let context = ContextId::from([0x34; 32]);
     let app_id = ApplicationId::from([0x35; 32]);
 
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &creator, GroupMemberRole::Member).unwrap();
-    set_member_capability(
-        &store,
-        &gid,
-        &creator,
-        calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
-    )
-    .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &creator, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &gid,
+            &creator,
+            calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+        )
+        .unwrap();
 
     let mut meta = test_meta();
     meta.target_application_id = calimero_primitives::application::ZERO_APPLICATION_ID;
-    save_group_meta(&store, &gid, &meta).unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
 
     // Pre-store context meta with zero app id to verify backfill path.
     let zero_app = calimero_primitives::application::ZERO_APPLICATION_ID;
@@ -212,7 +243,8 @@ fn context_registration_service_applies_backfill_and_detach_rules() {
         .unwrap();
     assert_eq!(get_group_for_context(&store, &context).unwrap(), Some(gid));
     assert_eq!(
-        load_group_meta(&store, &gid)
+        MetaRepository::new(&store)
+            .load(&gid)
             .unwrap()
             .unwrap()
             .target_application_id,
@@ -283,15 +315,19 @@ fn context_registration_service_keeps_existing_non_zero_context_meta_application
     let existing_app_id = ApplicationId::from([0x43; 32]);
     let incoming_app_id = ApplicationId::from([0x44; 32]);
 
-    add_group_member(&store, &gid, &creator, GroupMemberRole::Member).unwrap();
-    set_member_capability(
-        &store,
-        &gid,
-        &creator,
-        calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
-    )
-    .unwrap();
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &creator, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &gid,
+            &creator,
+            calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT,
+        )
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
 
     let ctx_meta_key = calimero_store::key::ContextMeta::new(context);
     let mut handle = store.handle();
@@ -339,7 +375,9 @@ fn apply_local_signed_group_op_nonce_and_admin() {
     let gid_bytes = gid.to_bytes();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let member_pk = PrivateKey::random(&mut rng).public_key();
 
@@ -356,7 +394,9 @@ fn apply_local_signed_group_op_nonce_and_admin() {
     )
     .unwrap();
     apply_local_signed_group_op(&store, &op1).unwrap();
-    assert!(check_group_membership(&store, &gid, &member_pk).unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&gid, &member_pk)
+        .unwrap());
 
     let op_dup_nonce =
         SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 1, GroupOp::Noop).unwrap();
@@ -370,13 +410,9 @@ fn apply_local_signed_group_op_nonce_and_admin() {
     apply_local_signed_group_op(&store, &op2).unwrap();
 
     let non_admin_sk = PrivateKey::random(&mut rng);
-    add_group_member(
-        &store,
-        &gid,
-        &non_admin_sk.public_key(),
-        GroupMemberRole::Member,
-    )
-    .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &non_admin_sk.public_key(), GroupMemberRole::Member)
+        .unwrap();
     let op_bad = SignedGroupOp::sign(
         &non_admin_sk,
         gid_bytes,
@@ -404,7 +440,9 @@ fn reject_read_only_tee_via_member_added() {
     let gid_bytes = gid.to_bytes();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let tee_pk = PrivateKey::random(&mut rng).public_key();
     let op = SignedGroupOp::sign(
@@ -438,11 +476,15 @@ fn reject_read_only_tee_via_member_role_set() {
     let gid_bytes = gid.to_bytes();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    add_group_member(&store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member_pk, GroupMemberRole::Member)
+        .unwrap();
 
     let op = SignedGroupOp::sign(
         &admin_sk,
@@ -475,12 +517,18 @@ fn apply_local_member_alias_member_signer_or_admin() {
     let gid_bytes = gid.to_bytes();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
-    add_group_member(&store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member_pk, GroupMemberRole::Member)
+        .unwrap();
 
     let op = SignedGroupOp::sign(
         &member_sk,
@@ -497,7 +545,8 @@ fn apply_local_member_alias_member_signer_or_admin() {
     .unwrap();
     apply_local_signed_group_op(&store, &op).unwrap();
     assert_eq!(
-        get_member_metadata(&store, &gid, &member_pk)
+        MetadataRepository::new(&store)
+            .member_metadata(&gid, &member_pk)
             .unwrap()
             .and_then(|r| r.name)
             .as_deref(),
@@ -535,7 +584,8 @@ fn apply_local_member_alias_member_signer_or_admin() {
     .unwrap();
     apply_local_signed_group_op(&store, &admin_op).unwrap();
     assert_eq!(
-        get_member_metadata(&store, &gid, &member_pk)
+        MetadataRepository::new(&store)
+            .member_metadata(&gid, &member_pk)
             .unwrap()
             .and_then(|r| r.name)
             .as_deref(),
@@ -556,19 +606,21 @@ fn apply_local_context_alias_admin_or_creator() {
     let gid_bytes = gid.to_bytes();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let creator_sk = PrivateKey::random(&mut rng);
     let creator_pk = creator_sk.public_key();
-    add_group_member(&store, &gid, &creator_pk, GroupMemberRole::Member).unwrap();
-    set_member_capability(
-        &store,
-        &gid,
-        &creator_pk,
-        MemberCapabilities::CAN_CREATE_CONTEXT,
-    )
-    .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &creator_pk, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &creator_pk, MemberCapabilities::CAN_CREATE_CONTEXT)
+        .unwrap();
 
     let context_id = ContextId::from([0x33; 32]);
 
@@ -622,7 +674,8 @@ fn apply_local_context_alias_admin_or_creator() {
     .unwrap();
     apply_local_signed_group_op(&store, &op_admin).unwrap();
     assert_eq!(
-        get_context_metadata(&store, &gid, &context_id)
+        MetadataRepository::new(&store)
+            .context_metadata(&gid, &context_id)
             .unwrap()
             .and_then(|r| r.name)
             .as_deref(),
@@ -648,11 +701,15 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
     let mut meta = test_meta();
     meta.admin_identity = admin_pk;
     meta.owner_identity = admin_pk;
-    save_group_meta(&store, &gid, &meta).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let member_m = PrivateKey::random(&mut rng).public_key();
-    add_group_member(&store, &gid, &member_m, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member_m, GroupMemberRole::Member)
+        .unwrap();
 
     let op_caps = SignedGroupOp::sign(
         &admin_sk,
@@ -668,7 +725,8 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
     .unwrap();
     apply_local_signed_group_op(&store, &op_caps).unwrap();
     assert_eq!(
-        get_member_capability(&store, &gid, &member_m)
+        CapabilitiesRepository::new(&store)
+            .member_capability(&gid, &member_m)
             .unwrap()
             .unwrap(),
         0x7
@@ -687,7 +745,8 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
     .unwrap();
     apply_local_signed_group_op(&store, &op_policy).unwrap();
     assert_eq!(
-        load_group_meta(&store, &gid)
+        MetaRepository::new(&store)
+            .load(&gid)
             .unwrap()
             .unwrap()
             .upgrade_policy,
@@ -704,7 +763,7 @@ fn apply_local_signed_group_op_capabilities_upgrade_policy_and_delete() {
     )
     .unwrap();
     apply_local_signed_group_op(&store, &op_del).unwrap();
-    assert!(load_group_meta(&store, &gid).unwrap().is_none());
+    assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
 
 #[test]
@@ -720,8 +779,12 @@ fn apply_local_signed_group_op_rejects_last_admin_removal() {
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let op_bad = SignedGroupOp::sign(
         &admin_sk,
@@ -746,10 +809,18 @@ fn store_and_get_signing_key() {
     let pk = PublicKey::from([0x10; 32]);
     let sk = [0xAA; 32];
 
-    assert!(get_group_signing_key(&store, &gid, &pk).unwrap().is_none());
+    assert!(SigningKeysRepository::new(&store)
+        .get_key(&gid, &pk)
+        .unwrap()
+        .is_none());
 
-    store_group_signing_key(&store, &gid, &pk, &sk).unwrap();
-    let loaded = get_group_signing_key(&store, &gid, &pk).unwrap().unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&gid, &pk, &sk)
+        .unwrap();
+    let loaded = SigningKeysRepository::new(&store)
+        .get_key(&gid, &pk)
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded, sk);
 }
 
@@ -760,9 +831,16 @@ fn delete_signing_key() {
     let pk = PublicKey::from([0x10; 32]);
     let sk = [0xAA; 32];
 
-    store_group_signing_key(&store, &gid, &pk, &sk).unwrap();
-    delete_group_signing_key(&store, &gid, &pk).unwrap();
-    assert!(get_group_signing_key(&store, &gid, &pk).unwrap().is_none());
+    SigningKeysRepository::new(&store)
+        .store_key(&gid, &pk, &sk)
+        .unwrap();
+    SigningKeysRepository::new(&store)
+        .delete_key(&gid, &pk)
+        .unwrap();
+    assert!(SigningKeysRepository::new(&store)
+        .get_key(&gid, &pk)
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -771,7 +849,9 @@ fn require_signing_key_fails_when_missing() {
     let gid = test_group_id();
     let pk = PublicKey::from([0x10; 32]);
 
-    assert!(require_group_signing_key(&store, &gid, &pk).is_err());
+    assert!(SigningKeysRepository::new(&store)
+        .require_key(&gid, &pk)
+        .is_err());
 }
 
 #[test]
@@ -781,13 +861,25 @@ fn delete_all_group_signing_keys_removes_all() {
     let pk1 = PublicKey::from([0x10; 32]);
     let pk2 = PublicKey::from([0x11; 32]);
 
-    store_group_signing_key(&store, &gid, &pk1, &[0xAA; 32]).unwrap();
-    store_group_signing_key(&store, &gid, &pk2, &[0xBB; 32]).unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&gid, &pk1, &[0xAA; 32])
+        .unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&gid, &pk2, &[0xBB; 32])
+        .unwrap();
 
-    delete_all_group_signing_keys(&store, &gid).unwrap();
+    SigningKeysRepository::new(&store)
+        .delete_all_for_group(&gid)
+        .unwrap();
 
-    assert!(get_group_signing_key(&store, &gid, &pk1).unwrap().is_none());
-    assert!(get_group_signing_key(&store, &gid, &pk2).unwrap().is_none());
+    assert!(SigningKeysRepository::new(&store)
+        .get_key(&gid, &pk1)
+        .unwrap()
+        .is_none());
+    assert!(SigningKeysRepository::new(&store)
+        .get_key(&gid, &pk2)
+        .unwrap()
+        .is_none());
 }
 
 // -----------------------------------------------------------------------
@@ -859,11 +951,26 @@ fn re_register_context_cleans_old_group() {
     let cid = ContextId::from([0x11; 32]);
 
     register_context_in_group(&store, &gid1, &cid).unwrap();
-    assert_eq!(count_group_contexts(&store, &gid1).unwrap(), 1);
+    assert_eq!(
+        MetadataRepository::new(&store)
+            .count_contexts(&gid1)
+            .unwrap(),
+        1
+    );
 
     register_context_in_group(&store, &gid2, &cid).unwrap();
-    assert_eq!(count_group_contexts(&store, &gid1).unwrap(), 0);
-    assert_eq!(count_group_contexts(&store, &gid2).unwrap(), 1);
+    assert_eq!(
+        MetadataRepository::new(&store)
+            .count_contexts(&gid1)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        MetadataRepository::new(&store)
+            .count_contexts(&gid2)
+            .unwrap(),
+        1
+    );
     assert_eq!(get_group_for_context(&store, &cid).unwrap().unwrap(), gid2);
 }
 
@@ -878,7 +985,12 @@ fn enumerate_and_count_contexts() {
         register_context_in_group(&store, &gid, &ContextId::from(cid_bytes)).unwrap();
     }
 
-    assert_eq!(count_group_contexts(&store, &gid).unwrap(), 4);
+    assert_eq!(
+        MetadataRepository::new(&store)
+            .count_contexts(&gid)
+            .unwrap(),
+        4
+    );
 
     let page = enumerate_group_contexts(&store, &gid, 1, 2).unwrap();
     assert_eq!(page.len(), 2);
@@ -893,7 +1005,10 @@ fn save_load_delete_upgrade() {
     let store = test_store();
     let gid = test_group_id();
 
-    assert!(load_group_upgrade(&store, &gid).unwrap().is_none());
+    assert!(UpgradesRepository::new(&store)
+        .load(&gid)
+        .unwrap()
+        .is_none());
 
     let upgrade = GroupUpgradeValue {
         from_version: "1.0.0".to_owned(),
@@ -908,13 +1023,18 @@ fn save_load_delete_upgrade() {
         },
     };
 
-    save_group_upgrade(&store, &gid, &upgrade).unwrap();
-    let loaded = load_group_upgrade(&store, &gid).unwrap().unwrap();
+    UpgradesRepository::new(&store)
+        .save(&gid, &upgrade)
+        .unwrap();
+    let loaded = UpgradesRepository::new(&store).load(&gid).unwrap().unwrap();
     assert_eq!(loaded.from_version, "1.0.0");
     assert_eq!(loaded.to_version, "2.0.0");
 
-    delete_group_upgrade(&store, &gid).unwrap();
-    assert!(load_group_upgrade(&store, &gid).unwrap().is_none());
+    UpgradesRepository::new(&store).delete(&gid).unwrap();
+    assert!(UpgradesRepository::new(&store)
+        .load(&gid)
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -923,41 +1043,43 @@ fn enumerate_in_progress_upgrades_filters_completed() {
     let gid_in_progress = ContextGroupId::from([0x01; 32]);
     let gid_completed = ContextGroupId::from([0x02; 32]);
 
-    save_group_upgrade(
-        &store,
-        &gid_in_progress,
-        &GroupUpgradeValue {
-            from_version: "1.0.0".to_owned(),
-            to_version: "2.0.0".to_owned(),
-            migration: None,
-            initiated_at: 1_700_000_000,
-            initiated_by: PublicKey::from([0x01; 32]),
-            status: GroupUpgradeStatus::InProgress {
-                total: 5,
-                completed: 2,
-                failed: 0,
+    UpgradesRepository::new(&store)
+        .save(
+            &gid_in_progress,
+            &GroupUpgradeValue {
+                from_version: "1.0.0".to_owned(),
+                to_version: "2.0.0".to_owned(),
+                migration: None,
+                initiated_at: 1_700_000_000,
+                initiated_by: PublicKey::from([0x01; 32]),
+                status: GroupUpgradeStatus::InProgress {
+                    total: 5,
+                    completed: 2,
+                    failed: 0,
+                },
             },
-        },
-    )
-    .unwrap();
+        )
+        .unwrap();
 
-    save_group_upgrade(
-        &store,
-        &gid_completed,
-        &GroupUpgradeValue {
-            from_version: "1.0.0".to_owned(),
-            to_version: "2.0.0".to_owned(),
-            migration: None,
-            initiated_at: 1_700_000_000,
-            initiated_by: PublicKey::from([0x01; 32]),
-            status: GroupUpgradeStatus::Completed {
-                completed_at: Some(1_700_001_000),
+    UpgradesRepository::new(&store)
+        .save(
+            &gid_completed,
+            &GroupUpgradeValue {
+                from_version: "1.0.0".to_owned(),
+                to_version: "2.0.0".to_owned(),
+                migration: None,
+                initiated_at: 1_700_000_000,
+                initiated_by: PublicKey::from([0x01; 32]),
+                status: GroupUpgradeStatus::Completed {
+                    completed_at: Some(1_700_001_000),
+                },
             },
-        },
-    )
-    .unwrap();
+        )
+        .unwrap();
 
-    let results = enumerate_in_progress_upgrades(&store).unwrap();
+    let results = UpgradesRepository::new(&store)
+        .enumerate_in_progress()
+        .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, gid_in_progress);
 }
@@ -977,13 +1099,15 @@ fn enumerate_all_groups_stops_before_member_keys() {
     let meta = test_meta();
     let member = PublicKey::from([0x10; 32]);
 
-    save_group_meta(&store, &gid, &meta).unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
     // Add a group member — this writes a GroupMember key (prefix 0x21)
     // into the same column, right after GroupMeta keys (prefix 0x20).
-    add_group_member(&store, &gid, &member, GroupMemberRole::Admin).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member, GroupMemberRole::Admin)
+        .unwrap();
 
     // Must return exactly one group without panicking.
-    let groups = enumerate_all_groups(&store, 0, 100).unwrap();
+    let groups = MetaRepository::new(&store).enumerate_all(0, 100).unwrap();
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].0, gid.to_bytes());
 }
@@ -995,28 +1119,20 @@ fn enumerate_all_groups_multiple_groups_with_members() {
     let gid2 = ContextGroupId::from([0x02; 32]);
     let meta = test_meta();
 
-    save_group_meta(&store, &gid1, &meta).unwrap();
-    save_group_meta(&store, &gid2, &meta).unwrap();
-    add_group_member(
-        &store,
-        &gid1,
-        &PublicKey::from([0xAA; 32]),
-        GroupMemberRole::Admin,
-    )
-    .unwrap();
-    add_group_member(
-        &store,
-        &gid2,
-        &PublicKey::from([0xBB; 32]),
-        GroupMemberRole::Member,
-    )
-    .unwrap();
+    MetaRepository::new(&store).save(&gid1, &meta).unwrap();
+    MetaRepository::new(&store).save(&gid2, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid1, &PublicKey::from([0xAA; 32]), GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid2, &PublicKey::from([0xBB; 32]), GroupMemberRole::Member)
+        .unwrap();
 
-    let groups = enumerate_all_groups(&store, 0, 100).unwrap();
+    let groups = MetaRepository::new(&store).enumerate_all(0, 100).unwrap();
     assert_eq!(groups.len(), 2);
 
     // Pagination
-    let page = enumerate_all_groups(&store, 1, 1).unwrap();
+    let page = MetaRepository::new(&store).enumerate_all(1, 1).unwrap();
     assert_eq!(page.len(), 1);
 }
 
@@ -1067,16 +1183,29 @@ fn set_and_get_member_capability() {
     let pk = PublicKey::from([0x10; 32]);
 
     // No capability stored yet
-    assert!(get_member_capability(&store, &gid, &pk).unwrap().is_none());
+    assert!(CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &pk)
+        .unwrap()
+        .is_none());
 
     // Set capabilities
-    set_member_capability(&store, &gid, &pk, 0b101).unwrap();
-    let caps = get_member_capability(&store, &gid, &pk).unwrap().unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &pk, 0b101)
+        .unwrap();
+    let caps = CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &pk)
+        .unwrap()
+        .unwrap();
     assert_eq!(caps, 0b101);
 
     // Update capabilities
-    set_member_capability(&store, &gid, &pk, 0b111).unwrap();
-    let caps = get_member_capability(&store, &gid, &pk).unwrap().unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &pk, 0b111)
+        .unwrap();
+    let caps = CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &pk)
+        .unwrap()
+        .unwrap();
     assert_eq!(caps, 0b111);
 }
 
@@ -1086,8 +1215,13 @@ fn capability_zero_means_no_permissions() {
     let gid = test_group_id();
     let pk = PublicKey::from([0x11; 32]);
 
-    set_member_capability(&store, &gid, &pk, 0).unwrap();
-    let caps = get_member_capability(&store, &gid, &pk).unwrap().unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &pk, 0)
+        .unwrap();
+    let caps = CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &pk)
+        .unwrap()
+        .unwrap();
     assert_eq!(caps, 0);
     // All capability bits are off
     assert_eq!(caps & (1 << 0), 0); // CAN_CREATE_CONTEXT
@@ -1102,17 +1236,25 @@ fn capabilities_isolated_per_member() {
     let alice = PublicKey::from([0x12; 32]);
     let bob = PublicKey::from([0x13; 32]);
 
-    set_member_capability(&store, &gid, &alice, 0b001).unwrap();
-    set_member_capability(&store, &gid, &bob, 0b110).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &alice, 0b001)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &bob, 0b110)
+        .unwrap();
 
     assert_eq!(
-        get_member_capability(&store, &gid, &alice)
+        CapabilitiesRepository::new(&store)
+            .member_capability(&gid, &alice)
             .unwrap()
             .unwrap(),
         0b001
     );
     assert_eq!(
-        get_member_capability(&store, &gid, &bob).unwrap().unwrap(),
+        CapabilitiesRepository::new(&store)
+            .member_capability(&gid, &bob)
+            .unwrap()
+            .unwrap(),
         0b110
     );
 }
@@ -1126,18 +1268,31 @@ fn set_and_get_default_capabilities() {
     let store = test_store();
     let gid = test_group_id();
 
-    assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
+    assert!(CapabilitiesRepository::new(&store)
+        .default_capabilities(&gid)
+        .unwrap()
+        .is_none());
 
-    set_default_capabilities(&store, &gid, 0b100).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&gid, 0b100)
+        .unwrap();
     assert_eq!(
-        get_default_capabilities(&store, &gid).unwrap().unwrap(),
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&gid)
+            .unwrap()
+            .unwrap(),
         0b100
     );
 
     // Update
-    set_default_capabilities(&store, &gid, 0b111).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&gid, 0b111)
+        .unwrap();
     assert_eq!(
-        get_default_capabilities(&store, &gid).unwrap().unwrap(),
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&gid)
+            .unwrap()
+            .unwrap(),
         0b111
     );
 }
@@ -1151,19 +1306,29 @@ fn set_and_get_subgroup_visibility() {
 
     // Absent key reads as Restricted (the safe default).
     assert_eq!(
-        get_subgroup_visibility(&store, &gid).unwrap(),
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&gid)
+            .unwrap(),
         VisibilityMode::Restricted
     );
 
-    set_subgroup_visibility(&store, &gid, VisibilityMode::Open).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&gid, VisibilityMode::Open)
+        .unwrap();
     assert_eq!(
-        get_subgroup_visibility(&store, &gid).unwrap(),
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&gid)
+            .unwrap(),
         VisibilityMode::Open
     );
 
-    set_subgroup_visibility(&store, &gid, VisibilityMode::Restricted).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&gid, VisibilityMode::Restricted)
+        .unwrap();
     assert_eq!(
-        get_subgroup_visibility(&store, &gid).unwrap(),
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&gid)
+            .unwrap(),
         VisibilityMode::Restricted
     );
 }
@@ -1221,10 +1386,15 @@ fn default_capabilities_include_can_join_open_subgroups() {
     let gid = ContextGroupId::from([0x40; 32]);
     let alice = PublicKey::from([0x01; 32]);
 
-    set_default_capabilities(&store, &gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS).unwrap();
-    add_group_member(&store, &gid, &alice, GroupMemberRole::Member).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&gid, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &alice, GroupMemberRole::Member)
+        .unwrap();
 
-    let caps = get_member_capability(&store, &gid, &alice)
+    let caps = CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &alice)
         .unwrap()
         .unwrap_or(0);
     assert_eq!(
@@ -1236,14 +1406,11 @@ fn default_capabilities_include_can_join_open_subgroups() {
 #[test]
 fn is_open_chain_to_namespace_walks_parent_chain_correctly() {
     use calimero_context_config::VisibilityMode;
-
-    use super::is_open_chain_to_namespace;
-
     // Tree: ns -> mid -> leaf. This is the input shape the
     // visibility-flip encryption special-case in
     // `GroupGovernancePublisher` feeds into when it queries the
     // **parent chain** of a `SubgroupVisibilitySet` op (i.e. it
-    // calls `is_open_chain_to_namespace(parent, ns)` instead of
+    // calls `CapabilitiesRepository::new(parent).is_open_chain_to_namespace(ns)` instead of
     // `(self, ns)`). The cases below pin down the contract that
     // path relies on.
     let store = test_store();
@@ -1256,36 +1423,52 @@ fn is_open_chain_to_namespace_walks_parent_chain_correctly() {
     // Identity case: a group is not an "Open chain to itself" — the
     // namespace root has no parent and does not participate in
     // subgroup-style inheritance.
-    assert!(!is_open_chain_to_namespace(&store, &ns, &ns).unwrap());
+    assert!(!CapabilitiesRepository::new(&store)
+        .is_open_chain_to_namespace(&ns, &ns)
+        .unwrap());
 
     // Direct child of the namespace: parent chain trivially Open
     // when `mid` itself is Open.
-    set_subgroup_visibility(&store, &mid, VisibilityMode::Open).unwrap();
-    assert!(is_open_chain_to_namespace(&store, &mid, &ns).unwrap());
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&mid, VisibilityMode::Open)
+        .unwrap();
+    assert!(CapabilitiesRepository::new(&store)
+        .is_open_chain_to_namespace(&mid, &ns)
+        .unwrap());
 
     // Two-hop chain, all Open → boundary is namespace-wide.
-    set_subgroup_visibility(&store, &leaf, VisibilityMode::Open).unwrap();
-    assert!(is_open_chain_to_namespace(&store, &leaf, &ns).unwrap());
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&leaf, VisibilityMode::Open)
+        .unwrap();
+    assert!(CapabilitiesRepository::new(&store)
+        .is_open_chain_to_namespace(&leaf, &ns)
+        .unwrap());
 
     // Restricted wall at mid → boundary is NOT namespace-wide,
     // even if leaf itself is Open.
-    set_subgroup_visibility(&store, &mid, VisibilityMode::Restricted).unwrap();
-    assert!(!is_open_chain_to_namespace(&store, &leaf, &ns).unwrap());
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&mid, VisibilityMode::Restricted)
+        .unwrap();
+    assert!(!CapabilitiesRepository::new(&store)
+        .is_open_chain_to_namespace(&leaf, &ns)
+        .unwrap());
 
     // The visibility-flip publisher special-case calls this with
     // the *parent* of the flipping group — `mid` here, walking up
     // to `ns`. With mid currently Restricted that returns false;
     // re-open mid and confirm we get true.
-    set_subgroup_visibility(&store, &mid, VisibilityMode::Open).unwrap();
-    assert!(is_open_chain_to_namespace(&store, &mid, &ns).unwrap());
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&mid, VisibilityMode::Open)
+        .unwrap();
+    assert!(CapabilitiesRepository::new(&store)
+        .is_open_chain_to_namespace(&mid, &ns)
+        .unwrap());
 }
 
 #[test]
 fn is_open_chain_to_namespace_bails_on_depth_overflow() {
-    use calimero_context_config::VisibilityMode;
-
-    use super::is_open_chain_to_namespace;
     use super::namespace::MAX_NAMESPACE_DEPTH;
+    use calimero_context_config::VisibilityMode;
 
     // Build a chain longer than MAX_NAMESPACE_DEPTH so the walk
     // exhausts its bound without finding the namespace. This used
@@ -1297,13 +1480,15 @@ fn is_open_chain_to_namespace_bails_on_depth_overflow() {
     for i in 0..(MAX_NAMESPACE_DEPTH + 2) {
         let next = ContextGroupId::from([0xD0u8.wrapping_add(i as u8); 32]);
         nest_for_test(&store, &prev, &next);
-        set_subgroup_visibility(&store, &next, VisibilityMode::Open).unwrap();
+        CapabilitiesRepository::new(&store)
+            .set_subgroup_visibility(&next, VisibilityMode::Open)
+            .unwrap();
         prev = next;
     }
     // Walking from the deepest node should hit the depth bound
     // before reaching `ns` and return an error rather than
     // Ok(false).
-    let res = is_open_chain_to_namespace(&store, &prev, &ns);
+    let res = CapabilitiesRepository::new(&store).is_open_chain_to_namespace(&prev, &ns);
     assert!(
         res.is_err(),
         "is_open_chain_to_namespace must bail on MAX_NAMESPACE_DEPTH overflow, \
@@ -1327,13 +1512,18 @@ fn default_capabilities_admin_override_propagates_to_new_member() {
     let alice = PublicKey::from([0x01; 32]);
 
     // Admin override: set default to 0 (no caps).
-    set_default_capabilities(&store, &gid, 0).unwrap();
-    add_group_member(&store, &gid, &alice, GroupMemberRole::Member).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&gid, 0)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &alice, GroupMemberRole::Member)
+        .unwrap();
 
     // alice should NOT have any capability bits; in particular she
     // should NOT have CAN_JOIN_OPEN_SUBGROUPS just because a hard-coded
     // path snuck it in.
-    let caps = get_member_capability(&store, &gid, &alice)
+    let caps = CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &alice)
         .unwrap()
         .unwrap_or(0);
     assert_eq!(
@@ -1345,9 +1535,14 @@ fn default_capabilities_admin_override_propagates_to_new_member() {
     let bob = PublicKey::from([0x02; 32]);
     let custom = calimero_context_config::MemberCapabilities::CAN_CREATE_CONTEXT
         | calimero_context_config::MemberCapabilities::CAN_INVITE_MEMBERS;
-    set_default_capabilities(&store, &gid, custom).unwrap();
-    add_group_member(&store, &gid, &bob, GroupMemberRole::Member).unwrap();
-    let bob_caps = get_member_capability(&store, &gid, &bob)
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&gid, custom)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &bob, GroupMemberRole::Member)
+        .unwrap();
+    let bob_caps = CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &bob)
         .unwrap()
         .unwrap_or(0);
     assert_eq!(
@@ -1364,25 +1559,43 @@ fn defaults_isolated_per_group() {
 
     use calimero_context_config::VisibilityMode;
 
-    set_default_capabilities(&store, &g1, 0b001).unwrap();
-    set_default_capabilities(&store, &g2, 0b110).unwrap();
-    set_subgroup_visibility(&store, &g1, VisibilityMode::Open).unwrap();
-    set_subgroup_visibility(&store, &g2, VisibilityMode::Restricted).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&g1, 0b001)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&g2, 0b110)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&g1, VisibilityMode::Open)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&g2, VisibilityMode::Restricted)
+        .unwrap();
 
     assert_eq!(
-        get_default_capabilities(&store, &g1).unwrap().unwrap(),
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&g1)
+            .unwrap()
+            .unwrap(),
         0b001
     );
     assert_eq!(
-        get_default_capabilities(&store, &g2).unwrap().unwrap(),
+        CapabilitiesRepository::new(&store)
+            .default_capabilities(&g2)
+            .unwrap()
+            .unwrap(),
         0b110
     );
     assert_eq!(
-        get_subgroup_visibility(&store, &g1).unwrap(),
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&g1)
+            .unwrap(),
         VisibilityMode::Open
     );
     assert_eq!(
-        get_subgroup_visibility(&store, &g2).unwrap(),
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&g2)
+            .unwrap(),
         VisibilityMode::Restricted
     );
 }
@@ -1396,30 +1609,38 @@ fn context_member_capability_roundtrip_and_isolation() {
     let alice = PublicKey::from([0x31; 32]);
     let bob = PublicKey::from([0x32; 32]);
 
-    assert!(
-        get_context_member_capability(&store, &gid, &context_a, &alice)
-            .unwrap()
-            .is_none()
-    );
+    assert!(CapabilitiesRepository::new(&store)
+        .context_member_capability(&gid, &context_a, &alice)
+        .unwrap()
+        .is_none());
 
-    set_context_member_capability(&store, &gid, &context_a, &alice, 0b001).unwrap();
-    set_context_member_capability(&store, &gid, &context_a, &bob, 0b010).unwrap();
-    set_context_member_capability(&store, &gid, &context_b, &alice, 0b111).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_context_member(&gid, &context_a, &alice, 0b001)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_context_member(&gid, &context_a, &bob, 0b010)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_context_member(&gid, &context_b, &alice, 0b111)
+        .unwrap();
 
     assert_eq!(
-        get_context_member_capability(&store, &gid, &context_a, &alice)
+        CapabilitiesRepository::new(&store)
+            .context_member_capability(&gid, &context_a, &alice)
             .unwrap()
             .unwrap(),
         0b001
     );
     assert_eq!(
-        get_context_member_capability(&store, &gid, &context_a, &bob)
+        CapabilitiesRepository::new(&store)
+            .context_member_capability(&gid, &context_a, &bob)
             .unwrap()
             .unwrap(),
         0b010
     );
     assert_eq!(
-        get_context_member_capability(&store, &gid, &context_b, &alice)
+        CapabilitiesRepository::new(&store)
+            .context_member_capability(&gid, &context_b, &alice)
             .unwrap()
             .unwrap(),
         0b111
@@ -1435,31 +1656,58 @@ fn delete_defaults_and_member_capabilities_clears_values() {
 
     use calimero_context_config::VisibilityMode;
 
-    set_default_capabilities(&store, &gid, 0b101).unwrap();
-    set_subgroup_visibility(&store, &gid, VisibilityMode::Restricted).unwrap();
-    set_member_capability(&store, &gid, &alice, 0b001).unwrap();
-    set_member_capability(&store, &gid, &bob, 0b010).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&gid, 0b101)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&gid, VisibilityMode::Restricted)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &alice, 0b001)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &bob, 0b010)
+        .unwrap();
     assert_eq!(
-        enumerate_member_capabilities(&store, &gid).unwrap().len(),
+        CapabilitiesRepository::new(&store)
+            .enumerate_members(&gid)
+            .unwrap()
+            .len(),
         2
     );
 
-    delete_default_capabilities(&store, &gid).unwrap();
-    delete_subgroup_visibility(&store, &gid).unwrap();
-    delete_all_member_capabilities(&store, &gid).unwrap();
+    CapabilitiesRepository::new(&store)
+        .delete_default(&gid)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .delete_subgroup_visibility(&gid)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .delete_all_member_caps(&gid)
+        .unwrap();
 
-    assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
+    assert!(CapabilitiesRepository::new(&store)
+        .default_capabilities(&gid)
+        .unwrap()
+        .is_none());
     // Subgroup visibility's contract is "absent reads as Restricted",
     // so a successful delete is observed as the default value coming back.
     assert_eq!(
-        get_subgroup_visibility(&store, &gid).unwrap(),
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&gid)
+            .unwrap(),
         VisibilityMode::Restricted
     );
-    assert!(get_member_capability(&store, &gid, &alice)
+    assert!(CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &alice)
         .unwrap()
         .is_none());
-    assert!(get_member_capability(&store, &gid, &bob).unwrap().is_none());
-    assert!(enumerate_member_capabilities(&store, &gid)
+    assert!(CapabilitiesRepository::new(&store)
+        .member_capability(&gid, &bob)
+        .unwrap()
+        .is_none());
+    assert!(CapabilitiesRepository::new(&store)
+        .enumerate_members(&gid)
         .unwrap()
         .is_empty());
 }
@@ -1471,31 +1719,42 @@ fn migration_tracking_roundtrip_and_cleanup() {
     let context_a = ContextId::from([0x51; 32]);
     let context_b = ContextId::from([0x52; 32]);
 
-    assert!(get_context_last_migration(&store, &gid, &context_a)
+    assert!(MigrationsRepository::new(&store)
+        .last_migration(&gid, &context_a)
         .unwrap()
         .is_none());
 
-    set_context_last_migration(&store, &gid, &context_a, "migrate_v2").unwrap();
-    set_context_last_migration(&store, &gid, &context_b, "migrate_v3").unwrap();
+    MigrationsRepository::new(&store)
+        .set_last_migration(&gid, &context_a, "migrate_v2")
+        .unwrap();
+    MigrationsRepository::new(&store)
+        .set_last_migration(&gid, &context_b, "migrate_v3")
+        .unwrap();
 
     assert_eq!(
-        get_context_last_migration(&store, &gid, &context_a)
+        MigrationsRepository::new(&store)
+            .last_migration(&gid, &context_a)
             .unwrap()
             .as_deref(),
         Some("migrate_v2")
     );
     assert_eq!(
-        get_context_last_migration(&store, &gid, &context_b)
+        MigrationsRepository::new(&store)
+            .last_migration(&gid, &context_b)
             .unwrap()
             .as_deref(),
         Some("migrate_v3")
     );
 
-    delete_all_context_last_migrations(&store, &gid).unwrap();
-    assert!(get_context_last_migration(&store, &gid, &context_a)
+    MigrationsRepository::new(&store)
+        .delete_all_for_group(&gid)
+        .unwrap();
+    assert!(MigrationsRepository::new(&store)
+        .last_migration(&gid, &context_a)
         .unwrap()
         .is_none());
-    assert!(get_context_last_migration(&store, &gid, &context_b)
+    assert!(MigrationsRepository::new(&store)
+        .last_migration(&gid, &context_b)
         .unwrap()
         .is_none());
 }
@@ -1524,42 +1783,51 @@ fn auto_group_node_identity_is_admin_member() {
     let sender_key = PrivateKey::random(&mut OsRng);
 
     // Save group meta (as create_context does for auto-groups)
-    save_group_meta(
-        &store,
-        &auto_group_id,
-        &GroupMetaValue {
-            app_key: [0u8; 32],
-            target_application_id: ApplicationId::from([0xCC; 32]),
-            upgrade_policy: UpgradePolicy::Automatic,
-            created_at: 1_700_000_000,
-            admin_identity: node_pk,
-            owner_identity: node_pk,
-            migration: None,
-            auto_join: true,
-        },
-    )
-    .unwrap();
+    MetaRepository::new(&store)
+        .save(
+            &auto_group_id,
+            &GroupMetaValue {
+                app_key: [0u8; 32],
+                target_application_id: ApplicationId::from([0xCC; 32]),
+                upgrade_policy: UpgradePolicy::Automatic,
+                created_at: 1_700_000_000,
+                admin_identity: node_pk,
+                owner_identity: node_pk,
+                migration: None,
+                auto_join: true,
+            },
+        )
+        .unwrap();
 
     // Add node identity as admin with keys (as create_context does)
-    add_group_member_with_keys(
-        &store,
-        &auto_group_id,
-        &node_pk,
-        GroupMemberRole::Admin,
-        Some(*node_sk),
-        Some(*sender_key),
-    )
-    .unwrap();
+    MembershipRepository::new(&store)
+        .add_member_with_keys(
+            &auto_group_id,
+            &node_pk,
+            GroupMemberRole::Admin,
+            Some(*node_sk),
+            Some(*sender_key),
+        )
+        .unwrap();
 
     // Register the context in the group
     register_context_in_group(&store, &auto_group_id, &context_id).unwrap();
 
     // The node's identity should be recognized as a group member
-    assert!(check_group_membership(&store, &auto_group_id, &node_pk).unwrap());
-    assert!(is_group_admin(&store, &auto_group_id, &node_pk).unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&auto_group_id, &node_pk)
+        .unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_admin(&auto_group_id, &node_pk)
+        .unwrap());
 
     // The group should have exactly 1 member
-    assert_eq!(count_group_members(&store, &auto_group_id).unwrap(), 1);
+    assert_eq!(
+        MembershipRepository::new(&store)
+            .count(&auto_group_id)
+            .unwrap(),
+        1
+    );
 
     // The context should be registered in the group
     assert_eq!(
@@ -1581,17 +1849,23 @@ fn auto_group_random_identity_not_found_by_node_check() {
     // A random creator identity was added as admin
     let random_sk = PrivateKey::random(&mut OsRng);
     let random_pk = random_sk.public_key();
-    add_group_member(&store, &auto_group_id, &random_pk, GroupMemberRole::Admin).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&auto_group_id, &random_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     // The node's ACTUAL group identity is different
     let node_sk = PrivateKey::random(&mut OsRng);
     let node_pk = node_sk.public_key();
 
     // The random identity IS a member
-    assert!(check_group_membership(&store, &auto_group_id, &random_pk).unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&auto_group_id, &random_pk)
+        .unwrap());
 
     // But the node's identity is NOT a member — this is the bug
-    assert!(!check_group_membership(&store, &auto_group_id, &node_pk).unwrap());
+    assert!(!MembershipRepository::new(&store)
+        .is_member(&auto_group_id, &node_pk)
+        .unwrap());
 }
 
 #[test]
@@ -1602,38 +1876,47 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     let member = PublicKey::from([0xC3; 32]);
     let member2 = PublicKey::from([0xC4; 32]);
 
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
-    set_default_capabilities(&store, &gid, 0b111).unwrap();
-    set_subgroup_visibility(
-        &store,
-        &gid,
-        calimero_context_config::VisibilityMode::Restricted,
-    )
-    .unwrap();
-    set_group_metadata(
-        &store,
-        &gid,
-        &calimero_primitives::metadata::MetadataRecord {
-            name: Some("g-alias".to_owned()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    set_context_last_migration(&store, &gid, &context, "v2").unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&gid, 0b111)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&gid, calimero_context_config::VisibilityMode::Restricted)
+        .unwrap();
+    MetadataRepository::new(&store)
+        .set_group(
+            &gid,
+            &calimero_primitives::metadata::MetadataRecord {
+                name: Some("g-alias".to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    MigrationsRepository::new(&store)
+        .set_last_migration(&gid, &context, "v2")
+        .unwrap();
 
-    add_group_member(&store, &gid, &member, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &member2, GroupMemberRole::Member).unwrap();
-    set_member_metadata(
-        &store,
-        &gid,
-        &member2,
-        &calimero_primitives::metadata::MetadataRecord {
-            name: Some("member2".to_owned()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    set_member_capability(&store, &gid, &member2, 0b010).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member2, GroupMemberRole::Member)
+        .unwrap();
+    MetadataRepository::new(&store)
+        .set_member(
+            &gid,
+            &member2,
+            &calimero_primitives::metadata::MetadataRecord {
+                name: Some("member2".to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &member2, 0b010)
+        .unwrap();
     set_local_gov_nonce(&store, &gid, &member, 7).unwrap();
 
     use calimero_primitives::identity::PrivateKey;
@@ -1659,10 +1942,18 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     // the whole prefix, not just one entry.
     let denied_a = PublicKey::from([0xD1; 32]);
     let denied_b = PublicKey::from([0xD2; 32]);
-    mark_denied(&store, &gid, &denied_a).unwrap();
-    mark_denied(&store, &gid, &denied_b).unwrap();
-    assert!(is_denied(&store, &gid, &denied_a).unwrap());
-    assert!(is_denied(&store, &gid, &denied_b).unwrap());
+    DenyListRepository::new(&store)
+        .mark(&gid, &denied_a)
+        .unwrap();
+    DenyListRepository::new(&store)
+        .mark(&gid, &denied_b)
+        .unwrap();
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&gid, &denied_a)
+        .unwrap());
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&gid, &denied_b)
+        .unwrap());
 
     assert_eq!(get_local_gov_nonce(&store, &gid, &member).unwrap(), Some(7));
     assert_eq!(read_op_log_after(&store, &gid, 0, 10).unwrap().len(), 1);
@@ -1675,20 +1966,33 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
 
     delete_group_local_rows(&store, &gid).unwrap();
 
-    assert!(load_group_meta(&store, &gid).unwrap().is_none());
-    assert!(get_group_metadata(&store, &gid).unwrap().is_none());
-    assert!(get_default_capabilities(&store, &gid).unwrap().is_none());
+    assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
+    assert!(MetadataRepository::new(&store)
+        .group_metadata(&gid)
+        .unwrap()
+        .is_none());
+    assert!(CapabilitiesRepository::new(&store)
+        .default_capabilities(&gid)
+        .unwrap()
+        .is_none());
     // Subgroup visibility falls back to Restricted when the row is absent
     // — that's how a successful delete is observed by the typed API.
     assert_eq!(
-        get_subgroup_visibility(&store, &gid).unwrap(),
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&gid)
+            .unwrap(),
         calimero_context_config::VisibilityMode::Restricted
     );
-    assert!(enumerate_member_capabilities(&store, &gid)
+    assert!(CapabilitiesRepository::new(&store)
+        .enumerate_members(&gid)
         .unwrap()
         .is_empty());
-    assert!(enumerate_member_metadata(&store, &gid).unwrap().is_empty());
-    assert!(get_context_last_migration(&store, &gid, &context)
+    assert!(MetadataRepository::new(&store)
+        .enumerate_members(&gid)
+        .unwrap()
+        .is_empty());
+    assert!(MigrationsRepository::new(&store)
+        .last_migration(&gid, &context)
         .unwrap()
         .is_none());
     assert!(get_local_gov_nonce(&store, &gid, &member)
@@ -1697,11 +2001,15 @@ fn local_state_join_tracking_and_delete_group_rows_cleanup() {
     assert!(get_op_head(&store, &gid).unwrap().is_none());
     assert!(read_op_log_after(&store, &gid, 0, 10).unwrap().is_empty());
     assert!(
-        !is_denied(&store, &gid, &denied_a).unwrap(),
+        !DenyListRepository::new(&store)
+            .is_denied(&gid, &denied_a)
+            .unwrap(),
         "deny-list entries must be swept during group teardown"
     );
     assert!(
-        !is_denied(&store, &gid, &denied_b).unwrap(),
+        !DenyListRepository::new(&store)
+            .is_denied(&gid, &denied_b)
+            .unwrap(),
         "deny-list entries must be swept during group teardown"
     );
 }
@@ -1859,7 +2167,7 @@ fn tee_policy_and_quote_hash_scan_latest_and_match() {
 ///
 /// `seed_bootstrap_admin_if_absent` writes two non-atomic rows: group meta and
 /// the admin member row. A crash between them leaves meta present but the member
-/// row missing. Gating the whole seed on `load_group_meta(..).is_some()` would
+/// row missing. Gating the whole seed on `MetaRepository::new(..).load().is_some()` would
 /// return early forever and never add the member row, so encrypted replay keeps
 /// failing the verifier-membership check with no way to self-repair. The fix
 /// gates each row on its own presence and always ensures the member row exists,
@@ -1885,18 +2193,24 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
     // ---- First seed: both meta and the admin member row are written. ----
     gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
         .expect("initial seed");
-    assert!(load_group_meta(&store, &ns_gid).unwrap().is_some());
+    assert!(MetaRepository::new(&store).load(&ns_gid).unwrap().is_some());
     assert_eq!(
-        get_group_member_role(&store, &ns_gid, &founder).unwrap(),
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
         Some(GroupMemberRole::Admin),
         "first seed must add the admin member row"
     );
 
     // ---- Simulate the partial-seed crash: meta survives, member row lost. ----
-    remove_group_member(&store, &ns_gid, &founder).unwrap();
-    assert!(load_group_meta(&store, &ns_gid).unwrap().is_some());
+    MembershipRepository::new(&store)
+        .remove_member(&ns_gid, &founder)
+        .unwrap();
+    assert!(MetaRepository::new(&store).load(&ns_gid).unwrap().is_some());
     assert_eq!(
-        get_group_member_role(&store, &ns_gid, &founder).unwrap(),
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
         None,
         "member row is gone, only meta remains (partial seed)"
     );
@@ -1906,7 +2220,9 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
     gov.seed_bootstrap_admin_if_absent(namespace_id, &founder)
         .expect("repair seed");
     assert_eq!(
-        get_group_member_role(&store, &ns_gid, &founder).unwrap(),
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &founder)
+            .unwrap(),
         Some(GroupMemberRole::Admin),
         "re-seed must repair the missing admin member row"
     );
@@ -1949,8 +2265,12 @@ fn tee_policy_lookup_from_subgroup_returns_root() {
     let child = ContextGroupId::from([0xE1; 32]);
     let grandchild = ContextGroupId::from([0xE2; 32]);
 
-    nest_group(&store, &root, &child).unwrap();
-    nest_group(&store, &child, &grandchild).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&child, &grandchild)
+        .unwrap();
     append_tee_policy_op(&store, &root, 1, "mrtd-root");
 
     for gid in [root, child, grandchild] {
@@ -1971,7 +2291,9 @@ fn tee_policy_lookup_from_subgroup_ignores_subgroup_own_bytes() {
     let root = ContextGroupId::from([0xF0; 32]);
     let child = ContextGroupId::from([0xF1; 32]);
 
-    nest_group(&store, &root, &child).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
     append_tee_policy_op(&store, &child, 1, "mrtd-subgroup-ignored");
 
     assert!(
@@ -2004,11 +2326,21 @@ fn apply_tee_policy_op_on_subgroup_rejected() {
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
-    save_group_meta(&store, &root, &test_meta()).unwrap();
-    save_group_meta(&store, &child, &test_meta()).unwrap();
-    add_group_member(&store, &root, &admin_pk, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &child, &admin_pk, GroupMemberRole::Admin).unwrap();
-    nest_group(&store, &root, &child).unwrap();
+    MetaRepository::new(&store)
+        .save(&root, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&child, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&root, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&child, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
 
     let op = SignedGroupOp::sign(
         &admin_sk,
@@ -2047,9 +2379,13 @@ fn resolve_signing_key_finds_key_on_self() {
     let pk = PublicKey::from([0xD1; 32]);
     let sk = [0xDD; 32];
 
-    store_group_signing_key(&store, &gid, &pk, &sk).unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&gid, &pk, &sk)
+        .unwrap();
 
-    let found = resolve_group_signing_key(&store, &gid, &pk).unwrap();
+    let found = SigningKeysRepository::new(&store)
+        .resolve(&gid, &pk)
+        .unwrap();
     assert_eq!(found, Some(sk));
 }
 
@@ -2061,11 +2397,17 @@ fn resolve_signing_key_walks_to_parent() {
     let pk = PublicKey::from([0x10; 32]);
     let sk = [0xAA; 32];
 
-    nest_group(&store, &root, &child).unwrap();
-    store_group_signing_key(&store, &root, &pk, &sk).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&root, &pk, &sk)
+        .unwrap();
 
     // Child should find root's key via parent walk
-    let found = resolve_group_signing_key(&store, &child, &pk).unwrap();
+    let found = SigningKeysRepository::new(&store)
+        .resolve(&child, &pk)
+        .unwrap();
     assert_eq!(found, Some(sk));
 }
 
@@ -2078,12 +2420,20 @@ fn resolve_signing_key_walks_grandparent_chain() {
     let pk = PublicKey::from([0x10; 32]);
     let sk = [0xBB; 32];
 
-    nest_group(&store, &root, &child).unwrap();
-    nest_group(&store, &child, &grandchild).unwrap();
-    store_group_signing_key(&store, &root, &pk, &sk).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&child, &grandchild)
+        .unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&root, &pk, &sk)
+        .unwrap();
 
     // Grandchild walks upward: grandchild -> child -> root, finds root's key
-    let found = resolve_group_signing_key(&store, &grandchild, &pk).unwrap();
+    let found = SigningKeysRepository::new(&store)
+        .resolve(&grandchild, &pk)
+        .unwrap();
     assert_eq!(found, Some(sk));
 }
 
@@ -2097,18 +2447,30 @@ fn resolve_signing_key_returns_nearest_ancestor() {
     let root_sk = [0xAA; 32];
     let child_sk = [0xBB; 32];
 
-    nest_group(&store, &root, &child).unwrap();
-    nest_group(&store, &child, &grandchild).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&child, &grandchild)
+        .unwrap();
 
-    store_group_signing_key(&store, &root, &pk, &root_sk).unwrap();
-    store_group_signing_key(&store, &child, &pk, &child_sk).unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&root, &pk, &root_sk)
+        .unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&child, &pk, &child_sk)
+        .unwrap();
 
     // Grandchild should find child's key (nearest), not root's
-    let found = resolve_group_signing_key(&store, &grandchild, &pk).unwrap();
+    let found = SigningKeysRepository::new(&store)
+        .resolve(&grandchild, &pk)
+        .unwrap();
     assert_eq!(found, Some(child_sk));
 
     // Child should find its own key
-    let found = resolve_group_signing_key(&store, &child, &pk).unwrap();
+    let found = SigningKeysRepository::new(&store)
+        .resolve(&child, &pk)
+        .unwrap();
     assert_eq!(found, Some(child_sk));
 }
 
@@ -2119,7 +2481,9 @@ fn resolve_signing_key_none_for_orphan() {
     let pk = PublicKey::from([0x10; 32]);
 
     // No parent, no key stored anywhere
-    let found = resolve_group_signing_key(&store, &orphan, &pk).unwrap();
+    let found = SigningKeysRepository::new(&store)
+        .resolve(&orphan, &pk)
+        .unwrap();
     assert_eq!(found, None);
 }
 
@@ -2132,15 +2496,23 @@ fn resolve_signing_key_wrong_identity_not_found() {
     let other = PublicKey::from([0x20; 32]);
     let sk = [0xCC; 32];
 
-    nest_group(&store, &root, &child).unwrap();
-    store_group_signing_key(&store, &root, &admin, &sk).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&root, &admin, &sk)
+        .unwrap();
 
     // Different identity should not find the key
-    let found = resolve_group_signing_key(&store, &child, &other).unwrap();
+    let found = SigningKeysRepository::new(&store)
+        .resolve(&child, &other)
+        .unwrap();
     assert_eq!(found, None);
 
     // Correct identity should find it
-    let found = resolve_group_signing_key(&store, &child, &admin).unwrap();
+    let found = SigningKeysRepository::new(&store)
+        .resolve(&child, &admin)
+        .unwrap();
     assert_eq!(found, Some(sk));
 }
 
@@ -2152,21 +2524,31 @@ fn resolve_signing_key_broken_by_unnest() {
     let pk = PublicKey::from([0x10; 32]);
     let sk = [0xAA; 32];
 
-    nest_group(&store, &root, &child).unwrap();
-    store_group_signing_key(&store, &root, &pk, &sk).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&root, &pk, &sk)
+        .unwrap();
 
     // Before unnest: child can find root's key
     assert_eq!(
-        resolve_group_signing_key(&store, &child, &pk).unwrap(),
+        SigningKeysRepository::new(&store)
+            .resolve(&child, &pk)
+            .unwrap(),
         Some(sk)
     );
 
     // Unnest breaks the parent link
-    unnest_group(&store, &root, &child).unwrap();
+    NamespaceRepository::new(&store)
+        .unnest(&root, &child)
+        .unwrap();
 
     // After unnest: child can no longer walk to root
     assert_eq!(
-        resolve_group_signing_key(&store, &child, &pk).unwrap(),
+        SigningKeysRepository::new(&store)
+            .resolve(&child, &pk)
+            .unwrap(),
         None
     );
 }
@@ -2179,20 +2561,32 @@ fn resolve_signing_key_survives_renesting() {
     let pk = PublicKey::from([0x10; 32]);
     let sk = [0xAA; 32];
 
-    nest_group(&store, &root, &child).unwrap();
-    store_group_signing_key(&store, &root, &pk, &sk).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&root, &pk, &sk)
+        .unwrap();
 
     // Unnest
-    unnest_group(&store, &root, &child).unwrap();
+    NamespaceRepository::new(&store)
+        .unnest(&root, &child)
+        .unwrap();
     assert_eq!(
-        resolve_group_signing_key(&store, &child, &pk).unwrap(),
+        SigningKeysRepository::new(&store)
+            .resolve(&child, &pk)
+            .unwrap(),
         None
     );
 
     // Re-nest: key should be reachable again
-    nest_group(&store, &root, &child).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
     assert_eq!(
-        resolve_group_signing_key(&store, &child, &pk).unwrap(),
+        SigningKeysRepository::new(&store)
+            .resolve(&child, &pk)
+            .unwrap(),
         Some(sk)
     );
 }
@@ -2217,17 +2611,23 @@ fn resolve_signing_key_none_when_exceeding_max_depth() {
 
     // Nest each group under the previous one: groups[0] -> groups[1] -> ... -> groups[16]
     for i in 0..MAX_NAMESPACE_DEPTH {
-        nest_group(&store, &groups[i], &groups[i + 1]).unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&groups[i], &groups[i + 1])
+            .unwrap();
     }
 
     // Store key only on the root
-    store_group_signing_key(&store, &groups[0], &pk, &sk).unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&groups[0], &pk, &sk)
+        .unwrap();
 
     // The deepest group (index MAX_NAMESPACE_DEPTH) is 16 levels below root.
     // The loop traverses MAX_NAMESPACE_DEPTH parent edges (matching
     // resolve_namespace), then does a final check on the reached group.
     // This means self + 16 edges + final check = covers the full chain.
-    let at_boundary = resolve_group_signing_key(&store, &groups[MAX_NAMESPACE_DEPTH], &pk).unwrap();
+    let at_boundary = SigningKeysRepository::new(&store)
+        .resolve(&groups[MAX_NAMESPACE_DEPTH], &pk)
+        .unwrap();
     assert_eq!(
         at_boundary,
         Some(sk),
@@ -2235,8 +2635,9 @@ fn resolve_signing_key_none_when_exceeding_max_depth() {
     );
 
     // One level shallower should also find it
-    let within_limit =
-        resolve_group_signing_key(&store, &groups[MAX_NAMESPACE_DEPTH - 1], &pk).unwrap();
+    let within_limit = SigningKeysRepository::new(&store)
+        .resolve(&groups[MAX_NAMESPACE_DEPTH - 1], &pk)
+        .unwrap();
     assert_eq!(
         within_limit,
         Some(sk),
@@ -2256,17 +2657,29 @@ fn preflight_rejects_non_admin_when_required() {
     let admin = PublicKey::from([0x01; 32]);
     let member = PublicKey::from([0x02; 32]);
 
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member, GroupMemberRole::Member)
+        .unwrap();
 
     // Admin passes
-    assert!(require_group_admin(&store, &gid, &admin).is_ok());
+    assert!(MembershipRepository::new(&store)
+        .require_admin(&gid, &admin)
+        .is_ok());
     // Non-admin fails
-    assert!(require_group_admin(&store, &gid, &member).is_err());
+    assert!(MembershipRepository::new(&store)
+        .require_admin(&gid, &member)
+        .is_err());
     // Unknown identity fails
     let unknown = PublicKey::from([0x03; 32]);
-    assert!(require_group_admin(&store, &gid, &unknown).is_err());
+    assert!(MembershipRepository::new(&store)
+        .require_admin(&gid, &unknown)
+        .is_err());
 }
 
 #[test]
@@ -2280,19 +2693,35 @@ fn preflight_signing_key_resolved_through_hierarchy() {
     let sk = [0xAA; 32];
 
     // Set up root with meta + admin + signing key
-    save_group_meta(&store, &root, &test_meta()).unwrap();
-    add_group_member(&store, &root, &admin, GroupMemberRole::Admin).unwrap();
-    store_group_signing_key(&store, &root, &admin, &sk).unwrap();
+    MetaRepository::new(&store)
+        .save(&root, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&root, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    SigningKeysRepository::new(&store)
+        .store_key(&root, &admin, &sk)
+        .unwrap();
 
     // Set up child nested under root, with meta + admin but NO signing key
-    save_group_meta(&store, &child, &test_meta()).unwrap();
-    add_group_member(&store, &child, &admin, GroupMemberRole::Admin).unwrap();
-    nest_group(&store, &root, &child).unwrap();
+    MetaRepository::new(&store)
+        .save(&child, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&child, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
 
     // Verify: group exists, admin check passes, signing key resolves via parent
-    assert!(load_group_meta(&store, &child).unwrap().is_some());
-    assert!(require_group_admin(&store, &child, &admin).is_ok());
-    let resolved = resolve_group_signing_key(&store, &child, &admin).unwrap();
+    assert!(MetaRepository::new(&store).load(&child).unwrap().is_some());
+    assert!(MembershipRepository::new(&store)
+        .require_admin(&child, &admin)
+        .is_ok());
+    let resolved = SigningKeysRepository::new(&store)
+        .resolve(&child, &admin)
+        .unwrap();
     assert_eq!(resolved, Some(sk), "signing key should resolve from root");
 }
 
@@ -2302,11 +2731,17 @@ fn preflight_fails_when_no_signing_key_in_hierarchy() {
     let gid = ContextGroupId::from([0xF0; 32]);
     let admin = PublicKey::from([0x01; 32]);
 
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
     // No signing key stored anywhere
 
-    let resolved = resolve_group_signing_key(&store, &gid, &admin).unwrap();
+    let resolved = SigningKeysRepository::new(&store)
+        .resolve(&gid, &admin)
+        .unwrap();
     assert_eq!(resolved, None, "no signing key should be found");
 }
 
@@ -2316,7 +2751,7 @@ fn preflight_fails_for_nonexistent_group() {
     let gid = ContextGroupId::from([0xF0; 32]);
 
     // Group doesn't exist — load_group_meta returns None
-    assert!(load_group_meta(&store, &gid).unwrap().is_none());
+    assert!(MetaRepository::new(&store).load(&gid).unwrap().is_none());
 }
 
 // -----------------------------------------------------------------------
@@ -2347,10 +2782,12 @@ fn restore_member_context_identities_writes_missing_rows() {
     register_context_in_group(&store, &gid, &ctx_b).unwrap();
 
     // The internal anti-spoof gate reads THIS node's namespace identity
-    // (via `resolve_namespace(gid)` → `gid` itself, since the test gid
+    // (via `NamespaceRepository::new(gid).resolve()` → `gid` itself, since the test gid
     // has no parent). Storing it for `member` makes this node the
     // local rejoiner; the function then derives `private_key` from it.
-    store_namespace_identity(&store, &gid, &member, &sk_bytes, &[0u8; 32]).unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&gid, &member, &sk_bytes, &[0u8; 32])
+        .unwrap();
 
     restore_member_context_identities(&store, &gid, &member).unwrap();
 
@@ -2394,7 +2831,9 @@ fn restore_member_context_identities_no_op_when_not_local_rejoiner() {
 
     // Namespace identity belongs to a different pk → still a no-op for
     // `member`.
-    store_namespace_identity(&store, &gid, &someone_else, &[0x55; 32], &[0u8; 32]).unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&gid, &someone_else, &[0x55; 32], &[0u8; 32])
+        .unwrap();
     restore_member_context_identities(&store, &gid, &member).unwrap();
     assert!(
         !store.handle().has(&key).unwrap(),
@@ -2414,7 +2853,9 @@ fn restore_member_context_identities_is_idempotent() {
 
     // This node is the local rejoiner — namespace identity stored for
     // `member`. The function will derive `original_sk` from it.
-    store_namespace_identity(&store, &gid, &member, &original_sk, &[0u8; 32]).unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&gid, &member, &original_sk, &[0u8; 32])
+        .unwrap();
 
     // Pre-existing row from a (notional) successful prior `join_context`
     // — already populated with a real sender_key from a delivered
@@ -2467,7 +2908,9 @@ fn restore_member_context_identities_repairs_keyless_row() {
     let delivered_sender = [0x77u8; 32];
     let ctx = ContextId::from([0xD2; 32]);
     register_context_in_group(&store, &gid, &ctx).unwrap();
-    store_namespace_identity(&store, &gid, &member, &sk_bytes, &[0u8; 32]).unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&gid, &member, &sk_bytes, &[0u8; 32])
+        .unwrap();
 
     // Keyless row with a delivered sender_key — the shape a restore
     // must repair without clobbering the sender_key.
@@ -2518,7 +2961,9 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     let gid_bytes = gid.to_bytes();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     // The local rejoiner: their namespace identity is stored. Note
     // `gid` here is treated as both the group and the namespace root —
@@ -2530,21 +2975,25 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
     // to `resolve_namespace` that breaks the no-parent case is caught
     // here rather than silently passing.
     assert_eq!(
-        resolve_namespace(&store, &gid).unwrap(),
+        NamespaceRepository::new(&store).resolve(&gid).unwrap(),
         gid,
         "flat-namespace test precondition: gid must resolve to itself"
     );
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
     let member_sk_bytes = *member_sk;
-    store_namespace_identity(&store, &gid, &member_pk, &member_sk_bytes, &[0u8; 32]).unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     // Pre-state: member already added once + has ContextIdentity for
     // the context, then admin removes them which cascades the row
     // delete. Simulate by adding via add_group_member, registering the
     // context, writing the ContextIdentity directly, then issuing
     // MemberRemoved (which cascade-deletes).
-    add_group_member(&store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member_pk, GroupMemberRole::Member)
+        .unwrap();
     let ctx = ContextId::from([0xE7; 32]);
     register_context_in_group(&store, &gid, &ctx).unwrap();
     {
@@ -2617,7 +3066,7 @@ fn member_added_after_remove_restores_context_identity_for_local_rejoiner() {
 #[test]
 fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_namespace() {
     // The first integration test conflates `gid` as both group and
-    // namespace, which means `resolve_namespace(group_id)` returns
+    // namespace, which means `NamespaceRepository::new(group_id).resolve()` returns
     // `gid` itself (no parent walk) and the test does not exercise
     // the subgroup case. This test sets up a real namespace+subgroup
     // pair where the subgroup's resolved namespace is a different
@@ -2636,27 +3085,41 @@ fn member_added_after_remove_restores_context_identity_for_subgroup_with_real_na
     // namespace (root) ── subgroup
     let ns_gid = ContextGroupId::from([0xD0; 32]);
     let subgroup = ContextGroupId::from([0xD1; 32]);
-    nest_group(&store, &ns_gid, &subgroup).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup)
+        .unwrap();
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    save_group_meta(&store, &subgroup, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &subgroup, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     // Local rejoiner: namespace identity is stored under the NAMESPACE
     // id (not the subgroup id). The MemberAdded apply for the subgroup
-    // must call `resolve_namespace(subgroup)` → `ns_gid` and then read
+    // must call `NamespaceRepository::new(subgroup).resolve()` → `ns_gid` and then read
     // the namespace identity from there.
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
     let member_sk_bytes: [u8; 32] = *member_sk;
-    store_namespace_identity(&store, &ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32]).unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     // Pre-state: member was a direct subgroup member with a context
     // identity, then admin removed them which cascade-deleted the row.
-    add_group_member(&store, &subgroup, &member_pk, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &member_pk, GroupMemberRole::Member)
+        .unwrap();
     let ctx = ContextId::from([0xE9; 32]);
     register_context_in_group(&store, &subgroup, &ctx).unwrap();
     {
@@ -2745,12 +3208,24 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
     // particular op only checks `MembershipPath::Inherited`.
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    save_group_meta(&store, &subgroup, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &subgroup, &admin_pk, GroupMemberRole::Admin).unwrap();
-    nest_group(&store, &ns_gid, &subgroup).unwrap();
-    set_subgroup_visibility(&store, &subgroup, VisibilityMode::Open).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&subgroup, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&subgroup, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &subgroup)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&subgroup, VisibilityMode::Open)
+        .unwrap();
     register_context_in_group(&store, &subgroup, &ctx).unwrap();
 
     // Rejoiner: direct namespace member with CAN_JOIN_OPEN_SUBGROUPS,
@@ -2758,26 +3233,34 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
     let member_sk_bytes: [u8; 32] = *member_sk;
-    add_group_member(&store, &ns_gid, &member_pk, GroupMemberRole::Member).unwrap();
-    set_member_capability(
-        &store,
-        &ns_gid,
-        &member_pk,
-        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
-    )
-    .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &ns_gid,
+            &member_pk,
+            MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
+        )
+        .unwrap();
 
     // Pre-state from a prior MemberLeft cascade: deny-list stamped,
     // ContextIdentity row deleted on the local rejoiner.
-    mark_denied(&store, &subgroup, &member_pk).unwrap();
-    assert!(is_denied(&store, &subgroup, &member_pk).unwrap());
+    DenyListRepository::new(&store)
+        .mark(&subgroup, &member_pk)
+        .unwrap();
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&subgroup, &member_pk)
+        .unwrap());
     let id_key = calimero_store::key::ContextIdentity::new(ctx, member_pk.into());
     assert!(!store.handle().has(&id_key).unwrap());
 
     // The local node IS the rejoiner — its namespace identity matches
     // `member_pk`. Without this gate the `restore_member_context_identities`
     // call would no-op (correctly — peers don't own the rejoiner's sk).
-    store_namespace_identity(&store, &ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32]).unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &member_pk, &member_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     // Sign + apply a fresh `MemberJoinedOpen` for the rejoiner.
     let signed = SignedNamespaceOp::sign(
@@ -2798,7 +3281,9 @@ fn member_joined_open_clears_deny_list_and_restores_context_identity() {
     // critical for peers — without it they continue dropping the
     // rejoiner's state-delta gossip at the receive filter.
     assert!(
-        !is_denied(&store, &subgroup, &member_pk).unwrap(),
+        !DenyListRepository::new(&store)
+            .is_denied(&subgroup, &member_pk)
+            .unwrap(),
         "MemberJoinedOpen apply MUST clear the per-subgroup deny-list \
          entry so peers stop dropping the rejoiner's state-deltas"
     );
@@ -2838,12 +3323,16 @@ fn member_added_does_nothing_for_non_rejoiner_peers() {
     let gid = test_group_id();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     // This node IS the admin — its namespace identity is admin_pk, not
     // the rejoiner's pk.
     let admin_sk_bytes = *admin_sk;
-    store_namespace_identity(&store, &gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     let rejoiner_pk = PrivateKey::random(&mut rng).public_key();
     let ctx = ContextId::from([0xE8; 32]);
@@ -2908,7 +3397,9 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     let ns_bytes = ns_id.to_bytes();
 
     let ns_pk = PublicKey::from([0x11; 32]);
-    store_namespace_identity(&store, &ns_id, &ns_pk, &[0x22; 32], &[0x33; 32]).unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_id, &ns_pk, &[0x22; 32], &[0x33; 32])
+        .unwrap();
 
     {
         let mut handle = store.handle();
@@ -2939,7 +3430,9 @@ fn delete_namespace_local_state_clears_identity_head_and_ops() {
     let other_ns_id = ContextGroupId::from([0xB2; 32]);
     let other_ns_bytes = other_ns_id.to_bytes();
     let other_pk = PublicKey::from([0x55; 32]);
-    store_namespace_identity(&store, &other_ns_id, &other_pk, &[0x66; 32], &[0x77; 32]).unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&other_ns_id, &other_pk, &[0x66; 32], &[0x77; 32])
+        .unwrap();
     {
         let mut handle = store.handle();
         handle
@@ -3017,11 +3510,21 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
     let child = ContextGroupId::from([0xF1; 32]);
     let grandchild = ContextGroupId::from([0xF2; 32]);
 
-    save_group_meta(&store, &ns_id, &test_meta()).unwrap();
-    save_group_meta(&store, &child, &test_meta()).unwrap();
-    save_group_meta(&store, &grandchild, &test_meta()).unwrap();
-    nest_group(&store, &ns_id, &child).unwrap();
-    nest_group(&store, &child, &grandchild).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_id, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&child, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&grandchild, &test_meta())
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_id, &child)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&child, &grandchild)
+        .unwrap();
 
     let ctx_root = ContextId::from([0x10; 32]);
     let ctx_child = ContextId::from([0x11; 32]);
@@ -3031,12 +3534,20 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
     register_context_in_group(&store, &grandchild, &ctx_gc).unwrap();
 
     let admin_pk = PublicKey::from([0xAA; 32]);
-    add_group_member(&store, &ns_id, &admin_pk, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &child, &admin_pk, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &grandchild, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_id, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&child, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&grandchild, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let ns_bytes = ns_id.to_bytes();
-    store_namespace_identity(&store, &ns_id, &admin_pk, &[0x22; 32], &[0x33; 32]).unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_id, &admin_pk, &[0x22; 32], &[0x33; 32])
+        .unwrap();
     {
         let mut handle = store.handle();
         handle
@@ -3059,7 +3570,9 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
     }
 
     // Execute the same children-first teardown the handler performs.
-    let payload = collect_subtree_for_cascade(&store, &ns_id).unwrap();
+    let payload = NamespaceRepository::new(&store)
+        .collect_subtree_for_cascade(&ns_id)
+        .unwrap();
     let all = payload
         .descendant_groups
         .iter()
@@ -3069,7 +3582,7 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
         for ctx in enumerate_group_contexts(&store, &gid, 0, usize::MAX).unwrap() {
             unregister_context_from_group(&store, &gid, &ctx).unwrap();
         }
-        let parent = get_parent_group(&store, &gid).unwrap();
+        let parent = NamespaceRepository::new(&store).parent(&gid).unwrap();
         delete_group_local_rows(&store, &gid).unwrap();
         if let Some(parent) = parent {
             let mut handle = store.handle();
@@ -3084,7 +3597,7 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
     // Every group's meta must be gone.
     for gid in [ns_id, child, grandchild] {
         assert!(
-            load_group_meta(&store, &gid).unwrap().is_none(),
+            MetaRepository::new(&store).load(&gid).unwrap().is_none(),
             "group {gid:?} meta should be gone"
         );
     }
@@ -3098,10 +3611,22 @@ fn delete_namespace_full_cascade_clears_subtree_and_namespace_state() {
     }
 
     // Edges must be gone.
-    assert!(get_parent_group(&store, &child).unwrap().is_none());
-    assert!(get_parent_group(&store, &grandchild).unwrap().is_none());
-    assert!(list_child_groups(&store, &ns_id).unwrap().is_empty());
-    assert!(list_child_groups(&store, &child).unwrap().is_empty());
+    assert!(NamespaceRepository::new(&store)
+        .parent(&child)
+        .unwrap()
+        .is_none());
+    assert!(NamespaceRepository::new(&store)
+        .parent(&grandchild)
+        .unwrap()
+        .is_none());
+    assert!(NamespaceRepository::new(&store)
+        .list_children(&ns_id)
+        .unwrap()
+        .is_empty());
+    assert!(NamespaceRepository::new(&store)
+        .list_children(&child)
+        .unwrap()
+        .is_empty());
 
     // Namespace-level rows must be gone.
     let handle = store.handle();
@@ -3153,8 +3678,12 @@ fn permission_checker_subgroup_management_capabilities() {
     let admin = PublicKey::from([0x01; 32]);
     let member = PublicKey::from([0x02; 32]);
 
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member, GroupMemberRole::Member)
+        .unwrap();
 
     let checker = PermissionChecker::new(&store, gid);
 
@@ -3169,27 +3698,23 @@ fn permission_checker_subgroup_management_capabilities() {
     assert!(checker.require_can_manage_visibility(&member).is_err());
 
     // CAN_CREATE_SUBGROUP only.
-    set_member_capability(
-        &store,
-        &gid,
-        &member,
-        MemberCapabilities::CAN_CREATE_SUBGROUP,
-    )
-    .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &member, MemberCapabilities::CAN_CREATE_SUBGROUP)
+        .unwrap();
     assert!(checker.require_can_create_subgroup(&member).is_ok());
     assert!(checker.require_can_delete_subgroup(&member).is_err());
     assert!(checker.require_can_manage_visibility(&member).is_err());
 
     // All three at once.
-    set_member_capability(
-        &store,
-        &gid,
-        &member,
-        MemberCapabilities::CAN_CREATE_SUBGROUP
-            | MemberCapabilities::CAN_DELETE_SUBGROUP
-            | MemberCapabilities::CAN_MANAGE_VISIBILITY,
-    )
-    .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &gid,
+            &member,
+            MemberCapabilities::CAN_CREATE_SUBGROUP
+                | MemberCapabilities::CAN_DELETE_SUBGROUP
+                | MemberCapabilities::CAN_MANAGE_VISIBILITY,
+        )
+        .unwrap();
     assert!(checker.require_can_create_subgroup(&member).is_ok());
     assert!(checker.require_can_delete_subgroup(&member).is_ok());
     assert!(checker.require_can_manage_visibility(&member).is_ok());
@@ -3206,8 +3731,12 @@ fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
     let admin = PublicKey::from([0x01; 32]);
     let member = PublicKey::from([0x02; 32]);
 
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member, GroupMemberRole::Member)
+        .unwrap();
 
     let svc = GroupSettingsService::new(&store, gid);
 
@@ -3215,7 +3744,9 @@ fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
     svc.set_subgroup_visibility(&admin, VisibilityMode::Open)
         .unwrap();
     assert_eq!(
-        get_subgroup_visibility(&store, &gid).unwrap(),
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&gid)
+            .unwrap(),
         VisibilityMode::Open
     );
 
@@ -3225,17 +3756,15 @@ fn group_settings_subgroup_visibility_honors_can_manage_visibility() {
         .is_err());
 
     // Granting CAN_MANAGE_VISIBILITY lets the member flip it.
-    set_member_capability(
-        &store,
-        &gid,
-        &member,
-        MemberCapabilities::CAN_MANAGE_VISIBILITY,
-    )
-    .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &member, MemberCapabilities::CAN_MANAGE_VISIBILITY)
+        .unwrap();
     svc.set_subgroup_visibility(&member, VisibilityMode::Restricted)
         .unwrap();
     assert_eq!(
-        get_subgroup_visibility(&store, &gid).unwrap(),
+        CapabilitiesRepository::new(&store)
+            .subgroup_visibility(&gid)
+            .unwrap(),
         VisibilityMode::Restricted
     );
 }
@@ -3284,7 +3813,9 @@ fn deny_list_starts_empty_for_new_member() {
     let store = test_store();
     let gid = test_group_id();
     let pk = PublicKey::from([0xA0; 32]);
-    assert!(!is_denied(&store, &gid, &pk).unwrap());
+    assert!(!DenyListRepository::new(&store)
+        .is_denied(&gid, &pk)
+        .unwrap());
 }
 
 #[test]
@@ -3293,8 +3824,10 @@ fn deny_list_mark_then_query_returns_true() {
     let gid = test_group_id();
     let pk = PublicKey::from([0xA1; 32]);
 
-    mark_denied(&store, &gid, &pk).unwrap();
-    assert!(is_denied(&store, &gid, &pk).unwrap());
+    DenyListRepository::new(&store).mark(&gid, &pk).unwrap();
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&gid, &pk)
+        .unwrap());
 }
 
 #[test]
@@ -3303,10 +3836,14 @@ fn deny_list_clear_then_query_returns_false() {
     let gid = test_group_id();
     let pk = PublicKey::from([0xA2; 32]);
 
-    mark_denied(&store, &gid, &pk).unwrap();
-    assert!(is_denied(&store, &gid, &pk).unwrap());
-    clear_denied(&store, &gid, &pk).unwrap();
-    assert!(!is_denied(&store, &gid, &pk).unwrap());
+    DenyListRepository::new(&store).mark(&gid, &pk).unwrap();
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&gid, &pk)
+        .unwrap());
+    DenyListRepository::new(&store).clear(&gid, &pk).unwrap();
+    assert!(!DenyListRepository::new(&store)
+        .is_denied(&gid, &pk)
+        .unwrap());
 }
 
 #[test]
@@ -3315,10 +3852,12 @@ fn deny_list_mark_is_idempotent() {
     let gid = test_group_id();
     let pk = PublicKey::from([0xA3; 32]);
 
-    mark_denied(&store, &gid, &pk).unwrap();
-    mark_denied(&store, &gid, &pk).unwrap();
-    mark_denied(&store, &gid, &pk).unwrap();
-    assert!(is_denied(&store, &gid, &pk).unwrap());
+    DenyListRepository::new(&store).mark(&gid, &pk).unwrap();
+    DenyListRepository::new(&store).mark(&gid, &pk).unwrap();
+    DenyListRepository::new(&store).mark(&gid, &pk).unwrap();
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&gid, &pk)
+        .unwrap());
 }
 
 #[test]
@@ -3328,8 +3867,10 @@ fn deny_list_clear_on_unmarked_is_noop() {
     let pk = PublicKey::from([0xA4; 32]);
 
     // Should not error or panic — clearing an absent entry is fine.
-    clear_denied(&store, &gid, &pk).unwrap();
-    assert!(!is_denied(&store, &gid, &pk).unwrap());
+    DenyListRepository::new(&store).clear(&gid, &pk).unwrap();
+    assert!(!DenyListRepository::new(&store)
+        .is_denied(&gid, &pk)
+        .unwrap());
 }
 
 #[test]
@@ -3339,10 +3880,14 @@ fn deny_list_is_per_group_not_per_pubkey() {
     let gid_b = ContextGroupId::from([0xB2; 32]);
     let pk = PublicKey::from([0xA5; 32]);
 
-    mark_denied(&store, &gid_a, &pk).unwrap();
-    assert!(is_denied(&store, &gid_a, &pk).unwrap());
+    DenyListRepository::new(&store).mark(&gid_a, &pk).unwrap();
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&gid_a, &pk)
+        .unwrap());
     assert!(
-        !is_denied(&store, &gid_b, &pk).unwrap(),
+        !DenyListRepository::new(&store)
+            .is_denied(&gid_b, &pk)
+            .unwrap(),
         "deny-list must be scoped to the group, not the pubkey — \
          a member denied in group A must still be allowed in group B"
     );
@@ -3358,11 +3903,13 @@ fn deny_list_add_remove_add_cycle_ends_cleared() {
     let gid = test_group_id();
     let pk = PublicKey::from([0xA6; 32]);
 
-    mark_denied(&store, &gid, &pk).unwrap();
-    clear_denied(&store, &gid, &pk).unwrap();
-    mark_denied(&store, &gid, &pk).unwrap();
-    clear_denied(&store, &gid, &pk).unwrap();
-    assert!(!is_denied(&store, &gid, &pk).unwrap());
+    DenyListRepository::new(&store).mark(&gid, &pk).unwrap();
+    DenyListRepository::new(&store).clear(&gid, &pk).unwrap();
+    DenyListRepository::new(&store).mark(&gid, &pk).unwrap();
+    DenyListRepository::new(&store).clear(&gid, &pk).unwrap();
+    assert!(!DenyListRepository::new(&store)
+        .is_denied(&gid, &pk)
+        .unwrap());
 }
 
 #[test]
@@ -3382,19 +3929,27 @@ fn deny_list_member_added_op_clears_existing_entry() {
     let mut meta = test_meta();
     meta.admin_identity = admin_pk;
     meta.owner_identity = admin_pk;
-    save_group_meta(&store, &gid, &meta).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     // Seed the deny-list as if `target_pk` had previously been removed.
-    mark_denied(&store, &gid, &target_pk).unwrap();
-    assert!(is_denied(&store, &gid, &target_pk).unwrap());
+    DenyListRepository::new(&store)
+        .mark(&gid, &target_pk)
+        .unwrap();
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&gid, &target_pk)
+        .unwrap());
 
     // Apply MemberAdded for target_pk.
     let op = SignedGroupOp::sign(
         &admin_sk,
         gid.to_bytes(),
         vec![],
-        compute_group_state_hash(&store, &gid).unwrap(),
+        MetaRepository::new(&store)
+            .compute_state_hash(&gid)
+            .unwrap(),
         1,
         GroupOp::MemberAdded {
             member: target_pk,
@@ -3405,11 +3960,15 @@ fn deny_list_member_added_op_clears_existing_entry() {
     apply_local_signed_group_op(&store, &op).expect("apply MemberAdded");
 
     assert!(
-        !is_denied(&store, &gid, &target_pk).unwrap(),
+        !DenyListRepository::new(&store)
+            .is_denied(&gid, &target_pk)
+            .unwrap(),
         "MemberAdded must clear the deny-list entry to allow re-add"
     );
     assert_eq!(
-        get_group_member_role(&store, &gid, &target_pk).unwrap(),
+        MembershipRepository::new(&store)
+            .role_of(&gid, &target_pk)
+            .unwrap(),
         Some(GroupMemberRole::Member),
         "member must actually be in the group after add"
     );
@@ -3427,16 +3986,24 @@ fn deny_list_member_removed_op_marks_entry() {
     let mut meta = test_meta();
     meta.admin_identity = admin_pk;
     meta.owner_identity = admin_pk;
-    save_group_meta(&store, &gid, &meta).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &target_pk, GroupMemberRole::Member).unwrap();
-    assert!(!is_denied(&store, &gid, &target_pk).unwrap());
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &target_pk, GroupMemberRole::Member)
+        .unwrap();
+    assert!(!DenyListRepository::new(&store)
+        .is_denied(&gid, &target_pk)
+        .unwrap());
 
     let op = SignedGroupOp::sign(
         &admin_sk,
         gid.to_bytes(),
         vec![],
-        compute_group_state_hash(&store, &gid).unwrap(),
+        MetaRepository::new(&store)
+            .compute_state_hash(&gid)
+            .unwrap(),
         1,
         dummy_member_removed_op(target_pk),
     )
@@ -3444,7 +4011,9 @@ fn deny_list_member_removed_op_marks_entry() {
     apply_local_signed_group_op(&store, &op).expect("apply MemberRemoved");
 
     assert!(
-        is_denied(&store, &gid, &target_pk).unwrap(),
+        DenyListRepository::new(&store)
+            .is_denied(&gid, &target_pk)
+            .unwrap(),
         "MemberRemoved must mark the member as denied"
     );
 }
@@ -3461,29 +4030,39 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
     let mut meta = test_meta();
     meta.admin_identity = admin_pk;
     meta.owner_identity = admin_pk;
-    save_group_meta(&store, &gid, &meta).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &target_pk, GroupMemberRole::Member).unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &target_pk, GroupMemberRole::Member)
+        .unwrap();
 
     // Remove.
     let rm = SignedGroupOp::sign(
         &admin_sk,
         gid.to_bytes(),
         vec![],
-        compute_group_state_hash(&store, &gid).unwrap(),
+        MetaRepository::new(&store)
+            .compute_state_hash(&gid)
+            .unwrap(),
         1,
         dummy_member_removed_op(target_pk),
     )
     .expect("sign MemberRemoved");
     apply_local_signed_group_op(&store, &rm).expect("apply MemberRemoved");
-    assert!(is_denied(&store, &gid, &target_pk).unwrap());
+    assert!(DenyListRepository::new(&store)
+        .is_denied(&gid, &target_pk)
+        .unwrap());
 
     // Re-add.
     let add = SignedGroupOp::sign(
         &admin_sk,
         gid.to_bytes(),
         vec![rm.content_hash().unwrap()],
-        compute_group_state_hash(&store, &gid).unwrap(),
+        MetaRepository::new(&store)
+            .compute_state_hash(&gid)
+            .unwrap(),
         2,
         GroupOp::MemberAdded {
             member: target_pk,
@@ -3493,7 +4072,9 @@ fn deny_list_remove_then_readd_clears_entry_via_apply_path() {
     .expect("sign MemberAdded");
     apply_local_signed_group_op(&store, &add).expect("apply MemberAdded");
     assert!(
-        !is_denied(&store, &gid, &target_pk).unwrap(),
+        !DenyListRepository::new(&store)
+            .is_denied(&gid, &target_pk)
+            .unwrap(),
         "re-add must clear the deny-list entry — semantics from design discussion"
     );
 }
@@ -3511,8 +4092,12 @@ fn permission_checker_can_manage_metadata() {
     let admin = PublicKey::from([0x01; 32]);
     let member = PublicKey::from([0x02; 32]);
 
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member, GroupMemberRole::Member)
+        .unwrap();
 
     let checker = PermissionChecker::new(&store, gid);
 
@@ -3521,13 +4106,9 @@ fn permission_checker_can_manage_metadata() {
     // Bare member denied.
     assert!(checker.require_can_manage_metadata(&member).is_err());
     // Granting the cap flips it.
-    set_member_capability(
-        &store,
-        &gid,
-        &member,
-        MemberCapabilities::CAN_MANAGE_METADATA,
-    )
-    .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &member, MemberCapabilities::CAN_MANAGE_METADATA)
+        .unwrap();
     assert!(checker.require_can_manage_metadata(&member).is_ok());
 }
 
@@ -3543,10 +4124,16 @@ fn metadata_set_does_not_change_group_state_hash() {
     let gid_bytes = gid.to_bytes();
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
-    let before = compute_group_state_hash(&store, &gid).unwrap();
+    let before = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
 
     let op = SignedGroupOp::sign(
         &admin_sk,
@@ -3566,13 +4153,16 @@ fn metadata_set_does_not_change_group_state_hash() {
     .unwrap();
     apply_local_signed_group_op(&store, &op).unwrap();
 
-    let after = compute_group_state_hash(&store, &gid).unwrap();
+    let after = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
     assert_eq!(
         before, after,
         "GroupMetadataSet must not perturb the group state hash"
     );
     assert_eq!(
-        get_group_metadata(&store, &gid)
+        MetadataRepository::new(&store)
+            .group_metadata(&gid)
             .unwrap()
             .and_then(|r| r.name)
             .as_deref(),
@@ -3594,15 +4184,23 @@ fn member_metadata_self_set_allowed_others_gated() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &test_meta()).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let alice_sk = PrivateKey::random(&mut rng);
     let alice_pk = alice_sk.public_key();
-    add_group_member(&store, &gid, &alice_pk, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &alice_pk, GroupMemberRole::Member)
+        .unwrap();
     let bob_sk = PrivateKey::random(&mut rng);
     let bob_pk = bob_sk.public_key();
-    add_group_member(&store, &gid, &bob_pk, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &bob_pk, GroupMemberRole::Member)
+        .unwrap();
 
     // Alice sets her own metadata — allowed.
     let op = SignedGroupOp::sign(
@@ -3652,13 +4250,9 @@ fn member_metadata_self_set_allowed_others_gated() {
     assert!(apply_local_signed_group_op(&store, &op_group).is_err());
 
     // Grant CAN_MANAGE_METADATA — now Alice can set Bob's and the group's.
-    set_member_capability(
-        &store,
-        &gid,
-        &alice_pk,
-        MemberCapabilities::CAN_MANAGE_METADATA,
-    )
-    .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&gid, &alice_pk, MemberCapabilities::CAN_MANAGE_METADATA)
+        .unwrap();
     let op_ok = SignedGroupOp::sign(
         &alice_sk,
         gid_bytes,
@@ -3673,7 +4267,8 @@ fn member_metadata_self_set_allowed_others_gated() {
     .unwrap();
     apply_local_signed_group_op(&store, &op_ok).unwrap();
     assert_eq!(
-        get_group_metadata(&store, &gid)
+        MetadataRepository::new(&store)
+            .group_metadata(&gid)
             .unwrap()
             .and_then(|r| r.name)
             .as_deref(),
@@ -3713,16 +4308,30 @@ fn compute_group_state_hash_after_remove_matches_post_apply_hash() {
     let to_remove = PublicKey::from([0xB1; 32]);
     let bystander = PublicKey::from([0xB2; 32]);
 
-    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &to_remove, GroupMemberRole::Member).unwrap();
-    add_group_member(&store, &gid, &bystander, GroupMemberRole::Member).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &to_remove, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &bystander, GroupMemberRole::Member)
+        .unwrap();
 
-    let precomputed = compute_group_state_hash_after_remove(&store, &gid, &to_remove).unwrap();
+    let precomputed = MetaRepository::new(&store)
+        .compute_state_hash_after_remove(&gid, &to_remove)
+        .unwrap();
 
     // Actually remove and recompute via the real helper.
-    remove_group_member(&store, &gid, &to_remove).unwrap();
-    let actual = compute_group_state_hash(&store, &gid).unwrap();
+    MembershipRepository::new(&store)
+        .remove_member(&gid, &to_remove)
+        .unwrap();
+    let actual = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
 
     assert_eq!(
         precomputed, actual,
@@ -3742,11 +4351,19 @@ fn compute_group_state_hash_after_remove_non_member_is_idempotent() {
     let admin = PublicKey::from([0x01; 32]);
     let stranger = PublicKey::from([0xCC; 32]);
 
-    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
 
-    let current = compute_group_state_hash(&store, &gid).unwrap();
-    let precomputed = compute_group_state_hash_after_remove(&store, &gid, &stranger).unwrap();
+    let current = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
+    let precomputed = MetaRepository::new(&store)
+        .compute_state_hash_after_remove(&gid, &stranger)
+        .unwrap();
 
     assert_eq!(current, precomputed);
 }
@@ -3763,7 +4380,9 @@ fn snapshot_context_state_hashes_returns_sorted_by_context_id() {
     let store = test_store();
     let gid = test_group_id();
     let admin = PublicKey::from([0x01; 32]);
-    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin))
+        .unwrap();
 
     // Register three contexts in non-sorted order, give each a
     // distinct root_hash so we can verify the values come back paired
@@ -3785,7 +4404,9 @@ fn snapshot_context_state_hashes_returns_sorted_by_context_id() {
         handle.put(&ContextMeta::new(cid), &meta).unwrap();
     }
 
-    let snapshot = snapshot_context_state_hashes(&store, &gid).unwrap();
+    let snapshot = MetaRepository::new(&store)
+        .snapshot_context_state_hashes(&gid)
+        .unwrap();
     let ids: Vec<ContextId> = snapshot.iter().map(|(c, _)| *c).collect();
 
     assert_eq!(
@@ -3812,13 +4433,17 @@ fn snapshot_context_state_hashes_skips_unmaterialized_contexts() {
     let store = test_store();
     let gid = test_group_id();
     let admin = PublicKey::from([0x01; 32]);
-    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin))
+        .unwrap();
 
     let cid = ContextId::from([0xAB; 32]);
     register_context_in_group(&store, &gid, &cid).unwrap();
     // Deliberately do NOT write a ContextMeta for this context.
 
-    let snapshot = snapshot_context_state_hashes(&store, &gid).unwrap();
+    let snapshot = MetaRepository::new(&store)
+        .snapshot_context_state_hashes(&gid)
+        .unwrap();
     assert!(
         snapshot.is_empty(),
         "unmaterialized contexts must be skipped, got {snapshot:?}"
@@ -3964,22 +4589,33 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
     let mut meta = test_meta();
     meta.admin_identity = admin_pk;
     meta.owner_identity = admin_pk;
-    save_group_meta(&store, &gid, &meta).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &target_pk, GroupMemberRole::Member).unwrap();
-    add_group_member(&store, &gid, &bystander_pk, GroupMemberRole::Member).unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &target_pk, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &bystander_pk, GroupMemberRole::Member)
+        .unwrap();
 
     // Real sign-time precomputation: admin's view of the post-apply
     // state, signed alongside the op.
-    let expected_group_state_hash =
-        compute_group_state_hash_after_remove(&store, &gid, &target_pk).unwrap();
-    let expected_context_state_hashes = snapshot_context_state_hashes(&store, &gid).unwrap();
+    let expected_group_state_hash = MetaRepository::new(&store)
+        .compute_state_hash_after_remove(&gid, &target_pk)
+        .unwrap();
+    let expected_context_state_hashes = MetaRepository::new(&store)
+        .snapshot_context_state_hashes(&gid)
+        .unwrap();
 
     let signed = SignedGroupOp::sign(
         &admin_sk,
         gid.to_bytes(),
         vec![],
-        compute_group_state_hash(&store, &gid).unwrap(),
+        MetaRepository::new(&store)
+            .compute_state_hash(&gid)
+            .unwrap(),
         1,
         GroupOp::MemberRemoved {
             member: target_pk,
@@ -3991,10 +4627,16 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
 
     // Apply on a sibling store that started from the same state.
     let receiver = test_store();
-    save_group_meta(&receiver, &gid, &meta).unwrap();
-    add_group_member(&receiver, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    add_group_member(&receiver, &gid, &target_pk, GroupMemberRole::Member).unwrap();
-    add_group_member(&receiver, &gid, &bystander_pk, GroupMemberRole::Member).unwrap();
+    MetaRepository::new(&receiver).save(&gid, &meta).unwrap();
+    MembershipRepository::new(&receiver)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&receiver)
+        .add_member(&gid, &target_pk, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&receiver)
+        .add_member(&gid, &bystander_pk, GroupMemberRole::Member)
+        .unwrap();
     apply_local_signed_group_op(&receiver, &signed).expect("apply MemberRemoved");
 
     // Receiver's actual post-apply hashes match the signed expected.
@@ -4003,12 +4645,16 @@ fn apply_with_precomputed_real_hashes_matches_post_apply_view() {
     // helpers ever drift from the live `compute_group_state_hash` /
     // `Snapshot::root_hash` semantics, this assertion catches it
     // before the warn-log path fires on every honest apply.
-    let receiver_group_hash = compute_group_state_hash(&receiver, &gid).unwrap();
+    let receiver_group_hash = MetaRepository::new(&receiver)
+        .compute_state_hash(&gid)
+        .unwrap();
     assert_eq!(
         receiver_group_hash, expected_group_state_hash,
         "receiver's post-apply group state hash must equal the signer's pre-apply simulation"
     );
-    let receiver_context_hashes = snapshot_context_state_hashes(&receiver, &gid).unwrap();
+    let receiver_context_hashes = MetaRepository::new(&receiver)
+        .snapshot_context_state_hashes(&gid)
+        .unwrap();
     assert_eq!(
         receiver_context_hashes, expected_context_state_hashes,
         "receiver's post-apply per-context snapshot must equal the signer's"
@@ -4032,9 +4678,15 @@ fn cascade_remove_member_does_not_change_group_state_hash() {
     let target = PublicKey::from([0xD0; 32]);
     let context_id = ContextId::from([0xE0; 32]);
 
-    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &target, GroupMemberRole::Member)
+        .unwrap();
 
     // Register a context and write a ContextIdentity for `target`
     // — exactly the row cascade_remove_member_from_group_tree
@@ -4053,9 +4705,13 @@ fn cascade_remove_member_does_not_change_group_state_hash() {
         .unwrap();
     drop(handle);
 
-    let hash_before = compute_group_state_hash(&store, &gid).unwrap();
+    let hash_before = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
     cascade_remove_member_from_group_tree(&store, &gid, &target).unwrap();
-    let hash_after = compute_group_state_hash(&store, &gid).unwrap();
+    let hash_after = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
 
     assert_eq!(
         hash_before, hash_after,
@@ -4084,14 +4740,26 @@ fn mark_denied_does_not_change_group_state_hash() {
     let admin = PublicKey::from([0x01; 32]);
     let target = PublicKey::from([0xD0; 32]);
 
-    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
-    remove_group_member(&store, &gid, &target).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &target, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .remove_member(&gid, &target)
+        .unwrap();
 
-    let hash_before = compute_group_state_hash(&store, &gid).unwrap();
-    mark_denied(&store, &gid, &target).unwrap();
-    let hash_after = compute_group_state_hash(&store, &gid).unwrap();
+    let hash_before = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
+    DenyListRepository::new(&store).mark(&gid, &target).unwrap();
+    let hash_after = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
 
     assert_eq!(
         hash_before, hash_after,
@@ -4117,12 +4785,22 @@ fn compute_group_state_hash_after_remove_never_returns_zeros_for_real_group() {
     let target = PublicKey::from([0xD0; 32]);
     let bystander = PublicKey::from([0xD1; 32]);
 
-    save_group_meta(&store, &gid, &sample_meta_with_admin(admin)).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
-    add_group_member(&store, &gid, &bystander, GroupMemberRole::Member).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta_with_admin(admin))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &target, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &bystander, GroupMemberRole::Member)
+        .unwrap();
 
-    let hash = compute_group_state_hash_after_remove(&store, &gid, &target).unwrap();
+    let hash = MetaRepository::new(&store)
+        .compute_state_hash_after_remove(&gid, &target)
+        .unwrap();
     assert_ne!(
         hash, [0u8; 32],
         "post-remove hash collided with the no-claim sentinel — \
@@ -4148,10 +4826,16 @@ fn apply_group_op_mutations_surfaces_divergence_on_hash_mismatch() {
     let mut meta = test_meta();
     meta.admin_identity = admin;
     meta.owner_identity = admin;
-    save_group_meta(&store, &gid, &meta).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
-    add_group_member(&store, &gid, &bystander, GroupMemberRole::Member).unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &target, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &bystander, GroupMemberRole::Member)
+        .unwrap();
 
     // Sign-time would precompute the real post-apply hash. Here we
     // deliberately supply a wrong one — the receiver's apply will
@@ -4190,13 +4874,20 @@ fn apply_group_op_mutations_no_divergence_on_matching_hash() {
     let mut meta = test_meta();
     meta.admin_identity = admin;
     meta.owner_identity = admin;
-    save_group_meta(&store, &gid, &meta).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
-    add_group_member(&store, &gid, &bystander, GroupMemberRole::Member).unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &target, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &bystander, GroupMemberRole::Member)
+        .unwrap();
 
-    let real_post_apply_hash =
-        compute_group_state_hash_after_remove(&store, &gid, &target).unwrap();
+    let real_post_apply_hash = MetaRepository::new(&store)
+        .compute_state_hash_after_remove(&gid, &target)
+        .unwrap();
     let op = GroupOp::MemberRemoved {
         member: target,
         expected_group_state_hash: real_post_apply_hash,
@@ -4283,9 +4974,7 @@ mod auto_follow_tests {
     use rand::rngs::OsRng;
 
     use super::*;
-    use crate::group_store::{
-        add_group_member, apply_local_signed_group_op, get_group_member_value,
-    };
+    use crate::group_store::apply_local_signed_group_op;
 
     fn seed(
         rng: &mut OsRng,
@@ -4301,14 +4990,12 @@ mod auto_follow_tests {
         let gid_bytes = gid.to_bytes();
         let admin_sk = PrivateKey::random(rng);
         let member_sk = PrivateKey::random(rng);
-        add_group_member(&store, &gid, &admin_sk.public_key(), GroupMemberRole::Admin).unwrap();
-        add_group_member(
-            &store,
-            &gid,
-            &member_sk.public_key(),
-            GroupMemberRole::Member,
-        )
-        .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &admin_sk.public_key(), GroupMemberRole::Admin)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &member_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
         (store, gid, gid_bytes, admin_sk, member_sk)
     }
 
@@ -4332,7 +5019,8 @@ mod auto_follow_tests {
         .unwrap();
         apply_local_signed_group_op(&store, &op).unwrap();
 
-        let val = get_group_member_value(&store, &gid, &member_sk.public_key())
+        let val = MembershipRepository::new(&store)
+            .member_value(&gid, &member_sk.public_key())
             .unwrap()
             .unwrap();
         assert!(val.auto_follow.contexts);
@@ -4359,7 +5047,8 @@ mod auto_follow_tests {
         .unwrap();
         apply_local_signed_group_op(&store, &op).unwrap();
 
-        let val = get_group_member_value(&store, &gid, &member_sk.public_key())
+        let val = MembershipRepository::new(&store)
+            .member_value(&gid, &member_sk.public_key())
             .unwrap()
             .unwrap();
         assert!(val.auto_follow.contexts);
@@ -4377,13 +5066,9 @@ mod auto_follow_tests {
         // refactored to look up the target before checking auth, this
         // test would still correctly assert "non-admin, non-self rejected".
         let other_sk = PrivateKey::random(&mut rng);
-        add_group_member(
-            &store,
-            &gid,
-            &other_sk.public_key(),
-            GroupMemberRole::Member,
-        )
-        .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(&gid, &other_sk.public_key(), GroupMemberRole::Member)
+            .unwrap();
 
         let op = SignedGroupOp::sign(
             &member_sk,
@@ -4407,7 +5092,8 @@ mod auto_follow_tests {
         // default that means {contexts: true, subgroups: false}.
         // The point of this test is that the failed op didn't
         // SHIFT the values, not that they were originally false.
-        let val = get_group_member_value(&store, &gid, &other_sk.public_key())
+        let val = MembershipRepository::new(&store)
+            .member_value(&gid, &other_sk.public_key())
             .unwrap()
             .unwrap();
         assert!(val.auto_follow.contexts, "default contexts=true preserved");
@@ -4448,7 +5134,8 @@ mod auto_follow_tests {
         // Initial state matches `AutoFollowFlags::default()`. Post-#2422
         // that's {contexts: true, subgroups: false} — explicit assertion
         // on the exact shape so a future default flip can't slip through.
-        let before = get_group_member_value(&store, &gid, &member_sk.public_key())
+        let before = MembershipRepository::new(&store)
+            .member_value(&gid, &member_sk.public_key())
             .unwrap()
             .unwrap();
         assert!(before.auto_follow.contexts);
@@ -4485,7 +5172,8 @@ mod auto_follow_tests {
         .unwrap();
         apply_local_signed_group_op(&store, &op2).unwrap();
 
-        let after = get_group_member_value(&store, &gid, &member_sk.public_key())
+        let after = MembershipRepository::new(&store)
+            .member_value(&gid, &member_sk.public_key())
             .unwrap()
             .unwrap();
         assert_eq!(after.role, GroupMemberRole::ReadOnly);
@@ -4531,7 +5219,8 @@ mod auto_follow_tests {
         apply_local_signed_group_op(&store, &set_flags).unwrap();
 
         // Verify state landed
-        let value = get_group_member_value(&store, &gid, &member_sk.public_key())
+        let value = MembershipRepository::new(&store)
+            .member_value(&gid, &member_sk.public_key())
             .unwrap()
             .unwrap();
         assert!(value.auto_follow.contexts);
@@ -4637,13 +5326,13 @@ mod auto_follow_tests {
 
         // Verify the storage-side fix landed first: the new member's
         // row has `auto_follow.contexts == true` via the new Default.
-        let value = get_group_member_value(
-            &store,
-            &calimero_context_config::types::ContextGroupId::from(gid_bytes),
-            &new_member_pk,
-        )
-        .unwrap()
-        .unwrap();
+        let value = MembershipRepository::new(&store)
+            .member_value(
+                &calimero_context_config::types::ContextGroupId::from(gid_bytes),
+                &new_member_pk,
+            )
+            .unwrap()
+            .unwrap();
         assert!(
             value.auto_follow.contexts,
             "new member should default to contexts=true post-#2422"
@@ -4755,7 +5444,8 @@ mod auto_follow_tests {
         )
         .unwrap();
 
-        let value = get_group_member_value(&store, &gid, &target_pk)
+        let value = MembershipRepository::new(&store)
+            .member_value(&gid, &target_pk)
             .unwrap()
             .unwrap();
         assert!(

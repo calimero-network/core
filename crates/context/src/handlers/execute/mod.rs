@@ -1,5 +1,6 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{
+    CapabilitiesRepository, GroupKeyring, MetaRepository, MigrationsRepository, NamespaceRepository,
+};
 use std::borrow::Cow;
 use std::collections::btree_map;
 // Removed: NonZeroUsize (replaced with CausalDelta)
@@ -201,7 +202,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     // corruption *and* mis-encrypt for inheritance-eligible
                     // receivers, who'd then fail to decrypt. Mirror the
                     // governance-publisher path: propagate the error.
-                    let ns_id = match crate::group_store::resolve_namespace(&self.datastore, &gid) {
+                    let ns_id = match NamespaceRepository::new(&self.datastore).resolve(&gid) {
                         Ok(ns_id) => ns_id,
                         Err(err) => {
                             error!(
@@ -213,11 +214,9 @@ impl Handler<ExecuteRequest> for ContextManager {
                             return ActorResponse::reply(Err(ExecuteError::InternalError));
                         }
                     };
-                    let key_group_id = match crate::group_store::is_open_chain_to_namespace(
-                        &self.datastore,
-                        &gid,
-                        &ns_id,
-                    ) {
+                    let key_group_id = match CapabilitiesRepository::new(&self.datastore)
+                        .is_open_chain_to_namespace(&gid, &ns_id)
+                    {
                         Ok(true) => ns_id,
                         Ok(false) => gid,
                         Err(err) => {
@@ -242,8 +241,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     // it's a real "key not yet delivered" condition and
                     // the caller needs to know — surface it loudly
                     // rather than silently mis-encrypting.
-                    match crate::group_store::load_current_group_key(&self.datastore, &key_group_id)
-                    {
+                    match GroupKeyring::new(&self.datastore, key_group_id).load_current_key() {
                         Ok(Some((kid, gk))) => (PrivateKey::from(gk), kid),
                         Ok(None) => {
                             // Surface the "key not yet delivered" condition as
@@ -399,12 +397,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                                                     // Record that this migration was applied so
                                                     // maybe_lazy_upgrade skips it on future accesses.
                                                     if let Err(err) =
-                                                        crate::group_store::set_context_last_migration(
-                                                            &datastore,
-                                                            &group_id,
-                                                            &cid,
-                                                            &method,
-                                                        )
+                                                        MigrationsRepository::new(&datastore).set_last_migration(&group_id, &cid, &method, )
                                                     {
                                                         warn!(
                                                             %cid,
@@ -1120,7 +1113,7 @@ fn compute_governance_position_for_context(
         }
     };
 
-    let namespace_id = match crate::group_store::resolve_namespace(datastore, &group_id) {
+    let namespace_id = match NamespaceRepository::new(datastore).resolve(&group_id) {
         Ok(ns_id) => ns_id,
         Err(err) => {
             tracing::warn!(
@@ -1157,8 +1150,7 @@ fn compute_governance_position_for_context(
         }
     };
 
-    let group_state_hash = match crate::group_store::compute_group_state_hash(datastore, &group_id)
-    {
+    let group_state_hash = match MetaRepository::new(datastore).compute_state_hash(&group_id) {
         Ok(hash) => hash,
         Err(err) => {
             tracing::warn!(
@@ -1244,7 +1236,8 @@ async fn internal_execute(
     Option<GovernancePosition>,
 )> {
     let executor_is_read_only = !is_state_op
-        && crate::group_store::is_read_only_for_context(&datastore, &context.id, &executor)
+        && NamespaceRepository::new(&datastore)
+            .is_read_only_for_context(&context.id, &executor)
             .unwrap_or(false);
 
     // B3 user-storage extension: a state op authored by a non-member of
@@ -1281,12 +1274,9 @@ async fn internal_execute(
     // defense-in-depth post-discard, while this is a primary
     // authorization gate.
     let executor_not_authorized_for_state_op = is_state_op
-        && !crate::group_store::is_authorized_for_context_state_op(
-            &datastore,
-            &context.id,
-            &executor,
-        )
-        .unwrap_or(false);
+        && !NamespaceRepository::new(&datastore)
+            .is_authorized_for_context_state_op(&context.id, &executor)
+            .unwrap_or(false);
 
     let storage = ContextStorage::from(datastore.clone(), context.id);
     let private_storage = ContextPrivateStorage::from(datastore, context.id);
@@ -2015,7 +2005,7 @@ fn maybe_lazy_upgrade(
     };
 
     // 2. Load group metadata
-    let meta = match group_store::load_group_meta(datastore, &group_id) {
+    let meta = match MetaRepository::new(datastore).load(&group_id) {
         Ok(Some(m)) => m,
         Ok(None) => return None, // group deleted?
         Err(err) => {
@@ -2044,12 +2034,12 @@ fn maybe_lazy_upgrade(
         };
 
         // Check per-context marker set after a successful migration run.
-        let already_applied =
-            group_store::get_context_last_migration(datastore, &group_id, context_id)
-                .ok()
-                .flatten()
-                .map(|last| last == *method)
-                .unwrap_or(false);
+        let already_applied = MigrationsRepository::new(datastore)
+            .last_migration(&group_id, context_id)
+            .ok()
+            .flatten()
+            .map(|last| last == *method)
+            .unwrap_or(false);
 
         if already_applied {
             return None; // migration was already applied to this context

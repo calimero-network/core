@@ -13,8 +13,6 @@
 //!   rate-limits the per-(peer, namespace) response at
 //!   `BEACON_INTERVAL / 2` — see
 //!   [`Handler<EmitOutOfCycleBeacon>`](crate::readiness::ReadinessManager).
-#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 

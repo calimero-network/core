@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{MembershipRepository, SigningKeysRepository};
 use core::error::Error;
 use std::sync::Arc;
 
@@ -67,7 +66,7 @@ impl Handler<DeleteContextRequest> for ContextManager {
                 }
             };
             if let Err(err) =
-                group_store::require_group_admin(&self.datastore, &group_id, &requester)
+                MembershipRepository::new(&self.datastore).require_admin(&group_id, &requester)
             {
                 return ActorResponse::reply(Err(err));
             }
@@ -129,7 +128,8 @@ async fn delete_context(
         let requester =
             requester.ok_or_else(|| eyre::eyre!("requester required to delete a group context"))?;
 
-        let sk = group_store::get_group_signing_key(&datastore, &group_id, &requester)?
+        let sk = SigningKeysRepository::new(&datastore)
+            .get_key(&group_id, &requester)?
             .ok_or_else(|| {
                 eyre::eyre!(
                     "signing key not found for requester in group '{group_id:?}'; \

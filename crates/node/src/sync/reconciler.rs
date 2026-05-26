@@ -19,8 +19,7 @@
 //! functions in this module so `SyncStateAccess`'s production impl in
 //! `crate::state` and the reconciler itself share a single source of
 //! truth. The fns are independently unit-testable.
-#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
-
+use calimero_context::group_store::MembershipRepository;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -419,7 +418,8 @@ impl Reconciler {
     /// well-defined on the local node.
     fn anchor_identities_for_group(&self, group_id: &ContextGroupId) -> BTreeSet<PublicKey> {
         let store = self.context_client.datastore_handle().into_inner();
-        calimero_context::group_store::trusted_anchors_for_group(&store, group_id)
+        MembershipRepository::new(&store)
+            .trusted_anchors(group_id)
             .unwrap_or_default()
     }
 }

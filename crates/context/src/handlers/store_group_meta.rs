@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{CapabilitiesRepository, MembershipRepository, MetaRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::StoreGroupMetaRequest;
 use calimero_context_config::MemberCapabilities;
@@ -20,7 +19,7 @@ impl Handler<StoreGroupMetaRequest> for ContextManager {
         }: StoreGroupMetaRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let existing_meta = group_store::load_group_meta(&self.datastore, &group_id);
+        let existing_meta = MetaRepository::new(&self.datastore).load(&group_id);
 
         // Only skip if BOTH metadata and admin member exist (full success previously).
         // If metadata exists but admin is missing, fall through to repair.
@@ -33,7 +32,8 @@ impl Handler<StoreGroupMetaRequest> for ContextManager {
             // missing direct row whenever the admin happens to also
             // inherit membership from a parent — leaving the repair path
             // unable to ever recover the direct row.
-            if group_store::has_direct_group_member(&self.datastore, &group_id, &admin_identity)
+            if MembershipRepository::new(&self.datastore)
+                .has_direct_member(&group_id, &admin_identity)
                 .unwrap_or(false)
             {
                 return ActorResponse::reply(Ok(()));
@@ -56,17 +56,16 @@ impl Handler<StoreGroupMetaRequest> for ContextManager {
 
         // save_group_meta is idempotent — safe to call on retry
         if !matches!(
-            group_store::load_group_meta(&self.datastore, &group_id),
+            MetaRepository::new(&self.datastore).load(&group_id),
             Ok(Some(_))
         ) {
-            if let Err(err) = group_store::save_group_meta(&self.datastore, &group_id, &meta) {
+            if let Err(err) = MetaRepository::new(&self.datastore).save(&group_id, &meta) {
                 return ActorResponse::reply(Err(err));
             }
         }
 
         // Bootstrap the admin as a group member so permission checks work
-        if let Err(err) = group_store::add_group_member(
-            &self.datastore,
+        if let Err(err) = MembershipRepository::new(&self.datastore).add_member(
             &group_id,
             &admin_identity,
             GroupMemberRole::Admin,
@@ -78,16 +77,14 @@ impl Handler<StoreGroupMetaRequest> for ContextManager {
         // DefaultCapabilitiesSet gossip arrives still get
         // CAN_JOIN_OPEN_SUBGROUPS, which gates inheritance into Open
         // child subgroups.
-        if group_store::get_default_capabilities(&self.datastore, &group_id)
+        if CapabilitiesRepository::new(&self.datastore)
+            .default_capabilities(&group_id)
             .ok()
             .flatten()
             .is_none()
         {
-            let _ = group_store::set_default_capabilities(
-                &self.datastore,
-                &group_id,
-                MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
-            );
+            let _ = CapabilitiesRepository::new(&self.datastore)
+                .set_default_capabilities(&group_id, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS);
         }
 
         info!(?group_id, %admin_identity, "stored group metadata from gossip");

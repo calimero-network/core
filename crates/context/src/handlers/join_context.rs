@@ -1,5 +1,4 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::time::Duration;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -124,7 +123,7 @@ impl Handler<JoinContextRequest> for ContextManager {
 
                 // Resolve joiner identity from node namespace identity.
                 let (joiner_identity, _) =
-                    group_store::resolve_namespace_identity(&datastore, &group_id)?
+                    NamespaceRepository::new(&datastore).resolve_identity(&group_id)?
                         .map(|(pk, sk, _sender)| (pk, sk))
                         .ok_or_else(|| {
                             eyre::eyre!(
@@ -137,14 +136,10 @@ impl Handler<JoinContextRequest> for ContextManager {
                 // `CAN_JOIN_OPEN_SUBGROUPS` capability at the anchor parent).
                 // `Restricted` subgroups still require an explicit
                 // `add_group_members` call by an admin.
-                if group_store::load_group_meta(&datastore, &group_id)?.is_none() {
+                if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
                     bail!("group not found");
                 }
-                let membership_path = group_store::check_group_membership_path(
-                    &datastore,
-                    &group_id,
-                    &joiner_identity,
-                )?;
+                let membership_path = MembershipRepository::new(&datastore).check_path(&group_id, &joiner_identity, )?;
                 let mut was_inherited = false;
                 match membership_path {
                     group_store::MembershipPath::None => {
@@ -170,14 +165,14 @@ impl Handler<JoinContextRequest> for ContextManager {
                     }
                 }
 
-                let ns_id = group_store::resolve_namespace(&datastore, &group_id)?;
-                let ns_identity = group_store::get_namespace_identity(&datastore, &ns_id)?
+                let ns_id = NamespaceRepository::new(&datastore).resolve(&group_id)?;
+                let ns_identity = NamespaceRepository::new(&datastore).identity(&ns_id)?
                     .ok_or_else(|| eyre::eyre!("namespace identity not found"))?;
                 let (_pk, sk_bytes, _sender) = ns_identity;
 
                 let zero_app = calimero_primitives::application::ApplicationId::from([0u8; 32]);
                 let config = if !context_client.has_context(&context_id)? {
-                    let app_id = group_store::load_group_meta(&datastore, &group_id)?
+                    let app_id = MetaRepository::new(&datastore).load(&group_id)?
                         .map(|meta| meta.target_application_id)
                         .filter(|id| *id != zero_app);
 
@@ -296,7 +291,7 @@ async fn sync_known_namespaces(
     datastore: &calimero_store::Store,
     node_client: &calimero_node_primitives::client::NodeClient,
 ) {
-    let groups = match group_store::enumerate_all_groups(datastore, 0, usize::MAX) {
+    let groups = match MetaRepository::new(datastore).enumerate_all(0, usize::MAX) {
         Ok(groups) => groups,
         Err(err) => {
             warn!(error = ?err, "failed to enumerate groups for namespace sync");
@@ -306,7 +301,7 @@ async fn sync_known_namespaces(
 
     for (group_id_bytes, _) in groups {
         let group_id = ContextGroupId::from(group_id_bytes);
-        let namespace = match group_store::resolve_namespace(datastore, &group_id) {
+        let namespace = match NamespaceRepository::new(datastore).resolve(&group_id) {
             Ok(namespace) => namespace,
             Err(err) => {
                 warn!(?group_id, error = ?err, "failed to resolve namespace while syncing");

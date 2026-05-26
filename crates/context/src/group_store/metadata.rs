@@ -1,3 +1,4 @@
+use crate::group_store::{MembershipRepository, NamespaceRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -9,10 +10,7 @@ use calimero_store::key::{
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use super::{
-    check_group_membership, collect_keys_with_prefix, count_group_members, count_keys_with_prefix,
-    enumerate_group_contexts, get_parent_group, list_child_groups,
-};
+use super::{collect_keys_with_prefix, count_keys_with_prefix, enumerate_group_contexts};
 
 /// Typed Repository for freeform metadata records on groups,
 /// contexts-within-groups, and members. Separate from
@@ -194,10 +192,13 @@ impl<'a> MetadataRepository<'a> {
         meta: &GroupMetaValue,
         node_identity: &PublicKey,
     ) -> EyreResult<Option<calimero_context_client::group::NamespaceSummary>> {
-        if get_parent_group(self.store, group_id)?.is_some() {
+        if NamespaceRepository::new(self.store)
+            .parent(group_id)?
+            .is_some()
+        {
             return Ok(None);
         }
-        if !check_group_membership(self.store, group_id, node_identity)? {
+        if !MembershipRepository::new(self.store).is_member(group_id, node_identity)? {
             return Ok(None);
         }
 
@@ -206,11 +207,14 @@ impl<'a> MetadataRepository<'a> {
             .ok()
             .flatten()
             .and_then(|r| r.name);
-        let member_count = count_group_members(self.store, group_id).unwrap_or(0);
+        let member_count = MembershipRepository::new(self.store)
+            .count(group_id)
+            .unwrap_or(0);
         let context_count = enumerate_group_contexts(self.store, group_id, 0, usize::MAX)
             .unwrap_or_default()
             .len();
-        let subgroup_count = list_child_groups(self.store, group_id)
+        let subgroup_count = NamespaceRepository::new(self.store)
+            .list_children(group_id)
             .unwrap_or_default()
             .len();
 
@@ -226,126 +230,6 @@ impl<'a> MetadataRepository<'a> {
             subgroup_count,
         }))
     }
-}
-
-// ---------------------------------------------------------------------------
-// Deprecated free-function wrappers.
-// ---------------------------------------------------------------------------
-
-#[deprecated(note = "use MetadataRepository::new(store).set_context(...)")]
-pub fn set_context_metadata(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-    record: &MetadataRecord,
-) -> EyreResult<()> {
-    MetadataRepository::new(store).set_context(group_id, context_id, record)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).context_metadata(...)")]
-pub fn get_context_metadata(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-) -> EyreResult<Option<MetadataRecord>> {
-    MetadataRepository::new(store).context_metadata(group_id, context_id)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).enumerate_contexts_with_names(...)")]
-pub fn enumerate_group_contexts_with_names(
-    store: &Store,
-    group_id: &ContextGroupId,
-    offset: usize,
-    limit: usize,
-) -> EyreResult<Vec<(ContextId, Option<String>)>> {
-    MetadataRepository::new(store).enumerate_contexts_with_names(group_id, offset, limit)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).set_member(...)")]
-pub fn set_member_metadata(
-    store: &Store,
-    group_id: &ContextGroupId,
-    member: &PublicKey,
-    record: &MetadataRecord,
-) -> EyreResult<()> {
-    MetadataRepository::new(store).set_member(group_id, member, record)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).member_metadata(...)")]
-pub fn get_member_metadata(
-    store: &Store,
-    group_id: &ContextGroupId,
-    member: &PublicKey,
-) -> EyreResult<Option<MetadataRecord>> {
-    MetadataRepository::new(store).member_metadata(group_id, member)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).set_group(...)")]
-pub fn set_group_metadata(
-    store: &Store,
-    group_id: &ContextGroupId,
-    record: &MetadataRecord,
-) -> EyreResult<()> {
-    MetadataRepository::new(store).set_group(group_id, record)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).group_metadata(...)")]
-pub fn get_group_metadata(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<MetadataRecord>> {
-    MetadataRepository::new(store).group_metadata(group_id)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).build_namespace_summary(...)")]
-pub fn build_namespace_summary(
-    store: &Store,
-    group_id: &ContextGroupId,
-    meta: &GroupMetaValue,
-    node_identity: &PublicKey,
-) -> EyreResult<Option<calimero_context_client::group::NamespaceSummary>> {
-    MetadataRepository::new(store).build_namespace_summary(group_id, meta, node_identity)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).enumerate_members(...)")]
-pub fn enumerate_member_metadata(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Vec<(PublicKey, MetadataRecord)>> {
-    MetadataRepository::new(store).enumerate_members(group_id)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).count_contexts(...)")]
-pub fn count_group_contexts(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
-    MetadataRepository::new(store).count_contexts(group_id)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).delete_group(...)")]
-pub fn delete_group_metadata(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    MetadataRepository::new(store).delete_group(group_id)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).delete_member(...)")]
-pub fn delete_member_metadata(
-    store: &Store,
-    group_id: &ContextGroupId,
-    member: &PublicKey,
-) -> EyreResult<()> {
-    MetadataRepository::new(store).delete_member(group_id, member)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).delete_context(...)")]
-pub fn delete_context_metadata(
-    store: &Store,
-    group_id: &ContextGroupId,
-    context_id: &ContextId,
-) -> EyreResult<()> {
-    MetadataRepository::new(store).delete_context(group_id, context_id)
-}
-
-#[deprecated(note = "use MetadataRepository::new(store).delete_all_members(...)")]
-pub fn delete_all_member_metadata(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    MetadataRepository::new(store).delete_all_members(group_id)
 }
 
 #[cfg(test)]

@@ -1,5 +1,3 @@
-#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
-
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -37,14 +35,7 @@ mod upgrades;
 use self::local_state::persist_group_governance_progress;
 
 pub use self::capabilities::CapabilitiesRepository;
-#[allow(deprecated)]
-pub use self::capabilities::{
-    delete_all_member_capabilities, delete_default_capabilities, delete_subgroup_visibility,
-    enumerate_member_capabilities, get_context_member_capability, get_default_capabilities,
-    get_member_capability, get_subgroup_visibility, is_open_chain_to_namespace,
-    set_context_member_capability, set_default_capabilities, set_member_capability,
-    set_subgroup_visibility,
-};
+
 pub use self::context_registration::ContextRegistrationService;
 pub use self::context_tree::ContextTreeService;
 pub use self::contexts::{
@@ -53,18 +44,10 @@ pub use self::contexts::{
     restore_member_context_identities, unregister_context_from_group,
 };
 pub use self::deny_list::DenyListRepository;
-#[allow(deprecated)]
-pub use self::deny_list::{
-    clear_all_denied, clear_denied, is_author_denied_for_context, is_denied, mark_denied,
-};
+
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
-#[allow(deprecated)]
-pub use self::group_keys::{
-    build_key_rotation, compute_key_id, decrypt_group_op, encrypt_group_op, load_current_group_key,
-    load_current_group_key_record, load_group_key_by_id, store_group_key, unwrap_group_key,
-    wrap_group_key_for_member,
-};
+
 pub use self::group_keys::{GroupKeyring, StoredGroupKey};
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
@@ -73,70 +56,31 @@ pub use self::local_state::{
     set_local_gov_nonce, track_member_context_join,
 };
 pub use self::membership::MembershipRepository;
-#[allow(deprecated)]
 pub use self::membership::{
-    add_group_member, add_group_member_with_keys, check_group_membership,
-    check_group_membership_path, count_group_admins, count_group_members,
-    enumerate_inherited_members, get_effective_member_capabilities, get_group_member_role,
-    get_group_member_value, has_direct_group_member, is_authoritative_namespace_identity,
-    is_direct_group_admin, is_group_admin, is_group_admin_or_has_capability, is_inherited_admin,
-    list_group_members, membership_status_at, namespace_member_pubkeys, remove_group_member,
-    require_group_admin, require_group_admin_or_capability, set_member_auto_follow,
-    subgroup_visible_to, trusted_anchors_for_group, GroupMembershipView, MembershipPath,
-    MembershipPolicy, MembershipStatus,
+    membership_status_at, GroupMembershipView, MembershipPath, MembershipPolicy, MembershipStatus,
 };
 pub use self::meta::MetaRepository;
-#[allow(deprecated)]
-pub use self::meta::{
-    compute_group_state_hash, compute_group_state_hash_after_remove, delete_group_meta,
-    enumerate_all_groups, load_group_meta, save_group_meta, snapshot_context_state_hashes,
-};
+
 pub use self::metadata::MetadataRepository;
-#[allow(deprecated)]
-pub use self::metadata::{
-    build_namespace_summary, count_group_contexts, delete_all_member_metadata,
-    delete_context_metadata, delete_group_metadata, delete_member_metadata,
-    enumerate_group_contexts_with_names, enumerate_member_metadata, get_context_metadata,
-    get_group_metadata, get_member_metadata, set_context_metadata, set_group_metadata,
-    set_member_metadata,
-};
+
 pub use self::migrations::MigrationsRepository;
-#[allow(deprecated)]
-pub use self::migrations::{
-    delete_all_context_last_migrations, get_context_last_migration, set_context_last_migration,
-};
+
 pub use self::namespace::NamespaceRepository;
 pub(crate) use self::namespace::MAX_NAMESPACE_DEPTH;
-#[allow(deprecated)]
 pub use self::namespace::{
-    apply_signed_namespace_op, collect_descendant_groups, collect_skeleton_delta_ids_for_group,
-    collect_subtree_for_cascade, collect_visible_descendant_groups, create_recursive_invitations,
-    get_namespace_identity, get_namespace_identity_record, get_or_create_namespace_identity,
-    get_or_create_namespace_identity_bundle, get_parent_group, is_authorized_for_context_state_op,
-    is_descendant_of, is_read_only_for_context, list_child_groups, nest_group,
-    recursive_remove_member, reparent_group, resolve_namespace, resolve_namespace_identity,
-    resolve_namespace_identity_record, sign_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op, store_namespace_identity, unnest_group,
-    ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure, NamespaceDagService,
-    NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
-    NamespaceOpLogService, NamespaceRetryService, PendingKeyDelivery, ReparentOutcome,
-    ResolvedNamespaceIdentity,
+    apply_signed_namespace_op, collect_skeleton_delta_ids_for_group, sign_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure,
+    NamespaceDagService, NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord,
+    NamespaceMembershipService, NamespaceOpLogService, NamespaceRetryService, PendingKeyDelivery,
+    ReparentOutcome, ResolvedNamespaceIdentity,
 };
 pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::SigningKeysRepository;
-#[allow(deprecated)]
-pub use self::signing_keys::{
-    delete_all_group_signing_keys, delete_group_signing_key, get_group_signing_key,
-    require_group_signing_key, resolve_group_signing_key, store_group_signing_key,
-};
+
 pub use self::tee::{
     is_quote_hash_used, is_tee_admitted_identity, read_tee_admission_policy, TeeAdmissionPolicy,
 };
 pub use self::upgrades::UpgradesRepository;
-#[allow(deprecated)]
-pub use self::upgrades::{
-    delete_group_upgrade, enumerate_in_progress_upgrades, load_group_upgrade, save_group_upgrade,
-};
 
 #[cfg(test)]
 use self::local_state::{append_op_log_entry, set_op_head};
@@ -343,7 +287,6 @@ pub struct GroupHandle<'a> {
 // deprecation warning to "callers of GroupHandle methods", not "inside
 // GroupHandle itself" — the latter would just be noise about the facade
 // calling its own internals.
-#[allow(deprecated)]
 impl<'a> GroupHandle<'a> {
     pub fn new(store: &'a Store, group_id: ContextGroupId) -> Self {
         Self { store, group_id }
@@ -358,21 +301,21 @@ impl<'a> GroupHandle<'a> {
 
     // --- Meta ---
     pub fn load_meta(&self) -> EyreResult<Option<GroupMetaValue>> {
-        load_group_meta(self.store, &self.group_id)
+        MetaRepository::new(self.store).load(&self.group_id)
     }
     pub fn save_meta(&self, meta: &GroupMetaValue) -> EyreResult<()> {
-        save_group_meta(self.store, &self.group_id, meta)
+        MetaRepository::new(self.store).save(&self.group_id, meta)
     }
     pub fn delete_meta(&self) -> EyreResult<()> {
-        delete_group_meta(self.store, &self.group_id)
+        MetaRepository::new(self.store).delete(&self.group_id)
     }
     pub fn compute_state_hash(&self) -> EyreResult<[u8; 32]> {
-        compute_group_state_hash(self.store, &self.group_id)
+        MetaRepository::new(self.store).compute_state_hash(&self.group_id)
     }
 
     // --- Members ---
     pub fn add_member(&self, identity: &PublicKey, role: GroupMemberRole) -> EyreResult<()> {
-        add_group_member(self.store, &self.group_id, identity, role)
+        MembershipRepository::new(self.store).add_member(&self.group_id, identity, role)
     }
     pub fn add_member_with_keys(
         &self,
@@ -381,8 +324,7 @@ impl<'a> GroupHandle<'a> {
         private_key: Option<[u8; 32]>,
         sender_key: Option<[u8; 32]>,
     ) -> EyreResult<()> {
-        add_group_member_with_keys(
-            self.store,
+        MembershipRepository::new(self.store).add_member_with_keys(
             &self.group_id,
             identity,
             role,
@@ -391,43 +333,47 @@ impl<'a> GroupHandle<'a> {
         )
     }
     pub fn remove_member(&self, identity: &PublicKey) -> EyreResult<()> {
-        remove_group_member(self.store, &self.group_id, identity)
+        MembershipRepository::new(self.store).remove_member(&self.group_id, identity)
     }
     pub fn list_members(
         &self,
         offset: usize,
         limit: usize,
     ) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
-        list_group_members(self.store, &self.group_id, offset, limit)
+        MembershipRepository::new(self.store).list(&self.group_id, offset, limit)
     }
     pub fn count_members(&self) -> EyreResult<usize> {
-        count_group_members(self.store, &self.group_id)
+        MembershipRepository::new(self.store).count(&self.group_id)
     }
     pub fn count_admins(&self) -> EyreResult<usize> {
-        count_group_admins(self.store, &self.group_id)
+        MembershipRepository::new(self.store).count_admins(&self.group_id)
     }
     pub fn is_member(&self, identity: &PublicKey) -> EyreResult<bool> {
-        check_group_membership(self.store, &self.group_id, identity)
+        MembershipRepository::new(self.store).is_member(&self.group_id, identity)
     }
     pub fn get_member_value(&self, identity: &PublicKey) -> EyreResult<Option<GroupMemberValue>> {
-        get_group_member_value(self.store, &self.group_id, identity)
+        MembershipRepository::new(self.store).member_value(&self.group_id, identity)
     }
     pub fn get_member_role(&self, identity: &PublicKey) -> EyreResult<Option<GroupMemberRole>> {
-        get_group_member_role(self.store, &self.group_id, identity)
+        MembershipRepository::new(self.store).role_of(&self.group_id, identity)
     }
 
     // --- Authorization ---
     pub fn is_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
-        is_group_admin(self.store, &self.group_id, identity)
+        MembershipRepository::new(self.store).is_admin(&self.group_id, identity)
     }
     pub fn is_direct_admin(&self, identity: &PublicKey) -> EyreResult<bool> {
-        is_direct_group_admin(self.store, &self.group_id, identity)
+        MembershipRepository::new(self.store).is_direct_admin(&self.group_id, identity)
     }
     pub fn require_admin(&self, identity: &PublicKey) -> EyreResult<()> {
-        require_group_admin(self.store, &self.group_id, identity)
+        MembershipRepository::new(self.store).require_admin(&self.group_id, identity)
     }
     pub fn is_admin_or_has_capability(&self, identity: &PublicKey, cap: u32) -> EyreResult<bool> {
-        is_group_admin_or_has_capability(self.store, &self.group_id, identity, cap)
+        MembershipRepository::new(self.store).is_admin_or_has_capability(
+            &self.group_id,
+            identity,
+            cap,
+        )
     }
     pub fn require_admin_or_capability(
         &self,
@@ -435,7 +381,12 @@ impl<'a> GroupHandle<'a> {
         cap: u32,
         op: &str,
     ) -> EyreResult<()> {
-        require_group_admin_or_capability(self.store, &self.group_id, identity, cap, op)
+        MembershipRepository::new(self.store).require_admin_or_capability(
+            &self.group_id,
+            identity,
+            cap,
+            op,
+        )
     }
 
     // --- Nonce ---
@@ -468,27 +419,27 @@ impl<'a> GroupHandle<'a> {
 
     // --- Signing keys ---
     pub fn store_signing_key(&self, pk: &PublicKey, sk: &[u8; 32]) -> EyreResult<()> {
-        store_group_signing_key(self.store, &self.group_id, pk, sk)
+        SigningKeysRepository::new(self.store).store_key(&self.group_id, pk, sk)
     }
     pub fn get_signing_key(&self, pk: &PublicKey) -> EyreResult<Option<[u8; 32]>> {
-        get_group_signing_key(self.store, &self.group_id, pk)
+        SigningKeysRepository::new(self.store).get_key(&self.group_id, pk)
     }
     pub fn delete_signing_key(&self, pk: &PublicKey) -> EyreResult<()> {
-        delete_group_signing_key(self.store, &self.group_id, pk)
+        SigningKeysRepository::new(self.store).delete_key(&self.group_id, pk)
     }
     pub fn require_signing_key(&self, pk: &PublicKey) -> EyreResult<()> {
-        require_group_signing_key(self.store, &self.group_id, pk)
+        SigningKeysRepository::new(self.store).require_key(&self.group_id, pk)
     }
 
     // --- Group keys ---
     pub fn store_key(&self, group_key: &[u8; 32]) -> EyreResult<[u8; 32]> {
-        store_group_key(self.store, &self.group_id, group_key)
+        GroupKeyring::new(self.store, self.group_id).store_key(group_key)
     }
     pub fn load_current_key(&self) -> EyreResult<Option<([u8; 32], [u8; 32])>> {
-        load_current_group_key(self.store, &self.group_id)
+        GroupKeyring::new(self.store, self.group_id).load_current_key()
     }
     pub fn load_key_by_id(&self, key_id: &[u8; 32]) -> EyreResult<Option<[u8; 32]>> {
-        load_group_key_by_id(self.store, &self.group_id, key_id)
+        GroupKeyring::new(self.store, self.group_id).load_key_by_id(key_id)
     }
 
     // --- Contexts ---
@@ -502,93 +453,97 @@ impl<'a> GroupHandle<'a> {
         enumerate_group_contexts(self.store, &self.group_id, offset, limit)
     }
     pub fn count_contexts(&self) -> EyreResult<usize> {
-        count_group_contexts(self.store, &self.group_id)
+        MetadataRepository::new(self.store).count_contexts(&self.group_id)
     }
 
     // --- Metadata records ---
     pub fn set_metadata(&self, record: &MetadataRecord) -> EyreResult<()> {
-        set_group_metadata(self.store, &self.group_id, record)
+        MetadataRepository::new(self.store).set_group(&self.group_id, record)
     }
     pub fn get_metadata(&self) -> EyreResult<Option<MetadataRecord>> {
-        get_group_metadata(self.store, &self.group_id)
+        MetadataRepository::new(self.store).group_metadata(&self.group_id)
     }
     pub fn set_member_metadata(
         &self,
         member: &PublicKey,
         record: &MetadataRecord,
     ) -> EyreResult<()> {
-        set_member_metadata(self.store, &self.group_id, member, record)
+        MetadataRepository::new(self.store).set_member(&self.group_id, member, record)
     }
     pub fn get_member_metadata(&self, member: &PublicKey) -> EyreResult<Option<MetadataRecord>> {
-        get_member_metadata(self.store, &self.group_id, member)
+        MetadataRepository::new(self.store).member_metadata(&self.group_id, member)
     }
     pub fn set_context_metadata(
         &self,
         ctx_id: &ContextId,
         record: &MetadataRecord,
     ) -> EyreResult<()> {
-        set_context_metadata(self.store, &self.group_id, ctx_id, record)
+        MetadataRepository::new(self.store).set_context(&self.group_id, ctx_id, record)
     }
     pub fn get_context_metadata(&self, ctx_id: &ContextId) -> EyreResult<Option<MetadataRecord>> {
-        get_context_metadata(self.store, &self.group_id, ctx_id)
+        MetadataRepository::new(self.store).context_metadata(&self.group_id, ctx_id)
     }
     pub fn enumerate_contexts_with_names(
         &self,
         offset: usize,
         limit: usize,
     ) -> EyreResult<Vec<(ContextId, Option<String>)>> {
-        enumerate_group_contexts_with_names(self.store, &self.group_id, offset, limit)
+        MetadataRepository::new(self.store).enumerate_contexts_with_names(
+            &self.group_id,
+            offset,
+            limit,
+        )
     }
     pub fn enumerate_member_metadata(&self) -> EyreResult<Vec<(PublicKey, MetadataRecord)>> {
-        enumerate_member_metadata(self.store, &self.group_id)
+        MetadataRepository::new(self.store).enumerate_members(&self.group_id)
     }
 
     // --- Capabilities ---
     pub fn get_member_capability(&self, member: &PublicKey) -> EyreResult<Option<u32>> {
-        get_member_capability(self.store, &self.group_id, member)
+        CapabilitiesRepository::new(self.store).member_capability(&self.group_id, member)
     }
     pub fn set_member_capability(&self, member: &PublicKey, caps: u32) -> EyreResult<()> {
-        set_member_capability(self.store, &self.group_id, member, caps)
+        CapabilitiesRepository::new(self.store).set_member_capability(&self.group_id, member, caps)
     }
     pub fn enumerate_capabilities(&self) -> EyreResult<Vec<(PublicKey, u32)>> {
-        enumerate_member_capabilities(self.store, &self.group_id)
+        CapabilitiesRepository::new(self.store).enumerate_members(&self.group_id)
     }
     pub fn get_default_capabilities(&self) -> EyreResult<Option<u32>> {
-        get_default_capabilities(self.store, &self.group_id)
+        CapabilitiesRepository::new(self.store).default_capabilities(&self.group_id)
     }
     pub fn set_default_capabilities(&self, caps: u32) -> EyreResult<()> {
-        set_default_capabilities(self.store, &self.group_id, caps)
+        CapabilitiesRepository::new(self.store).set_default_capabilities(&self.group_id, caps)
     }
     pub fn get_subgroup_visibility(&self) -> EyreResult<calimero_context_config::VisibilityMode> {
-        get_subgroup_visibility(self.store, &self.group_id)
+        CapabilitiesRepository::new(self.store).subgroup_visibility(&self.group_id)
     }
     pub fn set_subgroup_visibility(
         &self,
         mode: calimero_context_config::VisibilityMode,
     ) -> EyreResult<()> {
-        set_subgroup_visibility(self.store, &self.group_id, mode)
+        CapabilitiesRepository::new(self.store).set_subgroup_visibility(&self.group_id, mode)
     }
 
     // --- Tree ---
     pub fn parent(&self) -> EyreResult<Option<ContextGroupId>> {
-        get_parent_group(self.store, &self.group_id)
+        NamespaceRepository::new(self.store).parent(&self.group_id)
     }
     pub fn list_children(&self) -> EyreResult<Vec<ContextGroupId>> {
-        list_child_groups(self.store, &self.group_id)
+        NamespaceRepository::new(self.store).list_children(&self.group_id)
     }
     pub fn collect_descendants(&self) -> EyreResult<Vec<ContextGroupId>> {
-        collect_descendant_groups(self.store, &self.group_id)
+        NamespaceRepository::new(self.store).collect_descendants(&self.group_id)
     }
 
     // --- Upgrades ---
     pub fn save_upgrade(&self, upgrade: &GroupUpgradeValue) -> EyreResult<()> {
-        save_group_upgrade(self.store, &self.group_id, upgrade)
+        UpgradesRepository::new(self.store).save(&self.group_id, upgrade)
     }
     pub fn load_upgrade(&self) -> EyreResult<Option<GroupUpgradeValue>> {
-        load_group_upgrade(self.store, &self.group_id)
+        UpgradesRepository::new(self.store).load(&self.group_id)
     }
     pub fn delete_upgrade(&self) -> EyreResult<()> {
-        delete_group_upgrade(self.store, &self.group_id)
+        UpgradesRepository::new(self.store).delete(&self.group_id)
     }
 
     // --- Member-context tracking ---
@@ -626,29 +581,29 @@ impl<'a> GroupHandle<'a> {
 
     // --- Namespace resolution ---
     pub fn resolve_namespace(&self) -> EyreResult<ContextGroupId> {
-        resolve_namespace(self.store, &self.group_id)
+        NamespaceRepository::new(self.store).resolve(&self.group_id)
     }
     pub fn resolve_namespace_identity(
         &self,
     ) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
-        resolve_namespace_identity(self.store, &self.group_id)
+        NamespaceRepository::new(self.store).resolve_identity(&self.group_id)
     }
     pub fn get_or_create_namespace_identity(
         &self,
     ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
-        get_or_create_namespace_identity(self.store, &self.group_id)
+        NamespaceRepository::new(self.store).get_or_create_identity(&self.group_id)
     }
 
     // --- Migration tracking ---
     pub fn get_context_last_migration(&self, context_id: &ContextId) -> EyreResult<Option<String>> {
-        get_context_last_migration(self.store, &self.group_id, context_id)
+        MigrationsRepository::new(self.store).last_migration(&self.group_id, context_id)
     }
     pub fn set_context_last_migration(
         &self,
         context_id: &ContextId,
         method: &str,
     ) -> EyreResult<()> {
-        set_context_last_migration(self.store, &self.group_id, context_id, method)
+        MigrationsRepository::new(self.store).set_last_migration(&self.group_id, context_id, method)
     }
 
     // --- Per-context capabilities ---
@@ -658,14 +613,23 @@ impl<'a> GroupHandle<'a> {
         member: &PublicKey,
         caps: u8,
     ) -> EyreResult<()> {
-        set_context_member_capability(self.store, &self.group_id, ctx_id, member, caps)
+        CapabilitiesRepository::new(self.store).set_context_member(
+            &self.group_id,
+            ctx_id,
+            member,
+            caps,
+        )
     }
     pub fn get_context_member_capability(
         &self,
         ctx_id: &ContextId,
         member: &PublicKey,
     ) -> EyreResult<Option<u8>> {
-        get_context_member_capability(self.store, &self.group_id, ctx_id, member)
+        CapabilitiesRepository::new(self.store).context_member_capability(
+            &self.group_id,
+            ctx_id,
+            member,
+        )
     }
 }
 
@@ -679,7 +643,6 @@ pub struct NamespaceHandle<'a> {
     namespace_id: [u8; 32],
 }
 
-#[allow(deprecated)]
 impl<'a> NamespaceHandle<'a> {
     pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
         Self {
@@ -693,7 +656,7 @@ impl<'a> NamespaceHandle<'a> {
     }
 
     pub fn get_identity(&self) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
-        get_namespace_identity(self.store, &ContextGroupId::from(self.namespace_id))
+        NamespaceRepository::new(self.store).identity(&ContextGroupId::from(self.namespace_id))
     }
 
     pub fn store_identity(
@@ -702,8 +665,7 @@ impl<'a> NamespaceHandle<'a> {
         sk: &[u8; 32],
         sender: &[u8; 32],
     ) -> EyreResult<()> {
-        store_namespace_identity(
-            self.store,
+        NamespaceRepository::new(self.store).store_identity(
             &ContextGroupId::from(self.namespace_id),
             pk,
             sk,
@@ -746,7 +708,6 @@ pub struct GroupStoreIndex<'a> {
     store: &'a Store,
 }
 
-#[allow(deprecated)]
 impl<'a> GroupStoreIndex<'a> {
     pub fn new(store: &'a Store) -> Self {
         Self { store }
@@ -765,7 +726,7 @@ impl<'a> GroupStoreIndex<'a> {
         offset: usize,
         limit: usize,
     ) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
-        enumerate_all_groups(self.store, offset, limit)
+        MetaRepository::new(self.store).enumerate_all(offset, limit)
     }
 
     pub fn get_group_for_context(
@@ -778,11 +739,11 @@ impl<'a> GroupStoreIndex<'a> {
     pub fn enumerate_in_progress_upgrades(
         &self,
     ) -> EyreResult<Vec<(ContextGroupId, GroupUpgradeValue)>> {
-        enumerate_in_progress_upgrades(self.store)
+        UpgradesRepository::new(self.store).enumerate_in_progress()
     }
 
     pub fn resolve_namespace(&self, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
-        resolve_namespace(self.store, group_id)
+        NamespaceRepository::new(self.store).resolve(group_id)
     }
 
     pub fn is_read_only_for_context(
@@ -790,7 +751,7 @@ impl<'a> GroupStoreIndex<'a> {
         context_id: &ContextId,
         identity: &PublicKey,
     ) -> EyreResult<bool> {
-        is_read_only_for_context(self.store, context_id, identity)
+        NamespaceRepository::new(self.store).is_read_only_for_context(context_id, identity)
     }
 
     pub fn find_local_signing_identity(
@@ -908,7 +869,7 @@ fn verify_post_apply_state_hashes(
     // cases we suppress the hash fields from the divergence warn so
     // an operator doesn't see misleading `0000…` values.
     let group_outcome: Option<(bool, [u8; 32])> = if check_group_hash {
-        match compute_group_state_hash(store, group_id) {
+        match MetaRepository::new(store).compute_state_hash(group_id) {
             Ok(actual) => Some((actual != *expected_group_state_hash, actual)),
             Err(err) => {
                 tracing::warn!(
@@ -935,7 +896,7 @@ fn verify_post_apply_state_hashes(
     // `None` here means the check was skipped or the snapshot
     // errored; the warn omits the per-context fields in that case.
     let context_diff: Option<ContextHashDiff> = if check_context_hashes {
-        match snapshot_context_state_hashes(store, group_id) {
+        match MetaRepository::new(store).snapshot_context_state_hashes(group_id) {
             Ok(actual_context_state_hashes) => Some(diff_sorted_context_hashes(
                 group_id,
                 op_kind,
@@ -1224,7 +1185,7 @@ pub(super) fn emit_auto_follow_set_if_enabled(
     group_id: &ContextGroupId,
     member: &PublicKey,
 ) -> EyreResult<()> {
-    let value = match get_group_member_value(store, group_id, member) {
+    let value = match MembershipRepository::new(store).member_value(group_id, member) {
         Ok(Some(v)) => v,
         Ok(None) => {
             tracing::warn!(
@@ -1288,11 +1249,11 @@ fn apply_group_op_mutations(
             }
             permissions.require_manage_members(signer, "add member")?;
             permissions.require_admin_to_add_admin(signer, role)?;
-            add_group_member(store, group_id, member, role.clone())?;
+            MembershipRepository::new(store).add_member(group_id, member, role.clone())?;
             // Clear any stale deny-list entry — re-adding a previously
             // removed member transparently restores their network-level
             // access. Idempotent on a member who was never denied.
-            clear_denied(store, group_id, member)?;
+            DenyListRepository::new(store).clear(group_id, member)?;
             // Restore per-context `ContextIdentity` rows that
             // `cascade_remove_member_from_group_tree` deleted on a prior
             // `MemberRemoved`. The local-rejoiner anti-spoof gate is
@@ -1330,7 +1291,7 @@ fn apply_group_op_mutations(
             // Owner is immune to involuntary removal. Owner must
             // `TransferOwnership` first to step down, then they can be
             // removed (or self-leave once that op exists).
-            if let Some(meta) = load_group_meta(store, group_id)? {
+            if let Some(meta) = MetaRepository::new(store).load(group_id)? {
                 if meta.owner_identity == *member {
                     bail!(
                         "cannot remove owner of group {}; owner must \
@@ -1341,11 +1302,11 @@ fn apply_group_op_mutations(
             }
             membership_policy.ensure_not_last_admin_removal(member)?;
             cascade_remove_member_from_group_tree(store, group_id, member)?;
-            remove_group_member(store, group_id, member)?;
+            MembershipRepository::new(store).remove_member(group_id, member)?;
             // Add to deny-list: state deltas from this member will be
             // dropped at the receive entry point before the cross-DAG
             // check runs. Cleared if/when the member is re-added.
-            mark_denied(store, group_id, member)?;
+            DenyListRepository::new(store).mark(group_id, member)?;
             // Ordering invariant: `verify_post_apply_state_hashes`
             // must run AFTER the last mutation that touches inputs
             // to `compute_group_state_hash` (i.e. `GroupMeta` rows
@@ -1388,14 +1349,18 @@ fn apply_group_op_mutations(
             }
             permissions.require_admin(signer)?;
             membership_policy.ensure_not_last_admin_demotion(member, role)?;
-            add_group_member(store, group_id, member, role.clone())?;
+            MembershipRepository::new(store).add_member(group_id, member, role.clone())?;
         }
         GroupOp::MemberCapabilitySet {
             member,
             capabilities,
         } => {
             permissions.require_admin(signer)?;
-            set_member_capability(store, group_id, member, *capabilities)?;
+            CapabilitiesRepository::new(store).set_member_capability(
+                group_id,
+                member,
+                *capabilities,
+            )?;
         }
         GroupOp::DefaultCapabilitiesSet { capabilities } => {
             settings.set_default_capabilities(signer, *capabilities)?;
@@ -1441,8 +1406,7 @@ fn apply_group_op_mutations(
         GroupOp::GroupMetadataSet { name, data } => {
             permissions.require_can_manage_metadata(signer)?;
             validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
-            set_group_metadata(
-                store,
+            MetadataRepository::new(store).set_group(
                 group_id,
                 &MetadataRecord {
                     name: name.clone(),
@@ -1457,7 +1421,7 @@ fn apply_group_op_mutations(
             // actually are a member of this group; otherwise this is gated like
             // the other metadata ops (admin or CAN_MANAGE_METADATA).
             if signer == member {
-                if !check_group_membership(store, group_id, signer)? {
+                if !MembershipRepository::new(store).is_member(group_id, signer)? {
                     bail!(
                         "signer {signer} is not a member of group {}",
                         hex::encode(group_id.to_bytes())
@@ -1467,8 +1431,7 @@ fn apply_group_op_mutations(
                 permissions.require_can_manage_metadata(signer)?;
             }
             validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
-            set_member_metadata(
-                store,
+            MetadataRepository::new(store).set_member(
                 group_id,
                 member,
                 &MetadataRecord {
@@ -1495,8 +1458,7 @@ fn apply_group_op_mutations(
                 );
             }
             validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
-            set_context_metadata(
-                store,
+            MetadataRepository::new(store).set_context(
                 group_id,
                 context_id,
                 &MetadataRecord {
@@ -1511,7 +1473,7 @@ fn apply_group_op_mutations(
             // Owner-only. Admins can no longer delete the group on their
             // own — only the owner can. Tightens the previous policy
             // (`require_admin`) which let any admin destroy the group.
-            let meta = load_group_meta(store, group_id)?.ok_or_else(|| {
+            let meta = MetaRepository::new(store).load(group_id)?.ok_or_else(|| {
                 eyre::eyre!(
                     "cannot delete unknown group {}",
                     hex::encode(group_id.to_bytes())
@@ -1524,7 +1486,7 @@ fn apply_group_op_mutations(
                     hex::encode(group_id.to_bytes())
                 );
             }
-            if count_group_contexts(store, group_id)? > 0 {
+            if MetadataRepository::new(store).count_contexts(group_id)? > 0 {
                 bail!("cannot delete group: one or more contexts are still registered");
             }
             delete_group_local_rows(store, group_id)?;
@@ -1538,10 +1500,10 @@ fn apply_group_op_mutations(
             capability,
         } => {
             permissions.require_manage_members(signer, "grant context capability")?;
-            let current =
-                get_context_member_capability(store, group_id, context_id, member)?.unwrap_or(0);
-            set_context_member_capability(
-                store,
+            let current = CapabilitiesRepository::new(store)
+                .context_member_capability(group_id, context_id, member)?
+                .unwrap_or(0);
+            CapabilitiesRepository::new(store).set_context_member(
                 group_id,
                 context_id,
                 member,
@@ -1554,10 +1516,10 @@ fn apply_group_op_mutations(
             capability,
         } => {
             permissions.require_manage_members(signer, "revoke context capability")?;
-            let current =
-                get_context_member_capability(store, group_id, context_id, member)?.unwrap_or(0);
-            set_context_member_capability(
-                store,
+            let current = CapabilitiesRepository::new(store)
+                .context_member_capability(group_id, context_id, member)?
+                .unwrap_or(0);
+            CapabilitiesRepository::new(store).set_context_member(
                 group_id,
                 context_id,
                 member,
@@ -1570,7 +1532,7 @@ fn apply_group_op_mutations(
             // targeting a subgroup even if it arrives via replication.
             // Reader resolves to root anyway, so a stored subgroup op would
             // be dead data; rejecting at apply time keeps state clean.
-            if self::namespace::get_parent_group(store, group_id)?.is_some() {
+            if NamespaceRepository::new(store).parent(group_id)?.is_some() {
                 bail!(
                     "TeeAdmissionPolicySet rejected on subgroup {group_id:?}: policy is \
                      namespace-scoped, set it on the namespace root"
@@ -1599,7 +1561,7 @@ fn apply_group_op_mutations(
             membership_policy.admit_member_if_absent(member, role)?;
             // Same rationale as `MemberAdded`: a TEE rejoining after a
             // prior removal should have their deny-list entry cleared.
-            clear_denied(store, group_id, member)?;
+            DenyListRepository::new(store).clear(group_id, member)?;
             crate::op_events::notify(crate::op_events::OpEvent::TeeMemberAdmitted {
                 group_id: group_id.to_bytes(),
                 member: *member,
@@ -1627,14 +1589,17 @@ fn apply_group_op_mutations(
                 bail!("only group admin or the target member can set auto-follow");
             }
             // Target must already be a group member.
-            if get_group_member_role(store, group_id, target)?.is_none() {
+            if MembershipRepository::new(store)
+                .role_of(group_id, target)?
+                .is_none()
+            {
                 bail!("target is not a member of this group");
             }
             let flags = calimero_store::key::AutoFollowFlags {
                 contexts: *auto_follow_contexts,
                 subgroups: *auto_follow_subgroups,
             };
-            set_member_auto_follow(store, group_id, target, flags)?;
+            MembershipRepository::new(store).set_auto_follow(group_id, target, flags)?;
             crate::op_events::notify(crate::op_events::OpEvent::AutoFollowSet {
                 group_id: group_id.to_bytes(),
                 member: *target,
@@ -1659,7 +1624,10 @@ fn apply_group_op_mutations(
             // (Open subgroup with no stored row), there's nothing to delete
             // here — they have to leave whichever ancestor anchors their
             // membership instead.
-            if get_group_member_role(store, group_id, member)?.is_none() {
+            if MembershipRepository::new(store)
+                .role_of(group_id, member)?
+                .is_none()
+            {
                 bail!(
                     "member is not a direct member of group {}; \
                      leave the parent group where the membership anchor lives",
@@ -1668,7 +1636,7 @@ fn apply_group_op_mutations(
             }
 
             // Owner cannot self-leave. Must TransferOwnership first.
-            if let Some(meta) = load_group_meta(store, group_id)? {
+            if let Some(meta) = MetaRepository::new(store).load(group_id)? {
                 if meta.owner_identity == *member {
                     bail!(
                         "owner of group {} cannot self-leave; \
@@ -1687,20 +1655,22 @@ fn apply_group_op_mutations(
             // "no cascade for leave_group" rule, non-namespace groups don't
             // touch siblings or descendants. See § 6 for cascade semantics.
             let is_namespace_leave =
-                crate::group_store::namespace::resolve_namespace(store, group_id)? == *group_id;
+                NamespaceRepository::new(store).resolve(group_id)? == *group_id;
 
             if is_namespace_leave {
                 // Walk subtree, gather descendants where leaver has a direct
                 // row. Run owner + last-admin checks across all of them
                 // BEFORE mutating anything, so a failure surfaces the
                 // offending scope to the user with no half-applied cleanup.
-                let descendants =
-                    crate::group_store::namespace::collect_descendant_groups(store, group_id)?;
+                let descendants = NamespaceRepository::new(store).collect_descendants(group_id)?;
 
                 let mut direct_descendants: Vec<ContextGroupId> = Vec::new();
                 for sub in &descendants {
-                    if get_group_member_role(store, sub, member)?.is_some() {
-                        if let Some(sub_meta) = load_group_meta(store, sub)? {
+                    if MembershipRepository::new(store)
+                        .role_of(sub, member)?
+                        .is_some()
+                    {
+                        if let Some(sub_meta) = MetaRepository::new(store).load(sub)? {
                             if sub_meta.owner_identity == *member {
                                 bail!(
                                     "cannot leave namespace: leaver owns subgroup {}; \
@@ -1717,12 +1687,12 @@ fn apply_group_op_mutations(
 
                 for sub in &direct_descendants {
                     cascade_remove_member_from_group_tree(store, sub, member)?;
-                    remove_group_member(store, sub, member)?;
+                    MembershipRepository::new(store).remove_member(sub, member)?;
                     // Self-leave cascade: deny-list every descendant
                     // group where the leaver had a row, so their
                     // state-delta traffic on those topics is dropped
                     // until they re-join.
-                    mark_denied(store, sub, member)?;
+                    DenyListRepository::new(store).mark(sub, member)?;
                     crate::op_events::notify(crate::op_events::OpEvent::MemberRemoved {
                         group_id: sub.to_bytes(),
                         member: *member,
@@ -1731,10 +1701,10 @@ fn apply_group_op_mutations(
             }
 
             cascade_remove_member_from_group_tree(store, group_id, member)?;
-            remove_group_member(store, group_id, member)?;
+            MembershipRepository::new(store).remove_member(group_id, member)?;
             // Deny-list the leaver on this group too. See
             // `MemberRemoved` for the same rationale.
-            mark_denied(store, group_id, member)?;
+            DenyListRepository::new(store).mark(group_id, member)?;
 
             // NOTE on forward secrecy: this op deliberately does NOT trigger
             // the key-rotation pipeline that `MemberRemoved` does, because
@@ -1779,7 +1749,7 @@ fn apply_group_op_mutations(
         }
         GroupOp::TransferOwnership { new_owner } => {
             // Owner-only — current owner is the only signer who can transfer.
-            let mut meta = load_group_meta(store, group_id)?.ok_or_else(|| {
+            let mut meta = MetaRepository::new(store).load(group_id)?.ok_or_else(|| {
                 eyre::eyre!(
                     "cannot transfer ownership of unknown group {}",
                     hex::encode(group_id.to_bytes())
@@ -1805,7 +1775,7 @@ fn apply_group_op_mutations(
             //     a plain-Member owner would have a confusing "owner with
             //     reduced capabilities" status. Require Admin first;
             //     promote then transfer if needed.
-            match get_group_member_role(store, group_id, new_owner)? {
+            match MembershipRepository::new(store).role_of(group_id, new_owner)? {
                 Some(GroupMemberRole::Admin) => {}
                 Some(other) => bail!(
                     "new owner of group {} must be an Admin, but is currently {:?}; \
@@ -1820,7 +1790,7 @@ fn apply_group_op_mutations(
             }
 
             meta.owner_identity = *new_owner;
-            save_group_meta(store, group_id, &meta)?;
+            MetaRepository::new(store).save(group_id, &meta)?;
         }
         #[allow(unreachable_patterns)]
         _ => return Ok((false, None)),
@@ -1858,7 +1828,7 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
 
     let zero_hash = [0u8; 32];
     if op.state_hash != zero_hash {
-        let current_state_hash = compute_group_state_hash(store, &group_id)?;
+        let current_state_hash = MetaRepository::new(store).compute_state_hash(&group_id)?;
         if op.state_hash != current_state_hash {
             tracing::debug!(
                 group_id = %hex::encode(group_id.to_bytes()),
@@ -1952,7 +1922,7 @@ pub fn sign_apply_local_group_op_borsh(
     let parent_hashes = get_op_head(store, group_id)?
         .map(|h| h.dag_heads.clone())
         .unwrap_or_default();
-    let state_hash = compute_group_state_hash(store, group_id)?;
+    let state_hash = MetaRepository::new(store).compute_state_hash(group_id)?;
     let signed = SignedGroupOp::sign(
         signer_sk,
         group_id.to_bytes(),

@@ -13,8 +13,6 @@
 //! (left as a follow-up — current behavior is "soft": no purge,
 //! membership rows removed but encrypted blobs and keys remain on the
 //! local node).
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -23,6 +21,7 @@ use tracing::info;
 
 use crate::governance_broadcast::observe_handler_delivery;
 use crate::group_store;
+use crate::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use crate::ContextManager;
 
 impl Handler<LeaveNamespaceRequest> for ContextManager {
@@ -48,7 +47,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
 
         // Verify this is actually a namespace (no parent). If a non-root
         // group_id was passed by mistake, route the user to leave_group.
-        let resolved = match group_store::resolve_namespace(&self.datastore, &namespace_id) {
+        let resolved = match NamespaceRepository::new(&self.datastore).resolve(&namespace_id) {
             Ok(g) => g,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
@@ -60,7 +59,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
         }
 
         // Direct-row check at the root. Apply re-validates everything.
-        match group_store::get_group_member_role(&self.datastore, &namespace_id, &member_public_key)
+        match MembershipRepository::new(&self.datastore).role_of(&namespace_id, &member_public_key)
         {
             Ok(Some(_)) => {}
             Ok(None) => {
@@ -80,19 +79,18 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
         // leaver simulates the post-leave state so receivers can detect
         // divergence. See `compute_group_state_hash_after_remove` and
         // `snapshot_context_state_hashes`.
-        let expected_group_state_hash = match group_store::compute_group_state_hash_after_remove(
-            &self.datastore,
-            &namespace_id,
-            &member_public_key,
-        ) {
+        let expected_group_state_hash = match MetaRepository::new(&self.datastore)
+            .compute_state_hash_after_remove(&namespace_id, &member_public_key)
+        {
             Ok(h) => h,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
-        let expected_context_state_hashes =
-            match group_store::snapshot_context_state_hashes(&self.datastore, &namespace_id) {
-                Ok(v) => v,
-                Err(err) => return ActorResponse::reply(Err(err)),
-            };
+        let expected_context_state_hashes = match MetaRepository::new(&self.datastore)
+            .snapshot_context_state_hashes(&namespace_id)
+        {
+            Ok(v) => v,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
 
         ActorResponse::r#async(
             async move {

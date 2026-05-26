@@ -12,13 +12,12 @@
 //! free-function form takes the cache/notify as explicit args and is
 //! callable from any holder of those Arcs (server handlers, tests,
 //! [`NodeManager`] internals).
-#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
-
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use calimero_context::governance_broadcast::ns_topic;
-use calimero_context::group_store::{self, namespace_member_pubkeys, NamespaceGovernance};
+use calimero_context::group_store::{self, NamespaceGovernance};
+use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use calimero_context_client::local_governance::{
     AckRouter, NamespaceOp, NamespaceTopicMsg, ReadinessProbe, RootOp,
 };
@@ -139,9 +138,9 @@ pub async fn join_namespace(
     // step 2: provision identity (mark_membership_pending equivalent —
     // the namespace identity row IS the local pending marker until
     // MemberJoined ack arrives).
-    let (ns_id, _pk, mut sk_bytes, mut sender_key) =
-        group_store::get_or_create_namespace_identity(store, &group_id)
-            .map_err(|e| JoinError::Local(e.to_string()))?;
+    let (ns_id, _pk, mut sk_bytes, mut sender_key) = NamespaceRepository::new(store)
+        .get_or_create_identity(&group_id)
+        .map_err(|e| JoinError::Local(e.to_string()))?;
     let namespace_id = ns_id.to_bytes();
     // Zeroize raw secret-key bytes before drop — `PrivateKey::from(...)`
     // owns its own zeroizing wrapper, but the bare `[u8; 32]` arrays
@@ -172,7 +171,8 @@ pub async fn join_namespace(
     //
     // The block mirrors the local-init prelude of
     // `Handler<JoinGroupRequest>` in `crates/context/src/handlers/join_group.rs`.
-    if group_store::load_group_meta(store, &group_id)
+    if MetaRepository::new(store)
+        .load(&group_id)
         .map_err(|e| JoinError::Local(e.to_string()))?
         .is_none()
     {
@@ -187,7 +187,8 @@ pub async fn join_namespace(
             created_at: 0,
             auto_join: true,
         };
-        group_store::save_group_meta(store, &group_id, &meta)
+        MetaRepository::new(store)
+            .save(&group_id, &meta)
             .map_err(|e| JoinError::Local(e.to_string()))?;
     }
 
@@ -344,9 +345,9 @@ pub async fn await_namespace_ready(
 
     // step 2: load the namespace identity for signing MemberJoined.
     let group_id = ContextGroupId::from(namespace_id);
-    let (_, my_pk, mut my_sk_bytes, mut sender_key) =
-        group_store::get_or_create_namespace_identity(store, &group_id)
-            .map_err(|e| ReadyError::Local(e.to_string()))?;
+    let (_, my_pk, mut my_sk_bytes, mut sender_key) = NamespaceRepository::new(store)
+        .get_or_create_identity(&group_id)
+        .map_err(|e| ReadyError::Local(e.to_string()))?;
     // `sender_key` is unused — zeroize immediately. `my_sk_bytes` is
     // consumed by `PrivateKey::from(...)` below; because `[u8; 32]:
     // Copy` the "move" copies the bytes, so the stack copy survives
@@ -370,7 +371,8 @@ pub async fn await_namespace_ready(
     // Note the read accessors are best-effort — if the underlying
     // store read fails we substitute defaults rather than fail the
     // whole join, since the caller's primary signal is `acked_by`.
-    let members_learned = namespace_member_pubkeys(store, namespace_id)
+    let members_learned = MembershipRepository::new(store)
+        .namespace_pubkeys(namespace_id)
         .map(|m| m.len())
         .unwrap_or(0);
 

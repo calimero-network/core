@@ -1,5 +1,6 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use crate::group_store::{
+    MembershipRepository, MetaRepository, NamespaceRepository, SigningKeysRepository,
+};
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -49,7 +50,10 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
         let signing_key = node_sk;
 
         if let Err(err) = (|| -> eyre::Result<()> {
-            if group_store::load_group_meta(&self.datastore, &group_id)?.is_none() {
+            if MetaRepository::new(&self.datastore)
+                .load(&group_id)?
+                .is_none()
+            {
                 bail!("group '{group_id:?}' not found");
             }
 
@@ -57,18 +61,18 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
             // set one on a subgroup — callers must target the namespace root.
             // The policy a subgroup "inherits" is whatever is set on the root;
             // see project_subgroup_policy_decision.md.
-            if let Some(parent) = group_store::get_parent_group(&self.datastore, &group_id)? {
-                let root = group_store::resolve_namespace(&self.datastore, &group_id)?;
+            if let Some(parent) = NamespaceRepository::new(&self.datastore).parent(&group_id)? {
+                let root = NamespaceRepository::new(&self.datastore).resolve(&group_id)?;
                 bail!(
                     "TEE admission policy is namespace-scoped; set it on the namespace root \
                      '{root:?}' instead of subgroup '{group_id:?}' (parent: '{parent:?}')"
                 );
             }
 
-            group_store::require_group_admin(&self.datastore, &group_id, &requester)?;
+            MembershipRepository::new(&self.datastore).require_admin(&group_id, &requester)?;
 
             if signing_key.is_none() {
-                group_store::require_group_signing_key(&self.datastore, &group_id, &requester)?;
+                SigningKeysRepository::new(&self.datastore).require_key(&group_id, &requester)?;
             }
 
             Ok(())
@@ -78,7 +82,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
 
         if let Some(ref sk) = signing_key {
             if let Err(err) =
-                group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk)
+                SigningKeysRepository::new(&self.datastore).store_key(&group_id, &requester, sk)
             {
                 tracing::warn!(?group_id, %requester, error = %err, "Failed to persist group signing key");
             }
@@ -88,7 +92,8 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
         let effective_signing_key = signing_key.or_else(|| {
-            group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
+            SigningKeysRepository::new(&self.datastore)
+                .get_key(&group_id, &requester)
                 .ok()
                 .flatten()
         });

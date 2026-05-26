@@ -1,3 +1,4 @@
+use crate::group_store::NamespaceRepository;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupSigningKey, GroupSigningKeyValue, GROUP_SIGNING_KEY_PREFIX};
@@ -85,7 +86,7 @@ impl<'a> SigningKeysRepository<'a> {
             if let Some(sk) = self.get_key(&current, public_key)? {
                 return Ok(Some(sk));
             }
-            match super::get_parent_group(self.store, &current)? {
+            match NamespaceRepository::new(self.store).parent(&current)? {
                 Some(parent) => current = parent,
                 None => return Ok(None),
             }
@@ -108,61 +109,6 @@ impl<'a> SigningKeysRepository<'a> {
         }
         Ok(())
     }
-}
-
-// ---------------------------------------------------------------------------
-// Deprecated free-function wrappers.
-// ---------------------------------------------------------------------------
-
-#[deprecated(note = "use SigningKeysRepository::new(store).store_key(...)")]
-pub fn store_group_signing_key(
-    store: &Store,
-    group_id: &ContextGroupId,
-    public_key: &PublicKey,
-    private_key: &[u8; 32],
-) -> EyreResult<()> {
-    SigningKeysRepository::new(store).store_key(group_id, public_key, private_key)
-}
-
-#[deprecated(note = "use SigningKeysRepository::new(store).get_key(...)")]
-pub fn get_group_signing_key(
-    store: &Store,
-    group_id: &ContextGroupId,
-    public_key: &PublicKey,
-) -> EyreResult<Option<[u8; 32]>> {
-    SigningKeysRepository::new(store).get_key(group_id, public_key)
-}
-
-#[deprecated(note = "use SigningKeysRepository::new(store).delete_key(...)")]
-pub fn delete_group_signing_key(
-    store: &Store,
-    group_id: &ContextGroupId,
-    public_key: &PublicKey,
-) -> EyreResult<()> {
-    SigningKeysRepository::new(store).delete_key(group_id, public_key)
-}
-
-#[deprecated(note = "use SigningKeysRepository::new(store).require_key(...)")]
-pub fn require_group_signing_key(
-    store: &Store,
-    group_id: &ContextGroupId,
-    requester: &PublicKey,
-) -> EyreResult<()> {
-    SigningKeysRepository::new(store).require_key(group_id, requester)
-}
-
-#[deprecated(note = "use SigningKeysRepository::new(store).resolve(...)")]
-pub fn resolve_group_signing_key(
-    store: &Store,
-    group_id: &ContextGroupId,
-    public_key: &PublicKey,
-) -> EyreResult<Option<[u8; 32]>> {
-    SigningKeysRepository::new(store).resolve(group_id, public_key)
-}
-
-#[deprecated(note = "use SigningKeysRepository::new(store).delete_all_for_group(...)")]
-pub fn delete_all_group_signing_keys(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    SigningKeysRepository::new(store).delete_all_for_group(group_id)
 }
 
 #[cfg(test)]

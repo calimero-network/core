@@ -1,5 +1,7 @@
-#![allow(deprecated)] // #2303: per-handler Repository migration deferred to follow-up
-
+use crate::group_store::{
+    CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
+    SigningKeysRepository,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -80,14 +82,9 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // Phase 1: Set up local state.
                 // -------------------------------------------------------
 
-                let _ = group_store::store_group_signing_key(
-                    &datastore,
-                    &group_id,
-                    &joiner_identity,
-                    &sk_bytes,
-                );
+                let _ = SigningKeysRepository::new(&datastore).store_key(&group_id, &joiner_identity, &sk_bytes, );
 
-                if group_store::load_group_meta(&datastore, &group_id)?.is_none() {
+                if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
                     let admin_identity = calimero_primitives::identity::PublicKey::from(
                         invitation.invitation.inviter_identity.to_bytes(),
                     );
@@ -114,24 +111,15 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         created_at: 0,
                         auto_join: true,
                     };
-                    group_store::save_group_meta(&datastore, &group_id, &meta)?;
+                    MetaRepository::new(&datastore).save(&group_id, &meta)?;
 
                     // Add the namespace admin to the member list so joining
                     // nodes see the creator in /admin-api/groups/:id/members.
                     // Direct-row check: see joiner-side guard below for
                     // why inheritance-aware `check_group_membership`
                     // would be unsafe here.
-                    if !group_store::has_direct_group_member(
-                        &datastore,
-                        &group_id,
-                        &admin_identity,
-                    )? {
-                        group_store::add_group_member(
-                            &datastore,
-                            &group_id,
-                            &admin_identity,
-                            calimero_primitives::context::GroupMemberRole::Admin,
-                        )?;
+                    if !MembershipRepository::new(&datastore).has_direct_member(&group_id, &admin_identity, )? {
+                        MembershipRepository::new(&datastore).add_member(&group_id, &admin_identity, calimero_primitives::context::GroupMemberRole::Admin, )?;
                     }
                 }
 
@@ -154,7 +142,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // Unwrap and store the group key.
                 if !join_result.has_key() {
                     warn!("join response contained no group key");
-                } else if group_store::load_current_group_key(&datastore, &group_id)?.is_some() {
+                } else if GroupKeyring::new(&datastore, group_id).load_current_key()?.is_some() {
                     info!(
                         ?group_id,
                         "group key already present locally, skipping store from join response"
@@ -164,8 +152,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         borsh::from_slice(&join_result.key_envelope_bytes)
                             .map_err(|e| eyre::eyre!("failed to deserialize key envelope: {e}"))?;
 
-                    let group_key = group_store::unwrap_group_key(&sk, &envelope)?;
-                    group_store::store_group_key(&datastore, &group_id, &group_key)?;
+                    let group_key = GroupKeyring::unwrap_for_recipient(&sk, &envelope)?;
+                    GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                     info!("received group key via direct join response");
                 }
 
@@ -194,12 +182,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // overwrites the bundle value (authoritative-op-wins).
                 // The `is_none()` guard keeps this a no-op when a prior
                 // op already set the value.
-                if group_store::get_default_capabilities(&datastore, &group_id)?.is_none() {
-                    group_store::set_default_capabilities(
-                        &datastore,
-                        &group_id,
-                        join_result.default_capabilities,
-                    )?;
+                if CapabilitiesRepository::new(&datastore).default_capabilities(&group_id)?.is_none() {
+                    CapabilitiesRepository::new(&datastore).set_default_capabilities(&group_id, join_result.default_capabilities, )?;
                 }
 
                 // Apply governance ops so the local DAG is up to date.
@@ -264,8 +248,8 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // membership from a parent namespace, leaving them
                 // without the direct row that subsequent direct lookups
                 // (removal, capability writes, list_group_members) need.
-                if !group_store::has_direct_group_member(&datastore, &group_id, &joiner_identity)? {
-                    group_store::add_group_member(&datastore, &group_id, &joiner_identity, role)?;
+                if !MembershipRepository::new(&datastore).has_direct_member(&group_id, &joiner_identity)? {
+                    MembershipRepository::new(&datastore).add_member(&group_id, &joiner_identity, role)?;
                 } else {
                     info!(
                         ?group_id,
@@ -292,7 +276,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                 // immediately publish KeyDelivery, and have us miss it
                 // before subscribing.
                 let needs_key_wait =
-                    group_store::load_current_group_key(&datastore, &group_id)?.is_none();
+                    GroupKeyring::new(&datastore, group_id).load_current_key()?.is_none();
                 let mut op_event_rx = if needs_key_wait {
                     Some(subscribe_op_events())
                 } else {
@@ -341,7 +325,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         // deadline branch handles permanent failure. This
                         // mirrors the `RecvError::Lagged` arm's "we'll
                         // observe it next tick" semantics.
-                        match group_store::load_current_group_key(&datastore, &group_id) {
+                        match GroupKeyring::new(&datastore, group_id).load_current_key() {
                             Ok(Some(_)) => {
                                 info!(
                                     ?group_id,
@@ -442,23 +426,16 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         &std::collections::BTreeMap::new(),
                     )
                     .is_ok()
-                    && group_store::get_group_metadata(&datastore, &group_id)?.is_none()
+                    && MetadataRepository::new(&datastore).group_metadata(&group_id)?.is_none()
                 {
-                    group_store::set_group_metadata(
-                        &datastore,
-                        &group_id,
-                        &calimero_primitives::metadata::MetadataRecord {
-                            name: group_name.clone(),
-                            updated_at: group_store::now_millis(),
-                            updated_by: joiner_identity,
-                            ..Default::default()
-                        },
-                    )?;
+                    MetadataRepository::new(&datastore).set_group(&group_id, &calimero_primitives::metadata::MetadataRecord {
+                            name: group_name.clone(), updated_at: group_store::now_millis(), updated_by: joiner_identity, ..Default::default()
+                        }, )?;
                 }
 
                 let contexts = &join_result.context_ids;
 
-                if let Some(meta) = group_store::load_group_meta(&datastore, &group_id)? {
+                if let Some(meta) = MetaRepository::new(&datastore).load(&group_id)? {
                     if meta.auto_join {
                         info!(
                             ?group_id,
@@ -515,7 +492,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                 let resolved = if app_id != zero_app {
                                     Some(app_id)
                                 } else {
-                                    group_store::load_group_meta(&datastore, &group_id)?
+                                    MetaRepository::new(&datastore).load(&group_id)?
                                         .map(|m| m.target_application_id)
                                         .filter(|id| *id != zero_app)
                                 };

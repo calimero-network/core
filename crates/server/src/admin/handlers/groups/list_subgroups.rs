@@ -1,5 +1,6 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
+use calimero_context::group_store::{
+    MembershipRepository, MetadataRepository, NamespaceRepository,
+};
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -23,7 +24,7 @@ pub async fn handler(
 
     info!(group_id=%group_id_str, "Listing subgroups");
 
-    let children = match calimero_context::group_store::list_child_groups(&state.store, &group_id) {
+    let children = match NamespaceRepository::new(&state.store).list_children(&group_id) {
         Ok(children) => children,
         Err(err) => return parse_api_error(err).into_response(),
     };
@@ -35,20 +36,19 @@ pub async fn handler(
     // AuthenticatedKey extension). Using `resolve_namespace_identity`
     // matches what `list_group_members` already does to populate
     // `selfIdentity`.
-    let caller =
-        match calimero_context::group_store::resolve_namespace_identity(&state.store, &group_id) {
-            Ok(Some((pk, _, _))) => Some(pk),
-            Ok(None) => None,
-            Err(err) => {
-                warn!(
-                    ?err,
-                    group_id = %group_id_str,
-                    "resolve_namespace_identity failed; falling back to conservative listing \
-                     (all Restricted subgroups hidden)"
-                );
-                None
-            }
-        };
+    let caller = match NamespaceRepository::new(&state.store).resolve_identity(&group_id) {
+        Ok(Some((pk, _, _))) => Some(pk),
+        Ok(None) => None,
+        Err(err) => {
+            warn!(
+                ?err,
+                group_id = %group_id_str,
+                "resolve_namespace_identity failed; falling back to conservative listing \
+                 (all Restricted subgroups hidden)"
+            );
+            None
+        }
+    };
 
     let mut subgroups = Vec::with_capacity(children.len());
     for child in children {
@@ -59,8 +59,7 @@ pub async fn handler(
         // leaks a private subgroup. A `caller` of `None` (this node has
         // no namespace identity for the parent group) likewise hides all
         // `Restricted` children.
-        match calimero_context::group_store::subgroup_visible_to(
-            &state.store,
+        match MembershipRepository::new(&state.store).subgroup_visible_to(
             &group_id,
             &child,
             caller.as_ref(),
@@ -78,7 +77,7 @@ pub async fn handler(
             }
         }
 
-        let name = match calimero_context::group_store::get_group_metadata(&state.store, &child) {
+        let name = match MetadataRepository::new(&state.store).group_metadata(&child) {
             Ok(rec) => rec.and_then(|r| r.name),
             Err(err) => return parse_api_error(err).into_response(),
         };

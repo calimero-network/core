@@ -1,5 +1,3 @@
-#![allow(deprecated)] // #2303: per-file Repository migration deferred to follow-up
-
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -15,6 +13,10 @@ use tracing::{info, warn};
 
 use crate::governance_broadcast::ObserveDelivery;
 use crate::group_store;
+use crate::group_store::{
+    CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
+    SigningKeysRepository,
+};
 use crate::ContextManager;
 
 impl Handler<CreateGroupRequest> for ContextManager {
@@ -43,7 +45,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
             bytes.into()
         });
 
-        if let Ok(Some(_)) = group_store::load_group_meta(&self.datastore, &group_id) {
+        if let Ok(Some(_)) = MetaRepository::new(&self.datastore).load(&group_id) {
             return ActorResponse::reply(Err(eyre::eyre!("group '{group_id:?}' already exists")));
         }
 
@@ -62,7 +64,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
         // Subgroups inherit target_application_id from the parent (namespace root owns the app).
         let effective_application_id = if let Some(ref parent_id) = parent_group_id {
-            let parent_meta = match group_store::load_group_meta(&self.datastore, parent_id) {
+            let parent_meta = match MetaRepository::new(&self.datastore).load(parent_id) {
                 Ok(Some(m)) => m,
                 _ => {
                     return ActorResponse::reply(Err(eyre::eyre!(
@@ -75,11 +77,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
             // under the namespace root* if they hold `CAN_CREATE_SUBGROUP`
             // (honored only at root level — see the capability's doc and
             // `execute_group_created`, which re-checks this on every peer).
-            let is_namespace_admin = match group_store::is_group_admin(
-                &self.datastore,
-                &namespace_id,
-                &admin_identity,
-            ) {
+            let is_namespace_admin = match MembershipRepository::new(&self.datastore)
+                .is_admin(&namespace_id, &admin_identity)
+            {
                 Ok(v) => v,
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
@@ -112,8 +112,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
         // Auto-store signing key for future use (group is about to be created with
         // admin_identity as the first admin, so store it keyed to that identity)
         if let Some(ref sk) = signing_key {
-            let _ = group_store::store_group_signing_key(
-                &self.datastore,
+            let _ = SigningKeysRepository::new(&self.datastore).store_key(
                 &group_id,
                 &admin_identity,
                 sk,
@@ -141,9 +140,8 @@ impl Handler<CreateGroupRequest> for ContextManager {
                     auto_join: true,
                 };
 
-                group_store::save_group_meta(&datastore, &group_id, &meta)?;
-                group_store::add_group_member(
-                    &datastore,
+                MetaRepository::new(&datastore).save(&group_id, &meta)?;
+                MembershipRepository::new(&datastore).add_member(
                     &group_id,
                     &admin_identity,
                     GroupMemberRole::Admin,
@@ -151,15 +149,14 @@ impl Handler<CreateGroupRequest> for ContextManager {
 
                 // Set default capabilities so new members can be inherited
                 // into Open subgroups beneath this group.
-                group_store::set_default_capabilities(
-                    &datastore,
+                CapabilitiesRepository::new(&datastore).set_default_capabilities(
                     &group_id,
                     calimero_context_config::MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
                 )?;
 
                 // Generate and store the group encryption key.
                 let group_key: [u8; 32] = rand::thread_rng().gen();
-                let key_id = group_store::store_group_key(&datastore, &group_id, &group_key)?;
+                let key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                 tracing::debug!(
                     ?group_id,
                     key_id = %hex::encode(key_id),
@@ -178,8 +175,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         Some(n),
                         &std::collections::BTreeMap::new(),
                     ) {
-                        Ok(()) => group_store::set_group_metadata(
-                            &datastore,
+                        Ok(()) => MetadataRepository::new(&datastore).set_group(
                             &group_id,
                             &calimero_primitives::metadata::MetadataRecord {
                                 name: name.clone(),

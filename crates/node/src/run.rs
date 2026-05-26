@@ -2,8 +2,6 @@
 //!
 //! **Purpose**: Bootstraps the node with all required services and actors.
 //! **Main Function**: `start(NodeConfig)` - initializes and runs the node.
-#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
-
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;

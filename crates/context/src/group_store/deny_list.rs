@@ -28,6 +28,7 @@
 //! with the entry cleared — the deny-list is a derived view of "currently
 //! not a member," not an audit log.
 
+use crate::group_store::MembershipRepository;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{GroupDeniedMember, GROUP_DENIED_MEMBER_PREFIX};
@@ -73,7 +74,8 @@ impl<'a> DenyListRepository<'a> {
     /// the assertion exists to catch misuse during development.
     pub fn mark(&self, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<()> {
         debug_assert!(
-            !super::membership::has_direct_group_member(self.store, group_id, member)
+            !MembershipRepository::new(self.store)
+                .has_direct_member(group_id, member)
                 .unwrap_or(true),
             "DenyListRepository::mark: member {member:?} is still in the materialized set \
              for group {group_id:?} — callers must invoke remove_group_member first \
@@ -154,43 +156,6 @@ impl<'a> DenyListRepository<'a> {
         }
         Ok(())
     }
-}
-
-// ---------------------------------------------------------------------------
-// Deprecated free-function wrappers.
-// ---------------------------------------------------------------------------
-
-#[deprecated(note = "use DenyListRepository::new(store).mark(...)")]
-pub fn mark_denied(store: &Store, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<()> {
-    DenyListRepository::new(store).mark(group_id, member)
-}
-
-#[deprecated(note = "use DenyListRepository::new(store).clear(...)")]
-pub fn clear_denied(
-    store: &Store,
-    group_id: &ContextGroupId,
-    member: &PublicKey,
-) -> EyreResult<()> {
-    DenyListRepository::new(store).clear(group_id, member)
-}
-
-#[deprecated(note = "use DenyListRepository::new(store).is_denied(...)")]
-pub fn is_denied(store: &Store, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<bool> {
-    DenyListRepository::new(store).is_denied(group_id, member)
-}
-
-#[deprecated(note = "use DenyListRepository::new(store).is_author_denied_for_context(...)")]
-pub fn is_author_denied_for_context(
-    store: &Store,
-    context_id: &calimero_primitives::context::ContextId,
-    author: &PublicKey,
-) -> EyreResult<bool> {
-    DenyListRepository::new(store).is_author_denied_for_context(context_id, author)
-}
-
-#[deprecated(note = "use DenyListRepository::new(store).clear_all_for_group(...)")]
-pub fn clear_all_denied(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    DenyListRepository::new(store).clear_all_for_group(group_id)
 }
 
 #[cfg(test)]

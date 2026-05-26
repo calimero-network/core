@@ -1,3 +1,5 @@
+use crate::group_store::{CapabilitiesRepository, MetadataRepository};
+use crate::group_store::{DenyListRepository, MetaRepository, NamespaceRepository};
 use std::collections::BTreeSet;
 
 use calimero_context_config::types::ContextGroupId;
@@ -8,11 +10,10 @@ use calimero_store::key::{AutoFollowFlags, GroupMember, GroupMemberValue, GROUP_
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::super::namespace::{get_parent_group, MAX_NAMESPACE_DEPTH};
+use super::super::namespace::MAX_NAMESPACE_DEPTH;
 use super::super::{
     collect_keys_with_prefix, collect_keys_with_prefix_paginated, count_keys_with_prefix,
-    delete_member_metadata, get_member_capability, get_subgroup_visibility, is_denied,
-    load_group_meta, set_member_capability, GroupStoreError,
+    GroupStoreError,
 };
 
 /// Typed Repository for the membership cluster — direct member rows,
@@ -73,7 +74,8 @@ impl<'a> MembershipRepository<'a> {
         if !is_admin {
             if let Some(defaults) = get_member_default_capabilities(self.store, group_id)? {
                 if defaults != 0 {
-                    set_member_capability(self.store, group_id, identity, defaults)?;
+                    CapabilitiesRepository::new(self.store)
+                        .set_member_capability(group_id, identity, defaults)?;
                 }
             }
         }
@@ -86,7 +88,7 @@ impl<'a> MembershipRepository<'a> {
             let mut handle = self.store.handle();
             handle.delete(&GroupMember::new(group_id.to_bytes(), *identity))?;
         }
-        delete_member_metadata(self.store, group_id, identity)?;
+        MetadataRepository::new(self.store).delete_member(group_id, identity)?;
         Ok(())
     }
 
@@ -153,10 +155,12 @@ impl<'a> MembershipRepository<'a> {
         let mut anchor_decision: Option<MembershipPath> = None;
         let mut current = *group_id;
         for _ in 0..=MAX_NAMESPACE_DEPTH {
-            if get_subgroup_visibility(self.store, &current)? != VisibilityMode::Open {
+            if CapabilitiesRepository::new(self.store).subgroup_visibility(&current)?
+                != VisibilityMode::Open
+            {
                 return Ok(anchor_decision.unwrap_or(MembershipPath::None));
             }
-            let Some(parent) = get_parent_group(self.store, &current)? else {
+            let Some(parent) = NamespaceRepository::new(self.store).parent(&current)? else {
                 return Ok(anchor_decision.unwrap_or(MembershipPath::None));
             };
             if self.is_admin(&parent, identity)? {
@@ -166,7 +170,9 @@ impl<'a> MembershipRepository<'a> {
                 });
             }
             if has_direct_member(self.store, &parent, identity)? && anchor_decision.is_none() {
-                let caps = get_member_capability(self.store, &parent, identity)?.unwrap_or(0);
+                let caps = CapabilitiesRepository::new(self.store)
+                    .member_capability(&parent, identity)?
+                    .unwrap_or(0);
                 anchor_decision =
                     Some(if caps & MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS != 0 {
                         MembershipPath::Inherited {
@@ -205,11 +211,15 @@ impl<'a> MembershipRepository<'a> {
     ) -> EyreResult<Option<u32>> {
         match self.check_path(group_id, identity)? {
             MembershipPath::None => Ok(None),
-            MembershipPath::Inherited { .. } if is_denied(self.store, group_id, identity)? => {
+            MembershipPath::Inherited { .. }
+                if DenyListRepository::new(self.store).is_denied(group_id, identity)? =>
+            {
                 Ok(None)
             }
             MembershipPath::Direct | MembershipPath::Inherited { .. } => Ok(Some(
-                get_member_capability(self.store, group_id, identity)?.unwrap_or(0),
+                CapabilitiesRepository::new(self.store)
+                    .member_capability(group_id, identity)?
+                    .unwrap_or(0),
             )),
         }
     }
@@ -231,11 +241,13 @@ impl<'a> MembershipRepository<'a> {
         let mut current = *group_id;
         let mut terminated = false;
         for _ in 0..=MAX_NAMESPACE_DEPTH {
-            if get_subgroup_visibility(self.store, &current)? != VisibilityMode::Open {
+            if CapabilitiesRepository::new(self.store).subgroup_visibility(&current)?
+                != VisibilityMode::Open
+            {
                 terminated = true;
                 break;
             }
-            let Some(parent) = get_parent_group(self.store, &current)? else {
+            let Some(parent) = NamespaceRepository::new(self.store).parent(&current)? else {
                 terminated = true;
                 break;
             };
@@ -245,7 +257,7 @@ impl<'a> MembershipRepository<'a> {
                 .into_iter()
                 .map(|(pk, _)| pk)
                 .collect();
-            if let Some(meta) = load_group_meta(self.store, &parent)? {
+            if let Some(meta) = MetaRepository::new(self.store).load(&parent)? {
                 candidates.push(meta.admin_identity);
             }
 
@@ -253,7 +265,7 @@ impl<'a> MembershipRepository<'a> {
                 if !seen.insert(candidate) {
                     continue;
                 }
-                if is_denied(self.store, group_id, &candidate)? {
+                if DenyListRepository::new(self.store).is_denied(group_id, &candidate)? {
                     continue;
                 }
                 if let MembershipPath::Inherited { via_admin, .. } =
@@ -306,10 +318,12 @@ impl<'a> MembershipRepository<'a> {
         }
         let mut current = *group_id;
         for _ in 0..=MAX_NAMESPACE_DEPTH {
-            if get_subgroup_visibility(self.store, &current)? != VisibilityMode::Open {
+            if CapabilitiesRepository::new(self.store).subgroup_visibility(&current)?
+                != VisibilityMode::Open
+            {
                 return Ok(false);
             }
-            let Some(parent) = get_parent_group(self.store, &current)? else {
+            let Some(parent) = NamespaceRepository::new(self.store).parent(&current)? else {
                 return Ok(false);
             };
             if self.is_admin(&parent, identity)? {
@@ -327,7 +341,7 @@ impl<'a> MembershipRepository<'a> {
         if let Some(GroupMemberRole::Admin) = self.role_of(group_id, identity)? {
             return Ok(true);
         }
-        if let Some(meta) = load_group_meta(self.store, group_id)? {
+        if let Some(meta) = MetaRepository::new(self.store).load(group_id)? {
             if meta.admin_identity == *identity {
                 return Ok(true);
             }
@@ -353,7 +367,9 @@ impl<'a> MembershipRepository<'a> {
         child_group_id: &ContextGroupId,
         caller: Option<&PublicKey>,
     ) -> EyreResult<bool> {
-        if get_subgroup_visibility(self.store, child_group_id)? == VisibilityMode::Open {
+        if CapabilitiesRepository::new(self.store).subgroup_visibility(child_group_id)?
+            == VisibilityMode::Open
+        {
             return Ok(true);
         }
         let Some(caller_pk) = caller else {
@@ -376,7 +392,9 @@ impl<'a> MembershipRepository<'a> {
         if self.is_admin(group_id, identity)? {
             return Ok(true);
         }
-        let caps = get_member_capability(self.store, group_id, identity)?.unwrap_or(0);
+        let caps = CapabilitiesRepository::new(self.store)
+            .member_capability(group_id, identity)?
+            .unwrap_or(0);
         Ok(caps & capability_bit != 0)
     }
 
@@ -450,7 +468,7 @@ impl<'a> MembershipRepository<'a> {
         let group_id = ContextGroupId::from(namespace_id);
         let members = self.list(&group_id, 0, usize::MAX)?;
         let mut pubkeys: Vec<PublicKey> = members.into_iter().map(|(pk, _role)| pk).collect();
-        if let Some(meta) = load_group_meta(self.store, &group_id)? {
+        if let Some(meta) = MetaRepository::new(self.store).load(&group_id)? {
             if !pubkeys.contains(&meta.admin_identity) {
                 pubkeys.push(meta.admin_identity);
             }
@@ -465,7 +483,7 @@ impl<'a> MembershipRepository<'a> {
         group_id: &ContextGroupId,
     ) -> EyreResult<std::collections::BTreeSet<PublicKey>> {
         let mut anchors = std::collections::BTreeSet::new();
-        if let Some(meta) = load_group_meta(self.store, group_id)? {
+        if let Some(meta) = MetaRepository::new(self.store).load(group_id)? {
             let _ = anchors.insert(meta.owner_identity);
             let _ = anchors.insert(meta.admin_identity);
         }
@@ -489,7 +507,7 @@ impl<'a> MembershipRepository<'a> {
     ) -> EyreResult<bool> {
         let gid = ContextGroupId::from(namespace_id);
 
-        if let Some(meta) = load_group_meta(self.store, &gid)? {
+        if let Some(meta) = MetaRepository::new(self.store).load(&gid)? {
             if *identity == meta.owner_identity {
                 return Ok(true);
             }
@@ -572,239 +590,7 @@ fn get_member_default_capabilities(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<Option<u32>> {
-    super::super::get_default_capabilities(store, group_id)
-}
-
-// ---------------------------------------------------------------------------
-// Deprecated free-function wrappers.
-// ---------------------------------------------------------------------------
-
-#[deprecated(note = "use MembershipRepository::new(store).add_member(...)")]
-pub fn add_group_member(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-    role: GroupMemberRole,
-) -> EyreResult<()> {
-    MembershipRepository::new(store).add_member(group_id, identity, role)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).add_member_with_keys(...)")]
-pub fn add_group_member_with_keys(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-    role: GroupMemberRole,
-    private_key: Option<[u8; 32]>,
-    sender_key: Option<[u8; 32]>,
-) -> EyreResult<()> {
-    MembershipRepository::new(store).add_member_with_keys(
-        group_id,
-        identity,
-        role,
-        private_key,
-        sender_key,
-    )
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).remove_member(...)")]
-pub fn remove_group_member(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<()> {
-    MembershipRepository::new(store).remove_member(group_id, identity)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).set_auto_follow(...)")]
-pub fn set_member_auto_follow(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-    auto_follow: AutoFollowFlags,
-) -> EyreResult<()> {
-    MembershipRepository::new(store).set_auto_follow(group_id, identity, auto_follow)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).role_of(...)")]
-pub fn get_group_member_role(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<Option<GroupMemberRole>> {
-    MembershipRepository::new(store).role_of(group_id, identity)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).member_value(...)")]
-pub fn get_group_member_value(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<Option<GroupMemberValue>> {
-    MembershipRepository::new(store).member_value(group_id, identity)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).check_path(...)")]
-pub fn check_group_membership_path(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<MembershipPath> {
-    MembershipRepository::new(store).check_path(group_id, identity)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).is_member(...)")]
-pub fn check_group_membership(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    MembershipRepository::new(store).is_member(group_id, identity)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).effective_capabilities(...)")]
-pub fn get_effective_member_capabilities(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<Option<u32>> {
-    MembershipRepository::new(store).effective_capabilities(group_id, identity)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).enumerate_inherited(...)")]
-pub fn enumerate_inherited_members(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
-    MembershipRepository::new(store).enumerate_inherited(group_id)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).is_direct_admin(...)")]
-pub fn is_direct_group_admin(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    MembershipRepository::new(store).is_direct_admin(group_id, identity)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).is_inherited_admin(...)")]
-pub fn is_inherited_admin(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    MembershipRepository::new(store).is_inherited_admin(group_id, identity)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).is_admin(...)")]
-pub fn is_group_admin(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    MembershipRepository::new(store).is_admin(group_id, identity)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).require_admin(...)")]
-pub fn require_group_admin(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<()> {
-    MembershipRepository::new(store).require_admin(group_id, identity)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).subgroup_visible_to(...)")]
-pub fn subgroup_visible_to(
-    store: &Store,
-    parent_group_id: &ContextGroupId,
-    child_group_id: &ContextGroupId,
-    caller: Option<&PublicKey>,
-) -> EyreResult<bool> {
-    MembershipRepository::new(store).subgroup_visible_to(parent_group_id, child_group_id, caller)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).is_admin_or_has_capability(...)")]
-pub fn is_group_admin_or_has_capability(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-    capability_bit: u32,
-) -> EyreResult<bool> {
-    MembershipRepository::new(store).is_admin_or_has_capability(group_id, identity, capability_bit)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).require_admin_or_capability(...)")]
-pub fn require_group_admin_or_capability(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-    capability_bit: u32,
-    operation: &str,
-) -> EyreResult<()> {
-    MembershipRepository::new(store).require_admin_or_capability(
-        group_id,
-        identity,
-        capability_bit,
-        operation,
-    )
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).count_admins(...)")]
-pub fn count_group_admins(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
-    MembershipRepository::new(store).count_admins(group_id)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).list(...)")]
-pub fn list_group_members(
-    store: &Store,
-    group_id: &ContextGroupId,
-    offset: usize,
-    limit: usize,
-) -> EyreResult<Vec<(PublicKey, GroupMemberRole)>> {
-    MembershipRepository::new(store).list(group_id, offset, limit)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).namespace_pubkeys(...)")]
-pub fn namespace_member_pubkeys(
-    store: &Store,
-    namespace_id: [u8; 32],
-) -> EyreResult<Vec<PublicKey>> {
-    MembershipRepository::new(store).namespace_pubkeys(namespace_id)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).trusted_anchors(...)")]
-pub fn trusted_anchors_for_group(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<std::collections::BTreeSet<PublicKey>> {
-    MembershipRepository::new(store).trusted_anchors(group_id)
-}
-
-#[deprecated(
-    note = "use MembershipRepository::new(store).is_authoritative_namespace_identity(...)"
-)]
-pub fn is_authoritative_namespace_identity(
-    store: &Store,
-    namespace_id: [u8; 32],
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    MembershipRepository::new(store).is_authoritative_namespace_identity(namespace_id, identity)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).count(...)")]
-pub fn count_group_members(store: &Store, group_id: &ContextGroupId) -> EyreResult<usize> {
-    MembershipRepository::new(store).count(group_id)
-}
-
-#[deprecated(note = "use MembershipRepository::new(store).has_direct_member(...)")]
-pub fn has_direct_group_member(
-    store: &Store,
-    group_id: &ContextGroupId,
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    MembershipRepository::new(store).has_direct_member(group_id, identity)
+    CapabilitiesRepository::new(store).default_capabilities(group_id)
 }
 
 /// Repository-API smoke tests. Membership-feature coverage (path walks,

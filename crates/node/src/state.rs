@@ -1,5 +1,3 @@
-#![allow(deprecated)] // #2303: callers migrate per follow-up; group_store wrappers stable
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
