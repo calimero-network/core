@@ -1,3 +1,4 @@
+use crate::group_store::NamespaceRepository;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -28,7 +29,7 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
         // accepting it; we don't reject because existing workflows
         // (including e2e suites and likely external clients) issue
         // the call as a harmless setup step.
-        if let Ok(ns_id) = group_store::resolve_namespace(&self.datastore, &group_id) {
+        if let Ok(ns_id) = NamespaceRepository::new(&self.datastore).resolve(&group_id) {
             if ns_id == group_id {
                 warn!(
                     group_id = %hex::encode(group_id.to_bytes()),

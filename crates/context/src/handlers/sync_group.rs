@@ -1,3 +1,4 @@
+use crate::group_store::{MembershipRepository, MetaRepository, MetadataRepository};
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{SyncGroupRequest, SyncGroupResponse};
 use tracing::{info, warn};
@@ -17,8 +18,9 @@ impl Handler<SyncGroupRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let meta =
-                    group_store::load_group_meta(&datastore, &group_id)?.ok_or_else(|| {
+                let meta = MetaRepository::new(&datastore)
+                    .load(&group_id)?
+                    .ok_or_else(|| {
                         eyre::eyre!("group not found locally; wait for P2P replication")
                     })?;
 
@@ -35,9 +37,9 @@ impl Handler<SyncGroupRequest> for ContextManager {
                     }
                 }
 
-                let member_count = group_store::count_group_members(&datastore, &group_id)? as u64;
+                let member_count = MembershipRepository::new(&datastore).count(&group_id)? as u64;
                 let context_count =
-                    group_store::count_group_contexts(&datastore, &group_id)? as u64;
+                    MetadataRepository::new(&datastore).count_contexts(&group_id)? as u64;
 
                 info!(?group_id, "group state refreshed from local store");
 

@@ -29,7 +29,7 @@ use calimero_store::key::{GroupChildIndex, GroupMetaValue};
 use calimero_store::Store;
 
 use super::walk_for_predicate;
-use crate::group_store::{nest_group, save_group_meta};
+use crate::group_store::{MetaRepository, NamespaceRepository};
 
 const APP_KEY_A: [u8; 32] = [0xA1; 32];
 
@@ -67,10 +67,14 @@ fn walk_handles_deep_nesting() {
         bytes[31] = i;
         let gid = ContextGroupId::from(bytes);
         groups.push(gid);
-        save_group_meta(&store, &gid, &meta_with_app_key(APP_KEY_A)).unwrap();
+        MetaRepository::new(&store)
+            .save(&gid, &meta_with_app_key(APP_KEY_A))
+            .unwrap();
     }
     for i in 0..10 {
-        nest_group(&store, &groups[i], &groups[i + 1]).unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&groups[i], &groups[i + 1])
+            .unwrap();
     }
 
     let entries = walk_for_predicate(&store, groups[0], APP_KEY_A).unwrap();
@@ -111,8 +115,12 @@ fn walk_no_infinite_loop_on_cycle() {
     let a = ContextGroupId::from([0xAAu8; 32]);
     let b = ContextGroupId::from([0xBBu8; 32]);
 
-    save_group_meta(&store, &a, &meta_with_app_key(APP_KEY_A)).unwrap();
-    save_group_meta(&store, &b, &meta_with_app_key(APP_KEY_A)).unwrap();
+    MetaRepository::new(&store)
+        .save(&a, &meta_with_app_key(APP_KEY_A))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&b, &meta_with_app_key(APP_KEY_A))
+        .unwrap();
 
     // Plant A → B AND B → A directly in the child index. This bypasses
     // `nest_group`'s cycle check — the equivalent of a corrupted store.

@@ -1,3 +1,4 @@
+use crate::group_store::MembershipRepository;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -26,7 +27,8 @@ impl Handler<SetMemberCapabilitiesRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        if group_store::get_group_member_role(&self.datastore, &group_id, &member)
+        if MembershipRepository::new(&self.datastore)
+            .role_of(&group_id, &member)
             .ok()
             .flatten()
             .is_none()

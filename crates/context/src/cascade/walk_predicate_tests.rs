@@ -18,7 +18,7 @@ use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 
 use super::walk_for_predicate;
-use crate::group_store::{nest_group, save_group_meta};
+use crate::group_store::{MetaRepository, NamespaceRepository};
 
 const APP_KEY_A: [u8; 32] = [0xA1; 32];
 const APP_KEY_B: [u8; 32] = [0xB2; 32];
@@ -52,11 +52,21 @@ fn fixture_homogeneous_tree(
     child_b: ContextGroupId,
     app_key: [u8; 32],
 ) {
-    save_group_meta(store, &root, &meta_with_app_key(app_key)).unwrap();
-    save_group_meta(store, &child_a, &meta_with_app_key(app_key)).unwrap();
-    save_group_meta(store, &child_b, &meta_with_app_key(app_key)).unwrap();
-    nest_group(store, &root, &child_a).unwrap();
-    nest_group(store, &root, &child_b).unwrap();
+    MetaRepository::new(store)
+        .save(&root, &meta_with_app_key(app_key))
+        .unwrap();
+    MetaRepository::new(store)
+        .save(&child_a, &meta_with_app_key(app_key))
+        .unwrap();
+    MetaRepository::new(store)
+        .save(&child_b, &meta_with_app_key(app_key))
+        .unwrap();
+    NamespaceRepository::new(store)
+        .nest(&root, &child_a)
+        .unwrap();
+    NamespaceRepository::new(store)
+        .nest(&root, &child_b)
+        .unwrap();
 }
 
 #[test]
@@ -93,11 +103,21 @@ fn predicate_mismatch_skips_descendant() {
     let child_a = group_id(0xC1); // app_key A — should match
     let child_b = group_id(0xC2); // app_key B — should NOT match
 
-    save_group_meta(&store, &root, &meta_with_app_key(APP_KEY_A)).unwrap();
-    save_group_meta(&store, &child_a, &meta_with_app_key(APP_KEY_A)).unwrap();
-    save_group_meta(&store, &child_b, &meta_with_app_key(APP_KEY_B)).unwrap();
-    nest_group(&store, &root, &child_a).unwrap();
-    nest_group(&store, &root, &child_b).unwrap();
+    MetaRepository::new(&store)
+        .save(&root, &meta_with_app_key(APP_KEY_A))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&child_a, &meta_with_app_key(APP_KEY_A))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&child_b, &meta_with_app_key(APP_KEY_B))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child_a)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child_b)
+        .unwrap();
 
     let entries = walk_for_predicate(&store, root, APP_KEY_A).unwrap();
     assert_eq!(entries.len(), 3, "walk must visit every group: {entries:?}");
@@ -133,7 +153,9 @@ fn walk_includes_signed_group() {
     // own settings.
     let store = test_store();
     let root = group_id(0xE0);
-    save_group_meta(&store, &root, &meta_with_app_key(APP_KEY_A)).unwrap();
+    MetaRepository::new(&store)
+        .save(&root, &meta_with_app_key(APP_KEY_A))
+        .unwrap();
 
     let entries = walk_for_predicate(&store, root, APP_KEY_A).unwrap();
 

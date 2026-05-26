@@ -1,3 +1,4 @@
+use crate::group_store::NamespaceRepository;
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::GetNamespaceIdentityRequest;
 
@@ -13,8 +14,8 @@ impl Handler<GetNamespaceIdentityRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let ns_id = group_store::resolve_namespace(&self.datastore, &group_id)?;
-            match group_store::get_namespace_identity(&self.datastore, &ns_id)? {
+            let ns_id = NamespaceRepository::new(&self.datastore).resolve(&group_id)?;
+            match NamespaceRepository::new(&self.datastore).identity(&ns_id)? {
                 Some((pk, _sk, _sender)) => Ok(Some((ns_id, pk))),
                 None => Ok(None),
             }

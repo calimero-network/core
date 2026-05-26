@@ -5,6 +5,7 @@
 //! without duplicating fixtures. Crate-internal: visible to all
 //! submodules under `group_store/`, invisible outside.
 
+use super::NamespaceRepository;
 use std::sync::Arc;
 
 use calimero_context_client::local_governance::GroupOp;
@@ -13,11 +14,8 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::UpgradePolicy;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::db::InMemoryDB;
-use calimero_store::key::GroupMetaValue;
+use calimero_store::key::{GroupMetaValue, GroupParentRef};
 use calimero_store::Store;
-
-use super::nest_group;
-
 pub(super) fn test_store() -> Store {
     Store::new(Arc::new(InMemoryDB::owned()))
 }
@@ -72,5 +70,30 @@ pub(super) fn sample_meta_with_admin(admin: PublicKey) -> GroupMetaValue {
 /// the result. Used by membership-path tests across both `tests.rs` and
 /// `membership/tests.rs`.
 pub(super) fn nest_for_test(store: &Store, parent: &ContextGroupId, child: &ContextGroupId) {
-    nest_group(store, parent, child).unwrap();
+    NamespaceRepository::new(store).nest(parent, child).unwrap();
+}
+
+/// Like [`nest_for_test`] but writes the parent edge directly to the
+/// store, bypassing `NamespaceRepository::nest`'s `MAX_NAMESPACE_DEPTH`
+/// guard. Used by tests that need to construct chains longer than the
+/// walkers tolerate (depth-overflow regression tests for
+/// `enumerate_inherited`, `is_open_chain_to_namespace`, etc.). The
+/// resulting tree is intentionally malformed from the production API's
+/// perspective — only the walker bail-out path should ever observe it.
+///
+/// **Asymmetric edge.** Only writes the child→parent `GroupParentRef`
+/// edge. The parent→child `GroupChildIndex` edge that real `nest`
+/// writes is *not* set, so `list_children` / `collect_descendants` /
+/// any downward walk will not see these synthetic edges. Use this
+/// helper only for tests that walk upward (resolve, check_path,
+/// is_open_chain_to_namespace, enumerate_inherited).
+pub(super) fn nest_for_test_unchecked(
+    store: &Store,
+    parent: &ContextGroupId,
+    child: &ContextGroupId,
+) {
+    let mut handle = store.handle();
+    handle
+        .put(&GroupParentRef::new(child.to_bytes()), &parent.to_bytes())
+        .unwrap();
 }

@@ -1,3 +1,4 @@
+use crate::group_store::MetadataRepository;
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::GetContextMetadataRequest;
 
@@ -14,7 +15,8 @@ impl Handler<GetContextMetadataRequest> for ContextManager {
         }: GetContextMetadataRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result = group_store::get_context_metadata(&self.datastore, &group_id, &context_id);
+        let result =
+            MetadataRepository::new(&self.datastore).context_metadata(&group_id, &context_id);
         ActorResponse::reply(result)
     }
 }

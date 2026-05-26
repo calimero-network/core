@@ -1,3 +1,4 @@
+use crate::group_store::MembershipRepository;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -30,10 +31,10 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
         };
 
         if let Err(err) = (|| -> eyre::Result<()> {
-            let admin_count = group_store::count_group_admins(&self.datastore, &group_id)?;
+            let admin_count = MembershipRepository::new(&self.datastore).count_admins(&group_id)?;
             let mut unique_admins_being_removed: BTreeSet<PublicKey> = BTreeSet::new();
             for id in &members {
-                let role = group_store::get_group_member_role(&self.datastore, &group_id, id)?;
+                let role = MembershipRepository::new(&self.datastore).role_of(&group_id, id)?;
                 if role == Some(GroupMemberRole::Admin) {
                     unique_admins_being_removed.insert(*id);
                 }

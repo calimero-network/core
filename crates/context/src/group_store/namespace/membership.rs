@@ -1,3 +1,4 @@
+use crate::group_store::{MembershipRepository, NamespaceRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_context_config::MemberCapabilities;
@@ -7,13 +8,8 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 use sha2::Digest;
 
+use super::super::emit_auto_follow_set_if_enabled;
 use super::super::membership::role_from_invited_role;
-use super::super::{
-    add_group_member, emit_auto_follow_set_if_enabled, has_direct_group_member, is_group_admin,
-    is_group_admin_or_has_capability,
-};
-use super::core::resolve_namespace;
-
 /// Namespace-scoped service for handling `RootOp::MemberJoined`.
 pub struct NamespaceMembershipService<'a> {
     store: &'a Store,
@@ -47,21 +43,23 @@ impl<'a> NamespaceMembershipService<'a> {
         // having a direct row — they still need the explicit row written
         // so subsequent direct-membership lookups (e.g. removal,
         // capability writes, list_group_members) reflect their join.
-        if has_direct_group_member(self.store, &group_id, member)? {
+        if MembershipRepository::new(self.store).has_direct_member(&group_id, member)? {
             return Ok(());
         }
 
         let role = role_from_invited_role(inv.invited_role);
-        if role == GroupMemberRole::Admin && !is_group_admin(self.store, &group_id, &inviter_pk)? {
+        if role == GroupMemberRole::Admin
+            && !MembershipRepository::new(self.store).is_admin(&group_id, &inviter_pk)?
+        {
             bail!("only admins can invite new admins");
         }
 
-        let resolved_ns = resolve_namespace(self.store, &group_id)?;
+        let resolved_ns = NamespaceRepository::new(self.store).resolve(&group_id)?;
         if resolved_ns.to_bytes() != self.namespace_id {
             bail!("group does not belong to this namespace");
         }
 
-        add_group_member(self.store, &group_id, member, role)?;
+        MembershipRepository::new(self.store).add_member(&group_id, member, role)?;
         // #2422 Option 2: synthesize an `AutoFollowSet` so the auto-follow
         // handler backfills any pre-existing contexts in this group. Same
         // rationale as the `GroupOp::MemberAdded` arm in `apply_group_op_
@@ -108,8 +106,7 @@ impl<'a> NamespaceMembershipService<'a> {
         group_id: &ContextGroupId,
         inviter_pk: &PublicKey,
     ) -> EyreResult<()> {
-        if !is_group_admin_or_has_capability(
-            self.store,
+        if !MembershipRepository::new(self.store).is_admin_or_has_capability(
             group_id,
             inviter_pk,
             MemberCapabilities::CAN_INVITE_MEMBERS,

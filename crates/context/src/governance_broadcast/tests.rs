@@ -192,7 +192,9 @@ fn plant_namespace_member(
     pk: &calimero_primitives::identity::PublicKey,
 ) {
     let gid = ContextGroupId::from(namespace_id);
-    crate::group_store::add_group_member(store, &gid, pk, GroupMemberRole::Member).expect("plant");
+    MembershipRepository::new(store)
+        .add_member(&gid, pk, GroupMemberRole::Member)
+        .expect("plant");
 }
 
 #[tokio::test]

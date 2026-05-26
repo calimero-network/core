@@ -13,7 +13,7 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use crate::group_store::{list_child_groups, load_group_meta};
+use crate::group_store::{MetaRepository, NamespaceRepository};
 
 /// One entry in a [`walk_for_predicate`] result.
 ///
@@ -88,7 +88,7 @@ pub(crate) fn walk_for_predicate(
             continue;
         }
 
-        let meta_opt = load_group_meta(store, &current)?;
+        let meta_opt = MetaRepository::new(store).load(&current)?;
         let matched = meta_opt
             .as_ref()
             .map(|m| m.app_key == from_app_key)
@@ -104,7 +104,7 @@ pub(crate) fn walk_for_predicate(
         // even when the store has a diamond / cycle (the visited check
         // at pop time would also catch this, but skipping here keeps
         // `stack` from blowing up to O(cycle-length²)).
-        for child in list_child_groups(store, &current)? {
+        for child in NamespaceRepository::new(store).list_children(&current)? {
             if !visited.contains(&child) {
                 stack.push(child);
             }

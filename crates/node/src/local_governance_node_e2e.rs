@@ -1,18 +1,13 @@
 //! `ContextClient::apply_signed_group_op` → `group_store`.
 //!
 //! Complements `calimero-context` store-only tests and `calimero-network` gossipsub tests.
-
 use std::sync::Arc;
 use std::time::Duration;
 
 use actix::Actor;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager as BlobStore, FileSystem};
-use calimero_context::group_store::{
-    add_group_member, apply_local_signed_group_op, check_group_membership, count_group_members,
-    get_group_member_value, get_local_gov_nonce, save_group_meta, store_group_signing_key,
-    store_namespace_identity,
-};
+use calimero_context::group_store::{apply_local_signed_group_op, get_local_gov_nonce};
 use calimero_context::ContextManager;
 use calimero_context_client::client::ContextClient;
 use calimero_context_client::group::SetMemberAutoFollowRequest;
@@ -275,8 +270,12 @@ async fn apply_signed_group_op_via_context_client() {
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
 
-    save_group_meta(&node.store, &gid, &sample_meta(admin_pk)).expect("save_group_meta");
-    add_group_member(&node.store, &gid, &admin_pk, GroupMemberRole::Admin).expect("add admin");
+    calimero_context::group_store::MetaRepository::new(&node.store)
+        .save(&gid, &sample_meta(admin_pk))
+        .expect("save_group_meta");
+    calimero_context::group_store::MembershipRepository::new(&node.store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .expect("add admin");
 
     let new_member = PrivateKey::random(&mut rng).public_key();
 
@@ -304,7 +303,9 @@ async fn apply_signed_group_op_via_context_client() {
     }
 
     assert!(
-        check_group_membership(&node.store, &gid, &new_member).expect("check_group_membership"),
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .is_member(&gid, &new_member)
+            .expect("check_group_membership"),
         "member should be present after apply_signed_group_op"
     );
     assert_eq!(
@@ -346,25 +347,21 @@ async fn set_member_auto_follow_handler_error_paths() {
     let alice_sk = PrivateKey::random(&mut rng);
     let stranger = PrivateKey::random(&mut rng).public_key();
 
-    save_group_meta(&node.store, &gid, &sample_meta(admin_sk.public_key())).unwrap();
-    add_group_member(
-        &node.store,
-        &gid,
-        &admin_sk.public_key(),
-        GroupMemberRole::Admin,
-    )
-    .unwrap();
-    add_group_member(
-        &node.store,
-        &gid,
-        &alice_sk.public_key(),
-        GroupMemberRole::Member,
-    )
-    .unwrap();
+    calimero_context::group_store::MetaRepository::new(&node.store)
+        .save(&gid, &sample_meta(admin_sk.public_key()))
+        .unwrap();
+    calimero_context::group_store::MembershipRepository::new(&node.store)
+        .add_member(&gid, &admin_sk.public_key(), GroupMemberRole::Admin)
+        .unwrap();
+    calimero_context::group_store::MembershipRepository::new(&node.store)
+        .add_member(&gid, &alice_sk.public_key(), GroupMemberRole::Member)
+        .unwrap();
 
     // Admin needs a signing key registered so preflight can resolve one
     // when admin acts as requester.
-    store_group_signing_key(&node.store, &gid, &admin_sk.public_key(), &admin_sk).unwrap();
+    calimero_context::group_store::SigningKeysRepository::new(&node.store)
+        .store_key(&gid, &admin_sk.public_key(), &admin_sk)
+        .unwrap();
 
     // Case 1: unknown group — preflight bails before the membership
     // check, before signing, before any async work.
@@ -407,7 +404,8 @@ async fn set_member_auto_follow_handler_error_paths() {
     // Alice's flags remain at the default produced by `add_group_member`
     // — neither failed call mutated her row. The default is
     // `{ contexts: true, subgroups: false }` per #2422.
-    let alice_row = get_group_member_value(&node.store, &gid, &alice_sk.public_key())
+    let alice_row = calimero_context::group_store::MembershipRepository::new(&node.store)
+        .member_value(&gid, &alice_sk.public_key())
         .unwrap()
         .expect("alice row");
     assert!(alice_row.auto_follow.contexts);
@@ -509,13 +507,18 @@ fn provision_tee_owner(node: &TestNode, gid: &ContextGroupId, rng: &mut OsRng) -
     let owner_sk = PrivateKey::random(rng);
     let owner_pk = owner_sk.public_key();
 
-    save_group_meta(&node.store, gid, &sample_meta(owner_pk)).expect("save_group_meta");
-    add_group_member(&node.store, gid, &owner_pk, GroupMemberRole::Admin).expect("add owner admin");
+    calimero_context::group_store::MetaRepository::new(&node.store)
+        .save(gid, &sample_meta(owner_pk))
+        .expect("save_group_meta");
+    calimero_context::group_store::MembershipRepository::new(&node.store)
+        .add_member(gid, &owner_pk, GroupMemberRole::Admin)
+        .expect("add owner admin");
 
     // The namespace identity is what `admit_tee_node` uses as the verifier
     // identity AND signing key. Without it the handler bails with
     // "node has no configured group identity for TEE admission".
-    store_namespace_identity(&node.store, gid, &owner_pk, &owner_sk, &[0u8; 32])
+    calimero_context::group_store::NamespaceRepository::new(&node.store)
+        .store_identity(gid, &owner_pk, &owner_sk, &[0u8; 32])
         .expect("store_namespace_identity");
 
     // Policy lives on the namespace governance op log; admin-signed.
@@ -570,9 +573,16 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
     let owner_pk = provision_tee_owner(&node, &gid, &mut rng);
 
     // Sanity: only the owner is a member before the announce.
-    assert_eq!(count_group_members(&node.store, &gid).expect("count"), 1);
+    assert_eq!(
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .count(&gid)
+            .expect("count"),
+        1
+    );
     assert!(
-        check_group_membership(&node.store, &gid, &owner_pk).expect("owner membership"),
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .is_member(&gid, &owner_pk)
+            .expect("owner membership"),
         "owner must be the sole member before the announce"
     );
 
@@ -599,7 +609,8 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
         .expect("deliver NetworkEvent to node actor");
 
     let admitted = wait_until(|| {
-        get_group_member_value(&node.store, &gid, &announcer_pk)
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .member_value(&gid, &announcer_pk)
             .ok()
             .flatten()
             .map(|v| v.role == GroupMemberRole::ReadOnlyTee)
@@ -612,7 +623,9 @@ async fn ns_announce_admits_announcer_as_read_only_tee_member() {
         "announcer must be admitted as a ReadOnlyTee member after a TeeAttestationAnnounce on the ns/ topic"
     );
     assert_eq!(
-        count_group_members(&node.store, &gid).expect("count after admit"),
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .count(&gid)
+            .expect("count after admit"),
         2,
         "member_count must increment to 2 (owner + admitted TEE node)"
     );
@@ -660,7 +673,8 @@ async fn group_topic_announce_is_not_routed_as_namespace_admission() {
     // So the moment we get here, the #2096-shape regression (synchronous
     // mis-routing) is already decided — no member row can exist.
     assert!(
-        get_group_member_value(&node.store, &gid, &announcer_pk)
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .member_value(&gid, &announcer_pk)
             .ok()
             .flatten()
             .is_none(),
@@ -672,7 +686,8 @@ async fn group_topic_announce_is_not_routed_as_namespace_admission() {
     // row, then assert none did. (There is no positive signal to await for a
     // correctly-ignored announce without adding a test hook to production code.)
     let leaked = wait_until(|| {
-        get_group_member_value(&node.store, &gid, &announcer_pk)
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .member_value(&gid, &announcer_pk)
             .ok()
             .flatten()
             .is_some()
@@ -684,7 +699,9 @@ async fn group_topic_announce_is_not_routed_as_namespace_admission() {
         "a TeeAttestationAnnounce on a group/ topic must not be routed into namespace admission"
     );
     assert_eq!(
-        count_group_members(&node.store, &gid).expect("count"),
+        calimero_context::group_store::MembershipRepository::new(&node.store)
+            .count(&gid)
+            .expect("count"),
         1,
         "no member should be admitted from a group/ topic announce (owner only)"
     );

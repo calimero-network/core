@@ -1,3 +1,4 @@
+use calimero_context::group_store::{MetadataRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -21,16 +22,14 @@ pub async fn handler(
         Err(err) => return err.into_response(),
     };
 
-    let groups = match calimero_context::group_store::list_child_groups(&state.store, &namespace_id)
-    {
+    let groups = match NamespaceRepository::new(&state.store).list_children(&namespace_id) {
         Ok(groups) => groups,
         Err(err) => return parse_api_error(err).into_response(),
     };
 
     let mut entries = Vec::with_capacity(groups.len());
     for group_id in groups {
-        let name = match calimero_context::group_store::get_group_metadata(&state.store, &group_id)
-        {
+        let name = match MetadataRepository::new(&state.store).group_metadata(&group_id) {
             Ok(rec) => rec.and_then(|r| r.name),
             Err(err) => {
                 error!(

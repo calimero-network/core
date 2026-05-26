@@ -40,12 +40,10 @@
 //! AND lets us assert that the second (Op B) apply lands in the
 //! predicate-skip branch, which is the C1 regression guard.
 
+use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use calimero_context::governance_dag::{signed_op_to_delta, GroupGovernanceApplier};
-use calimero_context::group_store::{
-    add_group_member, load_group_meta, nest_group, save_group_meta,
-};
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_dag::DagStore;
@@ -95,8 +93,12 @@ fn create_group(
     app_key: [u8; 32],
     target: ApplicationId,
 ) {
-    save_group_meta(store, gid, &meta(admin, app_key, target)).unwrap();
-    add_group_member(store, gid, &admin, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(store)
+        .save(gid, &meta(admin, app_key, target))
+        .unwrap();
+    MembershipRepository::new(store)
+        .add_member(gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
 }
 
 /// Build the per-replica fixture: root R on K1 + one child R/A on K1,
@@ -107,7 +109,7 @@ fn build_replica(admin_pk: PublicKey) -> (Store, ContextGroupId, ContextGroupId)
     let r_a = ContextGroupId::from([0x71; 32]);
     create_group(&store, &r, admin_pk, APP_KEY_1, app_id_1());
     create_group(&store, &r_a, admin_pk, APP_KEY_1, app_id_1());
-    nest_group(&store, &r, &r_a).unwrap();
+    NamespaceRepository::new(&store).nest(&r, &r_a).unwrap();
     (store, r, r_a)
 }
 
@@ -205,7 +207,7 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
         );
         // Until op_a arrives, op_b has not been applied — store_b's
         // groups are still on K1.
-        let pre = load_group_meta(&store_b, &root).unwrap().unwrap();
+        let pre = MetaRepository::new(&store_b).load(&root).unwrap().unwrap();
         assert_eq!(
             pre.app_key, APP_KEY_1,
             "replica B must still be on K1 while op_b is pending"
@@ -231,10 +233,10 @@ async fn divergent_cascade_apply_order_converges_via_predicate_skip() {
     // physically receiving the ops in opposite orders. The DAG-causal
     // winner is op_a (it's op_b's ancestor), so the final app_key on
     // both replicas is K2 / APP_ID_2.
-    let final_a_root = load_group_meta(&store_a, &root).unwrap().unwrap();
-    let final_a_child = load_group_meta(&store_a, &child).unwrap().unwrap();
-    let final_b_root = load_group_meta(&store_b, &root).unwrap().unwrap();
-    let final_b_child = load_group_meta(&store_b, &child).unwrap().unwrap();
+    let final_a_root = MetaRepository::new(&store_a).load(&root).unwrap().unwrap();
+    let final_a_child = MetaRepository::new(&store_a).load(&child).unwrap().unwrap();
+    let final_b_root = MetaRepository::new(&store_b).load(&root).unwrap().unwrap();
+    let final_b_child = MetaRepository::new(&store_b).load(&child).unwrap().unwrap();
 
     assert_eq!(
         final_a_root.app_key, APP_KEY_2,

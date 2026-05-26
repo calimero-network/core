@@ -1,3 +1,4 @@
+use crate::group_store::CapabilitiesRepository;
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::StoreSubgroupVisibilityRequest;
 use calimero_context_config::VisibilityMode;
@@ -16,7 +17,8 @@ impl Handler<StoreSubgroupVisibilityRequest> for ContextManager {
             0 => VisibilityMode::Open,
             _ => VisibilityMode::Restricted,
         };
-        let result = group_store::set_subgroup_visibility(&self.datastore, &group_id, visibility);
+        let result = CapabilitiesRepository::new(&self.datastore)
+            .set_subgroup_visibility(&group_id, visibility);
         ActorResponse::reply(result)
     }
 }

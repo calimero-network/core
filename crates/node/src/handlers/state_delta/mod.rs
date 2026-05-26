@@ -1,8 +1,8 @@
 //! State delta handling for BroadcastMessage::StateDelta
 //!
 //! **SRP**: This module has ONE job - process state deltas from peers using DAG
-
 use calimero_context::group_store::{membership_status_at, MembershipStatus};
+use calimero_context::group_store::{DenyListRepository, GroupKeyring, NamespaceRepository};
 use calimero_context_client::client::ContextClient;
 use calimero_context_config::types::GovernancePosition;
 use calimero_crypto::Nonce;
@@ -69,14 +69,13 @@ async fn lookup_group_key_with_wait(
         // mistaken for being held across the sleep below.
         let resolved = {
             let store = context_client.datastore();
-            let direct =
-                calimero_context::group_store::load_group_key_by_id(store, group_id, key_id)?;
+            let direct = GroupKeyring::new(store, *group_id).load_key_by_id(key_id)?;
             match direct {
                 Some(k) => Some(k),
                 None => {
-                    let ns_id = calimero_context::group_store::resolve_namespace(store, group_id)?;
+                    let ns_id = NamespaceRepository::new(store).resolve(group_id)?;
                     if &ns_id != group_id {
-                        calimero_context::group_store::load_group_key_by_id(store, &ns_id, key_id)?
+                        GroupKeyring::new(store, ns_id).load_key_by_id(key_id)?
                     } else {
                         None
                     }
@@ -655,12 +654,9 @@ pub(crate) async fn apply_authorized_state_delta(
     // between the delta being authored and the drain could slip a write
     // through, since the cross-DAG check via `membership_status_at` returns
     // `Member(role)` with a wildcard role that the drain matches against.
-    if calimero_context::group_store::is_read_only_for_context(
-        node_clients.context.datastore(),
-        &context_id,
-        &author_id,
-    )
-    .unwrap_or(false)
+    if NamespaceRepository::new(node_clients.context.datastore())
+        .is_read_only_for_context(&context_id, &author_id)
+        .unwrap_or(false)
     {
         warn!(
             %context_id,
@@ -1141,12 +1137,9 @@ pub async fn handle_state_delta(
     // performs this check (so the governance-pending drain path is
     // covered), but doing it here too avoids paying for drain plus the
     // cross-DAG membership lookup on a delta we'll reject anyway.
-    if calimero_context::group_store::is_read_only_for_context(
-        node_clients.context.datastore(),
-        &context_id,
-        &author_id,
-    )
-    .unwrap_or(false)
+    if NamespaceRepository::new(node_clients.context.datastore())
+        .is_read_only_for_context(&context_id, &author_id)
+        .unwrap_or(false)
     {
         warn!(
             %context_id,
@@ -1186,20 +1179,17 @@ pub async fn handle_state_delta(
     // deltas whose authorization is decided by the cross-DAG check
     // against the original position, which is the authoritative
     // outcome.
-    let denied = calimero_context::group_store::is_author_denied_for_context(
-        node_clients.context.datastore(),
-        &context_id,
-        &author_id,
-    )
-    .unwrap_or_else(|err| {
-        warn!(
-            %context_id,
-            %author_id,
-            ?err,
-            "Deny-list lookup failed, falling through to cross-DAG check"
-        );
-        false
-    });
+    let denied = DenyListRepository::new(node_clients.context.datastore())
+        .is_author_denied_for_context(&context_id, &author_id)
+        .unwrap_or_else(|err| {
+            warn!(
+                %context_id,
+                %author_id,
+                ?err,
+                "Deny-list lookup failed, falling through to cross-DAG check"
+            );
+            false
+        });
     if denied {
         warn!(
             %context_id,
@@ -2324,12 +2314,9 @@ async fn request_missing_deltas(
                     // by a ReadOnly / ReadOnlyTee identity passes the
                     // membership check on the catchup path even
                     // though gossip rejects the same envelope.
-                    if calimero_context::group_store::is_read_only_for_context(
-                        &datastore,
-                        &context_id,
-                        &response_author,
-                    )
-                    .unwrap_or(false)
+                    if NamespaceRepository::new(&datastore)
+                        .is_read_only_for_context(&context_id, &response_author)
+                        .unwrap_or(false)
                     {
                         warn!(
                             %context_id,
@@ -2674,12 +2661,9 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
     // `apply_authorized_state_delta`. Snapshot-sync replay must enforce the
     // same per-context role gate; otherwise a peer that became ReadOnly
     // between authoring and replay slips a write through.
-    if calimero_context::group_store::is_read_only_for_context(
-        context_client.datastore(),
-        &context_id,
-        &buffered.author_id,
-    )
-    .unwrap_or(false)
+    if NamespaceRepository::new(context_client.datastore())
+        .is_read_only_for_context(&context_id, &buffered.author_id)
+        .unwrap_or(false)
     {
         warn!(
             %context_id,

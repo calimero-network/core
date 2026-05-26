@@ -1,6 +1,5 @@
 //! DAG-based governance: applies [`SignedGroupOp`] and [`SignedNamespaceOp`]
 //! in causal order.
-
 use std::sync::{Arc, Mutex};
 
 use calimero_context_client::local_governance::{SignedGroupOp, SignedNamespaceOp};

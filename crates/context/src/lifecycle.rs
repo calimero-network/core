@@ -8,14 +8,14 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::UpgradePolicy;
 use calimero_store::key::GroupUpgradeStatus;
 
-use crate::group_store;
+use crate::group_store::{MetaRepository, NamespaceRepository, UpgradesRepository};
 use crate::ContextManager;
 
 impl ContextManager {
     /// Scans the store for in-progress group upgrades and re-spawns
     /// propagators for each. Called during actor startup for crash recovery.
     pub(crate) fn recover_in_progress_upgrades(&mut self, ctx: &mut actix::Context<Self>) {
-        let upgrades = match group_store::enumerate_in_progress_upgrades(&self.datastore) {
+        let upgrades = match UpgradesRepository::new(&self.datastore).enumerate_in_progress() {
             Ok(u) => u,
             Err(err) => {
                 tracing::error!(
@@ -59,7 +59,7 @@ impl ContextManager {
                 .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
                 .map(|method| calimero_context_client::messages::MigrationParams { method });
 
-            let meta = match group_store::load_group_meta(&self.datastore, &group_id) {
+            let meta = match MetaRepository::new(&self.datastore).load(&group_id) {
                 Ok(Some(m)) => m,
                 Ok(None) => {
                     tracing::warn!(?group_id, "group not found during recovery, skipping");
@@ -107,15 +107,16 @@ impl ContextManager {
             let node_client = node_client.clone();
 
             actix::spawn(async move {
-                let groups = match group_store::enumerate_all_groups(&datastore, 0, usize::MAX) {
+                let groups = match MetaRepository::new(&datastore).enumerate_all(0, usize::MAX) {
                     Ok(g) => g,
                     Err(_) => return,
                 };
 
+                let namespaces = NamespaceRepository::new(&datastore);
                 let mut seen_ns = std::collections::HashSet::new();
                 for (group_id_bytes, _meta) in &groups {
                     let gid = ContextGroupId::from(*group_id_bytes);
-                    if let Ok(ns_id) = group_store::resolve_namespace(&datastore, &gid) {
+                    if let Ok(ns_id) = namespaces.resolve(&gid) {
                         let ns_bytes = ns_id.to_bytes();
                         if !seen_ns.insert(ns_bytes) {
                             continue;

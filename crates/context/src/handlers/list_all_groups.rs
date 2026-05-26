@@ -1,3 +1,4 @@
+use crate::group_store::{MembershipRepository, MetaRepository, MetadataRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{GroupSummary, ListAllGroupsRequest};
 use calimero_context_config::types::ContextGroupId;
@@ -14,7 +15,7 @@ impl Handler<ListAllGroupsRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let entries = group_store::enumerate_all_groups(&self.datastore, offset, limit)?;
+            let entries = MetaRepository::new(&self.datastore).enumerate_all(offset, limit)?;
 
             let mut summaries = Vec::with_capacity(entries.len());
             for (group_id_bytes, meta) in entries {
@@ -22,9 +23,11 @@ impl Handler<ListAllGroupsRequest> for ContextManager {
                 let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
                     continue;
                 };
-                if group_store::check_group_membership(&self.datastore, &group_id, &node_identity)?
+                if MembershipRepository::new(&self.datastore)
+                    .is_member(&group_id, &node_identity)?
                 {
-                    let name = group_store::get_group_metadata(&self.datastore, &group_id)
+                    let name = MetadataRepository::new(&self.datastore)
+                        .group_metadata(&group_id)
                         .ok()
                         .flatten()
                         .and_then(|r| r.name);

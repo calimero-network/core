@@ -15,7 +15,6 @@
 //! specialized for `ContextRegistered`; this module is its general-
 //! purpose peer covering all op variants that downstream handlers care
 //! about.
-
 use std::sync::OnceLock;
 
 use calimero_primitives::context::{ContextId, GroupMemberRole};

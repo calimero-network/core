@@ -11,6 +11,9 @@ use tracing::{info, warn};
 
 use crate::governance_broadcast::ObserveDelivery;
 use crate::group_store;
+use crate::group_store::{
+    GroupKeyring, MembershipRepository, NamespaceRepository, SigningKeysRepository,
+};
 use crate::ContextManager;
 
 /// Publish a `RootOp::KeyDelivery` wrapping the namespace group key for
@@ -31,9 +34,9 @@ async fn deliver_group_key_to_member(
     signer_sk: &PrivateKey,
     member: &PublicKey,
 ) -> eyre::Result<()> {
-    let namespace_id = group_store::resolve_namespace(store, group_id)?;
+    let namespace_id = NamespaceRepository::new(store).resolve(group_id)?;
 
-    let Some((_key_id, group_key)) = group_store::load_current_group_key(store, group_id)? else {
+    let Some((_key_id, group_key)) = GroupKeyring::new(store, *group_id).load_current_key()? else {
         // The verifier admitted the node against this namespace's policy but
         // holds no group key for it — there is nothing to deliver. This should
         // not happen for a namespace owner/admin, but bail loudly rather than
@@ -41,7 +44,7 @@ async fn deliver_group_key_to_member(
         eyre::bail!("verifier has no group key for namespace; cannot deliver to admitted TEE node");
     };
 
-    let envelope = group_store::wrap_group_key_for_member(signer_sk, member, &group_key)?;
+    let envelope = GroupKeyring::wrap_for_member(signer_sk, member, &group_key)?;
 
     let delivery_op = NamespaceOp::Root(RootOp::KeyDelivery {
         group_id: group_id.to_bytes(),
@@ -154,7 +157,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         // its own direct row, and skipping the write here would leave
         // the TEE without a per-node row that subsequent direct-membership
         // operations expect.
-        match group_store::has_direct_group_member(&self.datastore, &group_id, &member) {
+        match MembershipRepository::new(&self.datastore).has_direct_member(&group_id, &member) {
             Ok(true) => return ActorResponse::reply(Ok(())),
             Ok(false) => {}
             Err(e) => return ActorResponse::reply(Err(e)),
@@ -170,7 +173,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
 
         if let Some(ref sk) = node_sk {
             if let Err(err) =
-                group_store::store_group_signing_key(&self.datastore, &group_id, &requester, sk)
+                SigningKeysRepository::new(&self.datastore).store_key(&group_id, &requester, sk)
             {
                 tracing::warn!(?group_id, %requester, error = %err, "Failed to persist group signing key");
             }
@@ -180,7 +183,8 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
         let node_client = self.node_client.clone();
         let ack_router = Arc::clone(&self.ack_router);
         let effective_signing_key = node_sk.or_else(|| {
-            group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
+            SigningKeysRepository::new(&self.datastore)
+                .get_key(&group_id, &requester)
                 .ok()
                 .flatten()
         });

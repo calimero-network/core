@@ -10,11 +10,10 @@
 //! + the apply arm in `group_store::apply_group_op_mutations`, and that
 //! is exactly what `apply_local_signed_group_op` drives.
 
+use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
-use calimero_context::group_store::{
-    add_group_member, apply_local_signed_group_op, load_group_meta, nest_group, save_group_meta,
-};
+use calimero_context::group_store::apply_local_signed_group_op;
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
@@ -62,8 +61,12 @@ fn create_group(
     app_key: [u8; 32],
     target: ApplicationId,
 ) {
-    save_group_meta(store, gid, &meta(admin, app_key, target)).unwrap();
-    add_group_member(store, gid, &admin, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(store)
+        .save(gid, &meta(admin, app_key, target))
+        .unwrap();
+    MembershipRepository::new(store)
+        .add_member(gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
 }
 
 #[test]
@@ -85,9 +88,11 @@ fn cascade_target_application_set_updates_all_matching_descendants_and_skips_sib
     create_group(&store, &r_b, admin_pk, APP_KEY_1, app_id_1());
     create_group(&store, &r_b_b1, admin_pk, APP_KEY_1, app_id_1());
 
-    nest_group(&store, &r, &r_a).unwrap();
-    nest_group(&store, &r, &r_b).unwrap();
-    nest_group(&store, &r_b, &r_b_b1).unwrap();
+    NamespaceRepository::new(&store).nest(&r, &r_a).unwrap();
+    NamespaceRepository::new(&store).nest(&r, &r_b).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&r_b, &r_b_b1)
+        .unwrap();
 
     // Sibling namespace S: completely separate root with one child.
     // Same APP_KEY_1 as R so we prove the cascade's tree-walk is what
@@ -97,11 +102,14 @@ fn cascade_target_application_set_updates_all_matching_descendants_and_skips_sib
 
     create_group(&store, &s, admin_pk, APP_KEY_1, app_id_1());
     create_group(&store, &s_x, admin_pk, APP_KEY_1, app_id_1());
-    nest_group(&store, &s, &s_x).unwrap();
+    NamespaceRepository::new(&store).nest(&s, &s_x).unwrap();
 
     // Sanity: every group starts on (APP_KEY_1, APP_ID_1).
     for gid in [&r, &r_a, &r_b, &r_b_b1, &s, &s_x] {
-        let m = load_group_meta(&store, gid).unwrap().expect("meta");
+        let m = MetaRepository::new(&store)
+            .load(gid)
+            .unwrap()
+            .expect("meta");
         assert_eq!(m.app_key, APP_KEY_1);
         assert_eq!(m.target_application_id, app_id_1());
     }
@@ -129,7 +137,10 @@ fn cascade_target_application_set_updates_all_matching_descendants_and_skips_sib
 
     // Every group under R must now be on (APP_KEY_2, APP_ID_2).
     for gid in [&r, &r_a, &r_b, &r_b_b1] {
-        let m = load_group_meta(&store, gid).unwrap().expect("meta after");
+        let m = MetaRepository::new(&store)
+            .load(gid)
+            .unwrap()
+            .expect("meta after");
         assert_eq!(
             m.app_key,
             APP_KEY_2,
@@ -147,7 +158,10 @@ fn cascade_target_application_set_updates_all_matching_descendants_and_skips_sib
     // Sibling namespace S must be untouched — the cascade walked
     // descendants of R only, not "every group with app_key == K1".
     for gid in [&s, &s_x] {
-        let m = load_group_meta(&store, gid).unwrap().expect("sibling meta");
+        let m = MetaRepository::new(&store)
+            .load(gid)
+            .unwrap()
+            .expect("sibling meta");
         assert_eq!(
             m.app_key,
             APP_KEY_1,

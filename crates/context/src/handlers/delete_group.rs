@@ -1,3 +1,4 @@
+use crate::group_store::{MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -46,7 +47,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
         // tree invariant, every group except the root has a reachable
         // namespace, so this always succeeds for valid (non-root) targets.
         let namespace_identity =
-            match group_store::resolve_namespace_identity(&self.datastore, &group_id) {
+            match NamespaceRepository::new(&self.datastore).resolve_identity(&group_id) {
                 Ok(Some((pk, sk, _sender))) => (pk, sk),
                 Ok(None) => {
                     return ActorResponse::reply(Err(eyre::eyre!(
@@ -58,14 +59,14 @@ impl Handler<DeleteGroupRequest> for ContextManager {
 
         // Sync validation + cascade payload pre-computation.
         let validated = (|| -> eyre::Result<(group_store::CascadePayload, [u8; 32])> {
-            let Some(meta) = group_store::load_group_meta(&self.datastore, &group_id)? else {
+            let Some(meta) = MetaRepository::new(&self.datastore).load(&group_id)? else {
                 bail!("group '{group_id:?}' not found");
             };
 
             // Reject the namespace root explicitly; it has no parent edge to
             // identify it as a subtree, and the namespace-deletion path is
             // separate (delete_namespace).
-            let namespace_id = group_store::resolve_namespace(&self.datastore, &group_id)?;
+            let namespace_id = NamespaceRepository::new(&self.datastore).resolve(&group_id)?;
             if namespace_id == group_id {
                 bail!(
                     "cannot delete the namespace root '{group_id:?}': use delete_namespace instead"
@@ -85,7 +86,8 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                     })?;
             }
 
-            let payload = group_store::collect_subtree_for_cascade(&self.datastore, &group_id)?;
+            let payload =
+                NamespaceRepository::new(&self.datastore).collect_subtree_for_cascade(&group_id)?;
             Ok((payload, namespace_id.to_bytes()))
         })();
 

@@ -13,7 +13,6 @@
 //!   rate-limits the per-(peer, namespace) response at
 //!   `BEACON_INTERVAL / 2` — see
 //!   [`Handler<EmitOutOfCycleBeacon>`](crate::readiness::ReadinessManager).
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
