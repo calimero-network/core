@@ -1,22 +1,22 @@
 //! Unit tests for [`super::walk_for_predicate`] depth + cycle safety.
 //!
-//! The walk maintains its own visited-set and node cap (see the
-//! `Cycle and depth safety` doc on `walk_for_predicate`). The production
-//! tree-shape invariant is maintained by
+//! The walk maintains its own visited-set (see the `Cycle and depth
+//! safety` doc on `walk_for_predicate`). The production tree-shape
+//! invariant is maintained by
 //! [`nest_group`][crate::group_store::nest_group]'s pre-nest cycle check,
-//! so a real production store never trips either guard. These tests
-//! cover two paranoia surfaces:
+//! so a real production store never re-pops a node. These tests cover
+//! two paranoia surfaces:
 //!
-//! * A **deep but legitimate** chain (depth 10) — the walk must succeed,
-//!   not falsely trip its cap. Asserts the cap is generous enough for
-//!   the realistic upper bound of namespace nesting.
+//! * A **deep but legitimate** chain (depth 10) — the walk must succeed
+//!   and emit every node exactly once. Asserts there is no false cap on
+//!   realistic nesting.
 //! * A **synthesized cycle** at the store level (parent A → child B →
 //!   child A, bypassing `nest_group`'s safety check via direct
-//!   `GroupChildIndex` writes) — the walk must terminate cleanly rather
-//!   than spinning forever, returning either bounded output or an error.
-//!   This guards against a future bug that lets a cycle land in the
-//!   child-index causing the cascade apply to wedge the namespace
-//!   actor.
+//!   `GroupChildIndex` writes) — the walk's visited-set must terminate
+//!   the traversal cleanly via `Ok` with deduplicated entries, rather
+//!   than spinning forever. This guards against a future bug that lets
+//!   a cycle land in the child-index causing the cascade apply to wedge
+//!   the namespace actor.
 
 use std::sync::Arc;
 
@@ -102,8 +102,11 @@ fn walk_handles_deep_nesting() {
 fn walk_no_infinite_loop_on_cycle() {
     // Synthesize an A → B → A cycle by writing directly to the
     // `GroupChildIndex` keys (bypassing `nest_group`'s pre-nest cycle
-    // check). The walk's own visited-set + node cap must terminate the
-    // traversal cleanly rather than spinning the executor.
+    // check). The walk's visited-set must terminate the traversal
+    // cleanly — returning `Ok` with deduplicated entries — rather than
+    // spinning the executor. `walk_for_predicate` has no node cap; the
+    // visited-set is the sole cycle-termination mechanism, so the only
+    // observable outcome on a cycled store is a bounded `Ok`.
     let store = test_store();
     let a = ContextGroupId::from([0xAAu8; 32]);
     let b = ContextGroupId::from([0xBBu8; 32]);
@@ -123,41 +126,21 @@ fn walk_no_infinite_loop_on_cycle() {
             .unwrap();
     }
 
-    // The walk must terminate. Either:
-    //   * Returns Ok with a deduped result (visited-set caught the
-    //     cycle and re-pop of A was skipped) — preferred outcome.
-    //   * Returns Err because the node cap fired — also acceptable; the
-    //     point is the executor isn't blocked.
-    let result = walk_for_predicate(&store, a, APP_KEY_A);
+    let entries = walk_for_predicate(&store, a, APP_KEY_A)
+        .expect("visited-set must terminate traversal on cycled store");
 
-    match result {
-        Ok(entries) => {
-            // Visited-set path: A and B each appear at most once.
-            let emitted: std::collections::HashSet<_> =
-                entries.iter().map(|e| e.group_id).collect();
-            assert_eq!(
-                emitted.len(),
-                entries.len(),
-                "walk on a cycle must not emit duplicates: {entries:?}"
-            );
-            assert!(emitted.contains(&a), "walk must include the signed group A");
-            // B may or may not be visited depending on the order — what
-            // matters is no duplicates and bounded output.
-            assert!(
-                entries.len() <= 2,
-                "cycle over {{A, B}} must yield at most 2 entries, got {}",
-                entries.len()
-            );
-        }
-        Err(e) => {
-            // Node-cap path: at least the executor terminated. Sanity-check
-            // the error mentions the cycle / cap so an operator can
-            // diagnose store corruption.
-            let msg = e.to_string();
-            assert!(
-                msg.contains("cycle") || msg.contains("cap"),
-                "cycle-termination error should mention cycle/cap, got: {msg}"
-            );
-        }
-    }
+    // Each visited group appears at most once.
+    let emitted: std::collections::HashSet<_> = entries.iter().map(|e| e.group_id).collect();
+    assert_eq!(
+        emitted.len(),
+        entries.len(),
+        "walk on a cycle must not emit duplicates: {entries:?}"
+    );
+    assert!(emitted.contains(&a), "walk must include the signed group A");
+    // {A, B} are the only reachable nodes — visited-set must bound output.
+    assert!(
+        entries.len() <= 2,
+        "cycle over {{A, B}} must yield at most 2 entries, got {}",
+        entries.len()
+    );
 }

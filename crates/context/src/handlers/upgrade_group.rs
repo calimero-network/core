@@ -872,8 +872,16 @@ fn dispatch_cascade(
     // don't need an explicit key.
     if let (Some(sk), Some((node_pk, _))) = (signing_key, node_identity) {
         if requester == node_pk {
-            let _ =
-                group_store::store_group_signing_key(&actor.datastore, &group_id, &requester, &sk);
+            if let Err(err) =
+                group_store::store_group_signing_key(&actor.datastore, &group_id, &requester, &sk)
+            {
+                warn!(
+                    target: "calimero::cascade",
+                    ?err,
+                    ?group_id,
+                    "failed to auto-store signing key for cascade — next cascade on this group will require explicit key"
+                );
+            }
         }
     }
 
