@@ -81,10 +81,14 @@ pub use self::membership::{
     subgroup_visible_to, trusted_anchors_for_group, GroupMembershipView, MembershipPath,
     MembershipPolicy, MembershipStatus,
 };
+pub use self::meta::MetaRepository;
+#[allow(deprecated)]
 pub use self::meta::{
     compute_group_state_hash, compute_group_state_hash_after_remove, delete_group_meta,
     enumerate_all_groups, load_group_meta, save_group_meta, snapshot_context_state_hashes,
 };
+pub use self::metadata::MetadataRepository;
+#[allow(deprecated)]
 pub use self::metadata::{
     build_namespace_summary, count_group_contexts, delete_all_member_metadata,
     delete_context_metadata, delete_group_metadata, delete_member_metadata,
