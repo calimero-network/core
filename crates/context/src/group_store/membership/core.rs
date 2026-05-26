@@ -81,11 +81,7 @@ impl<'a> MembershipRepository<'a> {
         Ok(())
     }
 
-    pub fn remove_member(
-        &self,
-        group_id: &ContextGroupId,
-        identity: &PublicKey,
-    ) -> EyreResult<()> {
+    pub fn remove_member(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<()> {
         {
             let mut handle = self.store.handle();
             handle.delete(&GroupMember::new(group_id.to_bytes(), *identity))?;
@@ -191,12 +187,11 @@ impl<'a> MembershipRepository<'a> {
 
     /// Returns `true` if `identity` is a member of `group_id` either
     /// directly or by inheritance. Thin wrapper over [`Self::check_path`].
-    pub fn is_member(
-        &self,
-        group_id: &ContextGroupId,
-        identity: &PublicKey,
-    ) -> EyreResult<bool> {
-        Ok(!matches!(self.check_path(group_id, identity)?, MembershipPath::None))
+    pub fn is_member(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<bool> {
+        Ok(!matches!(
+            self.check_path(group_id, identity)?,
+            MembershipPath::None
+        ))
     }
 
     /// Returns the capability bitmask `identity` holds as an *effective*
@@ -328,11 +323,7 @@ impl<'a> MembershipRepository<'a> {
         )
     }
 
-    pub fn is_admin(
-        &self,
-        group_id: &ContextGroupId,
-        identity: &PublicKey,
-    ) -> EyreResult<bool> {
+    pub fn is_admin(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<bool> {
         if let Some(GroupMemberRole::Admin) = self.role_of(group_id, identity)? {
             return Ok(true);
         }
@@ -344,11 +335,7 @@ impl<'a> MembershipRepository<'a> {
         Ok(false)
     }
 
-    pub fn require_admin(
-        &self,
-        group_id: &ContextGroupId,
-        identity: &PublicKey,
-    ) -> EyreResult<()> {
+    pub fn require_admin(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<()> {
         if !self.is_admin(group_id, identity)? {
             bail!(GroupStoreError::NotAdmin {
                 group_id: format!("{group_id:?}"),
@@ -756,8 +743,12 @@ pub fn require_group_admin_or_capability(
     capability_bit: u32,
     operation: &str,
 ) -> EyreResult<()> {
-    MembershipRepository::new(store)
-        .require_admin_or_capability(group_id, identity, capability_bit, operation)
+    MembershipRepository::new(store).require_admin_or_capability(
+        group_id,
+        identity,
+        capability_bit,
+        operation,
+    )
 }
 
 #[deprecated(note = "use MembershipRepository::new(store).count_admins(...)")]
@@ -791,7 +782,9 @@ pub fn trusted_anchors_for_group(
     MembershipRepository::new(store).trusted_anchors(group_id)
 }
 
-#[deprecated(note = "use MembershipRepository::new(store).is_authoritative_namespace_identity(...)")]
+#[deprecated(
+    note = "use MembershipRepository::new(store).is_authoritative_namespace_identity(...)"
+)]
 pub fn is_authoritative_namespace_identity(
     store: &Store,
     namespace_id: [u8; 32],

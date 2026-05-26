@@ -17,7 +17,6 @@ mod view;
 #[cfg(test)]
 mod tests;
 
-pub use self::core::{MembershipPath, MembershipRepository};
 #[allow(deprecated)]
 pub use self::core::{
     add_group_member, add_group_member_with_keys, check_group_membership,
@@ -29,6 +28,7 @@ pub use self::core::{
     require_group_admin_or_capability, set_member_auto_follow, subgroup_visible_to,
     trusted_anchors_for_group,
 };
+pub use self::core::{MembershipPath, MembershipRepository};
 pub use self::policy::MembershipPolicy;
 pub(crate) use self::status::role_from_invited_role;
 pub use self::status::{membership_status_at, MembershipStatus};

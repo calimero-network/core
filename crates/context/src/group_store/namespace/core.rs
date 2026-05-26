@@ -125,10 +125,7 @@ impl<'a> NamespaceRepository<'a> {
         }
     }
 
-    pub fn parent(
-        &self,
-        group_id: &ContextGroupId,
-    ) -> EyreResult<Option<ContextGroupId>> {
+    pub fn parent(&self, group_id: &ContextGroupId) -> EyreResult<Option<ContextGroupId>> {
         let handle = self.store.handle();
         let key = GroupParentRef::new(group_id.to_bytes());
         Ok(handle.get(&key)?.map(ContextGroupId::from))
@@ -292,8 +289,7 @@ impl<'a> NamespaceRepository<'a> {
                 invited_role,
             };
 
-            let inv_bytes =
-                borsh::to_vec(&invitation).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+            let inv_bytes = borsh::to_vec(&invitation).map_err(|e| eyre::eyre!("borsh: {e}"))?;
             let hash = sha2::Sha256::digest(&inv_bytes);
             let sig = inviter_sk
                 .sign(&hash)
@@ -363,10 +359,7 @@ impl<'a> NamespaceRepository<'a> {
     /// Walk the subtree rooted at `root` and return:
     /// - every descendant `group_id` in children-first order
     /// - every `context_id` registered on `root` or any descendant
-    pub fn collect_subtree_for_cascade(
-        &self,
-        root: &ContextGroupId,
-    ) -> EyreResult<CascadePayload> {
+    pub fn collect_subtree_for_cascade(&self, root: &ContextGroupId) -> EyreResult<CascadePayload> {
         let mut contexts: Vec<ContextId> = Vec::new();
         contexts.extend(super::super::enumerate_group_contexts(
             self.store,
@@ -730,7 +723,12 @@ pub fn store_namespace_identity(
     private_key: &[u8; 32],
     sender_key: &[u8; 32],
 ) -> EyreResult<()> {
-    NamespaceRepository::new(store).store_identity(namespace_id, public_key, private_key, sender_key)
+    NamespaceRepository::new(store).store_identity(
+        namespace_id,
+        public_key,
+        private_key,
+        sender_key,
+    )
 }
 
 #[deprecated(note = "use NamespaceRepository::new(store).resolve_identity(...)")]

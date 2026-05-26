@@ -76,7 +76,9 @@ impl<'a> MetadataRepository<'a> {
         let ids = enumerate_group_contexts(self.store, group_id, offset, limit)?;
         ids.into_iter()
             .map(|ctx_id| {
-                let name = self.context_metadata(group_id, &ctx_id)?.and_then(|r| r.name);
+                let name = self
+                    .context_metadata(group_id, &ctx_id)?
+                    .and_then(|r| r.name);
                 Ok((ctx_id, name))
             })
             .collect()
@@ -119,11 +121,7 @@ impl<'a> MetadataRepository<'a> {
             .map_err(Into::into)
     }
 
-    pub fn delete_member(
-        &self,
-        group_id: &ContextGroupId,
-        member: &PublicKey,
-    ) -> EyreResult<()> {
+    pub fn delete_member(&self, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<()> {
         let mut handle = self.store.handle();
         handle.delete(&GroupMemberMetadata::new(group_id.to_bytes(), *member))?;
         Ok(())
@@ -168,20 +166,13 @@ impl<'a> MetadataRepository<'a> {
 
     // --- Group metadata ---
 
-    pub fn set_group(
-        &self,
-        group_id: &ContextGroupId,
-        record: &MetadataRecord,
-    ) -> EyreResult<()> {
+    pub fn set_group(&self, group_id: &ContextGroupId, record: &MetadataRecord) -> EyreResult<()> {
         let mut handle = self.store.handle();
         handle.put(&GroupMetadata::new(group_id.to_bytes()), record)?;
         Ok(())
     }
 
-    pub fn group_metadata(
-        &self,
-        group_id: &ContextGroupId,
-    ) -> EyreResult<Option<MetadataRecord>> {
+    pub fn group_metadata(&self, group_id: &ContextGroupId) -> EyreResult<Option<MetadataRecord>> {
         let handle = self.store.handle();
         handle
             .get(&GroupMetadata::new(group_id.to_bytes()))

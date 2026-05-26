@@ -83,11 +83,7 @@ impl<'a> CapabilitiesRepository<'a> {
         Ok(value.map(|v| v.capabilities))
     }
 
-    pub fn set_default_capabilities(
-        &self,
-        group_id: &ContextGroupId,
-        caps: u32,
-    ) -> EyreResult<()> {
+    pub fn set_default_capabilities(&self, group_id: &ContextGroupId, caps: u32) -> EyreResult<()> {
         let mut handle = self.store.handle();
         let key = GroupDefaultCaps::new(group_id.to_bytes());
         handle.put(&key, &GroupDefaultCapsValue { capabilities: caps })?;
@@ -100,10 +96,7 @@ impl<'a> CapabilitiesRepository<'a> {
     /// safer default. Membership inheritance via
     /// [`super::check_group_membership`] only walks parents when the
     /// subgroup is `Open`.
-    pub fn subgroup_visibility(
-        &self,
-        group_id: &ContextGroupId,
-    ) -> EyreResult<VisibilityMode> {
+    pub fn subgroup_visibility(&self, group_id: &ContextGroupId) -> EyreResult<VisibilityMode> {
         let handle = self.store.handle();
         let key = GroupSubgroupVis::new(group_id.to_bytes());
         let value = handle.get(&key)?;
@@ -311,7 +304,12 @@ pub fn set_context_member_capability(
     member: &PublicKey,
     capabilities: u8,
 ) -> EyreResult<()> {
-    CapabilitiesRepository::new(store).set_context_member(group_id, context_id, member, capabilities)
+    CapabilitiesRepository::new(store).set_context_member(
+        group_id,
+        context_id,
+        member,
+        capabilities,
+    )
 }
 
 #[deprecated(note = "use CapabilitiesRepository::new(store).context_member_capability(...)")]

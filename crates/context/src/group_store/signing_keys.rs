@@ -53,11 +53,7 @@ impl<'a> SigningKeysRepository<'a> {
         Ok(value.map(|v| v.private_key))
     }
 
-    pub fn delete_key(
-        &self,
-        group_id: &ContextGroupId,
-        public_key: &PublicKey,
-    ) -> EyreResult<()> {
+    pub fn delete_key(&self, group_id: &ContextGroupId, public_key: &PublicKey) -> EyreResult<()> {
         let mut handle = self.store.handle();
         let key = GroupSigningKey::new(group_id.to_bytes(), *public_key);
         handle.delete(&key)?;
@@ -65,11 +61,7 @@ impl<'a> SigningKeysRepository<'a> {
     }
 
     /// Verify that the node holds a signing key for `requester` in this group.
-    pub fn require_key(
-        &self,
-        group_id: &ContextGroupId,
-        requester: &PublicKey,
-    ) -> EyreResult<()> {
+    pub fn require_key(&self, group_id: &ContextGroupId, requester: &PublicKey) -> EyreResult<()> {
         if self.get_key(group_id, requester)?.is_none() {
             bail!(GroupStoreError::NoSigningKey {
                 group_id: format!("{group_id:?}"),

@@ -57,13 +57,13 @@ pub use self::deny_list::{
 };
 pub use self::governance_signer::GovernanceSigner;
 pub use self::group_governance_publisher::GroupGovernancePublisher;
-pub use self::group_keys::{GroupKeyring, StoredGroupKey};
 #[allow(deprecated)]
 pub use self::group_keys::{
     build_key_rotation, compute_key_id, decrypt_group_op, encrypt_group_op, load_current_group_key,
     load_current_group_key_record, load_group_key_by_id, store_group_key, unwrap_group_key,
     wrap_group_key_for_member,
 };
+pub use self::group_keys::{GroupKeyring, StoredGroupKey};
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
     delete_group_local_rows, delete_namespace_local_state, get_local_gov_nonce,

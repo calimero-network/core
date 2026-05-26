@@ -20,10 +20,6 @@ mod retry;
 mod tests;
 
 pub(crate) use self::core::MAX_NAMESPACE_DEPTH;
-pub use self::core::{
-    CascadePayload, NamespaceIdentityRecord, NamespaceRepository, ReparentOutcome,
-    ResolvedNamespaceIdentity,
-};
 #[allow(deprecated)]
 pub use self::core::{
     collect_descendant_groups, collect_subtree_for_cascade, collect_visible_descendant_groups,
@@ -33,6 +29,10 @@ pub use self::core::{
     list_child_groups, nest_group, recursive_remove_member, reparent_group, resolve_namespace,
     resolve_namespace_identity, resolve_namespace_identity_record, store_namespace_identity,
     unnest_group,
+};
+pub use self::core::{
+    CascadePayload, NamespaceIdentityRecord, NamespaceRepository, ReparentOutcome,
+    ResolvedNamespaceIdentity,
 };
 pub use self::dag::{NamespaceDagService, NamespaceHead};
 pub use self::governance::{

@@ -103,11 +103,7 @@ impl<'a> DenyListRepository<'a> {
     ///
     /// Hot-path callers (receive-side state-delta filter) call this on
     /// every incoming state delta for a group context. O(1) key lookup.
-    pub fn is_denied(
-        &self,
-        group_id: &ContextGroupId,
-        member: &PublicKey,
-    ) -> EyreResult<bool> {
+    pub fn is_denied(&self, group_id: &ContextGroupId, member: &PublicKey) -> EyreResult<bool> {
         let key = GroupDeniedMember::new(group_id.to_bytes(), *member);
         let handle = self.store.handle();
         handle
@@ -127,8 +123,7 @@ impl<'a> DenyListRepository<'a> {
         context_id: &calimero_primitives::context::ContextId,
         author: &PublicKey,
     ) -> EyreResult<bool> {
-        let Some(group_id) = super::contexts::get_group_for_context(self.store, context_id)?
-        else {
+        let Some(group_id) = super::contexts::get_group_for_context(self.store, context_id)? else {
             return Ok(false);
         };
         self.is_denied(&group_id, author)
