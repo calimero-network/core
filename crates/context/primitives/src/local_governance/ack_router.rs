@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use tokio::sync::broadcast;
 
-use super::SignedAck;
+use calimero_governance_types::SignedAck;
 
 /// Routes incoming `SignedAck` messages to in-flight
 /// `publish_and_await_ack` callers, keyed by `op_hash`.
