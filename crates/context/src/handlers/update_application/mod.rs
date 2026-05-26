@@ -732,7 +732,30 @@ fn write_migration_state(
 
     let root_entry_id = Id::new(ROOT_STORAGE_ENTRY_ID);
     let result = with_runtime_env(runtime_env, || -> Result<_, StorageError> {
-        let write_result = (|| -> Result<[u8; 32], StorageError> {
+        let write_result = (|| -> Result<Option<[u8; 32]>, StorageError> {
+            // Pre-flight LWW check. `write_pre_merged_root_state` has a
+            // built-in LWW guard: if the locally-stored root entry already
+            // has `updated_at > metadata.updated_at`, it silently returns
+            // the existing hash and does NOT apply our migrated bytes.
+            //
+            // For migration that is unsafe — the surrounding
+            // `update_application_id` flow still persists the new
+            // `application_id` regardless of what happened here, so a
+            // silent skip would leave the v2 binary running against
+            // un-migrated v1-shaped state (data corruption class). The
+            // pre-#2433 `save_raw` path surfaced this case via an
+            // `Ok(None)` return; we restore the same safety net here by
+            // checking the metadata ourselves and signalling skip as
+            // `Ok(None)`, which the outer match arm bails on.
+            //
+            // First-time migrations (no existing entry yet) skip the
+            // guard and proceed normally.
+            if let Some(existing) = <Index<MainStorage>>::get_metadata(root_entry_id)? {
+                if existing.updated_at > metadata.updated_at {
+                    return Ok(None);
+                }
+            }
+
             // Write the migrated root state via the pre-merged primitive
             // introduced by #2465. The caller (this function) is the
             // source of truth for the new bytes — the wasm migrate
@@ -758,7 +781,7 @@ fn write_migration_state(
                 .map(|(full_hash, _)| full_hash)
                 .unwrap_or([0; 32]);
 
-            Ok(root_hash)
+            Ok(Some(root_hash))
         })();
 
         // The storage-write path pushes sync actions into thread-local
@@ -771,13 +794,27 @@ fn write_migration_state(
     });
 
     match result {
-        Ok(root_hash) => {
+        Ok(Some(root_hash)) => {
             debug!(
                 %context_id,
                 root_hash = ?root_hash,
                 "Migrated state written successfully with Index update"
             );
             Ok(root_hash)
+        }
+        Ok(None) => {
+            error!(
+                %context_id,
+                "Migration state write skipped by LWW guard — local root metadata \
+                 is newer than the migration's deterministic timestamp"
+            );
+            bail!(
+                "Migration state write was skipped by the LWW guard: local root \
+                 metadata has a newer `updated_at` than the migration's. Persisting \
+                 the new application_id without writing the migrated bytes would \
+                 leave the v2 binary running against v1-shaped state. The migration \
+                 must be retried."
+            )
         }
         Err(e) => {
             error!(
