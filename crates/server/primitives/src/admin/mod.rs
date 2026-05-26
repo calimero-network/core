@@ -1805,6 +1805,16 @@ pub struct UpgradeGroupApiRequest {
     pub requester: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub migrate_method: Option<String>,
+    /// When `true`, the handler emits the cascade variant of the upgrade
+    /// op (`GroupOp::CascadeTargetApplicationSet` + optional
+    /// `GroupOp::CascadeGroupMigrationSet`) and dispatches the per-context
+    /// migration propagator against every descendant subgroup whose
+    /// current `app_key` matches the signed group's current `app_key`.
+    ///
+    /// Default: `false` — existing clients (e.g. PR-1's single-group
+    /// workflow 00) stay on the per-group path bit-identically.
+    #[serde(default)]
+    pub cascade: bool,
 }
 
 impl Validate for UpgradeGroupApiRequest {
