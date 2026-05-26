@@ -1,3 +1,5 @@
+#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
+
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -70,6 +72,8 @@ pub use self::local_state::{
     get_member_context_joins, get_op_head, read_op_log_after, remove_all_member_context_joins,
     set_local_gov_nonce, track_member_context_join,
 };
+pub use self::membership::MembershipRepository;
+#[allow(deprecated)]
 pub use self::membership::{
     add_group_member, add_group_member_with_keys, check_group_membership,
     check_group_membership_path, count_group_admins, count_group_members,
@@ -101,7 +105,9 @@ pub use self::migrations::MigrationsRepository;
 pub use self::migrations::{
     delete_all_context_last_migrations, get_context_last_migration, set_context_last_migration,
 };
+pub use self::namespace::NamespaceRepository;
 pub(crate) use self::namespace::MAX_NAMESPACE_DEPTH;
+#[allow(deprecated)]
 pub use self::namespace::{
     apply_signed_namespace_op, collect_descendant_groups, collect_skeleton_delta_ids_for_group,
     collect_subtree_for_cascade, collect_visible_descendant_groups, create_recursive_invitations,
@@ -330,6 +336,14 @@ pub struct GroupHandle<'a> {
     group_id: ContextGroupId,
 }
 
+// `GroupHandle` is itself a backward-compat facade that predates #2303's
+// Repository pattern. Its methods delegate to the (now-deprecated) free
+// functions to preserve the existing call surface; new code should use
+// the Repositories directly. The `allow(deprecated)` here scopes the
+// deprecation warning to "callers of GroupHandle methods", not "inside
+// GroupHandle itself" — the latter would just be noise about the facade
+// calling its own internals.
+#[allow(deprecated)]
 impl<'a> GroupHandle<'a> {
     pub fn new(store: &'a Store, group_id: ContextGroupId) -> Self {
         Self { store, group_id }
@@ -665,6 +679,7 @@ pub struct NamespaceHandle<'a> {
     namespace_id: [u8; 32],
 }
 
+#[allow(deprecated)]
 impl<'a> NamespaceHandle<'a> {
     pub fn new(store: &'a Store, namespace_id: [u8; 32]) -> Self {
         Self {
@@ -731,6 +746,7 @@ pub struct GroupStoreIndex<'a> {
     store: &'a Store,
 }
 
+#[allow(deprecated)]
 impl<'a> GroupStoreIndex<'a> {
     pub fn new(store: &'a Store) -> Self {
         Self { store }

@@ -19,6 +19,7 @@
 //! Collapsing these into `Option<GroupMemberRole>` (as the legacy
 //! `get_member_role` API does) makes "forgot to check" a silent runtime bug;
 //! [`MembershipStatus`] makes it a non-exhaustive-match warning.
+#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
 
 use std::collections::{HashSet, VecDeque};
 

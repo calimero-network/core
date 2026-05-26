@@ -1,3 +1,5 @@
+#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
+
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, NamespaceOp, RootOp,
     SignedGroupOp, SignedNamespaceOp,

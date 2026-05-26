@@ -1,3 +1,5 @@
+#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
+
 use calimero_context_client::local_governance::{AckRouter, GroupOp, NamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};

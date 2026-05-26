@@ -1,3 +1,5 @@
+#![allow(deprecated)] // internal facade — see #2303 deprecation cycle
+
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
