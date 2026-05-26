@@ -123,7 +123,10 @@ steps:
 
   # Three log patterns prove the migration ran end-to-end:
   #   1. "Executing migration" — update_application handler entered the migrate path.
-  #   2. "method=migrate_v1_to_v2" — the right migrate function was invoked.
+  #   2. "migrate_v1_to_v2" — the right migrate function was invoked. We match
+  #      the bare method name (not "method=migrate_v1_to_v2") because tracing's
+  #      colorised output wraps the `=` in ANSI escape codes, so the literal
+  #      substring "method=migrate_..." never appears contiguously in the log.
   #   3. "Migrated state written successfully" — write_migration_state hit the
   #      post-fix success log. Pre-fix (#2433 regression) this line is absent
   #      and "Failed to write migrated state" fires instead, so this pattern is
@@ -136,7 +139,7 @@ steps:
       - app-migration-baseline-1
     patterns:
       - "Executing migration"
-      - "method=migrate_v1_to_v2"
+      - "migrate_v1_to_v2"
       - "Migrated state written successfully"
     min_matches: 1
 
