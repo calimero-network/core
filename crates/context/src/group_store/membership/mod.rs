@@ -10,7 +10,7 @@
 
 mod core;
 mod policy;
-pub(crate) mod policy_rules;
+pub(super) mod policy_rules;
 mod status;
 mod view;
 
