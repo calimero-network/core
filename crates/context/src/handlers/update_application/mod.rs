@@ -750,8 +750,8 @@ fn write_migration_state(
             //
             // First-time migrations (no existing entry yet) skip the
             // guard and proceed normally.
-            if let Some(existing) = <Index<MainStorage>>::get_metadata(root_entry_id)? {
-                if existing.updated_at > metadata.updated_at {
+            if let Some(existing_index) = <Index<MainStorage>>::get_index(root_entry_id)? {
+                if existing_index.metadata.updated_at > metadata.updated_at {
                     return Ok(None);
                 }
             }
