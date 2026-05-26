@@ -1,0 +1,629 @@
+name: 01 — Single-namespace cascade (NS → 2 subgroups → 4 contexts, v1 → v2)
+description: >
+  2-node end-to-end cascade migration. Node-1 admin creates namespace `NS`
+  with `app_v1`, two subgroups (G1, G2) inside it, and 2 contexts per
+  subgroup (4 contexts total). Node-2 joins the namespace and inherits
+  both subgroups + all four contexts via the namespace-cascade engine.
+
+  After both nodes have synced the full hierarchy, the admin issues a
+  cascade upgrade against the namespace root group (`cascade: true`) that
+  walks every descendant subgroup and migrates every context under each
+  to `app_v2` via `migrate_v1_to_v2`.
+
+  Acts as the PR-2 happy-path regression guard for the cascade-engine:
+  one cascade RPC against a namespace must migrate every transitively
+  inherited context on every member node, not just the emitter's direct
+  matches.
+
+  -----------------------------------------------------------------------
+  External-dependency contract (pinned for Task 14 CI guard):
+
+    * `merobox >= 0.7.0` (placeholder pending merobox#255):
+        - `upgrade_group` step must accept the `cascade: bool` field.
+          Pre-#255 merobox silently drops unknown fields; the RPC then
+          executes as a non-cascade single-group upgrade, only the
+          emitter's directly-matched G1/G2 contexts (if any) migrate,
+          and the v2-schema asserts on the *other* subgroup's contexts
+          fail. Treat any failure at the "Assert ... is v2" steps under
+          pre-0.7.0 merobox as the version guard tripping, not a real
+          regression.
+
+    * Core: `feat/cascade-engine` (this branch) — provides the
+      cascade-emission handler (PR-2 Task 6) keyed off `cascade: true`
+      on the upgrade_group RPC.
+
+  Task 14 (`.github/workflows/app-migration-e2e.yml`) wires the actual
+  version check; this workflow's job is just to fail loudly when the
+  contract is unmet so the CI guard has something to gate on.
+  -----------------------------------------------------------------------
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  # Non-overlapping ports vs workflow 00 (9220/9320) so both workflows
+  # can run concurrently in local dev without RPC-port collisions.
+  prefix: app-migration-namespace-cascade
+  base_port: 9221
+  base_rpc_port: 9321
+
+steps:
+  # ── Phase 1: Install v1 + v2 on BOTH nodes ──────────────────────────
+  # Both nodes need both apps available locally; the cascade-engine on
+  # node-2 looks up `app_v2` by id when applying the migrated state.
+
+  - name: Install migration-suite-v1 on node-1
+    type: install_application
+    node: app-migration-namespace-cascade-1
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install migration-suite-v1 on node-2
+    type: install_application
+    node: app-migration-namespace-cascade-2
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+
+  - name: Install migration-suite-v2-add-field on node-1
+    type: install_application
+    node: app-migration-namespace-cascade-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Install migration-suite-v2-add-field on node-2
+    type: install_application
+    node: app-migration-namespace-cascade-2
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+
+  # ── Phase 2: Namespace + admin key + node-2 joins ───────────────────
+
+  - name: Node-1 creates namespace NS
+    type: create_namespace
+    node: app-migration-namespace-cascade-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown + auto-follow requester)
+    type: get_namespace_identity
+    node: app-migration-namespace-cascade-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: app-migration-namespace-cascade-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      ns_invite: invitation
+
+  - name: Wait for namespace governance to gossip to node-2
+    # Same window as sync-tests/opaque-leaf-regression.yml — namespace
+    # governance DAG needs to reach node-2 before the join op or
+    # `join_namespace` 404s on the invitation.
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: app-migration-namespace-cascade-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{ns_invite}}"
+    outputs:
+      node2_identity: memberIdentity
+
+  # ── Phase 3: Subgroups G1 + G2, made Open, joined by node-2 via ─────
+  # ── inheritance, then per-subgroup auto-follow grants for contexts ──
+  #
+  # Approach chosen: A — `join_subgroup_inheritance` (per
+  # apps/scaffolding-e2e/workflows/group-join-via-inheritance.yml).
+  #
+  # Why not the previously-used namespace-level
+  # `set_member_auto_follow auto_follow_subgroups: true`:
+  #   Per crates/context/src/auto_follow.rs:33-36 module docs and the
+  #   event-loop at auto_follow.rs:239-252, subgroup auto-follow is NOT
+  #   yet implemented for regular roles — `subgroups: true` is silently
+  #   ignored. Result: node-2 never became a member of G1/G2, so the
+  #   per-subgroup `auto_follow_contexts: true` grant had no effect
+  #   (node-2 isn't a member of the subgroup yet) and the contexts
+  #   never materialised on node-2. The namespace-level subgroup grant
+  #   has therefore been removed.
+  #
+  # Replacement pattern (production-equivalent for inherited members):
+  #   1. Create subgroup → make it Open via `set_subgroup_visibility`
+  #      so namespace members with CAN_JOIN_OPEN_SUBGROUPS may join via
+  #      the inherited Open chain.
+  #   2. Node-2 calls `join_subgroup_inheritance` on the subgroup
+  #      (POST /admin-api/groups/:group_id/join-via-inheritance,
+  #      calimero-network/core#2357). This materialises node-2's
+  #      membership in the subgroup so subsequent
+  #      `set_member_auto_follow auto_follow_contexts: true` grants
+  #      bind to a real member and the auto-follow loop actually fires
+  #      on context creation.
+  #   3. Per-subgroup `auto_follow_contexts: true` from the admin —
+  #      this IS implemented (auto_follow.rs:239-252 handles
+  #      `contexts: true`) and triggers materialisation on node-2 when
+  #      phase 4's contexts are created.
+  #
+  # Requires merobox >= 0.6.13 / calimero-client-py >= 0.6.11 for the
+  # `join_subgroup_inheritance` step itself, which is already part of
+  # the merobox >= 0.7.0 dependency contract pinned above.
+
+  - name: Create subgroup G1 inside NS
+    type: create_group_in_namespace
+    node: app-migration-namespace-cascade-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "cascade-G1"
+    outputs:
+      g1_id: groupId
+
+  - name: Mark G1 as Open (enable inherited join from namespace members)
+    type: set_subgroup_visibility
+    node: app-migration-namespace-cascade-1
+    group_id: "{{g1_id}}"
+    visibility: open
+
+  - name: Create subgroup G2 inside NS
+    type: create_group_in_namespace
+    node: app-migration-namespace-cascade-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "cascade-G2"
+    outputs:
+      g2_id: groupId
+
+  - name: Mark G2 as Open (enable inherited join from namespace members)
+    type: set_subgroup_visibility
+    node: app-migration-namespace-cascade-1
+    group_id: "{{g2_id}}"
+    visibility: open
+
+  - name: Wait for subgroup-creation + Open-visibility ops to reach node-2
+    # node-2 needs the Open-visibility row materialised before its
+    # `join_subgroup_inheritance` call can pass the inherited-membership
+    # validation. Matches the 10 s window used in
+    # apps/scaffolding-e2e/workflows/group-join-via-inheritance.yml
+    # ("Wait for subgroup visibility + context-registered ops to propagate").
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins G1 via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-namespace-cascade-2
+    group_id: "{{g1_id}}"
+
+  - name: Node-2 joins G2 via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-namespace-cascade-2
+    group_id: "{{g2_id}}"
+
+  # Per-subgroup auto-follow-contexts grants land AFTER node-2 has
+  # materialised its membership in each subgroup — otherwise the
+  # auto-follow handler skips a non-member target.
+  - name: Grant node-2 auto-follow contexts in G1
+    type: set_member_auto_follow
+    node: app-migration-namespace-cascade-1
+    group_id: "{{g1_id}}"
+    member_id: "{{node2_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  - name: Grant node-2 auto-follow contexts in G2
+    type: set_member_auto_follow
+    node: app-migration-namespace-cascade-1
+    group_id: "{{g2_id}}"
+    member_id: "{{node2_identity}}"
+    auto_follow_contexts: true
+    auto_follow_subgroups: false
+
+  - name: Wait for inheritance-join + auto-follow grants to gossip
+    type: wait
+    seconds: 10
+
+  # ── Phase 4: Four contexts (2 per subgroup), all on app_v1 ──────────
+
+  - name: Create G1-ctx1
+    type: create_context
+    node: app-migration-namespace-cascade-1
+    application_id: "{{app_v1}}"
+    group_id: "{{g1_id}}"
+    outputs:
+      ctx_g1_1: contextId
+
+  - name: Create G1-ctx2
+    type: create_context
+    node: app-migration-namespace-cascade-1
+    application_id: "{{app_v1}}"
+    group_id: "{{g1_id}}"
+    outputs:
+      ctx_g1_2: contextId
+
+  - name: Create G2-ctx1
+    type: create_context
+    node: app-migration-namespace-cascade-1
+    application_id: "{{app_v1}}"
+    group_id: "{{g2_id}}"
+    outputs:
+      ctx_g2_1: contextId
+
+  - name: Create G2-ctx2
+    type: create_context
+    node: app-migration-namespace-cascade-1
+    application_id: "{{app_v1}}"
+    group_id: "{{g2_id}}"
+    outputs:
+      ctx_g2_2: contextId
+
+  - name: Wait for all 4 contexts to inherit into node-2 via auto-follow
+    # Auto-follow materialisation on node-2 piggybacks on the standard
+    # context-registration gossip; 15 s is conservative for 4 contexts
+    # across 2 subgroups. If this turns out flaky in CI, bump to 20 s
+    # rather than reaching for `wait_for_sync` — the contexts carry no
+    # writes yet, so there's nothing for `wait_for_sync` to converge on.
+    type: wait
+    seconds: 15
+
+  - name: Assert bootstrap shape (all IDs resolved)
+    type: assert
+    statements:
+      - "is_set({{namespace_id}})"
+      - "is_set({{g1_id}})"
+      - "is_set({{g2_id}})"
+      - "is_set({{ctx_g1_1}})"
+      - "is_set({{ctx_g1_2}})"
+      - "is_set({{ctx_g2_1}})"
+      - "is_set({{ctx_g2_2}})"
+      - "is_set({{node2_identity}})"
+
+  # ── Phase 5: Sanity — read v1 schema on one context per node ────────
+  # Cheap pre-flight: confirms node-2 actually materialised the
+  # contexts before we burn a wait window on the cascade itself. If
+  # this asserts fail, the auto-follow grants + inheritance joins in phase 3 didn't
+  # take — fix that before chasing the cascade engine.
+
+  - name: Read v1 schema on G1-ctx1 (node-1) pre-cascade
+    type: call
+    node: app-migration-namespace-cascade-1
+    context_id: "{{ctx_g1_1}}"
+    method: schema_info
+    outputs:
+      g1_1_schema_n1_pre: result
+
+  - name: Assert G1-ctx1 (node-1) is v1 pre-cascade
+    type: json_assert
+    statements:
+      - 'json_subset({{g1_1_schema_n1_pre}}, {"output": {"schema_version": "1.0.0"}})'
+
+  - name: Read v1 schema on G1-ctx1 (node-2) pre-cascade
+    type: call
+    node: app-migration-namespace-cascade-2
+    context_id: "{{ctx_g1_1}}"
+    method: schema_info
+    outputs:
+      g1_1_schema_n2_pre: result
+
+  - name: Assert G1-ctx1 (node-2) is v1 pre-cascade
+    type: json_assert
+    statements:
+      - 'json_subset({{g1_1_schema_n2_pre}}, {"output": {"schema_version": "1.0.0"}})'
+
+  # ── Phase 6: Coordinate upgrade policy then cascade NS → v2 ─────────
+  # Set coordinated upgrade policy on the namespace root group so the
+  # cascade-emitter doesn't have to negotiate per-subgroup policies
+  # mid-walk. Matches workflow 00's single-group pre-upgrade step.
+
+  - name: Set namespace upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-namespace-cascade-1
+    group_id: "{{namespace_id}}"
+    upgrade_policy: coordinated
+
+  # The headline step. `cascade: true` is the new field PR-2 Task 6
+  # adds to the upgrade_group RPC, surfaced through merobox#255. With
+  # `cascade: true` against the namespace, the engine walks every
+  # descendant subgroup (G1, G2) and migrates every context under each
+  # (4 total). With `cascade: false` (or absent on a non-cascade-aware
+  # merobox), only contexts directly attached to the namespace root
+  # group would migrate — here that's zero, since every context lives
+  # under a subgroup, so the v2 asserts would fail loudly and the CI
+  # version guard (Task 14) catches it before this workflow runs.
+  - name: Cascade upgrade NS to v2
+    type: upgrade_group
+    node: app-migration-namespace-cascade-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+    cascade: true
+
+  - name: Wait for cascade + per-context migration + state-delta gossip
+    # Budget breakdown:
+    #   * cascade walks 2 subgroups, 4 contexts → ~1 s of governance ops
+    #   * per-context migrate runs (4 × ~0.5 s wasm) → ~2 s
+    #   * state-delta propagation node-1 → node-2 for 4 contexts → ~3 s
+    #   * gossip slack → ~4 s
+    # = 10 s, matching the spec §8.3 row-01 wait window. Bump to 15 s
+    # if CI flakes — the failure mode under under-budget is the
+    # node-2 schema asserts seeing v1, not v2, on one or more contexts.
+    type: wait
+    seconds: 10
+
+  - name: Read upgrade status on namespace (sanity)
+    type: get_group_upgrade_status
+    node: app-migration-namespace-cascade-1
+    group_id: "{{namespace_id}}"
+
+  # ── Phase 7: Log assertions — both nodes ran migrations ─────────────
+  # Reuses workflow 00's log-pattern triple. The patterns are stable
+  # across PR-1 (workflow 00) and PR-2 (this workflow) because the
+  # cascade emitter still calls the same per-context migration path
+  # (`Executing migration` → wasm `migrate_v1_to_v2` → `Migrated state
+  # written successfully` from `write_migration_state`).
+  #
+  # `min_matches: 1` is the conservative floor because we're not
+  # certain *where* each per-context migration runs:
+  #
+  #   * Emitter (node-1) definitely runs all 4 migrations locally
+  #     before the state-delta is gossiped. Floor on node-1: 4.
+  #   * Follower (node-2) MAY rerun the migration on apply (re-execute
+  #     model) OR apply the gossiped post-migration state directly
+  #     (state-delta model). Per the PR-2 spec the engine uses
+  #     state-delta gossip ("Migrated state written successfully" only
+  #     fires on the emitter), but the design is still under review
+  #     and could change. Floor on node-2: 1 if re-execute, 0 if
+  #     state-delta-only.
+  #
+  # `min_matches: 1` against the union (both nodes) guarantees at
+  # least one match somewhere, which is enough to prove the migration
+  # handler entered. The schema_info asserts in phase 8 are what
+  # actually prove the post-migration state reached node-2 — the log
+  # check is just defense-in-depth.
+  - name: Assert cascade ran (migration handler entered on at least one node)
+    type: assert_log_present
+    nodes:
+      - app-migration-namespace-cascade-1
+      - app-migration-namespace-cascade-2
+    patterns:
+      - "Executing migration"
+      - "migrate_v1_to_v2"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  # ── Phase 8: Read v2 schema on all 4 contexts × both nodes ──────────
+  # 8 read+assert pairs. Grouped by context, node-1 first then node-2,
+  # so on failure the pattern (e.g. "all node-2 reads fail" → cascade
+  # didn't reach node-2; "G2 reads fail on both" → cascade only walked
+  # G1) is obvious from the failing step name.
+
+  # ---- G1-ctx1 ----
+  - name: Read schema on G1-ctx1 (node-1)
+    type: call
+    node: app-migration-namespace-cascade-1
+    context_id: "{{ctx_g1_1}}"
+    method: schema_info
+    outputs:
+      g1_1_schema_n1: result
+
+  - name: Assert G1-ctx1 (node-1) is v2
+    type: json_assert
+    statements:
+      - 'json_subset({{g1_1_schema_n1}}, {"output": {"schema_version": "2.0.0"}})'
+
+  - name: Read schema on G1-ctx1 (node-2)
+    type: call
+    node: app-migration-namespace-cascade-2
+    context_id: "{{ctx_g1_1}}"
+    method: schema_info
+    outputs:
+      g1_1_schema_n2: result
+
+  - name: Assert G1-ctx1 (node-2) is v2
+    type: json_assert
+    statements:
+      - 'json_subset({{g1_1_schema_n2}}, {"output": {"schema_version": "2.0.0"}})'
+
+  # ---- G1-ctx2 ----
+  - name: Read schema on G1-ctx2 (node-1)
+    type: call
+    node: app-migration-namespace-cascade-1
+    context_id: "{{ctx_g1_2}}"
+    method: schema_info
+    outputs:
+      g1_2_schema_n1: result
+
+  - name: Assert G1-ctx2 (node-1) is v2
+    type: json_assert
+    statements:
+      - 'json_subset({{g1_2_schema_n1}}, {"output": {"schema_version": "2.0.0"}})'
+
+  - name: Read schema on G1-ctx2 (node-2)
+    type: call
+    node: app-migration-namespace-cascade-2
+    context_id: "{{ctx_g1_2}}"
+    method: schema_info
+    outputs:
+      g1_2_schema_n2: result
+
+  - name: Assert G1-ctx2 (node-2) is v2
+    type: json_assert
+    statements:
+      - 'json_subset({{g1_2_schema_n2}}, {"output": {"schema_version": "2.0.0"}})'
+
+  # ---- G2-ctx1 ----
+  - name: Read schema on G2-ctx1 (node-1)
+    type: call
+    node: app-migration-namespace-cascade-1
+    context_id: "{{ctx_g2_1}}"
+    method: schema_info
+    outputs:
+      g2_1_schema_n1: result
+
+  - name: Assert G2-ctx1 (node-1) is v2
+    type: json_assert
+    statements:
+      - 'json_subset({{g2_1_schema_n1}}, {"output": {"schema_version": "2.0.0"}})'
+
+  - name: Read schema on G2-ctx1 (node-2)
+    type: call
+    node: app-migration-namespace-cascade-2
+    context_id: "{{ctx_g2_1}}"
+    method: schema_info
+    outputs:
+      g2_1_schema_n2: result
+
+  - name: Assert G2-ctx1 (node-2) is v2
+    type: json_assert
+    statements:
+      - 'json_subset({{g2_1_schema_n2}}, {"output": {"schema_version": "2.0.0"}})'
+
+  # ---- G2-ctx2 ----
+  - name: Read schema on G2-ctx2 (node-1)
+    type: call
+    node: app-migration-namespace-cascade-1
+    context_id: "{{ctx_g2_2}}"
+    method: schema_info
+    outputs:
+      g2_2_schema_n1: result
+
+  - name: Assert G2-ctx2 (node-1) is v2
+    type: json_assert
+    statements:
+      - 'json_subset({{g2_2_schema_n1}}, {"output": {"schema_version": "2.0.0"}})'
+
+  - name: Read schema on G2-ctx2 (node-2)
+    type: call
+    node: app-migration-namespace-cascade-2
+    context_id: "{{ctx_g2_2}}"
+    method: schema_info
+    outputs:
+      g2_2_schema_n2: result
+
+  - name: Assert G2-ctx2 (node-2) is v2
+    type: json_assert
+    statements:
+      - 'json_subset({{g2_2_schema_n2}}, {"output": {"schema_version": "2.0.0"}})'
+
+  # ── Phase 9: v2-only setter round-trips on both nodes ──────────────
+  # Proves post-migration writes work — i.e. node-1 can write a v2-only
+  # field on one of its contexts and node-2 can write a v2-only field
+  # on a different one of its contexts. We don't cross-read (that's
+  # what the convergence workflow is for); just confirm the v2 ABI is
+  # usable on both nodes after cascade.
+
+  - name: Node-1 writes v2-only notes on G1-ctx1
+    type: call
+    node: app-migration-namespace-cascade-1
+    context_id: "{{ctx_g1_1}}"
+    method: set_notes
+    args:
+      notes: "node-1-post-cascade"
+
+  - name: Node-1 reads back notes on G1-ctx1
+    type: call
+    node: app-migration-namespace-cascade-1
+    context_id: "{{ctx_g1_1}}"
+    method: get_notes
+    outputs:
+      n1_notes_after: result
+
+  - name: Assert node-1's v2 setter/getter round-tripped
+    type: json_assert
+    statements:
+      - 'json_equal({{n1_notes_after}}, {"output": "node-1-post-cascade"})'
+
+  - name: Node-2 writes v2-only notes on G2-ctx2
+    type: call
+    node: app-migration-namespace-cascade-2
+    context_id: "{{ctx_g2_2}}"
+    method: set_notes
+    args:
+      notes: "node-2-post-cascade"
+
+  - name: Node-2 reads back notes on G2-ctx2
+    type: call
+    node: app-migration-namespace-cascade-2
+    context_id: "{{ctx_g2_2}}"
+    method: get_notes
+    outputs:
+      n2_notes_after: result
+
+  - name: Assert node-2's v2 setter/getter round-tripped
+    type: json_assert
+    statements:
+      - 'json_equal({{n2_notes_after}}, {"output": "node-2-post-cascade"})'
+
+  # ── Phase 10: Teardown ──────────────────────────────────────────────
+  # Mirrors workflow 00's order: contexts → subgroups → namespace →
+  # uninstall apps. Admin (`{{admin_key}}`) is the requester for every
+  # destructive op since node-2 only has Member role.
+
+  - name: Delete G1-ctx1
+    type: delete_context
+    node: app-migration-namespace-cascade-1
+    context_id: "{{ctx_g1_1}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete G1-ctx2
+    type: delete_context
+    node: app-migration-namespace-cascade-1
+    context_id: "{{ctx_g1_2}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete G2-ctx1
+    type: delete_context
+    node: app-migration-namespace-cascade-1
+    context_id: "{{ctx_g2_1}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete G2-ctx2
+    type: delete_context
+    node: app-migration-namespace-cascade-1
+    context_id: "{{ctx_g2_2}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup G1
+    type: delete_group
+    node: app-migration-namespace-cascade-1
+    group_id: "{{g1_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup G2
+    type: delete_group
+    node: app-migration-namespace-cascade-1
+    group_id: "{{g2_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-namespace-cascade-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1 on node-1
+    type: uninstall_application
+    node: app-migration-namespace-cascade-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2 on node-1
+    type: uninstall_application
+    node: app-migration-namespace-cascade-1
+    application_id: "{{app_v2}}"
+
+  - name: Uninstall v1 on node-2
+    type: uninstall_application
+    node: app-migration-namespace-cascade-2
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2 on node-2
+    type: uninstall_application
+    node: app-migration-namespace-cascade-2
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
