@@ -72,13 +72,24 @@ impl<'a> PermissionChecker<'a> {
         identity: &PublicKey,
         operation: &str,
     ) -> EyreResult<()> {
-        if self.is_authorized_with_capability(identity, MemberCapabilities::MANAGE_APPLICATION)? {
+        if self.can_manage_application(identity)? {
             return Ok(());
         }
         bail!(GroupStoreError::Unauthorized {
             group_id: format!("{:?}", self.group_id),
             operation: operation.to_owned(),
         });
+    }
+
+    /// Non-bailing mirror of [`require_manage_application`]. Returns
+    /// `Ok(true)` iff `identity` would pass the
+    /// `MANAGE_APPLICATION` capability gate on `self.group_id` (direct
+    /// admin / capability holder, or inherited admin via the Open
+    /// chain). Used by the cascade apply arms to pre-scan every matched
+    /// descendant before issuing any writes, so a per-descendant cap
+    /// mismatch can't leave the store in a partial-cascade state.
+    pub fn can_manage_application(&self, identity: &PublicKey) -> EyreResult<bool> {
+        self.is_authorized_with_capability(identity, MemberCapabilities::MANAGE_APPLICATION)
     }
 
     pub fn require_can_create_context(&self, identity: &PublicKey) -> EyreResult<()> {

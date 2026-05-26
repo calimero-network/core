@@ -8,7 +8,6 @@ use calimero_store::key::GroupMetaValue;
 use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
 
-use super::cascade_target_application;
 use super::permission_checker::PermissionChecker;
 
 /// Group-level settings mutation service.
@@ -55,8 +54,7 @@ impl<'a> GroupSettingsService<'a> {
         let mut meta = self.load_required_meta()?;
         meta.app_key = *app_key;
         meta.target_application_id = *target_application_id;
-        MetaRepository::new(self.store).save(&self.group_id, &meta)?;
-        cascade_target_application(self.store, &self.group_id, target_application_id, app_key)
+        MetaRepository::new(self.store).save(&self.group_id, &meta)
     }
 
     pub fn set_subgroup_visibility(

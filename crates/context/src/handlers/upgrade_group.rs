@@ -28,6 +28,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             target_application_id,
             requester,
             migration,
+            cascade,
         }: UpgradeGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -49,6 +50,31 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         // Resolve signing_key from node identity key
         let node_sk = node_identity.map(|(_, sk)| sk);
         let signing_key = node_sk;
+
+        // Cascade path: emit `GroupOp::CascadeTargetApplicationSet`
+        // (+ optional `GroupOp::CascadeGroupMigrationSet`) and dispatch
+        // one `propagate_upgrade` per descendant subgroup whose current
+        // `app_key` matches the signed group's current `app_key`.
+        //
+        // The single-group branch below stays bit-identical for
+        // `cascade = false` (the historical default).
+        //
+        // The cascade flow bypasses the single-group `validate_upgrade`
+        // preamble because (a) the signed group on a cascade is often a
+        // namespace root with no contexts of its own, and (b) cascade
+        // dispatches one propagator per matched descendant rather than
+        // one canary against a single context list.
+        if cascade {
+            return dispatch_cascade(
+                self,
+                group_id,
+                target_application_id,
+                requester,
+                signing_key,
+                node_identity,
+                migration,
+            );
+        }
 
         // --- Synchronous validation ---
         let preamble = match validate_upgrade(
@@ -738,4 +764,385 @@ pub(crate) fn update_upgrade_status(
         UpgradesRepository::new(datastore).save(group_id, &upgrade)?;
     }
     Ok(())
+}
+
+/// Cascade variant of the upgrade-group flow.
+///
+/// Emits [`GroupOp::CascadeTargetApplicationSet`] (and, when migration is
+/// requested, [`GroupOp::CascadeGroupMigrationSet`]) signed by the
+/// requester, then spawns one [`propagate_upgrade`] per descendant
+/// subgroup whose current `app_key` matches the signed group's current
+/// `app_key`.
+///
+/// The walk used to enumerate matched descendants runs BEFORE the
+/// cascade op is published locally — by the time the apply arm runs,
+/// matched descendants' `GroupMeta.app_key` has been rewritten to the
+/// new `app_key`, so a post-publish walk against the old predicate
+/// would find zero matches. Capturing the descendant list synchronously
+/// before publish is the simplest mechanism that respects the apply
+/// arm's own mutation.
+///
+/// Per-context status records and the PR-3 `cascade_hlc` field are NOT
+/// written here; those land in PR-3. The propagator's existing
+/// per-group `GroupUpgradeValue` write is the only status surface this
+/// flow updates, mirroring the single-group canary path.
+fn dispatch_cascade(
+    actor: &mut ContextManager,
+    group_id: ContextGroupId,
+    target_application_id: ApplicationId,
+    requester: PublicKey,
+    signing_key: Option<[u8; 32]>,
+    node_identity: Option<(PublicKey, [u8; 32])>,
+    migration: Option<MigrationParams>,
+) -> ActorResponse<ContextManager, eyre::Result<UpgradeGroupResponse>> {
+    // --- Lightweight cascade validation ---
+    // Cascade bypasses `validate_upgrade` because that helper requires
+    // the signed group to have at least one context (for canary
+    // selection). Namespace roots used as cascade entry-points often
+    // hold no contexts of their own, only descendant subgroups. We
+    // re-implement the subset of checks that do apply: group exists,
+    // requester is admin, signing key is available, no concurrent
+    // upgrade in progress on the signed group, and target differs.
+    let meta = match MetaRepository::new(&actor.datastore).load(&group_id) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return ActorResponse::reply(Err(eyre::eyre!("group not found")));
+        }
+        Err(err) => return ActorResponse::reply(Err(err)),
+    };
+
+    if let Err(err) =
+        MembershipRepository::new(&actor.datastore).require_admin(&group_id, &requester)
+    {
+        return ActorResponse::reply(Err(err));
+    }
+
+    let has_migration = migration.is_some();
+
+    if let Some(existing) = match UpgradesRepository::new(&actor.datastore).load(&group_id) {
+        Ok(v) => v,
+        Err(err) => return ActorResponse::reply(Err(err)),
+    } {
+        if matches!(existing.status, GroupUpgradeStatus::InProgress { .. }) {
+            return ActorResponse::reply(Err(eyre::eyre!(
+                "an upgrade is already in progress for this group"
+            )));
+        }
+    }
+
+    if meta.target_application_id == target_application_id && !has_migration {
+        return ActorResponse::reply(Err(eyre::eyre!(
+            "group is already targeting this application and no migration was requested"
+        )));
+    }
+
+    // Resolve target application meta (for the new app_key + blob announce).
+    let app_meta = {
+        let handle = actor.datastore.handle();
+        let key = key::ApplicationMeta::new(target_application_id);
+        match handle.get(&key) {
+            Ok(Some(m)) => m,
+            Ok(None) => {
+                return ActorResponse::reply(Err(eyre::eyre!("target application not found")));
+            }
+            Err(err) => return ActorResponse::reply(Err(err.into())),
+        }
+    };
+    let new_app_key = *app_meta.bytecode.blob_id().as_ref();
+    let target_blob_info = (app_meta.bytecode.blob_id(), app_meta.size);
+    let to_version: String = String::from(app_meta.version.clone());
+
+    let from_app_key = meta.app_key;
+    let from_version = {
+        let handle = actor.datastore.handle();
+        handle
+            .get(&key::ApplicationMeta::new(meta.target_application_id))
+            .ok()
+            .flatten()
+            .map_or_else(|| "unknown".to_owned(), |app| String::from(app.version))
+    };
+
+    // Auto-store signing key when requester == node identity, mirroring
+    // the single-group path so subsequent cascade ops on the same group
+    // don't need an explicit key.
+    if let (Some(sk), Some((node_pk, _))) = (signing_key, node_identity) {
+        if requester == node_pk {
+            if let Err(err) =
+                SigningKeysRepository::new(&actor.datastore).store_key(&group_id, &requester, &sk)
+            {
+                warn!(
+                    target: "calimero::cascade",
+                    ?err,
+                    ?group_id,
+                    "failed to auto-store signing key for cascade — next cascade on this group will require explicit key"
+                );
+            }
+        }
+    }
+
+    // Resolve the signing key once (prefer caller-passed key, fall back
+    // to the stored per-requester key) and validate the result with a
+    // single `ok_or_else`. The prior split — `require_group_signing_key`
+    // only when `signing_key.is_none()`, then `.or(...)` + later
+    // `ok_or_else` inside `publish_task` — could fall through validation
+    // when `signing_key` was `Some` but the stored key was absent,
+    // surfacing as a less clear failure deep in publish.
+    let effective_signing_key = match signing_key {
+        Some(sk) => sk,
+        None => match crate::group_store::SigningKeysRepository::new(&actor.datastore)
+            .get_key(&group_id, &requester)
+        {
+            Ok(Some(sk)) => sk,
+            Ok(None) => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "local group upgrade requires a signing key for the requester"
+                )));
+            }
+            Err(err) => return ActorResponse::reply(Err(err)),
+        },
+    };
+
+    // --- Capture matched descendants BEFORE emitting the cascade op ---
+    // After `sign_apply_and_publish` runs, the apply arm rewrites
+    // `GroupMeta.app_key` on matched descendants to `new_app_key`, so a
+    // post-publish walk against `from_app_key` would find zero matches.
+    let matched_descendants =
+        match crate::cascade::walk_for_predicate(&actor.datastore, group_id, from_app_key) {
+            Ok(entries) => entries
+                .into_iter()
+                .filter(|e| e.matched)
+                .map(|e| e.group_id)
+                .collect::<Vec<_>>(),
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+
+    if matched_descendants.is_empty() {
+        return ActorResponse::reply(Err(eyre::eyre!(
+            "cascade walk matched no descendants (signed group's app_key may have \
+             already been migrated by a concurrent cascade)"
+        )));
+    }
+
+    info!(
+        ?group_id,
+        %target_application_id,
+        matched = matched_descendants.len(),
+        "cascade upgrade: matched descendants enumerated"
+    );
+
+    let migration_bytes = migration.as_ref().map(|m| m.method.as_bytes().to_vec());
+
+    // Snapshot per-descendant context totals BEFORE emission so the
+    // pre-spawn `GroupUpgradeValue` write carries the right `total` for
+    // status accounting. Descendant counts can shift between snapshot
+    // and propagator-enumeration; the propagator re-enumerates and uses
+    // its own count as authoritative (see `propagate_upgrade`), so any
+    // brief mismatch here is harmless.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut pre_spawn_totals = Vec::with_capacity(matched_descendants.len());
+    for gid in &matched_descendants {
+        let total = match crate::group_store::MetadataRepository::new(&actor.datastore)
+            .count_contexts(gid)
+        {
+            Ok(c) => c as u32,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+        pre_spawn_totals.push(total);
+    }
+
+    let datastore = actor.datastore.clone();
+    let node_client = actor.node_client.clone();
+    let ack_router = Arc::clone(&actor.ack_router);
+    let context_client = actor.context_client.clone();
+
+    let datastore_for_publish = datastore.clone();
+    let node_client_for_publish = node_client.clone();
+    let ack_router_for_publish = Arc::clone(&ack_router);
+    let migration_bytes_for_publish = migration_bytes.clone();
+
+    let publish_task = async move {
+        let sk = PrivateKey::from(effective_signing_key);
+
+        let report = group_store::sign_apply_and_publish(
+            &datastore_for_publish,
+            &node_client_for_publish,
+            &ack_router_for_publish,
+            &group_id,
+            &sk,
+            GroupOp::CascadeTargetApplicationSet {
+                from_app_key,
+                app_key: new_app_key,
+                target_application_id,
+            },
+        )
+        .await?;
+        report.observe("upgrade_group", "CascadeTargetApplicationSet");
+
+        if migration_bytes_for_publish.is_some() {
+            let report = group_store::sign_apply_and_publish(
+                &datastore_for_publish,
+                &node_client_for_publish,
+                &ack_router_for_publish,
+                &group_id,
+                &sk,
+                GroupOp::CascadeGroupMigrationSet {
+                    from_app_key,
+                    migration: migration_bytes_for_publish.clone(),
+                },
+            )
+            .await?;
+            report.observe("upgrade_group", "CascadeGroupMigrationSet");
+        }
+
+        Ok::<_, eyre::Report>(())
+    }
+    .into_actor(actor);
+
+    ActorResponse::r#async(publish_task.map(move |publish_result, act, ctx| {
+        publish_result?;
+
+        // After successful publish + local apply, spawn one propagator
+        // per matched descendant. Each propagator re-enumerates its
+        // group's contexts on entry and drives `update_application` per
+        // context, exactly like the single-group path.
+        for (gid, total) in matched_descendants.iter().zip(pre_spawn_totals.iter()) {
+            // Per-descendant `GroupUpgradeValue` so the propagator's
+            // `update_upgrade_status` writes hit a live record. Same
+            // shape the single-group canary path uses.
+            let upgrade_value = GroupUpgradeValue {
+                from_version: from_version.clone(),
+                to_version: to_version.clone(),
+                migration: migration_bytes.clone(),
+                initiated_at: now,
+                initiated_by: requester,
+                status: GroupUpgradeStatus::InProgress {
+                    total: *total,
+                    completed: 0,
+                    failed: 0,
+                },
+            };
+            if let Err(err) = UpgradesRepository::new(&datastore).save(gid, &upgrade_value) {
+                error!(
+                    ?gid,
+                    ?err,
+                    "failed to save per-descendant upgrade record; skipping propagator spawn"
+                );
+                continue;
+            }
+
+            // Re-skip if a propagator is already running for this group
+            // (e.g. from a prior in-flight upgrade that finished after
+            // the validation check above). The active_propagators set
+            // is the in-process race guard.
+            if act.active_propagators.contains(gid) {
+                warn!(
+                    ?gid,
+                    "propagator already running for cascade descendant; skipping spawn"
+                );
+                continue;
+            }
+
+            spawn_propagator_for(
+                act,
+                ctx,
+                *gid,
+                target_application_id,
+                migration.clone(),
+                context_client.clone(),
+                datastore.clone(),
+            );
+        }
+
+        // Best-effort blob announce so peers can fetch the target app
+        // bytecode during their own context sync. Mirrors the gossip
+        // step in the single-group canary path.
+        let nc_for_announce = node_client.clone();
+        let datastore_for_announce = datastore.clone();
+        let descendants_for_announce = matched_descendants.clone();
+        let (blob_id, blob_size) = target_blob_info;
+        ctx.spawn(
+            async move {
+                for gid in &descendants_for_announce {
+                    let contexts = match group_store::enumerate_group_contexts(
+                        &datastore_for_announce,
+                        gid,
+                        0,
+                        usize::MAX,
+                    ) {
+                        Ok(c) => c,
+                        Err(err) => {
+                            warn!(
+                                ?gid,
+                                ?err,
+                                "failed to enumerate descendant contexts for blob announce"
+                            );
+                            continue;
+                        }
+                    };
+                    for context_id in &contexts {
+                        if let Err(err) = nc_for_announce
+                            .announce_blob_to_network(&blob_id, context_id, blob_size)
+                            .await
+                        {
+                            warn!(%err, "failed to announce target app blob");
+                        }
+                    }
+                }
+            }
+            .into_actor(act),
+        );
+
+        // Initial status snapshot for the signed group itself (which is
+        // also in `matched_descendants` since the walk always includes
+        // the root and it always matches `from_app_key`). The
+        // per-descendant propagators write their own statuses; we
+        // surface the signed group's initial status here for the RPC
+        // response.
+        let signed_status = match UpgradesRepository::new(&datastore).load(&group_id) {
+            Ok(Some(v)) => v.status,
+            _ => GroupUpgradeStatus::InProgress {
+                total: pre_spawn_totals.first().copied().unwrap_or(0),
+                completed: 0,
+                failed: 0,
+            },
+        };
+
+        Ok(UpgradeGroupResponse {
+            group_id,
+            status: signed_status.into(),
+        })
+    }))
+}
+
+/// Insert into `active_propagators`, spawn `propagate_upgrade` for the
+/// given group, and arrange the post-completion removal — used by the
+/// cascade dispatch loop. Mirrors the inline pattern in the single-
+/// group canary handler at L398-411 of `handle`, factored out so the
+/// cascade loop and any future caller can share one spawn shape.
+fn spawn_propagator_for(
+    actor: &mut ContextManager,
+    ctx: &mut <ContextManager as actix::Actor>::Context,
+    group_id: ContextGroupId,
+    target_application_id: ApplicationId,
+    migration: Option<MigrationParams>,
+    context_client: calimero_context_client::client::ContextClient,
+    datastore: calimero_store::Store,
+) {
+    actor.active_propagators.insert(group_id);
+    let propagator = propagate_upgrade(
+        context_client,
+        datastore,
+        group_id,
+        target_application_id,
+        migration,
+        None, // cascade has no per-descendant canary to skip
+        0,    // initial_completed: 0 — no contexts pre-migrated
+    );
+    ctx.spawn(propagator.into_actor(actor).map(move |_, act, _| {
+        act.active_propagators.remove(&group_id);
+    }));
 }

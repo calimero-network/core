@@ -129,6 +129,36 @@ pub enum ExecuteError {
     /// retry-able condition.
     #[error("group key not yet delivered for context '{context_id}' — retry shortly")]
     GroupKeyPending { context_id: ContextId },
+    /// The context belongs to a group whose cascade upgrade is currently
+    /// `InProgress`. Writes (and, conservatively, all `call` invocations)
+    /// are refused until the propagator finishes migrating every context
+    /// in the group; otherwise a call could observe — or commit to — a
+    /// mixed-version state where some contexts have already migrated and
+    /// others have not. Surfaced as a transient retry-able variant: the
+    /// client should re-issue the call once the group's `GroupUpgradeStatus`
+    /// transitions to `Completed { .. }` (typically seconds to low minutes
+    /// for a healthy propagation, longer if `failed > 0` and operator
+    /// intervention is required via `retry_group_upgrade`).
+    ///
+    /// PR-2 (cascade engine) chose group-level granularity over
+    /// per-context-HLC gating to avoid coupling this gate to the
+    /// storage-layout migration that introduces `cascade_hlc` (deferred to
+    /// PR-3). The trade-off: a user calling a context in a 100-context
+    /// group will be blocked for the duration of the group's whole
+    /// propagation, not just until *their* context has been migrated.
+    /// This is acceptable because:
+    ///   * Eager upgrades complete in bounded time (one execute per
+    ///     context, serialised).
+    ///   * `LazyOnAccess` groups never enter `InProgress` here — they
+    ///     upgrade per-call inside `maybe_lazy_upgrade` and skip the
+    ///     group-wide `propagate_upgrade` path entirely.
+    ///   * The alternative (no gate) lets a pre-migration call land on a
+    ///     context whose neighbours already migrated, creating exactly the
+    ///     cross-version drift the cascade is meant to prevent.
+    #[error(
+        "context upgrade in progress for group {group_id:?}; writes refused until migration completes"
+    )]
+    UpgradeInProgress { group_id: ContextGroupId },
 }
 
 #[derive(Copy, Clone, Debug)]
