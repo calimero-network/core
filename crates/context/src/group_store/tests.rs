@@ -260,7 +260,7 @@ fn membership_policy_guards_last_admin_and_tee_paths() {
 
 #[test]
 fn membership_policy_rules_report_rejection_reasons() {
-    use super::membership_policy_rules::{
+    use super::membership::policy_rules::{
         validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
         TeeAttestationClaims,
     };

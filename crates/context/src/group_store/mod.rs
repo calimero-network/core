@@ -24,10 +24,6 @@ mod group_keys;
 mod group_settings;
 mod local_state;
 mod membership;
-mod membership_policy;
-mod membership_policy_rules;
-mod membership_status;
-mod membership_view;
 mod meta;
 mod metadata;
 mod migrations;
@@ -79,13 +75,11 @@ pub use self::membership::{
     enumerate_inherited_members, get_effective_member_capabilities, get_group_member_role,
     get_group_member_value, has_direct_group_member, is_authoritative_namespace_identity,
     is_direct_group_admin, is_group_admin, is_group_admin_or_has_capability, is_inherited_admin,
-    list_group_members, namespace_member_pubkeys, remove_group_member, require_group_admin,
-    require_group_admin_or_capability, set_member_auto_follow, subgroup_visible_to,
-    trusted_anchors_for_group, MembershipPath,
+    list_group_members, membership_status_at, namespace_member_pubkeys, remove_group_member,
+    require_group_admin, require_group_admin_or_capability, set_member_auto_follow,
+    subgroup_visible_to, trusted_anchors_for_group, GroupMembershipView, MembershipPath,
+    MembershipPolicy, MembershipStatus,
 };
-pub use self::membership_policy::MembershipPolicy;
-pub use self::membership_status::{membership_status_at, MembershipStatus};
-pub use self::membership_view::GroupMembershipView;
 pub use self::meta::{
     compute_group_state_hash, compute_group_state_hash_after_remove, delete_group_meta,
     enumerate_all_groups, load_group_meta, save_group_meta, snapshot_context_state_hashes,
