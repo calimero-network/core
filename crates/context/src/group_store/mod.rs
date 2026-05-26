@@ -2051,4 +2051,7 @@ pub fn get_context_service_name(
 }
 
 #[cfg(test)]
+mod test_fixtures;
+
+#[cfg(test)]
 mod tests;

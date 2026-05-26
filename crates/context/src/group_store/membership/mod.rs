@@ -14,6 +14,9 @@ pub(crate) mod policy_rules;
 mod status;
 mod view;
 
+#[cfg(test)]
+mod tests;
+
 pub use self::core::{
     add_group_member, add_group_member_with_keys, check_group_membership,
     check_group_membership_path, count_group_admins, count_group_members,
