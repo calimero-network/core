@@ -216,11 +216,23 @@ impl<'a> GroupKeyring<'a> {
     }
 }
 
-// Backward-compatible free-function facade
+// ---------------------------------------------------------------------------
+// Deprecated free-function wrappers.
+//
+// The Repository pattern was already in place as `GroupKeyring` before
+// #2303. This commit just adds `#[deprecated]` to the free-function
+// facade to nudge external callers toward the struct API.
+// `GroupKeyring` is the keys-Repository for this domain — kept under
+// its existing name because "Keyring" reads more naturally than
+// "GroupKeysRepository" for a crypto-keys collection.
+// ---------------------------------------------------------------------------
+
+#[deprecated(note = "use GroupKeyring::key_id_for(...)")]
 pub fn compute_key_id(group_key: &[u8; 32]) -> [u8; 32] {
     GroupKeyring::key_id_for(group_key)
 }
 
+#[deprecated(note = "use GroupKeyring::new(store, group_id).store_key(...)")]
 pub fn store_group_key(
     store: &Store,
     group_id: &ContextGroupId,
@@ -229,6 +241,7 @@ pub fn store_group_key(
     GroupKeyring::new(store, *group_id).store_key(group_key)
 }
 
+#[deprecated(note = "use GroupKeyring::new(store, group_id).load_key_by_id(...)")]
 pub fn load_group_key_by_id(
     store: &Store,
     group_id: &ContextGroupId,
@@ -237,6 +250,7 @@ pub fn load_group_key_by_id(
     GroupKeyring::new(store, *group_id).load_key_by_id(key_id)
 }
 
+#[deprecated(note = "use GroupKeyring::new(store, group_id).load_current_key(...)")]
 pub fn load_current_group_key(
     store: &Store,
     group_id: &ContextGroupId,
@@ -244,6 +258,7 @@ pub fn load_current_group_key(
     GroupKeyring::new(store, *group_id).load_current_key()
 }
 
+#[deprecated(note = "use GroupKeyring::new(store, group_id).load_current_key_record(...)")]
 pub fn load_current_group_key_record(
     store: &Store,
     group_id: &ContextGroupId,
@@ -251,6 +266,7 @@ pub fn load_current_group_key_record(
     GroupKeyring::new(store, *group_id).load_current_key_record()
 }
 
+#[deprecated(note = "use GroupKeyring::wrap_for_member(...)")]
 pub fn wrap_group_key_for_member(
     sender_sk: &PrivateKey,
     recipient_pk: &PublicKey,
@@ -259,10 +275,12 @@ pub fn wrap_group_key_for_member(
     GroupKeyring::wrap_for_member(sender_sk, recipient_pk, group_key)
 }
 
+#[deprecated(note = "use GroupKeyring::unwrap_for_recipient(...)")]
 pub fn unwrap_group_key(recipient_sk: &PrivateKey, envelope: &KeyEnvelope) -> EyreResult<[u8; 32]> {
     GroupKeyring::unwrap_for_recipient(recipient_sk, envelope)
 }
 
+#[deprecated(note = "use GroupKeyring::new(store, group_id).build_rotation(...)")]
 pub fn build_key_rotation(
     store: &Store,
     group_id: &ContextGroupId,
@@ -273,10 +291,12 @@ pub fn build_key_rotation(
     GroupKeyring::new(store, *group_id).build_rotation(new_group_key, sender_sk, excluded_member)
 }
 
+#[deprecated(note = "use GroupKeyring::encrypt_op(...)")]
 pub fn encrypt_group_op(group_key: &[u8; 32], op: &GroupOp) -> EyreResult<EncryptedGroupOp> {
     GroupKeyring::encrypt_op(group_key, op)
 }
 
+#[deprecated(note = "use GroupKeyring::decrypt_op(...)")]
 pub fn decrypt_group_op(group_key: &[u8; 32], encrypted: &EncryptedGroupOp) -> EyreResult<GroupOp> {
     GroupKeyring::decrypt_op(group_key, encrypted)
 }
