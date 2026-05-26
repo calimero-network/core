@@ -113,11 +113,16 @@ fn sample_meta(admin: PublicKey) -> GroupMetaValue {
 /// Bundle of resources kept alive for the duration of a test — dropping
 /// `_tmp` or `_pool` would tear down the blobstore / arbiters underneath
 /// the running actors.
-struct TestNode {
+// Visibility note: this struct (and `boot_test_node` below) are
+// `pub(crate)` so the sibling `cascade_dispatch_e2e` test module can
+// share the same actor harness without duplicating ~120 LOC of
+// `ContextManager` + `NodeManager` boot machinery. The fields it
+// reads (`store`, `context_client`) are likewise `pub(crate)`.
+pub(crate) struct TestNode {
     _pool: ArbiterPool,
     _tmp: TempDir,
-    store: Store,
-    context_client: ContextClient,
+    pub(crate) store: Store,
+    pub(crate) context_client: ContextClient,
     /// Address of the running `NodeManager` actor. Lets a test deliver a
     /// synthesized `NetworkEvent` straight to the production
     /// `Handler<NetworkEvent>` dispatch (the same entrypoint a real
@@ -131,7 +136,7 @@ struct TestNode {
 /// recipient is a never-initialised `LazyRecipient`, so any outbound op
 /// publish becomes a local-only apply). Sufficient for governance handlers
 /// that just need the actor mailbox and the datastore.
-async fn boot_test_node() -> TestNode {
+pub(crate) async fn boot_test_node() -> TestNode {
     let mut pool = ArbiterPool::new().await.expect("arbiter pool");
     let tmp = tempfile::tempdir().expect("tempdir");
 

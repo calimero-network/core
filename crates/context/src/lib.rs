@@ -23,6 +23,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use crate::metrics::Metrics;
 
 pub mod auto_follow;
+pub(crate) mod cascade;
 pub mod config;
 pub mod error;
 pub mod governance_broadcast;

@@ -206,6 +206,39 @@ pub struct UpgradeGroupRequest {
     pub target_application_id: ApplicationId,
     pub requester: Option<PublicKey>,
     pub migration: Option<MigrationParams>,
+    /// When `true`, the handler emits the [`GroupOp::CascadeTargetApplicationSet`]
+    /// (and, if `migration` is set, [`GroupOp::CascadeGroupMigrationSet`])
+    /// variants that fan out to every descendant subgroup whose current
+    /// `app_key` matches the signed group's current `app_key`. When
+    /// `false` (the default for `Default::default()` and for any caller
+    /// that does not explicitly set it), the handler stays on the
+    /// existing single-group path that emits the per-group
+    /// [`GroupOp::TargetApplicationSet`] / [`GroupOp::GroupMigrationSet`]
+    /// ops.
+    ///
+    /// Default: `false` so existing callers stay bit-identical.
+    pub cascade: bool,
+}
+
+impl UpgradeGroupRequest {
+    /// Construct a non-cascade (single-group) upgrade request — the
+    /// historical default. Use the struct literal with `cascade: true`
+    /// for the cascade variant.
+    #[must_use]
+    pub fn new(
+        group_id: ContextGroupId,
+        target_application_id: ApplicationId,
+        requester: Option<PublicKey>,
+        migration: Option<MigrationParams>,
+    ) -> Self {
+        Self {
+            group_id,
+            target_application_id,
+            requester,
+            migration,
+            cascade: false,
+        }
+    }
 }
 
 impl Message for UpgradeGroupRequest {

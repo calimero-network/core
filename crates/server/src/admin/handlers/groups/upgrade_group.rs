@@ -42,6 +42,7 @@ pub async fn handler(
             target_application_id: req.target_application_id,
             requester,
             migration,
+            cascade: req.cascade,
         })
         .await
         .map_err(parse_api_error);

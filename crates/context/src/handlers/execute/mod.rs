@@ -122,6 +122,92 @@ impl Handler<ExecuteRequest> for ContextManager {
             Some(ContextAtomic::Held(ContextAtomicKey(guard))) => (Either::Left(guard), true),
         };
 
+        // Cascade-upgrade gate (PR-2): if this context belongs to a group whose
+        // upgrade is currently `InProgress`, refuse user-initiated calls. The
+        // propagator must finish (or be explicitly retried via
+        // `retry_group_upgrade`) before user traffic resumes, otherwise a
+        // call could land on a context whose group-mates have already
+        // migrated, producing cross-version state drift inside the same
+        // group — exactly what cascade is meant to prevent.
+        //
+        // Placed *after* `context.lock()` (which consumes the `context`
+        // borrow on `self`) so that `&self.datastore` is reachable — same
+        // borrow-ordering constraint as the existing `maybe_lazy_upgrade`
+        // call below.
+        //
+        // Bypasses:
+        //   * `__calimero_sync_next` (state-sync replay): sync-layer
+        //     internal traffic, not a user call. The state it carries was
+        //     produced by some peer and is being replayed locally; it does
+        //     not write *new* mutations. Gating it would wedge the sync
+        //     pipeline and defeat the migration's ability to converge.
+        //   * The propagator itself doesn't go through this handler — it
+        //     routes via `UpdateApplicationRequest` →
+        //     `handlers::update_application`, so no internal bypass field
+        //     is needed for `propagate_upgrade` / `recover_in_progress_upgrades`.
+        //
+        // Granularity: gate is per-group, not per-context. PR-2 explicitly
+        // chose this over per-context-HLC gating because the latter requires
+        // a storage-layout change (`cascade_hlc` field on
+        // `GroupUpgradeStatus`) that is deferred to PR-3. The trade-off is
+        // documented on `ExecuteError::UpgradeInProgress`.
+        //
+        // Read vs write: PR-2 blocks *all* `call` invocations during
+        // `InProgress`, not just writes. The `call` path doesn't carry an
+        // intent flag and we cannot cheaply derive write-intent from the
+        // method name alone — better to block too much than to let a read
+        // observe a mid-migration partial-snapshot of the group. PR-3 or a
+        // follow-up can refine this if usability complaints surface.
+        //
+        // Absent status row = "no upgrade running" → allow. Only an explicit
+        // `Some(InProgress { .. })` blocks. This keeps the baseline (no
+        // group, or group with no upgrade history) on the fast path.
+        if !is_state_op {
+            match crate::group_store::get_group_for_context(&self.datastore, &context_id) {
+                Ok(Some(group_id)) => {
+                    match crate::group_store::load_group_upgrade(&self.datastore, &group_id) {
+                        Ok(Some(upgrade)) => {
+                            use calimero_store::key::GroupUpgradeStatus;
+                            if matches!(upgrade.status, GroupUpgradeStatus::InProgress { .. }) {
+                                warn!(
+                                    %context_id,
+                                    ?group_id,
+                                    method,
+                                    "refusing execute: group upgrade in progress"
+                                );
+                                return ActorResponse::reply(Err(
+                                    ExecuteError::UpgradeInProgress { group_id },
+                                ));
+                            }
+                        }
+                        Ok(None) => {
+                            // No upgrade row for this group → not in progress, allow.
+                        }
+                        Err(err) => {
+                            error!(
+                                %context_id,
+                                ?group_id,
+                                %err,
+                                "cascade gate: failed to load GroupUpgradeStatus"
+                            );
+                            return ActorResponse::reply(Err(ExecuteError::InternalError));
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Context not registered to any group → no cascade gate applies.
+                }
+                Err(err) => {
+                    error!(
+                        %context_id,
+                        %err,
+                        "cascade gate: failed to resolve owning group"
+                    );
+                    return ActorResponse::reply(Err(ExecuteError::InternalError));
+                }
+            }
+        }
+
         // Lazy upgrade: if context belongs to a LazyOnAccess group and is stale,
         // trigger an upgrade before executing the method.
         // Note: placed after context.lock() so that `context` borrow is released
