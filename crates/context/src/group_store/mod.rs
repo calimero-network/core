@@ -34,6 +34,8 @@ mod tee;
 mod upgrades;
 use self::local_state::persist_group_governance_progress;
 
+pub use self::capabilities::CapabilitiesRepository;
+#[allow(deprecated)]
 pub use self::capabilities::{
     delete_all_member_capabilities, delete_default_capabilities, delete_subgroup_visibility,
     enumerate_member_capabilities, get_context_member_capability, get_default_capabilities,
@@ -48,6 +50,8 @@ pub use self::contexts::{
     get_group_for_context, is_currently_authorized_for_context, register_context_in_group,
     restore_member_context_identities, unregister_context_from_group,
 };
+pub use self::deny_list::DenyListRepository;
+#[allow(deprecated)]
 pub use self::deny_list::{
     clear_all_denied, clear_denied, is_author_denied_for_context, is_denied, mark_denied,
 };
