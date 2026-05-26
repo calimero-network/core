@@ -28,6 +28,6 @@ pub use self::core::{
     trusted_anchors_for_group, MembershipPath,
 };
 pub use self::policy::MembershipPolicy;
-pub use self::status::{membership_status_at, MembershipStatus};
 pub(crate) use self::status::role_from_invited_role;
+pub use self::status::{membership_status_at, MembershipStatus};
 pub use self::view::GroupMembershipView;

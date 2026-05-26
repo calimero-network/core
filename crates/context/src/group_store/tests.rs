@@ -6662,4 +6662,3 @@ fn is_tee_admitted_identity_matches_tee_joined_member() {
 // ---------------------------------------------------------------------
 // is_authoritative_namespace_identity
 // ---------------------------------------------------------------------
-

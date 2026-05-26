@@ -18,11 +18,11 @@ use calimero_store::db::InMemoryDB;
 use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
 use calimero_store::Store;
 
-use super::super::*;
 use super::super::test_fixtures::{
     dummy_member_removed_op, nest_for_test, sample_meta_with_admin, test_group_id, test_meta,
     test_store,
 };
+use super::super::*;
 
 #[test]
 fn add_and_check_membership() {
@@ -908,8 +908,9 @@ fn membership_path_inherited_admin_overrides_anchor_cap_denial() {
 fn auth_and_crypto_walks_agree_at_max_namespace_depth_boundary() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
 
+    use super::super::is_open_chain_to_namespace;
     use super::super::namespace::MAX_NAMESPACE_DEPTH;
-    use super::is_inherited_admin; use super::super::is_open_chain_to_namespace;
+    use super::is_inherited_admin;
 
     // Bugbot finding (PR #2261, comment 3146841673): at chain length
     // exactly `MAX_NAMESPACE_DEPTH`, `is_open_chain_to_namespace`
@@ -2427,4 +2428,3 @@ fn is_authoritative_namespace_identity_recognizes_owner_admin_tee() {
     assert!(!is_authoritative_namespace_identity(&store, namespace_id, &ordinary).unwrap());
     assert!(!is_authoritative_namespace_identity(&store, namespace_id, &stranger).unwrap());
 }
-
