@@ -5,7 +5,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use rand::{rngs::OsRng, Rng};
 
-use super::namespace_governance::classify_report_readiness;
+use super::namespace::classify_report_readiness;
 use super::{
     build_key_rotation, encrypt_group_op, get_namespace_identity_record, get_parent_group,
     is_open_chain_to_namespace, load_current_group_key_record, resolve_namespace,

@@ -11,7 +11,7 @@ use rand::rngs::OsRng;
 use rand::Rng;
 use sha2::Digest;
 
-use super::{
+use super::super::{
     cascade_remove_member_from_group_tree, collect_keys_with_prefix, get_group_for_context,
     get_group_member_role, remove_group_member,
 };
@@ -84,7 +84,7 @@ pub fn is_read_only_for_context(
 /// **Inherited membership.** Members of an Open subgroup may not have a
 /// stored `GroupMember` row at the subgroup level — they reach it via the
 /// parent-walk with `CAN_JOIN_OPEN_SUBGROUPS` at the anchor (see
-/// [`super::membership::check_group_membership_path`]). The receive-side
+/// [`super::super::membership::check_group_membership_path`]). The receive-side
 /// `membership_status_at` folds `Inherited → Member(Member)`; this function
 /// does the same so the two checks agree on inherited members. Without
 /// this, a perfectly legitimate inherited member's local state ops would be
@@ -92,7 +92,7 @@ pub fn is_read_only_for_context(
 /// internally inconsistent and breaks Open-subgroup workflows.
 ///
 /// The namespace creator / root admin is recognised via
-/// [`super::membership::is_group_admin`] (their membership lives in
+/// [`super::super::membership::is_group_admin`] (their membership lives in
 /// `GroupMeta::admin_identity`, not in a `GroupMember` row).
 ///
 /// **Deny-list is a separate layer.** This function checks live membership
@@ -121,7 +121,7 @@ pub fn is_authorized_for_context_state_op(
     // `namespace_member_pubkeys` apply, so admin authority is consistent
     // across the receive-side and local-execute-side authorization
     // checks.
-    if super::membership::is_group_admin(store, &group_id, executor)? {
+    if super::super::membership::is_group_admin(store, &group_id, executor)? {
         return Ok(true);
     }
 
@@ -141,16 +141,16 @@ pub fn is_authorized_for_context_state_op(
     // for non-admin anchors). Mirrors what the receive-side
     // `membership_status_at` does, so the two checks agree on who is
     // authorized to author state ops.
-    match super::membership::check_group_membership_path(store, &group_id, executor)? {
-        super::membership::MembershipPath::Direct => {
+    match super::super::membership::check_group_membership_path(store, &group_id, executor)? {
+        super::super::membership::MembershipPath::Direct => {
             // Practically unreachable: the direct lookup above already
             // returned `Some(role)` if a row existed. Treat a race here
             // (concurrent `MemberAdded`) as `Member` — same fallback the
             // receive-side check uses at the equivalent boundary.
             Ok(true)
         }
-        super::membership::MembershipPath::Inherited { .. } => Ok(true),
-        super::membership::MembershipPath::None => Ok(false),
+        super::super::membership::MembershipPath::Inherited { .. } => Ok(true),
+        super::super::membership::MembershipPath::None => Ok(false),
     }
 }
 
@@ -285,7 +285,7 @@ pub fn collect_descendant_groups(
 ///
 /// Unlike [`collect_descendant_groups`], the walk does not descend into —
 /// and does not include — a child the `viewer` is not a member of (per
-/// [`super::check_group_membership`]). A `Restricted` subgroup the viewer
+/// [`super::super::check_group_membership`]). A `Restricted` subgroup the viewer
 /// has neither a direct row in nor inherited membership of is a wall: it
 /// is skipped along with its entire subtree, because the viewer cannot
 /// observe what lies beyond it. `Open` subgroups beneath a namespace the
@@ -294,7 +294,7 @@ pub fn collect_descendant_groups(
 /// itself walks the parent chain and terminates at the first `Restricted`
 /// ancestor — that single primitive (shared with governance auth,
 /// crypto-key selection and sync stream-auth; see the module note on
-/// [`super::membership::check_group_membership_path`]) is the one source
+/// [`super::super::membership::check_group_membership_path`]) is the one source
 /// of truth for the wall, so this function deliberately does not
 /// re-derive a parallel visibility rule.
 ///
@@ -322,7 +322,7 @@ pub fn collect_visible_descendant_groups(
 
     while let Some(current) = stack.pop() {
         for child in list_child_groups(store, &current)? {
-            if !super::check_group_membership(store, &child, viewer)? {
+            if !super::super::check_group_membership(store, &child, viewer)? {
                 continue;
             }
             descendants.push(child);
@@ -406,7 +406,7 @@ pub fn create_recursive_invitations(
         // descendant; the joiner's existing zero-app self-heal path
         // (`context_registration::register_context_in_group`) covers the
         // missing-meta case the same way it covered it pre-fix.
-        let application_id = match super::load_group_meta(store, &gid)? {
+        let application_id = match super::super::load_group_meta(store, &gid)? {
             Some(meta) => Some(*meta.target_application_id.as_ref()),
             None => {
                 tracing::warn!(
@@ -435,7 +435,7 @@ pub fn create_recursive_invitations(
 /// Only **direct** memberships are touched: `remove_group_member` only
 /// deletes a direct membership row, so reporting groups where the member
 /// was merely inherited (via `Open` subgroup walks in
-/// [`super::check_group_membership`]) would be misleading -- the row
+/// [`super::super::check_group_membership`]) would be misleading -- the row
 /// doesn't exist, the call is a no-op, yet the caller would think they
 /// removed the user. To revoke inherited access, an admin removes the
 /// member from the anchor group higher up the chain (or flips the
@@ -528,7 +528,7 @@ pub fn collect_subtree_for_cascade(
     root: &ContextGroupId,
 ) -> EyreResult<CascadePayload> {
     let mut contexts: Vec<ContextId> = Vec::new();
-    contexts.extend(super::enumerate_group_contexts(store, root, 0, usize::MAX)?);
+    contexts.extend(super::super::enumerate_group_contexts(store, root, 0, usize::MAX)?);
 
     // DFS pre-order traversal. Push children onto a LIFO stack; each iteration
     // pops one and recurses into its subtree before backtracking. After the
@@ -541,7 +541,7 @@ pub fn collect_subtree_for_cascade(
         for child in list_child_groups(store, &g)? {
             dfs_preorder.push(child);
             stack.push(child);
-            contexts.extend(super::enumerate_group_contexts(
+            contexts.extend(super::super::enumerate_group_contexts(
                 store,
                 &child,
                 0,
@@ -594,7 +594,7 @@ pub fn reparent_group(
         return Ok(ReparentOutcome::Unchanged);
     }
 
-    if super::load_group_meta(store, new_parent)?.is_none() {
+    if super::super::load_group_meta(store, new_parent)?.is_none() {
         eyre::bail!("new parent group '{new_parent:?}' not found in this namespace");
     }
 

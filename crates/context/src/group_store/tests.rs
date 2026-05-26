@@ -2623,7 +2623,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -2805,7 +2805,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -2961,7 +2961,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -3084,7 +3084,7 @@ fn seed_bootstrap_admin_repairs_missing_member_row() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -4394,7 +4394,7 @@ fn governance_group_reparented_via_signed_op() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -4481,7 +4481,7 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -4536,7 +4536,7 @@ fn governance_rejects_non_admin_signer() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -4579,7 +4579,7 @@ fn governance_group_created_is_idempotent() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -4645,7 +4645,7 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -4708,7 +4708,7 @@ fn execute_group_created_rejects_self_parent() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -4755,7 +4755,7 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -4827,7 +4827,7 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
 
 #[test]
 fn min_acks_after_local_mutation_uses_publish_time_subscribers() {
-    let min_acks = namespace_governance::min_acks_after_local_mutation(1, 0);
+    let min_acks = super::namespace::min_acks_after_local_mutation(1, 0);
 
     assert_eq!(
         min_acks, 0,
@@ -5385,7 +5385,7 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;
@@ -5500,7 +5500,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     use calimero_primitives::identity::PrivateKey;
     use rand::rngs::OsRng;
 
-    use super::namespace_governance::NamespaceGovernance;
+    use super::NamespaceGovernance;
 
     let store = test_store();
     let mut rng = OsRng;

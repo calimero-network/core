@@ -3,7 +3,8 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use super::{load_group_key_by_id, namespace_op_log::NamespaceOpLogService};
+use super::op_log::NamespaceOpLogService;
+use super::super::load_group_key_by_id;
 
 /// A namespace group operation that can be retried locally because the
 /// corresponding group key is now available.

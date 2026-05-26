@@ -4,7 +4,7 @@ use calimero_context_client::local_governance::SignedNamespaceOp;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use super::namespace_op_log::NamespaceOpLogService;
+use super::op_log::NamespaceOpLogService;
 
 /// Namespace DAG head view used by governance workflows.
 #[derive(Debug, Clone)]

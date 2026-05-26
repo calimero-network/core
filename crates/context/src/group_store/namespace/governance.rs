@@ -17,15 +17,15 @@ use crate::governance_broadcast::{
 use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retry_event};
 use crate::op_events::{notify as notify_op_event, OpEvent};
 
-use super::{
+use super::core::get_namespace_identity_record;
+use super::dag::{NamespaceDagService, NamespaceHead};
+use super::membership::NamespaceMembershipService;
+use super::op_log::NamespaceOpLogService;
+use super::retry::NamespaceRetryService;
+use super::super::{
     add_group_member, apply_group_op_mutations, clear_denied, decrypt_group_op,
-    get_local_gov_nonce, get_namespace_identity_record, is_group_admin,
-    is_group_admin_or_has_capability, load_current_group_key_record, load_group_key_by_id,
-    load_group_meta,
-    namespace_dag::{NamespaceDagService, NamespaceHead},
-    namespace_membership::NamespaceMembershipService,
-    namespace_op_log::NamespaceOpLogService,
-    namespace_retry::NamespaceRetryService,
+    get_local_gov_nonce, is_group_admin, is_group_admin_or_has_capability,
+    load_current_group_key_record, load_group_key_by_id, load_group_meta,
     restore_member_context_identities, save_group_meta, set_local_gov_nonce, store_group_key,
     unwrap_group_key, PermissionChecker,
 };
@@ -57,7 +57,7 @@ pub struct ApplyNamespaceOpResult {
     /// `None` for ops that don't carry signed convergence claims, for
     /// ops that match the receiver's view, and for ops that don't go
     /// through the verify path at all.
-    pub divergence: Option<super::DivergenceReport>,
+    pub divergence: Option<super::super::DivergenceReport>,
 }
 
 pub(crate) fn min_acks_after_local_mutation(
@@ -81,7 +81,7 @@ pub(crate) fn classify_report_readiness(
     known_subscribers: usize,
 ) -> PublishReadiness {
     let authoritative_ack = report.acked_by.iter().any(|pk| {
-        super::membership::is_authoritative_namespace_identity(store, namespace_id, pk)
+        super::super::membership::is_authoritative_namespace_identity(store, namespace_id, pk)
             .unwrap_or(false)
     });
     classify_publish_readiness(authoritative_ack, report.acked_by.len(), known_subscribers)
@@ -197,7 +197,7 @@ impl<'a> NamespaceGovernance<'a> {
                         // call. Without this, "Unexpected length of input"
                         // is ambiguous between the identity read, the key
                         // store, or the retry walk.
-                        let mut apply_kd = || -> EyreResult<Option<super::DivergenceReport>> {
+                        let mut apply_kd = || -> EyreResult<Option<super::super::DivergenceReport>> {
                             if let Some(identity) =
                                 get_namespace_identity_record(self.store, &ns_id).map_err(|e| {
                                     eyre::eyre!("get_namespace_identity_record: {e}")
@@ -902,7 +902,7 @@ impl<'a> NamespaceGovernance<'a> {
             save_group_meta(self.store, &gid, &meta)?;
         }
 
-        let member_existed = super::get_group_member_role(self.store, &gid, founder)?.is_some();
+        let member_existed = super::super::get_group_member_role(self.store, &gid, founder)?.is_some();
         if !member_existed {
             add_group_member(self.store, &gid, founder, GroupMemberRole::Admin)?;
         }
@@ -924,7 +924,7 @@ impl<'a> NamespaceGovernance<'a> {
     fn retry_encrypted_ops_for_group(
         &self,
         group_id: [u8; 32],
-    ) -> EyreResult<Option<super::DivergenceReport>> {
+    ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let gid_typed = ContextGroupId::from(group_id);
         let retry_service = NamespaceRetryService::new(self.store, self.namespace_id);
         let retry_candidates = retry_service
@@ -942,7 +942,7 @@ impl<'a> NamespaceGovernance<'a> {
         // semantics. In practice each retry batch unblocks a small
         // number of ops and at most one is a `MemberRemoved` /
         // `MemberLeft` that could report divergence.
-        let mut retry_divergence: Option<super::DivergenceReport> = None;
+        let mut retry_divergence: Option<super::super::DivergenceReport> = None;
 
         for candidate in &retry_candidates {
             let NamespaceOp::Group { ref encrypted, .. } = candidate.signed_op.op else {
@@ -997,7 +997,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: &ContextGroupId,
         group_key: &[u8; 32],
         encrypted: &EncryptedGroupOp,
-    ) -> EyreResult<Option<super::DivergenceReport>> {
+    ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let inner_op = decrypt_group_op(group_key, encrypted)?;
 
         let signed_group_op = SignedGroupOp {
@@ -1018,7 +1018,7 @@ impl<'a> NamespaceGovernance<'a> {
         &self,
         group_id: &ContextGroupId,
         signed_group_op: &SignedGroupOp,
-    ) -> EyreResult<Option<super::DivergenceReport>> {
+    ) -> EyreResult<Option<super::super::DivergenceReport>> {
         let signer = &signed_group_op.signer;
         let nonce = signed_group_op.nonce;
         let op = &signed_group_op.op;
@@ -1132,7 +1132,7 @@ impl<'a> NamespaceGovernance<'a> {
             // a superseded-then-replayed op and append a duplicate — skewing
             // the very log scans (`is_quote_hash_used`, policy replay,
             // `read_tee_admission_policy`) this entry feeds.
-            let already_logged = super::local_state::op_log_contains_content_hash(
+            let already_logged = super::super::local_state::op_log_contains_content_hash(
                 self.store,
                 group_id,
                 &content_hash,
@@ -1148,7 +1148,7 @@ impl<'a> NamespaceGovernance<'a> {
                 // self-healing — the next op always lands strictly above every
                 // persisted entry. This also removes any reliance on a possibly
                 // stale `get_op_head` snapshot for sequencing.
-                let next_seq = super::local_state::max_op_log_sequence(self.store, group_id)?
+                let next_seq = super::super::local_state::max_op_log_sequence(self.store, group_id)?
                     .map_or(1, |max| max.saturating_add(1));
                 let op_bytes =
                     borsh::to_vec(signed_group_op).map_err(|e| eyre::eyre!("borsh: {e}"))?;
@@ -1165,7 +1165,7 @@ impl<'a> NamespaceGovernance<'a> {
                 // the only remaining group-op-head reader (the authoring path's
                 // `parent_op_hashes`, also node-local) and bounded by design.
                 let new_heads = vec![content_hash];
-                super::local_state::persist_group_op_log_entry(
+                super::super::local_state::persist_group_op_log_entry(
                     self.store, group_id, next_seq, new_heads, &op_bytes,
                 )?;
             }
@@ -1517,14 +1517,14 @@ impl<'a> NamespaceGovernance<'a> {
             .chain(std::iter::once(root_group_id));
         for gid_bytes in all_groups_iter {
             let gid = ContextGroupId::from(gid_bytes);
-            for ctx in super::enumerate_group_contexts(self.store, &gid, 0, usize::MAX)? {
-                super::unregister_context_from_group(self.store, &gid, &ctx)?;
+            for ctx in super::super::enumerate_group_contexts(self.store, &gid, 0, usize::MAX)? {
+                super::super::unregister_context_from_group(self.store, &gid, &ctx)?;
             }
             // Capture parent before delete_group_local_rows runs (it deletes
             // GroupMeta but leaves parent edges; we still need them to clean
             // up the child-index entry on the parent below).
             let parent_for_cleanup = super::get_parent_group(self.store, &gid)?;
-            super::delete_group_local_rows(self.store, &gid)?;
+            super::super::delete_group_local_rows(self.store, &gid)?;
             if let Some(parent) = parent_for_cleanup {
                 let mut handle = self.store.handle();
                 handle.delete(&calimero_store::key::GroupParentRef::new(gid_bytes))?;
@@ -1618,9 +1618,9 @@ impl<'a> NamespaceGovernance<'a> {
                 ContextGroupId::from(self.namespace_id)
             );
         }
-        match super::check_group_membership_path(self.store, &gid, &member)? {
-            super::MembershipPath::Inherited { .. } => Ok(()),
-            super::MembershipPath::Direct => {
+        match super::super::check_group_membership_path(self.store, &gid, &member)? {
+            super::super::MembershipPath::Inherited { .. } => Ok(()),
+            super::super::MembershipPath::Direct => {
                 // Direct members go through `MemberJoined` or `add_group_members`
                 // — they shouldn't be using this op.
                 eyre::bail!(
@@ -1630,7 +1630,7 @@ impl<'a> NamespaceGovernance<'a> {
                     gid
                 );
             }
-            super::MembershipPath::None => {
+            super::super::MembershipPath::None => {
                 eyre::bail!(
                     "MemberJoinedOpen rejected: signer {} has no membership path to {:?}",
                     member,
