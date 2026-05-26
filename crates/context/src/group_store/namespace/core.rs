@@ -31,452 +31,6 @@ pub struct ResolvedNamespaceIdentity {
     pub identity: NamespaceIdentityRecord,
 }
 
-/// Returns `true` if the member has a read-only role (`ReadOnly` or `ReadOnlyTee`)
-/// in the group that owns this context.
-/// Returns `false` if the context has no group, the member is not found, or the member
-/// has `Admin` or `Member` role.
-pub fn is_read_only_for_context(
-    store: &Store,
-    context_id: &ContextId,
-    identity: &PublicKey,
-) -> EyreResult<bool> {
-    let Some(group_id) = get_group_for_context(store, context_id)? else {
-        return Ok(false);
-    };
-    match get_group_member_role(store, &group_id, identity)? {
-        Some(
-            calimero_primitives::context::GroupMemberRole::ReadOnly
-            | calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
-        ) => Ok(true),
-        _ => Ok(false),
-    }
-}
-
-/// Returns `true` if `executor` is currently authorized to author state
-/// mutations on `context_id` — i.e., is a current Admin or Member of the
-/// context's owning group, either by direct row or by Open-subgroup
-/// inheritance.
-///
-/// Returns `false` for:
-/// * Direct members with read-only roles (`ReadOnly`, `ReadOnlyTee`) — they
-///   can read but not write.
-/// * Members that have been removed from the group.
-/// * Identities that were never a member of the group and don't reach it
-///   via Open-subgroup inheritance.
-///
-/// Returns `true` for contexts that aren't owned by any group — there's no
-/// group membership concept to enforce.
-///
-/// **Live-state check, not historical.** The receive path's cross-DAG check
-/// (`membership_status_at`) is forward-only at the delta's *signed* governance
-/// cut, which is the right semantic for replicated authoring: a pre-removal
-/// delta stays valid forever. This function is the local-execute mirror, and
-/// uses **current** membership because at execute time there is no signed
-/// cut — the WASM call happens "now," not against any historical snapshot.
-/// The two checks complement each other: the receive-path check decides
-/// whether a delta from a peer is honored; this one decides whether the
-/// local WASM may produce a delta in the first place. Without this check, a
-/// removed member's WASM could still mutate local state (including User-
-/// storage entries) — the mutation would never propagate (peers reject via
-/// the receive-path check), but would accumulate as silent divergence from
-/// the canonical view until the next sync round repaired it.
-///
-/// **Inherited membership.** Members of an Open subgroup may not have a
-/// stored `GroupMember` row at the subgroup level — they reach it via the
-/// parent-walk with `CAN_JOIN_OPEN_SUBGROUPS` at the anchor (see
-/// [`super::super::membership::check_group_membership_path`]). The receive-side
-/// `membership_status_at` folds `Inherited → Member(Member)`; this function
-/// does the same so the two checks agree on inherited members. Without
-/// this, a perfectly legitimate inherited member's local state ops would be
-/// dropped by this check, but the receive-side would accept their deltas —
-/// internally inconsistent and breaks Open-subgroup workflows.
-///
-/// The namespace creator / root admin is recognised via
-/// [`super::super::membership::is_group_admin`] (their membership lives in
-/// `GroupMeta::admin_identity`, not in a `GroupMember` row).
-///
-/// **Deny-list is a separate layer.** This function checks live membership
-/// state only. The receive path layers an additional `is_author_denied_for_context`
-/// pre-filter that runs in front of the cross-DAG check (an O(1) fast-
-/// rejection for identities the local node explicitly denied). The local-
-/// execute path doesn't need that fast-path: removed identities are caught
-/// here by the absence of a `GroupMember` row (admin removal also clears
-/// the row), and there is no high-volume traffic to short-circuit. If a
-/// future kick path ever marks an identity denied *without* removing its
-/// `GroupMember` row, add an `is_denied` consultation here.
-pub fn is_authorized_for_context_state_op(
-    store: &Store,
-    context_id: &ContextId,
-    executor: &PublicKey,
-) -> EyreResult<bool> {
-    let Some(group_id) = get_group_for_context(store, context_id)? else {
-        // Non-group context — no membership concept to enforce.
-        return Ok(true);
-    };
-
-    // Namespace creator / root admin carve-out — they don't emit a self-
-    // `MemberJoined` op at genesis, so their membership is stored in
-    // `GroupMeta::admin_identity` and `get_group_member_role` returns
-    // `None`. Mirror the same carve-out `membership_status_at` and
-    // `namespace_member_pubkeys` apply, so admin authority is consistent
-    // across the receive-side and local-execute-side authorization
-    // checks.
-    if super::super::membership::is_group_admin(store, &group_id, executor)? {
-        return Ok(true);
-    }
-
-    // Direct membership: check the stored `GroupMember` row's role.
-    if let Some(role) = get_group_member_role(store, &group_id, executor)? {
-        return Ok(matches!(
-            role,
-            calimero_primitives::context::GroupMemberRole::Admin
-                | calimero_primitives::context::GroupMemberRole::Member,
-        ));
-    }
-
-    // No direct row — fall through to the inherited-membership walk.
-    // `check_group_membership_path` returns `Inherited { .. }` when the
-    // executor reaches this group through an Open-subgroup chain anchored
-    // at an ancestor where they hold a row (and `CAN_JOIN_OPEN_SUBGROUPS`,
-    // for non-admin anchors). Mirrors what the receive-side
-    // `membership_status_at` does, so the two checks agree on who is
-    // authorized to author state ops.
-    match super::super::membership::check_group_membership_path(store, &group_id, executor)? {
-        super::super::membership::MembershipPath::Direct => {
-            // Practically unreachable: the direct lookup above already
-            // returned `Some(role)` if a row existed. Treat a race here
-            // (concurrent `MemberAdded`) as `Member` — same fallback the
-            // receive-side check uses at the equivalent boundary.
-            Ok(true)
-        }
-        super::super::membership::MembershipPath::Inherited { .. } => Ok(true),
-        super::super::membership::MembershipPath::None => Ok(false),
-    }
-}
-
-/// Read the parent group for a given group (legacy, used by `resolve_namespace`).
-pub fn get_parent_group(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<ContextGroupId>> {
-    let handle = store.handle();
-    let key = GroupParentRef::new(group_id.to_bytes());
-    Ok(handle.get(&key)?.map(ContextGroupId::from))
-}
-
-/// **Test/legacy helper.** Direct store write of a parent edge.
-///
-/// Production code MUST emit `RootOp::GroupCreated { parent_id }` or
-/// `RootOp::GroupReparented` instead — both go through the governance op
-/// layer where the strict-tree invariant is enforced. Calling this fn
-/// from a handler would bypass that enforcement.
-///
-/// Kept `pub` only because integration tests in `crates/context/tests/`
-/// use it to set up store state for non-orphan-related scenarios.
-///
-/// Hidden from rustdoc to discourage discovery.
-#[doc(hidden)]
-pub fn nest_group(
-    store: &Store,
-    parent_group_id: &ContextGroupId,
-    child_group_id: &ContextGroupId,
-) -> EyreResult<()> {
-    if parent_group_id == child_group_id {
-        bail!("cannot nest a group under itself");
-    }
-
-    if get_parent_group(store, child_group_id)?.is_some() {
-        bail!(
-            "group {:?} already has a parent; unnest it first",
-            child_group_id
-        );
-    }
-
-    // Walk up from parent to detect if child is already an ancestor of parent.
-    let mut current = *parent_group_id;
-    let mut depth = 0usize;
-    while let Some(ancestor) = get_parent_group(store, &current)? {
-        if ancestor == *child_group_id {
-            bail!("nesting would create a cycle");
-        }
-        depth += 1;
-        if depth > 256 {
-            bail!("nesting depth exceeds 256, possible data corruption");
-        }
-        current = ancestor;
-    }
-
-    let mut handle = store.handle();
-    let ref_key = GroupParentRef::new(child_group_id.to_bytes());
-    handle.put(&ref_key, &parent_group_id.to_bytes())?;
-    let idx_key = GroupChildIndex::new(parent_group_id.to_bytes(), child_group_id.to_bytes());
-    handle.put(&idx_key, &())?;
-    Ok(())
-}
-
-/// **Test/legacy helper.** Direct store delete of a parent edge.
-///
-/// Production code MUST emit `RootOp::GroupReparented` (atomic edge swap)
-/// or `RootOp::GroupDeleted` (which clears the edge as part of cascade).
-/// Calling this fn from a handler would create an orphan and violate the
-/// strict-tree invariant.
-///
-/// Kept `pub` only because integration tests in `crates/context/tests/`
-/// reference it.
-///
-/// Hidden from rustdoc to discourage discovery.
-#[doc(hidden)]
-pub fn unnest_group(
-    store: &Store,
-    parent_group_id: &ContextGroupId,
-    child_group_id: &ContextGroupId,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let ref_key = GroupParentRef::new(child_group_id.to_bytes());
-    handle.delete(&ref_key)?;
-    let idx_key = GroupChildIndex::new(parent_group_id.to_bytes(), child_group_id.to_bytes());
-    handle.delete(&idx_key)?;
-    Ok(())
-}
-
-/// List all direct children of a group.
-pub fn list_child_groups(
-    store: &Store,
-    parent_group_id: &ContextGroupId,
-) -> EyreResult<Vec<ContextGroupId>> {
-    let pid = parent_group_id.to_bytes();
-    let keys = collect_keys_with_prefix(
-        store,
-        GroupChildIndex::new(pid, [0u8; 32]),
-        GROUP_CHILD_INDEX_PREFIX,
-        |k| k.parent_group_id() == pid,
-    )?;
-    Ok(keys
-        .into_iter()
-        .map(|k| ContextGroupId::from(k.child_group_id()))
-        .collect())
-}
-
-/// Collect ALL descendant group IDs by walking the child index
-/// (iterative, depth-first via an explicit stack), excluding the
-/// starting group itself. Iteration order is unspecified — the callers
-/// (cascade-delete, [`recursive_remove_member`]) don't depend on it.
-pub fn collect_descendant_groups(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Vec<ContextGroupId>> {
-    let mut descendants = Vec::new();
-    let mut stack = vec![*group_id];
-
-    while let Some(current) = stack.pop() {
-        let children = list_child_groups(store, &current)?;
-        for child in children {
-            descendants.push(child);
-            stack.push(child);
-        }
-    }
-
-    Ok(descendants)
-}
-
-/// Collect descendant group IDs **visible to `viewer`**, walking the
-/// child index iteratively (depth-first via an explicit stack), excluding
-/// the starting group itself. Iteration order is unspecified.
-///
-/// Unlike [`collect_descendant_groups`], the walk does not descend into —
-/// and does not include — a child the `viewer` is not a member of (per
-/// [`super::super::check_group_membership`]). A `Restricted` subgroup the viewer
-/// has neither a direct row in nor inherited membership of is a wall: it
-/// is skipped along with its entire subtree, because the viewer cannot
-/// observe what lies beyond it. `Open` subgroups beneath a namespace the
-/// viewer belongs to are included (the membership walk inherits them).
-/// Each child is judged independently via `check_group_membership`, which
-/// itself walks the parent chain and terminates at the first `Restricted`
-/// ancestor — that single primitive (shared with governance auth,
-/// crypto-key selection and sync stream-auth; see the module note on
-/// [`super::super::membership::check_group_membership_path`]) is the one source
-/// of truth for the wall, so this function deliberately does not
-/// re-derive a parallel visibility rule.
-///
-/// **Precondition:** the `viewer` must be a member of `group_id` itself.
-/// This function checks the *children's* membership but takes the start
-/// group's on trust — it is meant to be called on a group the caller has
-/// already authorized the viewer against (e.g.
-/// [`create_recursive_invitations`] is gated on the inviter holding
-/// admin-or-`CAN_INVITE_MEMBERS` at the namespace root, and the namespace
-/// creator may legitimately lack a self `GroupMember` row, so a blanket
-/// `check_group_membership(group_id, viewer)` here would be wrong).
-///
-/// Cost: one `check_group_membership` per visited group, each of which is
-/// an O(namespace-depth ≤ [`MAX_NAMESPACE_DEPTH`]) parent-chain walk — so
-/// O(visible-subgroups · depth) store reads. That's fine for the caller
-/// (recursive invitations are a rare admin action over a bounded tree);
-/// don't reach for this on a hot path without memoizing the walk.
-pub fn collect_visible_descendant_groups(
-    store: &Store,
-    group_id: &ContextGroupId,
-    viewer: &PublicKey,
-) -> EyreResult<Vec<ContextGroupId>> {
-    let mut descendants = Vec::new();
-    let mut stack = vec![*group_id];
-
-    while let Some(current) = stack.pop() {
-        for child in list_child_groups(store, &current)? {
-            if !super::super::check_group_membership(store, &child, viewer)? {
-                continue;
-            }
-            descendants.push(child);
-            stack.push(child);
-        }
-    }
-
-    Ok(descendants)
-}
-
-/// Create invitations for a group AND all of its descendant groups that
-/// are **visible to the inviter** (see [`collect_visible_descendant_groups`]).
-///
-/// Returns a list of `(group_id, SignedGroupOpenInvitation)` pairs — one
-/// per group the member is being invited to. The caller publishes a
-/// `RootOp::MemberJoined` for each.
-///
-/// Privacy note: the descendant set is filtered through the inviter's own
-/// membership view, so `Restricted` subgroups the inviter is not in
-/// (member-created DMs/private channels) are neither invited into nor
-/// disclosed in the returned list. Encrypting the *existence* of such
-/// subgroups from non-members is tracked separately.
-pub fn create_recursive_invitations(
-    store: &Store,
-    root_group_id: &ContextGroupId,
-    inviter_sk: &PrivateKey,
-    expiration_secs: u64,
-    invited_role: u8,
-) -> EyreResult<
-    Vec<(
-        ContextGroupId,
-        calimero_context_config::types::SignedGroupOpenInvitation,
-    )>,
-> {
-    use calimero_context_config::types::{
-        GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
-    };
-
-    let mut groups = vec![*root_group_id];
-    groups.extend(collect_visible_descendant_groups(
-        store,
-        root_group_id,
-        &inviter_sk.public_key(),
-    )?);
-
-    let inviter_signer_id = SignerId::from(*inviter_sk.public_key());
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let expiration = now_secs + expiration_secs;
-
-    let mut result = Vec::with_capacity(groups.len());
-    for gid in groups {
-        let secret_salt: [u8; 32] = OsRng.gen();
-
-        let invitation = GroupInvitationFromAdmin {
-            inviter_identity: inviter_signer_id,
-            group_id: gid,
-            expiration_timestamp: expiration,
-            secret_salt,
-            invited_role,
-        };
-
-        let inv_bytes = borsh::to_vec(&invitation).map_err(|e| eyre::eyre!("borsh: {e}"))?;
-        let hash = sha2::Sha256::digest(&inv_bytes);
-        let sig = inviter_sk
-            .sign(&hash)
-            .map_err(|e| eyre::eyre!("signing: {e}"))?;
-
-        // Carry the real application_id so the joiner can pre-populate
-        // GroupMetaValue correctly. Without this, joiners would write
-        // target_application_id = ZERO and compute_group_state_hash
-        // would diverge from the inviter's view persistently.
-        //
-        // If meta is unexpectedly missing (e.g. partial-write state — child
-        // index says the group exists but no meta row yet), warn loudly and
-        // fall back to None so the joiner gets the same zero placeholder it
-        // would have had before this fix. We don't bail because that would
-        // poison the entire recursive-invitation set on a single bad
-        // descendant; the joiner's existing zero-app self-heal path
-        // (`context_registration::register_context_in_group`) covers the
-        // missing-meta case the same way it covered it pre-fix.
-        let application_id = match super::super::load_group_meta(store, &gid)? {
-            Some(meta) => Some(*meta.target_application_id.as_ref()),
-            None => {
-                tracing::warn!(
-                    group_id = %hex::encode(gid.to_bytes()),
-                    "create_recursive_invitations: missing GroupMeta for descendant; \
-                     issuing invitation with application_id = None (joiner will fall back to zero)"
-                );
-                None
-            }
-        };
-
-        let signed = SignedGroupOpenInvitation {
-            invitation,
-            inviter_signature: hex::encode(sig.to_bytes()),
-            application_id,
-        };
-
-        result.push((gid, signed));
-    }
-
-    Ok(result)
-}
-
-/// Remove a member from a group AND all its descendant groups.
-///
-/// Only **direct** memberships are touched: `remove_group_member` only
-/// deletes a direct membership row, so reporting groups where the member
-/// was merely inherited (via `Open` subgroup walks in
-/// [`super::super::check_group_membership`]) would be misleading -- the row
-/// doesn't exist, the call is a no-op, yet the caller would think they
-/// removed the user. To revoke inherited access, an admin removes the
-/// member from the anchor group higher up the chain (or flips the
-/// subgroup to `Restricted`, or revokes `CAN_JOIN_OPEN_SUBGROUPS`).
-///
-/// Returns the list of group IDs the member was directly removed from.
-pub fn recursive_remove_member(
-    store: &Store,
-    root_group_id: &ContextGroupId,
-    member: &PublicKey,
-) -> EyreResult<Vec<ContextGroupId>> {
-    let mut groups = vec![*root_group_id];
-    groups.extend(collect_descendant_groups(store, root_group_id)?);
-
-    let mut removed_from = Vec::new();
-    for gid in &groups {
-        if get_group_member_role(store, gid, member)?.is_some() {
-            remove_group_member(store, gid, member)?;
-            cascade_remove_member_from_group_tree(store, gid, member)?;
-            removed_from.push(*gid);
-        }
-    }
-
-    Ok(removed_from)
-}
-
-/// Walk the parent chain to find the root group (namespace).
-/// Returns the root group id (the one with no parent).
-pub fn resolve_namespace(store: &Store, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
-    let mut current = *group_id;
-    for _ in 0..MAX_NAMESPACE_DEPTH {
-        match get_parent_group(store, &current)? {
-            Some(parent) => current = parent,
-            None => return Ok(current),
-        }
-    }
-    eyre::bail!(
-        "namespace resolution exceeded max depth ({MAX_NAMESPACE_DEPTH}), possible circular reference"
-    )
-}
-
 /// Result of subtree enumeration. `descendant_groups` does NOT include the
 /// root itself. Order is children-first (deepest descendants come first),
 /// matching the order required by `execute_group_deleted` for safe child-index
@@ -485,80 +39,6 @@ pub fn resolve_namespace(store: &Store, group_id: &ContextGroupId) -> EyreResult
 pub struct CascadePayload {
     pub descendant_groups: Vec<ContextGroupId>,
     pub contexts: Vec<ContextId>,
-}
-
-/// Walk the subtree rooted at `root` and return:
-/// - every descendant `group_id` in children-first order (deepest first)
-/// - every `context_id` registered on `root` or any descendant
-///
-/// Used by the `delete_group` handler to build the `GroupDeleted` op
-/// payload, and by `execute_group_deleted` to verify deterministic
-/// application across peers.
-///
-/// **Determinism contract**: every peer running this fn against the same
-/// store state MUST produce identical output. `execute_group_deleted`
-/// compares `descendant_groups` as a `BTreeSet` (subset check, see the
-/// retry-friendly divergence logic there) and `contexts` likewise, so the
-/// exact sequence doesn't matter for correctness — but we do want every
-/// peer to deterministically produce the same output for debuggability and
-/// for the signer/verifier to agree on the payload.
-///
-/// Two invariants make the output deterministic across peers:
-///
-/// 1. Traversal is **purely a function of the tree shape** — no timing or
-///    scheduling dependence. Specifically: we maintain a `Vec` stack,
-///    pop from the end (LIFO), enumerate each node's children via
-///    `list_child_groups`, push them onto the stack in returned order.
-///    This is depth-first with siblings visited in reverse RocksDB
-///    key-byte order (last-pushed is popped first), then the collected
-///    pre-order is reversed for children-first output. Name-it-what-you-
-///    will; the contract is: same store state → same output, always.
-/// 2. `list_child_groups` returns children in stable RocksDB key-byte
-///    order (`GroupChildIndex` keys are `[prefix + parent + child]`,
-///    iterated lexicographically), which is the same on every peer for
-///    the same store state.
-///
-/// Do NOT rename this to "BFS" or "proper DFS" without understanding that
-/// the verifier now compares via set semantics — the divergence risk from
-/// earlier Vec-equality checks is gone, but callers that rely on the
-/// exact collection order (e.g. deletion ordering in
-/// `execute_group_deleted`) still depend on "children-first" holding.
-pub fn collect_subtree_for_cascade(
-    store: &Store,
-    root: &ContextGroupId,
-) -> EyreResult<CascadePayload> {
-    let mut contexts: Vec<ContextId> = Vec::new();
-    contexts.extend(super::super::enumerate_group_contexts(
-        store,
-        root,
-        0,
-        usize::MAX,
-    )?);
-
-    // DFS pre-order traversal. Push children onto a LIFO stack; each iteration
-    // pops one and recurses into its subtree before backtracking. After the
-    // walk, reverse to get children-first order (deepest descendant first),
-    // which is what execute_group_deleted needs to safely tear down child
-    // indices before deleting parents.
-    let mut dfs_preorder: Vec<ContextGroupId> = Vec::new();
-    let mut stack = vec![*root];
-    while let Some(g) = stack.pop() {
-        for child in list_child_groups(store, &g)? {
-            dfs_preorder.push(child);
-            stack.push(child);
-            contexts.extend(super::super::enumerate_group_contexts(
-                store,
-                &child,
-                0,
-                usize::MAX,
-            )?);
-        }
-    }
-    let descendant_groups = dfs_preorder.into_iter().rev().collect();
-    Ok(CascadePayload {
-        descendant_groups,
-        contexts,
-    })
 }
 
 /// Outcome of a `reparent_group` call. Distinguishes the no-op idempotent
@@ -575,111 +55,674 @@ pub enum ReparentOutcome {
     Unchanged,
 }
 
-/// Atomically swap the parent of `child` to `new_parent`.
+/// Typed Repository for namespace topology, identity, and tree-walk
+/// operations. Sibling to the service-style Repositories already in
+/// the namespace cluster (`NamespaceGovernance`, `NamespaceDagService`,
+/// `NamespaceOpLogService`, `NamespaceRetryService`,
+/// `NamespaceMembershipService`) — covers the topology half:
+/// parent/child edges, descendant walks, reparent, identity records.
 ///
-/// Replaces the old `nest_group` + `unnest_group` two-step pattern with a
-/// single op so orphan state is no longer expressible. Enforces:
-/// - `child` must currently have a parent (cannot reparent the namespace root).
-/// - `new_parent` must exist in the store (have a `GroupMeta` entry).
-/// - `new_parent` must not be a descendant of `child` (no cycles).
-/// - Idempotent on `new_parent == old_parent` (returns `Unchanged`).
-///
-/// All edge mutations happen in one store handle so a partial state is
-/// never observable.
+/// Issue #2303 / epic #2300.
+pub struct NamespaceRepository<'a> {
+    store: &'a Store,
+}
+
+impl<'a> NamespaceRepository<'a> {
+    pub fn new(store: &'a Store) -> Self {
+        Self { store }
+    }
+
+    /// Returns `true` if the member has a read-only role (`ReadOnly` or
+    /// `ReadOnlyTee`) in the group that owns this context.
+    pub fn is_read_only_for_context(
+        &self,
+        context_id: &ContextId,
+        identity: &PublicKey,
+    ) -> EyreResult<bool> {
+        let Some(group_id) = get_group_for_context(self.store, context_id)? else {
+            return Ok(false);
+        };
+        match get_group_member_role(self.store, &group_id, identity)? {
+            Some(
+                calimero_primitives::context::GroupMemberRole::ReadOnly
+                | calimero_primitives::context::GroupMemberRole::ReadOnlyTee,
+            ) => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    /// Returns `true` if `executor` is currently authorized to author state
+    /// mutations on `context_id` — direct admin/member or Open-subgroup
+    /// inheritance. See original `is_authorized_for_context_state_op` doc
+    /// for full semantics.
+    pub fn is_authorized_for_context_state_op(
+        &self,
+        context_id: &ContextId,
+        executor: &PublicKey,
+    ) -> EyreResult<bool> {
+        let Some(group_id) = get_group_for_context(self.store, context_id)? else {
+            return Ok(true);
+        };
+
+        if super::super::membership::is_group_admin(self.store, &group_id, executor)? {
+            return Ok(true);
+        }
+
+        if let Some(role) = get_group_member_role(self.store, &group_id, executor)? {
+            return Ok(matches!(
+                role,
+                calimero_primitives::context::GroupMemberRole::Admin
+                    | calimero_primitives::context::GroupMemberRole::Member,
+            ));
+        }
+
+        match super::super::membership::check_group_membership_path(
+            self.store, &group_id, executor,
+        )? {
+            super::super::membership::MembershipPath::Direct => Ok(true),
+            super::super::membership::MembershipPath::Inherited { .. } => Ok(true),
+            super::super::membership::MembershipPath::None => Ok(false),
+        }
+    }
+
+    pub fn parent(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<Option<ContextGroupId>> {
+        let handle = self.store.handle();
+        let key = GroupParentRef::new(group_id.to_bytes());
+        Ok(handle.get(&key)?.map(ContextGroupId::from))
+    }
+
+    /// **Test/legacy helper.** Direct store write of a parent edge.
+    /// Production code MUST emit `RootOp::GroupCreated` or `GroupReparented`.
+    #[doc(hidden)]
+    pub fn nest(
+        &self,
+        parent_group_id: &ContextGroupId,
+        child_group_id: &ContextGroupId,
+    ) -> EyreResult<()> {
+        if parent_group_id == child_group_id {
+            bail!("cannot nest a group under itself");
+        }
+
+        if self.parent(child_group_id)?.is_some() {
+            bail!(
+                "group {:?} already has a parent; unnest it first",
+                child_group_id
+            );
+        }
+
+        let mut current = *parent_group_id;
+        let mut depth = 0usize;
+        while let Some(ancestor) = self.parent(&current)? {
+            if ancestor == *child_group_id {
+                bail!("nesting would create a cycle");
+            }
+            depth += 1;
+            if depth > 256 {
+                bail!("nesting depth exceeds 256, possible data corruption");
+            }
+            current = ancestor;
+        }
+
+        let mut handle = self.store.handle();
+        let ref_key = GroupParentRef::new(child_group_id.to_bytes());
+        handle.put(&ref_key, &parent_group_id.to_bytes())?;
+        let idx_key = GroupChildIndex::new(parent_group_id.to_bytes(), child_group_id.to_bytes());
+        handle.put(&idx_key, &())?;
+        Ok(())
+    }
+
+    /// **Test/legacy helper.** Direct store delete of a parent edge.
+    /// Production code MUST emit `RootOp::GroupReparented` or `GroupDeleted`.
+    #[doc(hidden)]
+    pub fn unnest(
+        &self,
+        parent_group_id: &ContextGroupId,
+        child_group_id: &ContextGroupId,
+    ) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        let ref_key = GroupParentRef::new(child_group_id.to_bytes());
+        handle.delete(&ref_key)?;
+        let idx_key = GroupChildIndex::new(parent_group_id.to_bytes(), child_group_id.to_bytes());
+        handle.delete(&idx_key)?;
+        Ok(())
+    }
+
+    /// List all direct children of a group.
+    pub fn list_children(
+        &self,
+        parent_group_id: &ContextGroupId,
+    ) -> EyreResult<Vec<ContextGroupId>> {
+        let pid = parent_group_id.to_bytes();
+        let keys = collect_keys_with_prefix(
+            self.store,
+            GroupChildIndex::new(pid, [0u8; 32]),
+            GROUP_CHILD_INDEX_PREFIX,
+            |k| k.parent_group_id() == pid,
+        )?;
+        Ok(keys
+            .into_iter()
+            .map(|k| ContextGroupId::from(k.child_group_id()))
+            .collect())
+    }
+
+    /// Collect ALL descendant group IDs by walking the child index
+    /// (iterative DFS via explicit stack), excluding the starting group.
+    pub fn collect_descendants(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<Vec<ContextGroupId>> {
+        let mut descendants = Vec::new();
+        let mut stack = vec![*group_id];
+
+        while let Some(current) = stack.pop() {
+            let children = self.list_children(&current)?;
+            for child in children {
+                descendants.push(child);
+                stack.push(child);
+            }
+        }
+
+        Ok(descendants)
+    }
+
+    /// Collect descendant group IDs **visible to `viewer`**. See original
+    /// `collect_visible_descendant_groups` doc for full visibility rules.
+    pub fn collect_visible_descendants(
+        &self,
+        group_id: &ContextGroupId,
+        viewer: &PublicKey,
+    ) -> EyreResult<Vec<ContextGroupId>> {
+        let mut descendants = Vec::new();
+        let mut stack = vec![*group_id];
+
+        while let Some(current) = stack.pop() {
+            for child in self.list_children(&current)? {
+                if !super::super::check_group_membership(self.store, &child, viewer)? {
+                    continue;
+                }
+                descendants.push(child);
+                stack.push(child);
+            }
+        }
+
+        Ok(descendants)
+    }
+
+    /// Create invitations for a group AND all of its descendant groups
+    /// that are visible to the inviter. Returns
+    /// `(group_id, SignedGroupOpenInvitation)` pairs.
+    pub fn create_recursive_invitations(
+        &self,
+        root_group_id: &ContextGroupId,
+        inviter_sk: &PrivateKey,
+        expiration_secs: u64,
+        invited_role: u8,
+    ) -> EyreResult<
+        Vec<(
+            ContextGroupId,
+            calimero_context_config::types::SignedGroupOpenInvitation,
+        )>,
+    > {
+        use calimero_context_config::types::{
+            GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
+        };
+
+        let mut groups = vec![*root_group_id];
+        groups.extend(self.collect_visible_descendants(root_group_id, &inviter_sk.public_key())?);
+
+        let inviter_signer_id = SignerId::from(*inviter_sk.public_key());
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let expiration = now_secs + expiration_secs;
+
+        let mut result = Vec::with_capacity(groups.len());
+        for gid in groups {
+            let secret_salt: [u8; 32] = OsRng.gen();
+
+            let invitation = GroupInvitationFromAdmin {
+                inviter_identity: inviter_signer_id,
+                group_id: gid,
+                expiration_timestamp: expiration,
+                secret_salt,
+                invited_role,
+            };
+
+            let inv_bytes =
+                borsh::to_vec(&invitation).map_err(|e| eyre::eyre!("borsh: {e}"))?;
+            let hash = sha2::Sha256::digest(&inv_bytes);
+            let sig = inviter_sk
+                .sign(&hash)
+                .map_err(|e| eyre::eyre!("signing: {e}"))?;
+
+            let application_id = match super::super::load_group_meta(self.store, &gid)? {
+                Some(meta) => Some(*meta.target_application_id.as_ref()),
+                None => {
+                    tracing::warn!(
+                        group_id = %hex::encode(gid.to_bytes()),
+                        "create_recursive_invitations: missing GroupMeta for descendant; \
+                         issuing invitation with application_id = None (joiner will fall back to zero)"
+                    );
+                    None
+                }
+            };
+
+            let signed = SignedGroupOpenInvitation {
+                invitation,
+                inviter_signature: hex::encode(sig.to_bytes()),
+                application_id,
+            };
+
+            result.push((gid, signed));
+        }
+
+        Ok(result)
+    }
+
+    /// Remove a member from a group AND all its descendant groups
+    /// (direct memberships only). Returns the groups they were
+    /// directly removed from.
+    pub fn recursive_remove_member(
+        &self,
+        root_group_id: &ContextGroupId,
+        member: &PublicKey,
+    ) -> EyreResult<Vec<ContextGroupId>> {
+        let mut groups = vec![*root_group_id];
+        groups.extend(self.collect_descendants(root_group_id)?);
+
+        let mut removed_from = Vec::new();
+        for gid in &groups {
+            if get_group_member_role(self.store, gid, member)?.is_some() {
+                remove_group_member(self.store, gid, member)?;
+                cascade_remove_member_from_group_tree(self.store, gid, member)?;
+                removed_from.push(*gid);
+            }
+        }
+
+        Ok(removed_from)
+    }
+
+    /// Walk the parent chain to find the root group (namespace).
+    pub fn resolve(&self, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
+        let mut current = *group_id;
+        for _ in 0..MAX_NAMESPACE_DEPTH {
+            match self.parent(&current)? {
+                Some(parent) => current = parent,
+                None => return Ok(current),
+            }
+        }
+        eyre::bail!(
+            "namespace resolution exceeded max depth ({MAX_NAMESPACE_DEPTH}), possible circular reference"
+        )
+    }
+
+    /// Walk the subtree rooted at `root` and return:
+    /// - every descendant `group_id` in children-first order
+    /// - every `context_id` registered on `root` or any descendant
+    pub fn collect_subtree_for_cascade(
+        &self,
+        root: &ContextGroupId,
+    ) -> EyreResult<CascadePayload> {
+        let mut contexts: Vec<ContextId> = Vec::new();
+        contexts.extend(super::super::enumerate_group_contexts(
+            self.store,
+            root,
+            0,
+            usize::MAX,
+        )?);
+
+        let mut dfs_preorder: Vec<ContextGroupId> = Vec::new();
+        let mut stack = vec![*root];
+        while let Some(g) = stack.pop() {
+            for child in self.list_children(&g)? {
+                dfs_preorder.push(child);
+                stack.push(child);
+                contexts.extend(super::super::enumerate_group_contexts(
+                    self.store,
+                    &child,
+                    0,
+                    usize::MAX,
+                )?);
+            }
+        }
+        let descendant_groups = dfs_preorder.into_iter().rev().collect();
+        Ok(CascadePayload {
+            descendant_groups,
+            contexts,
+        })
+    }
+
+    /// Atomically swap the parent of `child` to `new_parent`. Replaces
+    /// the old `nest_group` + `unnest_group` two-step pattern.
+    pub fn reparent(
+        &self,
+        child: &ContextGroupId,
+        new_parent: &ContextGroupId,
+    ) -> EyreResult<ReparentOutcome> {
+        let old_parent = self.parent(child)?.ok_or_else(|| {
+            eyre::eyre!("cannot reparent the namespace root: '{child:?}' has no parent")
+        })?;
+
+        if old_parent == *new_parent {
+            return Ok(ReparentOutcome::Unchanged);
+        }
+
+        if super::super::load_group_meta(self.store, new_parent)?.is_none() {
+            eyre::bail!("new parent group '{new_parent:?}' not found in this namespace");
+        }
+
+        if self.is_descendant_of(new_parent, child)? {
+            eyre::bail!("cycle: new_parent '{new_parent:?}' is a descendant of child '{child:?}'");
+        }
+
+        let mut handle = self.store.handle();
+        handle.delete(&GroupChildIndex::new(
+            old_parent.to_bytes(),
+            child.to_bytes(),
+        ))?;
+        handle.put(
+            &GroupParentRef::new(child.to_bytes()),
+            &new_parent.to_bytes(),
+        )?;
+        handle.put(
+            &GroupChildIndex::new(new_parent.to_bytes(), child.to_bytes()),
+            &(),
+        )?;
+        Ok(ReparentOutcome::Reparented { old_parent })
+    }
+
+    /// Returns `true` iff `candidate` is a (transitive) descendant of
+    /// `potential_ancestor`. Returns `false` for `candidate == potential_ancestor`.
+    pub fn is_descendant_of(
+        &self,
+        candidate: &ContextGroupId,
+        potential_ancestor: &ContextGroupId,
+    ) -> EyreResult<bool> {
+        if candidate == potential_ancestor {
+            return Ok(false);
+        }
+        let mut current = *candidate;
+        for _ in 0..MAX_NAMESPACE_DEPTH {
+            match self.parent(&current)? {
+                Some(parent) => {
+                    if parent == *potential_ancestor {
+                        return Ok(true);
+                    }
+                    current = parent;
+                }
+                None => return Ok(false),
+            }
+        }
+        eyre::bail!(
+            "is_descendant_of exceeded MAX_NAMESPACE_DEPTH ({MAX_NAMESPACE_DEPTH}); possible cycle in store"
+        )
+    }
+
+    /// Read this node's identity for a namespace from the store.
+    pub fn identity(
+        &self,
+        namespace_id: &ContextGroupId,
+    ) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+        Ok(self
+            .identity_record(namespace_id)?
+            .map(|record| (record.public_key, record.private_key, record.sender_key)))
+    }
+
+    pub fn identity_record(
+        &self,
+        namespace_id: &ContextGroupId,
+    ) -> EyreResult<Option<NamespaceIdentityRecord>> {
+        let handle = self.store.handle();
+        let key = NamespaceIdentity::new(namespace_id.to_bytes());
+        match handle.get(&key)? {
+            Some(val) => Ok(Some(NamespaceIdentityRecord {
+                public_key: PublicKey::from(val.public_key),
+                private_key: val.private_key,
+                sender_key: val.sender_key,
+            })),
+            None => Ok(None),
+        }
+    }
+
+    pub fn store_identity(
+        &self,
+        namespace_id: &ContextGroupId,
+        public_key: &PublicKey,
+        private_key: &[u8; 32],
+        sender_key: &[u8; 32],
+    ) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        let key = NamespaceIdentity::new(namespace_id.to_bytes());
+        handle.put(
+            &key,
+            &NamespaceIdentityValue {
+                public_key: **public_key,
+                private_key: *private_key,
+                sender_key: *sender_key,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Resolve the namespace for a group and return this node's identity.
+    pub fn resolve_identity(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
+        Ok(self
+            .resolve_identity_record(group_id)?
+            .map(|record| (record.public_key, record.private_key, record.sender_key)))
+    }
+
+    pub fn resolve_identity_record(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<Option<NamespaceIdentityRecord>> {
+        let ns_id = self.resolve(group_id)?;
+        self.identity_record(&ns_id)
+    }
+
+    /// Resolve the namespace for a group and return this node's identity,
+    /// generating and storing a new keypair if none exists.
+    pub fn get_or_create_identity(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
+        let bundle = self.get_or_create_identity_bundle(group_id)?;
+        Ok((
+            bundle.namespace_id,
+            bundle.identity.public_key,
+            bundle.identity.private_key,
+            bundle.identity.sender_key,
+        ))
+    }
+
+    pub fn get_or_create_identity_bundle(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<ResolvedNamespaceIdentity> {
+        let ns_id = self.resolve(group_id)?;
+        if let Some(identity) = self.identity_record(&ns_id)? {
+            return Ok(ResolvedNamespaceIdentity {
+                namespace_id: ns_id,
+                identity,
+            });
+        }
+
+        let private_key = PrivateKey::random(&mut OsRng);
+        let public_key = private_key.public_key();
+        let sender_key = PrivateKey::random(&mut OsRng);
+
+        self.store_identity(&ns_id, &public_key, &private_key, &sender_key)?;
+
+        Ok(ResolvedNamespaceIdentity {
+            namespace_id: ns_id,
+            identity: NamespaceIdentityRecord {
+                public_key,
+                private_key: *private_key,
+                sender_key: *sender_key,
+            },
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deprecated free-function wrappers.
+// ---------------------------------------------------------------------------
+
+#[deprecated(note = "use NamespaceRepository::new(store).is_read_only_for_context(...)")]
+pub fn is_read_only_for_context(
+    store: &Store,
+    context_id: &ContextId,
+    identity: &PublicKey,
+) -> EyreResult<bool> {
+    NamespaceRepository::new(store).is_read_only_for_context(context_id, identity)
+}
+
+#[deprecated(note = "use NamespaceRepository::new(store).is_authorized_for_context_state_op(...)")]
+pub fn is_authorized_for_context_state_op(
+    store: &Store,
+    context_id: &ContextId,
+    executor: &PublicKey,
+) -> EyreResult<bool> {
+    NamespaceRepository::new(store).is_authorized_for_context_state_op(context_id, executor)
+}
+
+#[deprecated(note = "use NamespaceRepository::new(store).parent(...)")]
+pub fn get_parent_group(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Option<ContextGroupId>> {
+    NamespaceRepository::new(store).parent(group_id)
+}
+
+#[doc(hidden)]
+#[deprecated(note = "use NamespaceRepository::new(store).nest(...)")]
+pub fn nest_group(
+    store: &Store,
+    parent_group_id: &ContextGroupId,
+    child_group_id: &ContextGroupId,
+) -> EyreResult<()> {
+    NamespaceRepository::new(store).nest(parent_group_id, child_group_id)
+}
+
+#[doc(hidden)]
+#[deprecated(note = "use NamespaceRepository::new(store).unnest(...)")]
+pub fn unnest_group(
+    store: &Store,
+    parent_group_id: &ContextGroupId,
+    child_group_id: &ContextGroupId,
+) -> EyreResult<()> {
+    NamespaceRepository::new(store).unnest(parent_group_id, child_group_id)
+}
+
+#[deprecated(note = "use NamespaceRepository::new(store).list_children(...)")]
+pub fn list_child_groups(
+    store: &Store,
+    parent_group_id: &ContextGroupId,
+) -> EyreResult<Vec<ContextGroupId>> {
+    NamespaceRepository::new(store).list_children(parent_group_id)
+}
+
+#[deprecated(note = "use NamespaceRepository::new(store).collect_descendants(...)")]
+pub fn collect_descendant_groups(
+    store: &Store,
+    group_id: &ContextGroupId,
+) -> EyreResult<Vec<ContextGroupId>> {
+    NamespaceRepository::new(store).collect_descendants(group_id)
+}
+
+#[deprecated(note = "use NamespaceRepository::new(store).collect_visible_descendants(...)")]
+pub fn collect_visible_descendant_groups(
+    store: &Store,
+    group_id: &ContextGroupId,
+    viewer: &PublicKey,
+) -> EyreResult<Vec<ContextGroupId>> {
+    NamespaceRepository::new(store).collect_visible_descendants(group_id, viewer)
+}
+
+#[deprecated(note = "use NamespaceRepository::new(store).create_recursive_invitations(...)")]
+pub fn create_recursive_invitations(
+    store: &Store,
+    root_group_id: &ContextGroupId,
+    inviter_sk: &PrivateKey,
+    expiration_secs: u64,
+    invited_role: u8,
+) -> EyreResult<
+    Vec<(
+        ContextGroupId,
+        calimero_context_config::types::SignedGroupOpenInvitation,
+    )>,
+> {
+    NamespaceRepository::new(store).create_recursive_invitations(
+        root_group_id,
+        inviter_sk,
+        expiration_secs,
+        invited_role,
+    )
+}
+
+#[deprecated(note = "use NamespaceRepository::new(store).recursive_remove_member(...)")]
+pub fn recursive_remove_member(
+    store: &Store,
+    root_group_id: &ContextGroupId,
+    member: &PublicKey,
+) -> EyreResult<Vec<ContextGroupId>> {
+    NamespaceRepository::new(store).recursive_remove_member(root_group_id, member)
+}
+
+#[deprecated(note = "use NamespaceRepository::new(store).resolve(...)")]
+pub fn resolve_namespace(store: &Store, group_id: &ContextGroupId) -> EyreResult<ContextGroupId> {
+    NamespaceRepository::new(store).resolve(group_id)
+}
+
+#[deprecated(note = "use NamespaceRepository::new(store).collect_subtree_for_cascade(...)")]
+pub fn collect_subtree_for_cascade(
+    store: &Store,
+    root: &ContextGroupId,
+) -> EyreResult<CascadePayload> {
+    NamespaceRepository::new(store).collect_subtree_for_cascade(root)
+}
+
+#[deprecated(note = "use NamespaceRepository::new(store).reparent(...)")]
 pub fn reparent_group(
     store: &Store,
     child: &ContextGroupId,
     new_parent: &ContextGroupId,
 ) -> EyreResult<ReparentOutcome> {
-    let old_parent = get_parent_group(store, child)?.ok_or_else(|| {
-        eyre::eyre!("cannot reparent the namespace root: '{child:?}' has no parent")
-    })?;
-
-    if old_parent == *new_parent {
-        return Ok(ReparentOutcome::Unchanged);
-    }
-
-    if super::super::load_group_meta(store, new_parent)?.is_none() {
-        eyre::bail!("new parent group '{new_parent:?}' not found in this namespace");
-    }
-
-    if is_descendant_of(store, new_parent, child)? {
-        eyre::bail!("cycle: new_parent '{new_parent:?}' is a descendant of child '{child:?}'");
-    }
-
-    let mut handle = store.handle();
-    handle.delete(&GroupChildIndex::new(
-        old_parent.to_bytes(),
-        child.to_bytes(),
-    ))?;
-    handle.put(
-        &GroupParentRef::new(child.to_bytes()),
-        &new_parent.to_bytes(),
-    )?;
-    handle.put(
-        &GroupChildIndex::new(new_parent.to_bytes(), child.to_bytes()),
-        &(),
-    )?;
-    Ok(ReparentOutcome::Reparented { old_parent })
+    NamespaceRepository::new(store).reparent(child, new_parent)
 }
 
-/// Returns `true` iff `candidate` is a (transitive) descendant of
-/// `potential_ancestor`. Returns `false` for `candidate == potential_ancestor`.
-/// Bounded by `MAX_NAMESPACE_DEPTH`; returns `Err` if the walk exceeds the cap
-/// (indicates store corruption / cycle).
-///
-/// Used by `reparent_group` to reject moves that would create a cycle.
+#[deprecated(note = "use NamespaceRepository::new(store).is_descendant_of(...)")]
 pub fn is_descendant_of(
     store: &Store,
     candidate: &ContextGroupId,
     potential_ancestor: &ContextGroupId,
 ) -> EyreResult<bool> {
-    if candidate == potential_ancestor {
-        return Ok(false);
-    }
-    let mut current = *candidate;
-    for _ in 0..MAX_NAMESPACE_DEPTH {
-        match get_parent_group(store, &current)? {
-            Some(parent) => {
-                if parent == *potential_ancestor {
-                    return Ok(true);
-                }
-                current = parent;
-            }
-            None => return Ok(false),
-        }
-    }
-    eyre::bail!(
-        "is_descendant_of exceeded MAX_NAMESPACE_DEPTH ({MAX_NAMESPACE_DEPTH}); possible cycle in store"
-    )
+    NamespaceRepository::new(store).is_descendant_of(candidate, potential_ancestor)
 }
 
-/// Read this node's identity for a namespace from the store.
+#[deprecated(note = "use NamespaceRepository::new(store).identity(...)")]
 pub fn get_namespace_identity(
     store: &Store,
     namespace_id: &ContextGroupId,
 ) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
-    Ok(get_namespace_identity_record(store, namespace_id)?
-        .map(|record| (record.public_key, record.private_key, record.sender_key)))
+    NamespaceRepository::new(store).identity(namespace_id)
 }
 
+#[deprecated(note = "use NamespaceRepository::new(store).identity_record(...)")]
 pub fn get_namespace_identity_record(
     store: &Store,
     namespace_id: &ContextGroupId,
 ) -> EyreResult<Option<NamespaceIdentityRecord>> {
-    let handle = store.handle();
-    let key = NamespaceIdentity::new(namespace_id.to_bytes());
-    match handle.get(&key)? {
-        Some(val) => Ok(Some(NamespaceIdentityRecord {
-            public_key: PublicKey::from(val.public_key),
-            private_key: val.private_key,
-            sender_key: val.sender_key,
-        })),
-        None => Ok(None),
-    }
+    NamespaceRepository::new(store).identity_record(namespace_id)
 }
 
-/// Store this node's identity for a namespace.
+#[deprecated(note = "use NamespaceRepository::new(store).store_identity(...)")]
 pub fn store_namespace_identity(
     store: &Store,
     namespace_id: &ContextGroupId,
@@ -687,76 +730,37 @@ pub fn store_namespace_identity(
     private_key: &[u8; 32],
     sender_key: &[u8; 32],
 ) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = NamespaceIdentity::new(namespace_id.to_bytes());
-    handle.put(
-        &key,
-        &NamespaceIdentityValue {
-            public_key: **public_key,
-            private_key: *private_key,
-            sender_key: *sender_key,
-        },
-    )?;
-    Ok(())
+    NamespaceRepository::new(store).store_identity(namespace_id, public_key, private_key, sender_key)
 }
 
-/// Resolve the namespace for a group and return this node's identity.
-/// Returns None if no identity has been stored for that namespace.
+#[deprecated(note = "use NamespaceRepository::new(store).resolve_identity(...)")]
 pub fn resolve_namespace_identity(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<Option<(PublicKey, [u8; 32], [u8; 32])>> {
-    Ok(resolve_namespace_identity_record(store, group_id)?
-        .map(|record| (record.public_key, record.private_key, record.sender_key)))
+    NamespaceRepository::new(store).resolve_identity(group_id)
 }
 
+#[deprecated(note = "use NamespaceRepository::new(store).resolve_identity_record(...)")]
 pub fn resolve_namespace_identity_record(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<Option<NamespaceIdentityRecord>> {
-    let ns_id = resolve_namespace(store, group_id)?;
-    get_namespace_identity_record(store, &ns_id)
+    NamespaceRepository::new(store).resolve_identity_record(group_id)
 }
 
-/// Resolve the namespace for a group and return this node's identity,
-/// generating and storing a new keypair if none exists.
+#[deprecated(note = "use NamespaceRepository::new(store).get_or_create_identity(...)")]
 pub fn get_or_create_namespace_identity(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<(ContextGroupId, PublicKey, [u8; 32], [u8; 32])> {
-    let bundle = get_or_create_namespace_identity_bundle(store, group_id)?;
-    Ok((
-        bundle.namespace_id,
-        bundle.identity.public_key,
-        bundle.identity.private_key,
-        bundle.identity.sender_key,
-    ))
+    NamespaceRepository::new(store).get_or_create_identity(group_id)
 }
 
+#[deprecated(note = "use NamespaceRepository::new(store).get_or_create_identity_bundle(...)")]
 pub fn get_or_create_namespace_identity_bundle(
     store: &Store,
     group_id: &ContextGroupId,
 ) -> EyreResult<ResolvedNamespaceIdentity> {
-    let ns_id = resolve_namespace(store, group_id)?;
-    if let Some(identity) = get_namespace_identity_record(store, &ns_id)? {
-        return Ok(ResolvedNamespaceIdentity {
-            namespace_id: ns_id,
-            identity,
-        });
-    }
-
-    let private_key = PrivateKey::random(&mut OsRng);
-    let public_key = private_key.public_key();
-    let sender_key = PrivateKey::random(&mut OsRng);
-
-    store_namespace_identity(store, &ns_id, &public_key, &private_key, &sender_key)?;
-
-    Ok(ResolvedNamespaceIdentity {
-        namespace_id: ns_id,
-        identity: NamespaceIdentityRecord {
-            public_key,
-            private_key: *private_key,
-            sender_key: *sender_key,
-        },
-    })
+    NamespaceRepository::new(store).get_or_create_identity_bundle(group_id)
 }
