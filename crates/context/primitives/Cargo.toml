@@ -26,6 +26,7 @@ tracing.workspace = true
 url.workspace = true
 
 calimero-context-config.workspace = true
+calimero-governance-types.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-node-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }

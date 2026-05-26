@@ -1,0 +1,29 @@
+[package]
+name = "calimero-governance-types"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description.workspace = true
+publish = true
+
+# Pure-data leaf crate. Deliberately *no* `actix` dependency — this crate
+# is consumed by both `calimero-context-client` (which has an actix
+# runtime) and the to-be-created `calimero-governance-store`
+# (#2307), which must not transitively re-acquire actix through its
+# op-type dependency. See issue #2479 / epic #2300.
+
+[dependencies]
+blake3.workspace = true
+borsh = { workspace = true, features = ["derive"] }
+ed25519-dalek.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+calimero-context-config.workspace = true
+calimero-primitives = { workspace = true, features = ["borsh"] }
+
+[dev-dependencies]
+calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
+rand.workspace = true
