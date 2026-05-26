@@ -7,10 +7,12 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 use sha2::Digest;
 
-use super::{
-    add_group_member, has_direct_group_member, is_group_admin, is_group_admin_or_has_capability,
-    resolve_namespace,
+use super::super::membership::role_from_invited_role;
+use super::super::{
+    add_group_member, emit_auto_follow_set_if_enabled, has_direct_group_member, is_group_admin,
+    is_group_admin_or_has_capability,
 };
+use super::core::resolve_namespace;
 
 /// Namespace-scoped service for handling `RootOp::MemberJoined`.
 pub struct NamespaceMembershipService<'a> {
@@ -49,7 +51,7 @@ impl<'a> NamespaceMembershipService<'a> {
             return Ok(());
         }
 
-        let role = super::membership_status::role_from_invited_role(inv.invited_role);
+        let role = role_from_invited_role(inv.invited_role);
         if role == GroupMemberRole::Admin && !is_group_admin(self.store, &group_id, &inviter_pk)? {
             bail!("only admins can invite new admins");
         }
@@ -68,7 +70,7 @@ impl<'a> NamespaceMembershipService<'a> {
         // Open-subgroup self-joiner with `contexts: true` (the post-#2422
         // default) would only auto-follow FUTURE contexts, not the ones
         // already registered when they joined.
-        super::emit_auto_follow_set_if_enabled(self.store, &group_id, member)?;
+        emit_auto_follow_set_if_enabled(self.store, &group_id, member)?;
         Ok(())
     }
 

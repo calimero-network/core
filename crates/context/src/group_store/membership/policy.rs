@@ -4,16 +4,14 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::{
-    add_group_member,
-    membership_policy_rules::{
-        validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
-        TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_RTMR0, TEE_REJECT_RTMR1,
-        TEE_REJECT_RTMR2, TEE_REJECT_RTMR3, TEE_REJECT_TCB_STATUS,
-    },
-    membership_view::GroupMembershipView,
-    read_tee_admission_policy, GroupStoreError, TeeAdmissionPolicy,
+use super::super::{read_tee_admission_policy, GroupStoreError, TeeAdmissionPolicy};
+use super::core::add_group_member;
+use super::policy_rules::{
+    validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
+    TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_RTMR0, TEE_REJECT_RTMR1, TEE_REJECT_RTMR2,
+    TEE_REJECT_RTMR3, TEE_REJECT_TCB_STATUS,
 };
+use super::view::GroupMembershipView;
 use crate::metrics::record_membership_policy_rejection;
 
 /// Membership policy service for governance mutations.

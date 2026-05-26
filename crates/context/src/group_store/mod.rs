@@ -24,19 +24,10 @@ mod group_keys;
 mod group_settings;
 mod local_state;
 mod membership;
-mod membership_policy;
-mod membership_policy_rules;
-mod membership_status;
-mod membership_view;
 mod meta;
 mod metadata;
 mod migrations;
 mod namespace;
-mod namespace_dag;
-mod namespace_governance;
-mod namespace_membership;
-mod namespace_op_log;
-mod namespace_retry;
 mod permission_checker;
 mod signing_keys;
 mod tee;
@@ -79,13 +70,11 @@ pub use self::membership::{
     enumerate_inherited_members, get_effective_member_capabilities, get_group_member_role,
     get_group_member_value, has_direct_group_member, is_authoritative_namespace_identity,
     is_direct_group_admin, is_group_admin, is_group_admin_or_has_capability, is_inherited_admin,
-    list_group_members, namespace_member_pubkeys, remove_group_member, require_group_admin,
-    require_group_admin_or_capability, set_member_auto_follow, subgroup_visible_to,
-    trusted_anchors_for_group, MembershipPath,
+    list_group_members, membership_status_at, namespace_member_pubkeys, remove_group_member,
+    require_group_admin, require_group_admin_or_capability, set_member_auto_follow,
+    subgroup_visible_to, trusted_anchors_for_group, GroupMembershipView, MembershipPath,
+    MembershipPolicy, MembershipStatus,
 };
-pub use self::membership_policy::MembershipPolicy;
-pub use self::membership_status::{membership_status_at, MembershipStatus};
-pub use self::membership_view::GroupMembershipView;
 pub use self::meta::{
     compute_group_state_hash, compute_group_state_hash_after_remove, delete_group_meta,
     enumerate_all_groups, load_group_meta, save_group_meta, snapshot_context_state_hashes,
@@ -102,24 +91,19 @@ pub use self::migrations::{
 };
 pub(crate) use self::namespace::MAX_NAMESPACE_DEPTH;
 pub use self::namespace::{
-    collect_descendant_groups, collect_subtree_for_cascade, collect_visible_descendant_groups,
-    create_recursive_invitations, get_namespace_identity, get_namespace_identity_record,
-    get_or_create_namespace_identity, get_or_create_namespace_identity_bundle, get_parent_group,
-    is_authorized_for_context_state_op, is_descendant_of, is_read_only_for_context,
-    list_child_groups, nest_group, recursive_remove_member, reparent_group, resolve_namespace,
-    resolve_namespace_identity, resolve_namespace_identity_record, store_namespace_identity,
-    unnest_group, CascadePayload, NamespaceIdentityRecord, ReparentOutcome,
+    apply_signed_namespace_op, collect_descendant_groups, collect_skeleton_delta_ids_for_group,
+    collect_subtree_for_cascade, collect_visible_descendant_groups, create_recursive_invitations,
+    get_namespace_identity, get_namespace_identity_record, get_or_create_namespace_identity,
+    get_or_create_namespace_identity_bundle, get_parent_group, is_authorized_for_context_state_op,
+    is_descendant_of, is_read_only_for_context, list_child_groups, nest_group,
+    recursive_remove_member, reparent_group, resolve_namespace, resolve_namespace_identity,
+    resolve_namespace_identity_record, sign_and_publish_namespace_op,
+    sign_apply_and_publish_namespace_op, store_namespace_identity, unnest_group,
+    ApplyNamespaceOpResult, CascadePayload, KeyUnwrapFailure, NamespaceDagService,
+    NamespaceGovernance, NamespaceHead, NamespaceIdentityRecord, NamespaceMembershipService,
+    NamespaceOpLogService, NamespaceRetryService, PendingKeyDelivery, ReparentOutcome,
     ResolvedNamespaceIdentity,
 };
-pub use self::namespace_dag::{NamespaceDagService, NamespaceHead};
-pub use self::namespace_governance::{
-    apply_signed_namespace_op, collect_skeleton_delta_ids_for_group, sign_and_publish_namespace_op,
-    sign_apply_and_publish_namespace_op, ApplyNamespaceOpResult, KeyUnwrapFailure,
-    NamespaceGovernance, PendingKeyDelivery,
-};
-pub use self::namespace_membership::NamespaceMembershipService;
-pub use self::namespace_op_log::NamespaceOpLogService;
-pub use self::namespace_retry::NamespaceRetryService;
 pub use self::permission_checker::PermissionChecker;
 pub use self::signing_keys::{
     delete_all_group_signing_keys, delete_group_signing_key, get_group_signing_key,
@@ -2055,6 +2039,9 @@ pub fn get_context_service_name(
     let key = calimero_store::key::ContextServiceName::new(*context_id);
     Ok(handle.get(&key)?.map(|v| v.service_name.to_string()))
 }
+
+#[cfg(test)]
+mod test_fixtures;
 
 #[cfg(test)]
 mod tests;

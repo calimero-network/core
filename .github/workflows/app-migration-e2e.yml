@@ -1,0 +1,143 @@
+name: App migration e2e
+
+# End-to-end coverage for the per-context application migration
+# pipeline and its later namespace-cascade extensions. Runs every
+# workflow under workflows/app-migration/ against a locally built
+# merod:local image, exercising the migration-suite fixtures under
+# apps/migrations/migration-suite-v*.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/context/src/handlers/update_application/**"
+      - "crates/context/src/handlers/upgrade_group.rs"
+      - "crates/context/src/handlers/apply_signed_group_op.rs"
+      - "crates/context/primitives/src/local_governance/**"
+      - "crates/storage/src/interface.rs"
+      - "crates/sdk/macros/**"
+      - "apps/migrations/**"
+      - "workflows/app-migration/**"
+      - ".github/workflows/app-migration-e2e.yml"
+      - ".github/actions/build-local-merod/**"
+      - ".github/actions/setup-merobox/**"
+
+  pull_request:
+    branches: [master]
+    paths:
+      - "crates/context/src/handlers/update_application/**"
+      - "crates/context/src/handlers/upgrade_group.rs"
+      - "crates/context/src/handlers/apply_signed_group_op.rs"
+      - "crates/context/primitives/src/local_governance/**"
+      - "crates/storage/src/interface.rs"
+      - "crates/sdk/macros/**"
+      - "apps/migrations/**"
+      - "workflows/app-migration/**"
+      - ".github/workflows/app-migration-e2e.yml"
+      - ".github/actions/build-local-merod/**"
+      - ".github/actions/setup-merobox/**"
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_LOG: info,calimero_=debug
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  app-migration-e2e:
+    name: App migration e2e
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          shared-key: app-migration-e2e
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build local merod image
+        uses: ./.github/actions/build-local-merod
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build migration-suite WASM fixtures
+        run: bash workflows/app-migration/build-wasms.sh
+
+      - name: Setup merobox
+        uses: ./.github/actions/setup-merobox
+
+      - name: Run app-migration workflows
+        run: |
+          mkdir -p docker-logs
+          LOGDIR="$GITHUB_WORKSPACE/docker-logs"
+          WATCHER_STATE_DIR="$(mktemp -d)"
+          (
+            while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
+              for c in $(docker ps --filter "label=calimero.node=true" \
+                                   --format "{{.Names}}" 2>/dev/null \
+                         | grep -v -- '-init$' || true); do
+                mark="$WATCHER_STATE_DIR/${c}"
+                if [ ! -f "$mark" ]; then
+                  touch "$mark"
+                  echo "[log-watcher] following $c"
+                  docker logs -f --timestamps "$c" \
+                    > "$LOGDIR/${c}.log" 2>&1 &
+                fi
+              done
+              sleep 1
+            done
+          ) &
+          WATCHER_PID=$!
+
+          set +e
+          set -o pipefail
+          overall_exit=0
+          for wf in workflows/app-migration/*.yml; do
+              name=$(basename "$wf" .yml | tr -cd 'A-Za-z0-9_-')
+              echo "::group::Running $name"
+              merobox bootstrap run "$wf" \
+                  --image merod:local \
+                  --e2e-mode \
+                  --verbose 2>&1 | tee "docker-logs/merobox-${name}.log"
+              wf_exit=${PIPESTATUS[0]}
+              echo "::endgroup::"
+              if [ "$wf_exit" -ne 0 ]; then
+                  echo "::error::Workflow $name failed with exit $wf_exit"
+                  overall_exit=$wf_exit
+              fi
+          done
+          set +o pipefail
+
+          touch "$WATCHER_STATE_DIR/stop"
+          sleep 2
+          kill "$WATCHER_PID" 2>/dev/null || true
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
+
+          exit "$overall_exit"
+
+      - name: Upload docker logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-migration-e2e-docker-logs
+          path: docker-logs/
+          retention-days: 7
+          if-no-files-found: ignore

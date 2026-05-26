@@ -31,8 +31,8 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use super::group_keys::{decrypt_group_op, load_group_key_by_id};
-use super::namespace_op_log::NamespaceOpLogService;
+use super::super::group_keys::{decrypt_group_op, load_group_key_by_id};
+use super::super::NamespaceOpLogService;
 
 /// Maximum number of governance ops the prefix walk will visit before
 /// bailing. Bounds memory + CPU for the BFS even on very deep DAGs and
@@ -192,14 +192,14 @@ pub fn membership_status_at(
     // that mutates `admin_identity`; `TransferOwnership` is a
     // separate op that touches `owner_identity` and does not affect
     // this carve-out.
-    if super::membership::is_group_admin(store, &group_id, signer)? {
+    if super::core::is_group_admin(store, &group_id, signer)? {
         return Ok(MembershipStatus::Member(
             calimero_primitives::context::GroupMemberRole::Admin,
         ));
     }
 
-    let namespace_id = super::namespace::resolve_namespace(store, &group_id)?;
-    let dag = super::namespace_dag::NamespaceDagService::new(store, namespace_id.to_bytes());
+    let namespace_id = super::super::namespace::resolve_namespace(store, &group_id)?;
+    let dag = super::super::NamespaceDagService::new(store, namespace_id.to_bytes());
     let local_heads = dag.read_head_record()?.parent_hashes;
 
     // Branch 1 — heads match local state exactly. Use the materialized
@@ -210,7 +210,7 @@ pub fn membership_status_at(
         // of the same materialized state — divergence here signals
         // tampering or local corruption that the rest of the pipeline
         // can't detect on its own.
-        let local_state_hash = super::meta::compute_group_state_hash(store, &group_id)?;
+        let local_state_hash = super::super::meta::compute_group_state_hash(store, &group_id)?;
         if local_state_hash != position.group_state_hash {
             eyre::bail!(
                 "membership_status_at: group_state_hash mismatch — \
@@ -223,7 +223,7 @@ pub fn membership_status_at(
         }
         // Direct membership (GroupMember row at the named group) — the
         // common case for Restricted subgroups and for explicit-add flows.
-        if let Some(role) = super::membership::get_group_member_role(store, &group_id, signer)? {
+        if let Some(role) = super::core::get_group_member_role(store, &group_id, signer)? {
             return Ok(MembershipStatus::Member(role));
         }
         // Inherited membership — the signer doesn't have a `GroupMember`
@@ -238,8 +238,8 @@ pub fn membership_status_at(
         // We fold Inherited → Member(Member). The actor's effective role
         // in this subgroup is the inherited one from `check_group_*`;
         // we don't have a more precise role at the cross-DAG layer.
-        return match super::membership::check_group_membership_path(store, &group_id, signer)? {
-            super::membership::MembershipPath::Direct => {
+        return match super::core::check_group_membership_path(store, &group_id, signer)? {
+            super::core::MembershipPath::Direct => {
                 // Practically unreachable: `check_group_membership_path`
                 // returns `Direct` iff `has_direct_member` returned
                 // `true`, which reads the same store row that
@@ -253,10 +253,10 @@ pub fn membership_status_at(
                     calimero_primitives::context::GroupMemberRole::Member,
                 ))
             }
-            super::membership::MembershipPath::Inherited { .. } => Ok(MembershipStatus::Member(
+            super::core::MembershipPath::Inherited { .. } => Ok(MembershipStatus::Member(
                 calimero_primitives::context::GroupMemberRole::Member,
             )),
-            super::membership::MembershipPath::None => {
+            super::core::MembershipPath::None => {
                 // See function-level doc for the `Removed` vs
                 // `NeverMember` conflation caveat — the prefix walk
                 // recovers the distinction.
@@ -1076,7 +1076,8 @@ mod tests {
             migration: None,
             auto_join: false,
         };
-        super::super::meta::save_group_meta(&store, &group_id, &meta).expect("save_group_meta");
+        super::super::super::meta::save_group_meta(&store, &group_id, &meta)
+            .expect("save_group_meta");
 
         // Any well-formed position will do — the admin carve-out short-
         // circuits before we ever look at heads or `namespace_dag`.

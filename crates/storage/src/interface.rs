@@ -1235,12 +1235,43 @@ impl<S: StorageAdaptor> Interface<S> {
                     <Index<S>>::add_child_to(parent.id(), this.clone())?;
                 }
 
-                // For new entities, create a minimal index entry first to avoid orphan errors
+                // For new entities, create a minimal index entry first to avoid orphan errors.
+                //
+                // ENTRY-BEFORE-PARENT ordering (#2319 root cause): the
+                // `add_child_to` call below inserts `id` into the
+                // parent's `children` list. A reader that iterates the
+                // parent's children (`UnorderedMap::entries()` etc.)
+                // would then see `id` and try `find_by_id(id)` →
+                // `storage_read(Key::Entry(id))` → `None` (entry not
+                // yet written by `save_internal` below). The collection
+                // iterator's `.flatten().fuse()` silently drops the
+                // `NotFound` Err, producing a partial child list — the
+                // "Hello Wor" rga flake. PR #2470 swapped the order
+                // inside `save_internal` (entry-then-index) but missed
+                // this `apply_action` pre-creation path, which
+                // advertises the child in the parent BEFORE
+                // `save_internal` is reached at all.
+                //
+                // Fix: write `Key::Entry(id)` here, before the
+                // placeholder `add_child_to`, so by the time the
+                // parent advertises this child, the entry already
+                // exists. `save_internal` below will go through the
+                // "concurrent update" path (`last_metadata.updated_at
+                // == metadata.updated_at` since the placeholder we
+                // create carries the same metadata) and produce the
+                // same final bytes for non-root non-merging cases — a
+                // redundant overwrite that's the price of closing the
+                // window.
                 if !<Index<S>>::has_index(id) {
                     if id.is_root() {
                         debug!(%id, "Creating root index entry for entity");
                         <Index<S>>::add_root(ChildInfo::new(id, [0; 32], metadata.clone()))?;
                     } else if let Some(parent) = parent {
+                        // Pre-write the entry bytes so the parent's
+                        // children list never advertises an id without
+                        // a backing `Key::Entry`. See the
+                        // ENTRY-BEFORE-PARENT comment above.
+                        let _ignored = S::storage_write(Key::Entry(id), &data);
                         // Create minimal index entry with placeholder hash
                         let placeholder_hash = Sha256::digest(&data).into();
                         debug!(
@@ -2079,6 +2110,58 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let own_hash: [u8; 32] = Sha256::digest(&final_data).into();
 
+        // Write the entry bytes BEFORE updating the Merkle index. The
+        // index update propagates the new own_hash up the parent chain,
+        // making the new state observable via the root-hash poll path
+        // (`compute_root_hash`). Readers that iterate a collection's
+        // children silently drop entries whose `Key::Entry` lookup
+        // returns `None` (`UnorderedMap::entries` → `flatten().fuse()`
+        // swallows the `NotFound` Err), so an admin-server reader hit
+        // mid-write would otherwise see a converged root hash with
+        // missing children — the "Hello Wor" vs "Hello World" rga
+        // flake reproduced post-#2465. Writing the entry first means
+        // readers see either (old hash + old entries) or
+        // (new hash + new entries), never the inconsistent middle.
+        //
+        // `storage_write` returns `bool` meaning "evicted a previous
+        // value" (true) vs "inserted a new key" (false) — not
+        // success/failure. Actual write failures surface as `HostError`
+        // traps from the runtime (`KeyLengthOverflow`,
+        // `ValueLengthOverflow`, `InvalidMemoryAccess`), not as
+        // `Ok(false)`. Discard the bool — `let _ignored = ...` matches
+        // the style used at the `storage_remove` site (line 1448).
+        let _ignored = S::storage_write(Key::Entry(id), &final_data);
+
+        // If `update_hash_for` errors below after the entry write above
+        // succeeded, the entry bytes remain in storage with no index
+        // entry pointing at them — an "orphan." This is unavoidable
+        // without a transactional storage layer, and it's the lesser
+        // evil compared to the inverse (index advertising bytes that
+        // aren't there) because:
+        //   * `find_by_id` consults the index first (line 1689, 1702)
+        //     and bails when the index entry is missing or deleted —
+        //     so the read path used by collections (`Collection::get`,
+        //     `Collection::entries`) silently skips the orphan.
+        //   * `find_by_id_raw` does NOT consult the index — it returns
+        //     raw bytes whenever `Key::Entry(id)` is present. In
+        //     principle this exposes the orphan, but every production
+        //     caller (`compare_trees` and its sync-layer cousins in
+        //     `hash_comparison{,_protocol}.rs`, `level_sync.rs`)
+        //     reaches `find_by_id_raw` only after iterating a parent's
+        //     index-derived child list — and the orphan's id is, by
+        //     definition, not in any parent's index. `compare_trees`
+        //     called directly with the orphan's id also bails: line
+        //     1525 returns `IndexNotFound` from the `local_metadata`
+        //     check before the orphan bytes can become an `Action`.
+        //   * The next successful `apply_action` for the same id
+        //     overwrites the orphan bytes, so the storage cost is
+        //     transient.
+        // The pre-fix ordering (index-then-entry) had the symmetric
+        // problem with much worse user-visible behavior — the rga
+        // "Hello Wor" flake described above — because the read path
+        // *does* propagate index-advertised entries through every
+        // production caller, so a "hash exists, bytes don't"
+        // inconsistency surfaces immediately as a wrong-content read.
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
 
         if id.is_root() {
@@ -2090,8 +2173,6 @@ impl<S: StorageAdaptor> Interface<S> {
                 "ROOT MERGE: Final hashes after Merkle tree update"
             );
         }
-
-        _ = S::storage_write(Key::Entry(id), &final_data);
 
         let is_new = metadata.created_at == *metadata.updated_at;
 
@@ -2179,8 +2260,31 @@ impl<S: StorageAdaptor> Interface<S> {
         }
 
         let own_hash: [u8; 32] = Sha256::digest(merged).into();
+        // Entry-before-index ordering — same rationale as `save_internal`:
+        // updating the Merkle index first makes the new root hash
+        // observable before the entry bytes are stored, so a concurrent
+        // reader can see a converged root hash with missing children
+        // (the "Hello Wor" rga flake). The discarded `bool` from
+        // `storage_write` is the eviction signal ("did a previous value
+        // exist under this key"), not a success/failure flag — write
+        // failures trap from the runtime as `HostError`, not `Ok(false)`.
+        //
+        // Same orphan trade-off as `save_internal` (see the longer
+        // comment there): if `update_hash_for` errors below, the
+        // merged bytes are persisted but the index isn't updated.
+        // `find_by_id` bails on the missing index; `find_by_id_raw`
+        // would expose the orphan in principle, but every production
+        // caller reaches it only via an index-derived child list that
+        // the orphan isn't in. The next successful merge for this id
+        // overwrites the orphan bytes.
+        //
+        // We don't re-check the LWW guard after the entry write
+        // because the only thing that could invalidate it is a
+        // concurrent writer for the same id, and the storage layer
+        // doesn't serialize concurrent writes anyway — re-checking
+        // would just narrow the race window without closing it.
+        let _ignored = S::storage_write(Key::Entry(id), merged);
         let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
-        _ = S::storage_write(Key::Entry(id), merged);
         Ok(full_hash)
     }
 
