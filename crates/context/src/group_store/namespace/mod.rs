@@ -16,6 +16,9 @@ mod membership;
 mod op_log;
 mod retry;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) use self::core::MAX_NAMESPACE_DEPTH;
 pub use self::core::{
     collect_descendant_groups, collect_subtree_for_cascade, collect_visible_descendant_groups,
