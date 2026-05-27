@@ -1,4 +1,4 @@
-use crate::group_store::MembershipRepository;
+use crate::group_store::{MembershipRepository, MetaError};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
@@ -90,7 +90,7 @@ impl<'a> MetaRepository<'a> {
     pub fn compute_state_hash(&self, group_id: &ContextGroupId) -> EyreResult<[u8; 32]> {
         let meta = self
             .load(group_id)?
-            .ok_or_else(|| eyre!("group not found for state hash computation"))?;
+            .ok_or_else(|| MetaError::GroupNotFoundForHash)?;
 
         let mut members = MembershipRepository::new(self.store).list(group_id, 0, usize::MAX)?;
         members.sort_by(|a, b| a.0.cmp(&b.0));
@@ -116,7 +116,7 @@ impl<'a> MetaRepository<'a> {
     ) -> EyreResult<[u8; 32]> {
         let meta = self
             .load(group_id)?
-            .ok_or_else(|| eyre!("group not found for state hash computation"))?;
+            .ok_or_else(|| MetaError::GroupNotFoundForHash)?;
 
         let mut members = MembershipRepository::new(self.store).list(group_id, 0, usize::MAX)?;
         members.retain(|(pk, _role)| pk != removed_member);
@@ -249,6 +249,9 @@ mod tests {
         let store = test_store();
         let repo = MetaRepository::new(&store);
         let err = repo.compute_state_hash(&test_group_id()).unwrap_err();
-        assert!(format!("{err}").contains("group not found"));
+        assert!(matches!(
+            err.downcast_ref::<MetaError>(),
+            Some(MetaError::GroupNotFoundForHash)
+        ));
     }
 }

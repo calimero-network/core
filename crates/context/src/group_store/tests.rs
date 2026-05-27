@@ -459,8 +459,11 @@ fn reject_read_only_tee_via_member_added() {
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
     assert!(
-        err.to_string().contains("ReadOnlyTee"),
-        "expected ReadOnlyTee rejection, got: {err}"
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::ReadOnlyTeeViaAttestationOnly)
+        ),
+        "expected ReadOnlyTeeViaAttestationOnly, got: {err}"
     );
 }
 
@@ -500,8 +503,11 @@ fn reject_read_only_tee_via_member_role_set() {
     .unwrap();
     let err = apply_local_signed_group_op(&store, &op).unwrap_err();
     assert!(
-        err.to_string().contains("ReadOnlyTee"),
-        "expected ReadOnlyTee rejection, got: {err}"
+        matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::ReadOnlyTeeViaAttestationOnly)
+        ),
+        "expected ReadOnlyTeeViaAttestationOnly, got: {err}"
     );
 }
 
@@ -5084,7 +5090,10 @@ mod auto_follow_tests {
         )
         .unwrap();
         let err = apply_local_signed_group_op(&store, &op).unwrap_err();
-        assert!(err.to_string().contains("auto-follow"));
+        assert!(matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::AutoFollowAuthFailed)
+        ));
 
         // Sanity: the target's flags were not mutated by the
         // rejected op. The target was added via the seed() helper
@@ -5123,7 +5132,10 @@ mod auto_follow_tests {
         )
         .unwrap();
         let err = apply_local_signed_group_op(&store, &op).unwrap_err();
-        assert!(err.to_string().contains("not a member"));
+        assert!(matches!(
+            err.downcast_ref::<MembershipError>(),
+            Some(MembershipError::NotMember { .. })
+        ));
     }
 
     #[test]

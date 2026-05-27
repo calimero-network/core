@@ -308,6 +308,54 @@ mod interface__apply_actions {
         assert!(retrieved_page.is_some());
         assert_eq!(retrieved_page.unwrap().title, "Test Page");
     }
+
+    // Regression for #2356 item 1: a stale-by-HLC apply (incoming.updated_at <
+    // stored.updated_at) hits the `save_internal -> None` short-circuit. The
+    // apply must still enqueue Action::Compare so the receiver's current
+    // Merkle state for this entity propagates to peers — otherwise two nodes
+    // that each hold the locally-newer side of a concurrent CRDT merge keep
+    // dropping each other's deltas, and root-hash convergence stalls until an
+    // unrelated trigger forces a hash-comparison sweep.
+    #[test]
+    fn apply_action__stale_update_still_emits_compare() {
+        use crate::delta::{commit_causal_delta, reset_delta_context};
+
+        crate::tests::common::register_test_merge_functions();
+        reset_delta_context();
+
+        // Seed an entity locally at time T2.
+        let mut page = Page::new_from_element("Test Page", Element::root());
+        let id = page.id();
+        assert!(MainInterface::save(&mut page).unwrap());
+        let stored_updated_at = *page.element().metadata.updated_at;
+        // Discard actions emitted by the local save — the assertion below is
+        // only about what the stale apply contributes.
+        reset_delta_context();
+
+        // Build a remote-style Update with metadata at T1 < T2.
+        let mut stale_metadata = page.element().metadata.clone();
+        stale_metadata.set_updated_at(stored_updated_at.saturating_sub(1_000_000));
+        let stale_action = Action::Update {
+            id,
+            data: to_vec(&page).unwrap(),
+            ancestors: vec![],
+            metadata: stale_metadata,
+        };
+
+        assert!(MainInterface::apply_action(stale_action, &ApplyContext::empty()).is_ok());
+
+        let delta = commit_causal_delta(&[0; 32])
+            .unwrap()
+            .expect("stale apply must still emit a delta (Action::Compare)");
+        assert!(
+            delta
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::Compare { id: cid } if *cid == id)),
+            "expected Action::Compare for id={id} after stale apply, got: {:?}",
+            delta.actions
+        );
+    }
 }
 
 #[cfg(test)]

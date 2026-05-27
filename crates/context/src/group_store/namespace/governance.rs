@@ -1,5 +1,7 @@
 use crate::group_store::{
-    DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+    ApplyError, CapabilitiesError, DenyListRepository, GroupCreatedRejection,
+    GroupDeletedRejection, GroupKeyring, MemberJoinedOpenRejection, MembershipError,
+    MembershipRepository, MetaRepository, NamespaceError, NamespaceRepository,
 };
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, NamespaceOp, RootOp,
@@ -132,6 +134,52 @@ impl<'a> NamespaceGovernance<'a> {
     ) -> EyreResult<Vec<[u8; 32]>> {
         NamespaceDagService::new(self.store, self.namespace_id)
             .collect_skeleton_delta_ids_for_group(group_id)
+    }
+
+    /// Convergence claim baked into `SignedNamespaceOp.state_hash` at sign time.
+    ///
+    /// `Group` commits to the wrapped group's current meta+member set — the
+    /// same input the receiver recomputes in `apply_group_op_inner` to detect
+    /// a stale signer (mirrors `apply_local_signed_group_op` in the group-op
+    /// path).
+    ///
+    /// `Root` commits to the namespace's own meta+member set, but only for
+    /// variants whose correctness depends on it — see
+    /// `root_op_commits_to_namespace_state`. Additive/idempotent variants
+    /// (`KeyDelivery`) and subgroup-scoped mutations
+    /// (`GroupCreated`/`GroupReparented`/`GroupDeleted`) pass the zero
+    /// bypass to avoid coarse over-rejection on unrelated concurrent
+    /// activity.
+    ///
+    /// Pre-bootstrap groups/namespaces have no meta row to hash, so we fall
+    /// through to the documented zero-value bypass that the receiver also
+    /// recognizes.
+    ///
+    /// # Zero-hash bypass extends to gated variants too
+    ///
+    /// The receiver checks `op.state_hash != [0u8; 32]` before recomputing,
+    /// which means a gated variant (e.g. `AdminChanged`, `PolicyUpdated`)
+    /// signed with `state_hash == [0u8; 32]` skips the staleness check.
+    /// This is deliberate: pre-fix on-disk ops (signed before this change
+    /// landed) carry the zero hash, and rejecting them on replay would
+    /// break a node's ability to apply its own backfilled history. Net
+    /// effect: post-fix peers sign and verify; pre-fix ops bypass — same
+    /// semantics as the existing v1/v2 deployment. The bypass closes once
+    /// every signer has rolled forward and stopped emitting zero hashes;
+    /// no schema bump needed.
+    fn state_hash_for_op(&self, op: &NamespaceOp) -> EyreResult<[u8; 32]> {
+        let target_gid = match op {
+            NamespaceOp::Group { group_id, .. } => ContextGroupId::from(*group_id),
+            NamespaceOp::Root(root) if root_op_commits_to_namespace_state(root) => {
+                ContextGroupId::from(self.namespace_id)
+            }
+            NamespaceOp::Root(_) => return Ok([0u8; 32]),
+        };
+        let repo = MetaRepository::new(self.store);
+        if repo.load(&target_gid)?.is_none() {
+            return Ok([0u8; 32]);
+        }
+        repo.compute_state_hash(&target_gid)
     }
 
     pub fn apply_signed_op(&self, op: &SignedNamespaceOp) -> EyreResult<ApplyNamespaceOpResult> {
@@ -528,11 +576,12 @@ impl<'a> NamespaceGovernance<'a> {
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
         let op_timeout = timeout_for_namespace_op(&op);
+        let state_hash = self.state_hash_for_op(&op)?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
             head.parent_hashes,
-            [0u8; 32],
+            state_hash,
             head.next_nonce,
             op,
         )?;
@@ -704,11 +753,12 @@ impl<'a> NamespaceGovernance<'a> {
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
         let op_timeout = timeout_for_namespace_op(&op);
+        let state_hash = self.state_hash_for_op(&op)?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
             head.parent_hashes,
-            [0u8; 32],
+            state_hash,
             head.next_nonce,
             op,
         )?;
@@ -1012,6 +1062,23 @@ impl<'a> NamespaceGovernance<'a> {
         Ok(retry_divergence)
     }
 
+    /// Decrypt an encrypted group op and apply it via
+    /// [`apply_group_op_inner`](Self::apply_group_op_inner).
+    ///
+    /// # Hash-domain invariant
+    ///
+    /// `ns_op.state_hash` is propagated unchanged into the synthesized
+    /// `SignedGroupOp.state_hash`. This is correct because callers
+    /// always invoke this for `NamespaceOp::Group { encrypted, .. }`,
+    /// and `NamespaceGovernance::state_hash_for_op` computes the hash
+    /// over the *subgroup* (not the namespace root) for that variant —
+    /// the same domain `apply_group_op_inner`'s staleness guard then
+    /// recomputes locally. A future refactor that calls this for a
+    /// `NamespaceOp::Root` variant would silently pass the wrong
+    /// domain in, so the precondition is documented here rather than
+    /// type-enforced (the param type is the wrapping `SignedNamespaceOp`
+    /// regardless of variant, and pulling the variant info upstream
+    /// would ripple through every receive path).
     fn decrypt_and_apply_group_op(
         &self,
         ns_op: &SignedNamespaceOp,
@@ -1043,6 +1110,18 @@ impl<'a> NamespaceGovernance<'a> {
         let signer = &signed_group_op.signer;
         let nonce = signed_group_op.nonce;
         let op = &signed_group_op.op;
+
+        // Nonce dedup MUST run before the staleness check below.
+        //
+        // `retry_encrypted_ops_for_group` (fires on every KeyDelivery) reads
+        // back the entire op log for the group and re-feeds each entry
+        // through `decrypt_and_apply_group_op` → `apply_group_op_inner`.
+        // Already-applied ops therefore arrive here a second (or third…)
+        // time with their original `state_hash` — which was the group state
+        // *before* this op landed, i.e. inevitably different from the
+        // current state once the op has been applied. Running the staleness
+        // check first would `bail!` on every such replay; running the nonce
+        // dedup first cleanly short-circuits them to `Ok(None)`.
         let last = get_local_gov_nonce(self.store, group_id, signer)?.unwrap_or(0);
         if nonce <= last {
             tracing::debug!(
@@ -1052,6 +1131,37 @@ impl<'a> NamespaceGovernance<'a> {
                 "ignoring namespace group op with already-processed nonce"
             );
             return Ok(None);
+        }
+
+        // Staleness telemetry. `state_hash_for_op` commits to the wrapped
+        // group's pre-apply meta+member set; on receive we recompute and
+        // surface a structured warning when they disagree. We do NOT
+        // `bail!` on mismatch — that would reject legitimate concurrent
+        // ops in the multi-node case where peers A and B simultaneously
+        // sign against their (then-current) view and the second to land
+        // on peer C has already drifted. The local group-op equivalent
+        // (`apply_local_signed_group_op` in `group_store/mod.rs`) hard-
+        // bails because group state is per-subgroup and concurrent same-
+        // subgroup ops are rare; namespace-wrapped ops are shipped through
+        // the shared root DAG and concurrent contention is the norm —
+        // rejecting here breaks multi-node convergence in the
+        // scaffolding-e2e / group-3node suites. The PR caveat on #2500
+        // documents this trade-off: state_hash verification stays as a
+        // divergence signal, not an apply gate. Anchor-sync reconcile is
+        // the recovery path for genuinely diverged peers.
+        if signed_group_op.state_hash != [0u8; 32] {
+            let current = MetaRepository::new(self.store).compute_state_hash(group_id)?;
+            if signed_group_op.state_hash != current {
+                tracing::warn!(
+                    group_id = %hex::encode(group_id.to_bytes()),
+                    expected = %hex::encode(signed_group_op.state_hash),
+                    actual = %hex::encode(current),
+                    nonce,
+                    signer = %signer,
+                    "namespace group op state_hash mismatch (signed against stale state; \
+                     applying anyway — see PR #2500 caveat)"
+                );
+            }
         }
 
         if let GroupOp::ContextRegistered {
@@ -1222,16 +1332,51 @@ impl<'a> NamespaceGovernance<'a> {
     fn require_namespace_admin(&self, signer: &PublicKey) -> EyreResult<()> {
         let ns_gid = ContextGroupId::from(self.namespace_id);
         if !MembershipRepository::new(self.store).is_admin(&ns_gid, signer)? {
-            bail!(
-                "signer {} is not an admin of namespace {}",
-                signer,
-                hex::encode(self.namespace_id)
-            );
+            bail!(MembershipError::NotAdmin {
+                group_id: hex::encode(self.namespace_id),
+                identity: format!("{signer}"),
+            });
         }
         Ok(())
     }
 
     fn apply_root_op(&self, op: &SignedNamespaceOp, root: &RootOp) -> EyreResult<()> {
+        // Staleness telemetry for root ops whose correctness depends on
+        // the namespace's own meta+member set (`root_op_commits_to_
+        // namespace_state` whitelist). Other root variants pass the zero
+        // bypass at sign time and skip this check entirely.
+        //
+        // Same shape as the group-op branch in `apply_group_op_inner` —
+        // warn on mismatch, apply anyway. Hard-rejection would over-
+        // reject the namespace path because concurrent root ops (e.g.
+        // simultaneous joins or policy updates from different admins)
+        // are the common case, and there is no per-signer nonce dedup
+        // on this path to retry against. The PR #2500 caveat documents
+        // this trade-off; anchor-sync reconcile remains the recovery
+        // path for genuinely diverged peers.
+        //
+        // `GroupCreated` / `GroupReparented` / `GroupDeleted` are NOT
+        // gated by `root_op_commits_to_namespace_state` and skip this
+        // check entirely. Their authoritative state lives on the
+        // affected subgroup, not the namespace root. Authorization is
+        // still checked at apply time (via `require_namespace_admin` /
+        // capability checks in the executor arms below).
+        if root_op_commits_to_namespace_state(root) && op.state_hash != [0u8; 32] {
+            let ns_gid = ContextGroupId::from(self.namespace_id);
+            let current = MetaRepository::new(self.store).compute_state_hash(&ns_gid)?;
+            if op.state_hash != current {
+                tracing::warn!(
+                    namespace_id = %hex::encode(self.namespace_id),
+                    expected = %hex::encode(op.state_hash),
+                    actual = %hex::encode(current),
+                    nonce = op.nonce,
+                    signer = %op.signer,
+                    "namespace root op state_hash mismatch (signed against stale state; \
+                     applying anyway — see PR #2500 caveat)"
+                );
+            }
+        }
+
         match root {
             RootOp::GroupCreated {
                 group_id,
@@ -1278,11 +1423,7 @@ impl<'a> NamespaceGovernance<'a> {
         // for subgroups. Reject self-parent to make that invariant explicit
         // — a self-parent edge would cause resolve_namespace to cycle.
         if group_id == parent_id {
-            eyre::bail!(
-                "GroupCreated rejected: self-parent edge (group_id == parent_id). \
-                 Namespace roots must not emit GroupCreated — their existence is \
-                 recorded by the namespace-identity setup path."
-            );
+            eyre::bail!(NamespaceError::SelfParentEdge);
         }
 
         // Authorization. Namespace-root admins may create a subgroup at any
@@ -1301,12 +1442,12 @@ impl<'a> NamespaceGovernance<'a> {
                     calimero_context_config::MemberCapabilities::CAN_CREATE_SUBGROUP,
                 )?);
         if !authorized {
-            bail!(
-                "GroupCreated rejected: signer {} is neither an admin of namespace {} \
-                 nor a member holding CAN_CREATE_SUBGROUP at the namespace root",
-                op.signer,
-                hex::encode(self.namespace_id)
-            );
+            bail!(ApplyError::GroupCreatedRejected(
+                GroupCreatedRejection::Unauthorized {
+                    signer: format!("{}", op.signer),
+                    namespace: hex::encode(self.namespace_id),
+                }
+            ));
         }
 
         // Verify parent exists in this namespace (root or previously-created subgroup).
@@ -1421,9 +1562,7 @@ impl<'a> NamespaceGovernance<'a> {
     ) -> EyreResult<()> {
         let root_gid = ContextGroupId::from(root_group_id);
         if root_group_id == self.namespace_id {
-            eyre::bail!(
-                "cannot delete the namespace root '{root_gid:?}' (use delete_namespace instead)"
-            );
+            eyre::bail!(NamespaceError::CannotDeleteRoot(format!("{root_gid:?}")));
         }
 
         // Authorization. Cascade-delete is allowed for: the owner of the
@@ -1457,14 +1596,27 @@ impl<'a> NamespaceGovernance<'a> {
         let ns_gid = ContextGroupId::from(self.namespace_id);
         if let Some(root_meta) = MetaRepository::new(self.store).load(&root_gid)? {
             if root_meta.owner_identity != op.signer {
-                PermissionChecker::new(self.store, ns_gid)
+                if let Err(e) = PermissionChecker::new(self.store, ns_gid)
                     .require_can_delete_subgroup(&op.signer)
-                    .map_err(|e| {
-                        eyre::eyre!(
-                            "GroupDeleted rejected: {e} (or be the owner of subgroup {})",
-                            hex::encode(root_group_id)
-                        )
-                    })?;
+                {
+                    // `require_can_delete_subgroup` bails with a typed
+                    // `CapabilitiesError::Unauthorized`; preserve the
+                    // structured cause inside `GroupDeletedRejection::
+                    // Unauthorized` instead of flattening it to a string.
+                    // If the downcast unexpectedly fails (e.g. a future
+                    // refactor moves the check elsewhere), bubble the
+                    // original error so the unexpected type surfaces.
+                    return Err(match e.downcast::<CapabilitiesError>() {
+                        Ok(cap_err) => {
+                            ApplyError::GroupDeletedRejected(GroupDeletedRejection::Unauthorized {
+                                cause: cap_err,
+                                subgroup: hex::encode(root_group_id),
+                            })
+                            .into()
+                        }
+                        Err(other) => other,
+                    });
+                }
             }
         }
 
@@ -1494,16 +1646,22 @@ impl<'a> NamespaceGovernance<'a> {
         let payload_contexts: std::collections::BTreeSet<[u8; 32]> =
             cascade_context_ids.iter().copied().collect();
         if !local_groups.is_subset(&payload_groups) {
-            let extra: Vec<_> = local_groups.difference(&payload_groups).collect();
-            eyre::bail!(
-                "GroupDeleted cascade divergence: local subtree has groups not in payload: {extra:?}"
-            );
+            let extra: Vec<String> = local_groups
+                .difference(&payload_groups)
+                .map(hex::encode)
+                .collect();
+            eyre::bail!(ApplyError::GroupDeletedRejected(
+                GroupDeletedRejection::CascadeDivergenceGroups { extra }
+            ));
         }
         if !local_contexts.is_subset(&payload_contexts) {
-            let extra: Vec<_> = local_contexts.difference(&payload_contexts).collect();
-            eyre::bail!(
-                "GroupDeleted cascade divergence: local subtree has contexts not in payload: {extra:?}"
-            );
+            let extra: Vec<String> = local_contexts
+                .difference(&payload_contexts)
+                .map(hex::encode)
+                .collect();
+            eyre::bail!(ApplyError::GroupDeletedRejected(
+                GroupDeletedRejection::CascadeDivergenceContexts { extra }
+            ));
         }
         // Inverse direction is *not* an error — it's the expected shape on a
         // crash-recovery re-apply (the local subtree shrank since the op was
@@ -1583,7 +1741,7 @@ impl<'a> NamespaceGovernance<'a> {
         let ns_gid = ContextGroupId::from(self.namespace_id);
         let mut meta = MetaRepository::new(self.store)
             .load(&ns_gid)?
-            .ok_or_else(|| eyre::eyre!("namespace root group not found"))?;
+            .ok_or(NamespaceError::RootMissing)?;
         meta.admin_identity = new_admin;
         MetaRepository::new(self.store).save(&ns_gid, &meta)?;
         Ok(())
@@ -1624,11 +1782,12 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
     ) -> EyreResult<()> {
         if op.signer != member {
-            eyre::bail!(
-                "MemberJoinedOpen rejected: outer signer {} doesn't match member {}",
-                op.signer,
-                member
-            );
+            eyre::bail!(ApplyError::MemberJoinedOpenRejected(
+                MemberJoinedOpenRejection::SignerMismatch {
+                    signer: format!("{}", op.signer),
+                    member: format!("{member}"),
+                }
+            ));
         }
         let gid = ContextGroupId::from(group_id);
         // Cross-namespace forgery guard: without this check, an attacker
@@ -1641,35 +1800,56 @@ impl<'a> NamespaceGovernance<'a> {
         // `MemberJoined` apply path.
         let resolved_ns = NamespaceRepository::new(self.store).resolve(&gid)?;
         if resolved_ns.to_bytes() != self.namespace_id {
-            eyre::bail!(
-                "MemberJoinedOpen rejected: group_id {:?} resolves to namespace {:?}, \
-                 not this namespace {:?}",
-                gid,
-                resolved_ns,
-                ContextGroupId::from(self.namespace_id)
-            );
+            eyre::bail!(ApplyError::MemberJoinedOpenRejected(
+                MemberJoinedOpenRejection::WrongNamespace {
+                    gid: format!("{gid:?}"),
+                    resolved_ns: format!("{resolved_ns:?}"),
+                    this_ns: format!("{:?}", ContextGroupId::from(self.namespace_id)),
+                }
+            ));
         }
         match MembershipRepository::new(self.store).check_path(&gid, &member)? {
             super::super::MembershipPath::Inherited { .. } => Ok(()),
             super::super::MembershipPath::Direct => {
                 // Direct members go through `MemberJoined` or `add_group_members`
                 // — they shouldn't be using this op.
-                eyre::bail!(
-                    "MemberJoinedOpen rejected: signer {} is a direct member of {:?}; \
-                     use MemberJoined or add_group_members instead",
-                    member,
-                    gid
-                );
+                eyre::bail!(ApplyError::MemberJoinedOpenRejected(
+                    MemberJoinedOpenRejection::AlreadyDirectMember(format!("{member}"))
+                ));
             }
             super::super::MembershipPath::None => {
-                eyre::bail!(
-                    "MemberJoinedOpen rejected: signer {} has no membership path to {:?}",
-                    member,
-                    gid
-                );
+                eyre::bail!(ApplyError::MemberJoinedOpenRejected(
+                    MemberJoinedOpenRejection::NoMembershipPath {
+                        member: format!("{member}"),
+                        gid: format!("{gid:?}"),
+                    }
+                ));
             }
         }
     }
+}
+
+/// Whether a root op's correctness depends on the namespace's current
+/// meta+member set, and therefore should carry a non-zero `state_hash`
+/// committing to it.
+///
+/// Included: variants that mutate or read namespace authorization state —
+/// `AdminChanged` (admin identity), `PolicyUpdated` (policy bytes are
+/// authoritative state), `MemberJoined`/`MemberJoinedOpen` (member set).
+///
+/// Excluded: `KeyDelivery` (additive, idempotent — a stale delivery is
+/// still a valid delivery), and `GroupCreated`/`GroupReparented`/
+/// `GroupDeleted` (their authoritative state is on the affected subgroup,
+/// not on the namespace root). Gating those would over-reject on unrelated
+/// concurrent namespace activity.
+fn root_op_commits_to_namespace_state(op: &RootOp) -> bool {
+    matches!(
+        op,
+        RootOp::AdminChanged { .. }
+            | RootOp::PolicyUpdated { .. }
+            | RootOp::MemberJoined { .. }
+            | RootOp::MemberJoinedOpen { .. }
+    )
 }
 
 pub fn apply_signed_namespace_op(

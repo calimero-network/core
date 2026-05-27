@@ -2,7 +2,7 @@
 
 use calimero_server_primitives::admin::{
     FleetJoinRequest, FleetJoinResponse, GenerateContextIdentityResponse, GetPeersCountResponse,
-    InviteSpecializedNodeRequest, InviteSpecializedNodeResponse,
+    InviteSpecializedNodeRequest, InviteSpecializedNodeResponse, NetworkStatusResponse,
 };
 use eyre::Result;
 
@@ -24,6 +24,14 @@ where
 
     pub async fn get_peers_count(&self) -> Result<GetPeersCountResponse> {
         let response = self.connection.get("admin-api/peers").await?;
+        Ok(response)
+    }
+
+    /// Snapshot the local node's libp2p connectivity state — relays,
+    /// rendezvous registrations, DCUtR upgrade outcomes per peer, and
+    /// AutoNAT v2 reachability. Backs `meroctl network status`.
+    pub async fn network_status(&self) -> Result<NetworkStatusResponse> {
+        let response = self.connection.get("admin-api/network/status").await?;
         Ok(response)
     }
 

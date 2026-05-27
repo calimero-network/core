@@ -17,10 +17,11 @@ use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, GovernanceError, NamespaceOp, NamespaceTopicMsg, RootOp,
     SignedAck, SignedNamespaceOp, SignedReadinessBeacon,
 };
+use calimero_network_primitives::client::is_no_peers_subscribed_error;
 use calimero_node_primitives::sync::{BroadcastMessage, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
-use libp2p::gossipsub::{PublishError, TopicHash};
+use libp2p::gossipsub::TopicHash;
 use thiserror::Error;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
@@ -40,13 +41,7 @@ pub enum BroadcastPublishError {
 }
 
 pub(crate) fn classify_network_publish_error(e: eyre::Report) -> BroadcastPublishError {
-    let no_peers = e.chain().any(|cause| {
-        matches!(
-            cause.downcast_ref::<PublishError>(),
-            Some(PublishError::NoPeersSubscribedToTopic)
-        )
-    });
-    if no_peers {
+    if is_no_peers_subscribed_error(&e) {
         BroadcastPublishError::NoPeersSubscribed
     } else {
         BroadcastPublishError::Other(e.to_string())

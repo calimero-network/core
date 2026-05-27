@@ -604,6 +604,115 @@ fn test_multiple_listeners_map_to_distinct_relays() {
     assert_eq!(state.take_relay_listener(&listener_b), Some(relay_b));
 }
 
+/// Spin until the monotonic clock has strictly advanced past `prior`,
+/// bounded by a generous 100ms ceiling. Replaces `thread::sleep(2ms)`,
+/// which was flaky on slow CI where the kernel scheduler doesn't wake
+/// within the requested window and on Windows where `Instant`
+/// resolution is coarser than 1ms.
+fn wait_past(prior: std::time::Instant) {
+    let deadline = prior + std::time::Duration::from_millis(100);
+    while std::time::Instant::now() <= prior {
+        if std::time::Instant::now() > deadline {
+            panic!("clock failed to advance within 100ms — broken Instant");
+        }
+        std::hint::spin_loop();
+    }
+}
+
+#[test]
+fn record_dcutr_outcome_replaces_prior_observation() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+
+    // First observation: a failure. ensure_peer side-effect should create
+    // a PeerInfo entry even though we never identified the peer.
+    state.record_dcutr_outcome(
+        peer,
+        DcutrUpgradeStatus::Failed {
+            reason: "timeout".to_owned(),
+        },
+    );
+    let info = state.get_peer_info(&peer).expect("peer created");
+    let first = info.dcutr().expect("dcutr observation recorded");
+    let first_at = first.at();
+    assert!(matches!(first.status(), DcutrUpgradeStatus::Failed { .. }));
+
+    // A subsequent success must overwrite the failure and bump the timestamp.
+    wait_past(first_at);
+    state.record_dcutr_outcome(
+        peer,
+        DcutrUpgradeStatus::Succeeded {
+            connection_id: libp2p::swarm::ConnectionId::new_unchecked(7),
+        },
+    );
+    let second = state
+        .get_peer_info(&peer)
+        .and_then(|i| i.dcutr())
+        .expect("still recorded");
+    assert!(matches!(
+        second.status(),
+        DcutrUpgradeStatus::Succeeded { .. }
+    ));
+    assert!(
+        second.at() > first_at,
+        "second observation must postdate the first",
+    );
+}
+
+#[test]
+fn record_autonat_test_keeps_only_the_freshest_probe() {
+    let mut state = DiscoveryState::default();
+    let addr_one: Multiaddr = "/ip4/1.2.3.4/tcp/1234".parse().unwrap();
+    let addr_two: Multiaddr = "/ip4/5.6.7.8/tcp/5678".parse().unwrap();
+
+    state.record_autonat_test(
+        addr_one.clone(),
+        AutonatTestResult::Failed {
+            reason: "no servers".to_owned(),
+        },
+    );
+    let first_at = state.last_autonat_test().expect("recorded").at;
+
+    wait_past(first_at);
+    state.record_autonat_test(
+        addr_two.clone(),
+        AutonatTestResult::Reachable {
+            addr: addr_two.clone(),
+        },
+    );
+
+    let probe = state.last_autonat_test().expect("still recorded");
+    assert_eq!(probe.tested_addr, addr_two);
+    assert!(matches!(probe.result, AutonatTestResult::Reachable { .. }));
+    assert!(probe.at > first_at, "second probe must postdate first");
+}
+
+#[test]
+fn relay_reservation_status_change_bumps_last_state_change() {
+    let mut state = DiscoveryState::default();
+    let relay = PeerId::random();
+    state.update_peer_protocols(&relay, &[HOP_PROTOCOL_NAME]);
+
+    let baseline = state
+        .get_peer_info(&relay)
+        .and_then(|i| i.relay())
+        .map(|r| r.last_state_change())
+        .expect("relay info initialized");
+
+    wait_past(baseline);
+    state.update_relay_reservation_status(&relay, RelayReservationStatus::Accepted);
+
+    let after = state
+        .get_peer_info(&relay)
+        .and_then(|i| i.relay())
+        .map(|r| r.last_state_change())
+        .expect("still tracked");
+    assert!(
+        after > baseline,
+        "last_state_change must advance on status update",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // on_regular_peer_disconnected — the #2469 recovery path
 //
