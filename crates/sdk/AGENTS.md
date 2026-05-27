@@ -138,6 +138,92 @@ pub enum Event<'a> {
 - Use `#[borsh(crate = "calimero_sdk::borsh")]` for borsh derives
 - Define `Event<'a>` enum with `#[app::event]` for event handling
 
+### `#[app::migrate]` — state-migration export
+
+Marks a stand-alone function as the WASM export the node runtime
+calls during `upgrade_group(target=v2, migrate_method=...)`. The
+function reads the old state via `calimero_sdk::state::read_raw()`,
+constructs the new state struct, and returns it; the SDK macro
+wraps it in the same `Root::new(...)` context as `#[app::init]` so
+collection writes made inside the migrate body persist correctly.
+
+```rust
+use calimero_sdk::app;
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::state::read_raw;
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
+
+#[app::state(emits = for<'a> Event<'a>)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct AppV2 {
+    items: UnorderedMap<String, LwwRegister<String>>,
+    notes: LwwRegister<String>,  // new in v2
+}
+
+#[app::event]
+pub enum Event<'a> {
+    Migrated { from_version: &'a str, to_version: &'a str },
+}
+
+// Private borsh-deserialize shape matching the v1 state byte layout.
+// Field order MUST match v1's `#[app::state]` struct (borsh is
+// positional).
+#[derive(BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
+struct AppV1 {
+    items: UnorderedMap<String, LwwRegister<String>>,
+}
+
+#[app::migrate]
+pub fn migrate_v1_to_v2() -> AppV2 {
+    let old_bytes = read_raw().unwrap_or_else(|| {
+        panic!("Migration failed: no existing state.");
+    });
+    let old: AppV1 = BorshDeserialize::deserialize(&mut &old_bytes[..])
+        .unwrap_or_else(|e| panic!("V1 deserialize: {e:?}"));
+
+    app::emit!(Event::Migrated {
+        from_version: "1.0.0",
+        to_version: "2.0.0",
+    });
+
+    AppV2 {
+        items: old.items,
+        notes: LwwRegister::new("added in v2".to_owned()),
+    }
+}
+```
+
+**Key points:**
+
+- Free function, not a method on the state struct. The return type
+  is the v2 state struct, which determines the event emitter the
+  macro registers.
+- Read v1 state via `read_raw()` and deserialise into a private
+  borsh-only shadow struct of the v1 layout. Don't import the v1
+  crate's `#[app::state]` — it would pull in v1's full SDK surface.
+- Carrying a collection across versions: `items: old.items` —
+  the existing storage handle survives, no re-population needed.
+- Creating a NEW collection in migrate (e.g. archiving a removed
+  field into `UnorderedMap`): construct with
+  `UnorderedMap::new_with_field_name("...")` and insert as normal.
+  The SDK's macro wraps the migrate body in the same
+  `Root::new + __assign_deterministic_ids + commit` flow as
+  `#[app::init]`, so inserts persist to the same storage path a
+  later `&self` read computes for the same field.
+- Panic on unrecoverable inputs (corrupted state, deserialise
+  failure) — matches the existing `migration-suite-v{2..5}-add-field`
+  pattern. A panic traps the WASM and aborts the upgrade, leaving
+  v1 state intact for retry.
+
+End-to-end coverage of migration shapes lives in
+`workflows/app-migration/` (per-context migration, namespace cascade,
+12 schema-shape scenarios). See
+`apps/migrations/migration-suite-v{1..5}` (chain fixtures) and
+`apps/migrations/scenario-*-v{1,2}` (standalone scenario pairs) for
+concrete reference implementations.
+
 ## Patterns
 
 ### Basic Application
