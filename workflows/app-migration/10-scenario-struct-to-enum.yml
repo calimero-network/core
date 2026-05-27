@@ -1,6 +1,6 @@
-name: 10 — Scenario "struct to enum" (v1 → v2-struct-to-enum)
+name: 10 — Scenario "struct to enum" (v1 → v2-struct-to-enum, 2-node)
 description: >
-  Realistic per-context migration for the struct-to-enum scenario.
+  2-node per-context migration for the struct-to-enum scenario.
   v1 stores `status: LwwRegister<Status>` where `Status` is a struct
   with `active: bool` + `reason: Option<String>` — a layout that
   structurally allows the domain-impossible state
@@ -10,24 +10,26 @@ description: >
   legacy struct via a private `LegacyStatus` decoder and maps each
   v1 value to its equivalent v2 variant: `active = true` becomes
   `Status::Active` (any spurious reason is dropped), `active = false`
-  becomes `Status::Inactive(reason)`. Topology: namespace + one
-  subgroup + one context. Upgrade is per-context
+  becomes `Status::Inactive(reason)`. Topology: namespace + one Open
+  subgroup + one context in the subgroup. Upgrade is per-context
   `upgrade_group(group=subgroup, target=v2,
-  migrate=migrate_v1_to_v2)`.
+  migrate=migrate_v1_to_v2)`. Cross-node assertions prove the rewritten
+  enum shape reaches node 2 via context-sync gossip.
 
 no_docker: false
 nuke_on_start: true
 nuke_on_end: false
 
 nodes:
-  count: 1
+  count: 2
   image: merod:local
   prefix: app-migration-struct2enum
   base_port: 9320
   base_rpc_port: 9420
 
 steps:
-  - name: Install scenario-struct-to-enum-v1
+  # Phase 1: Install v1 + v2 binaries on BOTH nodes.
+  - name: Install scenario-struct-to-enum-v1 on node 1
     type: install_application
     node: app-migration-struct2enum-1
     path: apps/migrations/scenario-struct-to-enum-v1/res/scenario_struct_to_enum_v1.wasm
@@ -35,7 +37,13 @@ steps:
     outputs:
       app_v1: applicationId
 
-  - name: Install scenario-struct-to-enum-v2
+  - name: Install scenario-struct-to-enum-v1 on node 2
+    type: install_application
+    node: app-migration-struct2enum-2
+    path: apps/migrations/scenario-struct-to-enum-v1/res/scenario_struct_to_enum_v1.wasm
+    dev: true
+
+  - name: Install scenario-struct-to-enum-v2 on node 1
     type: install_application
     node: app-migration-struct2enum-1
     path: apps/migrations/scenario-struct-to-enum-v2/res/scenario_struct_to_enum_v2.wasm
@@ -43,7 +51,14 @@ steps:
     outputs:
       app_v2: applicationId
 
-  - name: Create namespace (v1)
+  - name: Install scenario-struct-to-enum-v2 on node 2
+    type: install_application
+    node: app-migration-struct2enum-2
+    path: apps/migrations/scenario-struct-to-enum-v2/res/scenario_struct_to_enum_v2.wasm
+    dev: true
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context.
+  - name: Create namespace (v1) on node 1
     type: create_namespace
     node: app-migration-struct2enum-1
     application_id: "{{app_v1}}"
@@ -57,7 +72,7 @@ steps:
     outputs:
       admin_key: publicKey
 
-  - name: Create subgroup under namespace
+  - name: Create Open subgroup under namespace
     type: create_group_in_namespace
     node: app-migration-struct2enum-1
     namespace_id: "{{namespace_id}}"
@@ -65,7 +80,13 @@ steps:
     outputs:
       group_id: groupId
 
-  - name: Create context in subgroup (v1)
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-struct2enum-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
     type: create_context
     node: app-migration-struct2enum-1
     application_id: "{{app_v1}}"
@@ -73,10 +94,35 @@ steps:
     outputs:
       ctx_id: contextId
 
-  - name: Wait for context propagation
-    type: wait
-    seconds: 3
+  # Phase 3: Invite node 2 to namespace; materialise subgroup + context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-struct2enum-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
 
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-struct2enum-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-struct2enum-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-struct2enum-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: Write v1 state on node 1, wait for node 2 to catch up.
   - name: Set v1 name
     type: call
     node: app-migration-struct2enum-1
@@ -93,7 +139,16 @@ steps:
     args:
       reason: "under-maintenance"
 
-  - name: Sanity-check v1 state shape
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-struct2enum-1
+      - app-migration-struct2enum-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Sanity-check v1 state shape on node 1
     type: call
     node: app-migration-struct2enum-1
     context_id: "{{ctx_id}}"
@@ -112,6 +167,7 @@ steps:
     group_id: "{{group_id}}"
     upgrade_policy: coordinated
 
+  # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
   - name: Upgrade subgroup v1 → v2 (per-context, with migrate)
     type: upgrade_group
     node: app-migration-struct2enum-1
@@ -119,11 +175,12 @@ steps:
     target_application_id: "{{app_v2}}"
     migrate_method: migrate_v1_to_v2
 
-  - name: Wait for upgrade + migration to apply
+  # Fixed wait, NOT wait_for_sync (see scenario 01 rationale).
+  - name: Wait for upgrade + migration to apply + log flush
     type: wait
-    seconds: 8
+    seconds: 15
 
-  - name: Assert migration handler ran end-to-end
+  - name: Assert migration handler ran end-to-end (node 1)
     type: assert_log_present
     nodes:
       - app-migration-struct2enum-1
@@ -133,38 +190,75 @@ steps:
       - "Migrated state written successfully"
     min_matches: 1
 
-  - name: Read post-migration schema_info
+  - name: Read post-migration schema_info on node 1
     type: call
     node: app-migration-struct2enum-1
     context_id: "{{ctx_id}}"
     method: schema_info
     outputs:
-      v2_schema: result
+      v2_schema_node1: result
 
-  - name: Assert v2 schema (struct collapsed to Inactive variant)
+  - name: Read post-migration schema_info on node 2
+    type: call
+    node: app-migration-struct2enum-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  - name: Assert v2 schema on node 1 (struct collapsed to Inactive variant)
     type: json_assert
     statements:
-      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "name": "entity-1", "status_kind": "inactive", "status_reason": "under-maintenance"}})'
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0", "name": "entity-1", "status_kind": "inactive", "status_reason": "under-maintenance"}})'
 
-  - name: Flip status to Active under v2
+  - name: Assert v2 schema on node 2 (same enum shape, proves rewrite reached node 2)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0", "name": "entity-1", "status_kind": "inactive", "status_reason": "under-maintenance"}})'
+
+  # Phase 7d: v2-only setter on node 1 round-trips to node 2.
+  - name: Flip status to Active under v2 on node 1
     type: call
     node: app-migration-struct2enum-1
     context_id: "{{ctx_id}}"
     method: set_status_active
 
-  - name: Read schema_info after flip
+  - name: Wait for v2 write to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-struct2enum-1
+      - app-migration-struct2enum-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read schema_info after flip on node 1
     type: call
     node: app-migration-struct2enum-1
     context_id: "{{ctx_id}}"
     method: schema_info
     outputs:
-      v2_schema_active: result
+      v2_schema_active_node1: result
 
-  - name: Assert Active variant drops the reason payload
+  - name: Read schema_info after flip on node 2
+    type: call
+    node: app-migration-struct2enum-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_active_node2: result
+
+  - name: Assert Active variant drops the reason payload on node 1
     type: json_assert
     statements:
-      - 'json_subset({{v2_schema_active}}, {"output": {"schema_version": "2.0.0", "name": "entity-1", "status_kind": "active", "status_reason": null}})'
+      - 'json_subset({{v2_schema_active_node1}}, {"output": {"schema_version": "2.0.0", "name": "entity-1", "status_kind": "active", "status_reason": null}})'
 
+  - name: Assert Active variant flip round-trips to node 2
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_active_node2}}, {"output": {"schema_version": "2.0.0", "name": "entity-1", "status_kind": "active", "status_reason": null}})'
+
+  # Phase 8: Teardown.
   - name: Delete context
     type: delete_context
     node: app-migration-struct2enum-1
@@ -183,12 +277,12 @@ steps:
     namespace_id: "{{namespace_id}}"
     requester: "{{admin_key}}"
 
-  - name: Uninstall v1
+  - name: Uninstall v1 on node 1
     type: uninstall_application
     node: app-migration-struct2enum-1
     application_id: "{{app_v1}}"
 
-  - name: Uninstall v2
+  - name: Uninstall v2 on node 1
     type: uninstall_application
     node: app-migration-struct2enum-1
     application_id: "{{app_v2}}"
