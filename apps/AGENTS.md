@@ -32,7 +32,8 @@ cd apps/kv-store && ./build.sh
 | `kv-store`               | Simple key-value store | Basic CRDT usage       |
 | `kv-store-init`          | KV with custom init    | `#[app::init]` pattern |
 | `kv-store-with-handlers` | KV with event handlers | Event handling         |
-| `migrations/migration-suite-v1..v5` | Migration examples     | Schema change patterns |
+| `migrations/migration-suite-v1..v5` | Migration chain (each `vN` migrates from `vN-1`) | additive, remove, rename, type-change |
+| `migrations/scenario-*-v{1,2}` | Standalone v1+v2 fixture pairs (each pair self-contained) | new-method, new-enum-variant, pure-bugfix, crdt-native, struct-to-enum, field-split, field-remove-archive, invariant-reshuffle |
 | `access-control`         | Permission management  | Authorization patterns |
 | `blobs`                  | Blob storage demo      | Blob operations        |
 | `collaborative-editor`   | Collaborative text     | Complex CRDTs          |
