@@ -6,11 +6,10 @@
 //! flows through `eyre::Report` and can be recovered by callers with
 //! `err.downcast_ref::<DomainError>()`.
 //!
-//! # Downcast asymmetry
+//! # Downcast: match the type that was bailed
 //!
-//! `bail!(DomainError::Variant)` stores the **`DomainError` type**
-//! inside `eyre::Report` — callers must `downcast_ref` to the same
-//! type that was bailed:
+//! `bail!(DomainError::Variant)` stores **`DomainError`** inside
+//! `eyre::Report`. Callers must `downcast_ref` to the same type:
 //!
 //! ```ignore
 //! // sites that bail!(MembershipError::LastAdmin)
@@ -18,19 +17,26 @@
 //!
 //! // sites that bail!(ApplyError::StateHashMismatch { .. })
 //! err.downcast_ref::<ApplyError>()
+//!
+//! // structured rejection causes — match the outer ApplyError variant,
+//! // then the inner sub-cause enum:
+//! if let Some(ApplyError::GroupDeletedRejected(rej)) =
+//!     err.downcast_ref::<ApplyError>()
+//! {
+//!     match rej {
+//!         GroupDeletedRejection::Unauthorized { .. } => { /* ... */ }
+//!         GroupDeletedRejection::CascadeDivergenceGroups { .. } => { /* ... */ }
+//!         GroupDeletedRejection::CascadeDivergenceContexts { .. } => { /* ... */ }
+//!     }
+//! }
 //! ```
 //!
-//! The `#[from]` impls on `ApplyError` are NOT triggered by `?` here
-//! (every method returns `EyreResult`, not `Result<_, ApplyError>`)
-//! — they exist for explicit `.into()` conversions when apply-path
-//! code wants to wrap a domain error as an `ApplyError` for logging
-//! / typed return.
-//!
-//! In short: downcast to the type that was bailed, not to
-//! `ApplyError`. The composition exists for the future state where
-//! method signatures move to `Result<_, ApplyError>` (#2304 / #2481);
-//! today it documents the type relationship without forcing a
-//! signature migration.
+//! Earlier drafts of this module had `#[from]` impls on `ApplyError`
+//! that composed the domain enums. They were removed: since every
+//! method returns `EyreResult` (not `Result<_, ApplyError>`), `?` never
+//! triggered those conversions and the generated code was dead. If a
+//! future per-op-Strategy refactor (#2304 / #2481) moves to typed
+//! `Result<_, ApplyError>` signatures, the impls can come back.
 //!
 //! **Why per-domain instead of one giant enum?** Callers (server handlers,
 //! tests, governance apply) need to discriminate by *meaning*, not by
@@ -45,11 +51,6 @@
 //! specific variants. Those callers use `downcast_ref` (zero-cost when
 //! the variant matches); callers that just bubble errors stay unchanged.
 //! See #2305 issue discussion.
-//!
-//! **Composition.** `ApplyError` is the top-level error type for the
-//! signed-op apply path (`apply_local_signed_group_op` and friends). It
-//! composes the domain enums via `#[from]` so apply-side code can write
-//! `?` against any of them.
 
 use thiserror::Error;
 
@@ -179,14 +180,6 @@ pub enum MembershipError {
     /// GroupNotFoundForHash`] so the two recovery paths can diverge.
     #[error("group {0} not found for this action")]
     UnknownGroup(String),
-
-    /// Context state-delta apply addressed a context that isn't
-    /// registered in the named group.
-    #[error("context {context_id} is not registered in group {group_id}")]
-    ContextNotInGroup {
-        group_id: String,
-        context_id: String,
-    },
 }
 
 /// Errors raised by `NamespaceRepository` and the namespace-DAG
@@ -332,10 +325,8 @@ pub enum KeyringError {
     InnerOpDecodeFailed(String),
 }
 
-/// Errors raised by `MetaRepository`. Currently apply-path-specific —
-/// the general "group not found" case for mutation paths lives on
-/// [`MembershipError::UnknownGroup`] because those sites are
-/// authorization-gated and route differently.
+/// Errors raised by `MetaRepository` and the meta-row-touching
+/// mutation paths.
 #[derive(Debug, Error)]
 pub enum MetaError {
     /// Group not found during state-hash computation. Apply-path
@@ -343,6 +334,13 @@ pub enum MetaError {
     /// generic "missing data" error.
     #[error("group not found for state hash computation")]
     GroupNotFoundForHash,
+
+    /// Cannot delete a group while contexts are still registered.
+    /// Lives on `MetaError` (not `UpgradesError`) because group
+    /// deletion is a meta-row mutation; the context-count check is
+    /// an invariant on top of that.
+    #[error("cannot delete group: one or more contexts are still registered")]
+    HasRegisteredContexts,
 }
 
 /// Errors raised by `UpgradesRepository` and the upgrade-orchestration
@@ -353,59 +351,94 @@ pub enum UpgradesError {
     /// upgrades would race the propagator state machine.
     #[error("an upgrade is already in progress for this group")]
     InProgress,
-
-    /// Cannot delete a group while contexts are still registered.
-    /// (Sits on upgrades because group deletion happens inside the
-    /// upgrade-orchestration code path; could move to `MetaError`
-    /// if a non-upgrade group-deletion code path is ever added.)
-    #[error("cannot delete group: one or more contexts are still registered")]
-    HasRegisteredContexts,
 }
 
-/// Errors raised by `ContextRegistrationRepository` (the context-to-group
-/// indirection).
+/// Errors raised by the context-to-group registration indirection.
 #[derive(Debug, Error)]
 pub enum ContextRegistrationError {
-    /// Context not registered to any group.
-    #[error("context is not registered in any group")]
-    NotRegistered,
-
-    /// Context registered to a different group than expected — caller
-    /// passed the wrong group_id or the registration changed under
-    /// them.
-    #[error("context is registered to a different group")]
-    WrongGroup,
+    /// State-delta apply addressed a context that isn't registered
+    /// in the named group (caller passed the wrong group_id or the
+    /// registration changed under them).
+    #[error("context {context_id} is not registered in group {group_id}")]
+    NotInGroup {
+        group_id: String,
+        context_id: String,
+    },
 }
 
-/// Errors raised on the `SignedGroupOp` apply path. These cross
-/// Repository boundaries and so live as their own type, composing the
-/// domain enums via `#[from]` so apply-time code can `?` any of them.
+// ---------------------------------------------------------------------------
+// Structured rejection-cause sub-enums for apply-path catch-all variants.
+// Each ApplyError::*Rejected variant wraps one of these so callers can
+// `matches!()` on the specific cause instead of substring-matching the
+// `reason` field that an earlier draft of this enum used.
+// ---------------------------------------------------------------------------
+
+/// Reasons `RootOp::GroupCreated` apply can be rejected.
+#[derive(Debug, Error)]
+pub enum GroupCreatedRejection {
+    /// Signer is neither a namespace-root admin nor a member holding
+    /// `CAN_CREATE_SUBGROUP` at the root.
+    #[error(
+        "signer {signer} is neither an admin of namespace {namespace} nor a member \
+         holding CAN_CREATE_SUBGROUP at the namespace root"
+    )]
+    Unauthorized { signer: String, namespace: String },
+}
+
+/// Reasons `RootOp::GroupDeleted` apply can be rejected.
+#[derive(Debug, Error)]
+pub enum GroupDeletedRejection {
+    /// Signer is neither the subgroup owner nor a namespace
+    /// admin / `CAN_DELETE_SUBGROUP` holder.
+    #[error("unauthorized: {cause} (or be the owner of subgroup {subgroup})")]
+    Unauthorized { cause: String, subgroup: String },
+
+    /// Local subtree contains groups that aren't in the op's
+    /// cascade payload — indicates divergence between local and
+    /// signed-against state.
+    #[error("cascade divergence: local subtree has groups not in payload: {extra:?}")]
+    CascadeDivergenceGroups { extra: Vec<String> },
+
+    /// Same as `CascadeDivergenceGroups` but for context IDs.
+    #[error("cascade divergence: local subtree has contexts not in payload: {extra:?}")]
+    CascadeDivergenceContexts { extra: Vec<String> },
+}
+
+/// Reasons `RootOp::MemberJoinedOpen` apply can be rejected.
+#[derive(Debug, Error)]
+pub enum MemberJoinedOpenRejection {
+    /// Outer `SignedNamespaceOp.signer` doesn't match the `member`
+    /// field of the op — `MemberJoinedOpen` is self-join only.
+    #[error("outer signer {signer} doesn't match member {member}")]
+    SignerMismatch { signer: String, member: String },
+
+    /// `group_id` resolves to a different namespace than the op was
+    /// applied under — cross-namespace forgery guard.
+    #[error("group_id {gid} resolves to namespace {resolved_ns}, not this namespace {this_ns}")]
+    WrongNamespace {
+        gid: String,
+        resolved_ns: String,
+        this_ns: String,
+    },
+
+    /// Signer is already a direct member — should use `MemberJoined`
+    /// or `add_group_members` instead.
+    #[error("signer {0} is a direct member; use MemberJoined or add_group_members instead")]
+    AlreadyDirectMember(String),
+
+    /// Signer has no inheritance path to the target group — Open
+    /// inheritance check failed.
+    #[error("signer {0} has no membership path to the target group")]
+    NoMembershipPath(String),
+}
+
+/// Errors raised on the `SignedGroupOp` apply path. Only variants
+/// that are *only* meaningful on the apply path live here — domain
+/// errors (`MembershipError`, `NamespaceError`, etc.) flow through
+/// `eyre::Report` independently and callers downcast to the leaf
+/// type, not to `ApplyError`.
 #[derive(Debug, Error)]
 pub enum ApplyError {
-    #[error(transparent)]
-    Membership(#[from] MembershipError),
-
-    #[error(transparent)]
-    Namespace(#[from] NamespaceError),
-
-    #[error(transparent)]
-    Capabilities(#[from] CapabilitiesError),
-
-    #[error(transparent)]
-    SigningKeys(#[from] SigningKeysError),
-
-    #[error(transparent)]
-    Keyring(#[from] KeyringError),
-
-    #[error(transparent)]
-    Meta(#[from] MetaError),
-
-    #[error(transparent)]
-    Upgrades(#[from] UpgradesError),
-
-    #[error(transparent)]
-    ContextRegistration(#[from] ContextRegistrationError),
-
     /// State-hash mismatch between op-signed-against and current
     /// store state. Apply-path-only — outside the apply path the
     /// hashes aren't compared.
@@ -434,23 +467,21 @@ pub enum ApplyError {
     #[error("MAX_GOVERNANCE_DAG_HEADS exceeded for namespace")]
     DagHeadsExceeded,
 
-    /// `GroupCreated` op rejected. The wrapped reason is a free-form
-    /// description; callers that need a specific check should match
-    /// the `NamespaceError` / `CapabilitiesError` variants instead,
-    /// which carry structured fields. This variant exists for the
-    /// catch-all paths where multiple distinct rejection causes share
-    /// one log site.
-    #[error("GroupCreated rejected: {reason}")]
-    GroupCreatedRejected { reason: String },
+    /// `GroupCreated` op rejected. Wraps a structured
+    /// [`GroupCreatedRejection`] so callers can match the specific
+    /// cause.
+    #[error("GroupCreated rejected: {0}")]
+    GroupCreatedRejected(#[source] GroupCreatedRejection),
 
-    /// `GroupDeleted` op rejected, including cascade-divergence
-    /// between the local subtree and the op payload.
-    #[error("GroupDeleted rejected: {reason}")]
-    GroupDeletedRejected { reason: String },
+    /// `GroupDeleted` op rejected. Wraps a structured
+    /// [`GroupDeletedRejection`] so callers can distinguish authz
+    /// failure from cascade-divergence.
+    #[error("GroupDeleted rejected: {0}")]
+    GroupDeletedRejected(#[source] GroupDeletedRejection),
 
-    /// `MemberJoinedOpen` op rejected. Common causes: signer ≠
-    /// member, group_id resolves to a different namespace, signer
-    /// already a direct member.
-    #[error("MemberJoinedOpen rejected: {reason}")]
-    MemberJoinedOpenRejected { reason: String },
+    /// `MemberJoinedOpen` op rejected. Wraps a structured
+    /// [`MemberJoinedOpenRejection`] so callers can distinguish the
+    /// four distinct rejection causes.
+    #[error("MemberJoinedOpen rejected: {0}")]
+    MemberJoinedOpenRejected(#[source] MemberJoinedOpenRejection),
 }

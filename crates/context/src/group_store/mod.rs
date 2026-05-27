@@ -95,8 +95,9 @@ use self::upgrades::extract_application_id;
 // Domain-specific error enums live in `errors.rs`. Re-exported below.
 
 pub use self::errors::{
-    ApplyError, CapabilitiesError, ContextRegistrationError, KeyringError, MembershipError,
-    MetaError, NamespaceError, SigningKeysError, UpgradesError,
+    ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
+    GroupDeletedRejection, KeyringError, MemberJoinedOpenRejection, MembershipError, MetaError,
+    NamespaceError, SigningKeysError, UpgradesError,
 };
 
 // ---------------------------------------------------------------------------
@@ -1405,7 +1406,7 @@ fn apply_group_op_mutations(
             // group — otherwise we'd create orphaned `GroupContextMetadata`
             // rows for contexts in a different group (or no group at all).
             if get_group_for_context(store, context_id)? != Some(*group_id) {
-                bail!(MembershipError::ContextNotInGroup {
+                bail!(ContextRegistrationError::NotInGroup {
                     group_id: hex::encode(group_id.to_bytes()),
                     context_id: format!("{context_id:?}"),
                 });
@@ -1435,7 +1436,7 @@ fn apply_group_op_mutations(
                 )));
             }
             if MetadataRepository::new(store).count_contexts(group_id)? > 0 {
-                bail!(UpgradesError::HasRegisteredContexts);
+                bail!(MetaError::HasRegisteredContexts);
             }
             delete_group_local_rows(store, group_id)?;
         }
