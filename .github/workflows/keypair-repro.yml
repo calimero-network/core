@@ -5,7 +5,17 @@
 # the e2e matrix).
 name: keypair-repro
 on:
+  # workflow_dispatch needs the file on the default branch to be
+  # invocable via the API. Adding the `push` trigger scoped to
+  # this throwaway branch + this file's path so we can iterate
+  # without first landing on master. Delete both this trigger
+  # and the file once the question is answered.
   workflow_dispatch:
+  push:
+    branches:
+      - feat/relay-recovery-workflows
+    paths:
+      - .github/workflows/keypair-repro.yml
 
 jobs:
   repro:
