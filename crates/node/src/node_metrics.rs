@@ -102,6 +102,7 @@ pub(crate) struct NodeMetrics {
     pub(crate) delta_outcomes_total: Family<DeltaApplyLabels, Counter>,
     pub(crate) delta_cascade_size: Histogram,
     pub(crate) delta_missing_parents_total: Counter,
+    pub(crate) dag_heads_count: Histogram,
 
     // HC / LevelWise / EntityPush per-leaf authorization drops.
     pub(crate) hc_leaf_drops_total: Family<LeafDropLabels, Counter>,
@@ -219,6 +220,22 @@ impl NodeMetrics {
             delta_missing_parents_total.clone(),
         );
 
+        // DAG heads observed after every delta apply. Per-context labels are
+        // intentionally omitted (see "Cardinality discipline" above); the
+        // sum-across-contexts distribution is enough to chart fan-out
+        // growth. Buckets stop at 256 because anything past that is a
+        // pathology that should page someone — operators will see the
+        // overflow bucket fill rather than the histogram lose resolution.
+        // The instrumentation step for #2356 item 2: data the cap-mechanism
+        // discussion currently lacks.
+        let dag_heads_count = Histogram::new([1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0]);
+        registry.register(
+            "dag_heads_count",
+            "Number of concurrent DAG heads observed at the end of each delta apply, \
+             across all contexts on this node",
+            dag_heads_count.clone(),
+        );
+
         let hc_leaf_drops_total: Family<LeafDropLabels, Counter> = Family::default();
         registry.register(
             "hc_leaf_drops_total",
@@ -275,6 +292,7 @@ impl NodeMetrics {
             delta_outcomes_total,
             delta_cascade_size,
             delta_missing_parents_total,
+            dag_heads_count,
             hc_leaf_drops_total,
             governance_drain_outcomes_total,
             process_resident_memory_bytes,
@@ -516,6 +534,18 @@ pub(crate) fn record_delta_outcome(outcome: &str) {
 pub(crate) fn observe_delta_cascade(size: usize) {
     if let Some(m) = global() {
         m.delta_cascade_size.observe(size as f64);
+    }
+}
+
+/// Observe the number of concurrent DAG heads after a delta apply.
+/// Called from `DeltaStore::add_delta_internal` right after the DAG
+/// reports its post-apply heads. Drives the #2356 item 2 head-fan-out
+/// decision: the cap mechanism + threshold should be picked from this
+/// histogram's p99 over a representative production window, not from
+/// #2293's stale 9.6 s anecdote.
+pub(crate) fn observe_dag_heads_count(heads: usize) {
+    if let Some(m) = global() {
+        m.dag_heads_count.observe(heads as f64);
     }
 }
 

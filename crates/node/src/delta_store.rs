@@ -1358,6 +1358,12 @@ impl DeltaStore {
         // Update context's dag_heads after the DAG has been updated
         let heads = dag.get_heads();
 
+        // Observe DAG head fan-out for #2356 item 2. The histogram drives
+        // the cap-mechanism decision (checkpoint vs periodic consolidation
+        // vs no cap) — currently we have no production data for what
+        // heads_count actually looks like post-#2238 / #2465.
+        crate::node_metrics::observe_dag_heads_count(heads.len());
+
         // Get list of deltas that were pending but are now applied (cascade effect)
         let cascaded_deltas: Vec<[u8; 32]> = if !pending_before.is_empty() {
             let pending_after: HashSet<[u8; 32]> =
