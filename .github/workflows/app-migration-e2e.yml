@@ -62,7 +62,7 @@ jobs:
   # scenario-* WASM fixture. Both are uploaded as artifacts so the
   # downstream matrix jobs never re-compile Rust.
   build:
-    name: Build merod + fixtures
+    name: Build merod
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 20
     steps:
