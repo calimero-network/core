@@ -1,0 +1,93 @@
+//! `GroupOp::CascadeGroupMigrationSet` apply handler. Extracted from
+//! `apply_group_op_mutations` in #2304.
+
+#![allow(unused_imports)]
+
+use super::context::GroupApplyCtx;
+use crate::group_store::{
+    cascade_remove_member_from_group_tree, delete_group_local_rows, enumerate_group_contexts,
+    get_group_for_context, MAX_NAMESPACE_DEPTH,
+};
+use crate::group_store::{
+    ApplyError, CapabilitiesError, CapabilitiesRepository, ContextRegistrationError,
+    ContextRegistrationService, DenyListRepository, GroupKeyring, GroupSettingsService,
+    KeyringError, MembershipError, MembershipPolicy, MembershipRepository, MetaError,
+    MetaRepository, MetadataRepository, MigrationsRepository, NamespaceError, NamespaceRepository,
+    PermissionChecker, SigningKeysError, SigningKeysRepository, UpgradesRepository,
+};
+use calimero_context_client::local_governance::GroupOp;
+use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+use calimero_primitives::identity::PublicKey;
+use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
+use eyre::{bail, Result as EyreResult};
+use std::collections::BTreeMap;
+
+pub(crate) fn apply(
+    ctx: &mut GroupApplyCtx<'_>,
+    from_app_key: &[u8; 32],
+    migration: &Option<Vec<u8>>,
+) -> EyreResult<()> {
+    let signer = ctx.signer;
+    let group_id = ctx.group_id;
+    let store = ctx.store;
+
+    // Mirror of `CascadeTargetApplicationSet` but for migration
+    // bytes only. ASYMMETRY: this variant does NOT mark contexts
+    // `InProgress` or kick the per-context migration propagator —
+    // only the paired `CascadeTargetApplicationSet` op kicks
+    // contexts into migration. The cascade-emitting RPC handler
+    // (PR-2 Task 6) emits both ops in the same governance round
+    // when the operator requested a cascade-with-migration, so the
+    // status + propagator effects fire exactly once per cascade
+    // round (driven by the target-application op, not this one).
+    let entries = crate::cascade::walk_for_predicate(store, *group_id, *from_app_key)?;
+
+    // Pre-scan: same atomicity guard as the target-application
+    // arm — see the longer rationale comment there.
+    for entry in &entries {
+        if !entry.matched {
+            continue;
+        }
+        let entry_permissions = PermissionChecker::new(store, entry.group_id);
+        if !entry_permissions.can_manage_application(signer)? {
+            bail!(
+                "cascade group-migration set: signer {} lacks MANAGE_APPLICATION on \
+                 descendant {}; aborting before any writes to keep cascade atomic",
+                signer,
+                hex::encode(entry.group_id.to_bytes())
+            );
+        }
+    }
+
+    let mut any_applied = false;
+    for entry in entries {
+        if !entry.matched {
+            tracing::debug!(
+                target: "calimero::cascade",
+                group_id = %hex::encode(entry.group_id.to_bytes()),
+                from_app_key = %hex::encode(from_app_key),
+                "CascadeGroupMigrationSet: skip (app_key mismatch)"
+            );
+            continue;
+        }
+        let entry_settings = GroupSettingsService::new(store, entry.group_id);
+        entry_settings.set_group_migration(signer, migration)?;
+        any_applied = true;
+    }
+    if !any_applied {
+        tracing::debug!(
+            target: "calimero::cascade",
+            signed_group = %hex::encode(group_id.to_bytes()),
+            from_app_key = %hex::encode(from_app_key),
+            "CascadeGroupMigrationSet: no descendants matched"
+        );
+    }
+    // See the corresponding comment in the
+    // `CascadeTargetApplicationSet` arm above — fall through to
+    // the shared `Ok((true, divergence))` tail with no
+    // divergence report.
+    ctx.divergence = None;
+    Ok(())
+}

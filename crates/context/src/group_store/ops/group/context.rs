@@ -1,0 +1,58 @@
+//! Per-apply context for group-op handlers.
+//!
+//! Holds everything a group-op handler needs to do its work:
+//! - `store` / `group_id` / `signer` for store I/O and authorization
+//! - Pre-built service helpers (`permissions`, `membership_policy`,
+//!   `settings`, `context_registration`) so each op doesn't
+//!   re-instantiate them
+//! - `divergence` — out-parameter for ops that compute a post-apply
+//!   state-hash check (`MemberRemoved`, `MemberLeft`). Set by those
+//!   handlers; left `None` by every other op.
+//!
+//! The context borrows the store immutably — handlers obtain mutable
+//! store access through `store.handle()` or through the repository
+//! APIs that wrap it. The context itself is `&mut` only to allow
+//! ops to set `divergence`.
+
+use crate::group_store::{
+    ContextRegistrationService, DivergenceReport, GroupSettingsService, MembershipPolicy,
+    PermissionChecker,
+};
+use calimero_context_config::types::ContextGroupId;
+use calimero_primitives::identity::PublicKey;
+use calimero_store::Store;
+
+pub(crate) struct GroupApplyCtx<'a> {
+    pub(crate) store: &'a Store,
+    pub(crate) group_id: &'a ContextGroupId,
+    pub(crate) signer: &'a PublicKey,
+    pub(crate) permissions: PermissionChecker<'a>,
+    pub(crate) membership_policy: MembershipPolicy<'a>,
+    pub(crate) settings: GroupSettingsService<'a>,
+    pub(crate) context_registration: ContextRegistrationService<'a>,
+    /// Populated by post-apply hash-check arms (`MemberRemoved`,
+    /// `MemberLeft`) when the recomputed local state diverges from
+    /// the signed claim. The dispatcher forwards this up the apply
+    /// pipeline; the node-side handler routes it to the
+    /// reconcile-via-anchor path.
+    pub(crate) divergence: Option<DivergenceReport>,
+}
+
+impl<'a> GroupApplyCtx<'a> {
+    pub(crate) fn new(
+        store: &'a Store,
+        group_id: &'a ContextGroupId,
+        signer: &'a PublicKey,
+    ) -> Self {
+        Self {
+            store,
+            group_id,
+            signer,
+            permissions: PermissionChecker::new(store, *group_id),
+            membership_policy: MembershipPolicy::new(store, *group_id),
+            settings: GroupSettingsService::new(store, *group_id),
+            context_registration: ContextRegistrationService::new(store, *group_id),
+            divergence: None,
+        }
+    }
+}
