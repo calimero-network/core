@@ -1,3 +1,17 @@
+Looking at the code diff, a new crate `calimero-governance-store` has been added to the workspace. This crate:
+
+1. Is defined in `Cargo.lock` and `Cargo.toml`
+2. Has dependencies on: `calimero-context-config`, `calimero-crypto`, `calimero-dag`, `calimero-network-primitives`, `calimero-node-primitives`, `calimero-primitives`, `calimero-storage`, `calimero-store`, `calimero-utils-actix`
+3. Is now a dependency of `calimero-context` (as shown in `crates/context/Cargo.toml`)
+
+The dependency explorer HTML page contains a hardcoded `CRATES` object that lists all crates and their dependencies. The new `calimero-governance-store` crate is missing from this list, and `calimero-context`'s dependencies need to be updated to include it.
+
+I need to update the HTML file to:
+1. Add the new `calimero-governance-store` crate to the `CRATES` object with its dependencies
+2. Add `calimero-governance-store` to the dependencies of `calimero-context`
+
+Looking at the crate structure, `calimero-governance-store` should be in the "core" or "data" group. Based on the naming pattern and dependencies, it appears to be a core data management crate, so I'll assign it to the "core" group with an appropriate color.
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -93,9 +107,10 @@ const CRATES = {
   "merod": { color: "#f59e0b", group: "cli", deps: ["calimero-node","calimero-server","calimero-config","calimero-context","calimero-context-config","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-store","calimero-store-rocksdb","calimero-blobstore","calimero-tee-attestation","calimero-utils-actix","calimero-build-utils","mero-auth"] },
   "meroctl": { color: "#f59e0b", group: "cli", deps: ["calimero-client","calimero-config","calimero-context-config","calimero-primitives","calimero-server-primitives","calimero-build-utils"] },
   "calimero-node": { color: "#3b82f6", group: "core", deps: ["calimero-context","calimero-context-config","calimero-context-primitives","calimero-crypto","calimero-dag","calimero-network","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-server","calimero-storage","calimero-store","calimero-store-encryption","calimero-store-rocksdb","calimero-blobstore","calimero-tee-attestation","calimero-utils-actix"] },
-  "calimero-context": { color: "#10b981", group: "core", deps: ["calimero-context-config","calimero-context-primitives","calimero-dag","calimero-node-primitives","calimero-prelude","calimero-primitives","calimero-runtime","calimero-storage","calimero-store","calimero-utils-actix"] },
+  "calimero-context": { color: "#10b981", group: "core", deps: ["calimero-context-config","calimero-context-primitives","calimero-dag","calimero-governance-store","calimero-node-primitives","calimero-prelude","calimero-primitives","calimero-runtime","calimero-storage","calimero-store","calimero-utils-actix"] },
   "calimero-context-primitives": { color: "#10b981", group: "types", deps: ["calimero-blobstore","calimero-context-config","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-store","calimero-utils-actix"] },
   "calimero-context-config": { color: "#10b981", group: "types", deps: [] },
+  "calimero-governance-store": { color: "#3b82f6", group: "core", deps: ["calimero-context-config","calimero-crypto","calimero-dag","calimero-network-primitives","calimero-node-primitives","calimero-primitives","calimero-storage","calimero-store","calimero-utils-actix"] },
   "calimero-network": { color: "#8b5cf6", group: "core", deps: ["calimero-network-primitives","calimero-primitives","calimero-utils-actix"] },
   "calimero-network-primitives": { color: "#8b5cf6", group: "types", deps: ["calimero-primitives","calimero-utils-actix"] },
   "calimero-node-primitives": { color: "#3b82f6", group: "types", deps: ["calimero-blobstore","calimero-crypto","calimero-network-primitives","calimero-primitives","calimero-storage","calimero-store","calimero-utils-actix"] },
@@ -434,32 +449,17 @@ searchInput.addEventListener('input', () => {
 
   nodeElements.select('.node-circle')
     .attr('stroke-width', d => matches.has(d.id) ? 2.5 : 1.5)
-    .attr('stroke', d => matches.has(d.id) ? '#f0f0f5' : d.color + '25')
-    .attr('fill', d => matches.has(d.id) ? d.color + '40' : d.color + '06');
+    .attr('stroke', d => matches.has(d.id) ? '#f0f0f5' : d.color)
+    .attr('fill', d => matches.has(d.id) ? d.color + '40' : d.color + '20');
 
   nodeElements.select('.node-label')
-    .attr('fill', d => matches.has(d.id) ? '#d4d4dc' : '#6b6b8020');
+    .attr('fill', d => matches.has(d.id) ? '#d4d4dc' : '#6b6b80');
 
   linkElements
-    .attr('stroke', '#252538' + '18')
-    .attr('stroke-width', 0.5);
-});
-
-document.getElementById('btn-reset').addEventListener('click', () => {
-  searchInput.value = '';
-  clearSelection();
-  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity);
-  simulation.alpha(0.5).restart();
-});
-
-if (window.arch && window.arch.buildBreadcrumb) {
-  window.arch.buildBreadcrumb([
-    { label: 'Home', href: 'index.html' },
-    { label: 'Dependency Explorer' },
-  ]);
-}
-
-});
-</script>
-</body>
-</html>
+    .attr('stroke', d => {
+      const sid = typeof d.source === 'object' ? d.source.id : d.source;
+      const tid = typeof d.target === 'object' ? d.target.id : d.target;
+      return (matches.has(sid) || matches.has(tid)) ? '#252538' : '#25253820';
+    })
+    .attr('stroke-width', d => {
+      const sid = typeof d.
