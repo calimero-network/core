@@ -101,11 +101,21 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         calimero_primitives::application::ApplicationId::from(
                             invitation.application_id.unwrap_or([0u8; 32]),
                         );
+                    // Mirror of `target_application_id` above: take the
+                    // value from the unsigned bootstrap field on the
+                    // invitation (populated by the inviter from local
+                    // state), fall back to zero only for pre-field
+                    // invitations. Closes the multi-node cascade
+                    // divergence where the joiner's local subgroup
+                    // `app_key` was `[0u8; 32]` and
+                    // `CascadeTargetApplicationSet` apply silently
+                    // skipped the subtree on the joiner's view.
+                    let app_key = invitation.app_key.unwrap_or([0u8; 32]);
                     let meta = calimero_store::key::GroupMetaValue {
                         admin_identity,
                         owner_identity: admin_identity,
                         target_application_id,
-                        app_key: [0u8; 32],
+                        app_key,
                         upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
                         migration: None,
                         created_at: 0,

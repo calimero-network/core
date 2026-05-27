@@ -876,6 +876,22 @@ pub struct SignedGroupOpenInvitation {
     /// this field was added; joiners fall back to zero when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub application_id: Option<[u8; 32]>,
+    /// `GroupMeta.app_key` for the group (unsigned bootstrap field).
+    ///
+    /// The inviter has already derived its local
+    /// `app_key = blob_id(app_meta.bytecode)` at `create_group` time;
+    /// shipping that value lets the joiner pre-populate its local
+    /// namespace-root meta with the same value the cascade predicate
+    /// (`from_app_key == descendant.app_key`) checks. Without this, the
+    /// joiner's pre-populated `app_key` is `[0u8; 32]` and any
+    /// `CascadeTargetApplicationSet` op the joiner applies locally
+    /// silently skips the subtree — divergence between originator
+    /// (cascade applied) and joiner (cascade no-op'd). Sibling of
+    /// `application_id` above; same null-safety: `None` for
+    /// backwards compatibility with pre-field invitations, joiners
+    /// fall back to zero + the existing self-heal path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_key: Option<[u8; 32]>,
 }
 
 #[cfg(test)]

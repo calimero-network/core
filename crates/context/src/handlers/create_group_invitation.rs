@@ -109,6 +109,15 @@ impl Handler<CreateGroupInvitationRequest> for ContextManager {
                     // and compute_group_state_hash would diverge from
                     // the inviter's view persistently.
                     application_id: Some(*meta.target_application_id.as_ref()),
+                    // Carry the real app_key (already derived from
+                    // blob_id(app_meta.bytecode) at create_group time)
+                    // so the joiner's pre-populated GroupMetaValue
+                    // matches the originator's. Without this the
+                    // joiner's app_key seeds to [0u8; 32] and any
+                    // CascadeTargetApplicationSet op the joiner
+                    // applies silently skips the subtree — divergence
+                    // between originator and joiner.
+                    app_key: Some(meta.app_key),
                 },
                 group_name,
             ))
