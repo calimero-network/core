@@ -1,31 +1,33 @@
-name: 02 — Scenario "additive field" (v1 → v2-add-field)
+name: 02 — Scenario "additive field" (v1 → v2-add-field, 2-node)
 description: >
-  Realistic per-context migration for the additive-field scenario.
+  2-node per-context migration for the additive-field scenario.
   v1 → v2-add-field adds a `notes: LwwRegister<String>` to the state
   struct; `migrate_v1_to_v2` preserves every v1 field and seeds the
-  new `notes` field. Topology: namespace + one subgroup + one context
-  in the subgroup. Upgrade is `upgrade_group(group=subgroup,
+  new `notes` field. Topology: namespace + one Open subgroup + one
+  context in the subgroup. Upgrade is `upgrade_group(group=subgroup,
   target=v2, migrate=migrate_v1_to_v2)` — per-context (cascade=false),
   not namespace-cascade (that's `01`). Acts as the additive row of the
   per-scenario matrix.
 
   Negative assertion: before the upgrade, the v2-only setter
   `set_notes` must NOT be callable (the binary doesn't export it under
-  v1). After the upgrade it must be callable and round-trip a value.
+  v1). After the upgrade it must be callable and round-trip a value
+  from node 1 to node 2.
 
 no_docker: false
 nuke_on_start: true
 nuke_on_end: false
 
 nodes:
-  count: 1
+  count: 2
   image: merod:local
   prefix: app-migration-additive
   base_port: 9240
   base_rpc_port: 9340
 
 steps:
-  - name: Install migration-suite-v1
+  # Phase 1: Install v1 + v2 binaries on BOTH nodes.
+  - name: Install migration-suite-v1 on node 1
     type: install_application
     node: app-migration-additive-1
     path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
@@ -33,7 +35,13 @@ steps:
     outputs:
       app_v1: applicationId
 
-  - name: Install migration-suite-v2-add-field
+  - name: Install migration-suite-v1 on node 2
+    type: install_application
+    node: app-migration-additive-2
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+
+  - name: Install migration-suite-v2-add-field on node 1
     type: install_application
     node: app-migration-additive-1
     path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
@@ -41,7 +49,14 @@ steps:
     outputs:
       app_v2: applicationId
 
-  - name: Create namespace (v1)
+  - name: Install migration-suite-v2-add-field on node 2
+    type: install_application
+    node: app-migration-additive-2
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context.
+  - name: Create namespace (v1) on node 1
     type: create_namespace
     node: app-migration-additive-1
     application_id: "{{app_v1}}"
@@ -55,7 +70,7 @@ steps:
     outputs:
       admin_key: publicKey
 
-  - name: Create subgroup under namespace
+  - name: Create Open subgroup under namespace
     type: create_group_in_namespace
     node: app-migration-additive-1
     namespace_id: "{{namespace_id}}"
@@ -63,7 +78,13 @@ steps:
     outputs:
       group_id: groupId
 
-  - name: Create context in subgroup (v1)
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-additive-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
     type: create_context
     node: app-migration-additive-1
     application_id: "{{app_v1}}"
@@ -71,10 +92,35 @@ steps:
     outputs:
       ctx_id: contextId
 
-  - name: Wait for context propagation
-    type: wait
-    seconds: 3
+  # Phase 3: Invite node 2 to namespace; materialise subgroup + context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-additive-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
 
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-additive-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-additive-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-additive-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: Write v1 state on node 1, wait for node 2 to catch up.
   - name: Write v1 state (description + counter + item)
     type: call
     node: app-migration-additive-1
@@ -104,7 +150,16 @@ steps:
       key: "k1"
       value: "v1-value"
 
-  - name: Sanity-check v1 state shape
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-additive-1
+      - app-migration-additive-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Sanity-check v1 state shape on node 1
     type: call
     node: app-migration-additive-1
     context_id: "{{ctx_id}}"
@@ -133,6 +188,7 @@ steps:
     group_id: "{{group_id}}"
     upgrade_policy: coordinated
 
+  # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
   - name: Upgrade subgroup v1 → v2 (per-context, not cascade)
     type: upgrade_group
     node: app-migration-additive-1
@@ -140,11 +196,12 @@ steps:
     target_application_id: "{{app_v2}}"
     migrate_method: migrate_v1_to_v2
 
-  - name: Wait for upgrade + migration to apply
+  # Fixed wait, NOT wait_for_sync (see scenario 01 rationale).
+  - name: Wait for upgrade + migration to apply + log flush
     type: wait
-    seconds: 8
+    seconds: 15
 
-  - name: Assert migration handler ran end-to-end
+  - name: Assert migration handler ran end-to-end (node 1)
     type: assert_log_present
     nodes:
       - app-migration-additive-1
@@ -154,22 +211,37 @@ steps:
       - "Migrated state written successfully"
     min_matches: 1
 
-  - name: Read post-migration schema_info
+  - name: Read post-migration schema_info on node 1
     type: call
     node: app-migration-additive-1
     context_id: "{{ctx_id}}"
     method: schema_info
     outputs:
-      v2_schema: result
+      v2_schema_node1: result
 
-  - name: Assert v2 schema (additive field seeded, v1 data preserved)
+  - name: Read post-migration schema_info on node 2
+    type: call
+    node: app-migration-additive-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  - name: Assert v2 schema on node 1 (additive field seeded, v1 data preserved)
     type: json_assert
     statements:
-      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0"}})'
-      - 'json_subset({{v2_schema}}, {"output": {"description": "additive-scenario", "counter": "2"}})'
-      - 'json_subset({{v2_schema}}, {"output": {"notes": "added in v2"}})'
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema_node1}}, {"output": {"description": "additive-scenario", "counter": "2"}})'
+      - 'json_subset({{v2_schema_node1}}, {"output": {"notes": "added in v2"}})'
 
-  - name: Assert v1 item map preserved through migration
+  - name: Assert v2 schema on node 2 (same shape, proves migration reached node 2)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema_node2}}, {"output": {"description": "additive-scenario", "counter": "2"}})'
+      - 'json_subset({{v2_schema_node2}}, {"output": {"notes": "added in v2"}})'
+
+  - name: Assert v1 item map preserved through migration (node 1)
     type: call
     node: app-migration-additive-1
     context_id: "{{ctx_id}}"
@@ -184,7 +256,8 @@ steps:
     statements:
       - 'json_equal({{preserved_item}}, {"output": "v1-value"})'
 
-  - name: v2-only set_notes now callable
+  # Phase 6: v2-only setter on node 1 round-trips to node 2.
+  - name: Node 1 calls v2-only setter set_notes
     type: call
     node: app-migration-additive-1
     context_id: "{{ctx_id}}"
@@ -192,19 +265,29 @@ steps:
     args:
       notes: "additive-scenario-post-migration"
 
-  - name: Read notes back via v2-only get_notes
+  - name: Wait for v2 write to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-additive-1
+      - app-migration-additive-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads notes back via v2-only get_notes
     type: call
-    node: app-migration-additive-1
+    node: app-migration-additive-2
     context_id: "{{ctx_id}}"
     method: get_notes
     outputs:
-      notes_after: result
+      notes_after_node2: result
 
-  - name: Assert v2-only round-trip
+  - name: Assert v2-only round-trip reached node 2
     type: json_assert
     statements:
-      - 'json_equal({{notes_after}}, {"output": "additive-scenario-post-migration"})'
+      - 'json_equal({{notes_after_node2}}, {"output": "additive-scenario-post-migration"})'
 
+  # Phase 7: Teardown.
   - name: Delete context
     type: delete_context
     node: app-migration-additive-1
@@ -223,12 +306,12 @@ steps:
     namespace_id: "{{namespace_id}}"
     requester: "{{admin_key}}"
 
-  - name: Uninstall v1
+  - name: Uninstall v1 on node 1
     type: uninstall_application
     node: app-migration-additive-1
     application_id: "{{app_v1}}"
 
-  - name: Uninstall v2
+  - name: Uninstall v2 on node 1
     type: uninstall_application
     node: app-migration-additive-1
     application_id: "{{app_v2}}"
