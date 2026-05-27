@@ -1206,6 +1206,70 @@ pub struct UsageResponse {
     pub namespaces: Vec<NamespaceUsage>,
 }
 
+/// Response for `GET /admin-api/network/status`. Wire-format snapshot of
+/// the local node's libp2p connectivity state — what relays we hold
+/// reservations with, which rendezvous registrations are live, the
+/// outcome of the latest DCUtR hole-punch per peer, and the most recent
+/// AutoNAT v2 probe. Surfaced verbatim by `meroctl network status`.
+///
+/// All multiaddrs / peer ids are stringified, all timestamps are RFC3339
+/// UTC, all status fields are flat strings (lowercase enum names). This
+/// keeps the wire shape stable across libp2p upgrades and friendly to
+/// consumers in any language.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkStatusResponse {
+    pub local_peer_id: String,
+    pub listen_addrs: Vec<String>,
+    pub external_addrs: Vec<String>,
+    pub relays: Vec<RelayStatusEntry>,
+    pub rendezvous: Vec<RendezvousStatusEntry>,
+    pub direct_upgrades: Vec<DirectUpgradeStatusEntry>,
+    pub autonat: AutonatStatusEntry,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayStatusEntry {
+    pub peer_id: String,
+    /// One of: `discovered`, `requested`, `accepted`, `expired`.
+    pub reservation_status: String,
+    pub last_state_change: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RendezvousStatusEntry {
+    pub peer_id: String,
+    /// One of: `discovered`, `requested`, `registered`, `expired`.
+    pub registration_status: String,
+    pub last_state_change: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectUpgradeStatusEntry {
+    pub peer_id: String,
+    /// `succeeded` or `failed`. When `failed`, `reason` is populated.
+    pub status: String,
+    pub reason: Option<String>,
+    pub connection_id: Option<String>,
+    pub last_attempt: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutonatStatusEntry {
+    /// One of: `unknown`, `public`, `private`.
+    pub reachability: String,
+    pub last_test_addr: Option<String>,
+    /// `reachable`, `failed`, or `null` if no probe has landed.
+    pub last_test_result: Option<String>,
+    pub last_test_reason: Option<String>,
+    pub last_test_observed_addr: Option<String>,
+    pub last_test_at: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeeInfoResponseData {

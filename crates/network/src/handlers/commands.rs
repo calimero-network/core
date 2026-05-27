@@ -11,6 +11,7 @@ mod listen;
 mod mesh_peer_count;
 mod mesh_peers;
 mod mesh_stats;
+mod network_status;
 mod open_stream;
 mod peer_count;
 mod publish;
@@ -57,6 +58,9 @@ impl Handler<NetworkMessage> for NetworkManager {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::MeshStats { request, outcome } => {
+                self.forward_handler(ctx, request, outcome);
+            }
+            NetworkMessage::NetworkStatus { request, outcome } => {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::AnnounceBlob { request, outcome } => {
