@@ -1,23 +1,24 @@
-# Throwaway diagnostic workflow for #2469. ITERATION 4:
+# Throwaway diagnostic workflow for #2469. ITERATION 5:
 #
-# v2 ruled out keypair-persistence (single-container test).
-# v3 ran the actual peer-restart workflow but died at
-# `install_application` because the scaffolding-e2e WASM
-# isn't shipped from this workflow (the regular CI builds it
-# in a separate job). Key finding from v3: the NAT topology
-# setup ITSELF worked perfectly — both clients reached the
-# boot-node on the first probe, no flake. So the bug isn't
-# in merobox setup; the matrix-level reachability flake is
-# unrelated.
+# Iteration learnings:
+#   v2: keypair persists (single container) — confirmed.
+#   v3: WASM missing — fixed by writing inline workflow.
+#   v4: snapshot fires ~1ms after wait_healthy → captures
+#       only merod's earliest startup phase, not libp2p
+#       activity. Watcher's label filter didn't match NAT
+#       containers either. Total diagnostic: nothing useful.
 #
-# v4: write a minimal merobox YAML INLINE that needs no
-# external WASM. Just: spin up the NAT topology, get a relay
-# reservation, restart node-1, wait, then exit. The merobox
-# `restart_container` step's pre/post snapshots are what we
-# care about — the absence of any test logic just lets us
-# isolate the libp2p-layer reconnection.
+# v5: instead of trying to follow logs in real-time, lean
+# on merobox's NATIVE graceful-stop log dump. When
+# `stop_all_nodes: true` fires at workflow end, merobox
+# writes complete container logs to
+# `<data_dir>/container-logs/<node>.log` — including
+# everything between restart and stop. We just collect
+# all those at the end.
 #
-# Delete this file once the question is answered.
+# Also bumps the post-restart wait so libp2p has time to
+# attempt reconnection + register before the container is
+# torn down.
 name: keypair-repro
 on:
   workflow_dispatch:
@@ -52,11 +53,7 @@ jobs:
           mkdir -p /tmp/repro
           cat > /tmp/repro/minimal-restart.yml <<'YAML'
           description: >
-            Minimal NAT-topology restart repro for #2469. No
-            application install, no sync — just bring up the
-            topology, wait, restart node-1, wait, exit. The
-            point is to capture pre/post-restart node-1 logs
-            via merobox 0.6.24's snapshot feature.
+            Minimal NAT-topology restart repro for #2469.
 
           name: Minimal NAT restart repro
 
@@ -72,7 +69,7 @@ jobs:
           steps:
             - name: Wait for libp2p to settle (initial)
               type: wait
-              seconds: 10
+              seconds: 15
 
             - name: Restart node-1 mid-session
               type: restart_container
@@ -80,13 +77,17 @@ jobs:
               wait_healthy: true
               timeout: 60
 
+            # 60s is plenty for libp2p to attempt every step we
+            # care about: dial boot-node, identify, request
+            # relay reservation, register with rendezvous. If
+            # post-restart node-1 hasn't done any of those by
+            # 60s, that's the diagnostic answer.
             - name: Wait for libp2p + rendezvous + reservation post-restart
               type: wait
-              seconds: 30
+              seconds: 60
 
           stop_all_nodes: true
           YAML
-          cat /tmp/repro/minimal-restart.yml
 
       - name: Run the minimal repro
         continue-on-error: true
@@ -94,116 +95,100 @@ jobs:
           MEROBOX_RESTART_LOG_DIR: ${{ github.workspace }}/restart-snapshots
           RUST_LOG: debug
         run: |
-          set -eu
-          mkdir -p restart-snapshots docker-logs
-
-          # Background watcher: streams `docker logs -f` for every
-          # container that appears, including boot-node + clients
-          # + gateway. The clients + gateway get the calimero.node
-          # label; the boot-node doesn't, so we follow it by name.
-          LOGDIR="$GITHUB_WORKSPACE/docker-logs"
-          STOP_FILE="$(mktemp)"
-          (
-            seen=""
-            while [ ! -f "$STOP_FILE" ]; do
-              for c in $(docker ps --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null | grep -v -- '-init$' || true); do
-                if ! echo "$seen" | grep -qw "$c"; then
-                  seen="$seen $c"
-                  echo "[watcher] following $c"
-                  docker logs -f "$c" > "$LOGDIR/$c.log" 2>&1 &
-                fi
-              done
-              for c in $(docker ps --format "{{.Names}}" 2>/dev/null | grep -E "boot-node|nat-gateway" || true); do
-                if ! echo "$seen" | grep -qw "$c"; then
-                  seen="$seen $c"
-                  echo "[watcher] following $c"
-                  docker logs -f "$c" > "$LOGDIR/$c.log" 2>&1 &
-                fi
-              done
-              sleep 1
-            done
-          ) &
-          WATCHER=$!
-
+          mkdir -p restart-snapshots
           merobox bootstrap run /tmp/repro/minimal-restart.yml \
             --image ghcr.io/calimero-network/merod:edge \
-            --e2e-mode || echo "(merobox exited non-zero — expected if stop_all_nodes raced)"
+            --e2e-mode \
+            || echo "(merobox exited non-zero — expected if stop_all_nodes raced)"
 
-          touch "$STOP_FILE"
-          sleep 2
-          kill $WATCHER 2>/dev/null || true
-          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
-          wait 2>/dev/null || true
+      - name: Collect graceful-stop container logs
+        if: always()
+        run: |
+          # merobox's `stop_all_nodes: true` triggers
+          # `_graceful_stop_containers_batch` which writes the
+          # FULL container log to `<data_dir>/container-logs/
+          # <node>.log` for each node before it's removed. That
+          # includes EVERY post-restart event up to the stop —
+          # exactly what we need to see libp2p's reconnection
+          # behaviour (which the early `wait_healthy` snapshot
+          # misses by 60+ seconds).
+          mkdir -p final-logs
+          find . -type d -name container-logs 2>/dev/null | while read d; do
+            echo "=== found $d ==="
+            ls -la "$d"
+            cp -r "$d"/* final-logs/ 2>/dev/null || true
+          done
+          echo ""
+          echo "=== final-logs/ contents ==="
+          ls -la final-logs/ 2>&1 || echo "(empty)"
 
       - name: Analyze post-restart node-1 connectivity
         if: always()
         run: |
           set -eu
-          echo "==================================================="
-          echo "Snapshot files (pre/post-restart node-1 logs):"
-          echo "==================================================="
-          ls -la "$GITHUB_WORKSPACE/restart-snapshots" 2>&1 || echo "no snapshots"
-
-          echo ""
-          echo "==================================================="
-          echo "Watcher captures (boot-node + clients + gateway):"
-          echo "==================================================="
-          ls -la "$GITHUB_WORKSPACE/docker-logs" 2>&1 || echo "no docker-logs"
-
-          PRE=$(ls "$GITHUB_WORKSPACE/restart-snapshots"/*pre-restart*.log 2>/dev/null | head -1 || true)
-          POST=$(ls "$GITHUB_WORKSPACE/restart-snapshots"/*post-restart*.log 2>/dev/null | head -1 || true)
-
-          if [ -n "$PRE" ] && [ -n "$POST" ]; then
-            PRE_PEER=$(grep -oE 'Peer ID: [A-Za-z0-9]+' "$PRE" | head -1 | awk '{print $3}')
-            POST_PEER=$(grep -oE 'Peer ID: [A-Za-z0-9]+' "$POST" | head -1 | awk '{print $3}')
-            echo ""
-            echo "PRE-restart node-1 peer-id:  $PRE_PEER"
-            echo "POST-restart node-1 peer-id: $POST_PEER"
-            if [ "$PRE_PEER" = "$POST_PEER" ]; then
-              echo "✓ Keypair persists (matches v2 single-container repro)"
-            else
-              echo "✗ Keypair changed across restart!"
-            fi
-
-            echo ""
-            echo "=== POST-restart node-1: identify / dial / connection events ==="
-            grep -E "boot-node|Identify|Dialing|ConnectionEstablished|ConnectionClosed|Failed to dial|established|Address /p2p" "$POST" | head -30 || echo "(no matches)"
-
-            echo ""
-            echo "=== POST-restart node-1: rendezvous events ==="
-            grep -iE "rendezvous|Register|Discovered" "$POST" | head -20 || echo "(no matches)"
-
-            echo ""
-            echo "=== POST-restart node-1: relay-reservation events ==="
-            grep -iE "ReservationReq|Hop|circuit|relay" "$POST" | head -30 || echo "(no matches)"
-
-            echo ""
-            echo "=== POST-restart node-1: ALL warn/error lines ==="
-            grep -iE "ERROR|WARN" "$POST" | head -50 || echo "(no matches)"
-
-            echo ""
-            echo "=== Boot-node logs (does it see node-1 reconnect?) ==="
-            BOOT_LOG=$(ls "$GITHUB_WORKSPACE/docker-logs"/*boot-node*.log 2>/dev/null | head -1 || true)
-            if [ -n "$BOOT_LOG" ]; then
-              echo "Last 30 boot-node lines AFTER node-1 restart:"
-              # The restart fires after ~10s of initial wait + setup ~10s
-              # so look at lines from 30s in onwards.
-              tail -200 "$BOOT_LOG" | grep -iE "register|reservation|peer.id|new connection|disconnect" | head -30 || echo "(no matches in boot-node tail)"
-            else
-              echo "(no boot-node log captured)"
-            fi
-          else
-            echo ""
-            echo "✗ Missing snapshots — pre=$PRE post=$POST"
+          NODE1_LOG="final-logs/sync-resil-node-1.log"
+          if [ ! -f "$NODE1_LOG" ]; then
+            echo "✗ Missing $NODE1_LOG — graceful stop didn't dump"
+            ls -la final-logs/ || true
+            exit 0
           fi
 
-      - name: Upload all logs
+          # Find the post-restart marker: the SECOND occurrence
+          # of "TEE not configured; starting" (the very first
+          # line merod prints) marks the boundary between the
+          # pre-restart and post-restart container's lifecycle.
+          POST_RESTART_LINE=$(grep -n "TEE not configured" "$NODE1_LOG" | sed -n 2p | cut -d: -f1)
+          if [ -z "$POST_RESTART_LINE" ]; then
+            echo "✗ No second 'TEE not configured' found — restart didn't trigger a fresh merod start?"
+            grep -c "TEE not configured" "$NODE1_LOG" || true
+            tail -50 "$NODE1_LOG"
+            exit 0
+          fi
+          echo "Post-restart merod startup begins at line $POST_RESTART_LINE"
+          echo ""
+
+          # Slice the log to just post-restart content.
+          tail -n "+$POST_RESTART_LINE" "$NODE1_LOG" > /tmp/node1-post.log
+
+          PRE_PEER=$(grep -m1 "Peer ID:" "$NODE1_LOG" | grep -oE '12D3KooW[A-Za-z0-9]+')
+          POST_PEER=$(grep -m1 "Peer ID:" /tmp/node1-post.log | grep -oE '12D3KooW[A-Za-z0-9]+')
+          echo "PRE-restart node-1 peer-id:  $PRE_PEER"
+          echo "POST-restart node-1 peer-id: $POST_PEER"
+          [ "$PRE_PEER" = "$POST_PEER" ] && echo "✓ Keypair persists" || echo "✗ Keypair changed!"
+
+          echo ""
+          echo "=== POST-restart node-1: log line count + duration ==="
+          POST_LINES=$(wc -l < /tmp/node1-post.log)
+          POST_DURATION=$(awk 'NR==1{first=$0} END{last=$0} END{print first" ... "last}' /tmp/node1-post.log | head -1)
+          echo "Lines: $POST_LINES"
+          echo ""
+
+          echo "=== POST-restart node-1: BOOT-NODE connection events ==="
+          grep -E "Dialing|ConnectionEstablished|ConnectionClosed|Failed to dial.*Transport" /tmp/node1-post.log | grep -oE "(Dialing|ConnectionEstablished|ConnectionClosed|Failed)[^,]*peer[_=]?id?[\":= ]+[A-Za-z0-9]+" | sort -u | head -20 || echo "(no matches)"
+          echo ""
+
+          echo "=== POST-restart node-1: rendezvous register attempts ==="
+          grep -iE "rendezvous_register|Register req|Sent register" /tmp/node1-post.log | head -10 || echo "(no matches)"
+          echo ""
+
+          echo "=== POST-restart node-1: relay reservation attempts ==="
+          grep -iE "ReservationReqAccepted|ReservationReqDenied|Hop.*reservation|listening on.*p2p-circuit|Relay.*reservation" /tmp/node1-post.log | head -10 || echo "(no matches)"
+          echo ""
+
+          echo "=== POST-restart node-1: any WARN/ERROR ==="
+          grep -E " WARN |ERROR" /tmp/node1-post.log | head -30 || echo "(no matches)"
+          echo ""
+
+          echo "=== POST-restart node-1: identify events (debug level) ==="
+          grep "identify.*Received\|identify.*Sent" /tmp/node1-post.log | head -10 || echo "(no matches)"
+
+      - name: Upload everything
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: keypair-repro-v4-${{ github.sha }}
+          name: keypair-repro-v5-${{ github.sha }}
           path: |
+            ${{ github.workspace }}/final-logs/
             ${{ github.workspace }}/restart-snapshots/
-            ${{ github.workspace }}/docker-logs/
           retention-days: 7
           if-no-files-found: warn
