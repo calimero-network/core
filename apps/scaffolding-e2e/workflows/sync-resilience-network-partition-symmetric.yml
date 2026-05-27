@@ -1,6 +1,6 @@
 description: >
   Strict counterpart to `sync-resilience-network-partition.yml`.
-  Same scenario (detach node-2 from the LAN bridge for ~15s while
+  Same scenario (detach node-2 from the LAN bridge for ~35s while
   node-1 writes, then reattach and verify catch-up), same
   assertions, but the NAT gateway runs `iptables MASQUERADE
   --random-fully` so DCUtR hole-punching can't predict a

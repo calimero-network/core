@@ -1,7 +1,10 @@
 description: >
   Sync-resilience smoke test: one peer is fully partitioned from the
-  LAN bridge for ~15 seconds while the other peer writes, then the
-  partition is healed and the partitioned peer must catch up.
+  LAN bridge for ~35 seconds while the other peer writes, then the
+  partition is healed and the partitioned peer must catch up. The
+  35s hold is sized to outlast libp2p's ~30s swarm-level ping +
+  ~15s yamux keepalive defaults, guaranteeing the connection is
+  marked dead rather than surviving as buffered retransmits.
 
   Fault primitive
   ---------------

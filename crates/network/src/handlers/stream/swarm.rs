@@ -195,11 +195,15 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                         // runner, up to ~60s on a cold-cache + I/O-
                         // saturated runner). Each re-fire bypasses
                         // the throttle via the force-path. The cost
-                        // is bounded — at most 5 queries to the
-                        // boot-node per disconnect event, regardless
-                        // of fleet size. No-op if we have no
-                        // rendezvous peers configured (mdns-only
-                        // deployments).
+                        // is bounded — at most 5 boot-node queries
+                        // per (disconnect_event, rendezvous_peer)
+                        // pair, i.e. 5 queries per disconnect in the
+                        // single-rendezvous case (production today)
+                        // and 5×M queries per disconnect with M
+                        // rendezvous peers configured (multi-
+                        // rendezvous deployments). No queries at all
+                        // if no rendezvous peers are configured
+                        // (mdns-only deployments).
                         //
                         // After the +60s retry the periodic
                         // discovery tick (default 15s, see
@@ -215,15 +219,24 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                         // Each closure captures `disconnected_peer`
                         // and gates the re-fire on
                         // `!is_connected(&disconnected_peer)`. If
-                        // the peer reconnected in the interim (fast
-                        // container restart, transient TCP RST that
-                        // recovered), the re-fire is a no-op — no
-                        // wasted boot-node query, no spurious force-
-                        // discover. This also bounds the multi-peer
-                        // case: if peer A disconnects and peer B
-                        // disconnects 1s later, A's later re-fires
-                        // don't double-fire for B (B has its own
-                        // re-fires; A's are gated on A specifically).
+                        // the peer is currently connected at re-fire
+                        // time (fast container restart, transient
+                        // TCP RST that recovered), the re-fire is a
+                        // no-op — no wasted boot-node query, no
+                        // spurious force-discover. Note: this is a
+                        // point-in-time check at fire-time; a peer
+                        // that reconnects and then disconnects again
+                        // before the next re-fire WILL trigger a
+                        // force-discover at that fire (because
+                        // `is_connected` would be false again),
+                        // which is the desired behavior — the second
+                        // disconnect is a fresh event worth
+                        // recovering from. This also bounds the
+                        // multi-peer case: if peer A disconnects and
+                        // peer B disconnects 1s later, A's later
+                        // re-fires don't double-fire for B (B has
+                        // its own re-fires; A's are gated on A
+                        // specifically).
                         let disconnected_peer = peer_id;
                         for delay_secs in [5_u64, 15, 30, 60] {
                             ctx.run_later(
