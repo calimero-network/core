@@ -1,0 +1,236 @@
+name: 02 — Scenario "additive field" (v1 → v2-add-field)
+description: >
+  Realistic per-context migration for the additive-field scenario.
+  v1 → v2-add-field adds a `notes: LwwRegister<String>` to the state
+  struct; `migrate_v1_to_v2` preserves every v1 field and seeds the
+  new `notes` field. Topology: namespace + one subgroup + one context
+  in the subgroup. Upgrade is `upgrade_group(group=subgroup,
+  target=v2, migrate=migrate_v1_to_v2)` — per-context (cascade=false),
+  not namespace-cascade (that's `01`). Acts as the additive row of the
+  per-scenario matrix.
+
+  Negative assertion: before the upgrade, the v2-only setter
+  `set_notes` must NOT be callable (the binary doesn't export it under
+  v1). After the upgrade it must be callable and round-trip a value.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-additive
+  base_port: 9240
+  base_rpc_port: 9340
+
+steps:
+  - name: Install migration-suite-v1
+    type: install_application
+    node: app-migration-additive-1
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install migration-suite-v2-add-field
+    type: install_application
+    node: app-migration-additive-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Create namespace (v1)
+    type: create_namespace
+    node: app-migration-additive-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-additive-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-additive-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "additive-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-additive-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Write v1 state (description + counter + item)
+    type: call
+    node: app-migration-additive-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "additive-scenario"
+
+  - name: Increment counter twice (v1)
+    type: call
+    node: app-migration-additive-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Increment counter again (v1)
+    type: call
+    node: app-migration-additive-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Write item to v1 map
+    type: call
+    node: app-migration-additive-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k1"
+      value: "v1-value"
+
+  - name: Sanity-check v1 state shape
+    type: call
+    node: app-migration-additive-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "description": "additive-scenario", "counter": "2"}})'
+
+  # Negative: v2-only setter not yet callable under v1.
+  - name: Negative — set_notes is not exported by v1
+    type: call
+    node: app-migration-additive-1
+    context_id: "{{ctx_id}}"
+    method: set_notes
+    args:
+      notes: "should-fail-pre-upgrade"
+    expected_failure: true
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-additive-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade subgroup v1 → v2 (per-context, not cascade)
+    type: upgrade_group
+    node: app-migration-additive-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  - name: Wait for upgrade + migration to apply
+    type: wait
+    seconds: 8
+
+  - name: Assert migration handler ran end-to-end
+    type: assert_log_present
+    nodes:
+      - app-migration-additive-1
+    patterns:
+      - "Executing migration"
+      - "migrate_v1_to_v2"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Read post-migration schema_info
+    type: call
+    node: app-migration-additive-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 schema (additive field seeded, v1 data preserved)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"description": "additive-scenario", "counter": "2"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"notes": "added in v2"}})'
+
+  - name: Assert v1 item map preserved through migration
+    type: call
+    node: app-migration-additive-1
+    context_id: "{{ctx_id}}"
+    method: get_item
+    args:
+      key: "k1"
+    outputs:
+      preserved_item: result
+
+  - name: Assert preserved v1 item value
+    type: json_assert
+    statements:
+      - 'json_equal({{preserved_item}}, {"output": "v1-value"})'
+
+  - name: v2-only set_notes now callable
+    type: call
+    node: app-migration-additive-1
+    context_id: "{{ctx_id}}"
+    method: set_notes
+    args:
+      notes: "additive-scenario-post-migration"
+
+  - name: Read notes back via v2-only get_notes
+    type: call
+    node: app-migration-additive-1
+    context_id: "{{ctx_id}}"
+    method: get_notes
+    outputs:
+      notes_after: result
+
+  - name: Assert v2-only round-trip
+    type: json_assert
+    statements:
+      - 'json_equal({{notes_after}}, {"output": "additive-scenario-post-migration"})'
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-additive-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-additive-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-additive-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-additive-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-additive-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

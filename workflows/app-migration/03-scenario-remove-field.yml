@@ -1,0 +1,198 @@
+name: 03 — Scenario "remove field" (v2-add-field → v3-remove-field)
+description: >
+  Realistic per-context migration for the remove-field scenario.
+  v2-add-field → v3-remove-field drops the `notes: LwwRegister<String>`
+  added in v2. `migrate_v2_to_v3` reads the v2 state (including
+  `notes`) and constructs a v3 state without that field — the bytes
+  for `notes` are deliberately dropped on the floor. Asserts the v2
+  surviving fields are preserved and the v3 binary refuses
+  `set_notes` / `get_notes` (the methods no longer exist).
+
+  Note: this scenario is "remove without archive". The archival
+  variant (where the removed field's value is moved into a sibling
+  collection) is a SEPARATE scenario covered by the
+  `scenario-field-remove-archive` fixture pair added later in this PR.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-remove
+  base_port: 9250
+  base_rpc_port: 9350
+
+steps:
+  - name: Install migration-suite-v2-add-field
+    type: install_application
+    node: app-migration-remove-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Install migration-suite-v3-remove-field
+    type: install_application
+    node: app-migration-remove-1
+    path: apps/migrations/migration-suite-v3-remove-field/res/migration_suite_v3_remove_field.wasm
+    dev: true
+    outputs:
+      app_v3: applicationId
+
+  - name: Create namespace (v2)
+    type: create_namespace
+    node: app-migration-remove-1
+    application_id: "{{app_v2}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-remove-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-remove-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "remove-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v2)
+    type: create_context
+    node: app-migration-remove-1
+    application_id: "{{app_v2}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Set description (v2)
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "remove-scenario"
+
+  - name: Increment counter (v2)
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Set notes (v2-only field that v3 drops)
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: set_notes
+    args:
+      notes: "value-that-will-be-dropped"
+
+  - name: Sanity-check v2 schema before migration
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 has notes set
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "notes": "value-that-will-be-dropped"}})'
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-remove-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade subgroup v2 → v3 (drops notes field)
+    type: upgrade_group
+    node: app-migration-remove-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v3}}"
+    migrate_method: migrate_v2_to_v3
+
+  - name: Wait for upgrade + migration to apply
+    type: wait
+    seconds: 8
+
+  - name: Assert migration handler ran
+    type: assert_log_present
+    nodes:
+      - app-migration-remove-1
+    patterns:
+      - "Executing migration"
+      - "migrate_v2_to_v3"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Read post-migration schema_info
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v3_schema: result
+
+  - name: Assert v3 schema (no notes field, v2 surviving fields preserved)
+    type: json_assert
+    statements:
+      - 'json_subset({{v3_schema}}, {"output": {"schema_version": "3.0.0", "description": "remove-scenario", "counter": "1"}})'
+
+  # Negative: v2 setter/getter for notes no longer exported by v3.
+  - name: Negative — set_notes is gone in v3
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: set_notes
+    args:
+      notes: "should-fail-post-remove"
+    expected_failure: true
+
+  - name: Negative — get_notes is gone in v3
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: get_notes
+    expected_failure: true
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-remove-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-remove-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-remove-1
+    application_id: "{{app_v2}}"
+
+  - name: Uninstall v3
+    type: uninstall_application
+    node: app-migration-remove-1
+    application_id: "{{app_v3}}"
+
+stop_all_nodes: false

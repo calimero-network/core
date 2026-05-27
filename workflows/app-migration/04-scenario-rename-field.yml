@@ -1,0 +1,210 @@
+name: 04 — Scenario "rename field" (v3-remove-field → v4-rename-field)
+description: >
+  Realistic per-context migration for the rename-field scenario.
+  v3-remove-field has `description: LwwRegister<String>`. v4-rename-field
+  renames it to `details: LwwRegister<String>` — the field is the same
+  logical thing, but borsh would never line up automatically because
+  borsh ordering is positional, not nominal. `migrate_v3_to_v4`
+  explicitly forwards `old.description → new.details`, proving an
+  explicit-migrate rename works.
+
+  Asserts: pre-upgrade v3 has `description` set; post-upgrade v4 has
+  `details` (same value) and `description` is no longer accepted by
+  the v4 binary's setter / getter.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-rename
+  base_port: 9260
+  base_rpc_port: 9360
+
+steps:
+  - name: Install migration-suite-v3-remove-field
+    type: install_application
+    node: app-migration-rename-1
+    path: apps/migrations/migration-suite-v3-remove-field/res/migration_suite_v3_remove_field.wasm
+    dev: true
+    outputs:
+      app_v3: applicationId
+
+  - name: Install migration-suite-v4-rename-field
+    type: install_application
+    node: app-migration-rename-1
+    path: apps/migrations/migration-suite-v4-rename-field/res/migration_suite_v4_rename_field.wasm
+    dev: true
+    outputs:
+      app_v4: applicationId
+
+  - name: Create namespace (v3)
+    type: create_namespace
+    node: app-migration-rename-1
+    application_id: "{{app_v3}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-rename-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-rename-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "rename-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v3)
+    type: create_context
+    node: app-migration-rename-1
+    application_id: "{{app_v3}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Set description (v3 — the field that gets renamed)
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "rename-scenario-original"
+
+  - name: Increment counter (v3)
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Sanity-check v3 schema
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v3_schema: result
+
+  - name: Assert v3 has description set
+    type: json_assert
+    statements:
+      - 'json_subset({{v3_schema}}, {"output": {"schema_version": "3.0.0", "description": "rename-scenario-original", "counter": "1"}})'
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-rename-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade subgroup v3 → v4 (renames description → details)
+    type: upgrade_group
+    node: app-migration-rename-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v4}}"
+    migrate_method: migrate_v3_to_v4
+
+  - name: Wait for upgrade + migration to apply
+    type: wait
+    seconds: 8
+
+  - name: Assert migration handler ran
+    type: assert_log_present
+    nodes:
+      - app-migration-rename-1
+    patterns:
+      - "Executing migration"
+      - "migrate_v3_to_v4"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Read post-migration schema_info
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v4_schema: result
+
+  - name: Assert v4 schema (description → details, value carried over)
+    type: json_assert
+    statements:
+      - 'json_subset({{v4_schema}}, {"output": {"schema_version": "4.0.0", "details": "rename-scenario-original", "counter": "1"}})'
+
+  - name: v4 setter for renamed field is set_details
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: set_details
+    args:
+      details: "rename-scenario-updated-via-v4"
+
+  - name: v4 getter for renamed field is get_details
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: get_details
+    outputs:
+      details_after: result
+
+  - name: Assert v4 round-trip on renamed field
+    type: json_assert
+    statements:
+      - 'json_equal({{details_after}}, {"output": "rename-scenario-updated-via-v4"})'
+
+  # Negative: old setter / getter names are gone from v4 binary.
+  - name: Negative — set_description gone in v4
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "should-fail-old-name"
+    expected_failure: true
+
+  - name: Negative — get_description gone in v4
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: get_description
+    expected_failure: true
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-rename-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-rename-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v3
+    type: uninstall_application
+    node: app-migration-rename-1
+    application_id: "{{app_v3}}"
+
+  - name: Uninstall v4
+    type: uninstall_application
+    node: app-migration-rename-1
+    application_id: "{{app_v4}}"
+
+stop_all_nodes: false

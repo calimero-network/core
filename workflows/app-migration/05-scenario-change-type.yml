@@ -1,0 +1,218 @@
+name: 05 — Scenario "change type" (v4-rename-field → v5-change-type)
+description: >
+  Realistic per-context migration for the type-change scenario.
+  v4-rename-field has `counter: LwwRegister<u64>` and an
+  `increment_counter()` method. v5-change-type changes the in-state
+  type to `LwwRegister<String>` and swaps `increment_counter()` for an
+  explicit `set_counter(String)`. `migrate_v4_to_v5` stringifies the
+  pre-migration u64 value so the existing counter survives the type
+  change.
+
+  This row of the scenario matrix proves that an explicit-migrate
+  type-change keeps the field value intact (just re-typed) and that
+  the new v5 method (set_counter) becomes callable while the v4
+  method (increment_counter) goes away.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-typechange
+  base_port: 9270
+  base_rpc_port: 9370
+
+steps:
+  - name: Install migration-suite-v4-rename-field
+    type: install_application
+    node: app-migration-typechange-1
+    path: apps/migrations/migration-suite-v4-rename-field/res/migration_suite_v4_rename_field.wasm
+    dev: true
+    outputs:
+      app_v4: applicationId
+
+  - name: Install migration-suite-v5-change-type
+    type: install_application
+    node: app-migration-typechange-1
+    path: apps/migrations/migration-suite-v5-change-type/res/migration_suite_v5_change_type.wasm
+    dev: true
+    outputs:
+      app_v5: applicationId
+
+  - name: Create namespace (v4)
+    type: create_namespace
+    node: app-migration-typechange-1
+    application_id: "{{app_v4}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-typechange-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-typechange-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "typechange-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v4)
+    type: create_context
+    node: app-migration-typechange-1
+    application_id: "{{app_v4}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Set details (v4)
+    type: call
+    node: app-migration-typechange-1
+    context_id: "{{ctx_id}}"
+    method: set_details
+    args:
+      details: "typechange-scenario"
+
+  # Increment counter (v4 numeric path). After three calls counter == 3.
+  - name: Increment counter (v4 numeric) — 1
+    type: call
+    node: app-migration-typechange-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Increment counter (v4 numeric) — 2
+    type: call
+    node: app-migration-typechange-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Increment counter (v4 numeric) — 3
+    type: call
+    node: app-migration-typechange-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Sanity-check v4 schema before migration
+    type: call
+    node: app-migration-typechange-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v4_schema: result
+
+  # v4 schema_info stringifies counter to JSON. The internal type is u64.
+  - name: Assert v4 has counter "3"
+    type: json_assert
+    statements:
+      - 'json_subset({{v4_schema}}, {"output": {"schema_version": "4.0.0", "details": "typechange-scenario", "counter": "3"}})'
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-typechange-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade subgroup v4 → v5 (counter u64 → String)
+    type: upgrade_group
+    node: app-migration-typechange-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v5}}"
+    migrate_method: migrate_v4_to_v5
+
+  - name: Wait for upgrade + migration to apply
+    type: wait
+    seconds: 8
+
+  - name: Assert migration handler ran
+    type: assert_log_present
+    nodes:
+      - app-migration-typechange-1
+    patterns:
+      - "Executing migration"
+      - "migrate_v4_to_v5"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Read post-migration schema_info
+    type: call
+    node: app-migration-typechange-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v5_schema: result
+
+  - name: Assert v5 schema (counter still "3", but now String-typed)
+    type: json_assert
+    statements:
+      - 'json_subset({{v5_schema}}, {"output": {"schema_version": "5.0.0", "details": "typechange-scenario", "counter": "3"}})'
+
+  # v5's new set_counter takes a String. v4 wouldn't have accepted this
+  # value because the param was numeric — proving the type change.
+  - name: v5 set_counter accepts a String (non-numeric)
+    type: call
+    node: app-migration-typechange-1
+    context_id: "{{ctx_id}}"
+    method: set_counter
+    args:
+      counter: "not-a-number-anymore"
+
+  - name: Read counter back via v5 get_counter
+    type: call
+    node: app-migration-typechange-1
+    context_id: "{{ctx_id}}"
+    method: get_counter
+    outputs:
+      counter_after: result
+
+  - name: Assert v5 counter holds the non-numeric string
+    type: json_assert
+    statements:
+      - 'json_equal({{counter_after}}, {"output": "not-a-number-anymore"})'
+
+  # Negative: v4's increment_counter (no-arg, numeric) is gone in v5.
+  - name: Negative — increment_counter gone in v5
+    type: call
+    node: app-migration-typechange-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+    expected_failure: true
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-typechange-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-typechange-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-typechange-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v4
+    type: uninstall_application
+    node: app-migration-typechange-1
+    application_id: "{{app_v4}}"
+
+  - name: Uninstall v5
+    type: uninstall_application
+    node: app-migration-typechange-1
+    application_id: "{{app_v5}}"
+
+stop_all_nodes: false

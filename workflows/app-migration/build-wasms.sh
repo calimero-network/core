@@ -14,6 +14,9 @@ cd "$REPO_ROOT"
 SUITES=(
     "apps/migrations/migration-suite-v1"
     "apps/migrations/migration-suite-v2-add-field"
+    "apps/migrations/migration-suite-v3-remove-field"
+    "apps/migrations/migration-suite-v4-rename-field"
+    "apps/migrations/migration-suite-v5-change-type"
 )
 
 for suite in "${SUITES[@]}"; do

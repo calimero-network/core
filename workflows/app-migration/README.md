@@ -9,13 +9,23 @@ and the namespace-cascade additions designed in
 
 | File | What it proves |
 |---|---|
+| File | What it proves |
+|---|---|
 | `00-single-group-migration-baseline.yml` | Single-node, single-group `v1 → v2` migration via `upgrade_group(cascade=false)`. **Regression guard for [#2433](https://github.com/calimero-network/core/pull/2433)** — the per-context migration write path that #2433 silently broke and PR-1 of the cascade train repairs. |
-| `01-namespace-cascade-migration.yml` | Single-node, namespace + one subgroup + one context, ONE `upgrade_group(cascade=true)` call against the namespace root. Asserts cascade fans out to BOTH layers and the descendant context's state migrates (v1 fields preserved, v2-only field readable). **Regression guard for the random-`app_key` bug** in `crates/context/src/handlers/create_group.rs::handle` (namespace root) and `crates/governance-store/src/ops/namespace/group_created.rs::apply` (subgroup). Pre-fix both sites seed `meta.app_key` from `rand`/`[0u8; 32]`, so the cascade predicate never matches the descendant and the walk silently skips it. |
+| `01-namespace-cascade-migration.yml` | Single-node, namespace + one subgroup + one context, ONE `upgrade_group(cascade=true)` call. **Regression guard for the random-`app_key` bug** at namespace/subgroup creation. |
+| `02-scenario-additive-field.yml` | **Additive field** (`v1 → v2-add-field`): adds `notes: LwwRegister<String>`. Negative pre-upgrade assertion: v2-only `set_notes` is not exported by v1; post-upgrade it is. |
+| `03-scenario-remove-field.yml` | **Remove field** (`v2 → v3-remove-field`): drops `notes`. Negative post-upgrade assertion: `set_notes` / `get_notes` no longer exist on v3. |
+| `04-scenario-rename-field.yml` | **Rename field** (`v3 → v4-rename-field`): `description` → `details`. Asserts value carries over and old names (`set_description` / `get_description`) are gone in v4. |
+| `05-scenario-change-type.yml` | **Type change** (`v4 → v5-change-type`): `counter: LwwRegister<u64>` → `LwwRegister<String>`. Asserts the numeric value survives as a string, v5's `set_counter(String)` is callable, and v4's `increment_counter` is gone. |
 
-Later PRs add per-scenario workflows (`02`..`N`) covering the schema-shape
-matrix: additive, remove, rename, type-change, enum-variant, struct-to-enum,
-field-split, field-archive, invariant-reshuffle, pure-bugfix, new-method,
-CRDT-native field growth.
+(The above two tables collapse into one in the rendered docs; the split
+keeps the namespace-cascade row visually separate from the per-context
+schema-shape rows.)
+
+Later commits in this PR add per-scenario fixtures + workflows for the
+remaining matrix rows: `new-method`, `new-enum-variant`, `pure-bugfix`,
+`crdt-native` (Vector growth), `struct-to-enum`, `field-split`,
+`field-remove-archive` (with archive), `invariant-reshuffle`.
 
 ## Fixtures
 
