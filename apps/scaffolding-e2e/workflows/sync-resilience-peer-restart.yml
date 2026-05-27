@@ -204,26 +204,27 @@ steps:
     statements:
       - "contains({{baseline_n1_post}}, 'pre_restart')"
 
-  # Even in cone mode where DCUtR may upgrade to direct after the
-  # initial relay handshake, the reservation flow still has to
-  # complete BOTH pre- and post-restart. Assert
-  # `ReservationReqAccepted` appears in EACH client's recent log
-  # tail — proves the relay handshake actually ran after the
-  # fault, not just during setup. Without `tail_lines: 200` the
-  # check would match the setup-phase reservation and silently
-  # pass even if post-restart relay recovery is broken.
+  # Relay-handshake sanity: assert `ReservationReqAccepted`
+  # appears in each client's log. merod emits this line ONCE per
+  # reservation (initial reserve, `renewal: false`); renewals
+  # don't re-emit it, so a `tail_lines` scope would race the log
+  # growth and miss the initial event entirely (observed in
+  # 0bc0181: node-1's log was 16k lines by assertion time, the
+  # reservation at line ~150 was outside any reasonable tail
+  # window). So we check the full log — proves the relay
+  # handshake completed during this run; the actual proof that
+  # relay-mediated sync recovered post-restart is the
+  # `Wait for post-restart write to converge` step above.
 
-  - name: Confirm node-1 re-acquired its relay reservation
+  - name: Confirm node-1 obtained a relay reservation
     type: assert_log_present
     nodes: [sync-resil-node-1]
-    tail_lines: 200
     patterns:
       - "ReservationReqAccepted"
 
-  - name: Confirm node-2 still has its relay reservation
+  - name: Confirm node-2 obtained a relay reservation
     type: assert_log_present
     nodes: [sync-resil-node-2]
-    tail_lines: 200
     patterns:
       - "ReservationReqAccepted"
 

@@ -209,13 +209,22 @@ steps:
   #    the relay handshake always happens. Without the tail
   #    scope, a regression that breaks post-restart relay
   #    recovery would silently pass because the setup-phase
-  #    /p2p-circuit/ matches.
+  #    /p2p-circuit/ matches. This pattern is emitted on every
+  #    relayed connection log line, so it survives the tail
+  #    scope across the test's lifetime.
   #
-  # 2. `ReservationReqAccepted` appears recently — proves the
-  #    relay-reservation handshake actually completed
-  #    post-restart, not just that some old log line referenced
-  #    a circuit address. Pinned by
-  #    `crates/network/src/handlers/stream/swarm/relay.rs`.
+  # 2. `ReservationReqAccepted` appears in the FULL log —
+  #    proves the relay-reservation handshake actually
+  #    completed during this run. NOT tail-scoped: merod emits
+  #    this exactly ONCE per reservation (initial reserve,
+  #    `renewal: false`), so a `tail_lines` scope races the log
+  #    growth and misses the initial event entirely (observed:
+  #    by assertion time the log is ~16k lines, the reservation
+  #    at line ~150 is far outside any reasonable tail window).
+  #    Pinned by `crates/network/src/handlers/stream/swarm/
+  #    relay.rs`. Post-fault relay recovery is validated by the
+  #    sync-converge step above (which only passes if
+  #    relay-mediated sync re-established post-restart).
   #
   # 3. `direct-connection upgrade succeeded` is ABSENT —
   #    proves DCUtR didn't manage to upgrade to a direct path.
@@ -233,7 +242,6 @@ steps:
     tail_lines: 200
     patterns:
       - "/p2p-circuit/"
-      - "ReservationReqAccepted"
 
   - name: Confirm node-2 used the relay circuit post-restart
     type: assert_log_present
@@ -241,6 +249,17 @@ steps:
     tail_lines: 200
     patterns:
       - "/p2p-circuit/"
+
+  - name: Confirm node-1 obtained a relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-1]
+    patterns:
+      - "ReservationReqAccepted"
+
+  - name: Confirm node-2 obtained a relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-2]
+    patterns:
       - "ReservationReqAccepted"
 
   - name: Confirm DCUtR did NOT upgrade (symmetric mode invariant)

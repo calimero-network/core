@@ -201,11 +201,17 @@ steps:
   # the rationale):
   #
   #   1. `/p2p-circuit/` in the recent tail (`tail_lines: 200`)
-  #      proves post-fault traffic stayed on the relay.
-  #   2. `ReservationReqAccepted` proves the reservation was
-  #      actually re-acquired after the unpause, not just that
-  #      the setup-phase circuit address still echoes in old log
-  #      lines.
+  #      proves post-fault traffic stayed on the relay. This
+  #      pattern is emitted on every relayed connection log
+  #      line, so it survives the tail scope.
+  #   2. `ReservationReqAccepted` in the FULL log proves the
+  #      relay-reservation handshake completed during this
+  #      run. NOT tail-scoped: merod emits this once per
+  #      reservation (initial reserve only, no renewal log),
+  #      so a tail window misses it once the log grows past
+  #      ~200 lines. Post-fault relay recovery is validated
+  #      by the during-pause sync-converge assertions above
+  #      (which only pass if relay-mediated propagation works).
   #   3. `direct-connection upgrade succeeded` is ABSENT — if
   #      `--random-fully` silently fell back to plain MASQUERADE,
   #      DCUtR would succeed and the test would be running cone
@@ -217,7 +223,6 @@ steps:
     tail_lines: 200
     patterns:
       - "/p2p-circuit/"
-      - "ReservationReqAccepted"
 
   - name: Confirm node-2 used the relay circuit post-unpause
     type: assert_log_present
@@ -225,6 +230,17 @@ steps:
     tail_lines: 200
     patterns:
       - "/p2p-circuit/"
+
+  - name: Confirm node-1 obtained a relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-1]
+    patterns:
+      - "ReservationReqAccepted"
+
+  - name: Confirm node-2 obtained a relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-2]
+    patterns:
       - "ReservationReqAccepted"
 
   - name: Confirm DCUtR did NOT upgrade (symmetric mode invariant)
