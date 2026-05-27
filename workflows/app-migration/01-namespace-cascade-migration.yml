@@ -82,13 +82,22 @@ steps:
     outputs:
       admin_key: publicKey
 
-  - name: Create descendant subgroup on node 1
+  - name: Create descendant Open subgroup on node 1
+    # Open visibility lets node 2 materialise its inherited membership
+    # via `join_subgroup_inheritance` (issue #2357 endpoint) instead
+    # of needing an admin-signed group invitation per descendant.
     type: create_group_in_namespace
     node: app-migration-cascade-1
     namespace_id: "{{namespace_id}}"
     group_name: "cascade-target-subgroup"
     outputs:
       group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-cascade-1
+    group_id: "{{group_id}}"
+    visibility: open
 
   - name: Create context in subgroup on node 1 (v1)
     type: create_context
@@ -98,7 +107,8 @@ steps:
     outputs:
       ctx_id: contextId
 
-  # Phase 3: Invite node 2 to the namespace. The namespace-invitation
+  # Phase 3: Invite node 2 to the namespace, then have it materialise
+  # the inherited Open-subgroup + context. The namespace-invitation
   # path issues a SignedGroupOpenInvitation containing the namespace
   # root's application_id AND app_key (added in this PR). Without the
   # app_key field, node 2 would seed its local namespace-root meta
@@ -111,16 +121,32 @@ steps:
     outputs:
       namespace_invitation: invitation
 
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    # Same rationale as group-join-via-inheritance.yml — node 2 needs
+    # to see the Open-visibility row and the context-registered op
+    # before its inheritance materialisation can succeed.
+    type: wait
+    seconds: 10
+
   - name: Node 2 joins namespace
     type: join_namespace
     node: app-migration-cascade-2
     namespace_id: "{{namespace_id}}"
     invitation: "{{namespace_invitation}}"
 
-  # Post-#2422 auto-follow: joiner defaults to auto_follow.contexts =
-  # true and MemberAdded emits AutoFollowSet so the auto-follow
-  # handler backfills pre-existing contexts and subgroup membership.
-  # No manual join_context / join_group needed here.
+  - name: Node 2 materialises subgroup membership via inheritance
+    # Open subgroup + inherited member: this endpoint (issue #2357)
+    # publishes MemberJoinedOpen, fetches the subgroup key via the
+    # direct-stream protocol, and returns once KeyDelivery lands so
+    # the subsequent join_context can decrypt traffic immediately.
+    type: join_subgroup_inheritance
+    node: app-migration-cascade-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-cascade-2
+    context_id: "{{ctx_id}}"
 
   # Phase 4: Write v1 state on node 1, wait for node 2 to catch up.
   - name: Node 1 writes v1 state (description)
