@@ -5,9 +5,9 @@ use calimero_context_client::group::DetachContextFromGroupRequest;
 use calimero_context_client::local_governance::GroupOp;
 use eyre::bail;
 
-use crate::governance_broadcast::ObserveDelivery;
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<DetachContextFromGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <DetachContextFromGroupRequest as Message>::Result>;
@@ -27,7 +27,8 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
         };
 
         if let Err(err) = (|| -> eyre::Result<()> {
-            let current_group = group_store::get_group_for_context(&self.datastore, &context_id)?;
+            let current_group =
+                calimero_governance_store::get_group_for_context(&self.datastore, &context_id)?;
             if current_group.as_ref() != Some(&group_id) {
                 bail!("context '{context_id}' does not belong to group '{group_id:?}'");
             }
@@ -43,7 +44,7 @@ impl Handler<DetachContextFromGroupRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let report = group_store::sign_apply_and_publish(
+                let report = calimero_governance_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,

@@ -1,5 +1,5 @@
-use crate::group_store::SigningKeysRepository;
-use crate::group_store::{MembershipRepository, MetaRepository, UpgradesRepository};
+use calimero_governance_store::SigningKeysRepository;
+use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,8 +15,8 @@ use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use eyre::bail;
 use tracing::{debug, error, info, warn};
 
-use crate::governance_broadcast::ObserveDelivery;
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<UpgradeGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <UpgradeGroupRequest as Message>::Result>;
@@ -156,7 +156,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                             .as_ref()
                             .ok_or_else(|| eyre::eyre!("target application not found"))?;
                         let app_key = *app_meta.bytecode.blob_id().as_ref();
-                        let report = group_store::sign_apply_and_publish(
+                        let report = calimero_governance_store::sign_apply_and_publish(
                             &datastore,
                             &node_client,
                             &ack_router_for_lazy,
@@ -170,7 +170,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         .await?;
                         report.observe("upgrade_group", "TargetApplicationSet");
                         if migration_bytes.is_some() {
-                            let report = group_store::sign_apply_and_publish(
+                            let report = calimero_governance_store::sign_apply_and_publish(
                                 &datastore,
                                 &node_client,
                                 &ack_router_for_lazy,
@@ -213,7 +213,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         "LazyOnAccess upgrade target set; contexts will upgrade on next access"
                     );
 
-                    let contexts = group_store::enumerate_group_contexts(
+                    let contexts = calimero_governance_store::enumerate_group_contexts(
                         &datastore,
                         &group_id,
                         0,
@@ -271,16 +271,18 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let datastore = self.datastore.clone();
         let migrate_method = migration.as_ref().map(|m| m.method.clone());
 
-        let canary_signer =
-            match group_store::find_local_signing_identity(&self.datastore, &canary_context_id) {
-                Ok(Some(s)) => s,
-                Ok(None) => {
-                    return ActorResponse::reply(Err(eyre::eyre!(
-                        "no local signing identity for canary context {canary_context_id}"
-                    )))
-                }
-                Err(err) => return ActorResponse::reply(Err(err)),
-            };
+        let canary_signer = match calimero_governance_store::find_local_signing_identity(
+            &self.datastore,
+            &canary_context_id,
+        ) {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                return ActorResponse::reply(Err(eyre::eyre!(
+                    "no local signing identity for canary context {canary_context_id}"
+                )))
+            }
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
 
         let target_blob_info = app_meta_for_contract
             .as_ref()
@@ -295,7 +297,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     .as_ref()
                     .ok_or_else(|| eyre::eyre!("target application not found"))?;
                 let app_key = *app_meta.bytecode.blob_id().as_ref();
-                let report = group_store::sign_apply_and_publish(
+                let report = calimero_governance_store::sign_apply_and_publish(
                     &datastore_for_canary,
                     &node_client,
                     &ack_router_for_canary,
@@ -309,7 +311,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                 .await?;
                 report.observe("upgrade_group", "TargetApplicationSet");
                 if migration_bytes.is_some() {
-                    let report = group_store::sign_apply_and_publish(
+                    let report = calimero_governance_store::sign_apply_and_publish(
                         &datastore_for_canary,
                         &node_client,
                         &ack_router_for_canary,
@@ -389,7 +391,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     update_upgrade_status(&datastore, &group_id_clone, status.clone())?;
 
                     // Gossip upgrade notification to peers
-                    if let Ok(contexts) = group_store::enumerate_group_contexts(
+                    if let Ok(contexts) = calimero_governance_store::enumerate_group_contexts(
                         &datastore_for_gossip,
                         &group_id_clone,
                         0,
@@ -507,7 +509,8 @@ fn validate_upgrade(
     }
 
     // 6. Group must have contexts
-    let contexts = group_store::enumerate_group_contexts(datastore, group_id, 0, usize::MAX)?;
+    let contexts =
+        calimero_governance_store::enumerate_group_contexts(datastore, group_id, 0, usize::MAX)?;
     if contexts.is_empty() {
         bail!("group has no contexts to upgrade");
     }
@@ -554,8 +557,12 @@ pub(crate) async fn propagate_upgrade(
     skip_context: Option<ContextId>,
     initial_completed: u32,
 ) {
-    let contexts = match group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)
-    {
+    let contexts = match calimero_governance_store::enumerate_group_contexts(
+        &datastore,
+        &group_id,
+        0,
+        usize::MAX,
+    ) {
         Ok(c) => c,
         Err(err) => {
             error!(
@@ -622,7 +629,9 @@ pub(crate) async fn propagate_upgrade(
 
             let migrate_method = migration.as_ref().map(|m| m.method.clone());
 
-            let signer = match group_store::find_local_signing_identity(&datastore, context_id) {
+            let signer = match calimero_governance_store::find_local_signing_identity(
+                &datastore, context_id,
+            ) {
                 Ok(Some(s)) => s,
                 Ok(None) => {
                     warn!(
@@ -889,7 +898,7 @@ fn dispatch_cascade(
     // surfacing as a less clear failure deep in publish.
     let effective_signing_key = match signing_key {
         Some(sk) => sk,
-        None => match crate::group_store::SigningKeysRepository::new(&actor.datastore)
+        None => match calimero_governance_store::SigningKeysRepository::new(&actor.datastore)
             .get_key(&group_id, &requester)
         {
             Ok(Some(sk)) => sk,
@@ -906,15 +915,18 @@ fn dispatch_cascade(
     // After `sign_apply_and_publish` runs, the apply arm rewrites
     // `GroupMeta.app_key` on matched descendants to `new_app_key`, so a
     // post-publish walk against `from_app_key` would find zero matches.
-    let matched_descendants =
-        match crate::cascade::walk_for_predicate(&actor.datastore, group_id, from_app_key) {
-            Ok(entries) => entries
-                .into_iter()
-                .filter(|e| e.matched)
-                .map(|e| e.group_id)
-                .collect::<Vec<_>>(),
-            Err(err) => return ActorResponse::reply(Err(err)),
-        };
+    let matched_descendants = match calimero_governance_store::cascade::walk_for_predicate(
+        &actor.datastore,
+        group_id,
+        from_app_key,
+    ) {
+        Ok(entries) => entries
+            .into_iter()
+            .filter(|e| e.matched)
+            .map(|e| e.group_id)
+            .collect::<Vec<_>>(),
+        Err(err) => return ActorResponse::reply(Err(err)),
+    };
 
     if matched_descendants.is_empty() {
         return ActorResponse::reply(Err(eyre::eyre!(
@@ -945,7 +957,7 @@ fn dispatch_cascade(
 
     let mut pre_spawn_totals = Vec::with_capacity(matched_descendants.len());
     for gid in &matched_descendants {
-        let total = match crate::group_store::MetadataRepository::new(&actor.datastore)
+        let total = match calimero_governance_store::MetadataRepository::new(&actor.datastore)
             .count_contexts(gid)
         {
             Ok(c) => c as u32,
@@ -967,7 +979,7 @@ fn dispatch_cascade(
     let publish_task = async move {
         let sk = PrivateKey::from(effective_signing_key);
 
-        let report = group_store::sign_apply_and_publish(
+        let report = calimero_governance_store::sign_apply_and_publish(
             &datastore_for_publish,
             &node_client_for_publish,
             &ack_router_for_publish,
@@ -983,7 +995,7 @@ fn dispatch_cascade(
         report.observe("upgrade_group", "CascadeTargetApplicationSet");
 
         if migration_bytes_for_publish.is_some() {
-            let report = group_store::sign_apply_and_publish(
+            let report = calimero_governance_store::sign_apply_and_publish(
                 &datastore_for_publish,
                 &node_client_for_publish,
                 &ack_router_for_publish,
@@ -1067,7 +1079,7 @@ fn dispatch_cascade(
         ctx.spawn(
             async move {
                 for gid in &descendants_for_announce {
-                    let contexts = match group_store::enumerate_group_contexts(
+                    let contexts = match calimero_governance_store::enumerate_group_contexts(
                         &datastore_for_announce,
                         gid,
                         0,

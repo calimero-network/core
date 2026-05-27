@@ -1,9 +1,9 @@
-use crate::group_store::{MembershipRepository, MetaRepository, MetadataRepository};
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{SyncGroupRequest, SyncGroupResponse};
+use calimero_governance_store::{MembershipRepository, MetaRepository, MetadataRepository};
 use tracing::{info, warn};
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<SyncGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <SyncGroupRequest as Message>::Result>;
@@ -24,8 +24,12 @@ impl Handler<SyncGroupRequest> for ContextManager {
                         eyre::eyre!("group not found locally; wait for P2P replication")
                     })?;
 
-                let contexts =
-                    group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;
+                let contexts = calimero_governance_store::enumerate_group_contexts(
+                    &datastore,
+                    &group_id,
+                    0,
+                    usize::MAX,
+                )?;
                 for context_id in &contexts {
                     if let Err(err) = context_client.sync_context_config(*context_id, None).await {
                         warn!(

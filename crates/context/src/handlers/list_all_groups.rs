@@ -1,10 +1,10 @@
-use crate::group_store::{MembershipRepository, MetaRepository, MetadataRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{GroupSummary, ListAllGroupsRequest};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{MembershipRepository, MetaRepository, MetadataRepository};
 
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
 
 impl Handler<ListAllGroupsRequest> for ContextManager {
     type Result = ActorResponse<Self, <ListAllGroupsRequest as Message>::Result>;

@@ -11,10 +11,10 @@ use calimero_store::Store;
 use eyre::bail;
 use serde::Serialize;
 
-use crate::group_store;
-use crate::group_store::MAX_NAMESPACE_DEPTH;
-use crate::group_store::{MembershipRepository, NamespaceRepository, SigningKeysRepository};
 use crate::ContextManager;
+use calimero_governance_store;
+use calimero_governance_store::MAX_NAMESPACE_DEPTH;
+use calimero_governance_store::{MembershipRepository, NamespaceRepository, SigningKeysRepository};
 
 /// Domain-separation tag prepended to the serialized payload before signing.
 /// Verifiers MUST reconstruct the signed bytes as `OWNERSHIP_PROOF_DOMAIN ||
@@ -74,7 +74,7 @@ pub(crate) fn build_ownership_proof(
         bail!("node is not a direct admin of this group");
     }
 
-    let ctx_group = group_store::get_group_for_context(store, &context_id)?
+    let ctx_group = calimero_governance_store::get_group_for_context(store, &context_id)?
         .ok_or_else(|| eyre::eyre!("context {context_id:?} is not registered in any group"))?;
     // The caller scopes the proof to a namespace root; the context may live in
     // that root or any descendant subgroup. Walk up from the context's group
@@ -317,8 +317,10 @@ mod tests {
     use serde_json::Value;
 
     use super::{build_namespace_ownership_proof, build_ownership_proof, OWNERSHIP_PROOF_DOMAIN};
-    use crate::group_store;
-    use crate::group_store::{MembershipRepository, NamespaceRepository, SigningKeysRepository};
+    use calimero_governance_store;
+    use calimero_governance_store::{
+        MembershipRepository, NamespaceRepository, SigningKeysRepository,
+    };
 
     const NOW_MS: u64 = 1_700_000_000_000;
 
@@ -340,7 +342,7 @@ mod tests {
         SigningKeysRepository::new(&store)
             .store_key(&group_id, &signing_pub, &signing_priv)
             .expect("store signing key");
-        group_store::register_context_in_group(&store, &group_id, &context_id)
+        calimero_governance_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
 
         (store, group_id, context_id, signing_pub, signing_priv)
@@ -425,7 +427,7 @@ mod tests {
         MembershipRepository::new(&store)
             .add_member(&group_id, &identity, GroupMemberRole::Admin)
             .expect("add admin");
-        group_store::register_context_in_group(&store, &group_id, &context_id)
+        calimero_governance_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
 
         let err = build_ownership_proof(
@@ -508,7 +510,7 @@ mod tests {
         NamespaceRepository::new(&store)
             .nest(&root, &child)
             .expect("nest child under root");
-        group_store::register_context_in_group(&store, &child, &context_id)
+        calimero_governance_store::register_context_in_group(&store, &child, &context_id)
             .expect("register context in subgroup");
 
         let out = build_ownership_proof(
@@ -541,7 +543,7 @@ mod tests {
         // descendant of it must not be claimable under `group_id`.
         let unrelated = ContextGroupId::from([0xEE; 32]);
         let foreign_ctx = ContextId::from([0xDD; 32]);
-        group_store::register_context_in_group(&store, &unrelated, &foreign_ctx)
+        calimero_governance_store::register_context_in_group(&store, &unrelated, &foreign_ctx)
             .expect("register context in unrelated group");
 
         let err = build_ownership_proof(
@@ -591,7 +593,7 @@ mod tests {
         SigningKeysRepository::new(&store)
             .store_key(&group_id, &node_identity, &real_priv)
             .expect("store signing key keyed by node_identity");
-        group_store::register_context_in_group(&store, &group_id, &context_id)
+        calimero_governance_store::register_context_in_group(&store, &group_id, &context_id)
             .expect("register context");
 
         let out = build_ownership_proof(

@@ -1,8 +1,8 @@
-use crate::group_store::MetadataRepository;
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::StoreContextMetadataRequest;
+use calimero_governance_store::MetadataRepository;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<StoreContextMetadataRequest> for ContextManager {
     type Result = ActorResponse<Self, <StoreContextMetadataRequest as Message>::Result>;

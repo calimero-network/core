@@ -1,14 +1,14 @@
-use crate::group_store::{
-    MembershipRepository, MetaRepository, MetadataRepository, UpgradesRepository,
-};
 use actix::{ActorFutureExt, ActorResponse, AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_client::group::{RetryGroupUpgradeRequest, UpgradeGroupResponse};
 use calimero_context_client::messages::MigrationParams;
+use calimero_governance_store::{
+    MembershipRepository, MetaRepository, MetadataRepository, UpgradesRepository,
+};
 use calimero_store::key::GroupUpgradeStatus;
 use eyre::bail;
 use tracing::info;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<RetryGroupUpgradeRequest> for ContextManager {
     type Result = ActorResponse<Self, <RetryGroupUpgradeRequest as Message>::Result>;

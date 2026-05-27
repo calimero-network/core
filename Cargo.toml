@@ -47,6 +47,7 @@ members = [
     "./crates/context/config",
     "./crates/context/primitives",
     "./crates/governance-types",
+    "./crates/governance-store",
     "./crates/crypto",
     "./crates/dag",
     "./crates/meroctl",
@@ -227,6 +228,7 @@ calimero-context = { path = "./crates/context" }
 calimero-context-config = { path = "./crates/context/config", default-features = false }
 calimero-context-client = { path = "./crates/context/primitives" }
 calimero-governance-types = { path = "./crates/governance-types" }
+calimero-governance-store = { path = "./crates/governance-store" }
 calimero-crypto = { path = "./crates/crypto" }
 calimero-dag = { path = "./crates/dag" }
 calimero-network = { path = "./crates/network" }
