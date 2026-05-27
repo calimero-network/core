@@ -177,16 +177,29 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                         // evicted when the relay control connection
                         // closed; the new one hasn't been written yet).
                         //
-                        // Three re-fires at 5s / 15s / 30s cover the
-                        // typical restart-window observed in CI
+                        // Four re-fires at 5s / 15s / 30s / 60s cover
+                        // the typical restart-window observed in CI
                         // (~3-5s warm, up to ~15-20s on a contended
-                        // runner). Each re-fire bypasses the throttle
-                        // via the force-path. The cost is bounded —
-                        // at most 4 queries to the boot-node per
-                        // disconnect event, regardless of fleet size.
-                        // No-op if we have no rendezvous peers
-                        // configured (mdns-only deployments).
-                        for delay_secs in [5_u64, 15, 30] {
+                        // runner, up to ~60s on a cold-cache + I/O-
+                        // saturated runner). Each re-fire bypasses
+                        // the throttle via the force-path. The cost
+                        // is bounded — at most 5 queries to the
+                        // boot-node per disconnect event, regardless
+                        // of fleet size. No-op if we have no
+                        // rendezvous peers configured (mdns-only
+                        // deployments).
+                        //
+                        // After the +60s retry the periodic
+                        // discovery tick (default 15s, see
+                        // `RendezvousConfig::default()`) takes over.
+                        // It is throttled at one query per 120s by
+                        // default, so worst-case rediscover latency
+                        // after a missed retry window is bounded by
+                        // `last_force_fire + 120s` ≈ t+180s — bad
+                        // for a 120s test budget, fine for a
+                        // production deployment where the peer is
+                        // expected back at all.
+                        for delay_secs in [5_u64, 15, 30, 60] {
                             ctx.run_later(
                                 core::time::Duration::from_secs(delay_secs),
                                 move |actor, _ctx| {
