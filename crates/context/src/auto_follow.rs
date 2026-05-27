@@ -1,6 +1,6 @@
 //! Auto-follow handler for group members.
 //!
-//! Subscribes to the op-apply event channel (see [`crate::op_events`])
+//! Subscribes to the op-apply event channel (see [`calimero_governance_store::op_events`])
 //! and reacts to governance-DAG ops by emitting the corresponding
 //! join ops on behalf of this node — subject to the member having the
 //! relevant [`AutoFollowFlags`] set for the group in question.
@@ -20,7 +20,7 @@
 //!
 //! The handler does NOT directly subscribe to `MemberAdded` /
 //! `MemberJoinedOpen` / `TeeMemberAdmitted` events. Instead, each of
-//! the corresponding apply sites in `crate::group_store` synthesizes
+//! the corresponding apply sites in `calimero_governance_store` synthesizes
 //! an `AutoFollowSet { contexts: true, .. }` event when the freshly-
 //! written member row has `auto_follow.contexts` true (the post-#2422
 //! default — see [`AutoFollowFlags::default`]). This routes the
@@ -46,9 +46,9 @@ use tokio::sync::Semaphore;
 use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
 
-use crate::group_store;
-use crate::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
-use crate::op_events::{self, OpEvent};
+use calimero_governance_store;
+use calimero_governance_store::op_events::{self, OpEvent};
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 
 /// Token-bucket rate limit for auto-follow emissions.
 ///
@@ -378,17 +378,18 @@ pub(crate) fn decide_on_auto_follow_enabled(
     if self_pk != member {
         return AutoFollowEnabledDecision::NotForSelf;
     }
-    let contexts = match group_store::enumerate_group_contexts(store, &gid, 0, BACKFILL_LIMIT) {
-        Ok(ids) => ids,
-        Err(err) => {
-            warn!(
-                group_id = %hex::encode(group_id),
-                ?err,
-                "auto-follow: failed to enumerate contexts for backfill"
-            );
-            return AutoFollowEnabledDecision::EnumerateFailed;
-        }
-    };
+    let contexts =
+        match calimero_governance_store::enumerate_group_contexts(store, &gid, 0, BACKFILL_LIMIT) {
+            Ok(ids) => ids,
+            Err(err) => {
+                warn!(
+                    group_id = %hex::encode(group_id),
+                    ?err,
+                    "auto-follow: failed to enumerate contexts for backfill"
+                );
+                return AutoFollowEnabledDecision::EnumerateFailed;
+            }
+        };
     if contexts.is_empty() {
         return AutoFollowEnabledDecision::NothingToBackfill;
     }
@@ -611,7 +612,7 @@ mod tests {
             decide_on_auto_follow_enabled, decide_on_context_registered, AutoFollowEnabledDecision,
             ContextRegisteredDecision, BACKFILL_LIMIT,
         };
-        use crate::group_store::{
+        use calimero_governance_store::{
             register_context_in_group, MembershipRepository, MetaRepository, NamespaceRepository,
         };
 

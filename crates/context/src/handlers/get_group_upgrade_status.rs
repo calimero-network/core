@@ -1,6 +1,6 @@
-use crate::group_store::{MembershipRepository, UpgradesRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::GetGroupUpgradeStatusRequest;
+use calimero_governance_store::{MembershipRepository, UpgradesRepository};
 use eyre::bail;
 
 use crate::{group_store, ContextManager};

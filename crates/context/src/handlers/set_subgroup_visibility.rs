@@ -1,4 +1,4 @@
-use crate::group_store::NamespaceRepository;
+use calimero_governance_store::NamespaceRepository;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -6,8 +6,8 @@ use calimero_context_client::group::SetSubgroupVisibilityRequest;
 use calimero_context_client::local_governance::GroupOp;
 use tracing::warn;
 
-use crate::governance_broadcast::ObserveDelivery;
 use crate::{group_store, ContextManager};
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
     type Result = ActorResponse<Self, <SetSubgroupVisibilityRequest as Message>::Result>;
@@ -48,8 +48,9 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
             Ok(p) => p,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
-        if let Err(err) = group_store::PermissionChecker::new(&self.datastore, group_id)
-            .require_can_manage_visibility(&preflight.requester)
+        if let Err(err) =
+            calimero_governance_store::PermissionChecker::new(&self.datastore, group_id)
+                .require_can_manage_visibility(&preflight.requester)
         {
             return ActorResponse::reply(Err(err));
         }
@@ -66,7 +67,7 @@ impl Handler<SetSubgroupVisibilityRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let report = group_store::sign_apply_and_publish(
+                let report = calimero_governance_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,

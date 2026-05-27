@@ -1,4 +1,4 @@
-use crate::group_store::{MembershipRepository, SigningKeysRepository};
+use calimero_governance_store::{MembershipRepository, SigningKeysRepository};
 use core::error::Error;
 use std::sync::Arc;
 
@@ -16,8 +16,8 @@ use eyre::bail;
 
 use calimero_primitives::identity::PrivateKey;
 
-use crate::governance_broadcast::ObserveDelivery;
 use crate::{group_store, ContextManager};
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<DeleteContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <DeleteContextRequest as Message>::Result>;
@@ -51,7 +51,7 @@ impl Handler<DeleteContextRequest> for ContextManager {
         let ack_router = Arc::clone(&self.ack_router);
 
         let group_id_for_context =
-            match group_store::get_group_for_context(&self.datastore, &context_id) {
+            match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
                 Ok(g) => g,
                 Err(err) => return ActorResponse::reply(Err(err)),
             };
@@ -124,7 +124,9 @@ async fn delete_context(
     // Context "deletion" should be a soft delete (marking as inactive/left)
     // rather than actually removing DAG history. See issue for details.
 
-    if let Some(group_id) = group_store::get_group_for_context(&datastore, &context_id)? {
+    if let Some(group_id) =
+        calimero_governance_store::get_group_for_context(&datastore, &context_id)?
+    {
         let requester =
             requester.ok_or_else(|| eyre::eyre!("requester required to delete a group context"))?;
 
@@ -136,7 +138,7 @@ async fn delete_context(
                      cannot publish local detach op"
                 )
             })?;
-        let report = group_store::sign_apply_and_publish(
+        let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
             &node_client,
             &ack_router,

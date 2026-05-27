@@ -1,8 +1,8 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::GetGroupForContextRequest;
 
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
 
 impl Handler<GetGroupForContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <GetGroupForContextRequest as Message>::Result>;
@@ -12,7 +12,7 @@ impl Handler<GetGroupForContextRequest> for ContextManager {
         GetGroupForContextRequest { context_id }: GetGroupForContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result = group_store::get_group_for_context(&self.datastore, &context_id);
+        let result = calimero_governance_store::get_group_for_context(&self.datastore, &context_id);
 
         ActorResponse::reply(result)
     }

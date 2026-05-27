@@ -8,8 +8,8 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::UpgradePolicy;
 use calimero_store::key::GroupUpgradeStatus;
 
-use crate::group_store::{MetaRepository, NamespaceRepository, UpgradesRepository};
 use crate::ContextManager;
+use calimero_governance_store::{MetaRepository, NamespaceRepository, UpgradesRepository};
 
 impl ContextManager {
     /// Scans the store for in-progress group upgrades and re-spawns

@@ -1,7 +1,7 @@
-use crate::group_store::{CapabilitiesRepository, MembershipRepository, MetaRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::StoreGroupMetaRequest;
 use calimero_context_config::MemberCapabilities;
+use calimero_governance_store::{CapabilitiesRepository, MembershipRepository, MetaRepository};
 use calimero_primitives::context::GroupMemberRole;
 use calimero_store::key::GroupMetaValue;
 use tracing::{info, warn};

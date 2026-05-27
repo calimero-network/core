@@ -1,4 +1,4 @@
-use crate::group_store::{MetaRepository, NamespaceRepository};
+use calimero_governance_store::{MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -8,9 +8,9 @@ use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
-use crate::governance_broadcast::ObserveDelivery;
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<DeleteGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <DeleteGroupRequest as Message>::Result>;
@@ -58,38 +58,42 @@ impl Handler<DeleteGroupRequest> for ContextManager {
             };
 
         // Sync validation + cascade payload pre-computation.
-        let validated = (|| -> eyre::Result<(group_store::CascadePayload, [u8; 32])> {
-            let Some(meta) = MetaRepository::new(&self.datastore).load(&group_id)? else {
-                bail!("group '{group_id:?}' not found");
-            };
+        let validated =
+            (|| -> eyre::Result<(calimero_governance_store::CascadePayload, [u8; 32])> {
+                let Some(meta) = MetaRepository::new(&self.datastore).load(&group_id)? else {
+                    bail!("group '{group_id:?}' not found");
+                };
 
-            // Reject the namespace root explicitly; it has no parent edge to
-            // identify it as a subtree, and the namespace-deletion path is
-            // separate (delete_namespace).
-            let namespace_id = NamespaceRepository::new(&self.datastore).resolve(&group_id)?;
-            if namespace_id == group_id {
-                bail!(
+                // Reject the namespace root explicitly; it has no parent edge to
+                // identify it as a subtree, and the namespace-deletion path is
+                // separate (delete_namespace).
+                let namespace_id = NamespaceRepository::new(&self.datastore).resolve(&group_id)?;
+                if namespace_id == group_id {
+                    bail!(
                     "cannot delete the namespace root '{group_id:?}': use delete_namespace instead"
                 );
-            }
+                }
 
-            // Authorization (re-checked on every peer in `execute_group_deleted`):
-            // the subgroup's owner, an admin of the namespace root, or a
-            // namespace member holding CAN_DELETE_SUBGROUP. The non-owner case
-            // routes through `PermissionChecker` to stay in step with the
-            // create / set-visibility handlers.
-            if meta.owner_identity != requester {
-                group_store::PermissionChecker::new(&self.datastore, namespace_id)
+                // Authorization (re-checked on every peer in `execute_group_deleted`):
+                // the subgroup's owner, an admin of the namespace root, or a
+                // namespace member holding CAN_DELETE_SUBGROUP. The non-owner case
+                // routes through `PermissionChecker` to stay in step with the
+                // create / set-visibility handlers.
+                if meta.owner_identity != requester {
+                    calimero_governance_store::PermissionChecker::new(
+                        &self.datastore,
+                        namespace_id,
+                    )
                     .require_can_delete_subgroup(&requester)
                     .map_err(|e| {
                         eyre::eyre!("deleting subgroup '{group_id:?}': {e} (or be its owner)")
                     })?;
-            }
+                }
 
-            let payload =
-                NamespaceRepository::new(&self.datastore).collect_subtree_for_cascade(&group_id)?;
-            Ok((payload, namespace_id.to_bytes()))
-        })();
+                let payload = NamespaceRepository::new(&self.datastore)
+                    .collect_subtree_for_cascade(&group_id)?;
+                Ok((payload, namespace_id.to_bytes()))
+            })();
 
         let (cascade_payload, namespace_id_bytes) = match validated {
             Ok(v) => v,
@@ -121,7 +125,7 @@ impl Handler<DeleteGroupRequest> for ContextManager {
                     cascade_context_ids,
                 });
 
-                let report = group_store::sign_apply_and_publish_namespace_op(
+                let report = calimero_governance_store::sign_apply_and_publish_namespace_op(
                     &datastore,
                     &node_client,
                     &ack_router,

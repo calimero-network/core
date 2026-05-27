@@ -3,7 +3,7 @@
 //! See `architecture/membership-and-leave.html` § 6 for the design.
 //! This handler is a thin wrapper over `leave_group`: it publishes
 //! `GroupOp::MemberLeft { member: signer }` at the namespace root.
-//! The apply path in `crate::group_store` detects "this group has no
+//! The apply path in `calimero_governance_store` detects "this group has no
 //! parent" and cascades through every descendant where the leaver has
 //! a direct row — owner + last-admin checks across all of them
 //! upfront, then row-removal cascade.
@@ -19,10 +19,10 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{LeaveNamespaceRequest, LeaveNamespaceResponse};
 use tracing::info;
 
-use crate::governance_broadcast::observe_handler_delivery;
-use crate::group_store;
-use crate::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use crate::ContextManager;
+use calimero_governance_store;
+use calimero_governance_store::governance_broadcast::observe_handler_delivery;
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 
 impl Handler<LeaveNamespaceRequest> for ContextManager {
     type Result = ActorResponse<Self, <LeaveNamespaceRequest as Message>::Result>;
@@ -104,7 +104,7 @@ impl Handler<LeaveNamespaceRequest> for ContextManager {
                 // performs the multi-scope owner / last-admin checks +
                 // cascade across descendants. If any check fails, the error
                 // surfaces here as the user-facing failure.
-                let report = group_store::sign_apply_and_publish(
+                let report = calimero_governance_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,

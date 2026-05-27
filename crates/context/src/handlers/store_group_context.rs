@@ -14,8 +14,11 @@ impl Handler<StoreGroupContextRequest> for ContextManager {
         }: StoreGroupContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let result =
-            group_store::register_context_in_group(&self.datastore, &group_id, &context_id);
+        let result = calimero_governance_store::register_context_in_group(
+            &self.datastore,
+            &group_id,
+            &context_id,
+        );
         ActorResponse::reply(result)
     }
 }

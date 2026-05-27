@@ -1,4 +1,4 @@
-use crate::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::time::Duration;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -9,7 +9,10 @@ use eyre::bail;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
-use crate::{group_store, registration_notify, ContextManager};
+use calimero_governance_store as group_store;
+use calimero_governance_store::registration_notify;
+
+use crate::ContextManager;
 
 /// Overall budget for the context→group mapping to land locally after a
 /// `sync_known_namespaces` kick. Dominated by peer-discovery in the cold
@@ -37,7 +40,7 @@ impl Handler<JoinContextRequest> for ContextManager {
         let ack_router = std::sync::Arc::clone(&self.ack_router);
         ActorResponse::r#async(
             async move {
-                let mut group_id = group_store::get_group_for_context(&datastore, &context_id)?;
+                let mut group_id = calimero_governance_store::get_group_for_context(&datastore, &context_id)?;
                 if group_id.is_none() {
                     // Subscribe BEFORE kicking sync so we cannot miss a signal
                     // that fires between the sync returning and us starting to
@@ -52,7 +55,7 @@ impl Handler<JoinContextRequest> for ContextManager {
 
                     // Mapping may have landed synchronously during sync (creator's
                     // own apply, or a sync that completed and applied inline).
-                    group_id = group_store::get_group_for_context(&datastore, &context_id)?;
+                    group_id = calimero_governance_store::get_group_for_context(&datastore, &context_id)?;
 
                     if group_id.is_none() {
                         let deadline = tokio::time::Instant::now() + GROUP_LOOKUP_TIMEOUT;
@@ -64,7 +67,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                             let recv = tokio::time::timeout(FALLBACK_POLL, rx.recv()).await;
                             match recv {
                                 Ok(Ok(cid)) if cid == context_id => {
-                                    group_id = group_store::get_group_for_context(
+                                    group_id = calimero_governance_store::get_group_for_context(
                                         &datastore, &context_id,
                                     )?;
                                     if group_id.is_some() {
@@ -85,7 +88,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                                         skipped,
                                         "registration_notify lagged; falling back to datastore poll"
                                     );
-                                    group_id = group_store::get_group_for_context(
+                                    group_id = calimero_governance_store::get_group_for_context(
                                         &datastore, &context_id,
                                     )?;
                                     if group_id.is_some() {
@@ -94,7 +97,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                                 }
                                 Ok(Err(RecvError::Closed)) => {
                                     // Channel sender dropped; final datastore check then bail.
-                                    group_id = group_store::get_group_for_context(
+                                    group_id = calimero_governance_store::get_group_for_context(
                                         &datastore, &context_id,
                                     )?;
                                     break;
@@ -102,7 +105,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                                 Err(_elapsed) => {
                                     // Poll tick — recheck the datastore and kick another
                                     // namespace sync to cover the "peer arrived late" case.
-                                    group_id = group_store::get_group_for_context(
+                                    group_id = calimero_governance_store::get_group_for_context(
                                         &datastore, &context_id,
                                     )?;
                                     if group_id.is_some() {
@@ -142,11 +145,11 @@ impl Handler<JoinContextRequest> for ContextManager {
                 let membership_path = MembershipRepository::new(&datastore).check_path(&group_id, &joiner_identity, )?;
                 let mut was_inherited = false;
                 match membership_path {
-                    group_store::MembershipPath::None => {
+                    calimero_governance_store::MembershipPath::None => {
                         bail!("identity is not a member of the group");
                     }
-                    group_store::MembershipPath::Direct => {}
-                    group_store::MembershipPath::Inherited { anchor, via_admin } => {
+                    calimero_governance_store::MembershipPath::Direct => {}
+                    calimero_governance_store::MembershipPath::Inherited { anchor, via_admin } => {
                         // Audit trail: inherited members do not appear in
                         // `list_group_members` for the subgroup, so emit a
                         // structured log so admins can reconstruct who has
@@ -178,7 +181,7 @@ impl Handler<JoinContextRequest> for ContextManager {
 
                     // Read service_name from the dedicated context service name key,
                     // written during ContextRegistered governance application.
-                    let svc_name = group_store::get_context_service_name(&datastore, &context_id)?;
+                    let svc_name = calimero_governance_store::get_context_service_name(&datastore, &context_id)?;
 
                     Some(ContextConfigParams {
                         application_id: app_id,
@@ -256,7 +259,7 @@ impl Handler<JoinContextRequest> for ContextManager {
                             group_id: group_id.to_bytes(),
                         },
                     );
-                    if let Err(e) = group_store::sign_apply_and_publish_namespace_op(
+                    if let Err(e) = calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
                         &node_client,
                         &ack_router,

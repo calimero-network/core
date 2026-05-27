@@ -1,4 +1,4 @@
-use crate::group_store::{MembershipRepository, MetaRepository};
+use calimero_governance_store::{MembershipRepository, MetaRepository};
 use std::collections::{btree_map, BTreeMap};
 use std::mem;
 use std::sync::Arc;
@@ -25,9 +25,9 @@ use tracing::{debug, error, warn};
 
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
-use crate::governance_broadcast::ObserveDelivery;
 use crate::handlers::execute::{persist_signed_signatures, sign_authorized_actions};
 use crate::{group_store, ContextManager, ContextMeta};
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<CreateContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <CreateContextRequest as Message>::Result>;
@@ -536,7 +536,7 @@ async fn create_context(
     // worst case is a single context associated with a since-removed member.
     {
         let sk = PrivateKey::from(*identity_secret);
-        let report = group_store::sign_apply_and_publish(
+        let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
             &node_client,
             &ack_router,
@@ -559,7 +559,7 @@ async fn create_context(
 
     if let Some(ref name_str) = name {
         let sk = PrivateKey::from(*identity_secret);
-        let report = group_store::sign_apply_and_publish(
+        let report = calimero_governance_store::sign_apply_and_publish(
             &datastore,
             &node_client,
             &ack_router,

@@ -36,9 +36,9 @@ use calimero_store::{key, types};
 use eyre::{bail, eyre, WrapErr};
 use tracing::{info, warn};
 
-use crate::group_store;
-use crate::group_store::NamespaceRepository;
 use crate::ContextManager;
+use calimero_governance_store;
+use calimero_governance_store::NamespaceRepository;
 
 impl Handler<LeaveContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <LeaveContextRequest as Message>::Result>;
@@ -65,7 +65,7 @@ impl Handler<LeaveContextRequest> for ContextManager {
                 // can mint a per-context identity on creation). Resolving
                 // through `find_local_signing_identity` deletes the row that
                 // actually exists on disk.
-                let member_public_key = match group_store::find_local_signing_identity(
+                let member_public_key = match calimero_governance_store::find_local_signing_identity(
                     &datastore,
                     &context_id,
                 )? {
@@ -78,7 +78,7 @@ impl Handler<LeaveContextRequest> for ContextManager {
                         // record under our identity. If even that fails,
                         // there's nothing for us to leave.
                         let group_id =
-                            group_store::get_group_for_context(&datastore, &context_id)?
+                            calimero_governance_store::get_group_for_context(&datastore, &context_id)?
                                 .ok_or_else(|| {
                                     eyre!(
                                         "context {} is not mapped to any local group; \

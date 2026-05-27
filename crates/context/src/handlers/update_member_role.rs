@@ -1,4 +1,4 @@
-use crate::group_store::MembershipRepository;
+use calimero_governance_store::MembershipRepository;
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -6,8 +6,8 @@ use calimero_context_client::group::UpdateMemberRoleRequest;
 use calimero_context_client::local_governance::GroupOp;
 use calimero_primitives::context::GroupMemberRole;
 
-use crate::governance_broadcast::ObserveDelivery;
 use crate::{group_store, ContextManager};
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<UpdateMemberRoleRequest> for ContextManager {
     type Result = ActorResponse<Self, <UpdateMemberRoleRequest as Message>::Result>;
@@ -71,7 +71,7 @@ impl Handler<UpdateMemberRoleRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let report = group_store::sign_apply_and_publish(
+                let report = calimero_governance_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,

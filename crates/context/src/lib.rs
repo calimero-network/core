@@ -1,7 +1,7 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
-use crate::group_store::{
+use calimero_governance_store::{
     MembershipRepository, MetaRepository, NamespaceRepository, SigningKeysRepository,
 };
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
@@ -23,20 +23,42 @@ use either::Either;
 use prometheus_client::registry::Registry;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-use crate::metrics::Metrics;
+use calimero_governance_store::metrics::Metrics;
 
 pub mod auto_follow;
-pub(crate) mod cascade;
 pub mod config;
 pub mod error;
-pub mod governance_broadcast;
 pub mod governance_dag;
-pub mod group_store;
 pub mod handlers;
 mod lifecycle;
-mod metrics;
-pub mod op_events;
-pub mod registration_notify;
+
+// Backward-compat re-export shims for the modules moved to
+// `calimero-governance-store` in #2307. External callers
+// (`crates/server`, `crates/node`, `crates/meroctl`) continue to
+// import via `calimero_context::group_store::*` /
+// `calimero_context::governance_broadcast::*` without source changes;
+// the curated symbol lists below are exactly the surface those callers
+// reach for today (audited via `grep -rh 'calimero_context::group_store::'`
+// on 2026-05-27). Anything not in this list is `pub(crate)` inside the
+// new crate and not re-exported.
+pub mod group_store {
+    pub use calimero_governance_store::{
+        apply_local_signed_group_op, apply_signed_namespace_op, enumerate_group_contexts,
+        get_group_for_context, get_local_gov_nonce, get_op_head,
+        is_currently_authorized_for_context, membership_status_at, now_millis, read_op_log_after,
+        read_tee_admission_policy, register_context_in_group, sign_and_publish_namespace_op,
+        sign_apply_and_publish, sign_apply_and_publish_namespace_op, CapabilitiesRepository,
+        DenyListRepository, GroupKeyring, MembershipPath, MembershipRepository, MembershipStatus,
+        MetaRepository, MetadataRepository, NamespaceDagService, NamespaceGovernance,
+        NamespaceRepository, SigningKeysRepository, UpgradesRepository,
+    };
+}
+
+pub mod governance_broadcast {
+    pub use calimero_governance_store::governance_broadcast::{
+        ns_topic, sign_ack, verify_readiness_beacon, ObserveDelivery,
+    };
+}
 
 use calimero_context_client::local_governance::AckRouter;
 
@@ -317,7 +339,7 @@ impl ContextManager {
 
         ActorResponse::r#async(
             async move {
-                let _report = group_store::sign_apply_and_publish(
+                let _report = calimero_governance_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,

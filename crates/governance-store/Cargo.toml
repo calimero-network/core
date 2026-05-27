@@ -1,0 +1,38 @@
+[package]
+name = "calimero-governance-store"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description.workspace = true
+publish = true
+
+[dependencies]
+actix.workspace = true
+async-trait.workspace = true
+borsh.workspace = true
+bs58.workspace = true
+eyre.workspace = true
+hex.workspace = true
+libp2p.workspace = true
+ouroboros.workspace = true
+prometheus-client.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
+tracing.workspace = true
+
+calimero-context-config.workspace = true
+calimero-context-client.workspace = true
+calimero-crypto.workspace = true
+calimero-dag.workspace = true
+calimero-network-primitives.workspace = true
+calimero-node-primitives.workspace = true
+calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
+calimero-storage.workspace = true
+calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-utils-actix.workspace = true

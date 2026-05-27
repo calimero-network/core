@@ -1,4 +1,6 @@
-use crate::group_store::{GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository};
+use calimero_governance_store::{
+    GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+};
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -45,7 +47,7 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     .check_path(&group_id, &joiner_identity)?;
 
                 match membership_path {
-                    group_store::MembershipPath::Direct => {
+                    calimero_governance_store::MembershipPath::Direct => {
                         info!(
                             ?group_id,
                             %joiner_identity,
@@ -57,7 +59,7 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                             was_inherited: false,
                         });
                     }
-                    group_store::MembershipPath::Inherited { anchor, via_admin } => {
+                    calimero_governance_store::MembershipPath::Inherited { anchor, via_admin } => {
                         info!(
                             target: "calimero::audit::group_membership",
                             subgroup_id = %hex::encode(group_id.to_bytes()),
@@ -67,7 +69,7 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                             "self-join via inherited Open-subgroup membership"
                         );
                     }
-                    group_store::MembershipPath::None => {
+                    calimero_governance_store::MembershipPath::None => {
                         return Err(JoinSubgroupInheritanceError::NotEligible.into());
                     }
                 }
@@ -140,7 +142,7 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     member: joiner_identity,
                     group_id: group_id.to_bytes(),
                 });
-                group_store::sign_apply_and_publish_namespace_op(
+                calimero_governance_store::sign_apply_and_publish_namespace_op(
                     &datastore,
                     &node_client,
                     &ack_router,
