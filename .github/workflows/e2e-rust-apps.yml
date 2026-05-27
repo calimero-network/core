@@ -440,24 +440,29 @@ jobs:
               exit 1
           fi
 
+      - name: List docker-logs/ before upload (debug)
+        if: always()
+        run: ls -la docker-logs/ 2>&1 || echo "docker-logs/ missing"
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ matrix.workflow }}-${{ github.sha }}
-          # First glob: watcher-captured `docker logs -f` streams,
-          #   named `${matrix.workflow}-${container}.log`.
-          # Second glob: pre-restart snapshots from merobox 0.6.22+'s
-          #   `restart_container` step (see merobox#258), named
-          #   `${container}.pre-restart-${utc-ts}.log`. Container names
-          #   in our workflows don't share the `${matrix.workflow}`
-          #   prefix, so they're invisible to the first pattern. Each
-          #   matrix entry runs on its own runner with its own
-          #   `docker-logs/` dir, so the second glob's broader pattern
-          #   doesn't cross-contaminate other matrix entries' artifacts.
-          path: |
-            docker-logs/${{ matrix.workflow }}*
-            docker-logs/*.pre-restart-*.log
+          # `docker-logs/` (with a trailing slash) uploads the
+          # ENTIRE directory: the watcher-captured `docker logs -f`
+          # streams (`${matrix.workflow}-${container}.log`) AND
+          # merobox 0.6.22+'s pre-restart snapshots
+          # (`${container}.pre-restart-${utc-ts}.log` — see
+          # merobox#258). Each matrix entry runs on its own runner
+          # with its own `docker-logs/` dir, so this doesn't
+          # cross-contaminate. Earlier attempt used a two-pattern
+          # glob `docker-logs/${{ matrix.workflow }}*` +
+          # `docker-logs/*.pre-restart-*.log`, but the second
+          # pattern silently matched zero files via upload-artifact's
+          # multi-line path handling; uploading the whole directory
+          # sidesteps that and is unambiguous.
+          path: docker-logs/
           retention-days: 7
           if-no-files-found: ignore
 
