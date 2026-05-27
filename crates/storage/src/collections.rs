@@ -422,22 +422,6 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
                 Err(e) => return Err(StoreError::StorageError(e)),
             };
 
-            // CHILDREN_CACHE diagnostic (#2319 follow-up): log how many
-            // children the parent's index advertises at cache-load time.
-            // Paired with `calimero_storage::orphan_add` warns, this tells
-            // you whether a missing entry was "never linked" (orphan_add
-            // warned, children_count low) vs. "linked then iterator
-            // dropped" (no orphan_add warn but `iter_drop` did fire). The
-            // RGA test reads a 9-char result for an 11-char document;
-            // the answer to "where did the 2 chars go?" lives in the
-            // delta between these two diagnostics.
-            tracing::debug!(
-                target: "calimero_storage::children_cache",
-                collection_id = %self.id(),
-                children_count = children.len(),
-                "CHILDREN_CACHE: loaded parent's children list from index"
-            );
-
             *cache = Some(children);
         }
 

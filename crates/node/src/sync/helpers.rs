@@ -325,43 +325,15 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         // before this fix.
         let parent_id = leaf.metadata.parent_id.map(Id::new).unwrap_or(root_id);
 
-        // Ensure the chosen parent has an index. For a freshly-pulled
-        // nested entity the parent may not yet exist locally — when the
-        // sender's `index.parent_id()` points at a parent we haven't
-        // pulled yet (HashComparison walks the tree top-down but a
-        // single EntityPush batch can deliver a child before its parent
-        // due to BFS-vs-DFS ordering and batch boundaries), create a
-        // placeholder index here so `Action::Add { ancestors: [parent] }`
-        // has something to attach to.
-        //
-        // ROOT-ONLY (#2319 follow-up): the previous version applied this
-        // placeholder unconditionally as `Action::Update { ancestors:
-        // vec![], data: vec![] }`. For non-root parents that action falls
-        // into `apply_action`'s no-parent branch (the
-        // `calimero_storage::orphan_add` path), which doesn't create the
-        // index entry, so `save_internal` errored
-        // `IndexNotFound(parent_id)` and the whole leaf application
-        // failed with "Failed to apply pushed entity" — exactly the
-        // residual scaffolding-e2e flake. We now gate the placeholder on
-        // `parent_id.is_root()`, where `apply_action` takes the
-        // `id.is_root()` branch and `save_internal` writes empty
-        // `Key::Entry(root_id)` so the root's `own_hash =
-        // Sha256::digest(empty)` matches the sender's (the sender's root
-        // is created the same way via the producer's
-        // `init_root`/equivalent path).
-        //
-        // For non-root parents, the child's
-        // `Action::Add { ancestors: vec![ChildInfo(parent_id, …)] }`
-        // constructed below already carries the parent in its ancestor
-        // list, and `apply_action`'s ancestor loop (interface.rs ~1227)
-        // calls `Index::add_root(parent_clone)` for any ancestor that
-        // doesn't have a local index entry yet. The placeholder hash
-        // ([0; 32]) and default metadata that loop installs are the same
-        // values this block would have computed, and `save_internal`'s
-        // post-merge `update_hash_for` updates the placeholder's
-        // `own_hash` to match the real bytes once the parent's own leaf
-        // arrives via a later push (which then goes through the Update
-        // branch, see the `existing_index.is_some()` arm above).
+        // Initialise the context root entry if it's not in the local
+        // index yet. `apply_action`'s `id.is_root()` branch then runs
+        // `add_root` and `save_internal` writes empty `Key::Entry(root_id)`
+        // so the root's `own_hash = Sha256::digest(empty)` matches the
+        // sender's (which produced its root the same way via `init_root`
+        // or equivalent). Without this, the receiver's root own_hash
+        // stays `[0; 32]` and diverges from the sender's. Gated on
+        // `parent_id.is_root()` because non-root parents are now handled
+        // by the wire-supplied ancestor chain (see comment below).
         if parent_id.is_root()
             && Index::<MainStorage>::get_index(parent_id)
                 .ok()
@@ -381,21 +353,16 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
             Interface::<MainStorage>::apply_action(parent_init, &ApplyContext::empty())?;
         }
 
-        // Prefer the full ancestor chain shipped by the sender (#2319
-        // follow-up). Without the chain, the apply_action ancestor
-        // loop falls back to `Index::add_root(parent_clone)` for any
-        // missing grandparent — placing intermediate ancestors at
-        // the wrong tree level and diverging the Merkle root for
-        // nested-collection entities. With the chain populated, the
-        // loop runs `add_child_to(grandparent, parent)` recursively
-        // up to root_child and `add_root(root_child)` — correct
-        // topology.
+        // Prefer the wire-supplied ancestor chain (immediate parent →
+        // root_child, root excluded). `apply_action`'s ancestor loop
+        // walks it in reverse and links each entry to the next up,
+        // placing intermediate ancestors at the correct tree level.
         //
-        // Legacy fallback: if the wire didn't carry `ancestors`
-        // (older peers), reconstruct a single-element chain from
-        // `parent_id`. Same behaviour as before the chain
-        // extension; bounds the worst case to a tree misplacement
-        // for ancestors above the immediate parent.
+        // Legacy fallback for peers shipping only `parent_id`: a
+        // one-element chain. `apply_action` will then `add_root`
+        // missing grandparents (the pre-#2319 behaviour), which can
+        // misplace deeply nested entities until the real ancestors
+        // arrive via their own leaf pushes.
         let ancestors = if !leaf.metadata.ancestors.is_empty() {
             leaf.metadata.ancestors.clone()
         } else {

@@ -246,18 +246,14 @@ where
     /// returned.
     ///
     pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
-        // ITER_DROP diagnostic (#2319 follow-up): the previous
-        // `.flatten().fuse()` silently swallowed `Err` items returned by
-        // the inner collection iterator. The Err is exactly what the
-        // "Hello Wor" RGA read race surfaces — an id that the parent's
-        // children list advertises but whose `Key::Entry` is not yet
-        // readable, so `find_by_id` returns `StorageError::NotFound(id)`
-        // and the iterator drops the entry. The CRDT contract makes
-        // dropping silently load-bearing for some reorderable apply paths
-        // (we don't want to fail the whole iteration on one transient
-        // miss), but logging the drop turns the next reproduction into a
-        // hard, locatable signal instead of a numerical text mismatch
-        // 720ms later.
+        // ITER_DROP diagnostic: the inner iterator yields `Result<…>`;
+        // an `Err` means the parent's children list advertises an id
+        // whose entry can't be loaded (e.g. `NotFound` from a
+        // partially-written ancestor or an orphan from a divergent
+        // sync). Skipping silently is the established CRDT-iter
+        // contract (`.flatten().fuse()` did this), but logging gives
+        // future races a precise anchor instead of a downstream
+        // content mismatch.
         let collection_id = self.inner.id();
         Ok(self.inner.entries()?.filter_map(move |result| match result {
             Ok(entry) => Some(entry),

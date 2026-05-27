@@ -495,15 +495,26 @@ impl<S: StorageAdaptor> Interface<S> {
         // `CollectionMut::insert` (collections.rs:527), i.e. every
         // WASM-side `chars.insert` — with the old order.
         //
-        // The bytes we write here are the borsh-encoded `data` before
-        // `save_raw` re-stamps the metadata (signature placeholder /
-        // nonce for User and Shared storage). `save_raw` → `save_internal`
-        // below overwrites Key::Entry with the final stamped bytes. The
-        // pre-write is a redundant overwrite — the cost of closing the
-        // window. Readers that interleave between this write and the
-        // final save see locally-consistent bytes that may carry a
-        // not-yet-stamped signature; verification only happens on
-        // remote-action apply via `apply_action`, never on local read.
+        // Signature on the pre-written bytes: `data` here is the
+        // borsh-encoded entity *before* `save_raw` re-stamps the metadata
+        // (signature placeholder / nonce for User and Shared storage), so
+        // the entry briefly carries a placeholder/stale signature.
+        // `save_raw` → `save_internal` below overwrites the bytes with
+        // the freshly-stamped version.
+        //
+        // Why this is safe locally: no local read path verifies entity
+        // signatures. `Interface::find_by_id` (line ~1750) reads bytes
+        // and the index entry without invoking
+        // `verify_snapshot_entity_signature`; signature checks live
+        // exclusively in `apply_action`'s remote-apply path (Action::Add
+        // / Action::Update verification at lines ~611-1196), which never
+        // sees these bytes because they're not shipped to peers
+        // (`save_raw` emits the post-stamp Action). The invariant to
+        // preserve: any future caller that wants to verify a signature
+        // must do so via `apply_action`'s gate or by re-reading
+        // `Key::Entry` *after* `save_raw` returns. A direct
+        // signature-check on a `find_by_id` result would observe this
+        // window's placeholder; don't add one.
         let _ignored = S::storage_write(Key::Entry(child.id()), &data);
 
         <Index<S>>::add_child_to(
@@ -1304,33 +1315,24 @@ impl<S: StorageAdaptor> Interface<S> {
                             ChildInfo::new(id, placeholder_hash, metadata.clone()),
                         )?;
                     } else {
-                        // ORPHAN_ADD diagnostic (#2319 follow-up): brand-new
-                        // entity, not root, and no parent ancestor was
-                        // supplied — typical of HashComparison sync, which
-                        // ships `ancestors: vec![]` ("HashComparison sync
-                        // runs precisely when tree shapes have drifted").
-                        // Without a parent reference, neither this branch
-                        // NOR the post-`save_internal` `add_child_to` below
-                        // can link the entity into the parent's children
-                        // list. The entity still reaches `Key::Entry(id)`
-                        // via `save_internal`'s `storage_write`, but the
-                        // parent collection's `children` list never learns
-                        // about it — readers iterating `parent.entries()`
-                        // skip it because it isn't advertised. Net effect
-                        // on the RGA test: chars present in storage,
-                        // missing from `chars_map.children`, producing
-                        // truncated reads ("Hello Wor" instead of "Hello
-                        // World"). Log loudly so the next reproduction
-                        // names the entity and the apply path; the
-                        // permanent linkage repair belongs in the HC sync
-                        // ship path (carry the parent in the action, or
-                        // call `add_child_to` from compare_affective).
+                        // ORPHAN_ADD diagnostic: brand-new non-root entity
+                        // with empty `ancestors`. With this PR's wire
+                        // extension (`LeafMetadata.ancestors`) HC and
+                        // LevelWise senders carry the full chain, so this
+                        // path is only hit by legacy peers that ship just
+                        // `parent_id`. `save_internal` still writes
+                        // `Key::Entry(id)` but the parent's `children`
+                        // list never learns about it — the read path
+                        // skips the entry because it isn't advertised.
+                        // Warn loudly so the next reproduction names the
+                        // entity and the sending peer is identifiable as
+                        // legacy.
                         tracing::warn!(
                             target: "calimero_storage::orphan_add",
                             %id,
                             created_at = metadata.created_at,
                             updated_at = metadata.updated_at(),
-                            "ORPHAN_ADD: applying Add/Update for brand-new non-root entity with empty ancestors — entity will land in Key::Entry but parent.children won't learn about it (HashComparison-style apply path)"
+                            "ORPHAN_ADD: brand-new non-root entity with empty ancestors — legacy peer or pre-#2319 sync path"
                         );
                     }
                 }
