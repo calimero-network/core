@@ -516,11 +516,25 @@ async fn execute_migration(
         "Preparing to execute migration function"
     );
 
-    let mut storage = ContextStorage::from(datastore.clone(), context_id);
+    let storage = ContextStorage::from(datastore.clone(), context_id);
 
-    let outcome = global_runtime()
+    // Return the storage from the spawn_blocking closure so we can commit
+    // it on the outer side. Without this, every `env::storage_write` the
+    // WASM migrate fn made (e.g. `UnorderedMap::insert` on a newly-
+    // constructed CRDT field) is buffered in the `Temporal` layer wrapped
+    // by `ContextStorage`, then dropped uncommitted when the closure ends
+    // — only the borsh-serialised root state returned via `value_return`
+    // (which `write_migration_state` writes directly to the underlying
+    // datastore below, bypassing the Temporal) survives. That's why
+    // scalar fields survived migration end-to-end but every freshly-
+    // created collection looked empty post-migration (regression that
+    // surfaced in PR #2507's `scenario-field-remove-archive` and
+    // `scenario-invariant-reshuffle` workflows). Mirrors the
+    // execute-path commit (`crates/context/src/handlers/execute/mod.rs:1483`).
+    let (outcome, storage) = global_runtime()
         .spawn_blocking(move || {
-            module.run(
+            let mut storage = storage;
+            let outcome = module.run(
                 context_id,
                 executor_identity,
                 &method,
@@ -528,10 +542,26 @@ async fn execute_migration(
                 &mut storage,
                 None,
                 Some(node_client),
-            )
+            );
+            (outcome, storage)
         })
         .await
-        .map_err(|e| eyre::eyre!("Migration task failed: {}", e))??;
+        .map_err(|e| eyre::eyre!("Migration task failed: {}", e))?;
+    let outcome = outcome?;
+
+    // Commit Temporal-buffered writes (UnorderedMap entries, Vector
+    // pushes, sub-entity element saves, etc.) BEFORE the host-side root
+    // state write happens. Order matters: a panic between commit() and
+    // write_migration_state would leave the context with v2-shaped
+    // collection entries but a v1-shaped root entry, which is a less
+    // bad failure mode than the other way around (v2 root pointing at
+    // entries that were never written). If write_migration_state later
+    // fails the caller bails before publishing the upgrade op, and the
+    // committed orphan entries are harmless dead weight — they'd be
+    // garbage-collected by a follow-up migration run.
+    let _store = storage
+        .commit()
+        .map_err(|e| eyre::eyre!("Failed to commit migration storage writes: {e}"))?;
 
     // Extract the return value from the outcome.
     // `outcome.returns` is `Result<Option<Vec<u8>>, FunctionCallError>` where the
