@@ -1,9 +1,36 @@
 use calimero_primitives::{blobs::BlobId, context::ContextId};
 use calimero_utils_actix::LazyRecipient;
-use libp2p::gossipsub::{IdentTopic, MessageId, TopicHash};
+use libp2p::gossipsub::{IdentTopic, MessageId, PublishError, TopicHash};
 use libp2p::request_response::{OutboundRequestId, ResponseChannel};
 use libp2p::Multiaddr;
 use tokio::sync::oneshot;
+
+/// Returns true when `err`'s `eyre::Report` chain contains
+/// `gossipsub::PublishError::NoPeersSubscribedToTopic`.
+///
+/// Single source of truth for classifying the one gossipsub publish error
+/// callers handle differently from the rest: it's a normal cold-start
+/// outcome (the topic has no subscribed peers yet), not a transport
+/// failure. Callers that broadcast state deltas (`broadcast`,
+/// `broadcast_heartbeat`) silence this variant and surface every other
+/// error; callers that publish governance ops surface it explicitly via
+/// `BroadcastPublishError::NoPeersSubscribed` so the higher-level
+/// publish-with-acks flow can decide whether to wait for mesh formation.
+///
+/// Only walks `eyre::Report::chain()`. A `PublishError` wrapped in a
+/// non-eyre `Box<dyn std::error::Error>` would not be detected here, but
+/// every current caller goes through `NetworkClient::publish`, whose
+/// return type is `eyre::Result<_>`, so the eyre chain is the only
+/// shape that reaches this helper in practice.
+#[must_use]
+pub fn is_no_peers_subscribed_error(err: &eyre::Report) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<PublishError>(),
+            Some(PublishError::NoPeersSubscribedToTopic)
+        )
+    })
+}
 
 use crate::blob_types::BlobAuth;
 use crate::messages::{
@@ -293,5 +320,37 @@ impl NetworkClient {
             .expect("Mailbox not to be dropped");
 
         rx.await.expect("Mailbox not to be dropped")
+    }
+}
+
+#[cfg(test)]
+mod is_no_peers_subscribed_error_tests {
+    use libp2p::gossipsub::PublishError;
+
+    use super::is_no_peers_subscribed_error;
+
+    #[test]
+    fn classifies_no_peers_subscribed_at_root() {
+        let err: eyre::Report = PublishError::NoPeersSubscribedToTopic.into();
+        assert!(is_no_peers_subscribed_error(&err));
+    }
+
+    #[test]
+    fn classifies_no_peers_subscribed_when_wrapped() {
+        let err = eyre::Report::from(PublishError::NoPeersSubscribedToTopic)
+            .wrap_err("failed to publish state delta");
+        assert!(is_no_peers_subscribed_error(&err));
+    }
+
+    #[test]
+    fn does_not_classify_other_publish_errors() {
+        let err: eyre::Report = PublishError::MessageTooLarge.into();
+        assert!(!is_no_peers_subscribed_error(&err));
+    }
+
+    #[test]
+    fn does_not_classify_unrelated_errors() {
+        let err: eyre::Report = eyre::eyre!("some other failure");
+        assert!(!is_no_peers_subscribed_error(&err));
     }
 }

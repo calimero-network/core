@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_stream::stream;
 use calimero_context_config::types::GovernancePosition;
 use calimero_crypto::SharedKey;
-use calimero_network_primitives::client::NetworkClient;
+use calimero_network_primitives::client::{is_no_peers_subscribed_error, NetworkClient};
 use calimero_network_primitives::config::GOSSIPSUB_MESH_N_LOW;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::NodeEvent;
@@ -17,7 +17,7 @@ use calimero_utils_actix::LazyRecipient;
 use dashmap::DashMap;
 use eyre::{OptionExt, WrapErr};
 use futures_util::Stream;
-use libp2p::gossipsub::{IdentTopic, PublishError, TopicHash};
+use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::PeerId;
 use rand::Rng;
 use tokio::sync::{broadcast, mpsc};
@@ -194,26 +194,6 @@ pub struct LocalAppliedDelta {
 /// publishes on an unhealthy mesh (gate too low).
 fn gossipsub_mesh_n_low_default() -> usize {
     GOSSIPSUB_MESH_N_LOW
-}
-
-/// Returns true when `err`'s chain contains `PublishError::NoPeersSubscribedToTopic`.
-///
-/// Used by `broadcast` and `broadcast_heartbeat` to silence the one
-/// publish-error variant that's a normal cold-start outcome rather than a
-/// transport failure. We do not queue or retry the payload — see #2356
-/// item 3 and the post-mortem on the closed PR #2369: queuing state
-/// deltas at the network layer races the receiver's DAG sync and
-/// replays stale snapshots. State deltas have a sync-pull recovery
-/// path (HashComparison via heartbeats); heartbeats are idempotent at
-/// their own cadence; either way, dropping one publish on a topic
-/// with zero subscribers is the safe behavior.
-fn is_no_peers_subscribed_error(err: &eyre::Report) -> bool {
-    err.chain().any(|cause| {
-        matches!(
-            cause.downcast_ref::<PublishError>(),
-            Some(PublishError::NoPeersSubscribedToTopic)
-        )
-    })
 }
 
 #[derive(Clone, Debug)]
@@ -411,6 +391,19 @@ impl NodeClient {
     }
 
     /// Publish raw payload on the namespace topic `ns/<hex(namespace_id)>`.
+    ///
+    /// # Why this path keeps the mesh-peer wait (unlike `broadcast`)
+    ///
+    /// `broadcast` / `broadcast_heartbeat` dropped their `mesh_peer_count == 0`
+    /// gate and silence `PublishError::NoPeersSubscribedToTopic` because state
+    /// deltas have a sync-pull recovery path (HashComparison via heartbeats):
+    /// a drop into an empty topic is recoverable by the next pull. Governance
+    /// ops carry no such recovery — a `ContextRegistered` lost on cold start
+    /// cannot be re-derived by the receiver, only re-published. So the
+    /// publisher-side wait stays: we poll for at least one mesh peer up to
+    /// `MAX_WAIT` before publishing, log when we give up, and propagate any
+    /// publish error (including `NoPeersSubscribedToTopic`) so the caller can
+    /// decide whether to retry/re-announce.
     pub async fn publish_on_namespace(
         &self,
         namespace_id: [u8; 32],
@@ -456,6 +449,13 @@ impl NodeClient {
     /// Kept separate from [`publish_on_namespace`](Self::publish_on_namespace)
     /// so the up-front wait-then-publish semantics other callers rely on are
     /// untouched; this is the opt-in, per-cycle building block.
+    ///
+    /// Like [`publish_on_namespace`](Self::publish_on_namespace), this method
+    /// propagates `PublishError::NoPeersSubscribedToTopic` to the caller
+    /// rather than silencing it — that's the exact "publish into an empty
+    /// mesh" signal the re-announce loop needs to know it must keep trying.
+    /// State-delta paths (`broadcast` / `broadcast_heartbeat`) silence the
+    /// same error because they have sync-pull recovery; governance does not.
     pub async fn publish_on_namespace_now(
         &self,
         namespace_id: [u8; 32],
@@ -580,7 +580,7 @@ impl NodeClient {
             Err(err) if is_no_peers_subscribed_error(&err) => {
                 debug!(
                     %context_id,
-                    "no peers subscribed to context topic, heartbeat dropped (next tick will retry)"
+                    "no peers subscribed to context topic, heartbeat dropped (next tick will carry fresh state)"
                 );
                 Ok(())
             }
@@ -1013,37 +1013,5 @@ mod publish_on_namespace_now_tests {
             1 + ADMIT_AFTER_CYCLES,
             "must stop announcing the instant admission is observed"
         );
-    }
-}
-
-#[cfg(test)]
-mod is_no_peers_subscribed_error_tests {
-    use libp2p::gossipsub::PublishError;
-
-    use super::is_no_peers_subscribed_error;
-
-    #[test]
-    fn classifies_no_peers_subscribed_at_root() {
-        let err: eyre::Report = PublishError::NoPeersSubscribedToTopic.into();
-        assert!(is_no_peers_subscribed_error(&err));
-    }
-
-    #[test]
-    fn classifies_no_peers_subscribed_when_wrapped() {
-        let err = eyre::Report::from(PublishError::NoPeersSubscribedToTopic)
-            .wrap_err("failed to publish state delta");
-        assert!(is_no_peers_subscribed_error(&err));
-    }
-
-    #[test]
-    fn does_not_classify_other_publish_errors() {
-        let err: eyre::Report = PublishError::MessageTooLarge.into();
-        assert!(!is_no_peers_subscribed_error(&err));
-    }
-
-    #[test]
-    fn does_not_classify_unrelated_errors() {
-        let err: eyre::Report = eyre::eyre!("some other failure");
-        assert!(!is_no_peers_subscribed_error(&err));
     }
 }
