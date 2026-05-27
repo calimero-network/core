@@ -461,12 +461,9 @@ fn reject_read_only_tee_via_member_added() {
     assert!(
         matches!(
             err.downcast_ref::<MembershipError>(),
-            Some(
-                MembershipError::ReadOnlyTeeViaAttestationOnly
-                    | MembershipError::TeeRoleMustBeReadOnly
-            )
+            Some(MembershipError::ReadOnlyTeeViaAttestationOnly)
         ),
-        "expected ReadOnlyTee rejection, got: {err}"
+        "expected ReadOnlyTeeViaAttestationOnly, got: {err}"
     );
 }
 
@@ -508,12 +505,9 @@ fn reject_read_only_tee_via_member_role_set() {
     assert!(
         matches!(
             err.downcast_ref::<MembershipError>(),
-            Some(
-                MembershipError::ReadOnlyTeeViaAttestationOnly
-                    | MembershipError::TeeRoleMustBeReadOnly
-            )
+            Some(MembershipError::ReadOnlyTeeViaAttestationOnly)
         ),
-        "expected ReadOnlyTee rejection, got: {err}"
+        "expected ReadOnlyTeeViaAttestationOnly, got: {err}"
     );
 }
 

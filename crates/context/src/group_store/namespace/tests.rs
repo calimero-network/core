@@ -8,7 +8,8 @@
 //! (`raw_namespace_dag_heads`) came along with the move.
 
 use crate::group_store::{
-    CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+    CapabilitiesRepository, GroupDeletedRejection, GroupKeyring, MembershipRepository,
+    MetaRepository, NamespaceRepository,
 };
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
@@ -2775,10 +2776,9 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     assert!(
         matches!(
             err.downcast_ref::<ApplyError>(),
-            Some(ApplyError::GroupDeletedRejected { .. })
-        ) || matches!(
-            err.downcast_ref::<NamespaceError>(),
-            Some(NamespaceError::CannotDeleteRoot(_))
+            Some(ApplyError::GroupDeletedRejected(
+                GroupDeletedRejection::Unauthorized { .. }
+            ))
         ),
         "stranger should be rejected by the authorization check, got: {err}"
     );
@@ -2793,10 +2793,9 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     assert!(
         matches!(
             err.downcast_ref::<ApplyError>(),
-            Some(ApplyError::GroupDeletedRejected { .. })
-        ) || matches!(
-            err.downcast_ref::<NamespaceError>(),
-            Some(NamespaceError::CannotDeleteRoot(_))
+            Some(ApplyError::GroupDeletedRejected(
+                GroupDeletedRejection::Unauthorized { .. }
+            ))
         ),
         "plain member should be rejected by the authorization check, got: {err}"
     );

@@ -97,7 +97,7 @@ use self::upgrades::extract_application_id;
 pub use self::errors::{
     ApplyError, CapabilitiesError, ContextRegistrationError, GroupCreatedRejection,
     GroupDeletedRejection, KeyringError, MemberJoinedOpenRejection, MembershipError, MetaError,
-    NamespaceError, SigningKeysError, UpgradesError,
+    NamespaceError, SigningKeysError,
 };
 
 // ---------------------------------------------------------------------------

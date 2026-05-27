@@ -1,7 +1,7 @@
 use crate::group_store::{
-    ApplyError, DenyListRepository, GroupCreatedRejection, GroupDeletedRejection, GroupKeyring,
-    MemberJoinedOpenRejection, MembershipError, MembershipRepository, MetaRepository,
-    NamespaceError, NamespaceRepository,
+    ApplyError, CapabilitiesError, DenyListRepository, GroupCreatedRejection,
+    GroupDeletedRejection, GroupKeyring, MemberJoinedOpenRejection, MembershipError,
+    MembershipRepository, MetaRepository, NamespaceError, NamespaceRepository,
 };
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, NamespaceOp, RootOp,
@@ -1452,14 +1452,27 @@ impl<'a> NamespaceGovernance<'a> {
         let ns_gid = ContextGroupId::from(self.namespace_id);
         if let Some(root_meta) = MetaRepository::new(self.store).load(&root_gid)? {
             if root_meta.owner_identity != op.signer {
-                PermissionChecker::new(self.store, ns_gid)
+                if let Err(e) = PermissionChecker::new(self.store, ns_gid)
                     .require_can_delete_subgroup(&op.signer)
-                    .map_err(|e| {
-                        ApplyError::GroupDeletedRejected(GroupDeletedRejection::Unauthorized {
-                            cause: format!("{e}"),
-                            subgroup: hex::encode(root_group_id),
-                        })
-                    })?;
+                {
+                    // `require_can_delete_subgroup` bails with a typed
+                    // `CapabilitiesError::Unauthorized`; preserve the
+                    // structured cause inside `GroupDeletedRejection::
+                    // Unauthorized` instead of flattening it to a string.
+                    // If the downcast unexpectedly fails (e.g. a future
+                    // refactor moves the check elsewhere), bubble the
+                    // original error so the unexpected type surfaces.
+                    return Err(match e.downcast::<CapabilitiesError>() {
+                        Ok(cap_err) => {
+                            ApplyError::GroupDeletedRejected(GroupDeletedRejection::Unauthorized {
+                                cause: cap_err,
+                                subgroup: hex::encode(root_group_id),
+                            })
+                            .into()
+                        }
+                        Err(other) => other,
+                    });
+                }
             }
         }
 
@@ -1662,7 +1675,10 @@ impl<'a> NamespaceGovernance<'a> {
             }
             super::super::MembershipPath::None => {
                 eyre::bail!(ApplyError::MemberJoinedOpenRejected(
-                    MemberJoinedOpenRejection::NoMembershipPath(format!("{member}"))
+                    MemberJoinedOpenRejection::NoMembershipPath {
+                        member: format!("{member}"),
+                        gid: format!("{gid:?}"),
+                    }
                 ));
             }
         }

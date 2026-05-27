@@ -92,11 +92,6 @@ pub enum MembershipError {
     #[error("member {member} not found in group {group_id}")]
     MemberNotFound { group_id: String, member: String },
 
-    /// Identity is not a TEE-attestation verifier authoritative for
-    /// this namespace.
-    #[error("identity {0} is not authoritative for this namespace")]
-    NotAuthoritative(String),
-
     /// TEE attestation submitted by a non-member. The verifier must
     /// itself be a member of the group whose admission policy it
     /// validates.
@@ -207,17 +202,6 @@ pub enum NamespaceError {
     /// No `NamespaceIdentity` row stored for the namespace root.
     #[error("namespace identity not found for {0}")]
     NoNamespaceIdentity(String),
-
-    /// Group is not within the namespace rooted at the expected
-    /// ancestor. Used by `is_descendant_of` callers that bail when
-    /// the relation is required (e.g. ownership-proof verification).
-    #[error("group {child} is not a descendant of {ancestor}")]
-    NotDescendant { ancestor: String, child: String },
-
-    /// Group does not belong to the namespace it was looked up
-    /// under. Hot path: tests that walk descendant lists.
-    #[error("group does not belong to this namespace")]
-    WrongNamespace,
 
     /// Reparent target's new parent is itself a descendant of the
     /// child — would create a cycle.
@@ -336,21 +320,10 @@ pub enum MetaError {
     GroupNotFoundForHash,
 
     /// Cannot delete a group while contexts are still registered.
-    /// Lives on `MetaError` (not `UpgradesError`) because group
-    /// deletion is a meta-row mutation; the context-count check is
-    /// an invariant on top of that.
+    /// Group deletion is a meta-row mutation; the context-count
+    /// check is an invariant on top of that.
     #[error("cannot delete group: one or more contexts are still registered")]
     HasRegisteredContexts,
-}
-
-/// Errors raised by `UpgradesRepository` and the upgrade-orchestration
-/// layer.
-#[derive(Debug, Error)]
-pub enum UpgradesError {
-    /// An upgrade is already in progress for this group; concurrent
-    /// upgrades would race the propagator state machine.
-    #[error("an upgrade is already in progress for this group")]
-    InProgress,
 }
 
 /// Errors raised by the context-to-group registration indirection.
@@ -389,9 +362,16 @@ pub enum GroupCreatedRejection {
 #[derive(Debug, Error)]
 pub enum GroupDeletedRejection {
     /// Signer is neither the subgroup owner nor a namespace
-    /// admin / `CAN_DELETE_SUBGROUP` holder.
-    #[error("unauthorized: {cause} (or be the owner of subgroup {subgroup})")]
-    Unauthorized { cause: String, subgroup: String },
+    /// admin / `CAN_DELETE_SUBGROUP` holder. The inner
+    /// [`CapabilitiesError`] preserves the typed authorization
+    /// failure (group_id + operation) instead of flattening it to a
+    /// string at the wrapping boundary.
+    #[error("unauthorized (or be the owner of subgroup {subgroup}): {cause}")]
+    Unauthorized {
+        #[source]
+        cause: CapabilitiesError,
+        subgroup: String,
+    },
 
     /// Local subtree contains groups that aren't in the op's
     /// cascade payload — indicates divergence between local and
@@ -428,8 +408,8 @@ pub enum MemberJoinedOpenRejection {
 
     /// Signer has no inheritance path to the target group — Open
     /// inheritance check failed.
-    #[error("signer {0} has no membership path to the target group")]
-    NoMembershipPath(String),
+    #[error("signer {member} has no membership path to {gid}")]
+    NoMembershipPath { member: String, gid: String },
 }
 
 /// Errors raised on the `SignedGroupOp` apply path. Only variants
