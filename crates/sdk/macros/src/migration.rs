@@ -79,56 +79,21 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#attrs)*
             fn __migration_logic() #return_type #block
 
-            // Run the user's migration inside a `Root::new(...)` wrapper —
-            // the same wrapper `#[app::init]` uses — so any newly-created
-            // CRDT collection (`UnorderedMap`, `Vector`, `UnorderedSet`,
-            // `Counter`, RGA, ...) inserted-into during migrate has its
-            // child entries persisted under the deterministic
-            // root-parented ID a later `&self` read computes for the
-            // same field. Without this wrapper, a fresh `UnorderedMap`
-            // created in migrate accepts inserts that go through to the
-            // host store but are written under a different parent-child
-            // ID space than the post-migrate read recomputes from the
-            // deserialised state, so the entries are silently
-            // unreachable (the migrate finishes with all CRDT writes
-            // looking like they succeeded — the symptom is "fresh
-            // collection looks empty after migration").
-            //
-            // `__assign_deterministic_ids` reassigns any collection the
-            // user constructed via `UnorderedMap::new()` (no field name)
-            // to the deterministic ID derived from its struct field
-            // name. For fields constructed via `new_with_field_name`
-            // the reassign is a no-op (IDs already match) — included
-            // for parity with init so a future user can mix patterns
-            // freely.
-            //
-            // `Root::commit()` flushes the root collection's own entry
-            // (the parent-child index that records this Root contains
-            // the user's state). The host's downstream
-            // `write_migration_state` then overwrites the
-            // `ROOT_ENTRY_ID` entry with our returned bytes (same
-            // payload), which keeps the existing migration data-flow
-            // unchanged.
-            let new_state_bytes = {
-                let root = ::calimero_storage::collections::Root::new(|| {
-                    let mut state = __migration_logic();
-                    state.__assign_deterministic_ids();
-                    state
-                });
-                let bytes = match ::calimero_sdk::borsh::to_vec(&*root) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        ::calimero_sdk::env::panic_str(
-                            &::std::format!("Migration serialization failed: {:?}", e)
-                        );
-                    }
-                };
-                root.commit();
-                bytes
+            // Execute migration and get new state
+            let new_state = __migration_logic();
+
+            // Serialize the new state
+            let output_bytes = match ::calimero_sdk::borsh::to_vec(&new_state) {
+                Ok(b) => b,
+                Err(e) => {
+                    ::calimero_sdk::env::panic_str(
+                        &::std::format!("Migration serialization failed: {:?}", e)
+                    );
+                }
             };
 
             // Return the serialized state to the runtime
-            ::calimero_sdk::env::value_return(&Ok::<Vec<u8>, Vec<u8>>(new_state_bytes));
+            ::calimero_sdk::env::value_return(&Ok::<Vec<u8>, Vec<u8>>(output_bytes));
         }
 
         /// Native version of the migration function for testing.
@@ -177,27 +142,6 @@ mod tests {
         assert!(
             expanded.contains("event :: register"),
             "expected event::register call in expansion: {}",
-            expanded
-        );
-        assert!(
-            expanded.contains("Root :: new"),
-            "expected Root::new wrapper around migration body so collection \
-             writes persist to the same storage-side parent-child index a \
-             post-migrate &self read computes from the deserialised state: {}",
-            expanded
-        );
-        assert!(
-            expanded.contains("__assign_deterministic_ids"),
-            "expected __assign_deterministic_ids call inside the Root wrapper, \
-             matching the init wrapper so users who mix UnorderedMap::new() \
-             (no field name) with UnorderedMap::new_with_field_name still get \
-             deterministic IDs across nodes: {}",
-            expanded
-        );
-        assert!(
-            expanded.contains("root . commit"),
-            "expected root.commit() so the Root collection's own entry \
-             (parent-child index for the user's state) is flushed: {}",
             expanded
         );
     }
