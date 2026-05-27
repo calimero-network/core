@@ -177,9 +177,17 @@ steps:
       key: during_partition
       value: written_while_partitioned
 
+  # Match the symmetric variant's 35s hold (was 15s). libp2p's
+  # swarm-level ping default times out at ~30s and yamux keepalive
+  # adds ~15s on top; a 15s hold straddled the ping boundary, so
+  # on a contended runner the connection sometimes survived as
+  # buffered retransmits and the test exercised gossipsub message
+  # loss rather than full connection teardown + recovery. 35s
+  # guarantees both timers fire so we always exercise the recovery
+  # path the test claims to test.
   - name: Hold the partition (allow libp2p to mark connection dead)
     type: wait
-    seconds: 15
+    seconds: 35
 
   - name: Reconnect node-2 to the LAN bridge
     type: connect_node

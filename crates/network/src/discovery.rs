@@ -102,7 +102,7 @@ impl NetworkManager {
             .discovery
             .state
             .get_peer_info(rendezvous_peer)
-            .wrap_err("Failed to get peer info {}")?;
+            .wrap_err_with(|| format!("Failed to get peer info for {rendezvous_peer}"))?;
 
         if !force
             && peer_info

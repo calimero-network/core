@@ -126,20 +126,35 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 );
 
                 if !self.swarm.is_connected(&peer_id) {
-                    // If this was the last connection to a known relay,
-                    // any reservation we held with it is gone with the
-                    // control connection. ExternalAddrExpired/ListenerClosed
-                    // usually follow, but they are not guaranteed to fire
-                    // for every disconnect cause (e.g. abrupt TCP reset),
-                    // so handle it here as well. on_relay_reservation_lost
-                    // is idempotent for already-Expired peers.
+                    // Two mutually-exclusive branches keyed on the role
+                    // of the disconnected peer:
+                    //
+                    //   1. Relay peer: reservation we held is gone with
+                    //      the control connection. Mark Expired and
+                    //      queue recovery. `on_relay_reservation_lost`
+                    //      is idempotent for already-Expired peers, so
+                    //      it's safe to call multiple times for the
+                    //      same disconnect cascade.
+                    //   2. Regular calimero peer (not relay, not
+                    //      rendezvous, not mdns-discovered): the peer
+                    //      may have restarted with a fresh libp2p
+                    //      identity state. Issue a throttle-bypassed
+                    //      rendezvous re-query to discover the new
+                    //      registration. See the inline comment on
+                    //      `for delay_secs in ...` for the retry
+                    //      schedule rationale.
+                    //
+                    // The branches were previously a duplicated
+                    // `is_peer_relay` predicate plus a long
+                    // `&& !is_peer_relay && !is_peer_rendezvous && !mdns`
+                    // compound on the regular branch. Restructured as
+                    // explicit if/else if to make the mutual exclusion
+                    // visible and survive future role-classification
+                    // refactors without the predicates drifting.
                     if self.discovery.state.is_peer_relay(&peer_id) {
                         let actions = self.discovery.state.on_relay_reservation_lost(&peer_id);
                         self.execute_reachability_actions(actions);
-                    }
-
-                    if !self.discovery.state.is_peer_relay(&peer_id)
-                        && !self.discovery.state.is_peer_rendezvous(&peer_id)
+                    } else if !self.discovery.state.is_peer_rendezvous(&peer_id)
                         && !self
                             .discovery
                             .state
@@ -147,21 +162,18 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                     {
                         self.discovery.state.remove_peer(&peer_id);
 
-                        // Losing the last connection to a regular peer
-                        // can mean the peer restarted (new libp2p state,
-                        // fresh relay reservation, new `/p2p-circuit/`
-                        // multiaddr). Our address book held nothing
-                        // dialable for them — relayed addresses are
-                        // intentionally not stored (see
-                        // `swarm.rs ConnectionEstablished` filter on
+                        // Our address book held nothing dialable for
+                        // them — relayed addresses are intentionally
+                        // not stored (see `swarm.rs
+                        // ConnectionEstablished` filter on
                         // `Protocol::P2pCircuit`), so the only way to
                         // pick up the post-restart registration is to
                         // re-query rendezvous. The periodic tick is
                         // gated by `discovery_rpm` (default 0.5 →
                         // 120s floor), which is far longer than the
                         // 120s sync-recovery budget the upstream
-                        // workflows assume. Issue the discover via the
-                        // force-path here so the throttle gets
+                        // workflows assume. Issue the discover via
+                        // the force-path here so the throttle gets
                         // bypassed for this event-driven case.
                         let actions = self.discovery.state.on_regular_peer_disconnected();
                         self.execute_reachability_actions(actions);
@@ -199,10 +211,27 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                         // for a 120s test budget, fine for a
                         // production deployment where the peer is
                         // expected back at all.
+                        //
+                        // Each closure captures `disconnected_peer`
+                        // and gates the re-fire on
+                        // `!is_connected(&disconnected_peer)`. If
+                        // the peer reconnected in the interim (fast
+                        // container restart, transient TCP RST that
+                        // recovered), the re-fire is a no-op — no
+                        // wasted boot-node query, no spurious force-
+                        // discover. This also bounds the multi-peer
+                        // case: if peer A disconnects and peer B
+                        // disconnects 1s later, A's later re-fires
+                        // don't double-fire for B (B has its own
+                        // re-fires; A's are gated on A specifically).
+                        let disconnected_peer = peer_id;
                         for delay_secs in [5_u64, 15, 30, 60] {
                             ctx.run_later(
                                 core::time::Duration::from_secs(delay_secs),
                                 move |actor, _ctx| {
+                                    if actor.swarm.is_connected(&disconnected_peer) {
+                                        return;
+                                    }
                                     let actions =
                                         actor.discovery.state.on_regular_peer_disconnected();
                                     actor.execute_reachability_actions(actions);
