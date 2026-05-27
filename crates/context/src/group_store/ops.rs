@@ -2,3 +2,4 @@
 //! and #2481 (namespace ops).
 
 pub(crate) mod group;
+pub(crate) mod namespace;
