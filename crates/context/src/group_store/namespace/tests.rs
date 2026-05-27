@@ -2950,7 +2950,7 @@ fn namespace_group_op_with_current_state_hash_applies() {
 }
 
 #[test]
-fn namespace_group_op_with_stale_state_hash_is_rejected() {
+fn namespace_group_op_with_stale_state_hash_applies_with_warning() {
     use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 
     use super::NamespaceGovernance;
@@ -2959,8 +2959,11 @@ fn namespace_group_op_with_stale_state_hash_is_rejected() {
         setup_state_hash_test_fixture();
 
     // Snapshot the state hash, then mutate the group (a real concurrent op
-    // would do this between sign and apply). The pre-mutation hash now
-    // represents a stale signer claim.
+    // would do this between sign and apply). The pre-mutation hash is now
+    // stale relative to post-mutation state — but the namespace path
+    // applies anyway and only logs a warning. Hard-rejecting would
+    // over-reject the multi-node concurrent-op case; see the apply-path
+    // comment in `apply_group_op_inner` and the PR #2500 caveat.
     let stale = MetaRepository::new(&store)
         .compute_state_hash(&group_gid)
         .expect("compute state hash");
@@ -2986,13 +2989,8 @@ fn namespace_group_op_with_stale_state_hash_is_rejected() {
     .unwrap();
 
     let gov = NamespaceGovernance::new(&store, namespace_id);
-    let err = gov
-        .apply_signed_op(&op)
-        .expect_err("stale state_hash must be rejected");
-    assert!(
-        err.to_string().contains("state_hash mismatch"),
-        "expected staleness rejection, got: {err}"
-    );
+    gov.apply_signed_op(&op)
+        .expect("stale state_hash must apply with a warning, not reject");
 }
 
 #[test]
@@ -3027,7 +3025,7 @@ fn namespace_root_op_with_current_state_hash_applies() {
 }
 
 #[test]
-fn namespace_root_op_with_stale_state_hash_is_rejected() {
+fn namespace_root_op_with_stale_state_hash_applies_with_warning() {
     use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
 
     use super::NamespaceGovernance;
@@ -3041,7 +3039,9 @@ fn namespace_root_op_with_stale_state_hash_is_rejected() {
         .expect("compute namespace state hash");
 
     // Move namespace state forward (admin adds a new namespace member),
-    // simulating a concurrent op landing between sign and apply.
+    // simulating a concurrent op landing between sign and apply. The
+    // root-op staleness check warns but does not reject — same shape as
+    // the group-op branch, same convergence-under-contention rationale.
     let new_member_pk = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
     MembershipRepository::new(&store)
         .add_member(&ns_gid, &new_member_pk, GroupMemberRole::Member)
@@ -3060,13 +3060,8 @@ fn namespace_root_op_with_stale_state_hash_is_rejected() {
     .unwrap();
 
     let gov = NamespaceGovernance::new(&store, namespace_id);
-    let err = gov
-        .apply_signed_op(&op)
-        .expect_err("stale root state_hash must be rejected");
-    assert!(
-        err.to_string().contains("state_hash mismatch"),
-        "expected staleness rejection, got: {err}"
-    );
+    gov.apply_signed_op(&op)
+        .expect("stale root state_hash must apply with a warning, not reject");
 }
 
 #[test]

@@ -1133,27 +1133,33 @@ impl<'a> NamespaceGovernance<'a> {
             return Ok(None);
         }
 
-        // Staleness guard. The wrapping `SignedNamespaceOp` commits to the
-        // group's pre-apply meta+member set via `state_hash_for_op`; if our
-        // local view of that state no longer matches, the signer raced a
-        // concurrent op (or replayed against stale state) and we reject —
-        // same shape as `apply_local_signed_group_op`. The zero-value
-        // bypass preserves pre-bootstrap and Root-op paths.
+        // Staleness telemetry. `state_hash_for_op` commits to the wrapped
+        // group's pre-apply meta+member set; on receive we recompute and
+        // surface a structured warning when they disagree. We do NOT
+        // `bail!` on mismatch — that would reject legitimate concurrent
+        // ops in the multi-node case where peers A and B simultaneously
+        // sign against their (then-current) view and the second to land
+        // on peer C has already drifted. The local group-op equivalent
+        // (`apply_local_signed_group_op` in `group_store/mod.rs`) hard-
+        // bails because group state is per-subgroup and concurrent same-
+        // subgroup ops are rare; namespace-wrapped ops are shipped through
+        // the shared root DAG and concurrent contention is the norm —
+        // rejecting here breaks multi-node convergence in the
+        // scaffolding-e2e / group-3node suites. The PR caveat on #2500
+        // documents this trade-off: state_hash verification stays as a
+        // divergence signal, not an apply gate. Anchor-sync reconcile is
+        // the recovery path for genuinely diverged peers.
         if signed_group_op.state_hash != [0u8; 32] {
             let current = MetaRepository::new(self.store).compute_state_hash(group_id)?;
             if signed_group_op.state_hash != current {
-                tracing::debug!(
+                tracing::warn!(
                     group_id = %hex::encode(group_id.to_bytes()),
                     expected = %hex::encode(signed_group_op.state_hash),
                     actual = %hex::encode(current),
                     nonce,
                     signer = %signer,
-                    "rejecting namespace group op: state_hash mismatch (signed against stale state)"
-                );
-                bail!(
-                    "namespace group op state_hash mismatch: signed against {}, current state is {}",
-                    hex::encode(signed_group_op.state_hash),
-                    hex::encode(current)
+                    "namespace group op state_hash mismatch (signed against stale state; \
+                     applying anyway — see PR #2500 caveat)"
                 );
             }
         }
@@ -1335,48 +1341,38 @@ impl<'a> NamespaceGovernance<'a> {
     }
 
     fn apply_root_op(&self, op: &SignedNamespaceOp, root: &RootOp) -> EyreResult<()> {
-        // Staleness guard for root ops whose correctness depends on the
-        // namespace's own meta+member set. Variants gated by
-        // `root_op_commits_to_namespace_state` carry a real claim; others
-        // pass the zero bypass on the sign side and skip the check here.
+        // Staleness telemetry for root ops whose correctness depends on
+        // the namespace's own meta+member set (`root_op_commits_to_
+        // namespace_state` whitelist). Other root variants pass the zero
+        // bypass at sign time and skip this check entirely.
         //
-        // Unlike `apply_group_op_inner`, this function has no per-signer
-        // nonce dedup. Replay protection comes from the caller:
-        // `apply_signed_op` consults the local op-log for `delta_id` (the
-        // content hash) and short-circuits with `Ok(...)` before reaching
-        // this function. So the only callers that arrive here are
-        // genuinely-new root ops. A *legitimate* root op whose state has
-        // advanced concurrently between sign and apply WILL be rejected
-        // here permanently — there is no retry mechanism for root ops.
-        // Callers must re-sign and resubmit on rejection; the failing
-        // op's `delta_id` would differ from the retry's, so the upstream
-        // op-log guard does not block the resubmit.
+        // Same shape as the group-op branch in `apply_group_op_inner` —
+        // warn on mismatch, apply anyway. Hard-rejection would over-
+        // reject the namespace path because concurrent root ops (e.g.
+        // simultaneous joins or policy updates from different admins)
+        // are the common case, and there is no per-signer nonce dedup
+        // on this path to retry against. The PR #2500 caveat documents
+        // this trade-off; anchor-sync reconcile remains the recovery
+        // path for genuinely diverged peers.
         //
         // `GroupCreated` / `GroupReparented` / `GroupDeleted` are NOT
-        // gated by `root_op_commits_to_namespace_state` and so skip this
-        // staleness check entirely. Their authoritative state lives on
-        // the affected subgroup, not the namespace root. Authorization
-        // for these ops is still checked at apply time (via
-        // `require_namespace_admin` / capability checks in the executor
-        // arms below), so a concurrent `AdminChanged` op that revokes
-        // the signer's admin role will still cause the op to fail —
-        // just at the authorization step, not the staleness step.
+        // gated by `root_op_commits_to_namespace_state` and skip this
+        // check entirely. Their authoritative state lives on the
+        // affected subgroup, not the namespace root. Authorization is
+        // still checked at apply time (via `require_namespace_admin` /
+        // capability checks in the executor arms below).
         if root_op_commits_to_namespace_state(root) && op.state_hash != [0u8; 32] {
             let ns_gid = ContextGroupId::from(self.namespace_id);
             let current = MetaRepository::new(self.store).compute_state_hash(&ns_gid)?;
             if op.state_hash != current {
-                tracing::debug!(
+                tracing::warn!(
                     namespace_id = %hex::encode(self.namespace_id),
                     expected = %hex::encode(op.state_hash),
                     actual = %hex::encode(current),
                     nonce = op.nonce,
                     signer = %op.signer,
-                    "rejecting namespace root op: state_hash mismatch (signed against stale state)"
-                );
-                bail!(
-                    "namespace root op state_hash mismatch: signed against {}, current state is {}",
-                    hex::encode(op.state_hash),
-                    hex::encode(current)
+                    "namespace root op state_hash mismatch (signed against stale state; \
+                     applying anyway — see PR #2500 caveat)"
                 );
             }
         }
