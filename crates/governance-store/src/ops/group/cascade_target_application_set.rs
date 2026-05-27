@@ -59,6 +59,7 @@ pub(crate) fn apply(
                 target: "calimero::cascade",
                 group_id = %hex::encode(entry.group_id.to_bytes()),
                 from_app_key = %hex::encode(from_app_key),
+                descendant_app_key = %hex::encode(entry.app_key),
                 "CascadeTargetApplicationSet: skip (app_key mismatch)"
             );
             continue;
