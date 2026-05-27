@@ -2832,3 +2832,278 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         .expect("CAN_DELETE_SUBGROUP holder can delete a subgroup");
     assert!(MetaRepository::new(&store).load(&s3_gid).unwrap().is_none());
 }
+
+/// Shared setup for the `state_hash` apply-path tests below. Builds a
+/// namespace with a signer admin and a wrapped subgroup that has its own
+/// meta + members + group key, ready for `NamespaceOp::Group` ops.
+fn setup_state_hash_test_fixture() -> (
+    Store,
+    PrivateKey,
+    [u8; 32],
+    ContextGroupId,
+    [u8; 32],
+    [u8; 32],
+) {
+    use rand::rngs::OsRng;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    let signer_sk = PrivateKey::random(&mut rng);
+    let signer_pk = signer_sk.public_key();
+
+    let namespace_id = [0xE0u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(signer_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &signer_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let group_id_arr = [0xE1u8; 32];
+    let group_gid = ContextGroupId::from(group_id_arr);
+    MetaRepository::new(&store)
+        .save(&group_gid, &sample_meta_with_admin(signer_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&group_gid, &signer_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let group_key = [0x6Au8; 32];
+    let key_id = GroupKeyring::new(&store, group_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    (store, signer_sk, namespace_id, group_gid, group_key, key_id)
+}
+
+#[test]
+fn namespace_group_op_zero_state_hash_bypasses_check() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    use super::NamespaceGovernance;
+
+    let (store, signer_sk, namespace_id, group_gid, group_key, key_id) =
+        setup_state_hash_test_fixture();
+
+    // Mutate the wrapped group's state AFTER picking up the (zero) state_hash
+    // so the recomputed hash would differ from any non-zero claim. The zero
+    // bypass must still apply cleanly — this is the documented backwards-
+    // compat path for pre-fix on-disk ops.
+    let other_pk = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    MembershipRepository::new(&store)
+        .add_member(&group_gid, &other_pk, GroupMemberRole::Member)
+        .unwrap();
+
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Group {
+            group_id: group_gid.to_bytes(),
+            key_id,
+            encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+    gov.apply_signed_op(&op)
+        .expect("zero state_hash must bypass the staleness check");
+}
+
+#[test]
+fn namespace_group_op_with_current_state_hash_applies() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    use super::NamespaceGovernance;
+
+    let (store, signer_sk, namespace_id, group_gid, group_key, key_id) =
+        setup_state_hash_test_fixture();
+
+    let current = MetaRepository::new(&store)
+        .compute_state_hash(&group_gid)
+        .expect("compute state hash");
+
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        current,
+        1,
+        NamespaceOp::Group {
+            group_id: group_gid.to_bytes(),
+            key_id,
+            encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+    gov.apply_signed_op(&op)
+        .expect("op signed against current state must apply");
+}
+
+#[test]
+fn namespace_group_op_with_stale_state_hash_is_rejected() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+
+    use super::NamespaceGovernance;
+
+    let (store, signer_sk, namespace_id, group_gid, group_key, key_id) =
+        setup_state_hash_test_fixture();
+
+    // Snapshot the state hash, then mutate the group (a real concurrent op
+    // would do this between sign and apply). The pre-mutation hash now
+    // represents a stale signer claim.
+    let stale = MetaRepository::new(&store)
+        .compute_state_hash(&group_gid)
+        .expect("compute state hash");
+
+    let other_pk = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    MembershipRepository::new(&store)
+        .add_member(&group_gid, &other_pk, GroupMemberRole::Member)
+        .unwrap();
+
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        stale,
+        1,
+        NamespaceOp::Group {
+            group_id: group_gid.to_bytes(),
+            key_id,
+            encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
+            key_rotation: None,
+        },
+    )
+    .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let err = gov
+        .apply_signed_op(&op)
+        .expect_err("stale state_hash must be rejected");
+    assert!(
+        err.to_string().contains("state_hash mismatch"),
+        "expected staleness rejection, got: {err}"
+    );
+}
+
+#[test]
+fn namespace_root_op_with_current_state_hash_applies() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    use super::NamespaceGovernance;
+
+    let (store, signer_sk, namespace_id, _group_gid, _group_key, _key_id) =
+        setup_state_hash_test_fixture();
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let current = MetaRepository::new(&store)
+        .compute_state_hash(&ns_gid)
+        .expect("compute namespace state hash");
+
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        current,
+        1,
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![1, 2, 3],
+        }),
+    )
+    .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+    gov.apply_signed_op(&op)
+        .expect("root op signed against current namespace state must apply");
+}
+
+#[test]
+fn namespace_root_op_with_stale_state_hash_is_rejected() {
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+
+    use super::NamespaceGovernance;
+
+    let (store, signer_sk, namespace_id, _group_gid, _group_key, _key_id) =
+        setup_state_hash_test_fixture();
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    let stale = MetaRepository::new(&store)
+        .compute_state_hash(&ns_gid)
+        .expect("compute namespace state hash");
+
+    // Move namespace state forward (admin adds a new namespace member),
+    // simulating a concurrent op landing between sign and apply.
+    let new_member_pk = PrivateKey::random(&mut rand::rngs::OsRng).public_key();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &new_member_pk, GroupMemberRole::Member)
+        .unwrap();
+
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        stale,
+        1,
+        NamespaceOp::Root(RootOp::PolicyUpdated {
+            policy_bytes: vec![9, 9, 9],
+        }),
+    )
+    .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+    let err = gov
+        .apply_signed_op(&op)
+        .expect_err("stale root state_hash must be rejected");
+    assert!(
+        err.to_string().contains("state_hash mismatch"),
+        "expected staleness rejection, got: {err}"
+    );
+}
+
+#[test]
+fn namespace_root_key_delivery_ignores_non_zero_state_hash() {
+    use calimero_context_client::local_governance::{
+        KeyEnvelope, NamespaceOp, RootOp, SignedNamespaceOp,
+    };
+
+    use super::NamespaceGovernance;
+
+    let (store, signer_sk, namespace_id, group_gid, _group_key, _key_id) =
+        setup_state_hash_test_fixture();
+
+    // KeyDelivery is intentionally NOT gated by `root_op_commits_to_
+    // namespace_state` — it's additive/idempotent, and a stale-but-valid
+    // delivery is still a valid delivery. Even if a peer (bug or otherwise)
+    // sets a non-matching state_hash on it, apply must succeed.
+    let bogus_hash = [0xCDu8; 32];
+    let op = SignedNamespaceOp::sign(
+        &signer_sk,
+        namespace_id,
+        vec![],
+        bogus_hash,
+        1,
+        NamespaceOp::Root(RootOp::KeyDelivery {
+            group_id: group_gid.to_bytes(),
+            envelope: KeyEnvelope {
+                recipient: signer_sk.public_key(),
+                ephemeral_pk: PublicKey::from([0u8; 32]),
+                nonce: [0u8; 12],
+                ciphertext: vec![0u8; 48],
+            },
+        }),
+    )
+    .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+    gov.apply_signed_op(&op)
+        .expect("non-gated root variants must skip the staleness check");
+}
