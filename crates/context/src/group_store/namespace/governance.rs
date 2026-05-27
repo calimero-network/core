@@ -1661,11 +1661,9 @@ impl<'a> NamespaceGovernance<'a> {
                 });
             }
             super::super::MembershipPath::None => {
-                eyre::bail!(
-                    "MemberJoinedOpen rejected: signer {} has no membership path to {:?}",
-                    member,
-                    gid
-                );
+                eyre::bail!(ApplyError::MemberJoinedOpenRejected {
+                    reason: format!("signer {member} has no membership path to {gid:?}"),
+                });
             }
         }
     }
