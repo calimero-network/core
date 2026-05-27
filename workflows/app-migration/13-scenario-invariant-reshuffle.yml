@@ -5,9 +5,12 @@ description: >
   level and `per_item_counts: UnorderedMap<String, LwwRegister<u64>>`. The
   implicit invariant `global_count == sum(per_item_counts)` is easy to
   violate because each `record(item)` call independently bumps both
-  fields. v2 normalizes the pair into a `stats: Stats { total, per_item }`
-  substruct and enforces the invariant via a single `record` method that
-  atomically bumps both. The migration re-derives `total` by summing the
+  fields. v2 keeps the same two top-level fields (`total` + `per_item`)
+  but funnels all writes through a single `record` method that
+  atomically bumps both — the field shape stays flat (a nested
+  `Stats` substruct can't be used as a top-level `#[app::state]` field
+  because plain structs of collections don't implement `Mergeable`).
+  The migration re-derives `total` by summing the
   v1 per-item values rather than trusting v1's redundant `global_count`,
   guaranteeing the v2 invariant holds from the first byte of v2 state.
   Topology: namespace + one subgroup + one context, coordinated upgrade
