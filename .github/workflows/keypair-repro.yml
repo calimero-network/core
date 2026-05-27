@@ -52,22 +52,35 @@ jobs:
           echo "ON-DISK peer_id: $CONFIG_PEER_ID"
 
           echo "=== Step 2: start merod, capture pre-restart runtime peer_id ==="
+          # RUST_LOG=debug elevates `libp2p_swarm` to emit
+          # `local_peer_id=...` at startup. Without it, libp2p
+          # is silent at INFO and we have to scrape the peer
+          # id from AutoNAT or subscription handler logs — both
+          # are slower-arriving and less reliable as a signal.
           docker run -d --name "$CONTAINER" \
             -v "$DATA_DIR:/app/data" \
+            -e RUST_LOG=debug \
             --entrypoint=merod \
             "$IMAGE" \
             --home /app/data --node test run
 
+          # The peer-id surfaces in two log lines:
+          #   * `INFO calimero_node::run: Peer ID: 12D3KooW...`
+          #     — emitted very early by cli::run, INFO level so
+          #     it appears regardless of RUST_LOG.
+          #   * `INFO libp2p_swarm: local_peer_id=12D3KooW...`
+          #     — emitted by libp2p, depends on RUST_LOG.
+          # Match on the cli::run line for robustness.
           PRE_RESTART_PEER=""
           for i in $(seq 1 30); do
-            PRE_RESTART_PEER=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'local_peer_id=[A-Za-z0-9]+' | head -1 | cut -d= -f2)
+            PRE_RESTART_PEER=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'Peer ID: [A-Za-z0-9]+' | head -1 | awk '{print $3}')
             [ -n "$PRE_RESTART_PEER" ] && break
             sleep 1
           done
 
           if [ -z "$PRE_RESTART_PEER" ]; then
-            echo "✗ Pre-restart local_peer_id never appeared"
-            docker logs "$CONTAINER" 2>&1 | tail -30
+            echo "✗ Pre-restart Peer ID never appeared"
+            docker logs "$CONTAINER" 2>&1 | tail -50
             exit 1
           fi
           echo "PRE-RESTART runtime peer_id: $PRE_RESTART_PEER"
@@ -75,19 +88,24 @@ jobs:
           echo "=== Step 3: docker restart, capture post-restart runtime peer_id ==="
           docker restart "$CONTAINER"
 
+          # Same grep pattern as pre-restart (`Peer ID: ...`).
+          # We need the SECOND occurrence — the first is the
+          # pre-restart container's startup, the second is the
+          # post-restart container's startup (docker logs
+          # returns the accumulated stream).
           POST_RESTART_PEER=""
           for i in $(seq 1 30); do
-            HITS=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'local_peer_id=[A-Za-z0-9]+' | wc -l)
+            HITS=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'Peer ID: [A-Za-z0-9]+' | wc -l)
             if [ "$HITS" -ge 2 ]; then
-              POST_RESTART_PEER=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'local_peer_id=[A-Za-z0-9]+' | sed -n 2p | cut -d= -f2)
+              POST_RESTART_PEER=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'Peer ID: [A-Za-z0-9]+' | sed -n 2p | awk '{print $3}')
               break
             fi
             sleep 1
           done
 
           if [ -z "$POST_RESTART_PEER" ]; then
-            echo "✗ Post-restart local_peer_id never appeared"
-            docker logs "$CONTAINER" 2>&1 | tail -50
+            echo "✗ Post-restart Peer ID never appeared (only $HITS occurrences)"
+            docker logs "$CONTAINER" 2>&1 | tail -80
             exit 1
           fi
           echo "POST-RESTART runtime peer_id: $POST_RESTART_PEER"
