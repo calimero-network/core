@@ -146,6 +146,27 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                             .is_peer_discovered_via(&peer_id, PeerDiscoveryMechanism::Mdns)
                     {
                         self.discovery.state.remove_peer(&peer_id);
+
+                        // Losing the last connection to a regular peer
+                        // can mean the peer restarted (new libp2p state,
+                        // fresh relay reservation, new `/p2p-circuit/`
+                        // multiaddr). Our address book held nothing
+                        // dialable for them — relayed addresses are
+                        // intentionally not stored (see
+                        // `swarm.rs ConnectionEstablished` filter on
+                        // `Protocol::P2pCircuit`), so the only way to
+                        // pick up the post-restart registration is to
+                        // re-query rendezvous. The periodic tick is
+                        // gated by `discovery_rpm` (default 0.5 →
+                        // 120s floor), which is far longer than the
+                        // 120s sync-recovery budget the upstream
+                        // workflows assume. Issue the discover via the
+                        // force-path here so the throttle gets
+                        // bypassed for this event-driven case.
+                        // No-op if we have no rendezvous peers
+                        // configured (mdns-only deployments).
+                        let actions = self.discovery.state.on_regular_peer_disconnected();
+                        self.execute_reachability_actions(actions);
                     }
                 }
             }

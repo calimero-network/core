@@ -603,3 +603,131 @@ fn test_multiple_listeners_map_to_distinct_relays() {
     assert_eq!(state.take_relay_listener(&listener_a), None);
     assert_eq!(state.take_relay_listener(&listener_b), Some(relay_b));
 }
+
+// ---------------------------------------------------------------------------
+// on_regular_peer_disconnected — the #2469 recovery path
+//
+// These tests pin the contract that the `SwarmEvent::ConnectionClosed` branch
+// in `crates/network/src/handlers/stream/swarm.rs` relies on:
+//
+//   - When a regular peer's connection drops, the action set must contain
+//     every known rendezvous peer in `rendezvous_discover_force` so the
+//     caller can fire an immediate (throttle-bypassed) discover request.
+//   - The throttled `rendezvous_discover` field must stay empty — otherwise
+//     the periodic-tick path would silently swallow these events when the
+//     `discovery_rpm` floor is still in effect (the bug we're fixing).
+//   - The method must be a no-op when no rendezvous peers are known (mdns-
+//     only / local-loopback deployments); we don't want bogus actions to
+//     trip the action dispatcher's `has_actions()` early-return.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_on_regular_peer_disconnected_queues_force_discover_for_known_rendezvous() {
+    let mut state = DiscoveryState::default();
+    let rendezvous = PeerId::random();
+    state.update_peer_protocols(&rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    let actions = state.on_regular_peer_disconnected();
+
+    assert_eq!(
+        actions.rendezvous_discover_force,
+        vec![rendezvous],
+        "the lone known rendezvous peer should be queued for force-discovery"
+    );
+    assert!(
+        actions.rendezvous_discover.is_empty(),
+        "the throttled path must NOT be populated; that path is for periodic ticks \
+         and would be no-op'd by the discovery_rpm floor right after a disconnect"
+    );
+    assert!(
+        actions.has_actions(),
+        "force-discover queue is a real action; has_actions must reflect that or \
+         the executor will short-circuit before dispatching it"
+    );
+}
+
+#[test]
+fn test_on_regular_peer_disconnected_returns_all_rendezvous_peers() {
+    let mut state = DiscoveryState::default();
+    let r1 = PeerId::random();
+    let r2 = PeerId::random();
+    let r3 = PeerId::random();
+    state.update_peer_protocols(&r1, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&r2, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&r3, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    let actions = state.on_regular_peer_disconnected();
+
+    // Order is not contractual (rendezvous peers live in a set), but every
+    // one of them must be queued so we re-query each independently. In
+    // production we typically run one rendezvous peer (the boot-node), but
+    // multi-rendezvous deployments do exist and we want symmetric behavior.
+    let mut got: Vec<_> = actions.rendezvous_discover_force.clone();
+    got.sort();
+    let mut want = vec![r1, r2, r3];
+    want.sort();
+    assert_eq!(got, want, "every known rendezvous peer must be queued");
+}
+
+#[test]
+fn test_on_regular_peer_disconnected_is_noop_without_rendezvous_peers() {
+    // mdns-only / local-loopback scenarios have no rendezvous server to
+    // re-query. The method must surface this as a no-op so the dispatcher's
+    // `if !actions.has_actions() { return; }` short-circuit fires.
+    let state = DiscoveryState::default();
+
+    let actions = state.on_regular_peer_disconnected();
+
+    assert!(actions.rendezvous_discover_force.is_empty());
+    assert!(actions.rendezvous_discover.is_empty());
+    assert!(
+        !actions.has_actions(),
+        "no rendezvous peers known → no actions; otherwise the dispatcher \
+         would spin on every disconnect of every mdns peer"
+    );
+}
+
+#[test]
+fn test_on_regular_peer_disconnected_ignores_non_rendezvous_peers() {
+    // A relay-only peer and a HOP+RENDEZVOUS dual-role peer share the
+    // rendezvous slot. The discriminator is `is_peer_rendezvous` which is
+    // driven by protocol announcement. The mere presence of a relay peer
+    // must NOT cause it to appear in the force-discover queue.
+    let mut state = DiscoveryState::default();
+    let relay = PeerId::random();
+    let rendezvous = PeerId::random();
+    state.update_peer_protocols(&relay, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    let actions = state.on_regular_peer_disconnected();
+
+    assert_eq!(
+        actions.rendezvous_discover_force,
+        vec![rendezvous],
+        "only rendezvous-protocol peers belong in the discover queue"
+    );
+    assert!(
+        !actions.rendezvous_discover_force.contains(&relay),
+        "relay-only peers must NOT be force-discovered (they don't serve \
+         rendezvous-discover requests)"
+    );
+}
+
+#[test]
+fn test_on_regular_peer_disconnected_includes_dual_role_peers() {
+    // A peer announcing both HOP and RENDEZVOUS protocols is the boot-node
+    // shape in the e2e workflows (single binary serving relay + rendezvous).
+    // Such a peer must be queued for discover (it serves the rendezvous
+    // protocol) regardless of the HOP role.
+    let mut state = DiscoveryState::default();
+    let boot_node = PeerId::random();
+    state.update_peer_protocols(&boot_node, &[HOP_PROTOCOL_NAME, RENDEZVOUS_PROTOCOL_NAME]);
+
+    let actions = state.on_regular_peer_disconnected();
+
+    assert_eq!(
+        actions.rendezvous_discover_force,
+        vec![boot_node],
+        "dual-role boot-node peers must be queued via their rendezvous role"
+    );
+}
