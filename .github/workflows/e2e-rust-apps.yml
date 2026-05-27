@@ -397,6 +397,15 @@ jobs:
           # Workaround tracked in calimero-network/merobox#207; once merobox
           # persists logs natively we'll remove this block (calimero/core#2179).
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"
+          # Point merobox's `restart_container` pre-restart snapshot
+          # (merobox 0.6.22+) at the same absolute LOGDIR. Without this
+          # env override, merobox writes the snapshot to a CWD-relative
+          # `docker-logs/` which resolves to `$GITHUB_WORKSPACE/apps/
+          # <app>/docker-logs/` (because the next line `cd`s into the
+          # app dir) — separate from the artifact-uploaded LOGDIR. The
+          # snapshot would then be invisible to the artifact uploader
+          # and post-restart debugging would stay blocked.
+          export MEROBOX_PRE_RESTART_LOG_DIR="$LOGDIR"
           WATCHER_STATE_DIR="$(mktemp -d)"
           (
               while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
