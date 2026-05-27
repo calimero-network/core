@@ -17,7 +17,7 @@ use calimero_utils_actix::LazyRecipient;
 use dashmap::DashMap;
 use eyre::{OptionExt, WrapErr};
 use futures_util::Stream;
-use libp2p::gossipsub::{IdentTopic, TopicHash};
+use libp2p::gossipsub::{IdentTopic, PublishError, TopicHash};
 use libp2p::PeerId;
 use rand::Rng;
 use tokio::sync::{broadcast, mpsc};
@@ -194,6 +194,26 @@ pub struct LocalAppliedDelta {
 /// publishes on an unhealthy mesh (gate too low).
 fn gossipsub_mesh_n_low_default() -> usize {
     GOSSIPSUB_MESH_N_LOW
+}
+
+/// Returns true when `err`'s chain contains `PublishError::NoPeersSubscribedToTopic`.
+///
+/// Used by `broadcast` and `broadcast_heartbeat` to silence the one
+/// publish-error variant that's a normal cold-start outcome rather than a
+/// transport failure. We do not queue or retry the payload — see #2356
+/// item 3 and the post-mortem on the closed PR #2369: queuing state
+/// deltas at the network layer races the receiver's DAG sync and
+/// replays stale snapshots. State deltas have a sync-pull recovery
+/// path (HashComparison via heartbeats); heartbeats are idempotent at
+/// their own cadence; either way, dropping one publish on a topic
+/// with zero subscribers is the safe behavior.
+fn is_no_peers_subscribed_error(err: &eyre::Report) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<PublishError>(),
+            Some(PublishError::NoPeersSubscribedToTopic)
+        )
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -486,10 +506,6 @@ impl NodeClient {
             "Sending state delta"
         );
 
-        if self.get_peers_count(Some(&context.id)).await == 0 {
-            return Ok(());
-        }
-
         let shared_key = SharedKey::from_sk(sender_key);
         let nonce = rand::thread_rng().gen();
 
@@ -516,9 +532,28 @@ impl NodeClient {
 
         let topic = TopicHash::from_raw(context.id);
 
-        let _ignored = self.network_client.publish(topic, payload).await?;
-
-        Ok(())
+        // Previously this returned early when `mesh_peer_count == 0`,
+        // which silently dropped state deltas during the cold-start
+        // window where peers are subscribed-but-not-yet-mesh. With
+        // `flood_publish(true)` (#2352), gossipsub itself decides
+        // reachability, so the application-level gate was both wrong
+        // (missed flood-eligible peers) and silent (no logs). Attempt
+        // the publish unconditionally and let gossipsub report the
+        // actual outcome; convert the one cold-start error variant
+        // to a debug log because the receiver's sync-pull path
+        // (HashComparison via heartbeats) recovers any drop.
+        match self.network_client.publish(topic, payload).await {
+            Ok(_) => Ok(()),
+            Err(err) if is_no_peers_subscribed_error(&err) => {
+                debug!(
+                    context_id = %context.id,
+                    delta_id = ?delta_id,
+                    "no peers subscribed to context topic, state delta dropped (sync-pull will recover)"
+                );
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn broadcast_heartbeat(
@@ -527,10 +562,6 @@ impl NodeClient {
         root_hash: calimero_primitives::hash::Hash,
         dag_heads: Vec<[u8; 32]>,
     ) -> eyre::Result<()> {
-        if self.get_peers_count(Some(context_id)).await == 0 {
-            return Ok(());
-        }
-
         let payload = BroadcastMessage::HashHeartbeat {
             context_id: *context_id,
             root_hash,
@@ -540,9 +571,21 @@ impl NodeClient {
         let payload = borsh::to_vec(&payload)?;
         let topic = TopicHash::from_raw(*context_id);
 
-        let _ignored = self.network_client.publish(topic, payload).await?;
-
-        Ok(())
+        // See `broadcast`: drop the application-level zero-peers gate so
+        // gossipsub's `flood_publish` decides reachability, and silence
+        // the cold-start `NoPeersSubscribed` variant — the next
+        // heartbeat tick (~5 s) carries fresh state regardless.
+        match self.network_client.publish(topic, payload).await {
+            Ok(_) => Ok(()),
+            Err(err) if is_no_peers_subscribed_error(&err) => {
+                debug!(
+                    %context_id,
+                    "no peers subscribed to context topic, heartbeat dropped (next tick will retry)"
+                );
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Mesh peer count for the namespace topic `ns/<hex>` — used by callers
@@ -970,5 +1013,37 @@ mod publish_on_namespace_now_tests {
             1 + ADMIT_AFTER_CYCLES,
             "must stop announcing the instant admission is observed"
         );
+    }
+}
+
+#[cfg(test)]
+mod is_no_peers_subscribed_error_tests {
+    use libp2p::gossipsub::PublishError;
+
+    use super::is_no_peers_subscribed_error;
+
+    #[test]
+    fn classifies_no_peers_subscribed_at_root() {
+        let err: eyre::Report = PublishError::NoPeersSubscribedToTopic.into();
+        assert!(is_no_peers_subscribed_error(&err));
+    }
+
+    #[test]
+    fn classifies_no_peers_subscribed_when_wrapped() {
+        let err = eyre::Report::from(PublishError::NoPeersSubscribedToTopic)
+            .wrap_err("failed to publish state delta");
+        assert!(is_no_peers_subscribed_error(&err));
+    }
+
+    #[test]
+    fn does_not_classify_other_publish_errors() {
+        let err: eyre::Report = PublishError::MessageTooLarge.into();
+        assert!(!is_no_peers_subscribed_error(&err));
+    }
+
+    #[test]
+    fn does_not_classify_unrelated_errors() {
+        let err: eyre::Report = eyre::eyre!("some other failure");
+        assert!(!is_no_peers_subscribed_error(&err));
     }
 }
