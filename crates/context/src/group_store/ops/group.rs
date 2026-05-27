@@ -154,7 +154,13 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             from_app_key,
             migration,
         } => cascade_group_migration_set::apply(ctx, from_app_key, migration)?,
-        #[allow(unreachable_patterns)]
+        // `GroupOp` is `#[non_exhaustive]` from a different crate,
+        // so the wildcard is required by the compiler. When a new
+        // variant is added in `calimero-governance-types`, it lands
+        // here as `handled = false`, which the caller turns into
+        // `ApplyError::UnsupportedOp` at runtime — not a compile
+        // error. Reviewers should grep for `GroupOp::` in this file
+        // when reviewing governance-types variant additions.
         _ => return Ok(false),
     }
     Ok(true)
