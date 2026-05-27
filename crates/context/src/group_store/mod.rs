@@ -95,8 +95,8 @@ use self::upgrades::extract_application_id;
 // Domain-specific error enums live in `errors.rs`. Re-exported below.
 
 pub use self::errors::{
-    ApplyError, CapabilitiesError, ContextRegistrationError, GroupStoreError, KeyringError,
-    MembershipError, MetaError, NamespaceError, SigningKeysError, UpgradesError,
+    ApplyError, CapabilitiesError, ContextRegistrationError, KeyringError, MembershipError,
+    MetaError, NamespaceError, SigningKeysError, UpgradesError,
 };
 
 // ---------------------------------------------------------------------------
@@ -1430,7 +1430,7 @@ fn apply_group_op_mutations(
                 .load(group_id)?
                 .ok_or_else(|| MembershipError::UnknownGroup(hex::encode(group_id.to_bytes())))?;
             if meta.owner_identity != *signer {
-                bail!(MembershipError::OnlyOwnerCanTransfer(hex::encode(
+                bail!(MembershipError::OnlyOwnerCanDelete(hex::encode(
                     group_id.to_bytes()
                 )));
             }

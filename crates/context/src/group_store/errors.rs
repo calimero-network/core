@@ -6,6 +6,32 @@
 //! flows through `eyre::Report` and can be recovered by callers with
 //! `err.downcast_ref::<DomainError>()`.
 //!
+//! # Downcast asymmetry
+//!
+//! `bail!(DomainError::Variant)` stores the **`DomainError` type**
+//! inside `eyre::Report` — callers must `downcast_ref` to the same
+//! type that was bailed:
+//!
+//! ```ignore
+//! // sites that bail!(MembershipError::LastAdmin)
+//! err.downcast_ref::<MembershipError>()
+//!
+//! // sites that bail!(ApplyError::StateHashMismatch { .. })
+//! err.downcast_ref::<ApplyError>()
+//! ```
+//!
+//! The `#[from]` impls on `ApplyError` are NOT triggered by `?` here
+//! (every method returns `EyreResult`, not `Result<_, ApplyError>`)
+//! — they exist for explicit `.into()` conversions when apply-path
+//! code wants to wrap a domain error as an `ApplyError` for logging
+//! / typed return.
+//!
+//! In short: downcast to the type that was bailed, not to
+//! `ApplyError`. The composition exists for the future state where
+//! method signatures move to `Result<_, ApplyError>` (#2304 / #2481);
+//! today it documents the type relationship without forcing a
+//! signature migration.
+//!
 //! **Why per-domain instead of one giant enum?** Callers (server handlers,
 //! tests, governance apply) need to discriminate by *meaning*, not by
 //! source file. Splitting along Repository lines would conflate truly
@@ -133,12 +159,24 @@ pub enum MembershipError {
     #[error("cannot leave namespace: leaver owns subgroup {0}; transfer ownership first")]
     OwnerOwnsSubgroup(String),
 
-    /// Only the current owner can transfer ownership.
+    /// Only the current owner can transfer ownership of a group.
     #[error("only the current owner of group {0} can transfer ownership")]
     OnlyOwnerCanTransfer(String),
 
-    /// Group target of an action does not exist (used for
-    /// `TransferOwnership` and `GroupDeleted`).
+    /// Only the current owner can delete a group. Distinct from
+    /// [`OnlyOwnerCanTransfer`] so callers can route delete-rejection
+    /// to a different code path than transfer-rejection (e.g. an HTTP
+    /// handler returning different error codes).
+    #[error(
+        "only the owner of group {0} can delete it; transfer ownership first if a \
+         non-owner needs to remove it"
+    )]
+    OnlyOwnerCanDelete(String),
+
+    /// Group does not exist (used for mutation paths that need the
+    /// meta row — `TransferOwnership`, `GroupDeleted`, etc.). The
+    /// apply-path's hash-recomputation has its own [`MetaError::
+    /// GroupNotFoundForHash`] so the two recovery paths can diverge.
     #[error("group {0} not found for this action")]
     UnknownGroup(String),
 
@@ -294,19 +332,15 @@ pub enum KeyringError {
     InnerOpDecodeFailed(String),
 }
 
-/// Errors raised by `MetaRepository`. Mostly the "this group doesn't
-/// exist" case; computational errors (state hash mismatches) live on
-/// `ApplyError` because they're apply-path-specific.
+/// Errors raised by `MetaRepository`. Currently apply-path-specific —
+/// the general "group not found" case for mutation paths lives on
+/// [`MembershipError::UnknownGroup`] because those sites are
+/// authorization-gated and route differently.
 #[derive(Debug, Error)]
 pub enum MetaError {
-    /// Group metadata row not found.
-    #[error("group {0} not found")]
-    GroupNotFound(String),
-
-    /// Group not found during state-hash computation. Distinct from
-    /// `GroupNotFound` so callers in the apply path can route the
-    /// failure to a "diverged peer" code path rather than a generic
-    /// "missing data" one.
+    /// Group not found during state-hash computation. Apply-path
+    /// only — surfaces as a "diverged peer" signal rather than a
+    /// generic "missing data" error.
     #[error("group not found for state hash computation")]
     GroupNotFoundForHash,
 }
@@ -420,11 +454,3 @@ pub enum ApplyError {
     #[error("MemberJoinedOpen rejected: {reason}")]
     MemberJoinedOpenRejected { reason: String },
 }
-
-/// Backwards-compatible alias for the pre-#2305 single-enum API.
-///
-/// `GroupStoreError` is preserved as an alias for [`ApplyError`] so
-/// external callers (`crates/server`, `crates/node`) that already
-/// match on `GroupStoreError::*` continue to compile. New code should
-/// import the specific domain enum directly.
-pub type GroupStoreError = ApplyError;
