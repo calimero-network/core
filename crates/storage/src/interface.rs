@@ -1303,6 +1303,35 @@ impl<S: StorageAdaptor> Interface<S> {
                             parent.id(),
                             ChildInfo::new(id, placeholder_hash, metadata.clone()),
                         )?;
+                    } else {
+                        // ORPHAN_ADD diagnostic (#2319 follow-up): brand-new
+                        // entity, not root, and no parent ancestor was
+                        // supplied — typical of HashComparison sync, which
+                        // ships `ancestors: vec![]` ("HashComparison sync
+                        // runs precisely when tree shapes have drifted").
+                        // Without a parent reference, neither this branch
+                        // NOR the post-`save_internal` `add_child_to` below
+                        // can link the entity into the parent's children
+                        // list. The entity still reaches `Key::Entry(id)`
+                        // via `save_internal`'s `storage_write`, but the
+                        // parent collection's `children` list never learns
+                        // about it — readers iterating `parent.entries()`
+                        // skip it because it isn't advertised. Net effect
+                        // on the RGA test: chars present in storage,
+                        // missing from `chars_map.children`, producing
+                        // truncated reads ("Hello Wor" instead of "Hello
+                        // World"). Log loudly so the next reproduction
+                        // names the entity and the apply path; the
+                        // permanent linkage repair belongs in the HC sync
+                        // ship path (carry the parent in the action, or
+                        // call `add_child_to` from compare_affective).
+                        tracing::warn!(
+                            target: "calimero_storage::orphan_add",
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            "ORPHAN_ADD: applying Add/Update for brand-new non-root entity with empty ancestors — entity will land in Key::Entry but parent.children won't learn about it (HashComparison-style apply path)"
+                        );
                     }
                 }
 
