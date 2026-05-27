@@ -281,10 +281,6 @@ steps:
   # state via the standard context-sync gossip path. They do NOT
   # re-run `migrate_v1_to_v2` locally, so a node-2 log assertion
   # for "Executing migration" would always fail by design.
-  #
-  # Cross-node visibility of the migrated state is verified in
-  # Phase 7c (schema_info on node 2 must return v2 shape) + Phase
-  # 7d (v2-only setter on node 1 round-trips to node 2).
   - name: Assert migration ran on node 1
     type: assert_log_present
     nodes:
@@ -294,6 +290,35 @@ steps:
       - "migrate_v1_to_v2"
       - "Migrated state written successfully"
     min_matches: 1
+
+  # Phase 7b': Receiver-side cascade apply log on EACH node
+  # separately.
+  #
+  # `CascadeTargetApplicationSet: applied` is emitted at INFO level
+  # by the apply handler on EVERY peer whose local walk matches the
+  # signed-group + descendant subtree (emitter + every receiver
+  # that subscribes to the namespace topic). In this scenario the
+  # walk matches the namespace root + 1 descendant subgroup = 2
+  # log lines per node. Per-node assertions (rather than a single
+  # aggregated check) catch the asymmetric regression where node 1
+  # applies but node 2 silently drops the op — that case would
+  # still satisfy any aggregated threshold but is exactly the bug
+  # this PR's `app_key` fix triangle prevents.
+  - name: Assert cascade apply log on node 1 (emitter)
+    type: assert_log_present
+    nodes:
+      - app-migration-cascade-1
+    patterns:
+      - "CascadeTargetApplicationSet: applied"
+    min_matches: 2
+
+  - name: Assert cascade apply log on node 2 (receiver)
+    type: assert_log_present
+    nodes:
+      - app-migration-cascade-2
+    patterns:
+      - "CascadeTargetApplicationSet: applied"
+    min_matches: 2
 
   # Phase 7c: Post-migration schema visible on BOTH nodes with v1
   # data preserved + v2-only field readable.

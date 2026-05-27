@@ -56,6 +56,17 @@ pub(crate) fn apply(
         }
         let entry_settings = GroupSettingsService::new(store, entry.group_id);
         entry_settings.set_group_migration(signer, migration)?;
+        // Match-success log — symmetric with the
+        // `CascadeTargetApplicationSet` apply log. Migration bytes
+        // size is recorded instead of the bytes themselves to keep
+        // logs compact.
+        tracing::info!(
+            target: "calimero::cascade",
+            group_id = %hex::encode(entry.group_id.to_bytes()),
+            from_app_key = %hex::encode(from_app_key),
+            migration_bytes_len = migration.as_ref().map(|m| m.len()).unwrap_or(0),
+            "CascadeGroupMigrationSet: applied"
+        );
         any_applied = true;
     }
     if !any_applied {
