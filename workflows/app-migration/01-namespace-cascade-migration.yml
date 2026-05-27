@@ -1,0 +1,241 @@
+name: 01 — Namespace-cascade migration (v1 → v2 via cascade=true)
+description: >
+  Single-node, namespace-rooted cascade upgrade. Installs
+  migration-suite-v1, creates a namespace + one descendant subgroup +
+  one context in the subgroup, writes v1 state, then issues ONE
+  upgrade_group(cascade=true) against the namespace root. Asserts:
+    - cascade fan-out lands on BOTH the namespace root AND the
+      descendant subgroup (target_application_id flips to v2)
+    - the descendant context's state migrates (v1 fields preserved,
+      v2-only field readable)
+
+  Regression guard for the random-app_key bug in
+  `crates/context/src/handlers/create_group.rs::handle` (namespace root)
+  and `crates/governance-store/src/ops/namespace/group_created.rs::apply`
+  (subgroup). Pre-fix: both sites seed `meta.app_key` from a fresh
+  random or `[0u8; 32]`, so the cascade predicate
+  (`from_app_key == descendant.app_key`) never matches the descendant
+  and the cascade walk silently skips it — only the namespace root
+  flips, the subgroup stays at v1. Post-fix the predicate matches and
+  this workflow goes green.
+
+  Realistic: no pre-cascade alignment, no double-upgrade workaround.
+  Goes straight from `create_namespace` → `create_group_in_namespace`
+  → one cascade call.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-cascade
+  base_port: 9230
+  base_rpc_port: 9330
+
+steps:
+  # Phase 1: Install v1 + v2 binaries.
+  - name: Install migration-suite-v1
+    type: install_application
+    node: app-migration-cascade-1
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install migration-suite-v2-add-field
+    type: install_application
+    node: app-migration-cascade-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Phase 2: Build a namespace with one descendant subgroup. NO
+  # pre-cascade alignment — the whole point of this workflow is that
+  # cascade should work straight out of `create_namespace` +
+  # `create_group_in_namespace`.
+  - name: Create namespace (anchors app_v1)
+    type: create_namespace
+    node: app-migration-cascade-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-cascade-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create descendant subgroup
+    type: create_group_in_namespace
+    node: app-migration-cascade-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "cascade-target-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-cascade-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Write v1 state (description + counter)
+    type: call
+    node: app-migration-cascade-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "set-before-cascade"
+
+  - name: Increment counter (v1)
+    type: call
+    node: app-migration-cascade-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Sanity-check v1 schema before cascade
+    type: call
+    node: app-migration-cascade-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "description": "set-before-cascade", "counter": "1"}})'
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-cascade-1
+    group_id: "{{namespace_id}}"
+    upgrade_policy: coordinated
+
+  # Phase 3: ONE cascade call against the namespace root. Walks
+  # descendants whose current app_key matches the namespace root's
+  # current app_key (which both sites — root and subgroup — now derive
+  # from blob_id(v1.bytecode), matching exactly).
+  - name: Cascade namespace v1 → v2
+    type: upgrade_group
+    node: app-migration-cascade-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+    cascade: true
+
+  - name: Wait for cascade + migration to apply
+    type: wait
+    seconds: 10
+
+  # Phase 4a: Both layers must have flipped to v2.
+  - name: Read namespace root info
+    type: get_group_info
+    node: app-migration-cascade-1
+    group_id: "{{namespace_id}}"
+    outputs:
+      ns_target_app: targetApplicationId
+
+  - name: Read descendant subgroup info
+    type: get_group_info
+    node: app-migration-cascade-1
+    group_id: "{{group_id}}"
+    outputs:
+      sub_target_app: targetApplicationId
+
+  - name: Assert cascade fanned out to BOTH root and subgroup
+    type: json_assert
+    statements:
+      - 'equal("{{ns_target_app}}", "{{app_v2}}")'
+      - 'equal("{{sub_target_app}}", "{{app_v2}}")'
+
+  # Phase 4b: The context's state migrated. The migrate handler ran
+  # against the subgroup's context (`migrate_v1_to_v2` preserves v1
+  # fields and seeds the new `notes` field).
+  - name: Assert migration handler ran in the context
+    type: assert_log_present
+    nodes:
+      - app-migration-cascade-1
+    patterns:
+      - "Executing migration"
+      - "migrate_v1_to_v2"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Read post-migration schema_info
+    type: call
+    node: app-migration-cascade-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 schema after cascade (v1 data preserved + notes seeded)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"description": "set-before-cascade", "counter": "1"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"notes": "added in v2"}})'
+
+  - name: Call v2-only setter (set_notes)
+    type: call
+    node: app-migration-cascade-1
+    context_id: "{{ctx_id}}"
+    method: set_notes
+    args:
+      notes: "written-post-cascade"
+
+  - name: Read notes via v2 getter
+    type: call
+    node: app-migration-cascade-1
+    context_id: "{{ctx_id}}"
+    method: get_notes
+    outputs:
+      notes_after: result
+
+  - name: Assert v2 setter/getter round-tripped
+    type: json_assert
+    statements:
+      - 'json_equal({{notes_after}}, {"output": "written-post-cascade"})'
+
+  # Phase 5: Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-cascade-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-cascade-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-cascade-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-cascade-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-cascade-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

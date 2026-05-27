@@ -10,9 +10,12 @@ and the namespace-cascade additions designed in
 | File | What it proves |
 |---|---|
 | `00-single-group-migration-baseline.yml` | Single-node, single-group `v1 → v2` migration via `upgrade_group(cascade=false)`. **Regression guard for [#2433](https://github.com/calimero-network/core/pull/2433)** — the per-context migration write path that #2433 silently broke and PR-1 of the cascade train repairs. |
+| `01-namespace-cascade-migration.yml` | Single-node, namespace + one subgroup + one context, ONE `upgrade_group(cascade=true)` call against the namespace root. Asserts cascade fans out to BOTH layers and the descendant context's state migrates (v1 fields preserved, v2-only field readable). **Regression guard for the random-`app_key` bug** in `crates/context/src/handlers/create_group.rs::handle` (namespace root) and `crates/governance-store/src/ops/namespace/group_created.rs::apply` (subgroup). Pre-fix both sites seed `meta.app_key` from `rand`/`[0u8; 32]`, so the cascade predicate never matches the descendant and the walk silently skips it. |
 
-Later PRs (PR-2, PR-3) add workflows `01`..`06` covering namespace cascade,
-HLC fence, multi-version coexistence, etc.
+Later PRs add per-scenario workflows (`02`..`N`) covering the schema-shape
+matrix: additive, remove, rename, type-change, enum-variant, struct-to-enum,
+field-split, field-archive, invariant-reshuffle, pure-bugfix, new-method,
+CRDT-native field growth.
 
 ## Fixtures
 

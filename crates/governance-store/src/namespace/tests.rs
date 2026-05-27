@@ -2141,6 +2141,77 @@ fn execute_group_created_rejects_self_parent() {
 }
 
 #[test]
+fn execute_group_created_inherits_app_key_and_application_from_parent() {
+    // Regression guard: a freshly-applied `GroupCreated` op must seed the
+    // subgroup's `GroupMetaValue` with the parent's `app_key` (not zero).
+    // The cascade predicate is `from_app_key == descendant.app_key`, so a
+    // zero-init here would make every cascade walk silently skip
+    // remote-created subgroups even though the originator's local copy
+    // had the right key (originator pre-populates meta with the derived
+    // blob-id-based key; peers' copies come from this apply handler).
+    use calimero_context_client::local_governance::{NamespaceOp, RootOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+    let admin_sk_bytes: [u8; 32] = rand::Rng::gen(&mut rng);
+    let admin_sk = PrivateKey::from(admin_sk_bytes);
+    let admin_pk = admin_sk.public_key();
+
+    let ns_id = [0xE0u8; 32];
+    let ns_gid = ContextGroupId::from(ns_id);
+
+    // `sample_meta_with_admin` pins app_key = [0xBB; 32] and
+    // target_application_id = [0xCC; 32].
+    let parent_meta = sample_meta_with_admin(admin_pk);
+    MetaRepository::new(&store)
+        .save(&ns_gid, &parent_meta)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
+
+    let sub_id = [0xE1u8; 32];
+    let sub_gid = ContextGroupId::from(sub_id);
+
+    let op = SignedNamespaceOp::sign(
+        &admin_sk,
+        ns_id,
+        vec![],
+        [0u8; 32],
+        1,
+        NamespaceOp::Root(RootOp::GroupCreated {
+            group_id: sub_id,
+            parent_id: ns_id,
+        }),
+    )
+    .expect("sign op");
+
+    let gov = NamespaceGovernance::new(&store, ns_id);
+    gov.apply_signed_op(&op).expect("apply group_created");
+
+    let sub_meta = MetaRepository::new(&store)
+        .load(&sub_gid)
+        .expect("load sub meta")
+        .expect("sub meta written");
+
+    assert_eq!(
+        sub_meta.app_key, parent_meta.app_key,
+        "subgroup must inherit parent's app_key so cascade predicate matches"
+    );
+    assert_eq!(
+        sub_meta.target_application_id, parent_meta.target_application_id,
+        "subgroup must inherit parent's target_application_id"
+    );
+}
+
+#[test]
 fn execute_group_deleted_subset_check_allows_partial_retry() {
     // Regression test for meroreviewer bugbot finding #3124131096 on PR #2200:
     // If a previous apply of GroupDeleted crashes mid-cascade, the local

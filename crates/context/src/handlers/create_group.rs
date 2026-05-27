@@ -7,6 +7,7 @@ use calimero_context_config::types::AppKey;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::key::GroupMetaValue;
+use calimero_store::types::ApplicationMeta as ApplicationMetaValue;
 use calimero_store::Store;
 use rand::Rng;
 use tracing::{info, warn};
@@ -34,12 +35,6 @@ impl Handler<CreateGroupRequest> for ContextManager {
         }: CreateGroupRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        // Resolve app_key: use provided value or generate random
-        let app_key = app_key.unwrap_or_else(|| {
-            let bytes: [u8; 32] = rand::thread_rng().gen();
-            AppKey::from(bytes)
-        });
-
         let group_id = group_id.unwrap_or_else(|| {
             let bytes: [u8; 32] = rand::thread_rng().gen();
             bytes.into()
@@ -102,9 +97,21 @@ impl Handler<CreateGroupRequest> for ContextManager {
             application_id
         };
 
-        if let Err(err) = load_app_meta(&self.datastore, &effective_application_id) {
-            return ActorResponse::reply(Err(err));
-        }
+        let app_meta = match load_app_meta(&self.datastore, &effective_application_id) {
+            Ok(m) => m,
+            Err(err) => return ActorResponse::reply(Err(err)),
+        };
+
+        // Derive app_key from the resolved application's bytecode blob_id
+        // when the caller didn't provide one. This is the same value that
+        // `set_target_application` (upgrade_group's apply path) writes after
+        // an upgrade, so the cascade predicate (from_app_key == descendant
+        // app_key) walks into freshly-created subgroups without needing a
+        // pre-cascade alignment upgrade. A randomly-seeded app_key, which
+        // is what this used to do, made every cascade silently skip the
+        // descendant subtree.
+        let app_key =
+            app_key.unwrap_or_else(|| AppKey::from(*app_meta.bytecode.blob_id().as_ref()));
 
         let datastore = self.datastore.clone();
         let node_client = self.node_client.clone();
@@ -250,7 +257,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
 fn load_app_meta(
     datastore: &Store,
     application_id: &calimero_primitives::application::ApplicationId,
-) -> eyre::Result<calimero_store::types::ApplicationMeta> {
+) -> eyre::Result<ApplicationMetaValue> {
     let handle = datastore.handle();
     let key = calimero_store::key::ApplicationMeta::new(*application_id);
     handle
