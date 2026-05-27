@@ -1,3 +1,6 @@
+use calimero_context::group_store::{
+    GroupKeyring, MetadataRepository, NamespaceRepository, SigningKeysRepository,
+};
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -52,7 +55,7 @@ pub async fn handler(
         rand::thread_rng().gen()
     };
 
-    match calimero_context::group_store::get_parent_group(&state.store, &namespace_id) {
+    match NamespaceRepository::new(&state.store).parent(&namespace_id) {
         Ok(Some(_)) => {
             return parse_api_error(eyre::eyre!("namespace_id must reference a root group"))
                 .into_response();
@@ -62,10 +65,7 @@ pub async fn handler(
     }
 
     let (resolved_ns_id, signer_pk, sk_bytes, _sender) =
-        match calimero_context::group_store::get_or_create_namespace_identity(
-            &state.store,
-            &namespace_id,
-        ) {
+        match NamespaceRepository::new(&state.store).get_or_create_identity(&namespace_id) {
             Ok(r) => r,
             Err(err) => {
                 error!(?err, "Failed to resolve namespace identity");
@@ -119,12 +119,9 @@ pub async fn handler(
             // key at crates/context/src/handlers/create_group.rs:85-94;
             // this keeps subgroups created via create_group_in_namespace in
             // sync with that invariant.
-            if let Err(err) = calimero_context::group_store::store_group_signing_key(
-                &state.store,
-                &group_id,
-                &signer_pk,
-                &sk_bytes,
-            ) {
+            if let Err(err) =
+                SigningKeysRepository::new(&state.store).store_key(&group_id, &signer_pk, &sk_bytes)
+            {
                 warn!(
                     group_id=%hex::encode(group_id.to_bytes()),
                     ?err,
@@ -140,11 +137,7 @@ pub async fn handler(
                     use rand::Rng;
                     rand::thread_rng().gen()
                 };
-                if let Err(err) = calimero_context::group_store::store_group_key(
-                    &state.store,
-                    &group_id,
-                    &group_key,
-                ) {
+                if let Err(err) = GroupKeyring::new(&state.store, group_id).store_key(&group_key) {
                     warn!(
                         group_id=%hex::encode(group_id.to_bytes()),
                         ?err,
@@ -169,8 +162,7 @@ pub async fn handler(
                         %reason,
                         "Group created but the requested name is invalid; not persisted"
                     );
-                } else if let Err(err) = calimero_context::group_store::set_group_metadata(
-                    &state.store,
+                } else if let Err(err) = MetadataRepository::new(&state.store).set_group(
                     &group_id,
                     &calimero_primitives::metadata::MetadataRecord {
                         name: body.group_name.clone(),

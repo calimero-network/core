@@ -1,3 +1,7 @@
+use crate::group_store::{
+    CapabilitiesRepository, DenyListRepository, MembershipRepository, MetaRepository,
+    MetadataRepository, MigrationsRepository, SigningKeysRepository, UpgradesRepository,
+};
 use calimero_context_client::local_governance::SignedGroupOp;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
@@ -10,12 +14,7 @@ use calimero_store::key::{
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
-use super::{
-    collect_keys_with_prefix, delete_all_context_last_migrations, delete_all_group_signing_keys,
-    delete_all_member_capabilities, delete_all_member_metadata, delete_default_capabilities,
-    delete_group_meta, delete_group_metadata, delete_group_upgrade, delete_subgroup_visibility,
-    list_group_members, remove_group_member,
-};
+use super::collect_keys_with_prefix;
 
 pub fn get_local_gov_nonce(
     store: &Store,
@@ -377,7 +376,7 @@ pub fn remove_all_member_context_joins(
 /// records, ...).
 /// Caller must enforce admin authorization and `count_group_contexts == 0`.
 pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    let members_snapshot = list_group_members(store, group_id, 0, usize::MAX)?;
+    let members_snapshot = MembershipRepository::new(store).list(group_id, 0, usize::MAX)?;
     delete_local_gov_nonces_for_listed_members(store, group_id, &members_snapshot)?;
 
     for (pk, _) in &members_snapshot {
@@ -392,20 +391,20 @@ pub fn delete_group_local_rows(store: &Store, group_id: &ContextGroupId) -> Eyre
     }
 
     for (identity, _) in &members_snapshot {
-        remove_group_member(store, group_id, identity)?;
+        MembershipRepository::new(store).remove_member(group_id, identity)?;
     }
 
-    delete_all_member_capabilities(store, group_id)?;
-    delete_all_member_metadata(store, group_id)?;
-    delete_default_capabilities(store, group_id)?;
-    delete_subgroup_visibility(store, group_id)?;
-    delete_group_metadata(store, group_id)?;
-    delete_all_context_last_migrations(store, group_id)?;
-    delete_group_upgrade(store, group_id)?;
-    delete_all_group_signing_keys(store, group_id)?;
-    super::clear_all_denied(store, group_id)?;
+    CapabilitiesRepository::new(store).delete_all_member_caps(group_id)?;
+    MetadataRepository::new(store).delete_all_members(group_id)?;
+    CapabilitiesRepository::new(store).delete_default(group_id)?;
+    CapabilitiesRepository::new(store).delete_subgroup_visibility(group_id)?;
+    MetadataRepository::new(store).delete_group(group_id)?;
+    MigrationsRepository::new(store).delete_all_for_group(group_id)?;
+    UpgradesRepository::new(store).delete(group_id)?;
+    SigningKeysRepository::new(store).delete_all_for_group(group_id)?;
+    DenyListRepository::new(store).clear_all_for_group(group_id)?;
     delete_op_log_and_head(store, group_id)?;
-    delete_group_meta(store, group_id)?;
+    MetaRepository::new(store).delete(group_id)?;
     Ok(())
 }
 

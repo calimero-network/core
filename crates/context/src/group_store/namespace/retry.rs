@@ -1,10 +1,9 @@
+use super::op_log::NamespaceOpLogService;
+use crate::group_store::GroupKeyring;
 use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
-
-use super::super::load_group_key_by_id;
-use super::op_log::NamespaceOpLogService;
 
 /// A namespace group operation that can be retried locally because the
 /// corresponding group key is now available.
@@ -45,12 +44,14 @@ impl<'a> NamespaceRetryService<'a> {
             // Issue #2256: same fallback as the live-apply path — the op
             // may have been encrypted with the namespace key if the
             // subgroup was `Open` at publish time.
-            let group_key = match load_group_key_by_id(self.store, &gid_typed, &key_id)
+            let group_key = match GroupKeyring::new(self.store, gid_typed)
+                .load_key_by_id(&key_id)
                 .map_err(|e| eyre::eyre!("load_group_key_by_id(group): {e}"))?
             {
                 Some(k) => k,
                 None => {
-                    let Some(k) = load_group_key_by_id(self.store, &ns_typed, &key_id)
+                    let Some(k) = GroupKeyring::new(self.store, ns_typed)
+                        .load_key_by_id(&key_id)
                         .map_err(|e| eyre::eyre!("load_group_key_by_id(namespace): {e}"))?
                     else {
                         continue;

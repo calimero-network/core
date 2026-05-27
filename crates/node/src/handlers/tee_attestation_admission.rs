@@ -7,7 +7,6 @@
 //!
 //! The heavy lifting (policy lookup, governance op signing, DAG interaction) is
 //! delegated to `calimero_context::group_store` via the `ContextClient`.
-
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::identity::PublicKey;
 use calimero_tee_attestation::{is_mock_quote, verify_attestation, verify_mock_attestation};

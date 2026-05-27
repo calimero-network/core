@@ -1,3 +1,4 @@
+use crate::group_store::{MetaRepository, MetadataRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::application::ZERO_APPLICATION_ID;
@@ -9,10 +10,7 @@ use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
 use super::permission_checker::PermissionChecker;
-use super::{
-    context_tree::ContextTreeService, delete_context_metadata, get_group_for_context,
-    load_group_meta, save_group_meta,
-};
+use super::{context_tree::ContextTreeService, get_group_for_context};
 
 /// Service that applies context registration and detachment mutations.
 pub struct ContextRegistrationService<'a> {
@@ -57,7 +55,7 @@ impl<'a> ContextRegistrationService<'a> {
                     .unregister_context(context_id)?;
                 // Drop the context's metadata record so detach doesn't leave
                 // an orphaned `GroupContextMetadata` row behind.
-                delete_context_metadata(self.store, &self.group_id, context_id)?;
+                MetadataRepository::new(self.store).delete_context(&self.group_id, context_id)?;
                 Ok(())
             }
             Some(_) => bail!("context is registered to a different group"),
@@ -74,11 +72,11 @@ impl<'a> ContextRegistrationService<'a> {
             return Ok(());
         }
 
-        if let Some(meta) = load_group_meta(self.store, &self.group_id)? {
+        if let Some(meta) = MetaRepository::new(self.store).load(&self.group_id)? {
             if meta.target_application_id == ZERO_APPLICATION_ID {
                 let mut updated = meta;
                 updated.target_application_id = *application_id;
-                save_group_meta(self.store, &self.group_id, &updated)?;
+                MetaRepository::new(self.store).save(&self.group_id, &updated)?;
                 tracing::info!(
                     group_id = %hex::encode(self.group_id.to_bytes()),
                     %application_id,

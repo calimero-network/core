@@ -1,3 +1,4 @@
+use crate::group_store::MembershipRepository;
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
@@ -6,105 +7,151 @@ use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
 use sha2::{Digest, Sha256};
 
-use super::{collect_keys_with_prefix_paginated, enumerate_group_contexts, list_group_members};
+use super::{collect_keys_with_prefix_paginated, enumerate_group_contexts};
 
-pub fn load_group_meta(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Option<GroupMetaValue>> {
-    let handle = store.handle();
-    let key = GroupMeta::new(group_id.to_bytes());
-    let value = handle.get(&key)?;
-    Ok(value)
+/// Typed Repository for `GroupMetaValue` rows + the derived
+/// state-hash computation that gates SignedGroupOp apply.
+///
+/// Holds the consensus-relevant identity for each group
+/// (admin/owner, target application, upgrade policy). Excludes the
+/// freeform metadata (`name` / `data`); that's on
+/// [`MetadataRepository`].
+///
+/// Issue #2303 / epic #2300.
+pub struct MetaRepository<'a> {
+    store: &'a Store,
 }
 
-pub fn save_group_meta(
-    store: &Store,
-    group_id: &ContextGroupId,
-    meta: &GroupMetaValue,
-) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupMeta::new(group_id.to_bytes());
-    handle.put(&key, meta)?;
-    Ok(())
-}
-
-pub fn delete_group_meta(store: &Store, group_id: &ContextGroupId) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupMeta::new(group_id.to_bytes());
-    handle.delete(&key)?;
-    Ok(())
-}
-
-pub fn enumerate_all_groups(
-    store: &Store,
-    offset: usize,
-    limit: usize,
-) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
-    let keys = collect_keys_with_prefix_paginated(
-        store,
-        GroupMeta::new([0u8; 32]),
-        GROUP_META_PREFIX,
-        |_| true,
-        offset,
-        limit,
-    )?;
-    let handle = store.handle();
-    let mut results = Vec::new();
-
-    for key in keys {
-        let Some(meta) = handle.get(&key)? else {
-            continue;
-        };
-        results.push((key.group_id(), meta));
+impl<'a> MetaRepository<'a> {
+    pub fn new(store: &'a Store) -> Self {
+        Self { store }
     }
 
-    Ok(results)
+    pub fn load(&self, group_id: &ContextGroupId) -> EyreResult<Option<GroupMetaValue>> {
+        let handle = self.store.handle();
+        let key = GroupMeta::new(group_id.to_bytes());
+        Ok(handle.get(&key)?)
+    }
+
+    pub fn save(&self, group_id: &ContextGroupId, meta: &GroupMetaValue) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        let key = GroupMeta::new(group_id.to_bytes());
+        handle.put(&key, meta)?;
+        Ok(())
+    }
+
+    pub fn delete(&self, group_id: &ContextGroupId) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        let key = GroupMeta::new(group_id.to_bytes());
+        handle.delete(&key)?;
+        Ok(())
+    }
+
+    pub fn enumerate_all(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> EyreResult<Vec<([u8; 32], GroupMetaValue)>> {
+        let keys = collect_keys_with_prefix_paginated(
+            self.store,
+            GroupMeta::new([0u8; 32]),
+            GROUP_META_PREFIX,
+            |_| true,
+            offset,
+            limit,
+        )?;
+        let handle = self.store.handle();
+        let mut results = Vec::new();
+        for key in keys {
+            let Some(meta) = handle.get(&key)? else {
+                continue;
+            };
+            results.push((key.group_id(), meta));
+        }
+        Ok(results)
+    }
+
+    /// Compute a deterministic SHA-256 hash of the group's authorization-relevant state.
+    ///
+    /// Covers members (sorted by public key) + roles + admin identity + owner identity +
+    /// target application. This hash is embedded in each SignedGroupOp to ensure ops can
+    /// only apply against the exact state they were signed against, preventing divergence
+    /// from concurrent ops.
+    ///
+    /// `owner_identity` is part of the hash because it gates a real authorization decision:
+    /// `TransferOwnership`, `GroupDelete`, and the `CannotRemoveOwner` check on
+    /// `MemberRemoved` all branch on the current owner. Without including it, two ops
+    /// signed before and after a `TransferOwnership` would compute the same state hash and
+    /// the divergence-prevention check would fail to detect that ownership changed.
+    ///
+    /// Note: metadata records (`name` / `data` / `updated_at` / `updated_by`) are
+    /// intentionally **excluded** from this hash — exactly as the former alias rows
+    /// were — so the hash stays a function of consensus-relevant state only.
+    pub fn compute_state_hash(&self, group_id: &ContextGroupId) -> EyreResult<[u8; 32]> {
+        let meta = self
+            .load(group_id)?
+            .ok_or_else(|| eyre!("group not found for state hash computation"))?;
+
+        let mut members = MembershipRepository::new(self.store).list(group_id, 0, usize::MAX)?;
+        members.sort_by(|a, b| a.0.cmp(&b.0));
+        // Defensive dedup against the theoretical case of duplicate
+        // `GroupMember` rows (store corruption only).
+        members.dedup_by(|a, b| a.0 == b.0);
+
+        hash_group_state(group_id, &meta, &members)
+    }
+
+    /// Return the group state hash that would result if `removed_member`
+    /// were dropped from the group's member set. Pure simulation: reads
+    /// the current materialized state, removes the named identity from
+    /// the sorted-by-pubkey member list in-memory, and hashes.
+    ///
+    /// Used at sign time so the admin (or leaver) can populate the
+    /// `expected_group_state_hash` field on `MemberRemoved` /
+    /// `MemberLeft` before the apply runs locally.
+    pub fn compute_state_hash_after_remove(
+        &self,
+        group_id: &ContextGroupId,
+        removed_member: &PublicKey,
+    ) -> EyreResult<[u8; 32]> {
+        let meta = self
+            .load(group_id)?
+            .ok_or_else(|| eyre!("group not found for state hash computation"))?;
+
+        let mut members = MembershipRepository::new(self.store).list(group_id, 0, usize::MAX)?;
+        members.retain(|(pk, _role)| pk != removed_member);
+        members.sort_by(|a, b| a.0.cmp(&b.0));
+        members.dedup_by(|a, b| a.0 == b.0);
+
+        hash_group_state(group_id, &meta, &members)
+    }
+
+    /// Snapshot the current CRDT root hash for every context registered
+    /// under `group_id`. Returned sorted by `context_id` for
+    /// deterministic op-content hashing.
+    ///
+    /// Contexts whose `ContextMeta` row is missing (registered in the
+    /// group index but not yet materialized) are skipped, not errored
+    /// — see the asymmetric-skip rationale in the original module doc.
+    pub fn snapshot_context_state_hashes(
+        &self,
+        group_id: &ContextGroupId,
+    ) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
+        let context_ids = enumerate_group_contexts(self.store, group_id, 0, usize::MAX)?;
+        let handle = self.store.handle();
+        let mut entries = Vec::new();
+        for context_id in context_ids {
+            let key = ContextMeta::new(context_id);
+            if let Some(meta) = handle.get(&key)? {
+                entries.push((context_id, meta.root_hash));
+            }
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(entries)
+    }
 }
 
-/// Compute a deterministic SHA-256 hash of the group's authorization-relevant state.
-///
-/// Covers members (sorted by public key) + roles + admin identity + owner identity +
-/// target application. This hash is embedded in each SignedGroupOp to ensure ops can
-/// only apply against the exact state they were signed against, preventing divergence
-/// from concurrent ops.
-///
-/// `owner_identity` is part of the hash because it gates a real authorization decision:
-/// `TransferOwnership`, `GroupDelete`, and the `CannotRemoveOwner` check on
-/// `MemberRemoved` all branch on the current owner. Without including it, two ops
-/// signed before and after a `TransferOwnership` would compute the same state hash and
-/// the divergence-prevention check would fail to detect that ownership changed.
-///
-/// Note: metadata records (`name` / `data` / `updated_at` / `updated_by`) are
-/// intentionally **excluded** from this hash — exactly as the former alias rows
-/// were — so the hash stays a function of consensus-relevant state only. A
-/// `*MetadataSet` op never changes the group state hash, and `updated_at` is
-/// applier-stamped (so it can differ per peer) precisely because it is not part
-/// of consensus state.
-pub fn compute_group_state_hash(store: &Store, group_id: &ContextGroupId) -> EyreResult<[u8; 32]> {
-    let meta = load_group_meta(store, group_id)?
-        .ok_or_else(|| eyre::eyre!("group not found for state hash computation"))?;
-
-    let mut members = list_group_members(store, group_id, 0, usize::MAX)?;
-    members.sort_by(|a, b| a.0.cmp(&b.0));
-    // Dedup-by-key against the theoretical case of duplicate
-    // `GroupMember` rows for the same public key (would only happen
-    // under store corruption — `list_group_members` is a prefix scan
-    // over uniquely-keyed rows in normal operation). Without this,
-    // `hash_group_state`'s strict-less-than `debug_assert` would fire
-    // in dev / test on duplicates and silently double-hash the same
-    // member in release. Defensive only.
-    members.dedup_by(|a, b| a.0 == b.0);
-
-    hash_group_state(group_id, &meta, &members)
-}
-
-/// Single source of truth for the group state hash byte layout. Both
-/// `compute_group_state_hash` (post-apply, reads real store state) and
-/// `compute_group_state_hash_after_remove` (pre-apply simulation) feed
-/// their prepared sorted-member list here so any change to the hash
-/// format is structurally guaranteed to apply to both paths — no
-/// silent sign/verify divergence from a one-sided update.
+/// Single source of truth for the group state hash byte layout.
 ///
 /// **Caller contract**: `members` MUST be sorted by `PublicKey` byte
 /// ordering. The hash is order-sensitive; an unsorted slice produces a
@@ -114,9 +161,6 @@ fn hash_group_state(
     meta: &GroupMetaValue,
     members_sorted: &[(PublicKey, GroupMemberRole)],
 ) -> EyreResult<[u8; 32]> {
-    // Sorted-input contract enforced in dev / test, compiled out in
-    // release. Catches a caller that forgets to sort before
-    // delegating — the same shape used by `diff_sorted_context_hashes`.
     debug_assert!(
         members_sorted
             .windows(2)
@@ -137,87 +181,74 @@ fn hash_group_state(
     Ok(hasher.finalize().into())
 }
 
-/// Return the group state hash that would result if `removed_member`
-/// were dropped from the group's member set. Pure simulation: reads
-/// the current materialized state, removes the named identity from the
-/// sorted-by-pubkey member list in-memory, and hashes — mirrors what
-/// [`compute_group_state_hash`] would compute after a `MemberRemoved`
-/// or `MemberLeft` apply.
-///
-/// Used at sign time so the admin (or leaver) can populate the
-/// `expected_group_state_hash` field on `MemberRemoved` / `MemberLeft`
-/// before the apply runs locally. Receivers compute the real hash
-/// after their own apply and compare; mismatch surfaces membership-row
-/// divergence.
-///
-/// Idempotent on a non-member input — if `removed_member` isn't in the
-/// set, the result is the same as `compute_group_state_hash` on the
-/// current state. The op apply path bails on non-members independently;
-/// this helper just computes deterministically over whatever set it
-/// finds.
-pub fn compute_group_state_hash_after_remove(
-    store: &Store,
-    group_id: &ContextGroupId,
-    removed_member: &PublicKey,
-) -> EyreResult<[u8; 32]> {
-    let meta = load_group_meta(store, group_id)?
-        .ok_or_else(|| eyre!("group not found for state hash computation"))?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::group_store::test_fixtures::{test_group_id, test_meta, test_store};
 
-    let mut members = list_group_members(store, group_id, 0, usize::MAX)?;
-    members.retain(|(pk, _role)| pk != removed_member);
-    members.sort_by(|a, b| a.0.cmp(&b.0));
-    // Same dedup-against-corrupt-store defense as
-    // `compute_group_state_hash`. Both helpers must stay in lockstep
-    // — they hash the same logical input set.
-    members.dedup_by(|a, b| a.0 == b.0);
-
-    hash_group_state(group_id, &meta, &members)
-}
-
-/// Snapshot the current CRDT root hash for every context registered
-/// under `group_id`. Returned sorted by `context_id` for deterministic
-/// op-content hashing (the result lands inside a signed governance op
-/// whose content hash is the dedup key).
-///
-/// `MemberRemoved` / `MemberLeft` don't directly mutate per-context
-/// CRDT state, so this is simply the admin's view of "what these
-/// contexts look like right now" at sign time. Receivers compare
-/// against their own context roots after applying the removal; a
-/// divergent root means the receiver applied legitimate pre-removal
-/// state-DAG deltas from the now-removed member that admin's view
-/// didn't include — the partition-window case the anchor-sync
-/// reconcile path will heal.
-///
-/// Contexts whose `ContextMeta` row is missing (registered in the
-/// group index but not yet materialized — e.g. fresh node that hasn't
-/// joined yet) are skipped, not errored. Hashing what isn't there
-/// would put zero bytes in the snapshot and force a divergence on
-/// every receiver that has the context materialized.
-///
-/// **Asymmetric skip behavior between signer and receiver — by
-/// design.** The signer's call (at op-construction time) writes
-/// whichever contexts it has materialized into the signed claim. The
-/// receiver's call (during apply-time verification) reads its own
-/// materialized set. A context the signer had but the receiver
-/// doesn't appears as "only in expected" in the diff — and that's
-/// exactly the partition-window signal the anchor-sync reconcile
-/// path consumes to heal. On freshly-joined receivers many contexts
-/// may be unmaterialized and produce this signal in bulk; the
-/// per-context debug log in `diff_sorted_context_hashes` lets
-/// operators distinguish bootstrap catchup from real divergence.
-pub fn snapshot_context_state_hashes(
-    store: &Store,
-    group_id: &ContextGroupId,
-) -> EyreResult<Vec<(ContextId, [u8; 32])>> {
-    let context_ids = enumerate_group_contexts(store, group_id, 0, usize::MAX)?;
-    let handle = store.handle();
-    let mut entries = Vec::new();
-    for context_id in context_ids {
-        let key = ContextMeta::new(context_id);
-        if let Some(meta) = handle.get(&key)? {
-            entries.push((context_id, meta.root_hash));
-        }
+    #[test]
+    fn load_returns_none_when_unset() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        assert!(repo.load(&test_group_id()).unwrap().is_none());
     }
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(entries)
+
+    #[test]
+    fn save_then_load_round_trip() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        let gid = test_group_id();
+        let meta = test_meta();
+
+        repo.save(&gid, &meta).unwrap();
+        let loaded = repo.load(&gid).unwrap().expect("meta must round-trip");
+        assert_eq!(loaded.app_key, meta.app_key);
+        assert_eq!(loaded.admin_identity, meta.admin_identity);
+    }
+
+    #[test]
+    fn delete_clears_existing_meta() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        let gid = test_group_id();
+        repo.save(&gid, &test_meta()).unwrap();
+        repo.delete(&gid).unwrap();
+        assert!(repo.load(&gid).unwrap().is_none());
+    }
+
+    #[test]
+    fn enumerate_all_returns_saved_groups() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        let gid_a = test_group_id();
+        let gid_b = ContextGroupId::from([0xBB; 32]);
+        repo.save(&gid_a, &test_meta()).unwrap();
+        repo.save(&gid_b, &test_meta()).unwrap();
+
+        let all = repo.enumerate_all(0, usize::MAX).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn compute_state_hash_is_deterministic() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        let gid = test_group_id();
+        repo.save(&gid, &test_meta()).unwrap();
+
+        let hash_1 = repo.compute_state_hash(&gid).unwrap();
+        let hash_2 = repo.compute_state_hash(&gid).unwrap();
+        assert_eq!(
+            hash_1, hash_2,
+            "state hash must be deterministic across calls"
+        );
+    }
+
+    #[test]
+    fn compute_state_hash_bails_when_meta_missing() {
+        let store = test_store();
+        let repo = MetaRepository::new(&store);
+        let err = repo.compute_state_hash(&test_group_id()).unwrap_err();
+        assert!(format!("{err}").contains("group not found"));
+    }
 }

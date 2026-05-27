@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use actix::{AsyncContext, WrapFuture};
 use calimero_context::governance_broadcast::sign_ack;
-use calimero_context::group_store::get_namespace_identity;
+use calimero_context::group_store::NamespaceRepository;
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, NamespaceTopicMsg, SignedNamespaceOp,
 };
@@ -603,7 +603,7 @@ async fn emit_namespace_ack(
 
     let store = context_client.datastore();
     let ns_group = ContextGroupId::from(namespace_id);
-    let mut identity = match get_namespace_identity(store, &ns_group) {
+    let mut identity = match NamespaceRepository::new(store).identity(&ns_group) {
         Ok(Some(t)) => t,
         Ok(None) => {
             debug!(

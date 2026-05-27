@@ -1,3 +1,4 @@
+use crate::group_store::{CapabilitiesRepository, MetaRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_context_config::VisibilityMode;
 use calimero_primitives::application::ApplicationId;
@@ -8,7 +9,6 @@ use calimero_store::Store;
 use eyre::{eyre, Result as EyreResult};
 
 use super::permission_checker::PermissionChecker;
-use super::{load_group_meta, save_group_meta, set_default_capabilities, set_subgroup_visibility};
 
 /// Group-level settings mutation service.
 ///
@@ -31,7 +31,8 @@ impl<'a> GroupSettingsService<'a> {
     ) -> EyreResult<()> {
         let permissions = self.permissions();
         permissions.require_admin(signer)?;
-        set_default_capabilities(self.store, &self.group_id, capabilities)
+        CapabilitiesRepository::new(self.store)
+            .set_default_capabilities(&self.group_id, capabilities)
     }
 
     pub fn set_upgrade_policy(&self, signer: &PublicKey, policy: &UpgradePolicy) -> EyreResult<()> {
@@ -39,7 +40,7 @@ impl<'a> GroupSettingsService<'a> {
         permissions.require_admin(signer)?;
         let mut meta = self.load_required_meta()?;
         meta.upgrade_policy = policy.clone();
-        save_group_meta(self.store, &self.group_id, &meta)
+        MetaRepository::new(self.store).save(&self.group_id, &meta)
     }
 
     pub fn set_target_application(
@@ -53,7 +54,7 @@ impl<'a> GroupSettingsService<'a> {
         let mut meta = self.load_required_meta()?;
         meta.app_key = *app_key;
         meta.target_application_id = *target_application_id;
-        save_group_meta(self.store, &self.group_id, &meta)
+        MetaRepository::new(self.store).save(&self.group_id, &meta)
     }
 
     pub fn set_subgroup_visibility(
@@ -63,7 +64,7 @@ impl<'a> GroupSettingsService<'a> {
     ) -> EyreResult<()> {
         let permissions = self.permissions();
         permissions.require_can_manage_visibility(signer)?;
-        set_subgroup_visibility(self.store, &self.group_id, mode)
+        CapabilitiesRepository::new(self.store).set_subgroup_visibility(&self.group_id, mode)
     }
 
     pub fn set_group_migration(
@@ -75,11 +76,12 @@ impl<'a> GroupSettingsService<'a> {
         permissions.require_manage_application(signer, "set group migration")?;
         let mut meta = self.load_required_meta()?;
         meta.migration = migration.clone();
-        save_group_meta(self.store, &self.group_id, &meta)
+        MetaRepository::new(self.store).save(&self.group_id, &meta)
     }
 
     fn load_required_meta(&self) -> EyreResult<GroupMetaValue> {
-        load_group_meta(self.store, &self.group_id)?
+        MetaRepository::new(self.store)
+            .load(&self.group_id)?
             .ok_or_else(|| eyre!("group metadata not found"))
     }
 

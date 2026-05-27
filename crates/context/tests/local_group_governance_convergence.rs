@@ -9,8 +9,8 @@ use std::sync::Arc;
 use borsh::to_vec as borsh_to_vec;
 use calimero_context::governance_dag::{signed_op_to_delta, GroupGovernanceApplier};
 use calimero_context::group_store::{
-    self, add_group_member, apply_local_signed_group_op, compute_group_state_hash, get_op_head,
-    list_group_members, load_group_meta, read_op_log_after, save_group_meta,
+    self, apply_local_signed_group_op, get_op_head, read_op_log_after, MembershipRepository,
+    MetaRepository,
 };
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::{
@@ -63,7 +63,9 @@ fn sample_meta(admin: PublicKey) -> GroupMetaValue {
 }
 
 fn sorted_members(store: &Store, gid: &ContextGroupId) -> Vec<(PublicKey, GroupMemberRole)> {
-    let mut v = list_group_members(store, gid, 0, usize::MAX).expect("list_group_members");
+    let mut v = MembershipRepository::new(store)
+        .list(gid, 0, usize::MAX)
+        .expect("list_group_members");
     v.sort_by(|a, b| a.0.cmp(&b.0));
     v
 }
@@ -95,8 +97,12 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
     let admin_pk = admin_sk.public_key();
 
     for store in [&store_a, &store_b] {
-        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+        MetaRepository::new(store)
+            .save(&gid, &sample_meta(admin_pk))
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
     }
 
     let new_member = PrivateKey::random(&mut rng).public_key();
@@ -120,8 +126,16 @@ fn two_nodes_converge_on_same_signed_op_sequence() {
     apply_wire_payload(&store_b, &payload1);
 
     assert_same_group_view(&store_a, &store_b, &gid);
-    assert!(group_store::check_group_membership(&store_a, &gid, &new_member).unwrap());
-    assert!(group_store::check_group_membership(&store_b, &gid, &new_member).unwrap());
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store_a)
+            .is_member(&gid, &new_member)
+            .unwrap()
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store_b)
+            .is_member(&gid, &new_member)
+            .unwrap()
+    );
 
     let op2 = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 2, GroupOp::Noop)
         .expect("sign op2");
@@ -159,8 +173,12 @@ fn two_nodes_converge_on_target_application_and_migration() {
     let admin_pk = admin_sk.public_key();
 
     for store in [&store_a, &store_b] {
-        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+        MetaRepository::new(store)
+            .save(&gid, &sample_meta(admin_pk))
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
     }
 
     let new_target = ApplicationId::from([0xEE; 32]);
@@ -198,8 +216,14 @@ fn two_nodes_converge_on_target_application_and_migration() {
     apply_wire_payload(&store_a, &payload2);
     apply_wire_payload(&store_b, &payload2);
 
-    let meta_a = load_group_meta(&store_a, &gid).unwrap().expect("meta a");
-    let meta_b = load_group_meta(&store_b, &gid).unwrap().expect("meta b");
+    let meta_a = MetaRepository::new(&store_a)
+        .load(&gid)
+        .unwrap()
+        .expect("meta a");
+    let meta_b = MetaRepository::new(&store_b)
+        .load(&gid)
+        .unwrap()
+        .expect("meta b");
 
     assert_eq!(meta_a.target_application_id, new_target);
     assert_eq!(meta_a.app_key, [0x11; 32]);
@@ -226,8 +250,12 @@ fn two_nodes_converge_on_namespace_member_joined() {
     let joiner_pk = joiner_sk.public_key();
 
     for store in [&store_a, &store_b] {
-        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+        MetaRepository::new(store)
+            .save(&gid, &sample_meta(admin_pk))
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
     }
 
     let invitation = GroupInvitationFromAdmin {
@@ -263,8 +291,16 @@ fn two_nodes_converge_on_namespace_member_joined() {
     group_store::apply_signed_namespace_op(&store_a, &ns_op).unwrap();
     group_store::apply_signed_namespace_op(&store_b, &ns_op).unwrap();
 
-    assert!(group_store::check_group_membership(&store_a, &gid, &joiner_pk).unwrap());
-    assert!(group_store::check_group_membership(&store_b, &gid, &joiner_pk).unwrap());
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store_a)
+            .is_member(&gid, &joiner_pk)
+            .unwrap()
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store_b)
+            .is_member(&gid, &joiner_pk)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -286,30 +322,39 @@ fn recursive_invite_joins_all_descendant_groups() {
 
     // Setup: create namespace root + child groups, add admin to all
     for gid in [&ns_id, &child_a, &child_b, &grandchild] {
-        save_group_meta(&store, gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(&store, gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+        MetaRepository::new(&store)
+            .save(gid, &sample_meta(admin_pk))
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
     }
 
     // Setup nesting: ns_id → child_a → grandchild, ns_id → child_b
-    group_store::nest_group(&store, &ns_id, &child_a).unwrap();
-    group_store::nest_group(&store, &ns_id, &child_b).unwrap();
-    group_store::nest_group(&store, &child_a, &grandchild).unwrap();
+    calimero_context::group_store::NamespaceRepository::new(&store)
+        .nest(&ns_id, &child_a)
+        .unwrap();
+    calimero_context::group_store::NamespaceRepository::new(&store)
+        .nest(&ns_id, &child_b)
+        .unwrap();
+    calimero_context::group_store::NamespaceRepository::new(&store)
+        .nest(&child_a, &grandchild)
+        .unwrap();
 
     // Verify tree structure
-    let children = group_store::list_child_groups(&store, &ns_id).unwrap();
+    let children = calimero_context::group_store::NamespaceRepository::new(&store)
+        .list_children(&ns_id)
+        .unwrap();
     assert_eq!(children.len(), 2);
-    let descendants = group_store::collect_descendant_groups(&store, &ns_id).unwrap();
+    let descendants = calimero_context::group_store::NamespaceRepository::new(&store)
+        .collect_descendants(&ns_id)
+        .unwrap();
     assert_eq!(descendants.len(), 3); // child_a, child_b, grandchild
 
     // Recursive invite for ns_id (covers all 4 groups including ns_id itself)
-    let invitations = group_store::create_recursive_invitations(
-        &store,
-        &ns_id,
-        &admin_sk,
-        365 * 24 * 3600,
-        1, // Member
-    )
-    .unwrap();
+    let invitations = calimero_context::group_store::NamespaceRepository::new(&store)
+        .create_recursive_invitations(&ns_id, &admin_sk, 365 * 24 * 3600, 1)
+        .unwrap();
 
     assert_eq!(invitations.len(), 4); // ns_id + child_a + child_b + grandchild
 
@@ -332,19 +377,53 @@ fn recursive_invite_joins_all_descendant_groups() {
     }
 
     // Verify joiner is member of ALL groups
-    assert!(group_store::check_group_membership(&store, &ns_id, &joiner_pk).unwrap());
-    assert!(group_store::check_group_membership(&store, &child_a, &joiner_pk).unwrap());
-    assert!(group_store::check_group_membership(&store, &child_b, &joiner_pk).unwrap());
-    assert!(group_store::check_group_membership(&store, &grandchild, &joiner_pk).unwrap());
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&ns_id, &joiner_pk)
+            .unwrap()
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&child_a, &joiner_pk)
+            .unwrap()
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&child_b, &joiner_pk)
+            .unwrap()
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&grandchild, &joiner_pk)
+            .unwrap()
+    );
 
     // Recursive remove from ns_id (should remove from all 4)
-    let removed = group_store::recursive_remove_member(&store, &ns_id, &joiner_pk).unwrap();
+    let removed = calimero_context::group_store::NamespaceRepository::new(&store)
+        .recursive_remove_member(&ns_id, &joiner_pk)
+        .unwrap();
     assert_eq!(removed.len(), 4);
 
-    assert!(!group_store::check_group_membership(&store, &ns_id, &joiner_pk).unwrap());
-    assert!(!group_store::check_group_membership(&store, &child_a, &joiner_pk).unwrap());
-    assert!(!group_store::check_group_membership(&store, &child_b, &joiner_pk).unwrap());
-    assert!(!group_store::check_group_membership(&store, &grandchild, &joiner_pk).unwrap());
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&ns_id, &joiner_pk)
+            .unwrap()
+    );
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&child_a, &joiner_pk)
+            .unwrap()
+    );
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&child_b, &joiner_pk)
+            .unwrap()
+    );
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&grandchild, &joiner_pk)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -360,15 +439,22 @@ fn nest_group_rejects_cycles() {
     let group_c = ContextGroupId::from([0xC0; 32]);
 
     for gid in [&group_a, &group_b, &group_c] {
-        save_group_meta(&store, gid, &sample_meta(admin_pk)).unwrap();
+        MetaRepository::new(&store)
+            .save(gid, &sample_meta(admin_pk))
+            .unwrap();
     }
 
     // A → B → C
-    group_store::nest_group(&store, &group_a, &group_b).unwrap();
-    group_store::nest_group(&store, &group_b, &group_c).unwrap();
+    calimero_context::group_store::NamespaceRepository::new(&store)
+        .nest(&group_a, &group_b)
+        .unwrap();
+    calimero_context::group_store::NamespaceRepository::new(&store)
+        .nest(&group_b, &group_c)
+        .unwrap();
 
     // C → A would create A → B → C → A cycle
-    let result = group_store::nest_group(&store, &group_c, &group_a);
+    let result =
+        calimero_context::group_store::NamespaceRepository::new(&store).nest(&group_c, &group_a);
     assert!(result.is_err(), "should reject cycle");
     assert!(
         result.unwrap_err().to_string().contains("cycle"),
@@ -376,11 +462,13 @@ fn nest_group_rejects_cycles() {
     );
 
     // Self-nesting
-    let result = group_store::nest_group(&store, &group_a, &group_a);
+    let result =
+        calimero_context::group_store::NamespaceRepository::new(&store).nest(&group_a, &group_a);
     assert!(result.is_err(), "should reject self-nesting");
 
     // B already has a parent (A), can't give it a second
-    let result = group_store::nest_group(&store, &group_c, &group_b);
+    let result =
+        calimero_context::group_store::NamespaceRepository::new(&store).nest(&group_c, &group_b);
     assert!(result.is_err(), "should reject double-parent");
 }
 
@@ -401,16 +489,18 @@ fn two_nodes_converge_on_context_alias_as_admin() {
     let context_id = ContextId::from([0xAB; 32]);
 
     for store in [&store_a, &store_b] {
-        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-        add_group_member(store, &gid, &creator_pk, GroupMemberRole::Member).unwrap();
-        group_store::set_member_capability(
-            store,
-            &gid,
-            &creator_pk,
-            MemberCapabilities::CAN_CREATE_CONTEXT,
-        )
-        .unwrap();
+        MetaRepository::new(store)
+            .save(&gid, &sample_meta(admin_pk))
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &creator_pk, GroupMemberRole::Member)
+            .unwrap();
+        calimero_context::group_store::CapabilitiesRepository::new(store)
+            .set_member_capability(&gid, &creator_pk, MemberCapabilities::CAN_CREATE_CONTEXT)
+            .unwrap();
     }
 
     let op1 = SignedGroupOp::sign(
@@ -451,14 +541,16 @@ fn two_nodes_converge_on_context_alias_as_admin() {
     }
 
     assert_eq!(
-        group_store::get_context_metadata(&store_a, &gid, &context_id)
+        calimero_context::group_store::MetadataRepository::new(&store_a)
+            .context_metadata(&gid, &context_id)
             .unwrap()
             .and_then(|r| r.name)
             .as_deref(),
         Some("wire-alias")
     );
     assert_eq!(
-        group_store::get_context_metadata(&store_b, &gid, &context_id)
+        calimero_context::group_store::MetadataRepository::new(&store_b)
+            .context_metadata(&gid, &context_id)
             .unwrap()
             .and_then(|r| r.name)
             .as_deref(),
@@ -475,8 +567,12 @@ fn op_log_records_applied_ops_and_head_advances() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     assert!(get_op_head(&store, &gid).unwrap().is_none());
 
@@ -530,8 +626,12 @@ fn duplicate_op_is_idempotent() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let op = SignedGroupOp::sign(&admin_sk, gid_bytes, vec![], [0u8; 32], 1, GroupOp::Noop)
         .expect("sign op");
@@ -560,8 +660,12 @@ fn offline_node_replays_missed_ops_from_log() {
     let admin_pk = admin_sk.public_key();
 
     for store in [&store_online, &store_offline] {
-        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+        MetaRepository::new(store)
+            .save(&gid, &sample_meta(admin_pk))
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
     }
 
     let member1 = PrivateKey::random(&mut rng).public_key();
@@ -597,9 +701,21 @@ fn offline_node_replays_missed_ops_from_log() {
         apply_local_signed_group_op(&store_online, op).unwrap();
     }
 
-    assert!(group_store::check_group_membership(&store_online, &gid, &member1).unwrap());
-    assert!(group_store::check_group_membership(&store_online, &gid, &member2).unwrap());
-    assert!(!group_store::check_group_membership(&store_offline, &gid, &member1).unwrap());
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store_online)
+            .is_member(&gid, &member1)
+            .unwrap()
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store_online)
+            .is_member(&gid, &member2)
+            .unwrap()
+    );
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&store_offline)
+            .is_member(&gid, &member1)
+            .unwrap()
+    );
 
     let missed_ops = read_op_log_after(&store_online, &gid, 0, 100).unwrap();
     assert_eq!(missed_ops.len(), 2);
@@ -610,8 +726,16 @@ fn offline_node_replays_missed_ops_from_log() {
     }
 
     assert_same_group_view(&store_online, &store_offline, &gid);
-    assert!(group_store::check_group_membership(&store_offline, &gid, &member1).unwrap());
-    assert!(group_store::check_group_membership(&store_offline, &gid, &member2).unwrap());
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store_offline)
+            .is_member(&gid, &member1)
+            .unwrap()
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store_offline)
+            .is_member(&gid, &member2)
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -623,8 +747,12 @@ async fn dag_applies_ops_in_causal_order() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let member1 = PrivateKey::random(&mut rng).public_key();
     let member2 = PrivateKey::random(&mut rng).public_key();
@@ -666,15 +794,27 @@ async fn dag_applies_ops_in_causal_order() {
     // Apply op2 first — should be pending (parent op1 not yet in DAG)
     let applied = dag.add_delta(delta2, &applier).await.unwrap();
     assert!(!applied, "op2 should be pending because op1 hasn't arrived");
-    assert!(!group_store::check_group_membership(&store, &gid, &member2).unwrap());
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&gid, &member2)
+            .unwrap()
+    );
 
     // Apply op1 — should apply immediately AND cascade to apply op2
     let applied = dag.add_delta(delta1, &applier).await.unwrap();
     assert!(applied, "op1 should apply immediately");
 
     // Both members should now be present
-    assert!(group_store::check_group_membership(&store, &gid, &member1).unwrap());
-    assert!(group_store::check_group_membership(&store, &gid, &member2).unwrap());
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&gid, &member1)
+            .unwrap()
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&gid, &member2)
+            .unwrap()
+    );
 
     // DAG should have 1 head (op2, since it's the tip)
     let heads = dag.get_heads();
@@ -691,8 +831,12 @@ async fn dag_concurrent_ops_create_two_heads() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let member1 = PrivateKey::random(&mut rng).public_key();
     let member2 = PrivateKey::random(&mut rng).public_key();
@@ -733,8 +877,16 @@ async fn dag_concurrent_ops_create_two_heads() {
         .await
         .unwrap();
 
-    assert!(group_store::check_group_membership(&store, &gid, &member1).unwrap());
-    assert!(group_store::check_group_membership(&store, &gid, &member2).unwrap());
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&gid, &member1)
+            .unwrap()
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&gid, &member2)
+            .unwrap()
+    );
 
     // Two heads (concurrent branches)
     let heads = dag.get_heads();
@@ -771,8 +923,12 @@ async fn dag_duplicate_delta_is_idempotent() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let op = SignedGroupOp::sign(
         &admin_sk,
@@ -803,8 +959,12 @@ async fn dag_deep_chain_with_out_of_order_delivery() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     // Build chain: op1 → op2 → op3 → op4 → op5
     let mut ops = Vec::new();
@@ -865,8 +1025,12 @@ fn rejects_op_with_too_many_parents() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     // 256 parents should be accepted
     let parents_256: Vec<[u8; 32]> = (0..256)
@@ -918,8 +1082,12 @@ fn dag_heads_are_capped_at_max() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     // Create 70 concurrent ops (all with genesis parent) to exceed MAX_DAG_HEADS (64)
     for i in 1..=70u64 {
@@ -982,14 +1150,24 @@ fn state_hash_prevents_concurrent_op_divergence() {
     meta.owner_identity = founder_pk;
 
     for store in [&node_b, &node_c] {
-        save_group_meta(store, &gid, &meta).unwrap();
-        add_group_member(store, &gid, &founder_pk, GroupMemberRole::Admin).unwrap();
-        add_group_member(store, &gid, &admin_a_pk, GroupMemberRole::Admin).unwrap();
-        add_group_member(store, &gid, &admin_c_pk, GroupMemberRole::Admin).unwrap();
+        MetaRepository::new(store).save(&gid, &meta).unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &founder_pk, GroupMemberRole::Admin)
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &admin_a_pk, GroupMemberRole::Admin)
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &admin_c_pk, GroupMemberRole::Admin)
+            .unwrap();
     }
 
-    let state_hash_b = compute_group_state_hash(&node_b, &gid).unwrap();
-    let state_hash_c = compute_group_state_hash(&node_c, &gid).unwrap();
+    let state_hash_b = MetaRepository::new(&node_b)
+        .compute_state_hash(&gid)
+        .unwrap();
+    let state_hash_c = MetaRepository::new(&node_c)
+        .compute_state_hash(&gid)
+        .unwrap();
     assert_eq!(
         state_hash_b, state_hash_c,
         "nodes start with identical state hash"
@@ -1041,12 +1219,28 @@ fn state_hash_prevents_concurrent_op_divergence() {
     );
 
     // Node B: A is still admin, D was added, C's removal of A was rejected
-    assert!(group_store::check_group_membership(&node_b, &gid, &admin_a_pk).unwrap());
-    assert!(group_store::check_group_membership(&node_b, &gid, &new_member_d).unwrap());
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&node_b)
+            .is_member(&gid, &admin_a_pk)
+            .unwrap()
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&node_b)
+            .is_member(&gid, &new_member_d)
+            .unwrap()
+    );
 
     // Node C: A was removed by C, D was NOT added
-    assert!(!group_store::check_group_membership(&node_c, &gid, &admin_a_pk).unwrap());
-    assert!(!group_store::check_group_membership(&node_c, &gid, &new_member_d).unwrap());
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&node_c)
+            .is_member(&gid, &admin_a_pk)
+            .unwrap()
+    );
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&node_c)
+            .is_member(&gid, &new_member_d)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -1061,9 +1255,15 @@ fn cascade_removal_on_member_kick() {
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
 
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member_pk, GroupMemberRole::Member)
+        .unwrap();
 
     let context_id = ContextId::from([0xCC; 32]);
 
@@ -1106,7 +1306,11 @@ fn cascade_removal_on_member_kick() {
     .unwrap();
     apply_local_signed_group_op(&store, &op).unwrap();
 
-    assert!(!group_store::check_group_membership(&store, &gid, &member_pk).unwrap());
+    assert!(
+        !calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&gid, &member_pk)
+            .unwrap()
+    );
 
     {
         use calimero_store::key::ContextIdentity;
@@ -1136,9 +1340,15 @@ fn cascade_removal_deterministic_across_nodes() {
     let ctx2 = ContextId::from([0xC2; 32]);
 
     for store in [&node_a, &node_b] {
-        save_group_meta(store, &gid, &sample_meta(admin_pk)).unwrap();
-        add_group_member(store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-        add_group_member(store, &gid, &member_pk, GroupMemberRole::Member).unwrap();
+        MetaRepository::new(store)
+            .save(&gid, &sample_meta(admin_pk))
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+            .unwrap();
+        MembershipRepository::new(store)
+            .add_member(&gid, &member_pk, GroupMemberRole::Member)
+            .unwrap();
         group_store::register_context_in_group(store, &gid, &ctx1).unwrap();
         group_store::register_context_in_group(store, &gid, &ctx2).unwrap();
 
@@ -1182,7 +1392,9 @@ fn cascade_removal_deterministic_across_nodes() {
             );
         }
         assert!(
-            !group_store::check_group_membership(store, &gid, &member_pk).unwrap(),
+            !calimero_context::group_store::MembershipRepository::new(store)
+                .is_member(&gid, &member_pk)
+                .unwrap(),
             "{label}: member should be removed from group"
         );
     }
@@ -1201,14 +1413,20 @@ fn state_hash_allows_sequential_ops() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let member1 = PrivateKey::random(&mut rng).public_key();
     let member2 = PrivateKey::random(&mut rng).public_key();
 
     // Op1: add member1, signed against initial state
-    let state1 = compute_group_state_hash(&store, &gid).unwrap();
+    let state1 = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
     let op1 = SignedGroupOp::sign(
         &admin_sk,
         gid_bytes,
@@ -1224,7 +1442,9 @@ fn state_hash_allows_sequential_ops() {
     apply_local_signed_group_op(&store, &op1).unwrap();
 
     // Op2: add member2, signed against state AFTER op1
-    let state2 = compute_group_state_hash(&store, &gid).unwrap();
+    let state2 = MetaRepository::new(&store)
+        .compute_state_hash(&gid)
+        .unwrap();
     assert_ne!(
         state1, state2,
         "state hash should change after adding member1"
@@ -1243,8 +1463,16 @@ fn state_hash_allows_sequential_ops() {
     .unwrap();
     apply_local_signed_group_op(&store, &op2).unwrap();
 
-    assert!(group_store::check_group_membership(&store, &gid, &member1).unwrap());
-    assert!(group_store::check_group_membership(&store, &gid, &member2).unwrap());
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&gid, &member1)
+            .unwrap()
+    );
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&gid, &member2)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -1256,8 +1484,12 @@ fn state_hash_zero_skips_validation() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     let op = SignedGroupOp::sign(
         &admin_sk,
@@ -1279,25 +1511,32 @@ fn group_member_with_keys_persists_and_retrieves() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
 
     let member_sk = PrivateKey::random(&mut rng);
     let member_pk = member_sk.public_key();
     let sender_sk = PrivateKey::random(&mut rng);
 
-    group_store::add_group_member_with_keys(
-        &store,
-        &gid,
-        &member_pk,
-        GroupMemberRole::Member,
-        Some(*member_sk),
-        Some(*sender_sk),
-    )
-    .unwrap();
+    calimero_context::group_store::MembershipRepository::new(&store)
+        .add_member_with_keys(
+            &gid,
+            &member_pk,
+            GroupMemberRole::Member,
+            Some(*member_sk),
+            Some(*sender_sk),
+        )
+        .unwrap();
 
-    assert!(group_store::check_group_membership(&store, &gid, &member_pk).unwrap());
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&gid, &member_pk)
+            .unwrap()
+    );
 
-    let value = group_store::get_group_member_value(&store, &gid, &member_pk)
+    let value = calimero_context::group_store::MembershipRepository::new(&store)
+        .member_value(&gid, &member_pk)
         .unwrap()
         .expect("member value should exist");
 
@@ -1314,12 +1553,17 @@ fn group_member_without_keys_has_none_keys() {
 
     let admin_sk = PrivateKey::random(&mut rng);
     let admin_pk = admin_sk.public_key();
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
 
     let remote_pk = PrivateKey::random(&mut rng).public_key();
-    group_store::add_group_member(&store, &gid, &remote_pk, GroupMemberRole::Member).unwrap();
+    calimero_context::group_store::MembershipRepository::new(&store)
+        .add_member(&gid, &remote_pk, GroupMemberRole::Member)
+        .unwrap();
 
-    let value = group_store::get_group_member_value(&store, &gid, &remote_pk)
+    let value = calimero_context::group_store::MembershipRepository::new(&store)
+        .member_value(&gid, &remote_pk)
         .unwrap()
         .expect("member value should exist");
 
@@ -1352,8 +1596,12 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     let joiner_sk = PrivateKey::random(&mut rng);
     let joiner_pk = joiner_sk.public_key();
 
-    save_group_meta(&store, &gid, &sample_meta(admin_pk)).unwrap();
-    add_group_member(&store, &gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&gid, &sample_meta(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     // A real MemberJoined op (signer = joiner, with an admin-signed invitation),
     // matching the `two_nodes_converge_on_namespace_member_joined` setup.
@@ -1404,7 +1652,9 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         );
         // A node at this cut can embed a non-empty GovernancePosition — i.e.
         // `governance_dag_heads_len == 1`, so peers accept its state deltas.
-        let state_hash = compute_group_state_hash(&store, &gid).expect("compute_group_state_hash");
+        let state_hash = MetaRepository::new(&store)
+            .compute_state_hash(&gid)
+            .expect("compute_group_state_hash");
         let position = GovernancePosition::new(gid, state_hash, heads)
             .unwrap_or_else(|e| panic!("GovernancePosition must be embeddable ({label}): {e}"));
         assert_eq!(position.governance_dag_heads, vec![op_hash]);
@@ -1419,5 +1669,9 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
     group_store::apply_signed_namespace_op(&store, &ns_op).unwrap();
     read_state("after 2nd re-receive");
 
-    assert!(group_store::check_group_membership(&store, &gid, &joiner_pk).unwrap());
+    assert!(
+        calimero_context::group_store::MembershipRepository::new(&store)
+            .is_member(&gid, &joiner_pk)
+            .unwrap()
+    );
 }

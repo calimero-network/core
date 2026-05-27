@@ -2,7 +2,9 @@
 //!
 //! **Purpose**: Coordinates periodic syncs, selects peers, and delegates to protocols.
 //! **Strategy**: Try delta sync first, fallback to state sync on failure.
-
+use calimero_context::group_store::{
+    CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+};
 use std::sync::Arc;
 
 use calimero_context_client::client::ContextClient;
@@ -514,29 +516,29 @@ impl SyncManager {
         let resolve_namespace_topic = move || {
             let group_id = context_client.get_context_group_id(&context_id).ok()??;
             let store = context_client.datastore_handle().into_inner();
-            let ns_id_bytes = calimero_context::group_store::resolve_namespace(
-                &store,
-                &calimero_context_config::types::ContextGroupId::from(group_id),
-            )
-            .map(|id| id.to_bytes())
-            .unwrap_or_else(|err| {
-                // Errors here are rare and always indicate something
-                // worth investigating: store I/O failure or a
-                // circular parent chain exceeding
-                // MAX_NAMESPACE_DEPTH. Surface them before falling
-                // back so this debugging-focused code path doesn't
-                // hide real data-integrity bugs. Falling back to the
-                // immediate owning group preserves pre-extraction
-                // behaviour rather than aborting the whole sync
-                // attempt.
-                warn!(
-                    %context_id,
-                    %err,
-                    "failed to resolve namespace root for fallback topic; \
-                     using immediate group id as best-effort"
-                );
-                group_id
-            });
+            let ns_id_bytes = NamespaceRepository::new(&store)
+                .resolve(&calimero_context_config::types::ContextGroupId::from(
+                    group_id,
+                ))
+                .map(|id| id.to_bytes())
+                .unwrap_or_else(|err| {
+                    // Errors here are rare and always indicate something
+                    // worth investigating: store I/O failure or a
+                    // circular parent chain exceeding
+                    // MAX_NAMESPACE_DEPTH. Surface them before falling
+                    // back so this debugging-focused code path doesn't
+                    // hide real data-integrity bugs. Falling back to the
+                    // immediate owning group preserves pre-extraction
+                    // behaviour rather than aborting the whole sync
+                    // attempt.
+                    warn!(
+                        %context_id,
+                        %err,
+                        "failed to resolve namespace root for fallback topic; \
+                         using immediate group id as best-effort"
+                    );
+                    group_id
+                });
             Some(TopicHash::from_raw(format!(
                 "ns/{}",
                 hex::encode(ns_id_bytes)
@@ -666,7 +668,8 @@ impl SyncManager {
         group_id: &calimero_context_config::types::ContextGroupId,
     ) -> std::collections::BTreeSet<calimero_primitives::identity::PublicKey> {
         let store = self.context_client.datastore_handle().into_inner();
-        calimero_context::group_store::trusted_anchors_for_group(&store, group_id)
+        MembershipRepository::new(&store)
+            .trusted_anchors(group_id)
             .unwrap_or_default()
     }
 
@@ -1928,12 +1931,9 @@ impl SyncManager {
                             // the cross-DAG check on the catchup path
                             // even though gossip rejects it. Mirror the
                             // gate `apply_authorized_state_delta` uses.
-                            if calimero_context::group_store::is_read_only_for_context(
-                                &datastore_for_heads,
-                                &context_id,
-                                &author,
-                            )
-                            .unwrap_or(false)
+                            if NamespaceRepository::new(&datastore_for_heads)
+                                .is_read_only_for_context(&context_id, &author)
+                                .unwrap_or(false)
                             {
                                 warn!(
                                     %context_id,
@@ -2711,11 +2711,9 @@ impl SyncManager {
                                 &context_id,
                             )?
                         {
-                            if calimero_context::group_store::check_group_membership(
-                                store,
-                                &group_id,
-                                &their_identity,
-                            )? {
+                            if MembershipRepository::new(store)
+                                .is_member(&group_id, &their_identity)?
+                            {
                                 dialer_verified = true;
                             }
                         }
@@ -2809,7 +2807,7 @@ impl SyncManager {
             else {
                 return Ok(false);
             };
-            calimero_context::group_store::check_group_membership(store, &group_id, &their_identity)
+            MembershipRepository::new(store).is_member(&group_id, &their_identity)
         };
 
         if !self
@@ -3133,20 +3131,18 @@ impl SyncManager {
         let store = self.context_client.datastore();
         let namespace_id =
             match calimero_context::group_store::get_group_for_context(store, context_id) {
-                Ok(Some(group_id)) => {
-                    match calimero_context::group_store::resolve_namespace(store, &group_id) {
-                        Ok(ns) => ns.to_bytes(),
-                        Err(err) => {
-                            debug!(
-                                %context_id,
-                                %their_identity,
-                                %err,
-                                "failed to resolve namespace for governance catch-up"
-                            );
-                            return;
-                        }
+                Ok(Some(group_id)) => match NamespaceRepository::new(store).resolve(&group_id) {
+                    Ok(ns) => ns.to_bytes(),
+                    Err(err) => {
+                        debug!(
+                            %context_id,
+                            %their_identity,
+                            %err,
+                            "failed to resolve namespace for governance catch-up"
+                        );
+                        return;
                     }
-                }
+                },
                 Ok(None) => {
                     debug!(
                         %context_id,
@@ -3377,10 +3373,7 @@ impl SyncManager {
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
-        use calimero_context::group_store::{
-            enumerate_group_contexts, get_default_capabilities, load_current_group_key,
-            load_group_meta, wrap_group_key_for_member,
-        };
+        use calimero_context::group_store::enumerate_group_contexts;
         use calimero_context_config::types::ContextGroupId;
         use calimero_context_config::types::SignedGroupOpenInvitation;
 
@@ -3402,7 +3395,7 @@ impl SyncManager {
         let group_id = ContextGroupId::from(namespace_id);
         let store = self.context_client.datastore_handle().into_inner();
 
-        let meta = match load_group_meta(&store, &group_id)? {
+        let meta = match MetaRepository::new(&store).load(&group_id)? {
             Some(m) => m,
             None => {
                 let msg = StreamMessage::Message {
@@ -3417,17 +3410,19 @@ impl SyncManager {
             }
         };
 
-        let key_envelope_bytes = match load_current_group_key(&store, &group_id)? {
+        let key_envelope_bytes = match GroupKeyring::new(&store, group_id).load_current_key()? {
             Some((_key_id, group_key)) => {
-                let ns_identity = calimero_context::group_store::resolve_namespace_identity_record(
-                    &store, &group_id,
-                )?;
+                let ns_identity =
+                    NamespaceRepository::new(&store).resolve_identity_record(&group_id)?;
                 match ns_identity {
                     Some(record) => {
                         let sender_sk =
                             calimero_primitives::identity::PrivateKey::from(record.private_key);
-                        match wrap_group_key_for_member(&sender_sk, &joiner_public_key, &group_key)
-                        {
+                        match GroupKeyring::wrap_for_member(
+                            &sender_sk,
+                            &joiner_public_key,
+                            &group_key,
+                        ) {
                             Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
                             Err(err) => {
                                 warn!(
@@ -3454,8 +3449,7 @@ impl SyncManager {
         // Pre-register the joiner as a group member and write ContextIdentity
         // entries so that when the joiner opens a sync stream, this node's
         // membership check (has_member) passes immediately.
-        if let Err(e) = calimero_context::group_store::add_group_member(
-            &store,
+        if let Err(e) = MembershipRepository::new(&store).add_member(
             &group_id,
             &joiner_public_key,
             calimero_primitives::context::GroupMemberRole::Member,
@@ -3489,7 +3483,9 @@ impl SyncManager {
         // `DefaultCapabilitiesSet` ops because the local store is
         // updated as those ops apply). `unwrap_or(0)` matches the
         // pre-existing semantics for "default key absent."
-        let default_capabilities = get_default_capabilities(&store, &group_id)?.unwrap_or(0);
+        let default_capabilities = CapabilitiesRepository::new(&store)
+            .default_capabilities(&group_id)?
+            .unwrap_or(0);
 
         debug!(
             namespace_id = %hex::encode(namespace_id),
@@ -3530,11 +3526,7 @@ impl SyncManager {
         stream: &mut Stream,
         nonce: Nonce,
     ) -> eyre::Result<()> {
-        use calimero_context::group_store::{
-            check_group_membership_path, load_current_group_key, load_group_meta,
-            resolve_namespace, resolve_namespace_identity_record, wrap_group_key_for_member,
-            MembershipPath,
-        };
+        use calimero_context::group_store::MembershipPath;
         use calimero_context_config::types::ContextGroupId;
 
         let subgroup_gid = ContextGroupId::from(subgroup_id);
@@ -3543,7 +3535,7 @@ impl SyncManager {
         // Cross-namespace pin: the requested subgroup must belong to the
         // namespace the joiner named, otherwise an attacker on namespace
         // A could elicit a key for a subgroup of namespace B.
-        match resolve_namespace(&store, &subgroup_gid) {
+        match NamespaceRepository::new(&store).resolve(&subgroup_gid) {
             Ok(ns) if ns.to_bytes() == namespace_id => {}
             Ok(other_ns) => {
                 let msg = StreamMessage::Message {
@@ -3573,7 +3565,7 @@ impl SyncManager {
             }
         }
 
-        if load_group_meta(&store, &subgroup_gid)?.is_none() {
+        if MetaRepository::new(&store).load(&subgroup_gid)?.is_none() {
             let msg = StreamMessage::Message {
                 sequence_id: 0,
                 payload: MessagePayload::OpenSubgroupJoinRejected {
@@ -3589,7 +3581,7 @@ impl SyncManager {
         // Open-chain inheritance walk. `MembershipPath::Inherited`
         // implies every intermediate ancestor was Open (see
         // `membership.rs:267`), so this is the proof of authorisation.
-        match check_group_membership_path(&store, &subgroup_gid, &joiner_public_key)? {
+        match MembershipRepository::new(&store).check_path(&subgroup_gid, &joiner_public_key)? {
             MembershipPath::Inherited { .. } | MembershipPath::Direct => {}
             MembershipPath::None => {
                 let msg = StreamMessage::Message {
@@ -3604,15 +3596,18 @@ impl SyncManager {
             }
         }
 
-        let key_envelope_bytes = match load_current_group_key(&store, &subgroup_gid)? {
+        let key_envelope_bytes = match GroupKeyring::new(&store, subgroup_gid).load_current_key()? {
             Some((_key_id, group_key)) => {
                 let ns_gid = ContextGroupId::from(namespace_id);
-                match resolve_namespace_identity_record(&store, &ns_gid)? {
+                match NamespaceRepository::new(&store).resolve_identity_record(&ns_gid)? {
                     Some(record) => {
                         let sender_sk =
                             calimero_primitives::identity::PrivateKey::from(record.private_key);
-                        match wrap_group_key_for_member(&sender_sk, &joiner_public_key, &group_key)
-                        {
+                        match GroupKeyring::wrap_for_member(
+                            &sender_sk,
+                            &joiner_public_key,
+                            &group_key,
+                        ) {
                             Ok(envelope) => borsh::to_vec(&envelope).unwrap_or_default(),
                             Err(err) => {
                                 warn!(

@@ -2,7 +2,6 @@
 //!
 //! **Purpose**: Bootstraps the node with all required services and actors.
 //! **Main Function**: `start(NodeConfig)` - initializes and runs the node.
-
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;

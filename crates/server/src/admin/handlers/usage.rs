@@ -4,15 +4,12 @@
 //! breakdown (state, private_state, delta, governance). Bytes come from
 //! `Store::approximate_size`, which for RocksDB samples SST metadata (no
 //! scan). Sufficient for plan enforcement in MDMA; not exact.
-
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_context::group_store::{
-    check_group_membership, count_group_members, enumerate_all_groups, enumerate_group_contexts,
-    get_parent_group, list_child_groups, resolve_namespace_identity,
-};
+use calimero_context::group_store::enumerate_group_contexts;
+use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_server_primitives::admin::{NamespaceUsage, NamespaceUsageBytes, UsageResponse};
 use calimero_store::db::Column;
@@ -43,34 +40,41 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
 /// this node is a member of. Extracted so tests can drive it against an
 /// in-memory store without spinning up the axum layer.
 pub fn collect_usage(store: &Store) -> EyreResult<Vec<NamespaceUsage>> {
-    let entries = enumerate_all_groups(store, 0, usize::MAX)?;
+    let entries = MetaRepository::new(store).enumerate_all(0, usize::MAX)?;
     let mut out = Vec::new();
 
     for (group_id_bytes, _meta) in entries {
         let group_id = ContextGroupId::from(group_id_bytes);
 
         // Namespaces are groups with no parent.
-        if get_parent_group(store, &group_id)?.is_some() {
+        if NamespaceRepository::new(store).parent(&group_id)?.is_some() {
             continue;
         }
 
         // Only include namespaces this node actually participates in. We
         // use the stored namespace identity (set on admission) rather than
         // membership alone, matching what `list_namespaces` reports.
-        let Some((node_identity, _, _)) = resolve_namespace_identity(store, &group_id)? else {
+        let Some((node_identity, _, _)) =
+            NamespaceRepository::new(store).resolve_identity(&group_id)?
+        else {
             continue;
         };
-        if !check_group_membership(store, &group_id, &node_identity)? {
+        if !MembershipRepository::new(store).is_member(&group_id, &node_identity)? {
             continue;
         }
 
         let context_ids =
             enumerate_group_contexts(store, &group_id, 0, usize::MAX).unwrap_or_default();
         let context_count = u32::try_from(context_ids.len()).unwrap_or(u32::MAX);
-        let member_count =
-            u32::try_from(count_group_members(store, &group_id).unwrap_or(0)).unwrap_or(u32::MAX);
+        let member_count = u32::try_from(
+            MembershipRepository::new(store)
+                .count(&group_id)
+                .unwrap_or(0),
+        )
+        .unwrap_or(u32::MAX);
         let subgroup_count = u32::try_from(
-            list_child_groups(store, &group_id)
+            NamespaceRepository::new(store)
+                .list_children(&group_id)
                 .unwrap_or_default()
                 .len(),
         )
@@ -176,9 +180,6 @@ fn governance_bytes(store: &Store, namespace_id: &[u8; 32]) -> u64 {
 mod tests {
     use std::sync::Arc;
 
-    use calimero_context::group_store::{
-        add_group_member, save_group_meta, store_namespace_identity,
-    };
     use calimero_context_config::types::ContextGroupId;
     use calimero_primitives::application::ApplicationId;
     use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
@@ -236,22 +237,20 @@ mod tests {
             migration: None,
             auto_join: true,
         };
-        save_group_meta(store, &namespace_id, &meta).expect("save meta");
-        store_namespace_identity(
-            store,
-            &namespace_id,
-            &node_identity_pk,
-            &**node_identity_sk,
-            &[0x44; 32],
-        )
-        .expect("store identity");
-        add_group_member(
-            store,
-            &namespace_id,
-            &node_identity_pk,
-            GroupMemberRole::Admin,
-        )
-        .expect("add member");
+        MetaRepository::new(store)
+            .save(&namespace_id, &meta)
+            .expect("save meta");
+        NamespaceRepository::new(store)
+            .store_identity(
+                &namespace_id,
+                &node_identity_pk,
+                &**node_identity_sk,
+                &[0x44; 32],
+            )
+            .expect("store identity");
+        MembershipRepository::new(store)
+            .add_member(&namespace_id, &node_identity_pk, GroupMemberRole::Admin)
+            .expect("add member");
     }
 
     fn write_state(store: &Store, context_id: ContextId, key_tag: u8, value_len: usize) {
@@ -293,7 +292,9 @@ mod tests {
             migration: None,
             auto_join: true,
         };
-        save_group_meta(&store, &ns_b, &meta).expect("save meta b");
+        MetaRepository::new(&store)
+            .save(&ns_b, &meta)
+            .expect("save meta b");
 
         let rows = collect_usage(&store).expect("collect");
         assert_eq!(rows.len(), 1, "only ns_a with membership reports");

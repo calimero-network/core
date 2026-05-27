@@ -1,6 +1,9 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
+use crate::group_store::{
+    MembershipRepository, MetaRepository, NamespaceRepository, SigningKeysRepository,
+};
 use std::collections::{btree_map, BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
@@ -191,7 +194,7 @@ impl ContextManager {
         &self,
         group_id: &ContextGroupId,
     ) -> Option<(calimero_primitives::identity::PublicKey, [u8; 32])> {
-        match group_store::resolve_namespace_identity(&self.datastore, group_id) {
+        match NamespaceRepository::new(&self.datastore).resolve_identity(group_id) {
             Ok(Some((pk, sk, _sender))) => Some((pk, sk)),
             Ok(None) => None,
             Err(e) => {
@@ -212,7 +215,7 @@ impl ContextManager {
         [u8; 32],
         [u8; 32],
     )> {
-        group_store::get_or_create_namespace_identity(&self.datastore, group_id)
+        NamespaceRepository::new(&self.datastore).get_or_create_identity(group_id)
     }
 }
 
@@ -261,18 +264,21 @@ impl ContextManager {
                 })?,
         };
 
-        if group_store::load_group_meta(&self.datastore, group_id)?.is_none() {
+        if MetaRepository::new(&self.datastore)
+            .load(group_id)?
+            .is_none()
+        {
             eyre::bail!("group '{group_id:?}' not found");
         }
         if require_admin {
-            group_store::require_group_admin(&self.datastore, group_id, &requester)?;
+            MembershipRepository::new(&self.datastore).require_admin(group_id, &requester)?;
         }
 
-        let signing_key =
-            group_store::resolve_group_signing_key(&self.datastore, group_id, &requester)?
-                .ok_or_else(|| {
-                    eyre::eyre!("local group governance requires a signing key for the requester")
-                })?;
+        let signing_key = SigningKeysRepository::new(&self.datastore)
+            .resolve(group_id, &requester)?
+            .ok_or_else(|| {
+                eyre::eyre!("local group governance requires a signing key for the requester")
+            })?;
 
         Ok(GovernancePreflight {
             requester,

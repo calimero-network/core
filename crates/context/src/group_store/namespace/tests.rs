@@ -7,6 +7,9 @@
 //! `group_store::test_fixtures` module. Namespace-only inline helpers
 //! (`raw_namespace_dag_heads`) came along with the move.
 
+use crate::group_store::{
+    CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+};
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::application::ApplicationId;
@@ -224,7 +227,7 @@ fn namespace_op_log_service_reads_signed_and_skeleton_entries() {
         NamespaceOp::Group {
             group_id: group_a.to_bytes(),
             key_id: [0x01; 32],
-            encrypted: encrypt_group_op(&[0xA1; 32], &GroupOp::Noop).unwrap(),
+            encrypted: GroupKeyring::encrypt_op(&[0xA1; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
     )
@@ -294,7 +297,7 @@ fn namespace_op_log_service_reads_tagged_and_legacy_rows() {
         NamespaceOp::Group {
             group_id: group.to_bytes(),
             key_id: [0x12; 32],
-            encrypted: encrypt_group_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
+            encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
     )
@@ -371,7 +374,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
         NamespaceOp::Group {
             group_id: group_a.to_bytes(),
             key_id: [0x11; 32],
-            encrypted: encrypt_group_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
+            encrypted: GroupKeyring::encrypt_op(&[0xAA; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
     )
@@ -386,7 +389,7 @@ fn namespace_op_log_service_collects_group_scoped_signed_ops() {
         NamespaceOp::Group {
             group_id: group_b.to_bytes(),
             key_id: [0x22; 32],
-            encrypted: encrypt_group_op(&[0xBB; 32], &GroupOp::Noop).unwrap(),
+            encrypted: GroupKeyring::encrypt_op(&[0xBB; 32], &GroupOp::Noop).unwrap(),
             key_rotation: None,
         },
     )
@@ -434,10 +437,12 @@ fn namespace_retry_service_collects_only_retryable_group_ops() {
     let signer_sk = PrivateKey::random(&mut rng);
 
     let group_key = [0x91; 32];
-    let key_id = store_group_key(&store, &group_a, &group_key).unwrap();
+    let key_id = GroupKeyring::new(&store, group_a)
+        .store_key(&group_key)
+        .unwrap();
 
-    let encrypted_a = encrypt_group_op(&group_key, &GroupOp::Noop).unwrap();
-    let encrypted_b = encrypt_group_op(&group_key, &GroupOp::Noop).unwrap();
+    let encrypted_a = GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap();
+    let encrypted_b = GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap();
 
     let group_a_op = SignedNamespaceOp::sign(
         &signer_sk,
@@ -531,7 +536,9 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
     let group = ContextGroupId::from([0x85; 32]);
 
     let group_key = [0x95; 32];
-    let key_id = store_group_key(&store, &group, &group_key).unwrap();
+    let key_id = GroupKeyring::new(&store, group)
+        .store_key(&group_key)
+        .unwrap();
 
     // Search the random-key space for a signer whose 4 signed ops
     // produce a content-hash iteration order DIFFERENT from nonce
@@ -556,7 +563,7 @@ fn namespace_retry_service_orders_candidates_by_signer_nonce() {
                     NamespaceOp::Group {
                         group_id: group.to_bytes(),
                         key_id,
-                        encrypted: encrypt_group_op(&group_key, &GroupOp::Noop).unwrap(),
+                        encrypted: GroupKeyring::encrypt_op(&group_key, &GroupOp::Noop).unwrap(),
                         key_rotation: None,
                     },
                 )
@@ -640,30 +647,54 @@ fn namespace_nesting_resolve_and_read_only_checks() {
     let ro_member = PublicKey::from([0xB2; 32]);
     let rw_member = PublicKey::from([0xB3; 32]);
 
-    nest_group(&store, &parent, &child).unwrap();
-    nest_group(&store, &child, &grandchild).unwrap();
-    assert!(nest_group(&store, &grandchild, &parent).is_err());
+    NamespaceRepository::new(&store)
+        .nest(&parent, &child)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&child, &grandchild)
+        .unwrap();
+    assert!(NamespaceRepository::new(&store)
+        .nest(&grandchild, &parent)
+        .is_err());
 
-    let children = list_child_groups(&store, &parent).unwrap();
+    let children = NamespaceRepository::new(&store)
+        .list_children(&parent)
+        .unwrap();
     assert_eq!(children, vec![child]);
-    let descendants = collect_descendant_groups(&store, &parent).unwrap();
+    let descendants = NamespaceRepository::new(&store)
+        .collect_descendants(&parent)
+        .unwrap();
     assert!(descendants.contains(&child));
     assert!(descendants.contains(&grandchild));
 
-    assert_eq!(resolve_namespace(&store, &grandchild).unwrap(), parent);
-    assert_eq!(resolve_namespace(&store, &outsider).unwrap(), outsider);
+    assert_eq!(
+        NamespaceRepository::new(&store)
+            .resolve(&grandchild)
+            .unwrap(),
+        parent
+    );
+    assert_eq!(
+        NamespaceRepository::new(&store).resolve(&outsider).unwrap(),
+        outsider
+    );
 
     register_context_in_group(&store, &child, &context).unwrap();
-    add_group_member(&store, &child, &ro_member, GroupMemberRole::ReadOnly).unwrap();
-    add_group_member(&store, &child, &rw_member, GroupMemberRole::Member).unwrap();
-    assert!(is_read_only_for_context(&store, &context, &ro_member).unwrap());
-    assert!(!is_read_only_for_context(&store, &context, &rw_member).unwrap());
+    MembershipRepository::new(&store)
+        .add_member(&child, &ro_member, GroupMemberRole::ReadOnly)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&child, &rw_member, GroupMemberRole::Member)
+        .unwrap();
+    assert!(NamespaceRepository::new(&store)
+        .is_read_only_for_context(&context, &ro_member)
+        .unwrap());
+    assert!(!NamespaceRepository::new(&store)
+        .is_read_only_for_context(&context, &rw_member)
+        .unwrap());
 }
 
 #[test]
 fn authorized_for_state_op_admits_admin_and_member_only() {
-    use super::is_authorized_for_context_state_op;
-
     let store = test_store();
     let gid = ContextGroupId::from([0xC0; 32]);
     let context = ContextId::from([0xC1; 32]);
@@ -676,39 +707,55 @@ fn authorized_for_state_op_admits_admin_and_member_only() {
     let mut meta = test_meta();
     meta.admin_identity = admin;
     meta.owner_identity = admin;
-    save_group_meta(&store, &gid, &meta).unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
     register_context_in_group(&store, &gid, &context).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &member, GroupMemberRole::Member).unwrap();
-    add_group_member(&store, &gid, &ro, GroupMemberRole::ReadOnly).unwrap();
-    add_group_member(&store, &gid, &ro_tee, GroupMemberRole::ReadOnlyTee).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &member, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &ro, GroupMemberRole::ReadOnly)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &ro_tee, GroupMemberRole::ReadOnlyTee)
+        .unwrap();
 
     assert!(
-        is_authorized_for_context_state_op(&store, &context, &admin).unwrap(),
+        NamespaceRepository::new(&store)
+            .is_authorized_for_context_state_op(&context, &admin)
+            .unwrap(),
         "Admin must be authorized to author state ops"
     );
     assert!(
-        is_authorized_for_context_state_op(&store, &context, &member).unwrap(),
+        NamespaceRepository::new(&store)
+            .is_authorized_for_context_state_op(&context, &member)
+            .unwrap(),
         "Member must be authorized to author state ops"
     );
     assert!(
-        !is_authorized_for_context_state_op(&store, &context, &ro).unwrap(),
+        !NamespaceRepository::new(&store)
+            .is_authorized_for_context_state_op(&context, &ro)
+            .unwrap(),
         "ReadOnly must NOT be authorized to author state ops"
     );
     assert!(
-        !is_authorized_for_context_state_op(&store, &context, &ro_tee).unwrap(),
+        !NamespaceRepository::new(&store)
+            .is_authorized_for_context_state_op(&context, &ro_tee)
+            .unwrap(),
         "ReadOnlyTee must NOT be authorized to author state ops"
     );
     assert!(
-        !is_authorized_for_context_state_op(&store, &context, &outsider).unwrap(),
+        !NamespaceRepository::new(&store)
+            .is_authorized_for_context_state_op(&context, &outsider)
+            .unwrap(),
         "Non-member must NOT be authorized to author state ops"
     );
 }
 
 #[test]
 fn authorized_for_state_op_rejects_removed_member() {
-    use super::is_authorized_for_context_state_op;
-
     let store = test_store();
     let gid = ContextGroupId::from([0xD0; 32]);
     let context = ContextId::from([0xD1; 32]);
@@ -718,31 +765,39 @@ fn authorized_for_state_op_rejects_removed_member() {
     let mut meta = test_meta();
     meta.admin_identity = admin;
     meta.owner_identity = admin;
-    save_group_meta(&store, &gid, &meta).unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
     register_context_in_group(&store, &gid, &context).unwrap();
-    add_group_member(&store, &gid, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &gid, &target, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &target, GroupMemberRole::Member)
+        .unwrap();
 
     // Member is authorized while in the group.
-    assert!(is_authorized_for_context_state_op(&store, &context, &target).unwrap());
+    assert!(NamespaceRepository::new(&store)
+        .is_authorized_for_context_state_op(&context, &target)
+        .unwrap());
 
     // After removal: the GroupMember row is gone (apply path deletes it),
     // and the deny-list flags the identity as denied — both ways the
     // check must return `false`. The B3 receive path rejects deltas
     // from this identity at the cut; this check rejects local state ops
     // by the same identity at the WASM-execute path.
-    remove_group_member(&store, &gid, &target).unwrap();
+    MembershipRepository::new(&store)
+        .remove_member(&gid, &target)
+        .unwrap();
 
     assert!(
-        !is_authorized_for_context_state_op(&store, &context, &target).unwrap(),
+        !NamespaceRepository::new(&store)
+            .is_authorized_for_context_state_op(&context, &target)
+            .unwrap(),
         "Removed member must NOT be authorized to author state ops locally"
     );
 }
 
 #[test]
 fn authorized_for_state_op_recognises_namespace_creator() {
-    use super::is_authorized_for_context_state_op;
-
     // Namespace creator does not have a `GroupMember` row at namespace
     // genesis — their admin authority lives in `GroupMeta::admin_identity`.
     // The check must use the same `is_group_admin` carve-out as the
@@ -756,21 +811,21 @@ fn authorized_for_state_op_recognises_namespace_creator() {
     let mut meta = test_meta();
     meta.admin_identity = creator;
     meta.owner_identity = creator;
-    save_group_meta(&store, &gid, &meta).unwrap();
+    MetaRepository::new(&store).save(&gid, &meta).unwrap();
     register_context_in_group(&store, &gid, &context).unwrap();
     // No `GroupMember` row for the creator — relies on the
     // `is_group_admin` carve-out.
 
     assert!(
-        is_authorized_for_context_state_op(&store, &context, &creator).unwrap(),
+        NamespaceRepository::new(&store)
+            .is_authorized_for_context_state_op(&context, &creator)
+            .unwrap(),
         "Namespace creator must be authorized via the admin-identity carve-out"
     );
 }
 
 #[test]
 fn authorized_for_state_op_allows_non_group_context() {
-    use super::is_authorized_for_context_state_op;
-
     // A context that isn't registered under any group has no
     // group-membership concept to enforce. The check returns `true`
     // (no enforcement) so legacy / non-group contexts keep working.
@@ -779,7 +834,9 @@ fn authorized_for_state_op_allows_non_group_context() {
     let executor = PublicKey::from([0xF2; 32]);
 
     assert!(
-        is_authorized_for_context_state_op(&store, &context, &executor).unwrap(),
+        NamespaceRepository::new(&store)
+            .is_authorized_for_context_state_op(&context, &executor)
+            .unwrap(),
         "Non-group context must allow any executor (nothing to enforce)"
     );
 }
@@ -787,9 +844,6 @@ fn authorized_for_state_op_allows_non_group_context() {
 #[test]
 fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
     use calimero_context_config::{MemberCapabilities, VisibilityMode};
-
-    use super::is_authorized_for_context_state_op;
-
     // Members of an Open subgroup don't necessarily have a stored
     // `GroupMember` row at the subgroup level — they reach the subgroup
     // via the parent-walk with `CAN_JOIN_OPEN_SUBGROUPS` at the anchor.
@@ -807,24 +861,34 @@ fn authorized_for_state_op_admits_inherited_members_via_open_subgroup() {
     let inherited = PublicKey::from([0xC4; 32]);
 
     nest_for_test(&store, &ns, &child);
-    set_subgroup_visibility(&store, &child, VisibilityMode::Open).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&child, VisibilityMode::Open)
+        .unwrap();
 
     let mut meta = test_meta();
     meta.admin_identity = admin;
     meta.owner_identity = admin;
-    save_group_meta(&store, &ns, &meta).unwrap();
-    save_group_meta(&store, &child, &meta).unwrap();
+    MetaRepository::new(&store).save(&ns, &meta).unwrap();
+    MetaRepository::new(&store).save(&child, &meta).unwrap();
 
-    set_default_capabilities(&store, &ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS).unwrap();
-    add_group_member(&store, &ns, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &ns, &inherited, GroupMemberRole::Member).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_default_capabilities(&ns, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns, &inherited, GroupMemberRole::Member)
+        .unwrap();
 
     // Register the context under the (Open) child — `inherited` has
     // no row in `child`, only in `ns`.
     register_context_in_group(&store, &child, &context).unwrap();
 
     assert!(
-        is_authorized_for_context_state_op(&store, &context, &inherited).unwrap(),
+        NamespaceRepository::new(&store)
+            .is_authorized_for_context_state_op(&context, &inherited)
+            .unwrap(),
         "Inherited member of an Open subgroup must be authorized to author state ops"
     );
 }
@@ -858,10 +922,16 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // in the real fleet-join flow this row is seeded from the KeyDelivery
     // signer by `seed_bootstrap_admin_if_absent`), plus the group key the
     // replica received via KeyDelivery so it can decrypt the group ops.
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(verifier_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &verifier_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(verifier_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &verifier_pk, GroupMemberRole::Admin)
+        .unwrap();
     let group_key = [0x97u8; 32];
-    let key_id = store_group_key(&store, &ns_gid, &group_key).unwrap();
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
 
     let gov = NamespaceGovernance::new(&store, namespace_id);
 
@@ -877,7 +947,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // ---- Op 1 (nonce 1): TeeAdmissionPolicySet, authored by the verifier. ----
     // `accept_mock` with allowlists that match the join op's mock measurements
     // (empty RTMR lists allow all; mrtd/tcb_status are matched explicitly).
-    let policy_op = encrypt_group_op(
+    let policy_op = GroupKeyring::encrypt_op(
         &group_key,
         &GroupOp::TeeAdmissionPolicySet {
             allowed_mrtd: vec!["m1".to_owned()],
@@ -919,7 +989,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
     // ---- Op 2 (nonce 2): MemberJoinedViaTeeAttestation, authored by the
     // verifier — applied next, exactly as in the retry batch. Its apply reads
     // the policy from the op-log; with the fix that read succeeds. ----
-    let join_op = encrypt_group_op(
+    let join_op = GroupKeyring::encrypt_op(
         &group_key,
         &GroupOp::MemberJoinedViaTeeAttestation {
             member: tee_member,
@@ -963,7 +1033,9 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
         "policy must remain readable after the membership op applies"
     );
     assert_eq!(
-        get_group_member_role(&store, &ns_gid, &tee_member).unwrap(),
+        MembershipRepository::new(&store)
+            .role_of(&ns_gid, &tee_member)
+            .unwrap(),
         Some(GroupMemberRole::ReadOnlyTee),
         "the TEE node must be recorded as a ReadOnlyTee member on the replica"
     );
@@ -976,7 +1048,7 @@ fn replica_applies_tee_policy_then_membership_via_namespace_governance() {
         "the admission quote hash must be recorded in the replica's op-log"
     );
     assert_eq!(
-        count_group_members(&store, &ns_gid).unwrap(),
+        MembershipRepository::new(&store).count(&ns_gid).unwrap(),
         2,
         "verifier admin + newly admitted ReadOnlyTee member"
     );
@@ -1003,10 +1075,16 @@ fn replica_op_log_dedup_survives_head_pruning() {
 
     // Replica bootstrap state: namespace meta with the signer as admin + the
     // group key so the encrypted ops decrypt.
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(signer_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &signer_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(signer_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &signer_pk, GroupMemberRole::Admin)
+        .unwrap();
     let group_key = [0x5Au8; 32];
-    let key_id = store_group_key(&store, &ns_gid, &group_key).unwrap();
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
 
     let gov = NamespaceGovernance::new(&store, namespace_id);
 
@@ -1048,7 +1126,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
         NamespaceOp::Group {
             group_id: namespace_id,
             key_id,
-            encrypted: encrypt_group_op(&group_key, &inner_a).unwrap(),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &inner_a).unwrap(),
             key_rotation: None,
         },
     )
@@ -1076,7 +1154,7 @@ fn replica_op_log_dedup_survives_head_pruning() {
         NamespaceOp::Group {
             group_id: namespace_id,
             key_id,
-            encrypted: encrypt_group_op(&group_key, &inner_b).unwrap(),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &inner_b).unwrap(),
             key_rotation: None,
         },
     )
@@ -1139,10 +1217,16 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
     let namespace_id = [0xC5u8; 32];
     let ns_gid = ContextGroupId::from(namespace_id);
 
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(signer_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &signer_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(signer_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &signer_pk, GroupMemberRole::Admin)
+        .unwrap();
     let group_key = [0x5Bu8; 32];
-    let key_id = store_group_key(&store, &ns_gid, &group_key).unwrap();
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
 
     let gov = NamespaceGovernance::new(&store, namespace_id);
 
@@ -1182,7 +1266,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
         NamespaceOp::Group {
             group_id: namespace_id,
             key_id,
-            encrypted: encrypt_group_op(&group_key, &inner_a).unwrap(),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &inner_a).unwrap(),
             key_rotation: None,
         },
     )
@@ -1208,7 +1292,7 @@ fn replica_stale_head_does_not_overwrite_orphan_entry() {
         NamespaceOp::Group {
             group_id: namespace_id,
             key_id,
-            encrypted: encrypt_group_op(&group_key, &inner_b).unwrap(),
+            encrypted: GroupKeyring::encrypt_op(&group_key, &inner_b).unwrap(),
             key_rotation: None,
         },
     )
@@ -1246,33 +1330,61 @@ fn recursive_remove_cascades_to_all_descendants() {
     let member = PublicKey::from([0x02; 32]);
 
     // Build hierarchy
-    nest_group(&store, &root, &child).unwrap();
-    nest_group(&store, &child, &grandchild).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&child, &grandchild)
+        .unwrap();
 
     // Add admin + member to all groups
     for gid in [&root, &child, &grandchild] {
-        save_group_meta(&store, gid, &test_meta()).unwrap();
-        add_group_member(&store, gid, &admin, GroupMemberRole::Admin).unwrap();
-        add_group_member(&store, gid, &member, GroupMemberRole::Member).unwrap();
+        MetaRepository::new(&store).save(gid, &test_meta()).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(gid, &member, GroupMemberRole::Member)
+            .unwrap();
     }
 
     // Verify member exists everywhere
-    assert!(check_group_membership(&store, &root, &member).unwrap());
-    assert!(check_group_membership(&store, &child, &member).unwrap());
-    assert!(check_group_membership(&store, &grandchild, &member).unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&root, &member)
+        .unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&child, &member)
+        .unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&grandchild, &member)
+        .unwrap());
 
     // Remove from root — should cascade to child and grandchild
-    let removed_from = recursive_remove_member(&store, &root, &member).unwrap();
+    let removed_from = NamespaceRepository::new(&store)
+        .recursive_remove_member(&root, &member)
+        .unwrap();
     assert_eq!(removed_from.len(), 3, "should be removed from all 3 groups");
 
-    assert!(!check_group_membership(&store, &root, &member).unwrap());
-    assert!(!check_group_membership(&store, &child, &member).unwrap());
-    assert!(!check_group_membership(&store, &grandchild, &member).unwrap());
+    assert!(!MembershipRepository::new(&store)
+        .is_member(&root, &member)
+        .unwrap());
+    assert!(!MembershipRepository::new(&store)
+        .is_member(&child, &member)
+        .unwrap());
+    assert!(!MembershipRepository::new(&store)
+        .is_member(&grandchild, &member)
+        .unwrap());
 
     // Admin should be unaffected
-    assert!(check_group_membership(&store, &root, &admin).unwrap());
-    assert!(check_group_membership(&store, &child, &admin).unwrap());
-    assert!(check_group_membership(&store, &grandchild, &admin).unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&root, &admin)
+        .unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&child, &admin)
+        .unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&grandchild, &admin)
+        .unwrap());
 }
 
 #[test]
@@ -1284,26 +1396,42 @@ fn recursive_remove_from_child_does_not_affect_parent() {
     let admin = PublicKey::from([0x01; 32]);
     let member = PublicKey::from([0x02; 32]);
 
-    nest_group(&store, &root, &child).unwrap();
-    nest_group(&store, &child, &grandchild).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&child, &grandchild)
+        .unwrap();
 
     for gid in [&root, &child, &grandchild] {
-        save_group_meta(&store, gid, &test_meta()).unwrap();
-        add_group_member(&store, gid, &admin, GroupMemberRole::Admin).unwrap();
-        add_group_member(&store, gid, &member, GroupMemberRole::Member).unwrap();
+        MetaRepository::new(&store).save(gid, &test_meta()).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
+        MembershipRepository::new(&store)
+            .add_member(gid, &member, GroupMemberRole::Member)
+            .unwrap();
     }
 
     // Remove from child only — should cascade to grandchild but NOT root
-    let removed_from = recursive_remove_member(&store, &child, &member).unwrap();
+    let removed_from = NamespaceRepository::new(&store)
+        .recursive_remove_member(&child, &member)
+        .unwrap();
     assert_eq!(removed_from.len(), 2, "removed from child + grandchild");
 
     // Root membership should be unaffected
     assert!(
-        check_group_membership(&store, &root, &member).unwrap(),
+        MembershipRepository::new(&store)
+            .is_member(&root, &member)
+            .unwrap(),
         "root membership must survive child removal"
     );
-    assert!(!check_group_membership(&store, &child, &member).unwrap());
-    assert!(!check_group_membership(&store, &grandchild, &member).unwrap());
+    assert!(!MembershipRepository::new(&store)
+        .is_member(&child, &member)
+        .unwrap());
+    assert!(!MembershipRepository::new(&store)
+        .is_member(&grandchild, &member)
+        .unwrap());
 }
 
 #[test]
@@ -1314,22 +1442,32 @@ fn recursive_remove_member_not_in_some_descendants() {
     let admin = PublicKey::from([0x01; 32]);
     let member = PublicKey::from([0x02; 32]);
 
-    nest_group(&store, &root, &child).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
 
     for gid in [&root, &child] {
-        save_group_meta(&store, gid, &test_meta()).unwrap();
-        add_group_member(&store, gid, &admin, GroupMemberRole::Admin).unwrap();
+        MetaRepository::new(&store).save(gid, &test_meta()).unwrap();
+        MembershipRepository::new(&store)
+            .add_member(gid, &admin, GroupMemberRole::Admin)
+            .unwrap();
     }
     // Member only in root, not in child
-    add_group_member(&store, &root, &member, GroupMemberRole::Member).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&root, &member, GroupMemberRole::Member)
+        .unwrap();
 
-    let removed_from = recursive_remove_member(&store, &root, &member).unwrap();
+    let removed_from = NamespaceRepository::new(&store)
+        .recursive_remove_member(&root, &member)
+        .unwrap();
     assert_eq!(
         removed_from.len(),
         1,
         "only removed from root where member existed"
     );
-    assert!(!check_group_membership(&store, &root, &member).unwrap());
+    assert!(!MembershipRepository::new(&store)
+        .is_member(&root, &member)
+        .unwrap());
 }
 
 #[test]
@@ -1349,30 +1487,44 @@ fn recursive_remove_skips_inherited_only_members() {
     let admin = PublicKey::from([0x01; 32]);
     let member = PublicKey::from([0x02; 32]);
 
-    nest_group(&store, &root, &open_child).unwrap();
-    save_group_meta(&store, &root, &test_meta()).unwrap();
-    save_group_meta(&store, &open_child, &test_meta()).unwrap();
-    add_group_member(&store, &root, &admin, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &open_child, &admin, GroupMemberRole::Admin).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &open_child)
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&root, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&open_child, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&root, &admin, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&open_child, &admin, GroupMemberRole::Admin)
+        .unwrap();
 
     // Direct member of `root` only; inherited into `open_child` via the
     // CAN_JOIN_OPEN_SUBGROUPS cap + Open visibility.
-    add_group_member(&store, &root, &member, GroupMemberRole::Member).unwrap();
-    set_member_capability(
-        &store,
-        &root,
-        &member,
-        MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS,
-    )
-    .unwrap();
-    set_subgroup_visibility(&store, &open_child, VisibilityMode::Open).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&root, &member, GroupMemberRole::Member)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&root, &member, MemberCapabilities::CAN_JOIN_OPEN_SUBGROUPS)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&open_child, VisibilityMode::Open)
+        .unwrap();
 
     // Sanity: inherited path works pre-removal.
-    assert!(check_group_membership(&store, &open_child, &member).unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&open_child, &member)
+        .unwrap());
 
     // Recursive remove anchored at `open_child` must NOT report it as
     // removed-from -- the member has no direct row there.
-    let removed_from = recursive_remove_member(&store, &open_child, &member).unwrap();
+    let removed_from = NamespaceRepository::new(&store)
+        .recursive_remove_member(&open_child, &member)
+        .unwrap();
     assert!(
         removed_from.is_empty(),
         "inherited-only member should not be reported as removed (got {removed_from:?})"
@@ -1380,12 +1532,18 @@ fn recursive_remove_skips_inherited_only_members() {
 
     // The member is still inherited because root membership + cap + Open
     // child are all unchanged.
-    assert!(check_group_membership(&store, &open_child, &member).unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&open_child, &member)
+        .unwrap());
 
     // To actually revoke, the admin removes them from the anchor (root).
-    let removed_from = recursive_remove_member(&store, &root, &member).unwrap();
+    let removed_from = NamespaceRepository::new(&store)
+        .recursive_remove_member(&root, &member)
+        .unwrap();
     assert_eq!(removed_from, vec![root]);
-    assert!(!check_group_membership(&store, &open_child, &member).unwrap());
+    assert!(!MembershipRepository::new(&store)
+        .is_member(&open_child, &member)
+        .unwrap());
 }
 
 #[test]
@@ -1395,10 +1553,16 @@ fn recursive_remove_nonexistent_member_returns_empty() {
     let admin = PublicKey::from([0x01; 32]);
     let stranger = PublicKey::from([0x99; 32]);
 
-    save_group_meta(&store, &root, &test_meta()).unwrap();
-    add_group_member(&store, &root, &admin, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&root, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&root, &admin, GroupMemberRole::Admin)
+        .unwrap();
 
-    let removed_from = recursive_remove_member(&store, &root, &stranger).unwrap();
+    let removed_from = NamespaceRepository::new(&store)
+        .recursive_remove_member(&root, &stranger)
+        .unwrap();
     assert!(removed_from.is_empty(), "nothing to remove");
 }
 
@@ -1415,39 +1579,69 @@ fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_i
     let behind_wall = ContextGroupId::from([0x13; 32]); // Open, but under owner_priv -> unreachable
     let inviter_priv = ContextGroupId::from([0x14; 32]); // Restricted, inviter IS a direct member
 
-    nest_group(&store, &ns, &open_sub).unwrap();
-    nest_group(&store, &ns, &owner_priv).unwrap();
-    nest_group(&store, &owner_priv, &behind_wall).unwrap();
-    nest_group(&store, &ns, &inviter_priv).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns, &open_sub)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns, &owner_priv)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&owner_priv, &behind_wall)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns, &inviter_priv)
+        .unwrap();
     for gid in [&ns, &open_sub, &owner_priv, &behind_wall, &inviter_priv] {
-        save_group_meta(&store, gid, &test_meta()).unwrap();
+        MetaRepository::new(&store).save(gid, &test_meta()).unwrap();
     }
 
     // The recursive inviter is an admin of the namespace root.
     let inviter_sk = PrivateKey::random(&mut OsRng);
     let inviter_pk = inviter_sk.public_key();
-    add_group_member(&store, &ns, &inviter_pk, GroupMemberRole::Admin).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns, &inviter_pk, GroupMemberRole::Admin)
+        .unwrap();
 
     // open_sub is Open -> the namespace admin inherits in.
-    set_subgroup_visibility(&store, &open_sub, VisibilityMode::Open).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&open_sub, VisibilityMode::Open)
+        .unwrap();
 
     // owner_priv is a different member's private DM: Restricted, inviter never added.
     let owner_pk = PrivateKey::random(&mut OsRng).public_key();
-    set_subgroup_visibility(&store, &owner_priv, VisibilityMode::Restricted).unwrap();
-    add_group_member(&store, &owner_priv, &owner_pk, GroupMemberRole::Admin).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&owner_priv, VisibilityMode::Restricted)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&owner_priv, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
     // ...even though there is an Open subgroup *under* it: the wall hides the whole subtree.
-    set_subgroup_visibility(&store, &behind_wall, VisibilityMode::Open).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&behind_wall, VisibilityMode::Open)
+        .unwrap();
 
     // inviter_priv is Restricted, but the inviter has a direct member row -> visible.
-    set_subgroup_visibility(&store, &inviter_priv, VisibilityMode::Restricted).unwrap();
-    add_group_member(&store, &inviter_priv, &inviter_pk, GroupMemberRole::Member).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&inviter_priv, VisibilityMode::Restricted)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&inviter_priv, &inviter_pk, GroupMemberRole::Member)
+        .unwrap();
 
     // Sanity on the membership facts the walk depends on.
-    assert!(check_group_membership(&store, &open_sub, &inviter_pk).unwrap());
-    assert!(!check_group_membership(&store, &owner_priv, &inviter_pk).unwrap());
-    assert!(check_group_membership(&store, &inviter_priv, &inviter_pk).unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&open_sub, &inviter_pk)
+        .unwrap());
+    assert!(!MembershipRepository::new(&store)
+        .is_member(&owner_priv, &inviter_pk)
+        .unwrap());
+    assert!(MembershipRepository::new(&store)
+        .is_member(&inviter_priv, &inviter_pk)
+        .unwrap());
 
-    let visible = collect_visible_descendant_groups(&store, &ns, &inviter_pk).unwrap();
+    let visible = NamespaceRepository::new(&store)
+        .collect_visible_descendants(&ns, &inviter_pk)
+        .unwrap();
     assert!(visible.contains(&open_sub));
     assert!(visible.contains(&inviter_priv));
     assert!(
@@ -1466,7 +1660,9 @@ fn collect_visible_descendant_groups_walls_at_restricted_subgroups_inviter_not_i
 
     // The unfiltered walk still sees everything — cascade-delete / recursive-remove
     // rely on `collect_descendant_groups` keeping that whole-subtree behavior.
-    let all = collect_descendant_groups(&store, &ns).unwrap();
+    let all = NamespaceRepository::new(&store)
+        .collect_descendants(&ns)
+        .unwrap();
     for gid in [&open_sub, &owner_priv, &behind_wall, &inviter_priv] {
         assert!(
             all.contains(gid),
@@ -1486,22 +1682,36 @@ fn create_recursive_invitations_omits_private_subgroups_inviter_not_in() {
     let open_sub = ContextGroupId::from([0x21; 32]);
     let owner_priv = ContextGroupId::from([0x22; 32]);
 
-    nest_group(&store, &ns, &open_sub).unwrap();
-    nest_group(&store, &ns, &owner_priv).unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns, &open_sub)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns, &owner_priv)
+        .unwrap();
     for gid in [&ns, &open_sub, &owner_priv] {
-        save_group_meta(&store, gid, &test_meta()).unwrap();
+        MetaRepository::new(&store).save(gid, &test_meta()).unwrap();
     }
 
     let inviter_sk = PrivateKey::random(&mut OsRng);
     let inviter_pk = inviter_sk.public_key();
-    add_group_member(&store, &ns, &inviter_pk, GroupMemberRole::Admin).unwrap();
-    set_subgroup_visibility(&store, &open_sub, VisibilityMode::Open).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns, &inviter_pk, GroupMemberRole::Admin)
+        .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&open_sub, VisibilityMode::Open)
+        .unwrap();
 
     let owner_pk = PrivateKey::random(&mut OsRng).public_key();
-    set_subgroup_visibility(&store, &owner_priv, VisibilityMode::Restricted).unwrap();
-    add_group_member(&store, &owner_priv, &owner_pk, GroupMemberRole::Admin).unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_subgroup_visibility(&owner_priv, VisibilityMode::Restricted)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&owner_priv, &owner_pk, GroupMemberRole::Admin)
+        .unwrap();
 
-    let invitations = create_recursive_invitations(&store, &ns, &inviter_sk, 3600, 1).unwrap();
+    let invitations = NamespaceRepository::new(&store)
+        .create_recursive_invitations(&ns, &inviter_sk, 3600, 1)
+        .unwrap();
     let invited: Vec<ContextGroupId> = invitations.iter().map(|(gid, _)| *gid).collect();
 
     assert!(
@@ -1552,9 +1762,15 @@ fn governance_group_reparented_via_signed_op() {
     let leaf_gid = ContextGroupId::from(leaf_id);
 
     // Bootstrap namespace: meta + admin + namespace identity
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id);
 
@@ -1579,7 +1795,10 @@ fn governance_group_reparented_via_signed_op() {
         gov.apply_signed_op(&op).expect("apply create op");
     }
 
-    assert_eq!(get_parent_group(&store, &leaf_gid).unwrap(), Some(mid_gid));
+    assert_eq!(
+        NamespaceRepository::new(&store).parent(&leaf_gid).unwrap(),
+        Some(mid_gid)
+    );
 
     // Reparent leaf from mid to new_parent.
     let reparent_op = SignedNamespaceOp::sign(
@@ -1598,12 +1817,16 @@ fn governance_group_reparented_via_signed_op() {
         .expect("apply reparent op");
 
     assert_eq!(
-        get_parent_group(&store, &leaf_gid).unwrap(),
+        NamespaceRepository::new(&store).parent(&leaf_gid).unwrap(),
         Some(new_parent_gid)
     );
-    let mid_children = list_child_groups(&store, &mid_gid).unwrap();
+    let mid_children = NamespaceRepository::new(&store)
+        .list_children(&mid_gid)
+        .unwrap();
     assert!(!mid_children.contains(&leaf_gid), "leaf detached from mid");
-    let new_children = list_child_groups(&store, &new_parent_gid).unwrap();
+    let new_children = NamespaceRepository::new(&store)
+        .list_children(&new_parent_gid)
+        .unwrap();
     assert!(
         new_children.contains(&leaf_gid),
         "leaf attached to new_parent"
@@ -1627,9 +1850,15 @@ fn governance_apply_signed_op_is_idempotent_on_replay() {
     let ns_id = [0xC0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
 
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id);
 
@@ -1684,9 +1913,15 @@ fn governance_rejects_non_admin_signer() {
     let ns_gid = ContextGroupId::from(ns_id);
 
     // Bootstrap namespace with admin
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id);
 
@@ -1726,9 +1961,15 @@ fn governance_group_created_is_idempotent() {
     let ns_gid = ContextGroupId::from(ns_id);
     let new_group_id = [0xCC; 32];
 
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id);
 
@@ -1793,13 +2034,21 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
     let new_group_id = [0xCCu8; 32];
     let new_gid = ContextGroupId::from(new_group_id);
 
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     // Simulate the create_group HANDLER pre-populating meta before publishing:
     // this is the originator's flow.
-    save_group_meta(&store, &new_gid, &sample_meta_with_admin(admin_pk)).unwrap();
+    MetaRepository::new(&store)
+        .save(&new_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
 
     // Now apply the GroupCreated op — idempotency must NOT skip the edges.
     let gov = NamespaceGovernance::new(&store, ns_id);
@@ -1820,12 +2069,14 @@ fn governance_group_created_writes_parent_edge_even_when_meta_pre_populated() {
 
     // Parent edge must exist (the bug was that it wouldn't).
     assert_eq!(
-        get_parent_group(&store, &new_gid).unwrap(),
+        NamespaceRepository::new(&store).parent(&new_gid).unwrap(),
         Some(ns_gid),
         "originator must have parent edge after GroupCreated even though meta was pre-populated"
     );
     // Child index on namespace must include the new group.
-    let children = list_child_groups(&store, &ns_gid).unwrap();
+    let children = NamespaceRepository::new(&store)
+        .list_children(&ns_gid)
+        .unwrap();
     assert!(
         children.contains(&new_gid),
         "namespace's child index must include new group"
@@ -1853,9 +2104,15 @@ fn execute_group_created_rejects_self_parent() {
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     // Attempt to emit GroupCreated with group_id == parent_id (the bug).
     let op = SignedNamespaceOp::sign(
@@ -1900,22 +2157,38 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     // Build: namespace → A → B (two-level subtree).
     let a_id = [0xAAu8; 32];
     let b_id = [0xBBu8; 32];
     let a_gid = ContextGroupId::from(a_id);
     let b_gid = ContextGroupId::from(b_id);
-    save_group_meta(&store, &a_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    save_group_meta(&store, &b_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    nest_group(&store, &ns_gid, &a_gid).unwrap();
-    nest_group(&store, &a_gid, &b_gid).unwrap();
+    MetaRepository::new(&store)
+        .save(&a_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&b_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&ns_gid, &a_gid)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&a_gid, &b_gid)
+        .unwrap();
 
     // Pre-compute the ORIGINAL payload (the "full" cascade).
-    let original_payload = collect_subtree_for_cascade(&store, &a_gid).unwrap();
+    let original_payload = NamespaceRepository::new(&store)
+        .collect_subtree_for_cascade(&a_gid)
+        .unwrap();
     let cascade_group_ids: Vec<[u8; 32]> = original_payload
         .descendant_groups
         .iter()
@@ -1925,7 +2198,7 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
 
     // Simulate a partial-delete crash by deleting B's meta + parent edge
     // (i.e., B is "already gone" from a hypothetical first apply attempt).
-    delete_group_meta(&store, &b_gid).unwrap();
+    MetaRepository::new(&store).delete(&b_gid).unwrap();
     {
         use calimero_store::key::{GroupChildIndex, GroupParentRef};
         let mut h = store.handle();
@@ -1955,7 +2228,7 @@ fn execute_group_deleted_subset_check_allows_partial_retry() {
 
     // A must now be gone (retry completed the deletion).
     assert!(
-        load_group_meta(&store, &a_gid).unwrap().is_none(),
+        MetaRepository::new(&store).load(&a_gid).unwrap().is_none(),
         "cascade retry must complete the root deletion"
     );
 }
@@ -1975,12 +2248,22 @@ fn is_descendant_of_direct_child() {
     let store = test_store();
     let parent = ContextGroupId::from([0xD0; 32]);
     let child = ContextGroupId::from([0xD1; 32]);
-    save_group_meta(&store, &parent, &test_meta()).unwrap();
-    save_group_meta(&store, &child, &test_meta()).unwrap();
-    nest_group(&store, &parent, &child).unwrap();
+    MetaRepository::new(&store)
+        .save(&parent, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&child, &test_meta())
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&parent, &child)
+        .unwrap();
 
-    assert!(is_descendant_of(&store, &child, &parent).unwrap());
-    assert!(!is_descendant_of(&store, &parent, &child).unwrap());
+    assert!(NamespaceRepository::new(&store)
+        .is_descendant_of(&child, &parent)
+        .unwrap());
+    assert!(!NamespaceRepository::new(&store)
+        .is_descendant_of(&parent, &child)
+        .unwrap());
 }
 
 #[test]
@@ -1989,15 +2272,27 @@ fn is_descendant_of_grandchild() {
     let root = ContextGroupId::from([0xD0; 32]);
     let mid = ContextGroupId::from([0xD1; 32]);
     let leaf = ContextGroupId::from([0xD2; 32]);
-    save_group_meta(&store, &root, &test_meta()).unwrap();
-    save_group_meta(&store, &mid, &test_meta()).unwrap();
-    save_group_meta(&store, &leaf, &test_meta()).unwrap();
-    nest_group(&store, &root, &mid).unwrap();
-    nest_group(&store, &mid, &leaf).unwrap();
+    MetaRepository::new(&store)
+        .save(&root, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&mid, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&leaf, &test_meta())
+        .unwrap();
+    NamespaceRepository::new(&store).nest(&root, &mid).unwrap();
+    NamespaceRepository::new(&store).nest(&mid, &leaf).unwrap();
 
-    assert!(is_descendant_of(&store, &leaf, &root).unwrap());
-    assert!(is_descendant_of(&store, &leaf, &mid).unwrap());
-    assert!(!is_descendant_of(&store, &root, &leaf).unwrap());
+    assert!(NamespaceRepository::new(&store)
+        .is_descendant_of(&leaf, &root)
+        .unwrap());
+    assert!(NamespaceRepository::new(&store)
+        .is_descendant_of(&leaf, &mid)
+        .unwrap());
+    assert!(!NamespaceRepository::new(&store)
+        .is_descendant_of(&root, &leaf)
+        .unwrap());
 }
 
 #[test]
@@ -2005,15 +2300,21 @@ fn is_descendant_of_unrelated() {
     let store = test_store();
     let a = ContextGroupId::from([0xD0; 32]);
     let b = ContextGroupId::from([0xD1; 32]);
-    assert!(!is_descendant_of(&store, &a, &b).unwrap());
-    assert!(!is_descendant_of(&store, &b, &a).unwrap());
+    assert!(!NamespaceRepository::new(&store)
+        .is_descendant_of(&a, &b)
+        .unwrap());
+    assert!(!NamespaceRepository::new(&store)
+        .is_descendant_of(&b, &a)
+        .unwrap());
 }
 
 #[test]
 fn is_descendant_of_self_is_false() {
     let store = test_store();
     let a = ContextGroupId::from([0xD0; 32]);
-    assert!(!is_descendant_of(&store, &a, &a).unwrap());
+    assert!(!NamespaceRepository::new(&store)
+        .is_descendant_of(&a, &a)
+        .unwrap());
 }
 
 #[test]
@@ -2022,17 +2323,34 @@ fn reparent_group_swaps_parent_edge() {
     let old_parent = ContextGroupId::from([0xE0; 32]);
     let new_parent = ContextGroupId::from([0xE1; 32]);
     let child = ContextGroupId::from([0xE2; 32]);
-    save_group_meta(&store, &old_parent, &test_meta()).unwrap();
-    save_group_meta(&store, &new_parent, &test_meta()).unwrap();
-    save_group_meta(&store, &child, &test_meta()).unwrap();
-    nest_group(&store, &old_parent, &child).unwrap();
+    MetaRepository::new(&store)
+        .save(&old_parent, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&new_parent, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&child, &test_meta())
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&old_parent, &child)
+        .unwrap();
 
-    reparent_group(&store, &child, &new_parent).unwrap();
+    NamespaceRepository::new(&store)
+        .reparent(&child, &new_parent)
+        .unwrap();
 
-    assert_eq!(get_parent_group(&store, &child).unwrap(), Some(new_parent));
-    let old_children = list_child_groups(&store, &old_parent).unwrap();
+    assert_eq!(
+        NamespaceRepository::new(&store).parent(&child).unwrap(),
+        Some(new_parent)
+    );
+    let old_children = NamespaceRepository::new(&store)
+        .list_children(&old_parent)
+        .unwrap();
     assert!(!old_children.contains(&child));
-    let new_children = list_child_groups(&store, &new_parent).unwrap();
+    let new_children = NamespaceRepository::new(&store)
+        .list_children(&new_parent)
+        .unwrap();
     assert!(new_children.contains(&child));
 }
 
@@ -2041,13 +2359,30 @@ fn reparent_group_idempotent_on_same_parent() {
     let store = test_store();
     let parent = ContextGroupId::from([0xE0; 32]);
     let child = ContextGroupId::from([0xE2; 32]);
-    save_group_meta(&store, &parent, &test_meta()).unwrap();
-    save_group_meta(&store, &child, &test_meta()).unwrap();
-    nest_group(&store, &parent, &child).unwrap();
+    MetaRepository::new(&store)
+        .save(&parent, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&child, &test_meta())
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&parent, &child)
+        .unwrap();
 
-    reparent_group(&store, &child, &parent).unwrap();
-    assert_eq!(get_parent_group(&store, &child).unwrap(), Some(parent));
-    assert_eq!(list_child_groups(&store, &parent).unwrap().len(), 1);
+    NamespaceRepository::new(&store)
+        .reparent(&child, &parent)
+        .unwrap();
+    assert_eq!(
+        NamespaceRepository::new(&store).parent(&child).unwrap(),
+        Some(parent)
+    );
+    assert_eq!(
+        NamespaceRepository::new(&store)
+            .list_children(&parent)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -2055,11 +2390,13 @@ fn reparent_group_rejects_cycle() {
     let store = test_store();
     let a = ContextGroupId::from([0xE0; 32]);
     let b = ContextGroupId::from([0xE1; 32]);
-    save_group_meta(&store, &a, &test_meta()).unwrap();
-    save_group_meta(&store, &b, &test_meta()).unwrap();
-    nest_group(&store, &a, &b).unwrap();
+    MetaRepository::new(&store).save(&a, &test_meta()).unwrap();
+    MetaRepository::new(&store).save(&b, &test_meta()).unwrap();
+    NamespaceRepository::new(&store).nest(&a, &b).unwrap();
 
-    let err = reparent_group(&store, &a, &b).unwrap_err();
+    let err = NamespaceRepository::new(&store)
+        .reparent(&a, &b)
+        .unwrap_err();
     assert!(
         format!("{err}").contains("cycle") || format!("{err}").contains("namespace root"),
         "expected cycle or root error, got: {err}"
@@ -2071,10 +2408,16 @@ fn reparent_group_rejects_root() {
     let store = test_store();
     let root = ContextGroupId::from([0xE0; 32]);
     let other = ContextGroupId::from([0xE1; 32]);
-    save_group_meta(&store, &root, &test_meta()).unwrap();
-    save_group_meta(&store, &other, &test_meta()).unwrap();
+    MetaRepository::new(&store)
+        .save(&root, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&other, &test_meta())
+        .unwrap();
 
-    let err = reparent_group(&store, &root, &other).unwrap_err();
+    let err = NamespaceRepository::new(&store)
+        .reparent(&root, &other)
+        .unwrap_err();
     assert!(
         format!("{err}").contains("namespace root") || format!("{err}").contains("no parent"),
         "expected root rejection, got: {err}"
@@ -2087,11 +2430,19 @@ fn reparent_group_rejects_nonexistent_new_parent() {
     let parent = ContextGroupId::from([0xE0; 32]);
     let child = ContextGroupId::from([0xE2; 32]);
     let phantom = ContextGroupId::from([0xFF; 32]);
-    save_group_meta(&store, &parent, &test_meta()).unwrap();
-    save_group_meta(&store, &child, &test_meta()).unwrap();
-    nest_group(&store, &parent, &child).unwrap();
+    MetaRepository::new(&store)
+        .save(&parent, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&child, &test_meta())
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&parent, &child)
+        .unwrap();
 
-    let err = reparent_group(&store, &child, &phantom).unwrap_err();
+    let err = NamespaceRepository::new(&store)
+        .reparent(&child, &phantom)
+        .unwrap_err();
     assert!(
         format!("{err}").contains("not found") || format!("{err}").contains("does not exist"),
         "expected new-parent-not-found, got: {err}"
@@ -2102,9 +2453,13 @@ fn reparent_group_rejects_nonexistent_new_parent() {
 fn collect_subtree_for_cascade_empty_subtree() {
     let store = test_store();
     let root = ContextGroupId::from([0xF0; 32]);
-    save_group_meta(&store, &root, &test_meta()).unwrap();
+    MetaRepository::new(&store)
+        .save(&root, &test_meta())
+        .unwrap();
 
-    let payload = collect_subtree_for_cascade(&store, &root).unwrap();
+    let payload = NamespaceRepository::new(&store)
+        .collect_subtree_for_cascade(&root)
+        .unwrap();
     assert!(payload.descendant_groups.is_empty());
     assert!(payload.contexts.is_empty());
 }
@@ -2115,13 +2470,21 @@ fn collect_subtree_for_cascade_two_level_tree() {
     let root = ContextGroupId::from([0xF0; 32]);
     let mid = ContextGroupId::from([0xF1; 32]);
     let leaf = ContextGroupId::from([0xF2; 32]);
-    save_group_meta(&store, &root, &test_meta()).unwrap();
-    save_group_meta(&store, &mid, &test_meta()).unwrap();
-    save_group_meta(&store, &leaf, &test_meta()).unwrap();
-    nest_group(&store, &root, &mid).unwrap();
-    nest_group(&store, &mid, &leaf).unwrap();
+    MetaRepository::new(&store)
+        .save(&root, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&mid, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&leaf, &test_meta())
+        .unwrap();
+    NamespaceRepository::new(&store).nest(&root, &mid).unwrap();
+    NamespaceRepository::new(&store).nest(&mid, &leaf).unwrap();
 
-    let payload = collect_subtree_for_cascade(&store, &root).unwrap();
+    let payload = NamespaceRepository::new(&store)
+        .collect_subtree_for_cascade(&root)
+        .unwrap();
     assert_eq!(payload.descendant_groups.len(), 2);
     let leaf_pos = payload
         .descendant_groups
@@ -2144,16 +2507,24 @@ fn collect_subtree_for_cascade_includes_contexts_from_all_groups() {
     let store = test_store();
     let root = ContextGroupId::from([0xF0; 32]);
     let child = ContextGroupId::from([0xF1; 32]);
-    save_group_meta(&store, &root, &test_meta()).unwrap();
-    save_group_meta(&store, &child, &test_meta()).unwrap();
-    nest_group(&store, &root, &child).unwrap();
+    MetaRepository::new(&store)
+        .save(&root, &test_meta())
+        .unwrap();
+    MetaRepository::new(&store)
+        .save(&child, &test_meta())
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .nest(&root, &child)
+        .unwrap();
 
     let ctx_root = ContextId::from([0x10; 32]);
     let ctx_child = ContextId::from([0x11; 32]);
     register_context_in_group(&store, &root, &ctx_root).unwrap();
     register_context_in_group(&store, &child, &ctx_child).unwrap();
 
-    let payload = collect_subtree_for_cascade(&store, &root).unwrap();
+    let payload = NamespaceRepository::new(&store)
+        .collect_subtree_for_cascade(&root)
+        .unwrap();
     assert!(payload.contexts.contains(&ctx_root));
     assert!(payload.contexts.contains(&ctx_child));
     assert_eq!(payload.contexts.len(), 2);
@@ -2180,10 +2551,18 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
-    add_group_member(&store, &ns_gid, &member_pk, GroupMemberRole::Member).unwrap();
-    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &member_pk, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     let gov = NamespaceGovernance::new(&store, ns_id);
     // `nonce` is informational only — `apply_signed_op` advances the DAG head
@@ -2211,7 +2590,9 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     // A total stranger (not a namespace member, no capability row) cannot
     // create a subgroup — rejected by the apply-side authorization check.
     assert!(
-        !check_group_membership(&store, &ns_gid, &stranger_sk.public_key()).unwrap(),
+        !MembershipRepository::new(&store)
+            .is_member(&ns_gid, &stranger_sk.public_key())
+            .unwrap(),
         "precondition: the stranger must not be enrolled in the namespace"
     );
     let err = gov
@@ -2221,7 +2602,8 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         format!("{err}").contains("GroupCreated rejected"),
         "stranger should be rejected by the authorization check, got: {err}"
     );
-    assert!(load_group_meta(&store, &ContextGroupId::from(chan))
+    assert!(MetaRepository::new(&store)
+        .load(&ContextGroupId::from(chan))
         .unwrap()
         .is_none());
 
@@ -2229,23 +2611,21 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
     assert!(gov
         .apply_signed_op(&create(&member_sk, chan, ns_id, 2))
         .is_err());
-    assert!(load_group_meta(&store, &ContextGroupId::from(chan))
+    assert!(MetaRepository::new(&store)
+        .load(&ContextGroupId::from(chan))
         .unwrap()
         .is_none());
 
     // Granting CAN_CREATE_SUBGROUP at the namespace root lets them create one
     // directly under the root, and they become its owner.
-    set_member_capability(
-        &store,
-        &ns_gid,
-        &member_pk,
-        MemberCapabilities::CAN_CREATE_SUBGROUP,
-    )
-    .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(&ns_gid, &member_pk, MemberCapabilities::CAN_CREATE_SUBGROUP)
+        .unwrap();
     gov.apply_signed_op(&create(&member_sk, chan, ns_id, 3))
         .expect("member with CAN_CREATE_SUBGROUP creates a subgroup under the root");
     assert_eq!(
-        load_group_meta(&store, &ContextGroupId::from(chan))
+        MetaRepository::new(&store)
+            .load(&ContextGroupId::from(chan))
             .unwrap()
             .unwrap()
             .owner_identity,
@@ -2253,7 +2633,9 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         "creator owns the new subgroup"
     );
     assert!(
-        is_group_admin(&store, &ContextGroupId::from(chan), &member_pk).unwrap(),
+        MembershipRepository::new(&store)
+            .is_admin(&ContextGroupId::from(chan), &member_pk)
+            .unwrap(),
         "creator is added as an admin of the new subgroup"
     );
 
@@ -2300,24 +2682,40 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
 
     let ns_id = [0xA0u8; 32];
     let ns_gid = ContextGroupId::from(ns_id);
-    save_group_meta(&store, &ns_gid, &sample_meta_with_admin(admin_pk)).unwrap();
-    add_group_member(&store, &ns_gid, &admin_pk, GroupMemberRole::Admin).unwrap();
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(admin_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
     // `owner_pk` is enrolled as an ordinary namespace member — that mirrors the
     // real model (a subgroup owner got there by being a namespace member and
     // creating it; `leave_namespace` refuses an owner via `MustTransferOwnership`,
     // so an owner is always a current member). It holds no caps and no admin
     // role at the namespace level, so it can only delete via the owner path.
-    add_group_member(&store, &ns_gid, &owner_pk, GroupMemberRole::Member).unwrap();
-    add_group_member(&store, &ns_gid, &plain_member_pk, GroupMemberRole::Member).unwrap();
-    add_group_member(&store, &ns_gid, &janitor_pk, GroupMemberRole::Member).unwrap();
-    store_namespace_identity(&store, &ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32]).unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &owner_pk, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &plain_member_pk, GroupMemberRole::Member)
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &janitor_pk, GroupMemberRole::Member)
+        .unwrap();
+    NamespaceRepository::new(&store)
+        .store_identity(&ns_gid, &admin_pk, &admin_sk_bytes, &[0u8; 32])
+        .unwrap();
 
     // Three leaf subgroups under the root, all owned by `owner_pk`.
     let mk_subgroup = |tag: u8| {
         let id = [tag; 32];
         let gid = ContextGroupId::from(id);
-        save_group_meta(&store, &gid, &sample_meta_with_admin(owner_pk)).unwrap();
-        nest_group(&store, &ns_gid, &gid).unwrap();
+        MetaRepository::new(&store)
+            .save(&gid, &sample_meta_with_admin(owner_pk))
+            .unwrap();
+        NamespaceRepository::new(&store)
+            .nest(&ns_gid, &gid)
+            .unwrap();
         (id, gid)
     };
     let (s1, s1_gid) = mk_subgroup(0xC1);
@@ -2350,7 +2748,9 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     // path): signature verification passes for any valid key, so the op
     // reaches `execute_group_deleted` and fails the owner/admin/cap gate.
     assert!(
-        !check_group_membership(&store, &ns_gid, &stranger_sk.public_key()).unwrap(),
+        !MembershipRepository::new(&store)
+            .is_member(&ns_gid, &stranger_sk.public_key())
+            .unwrap(),
         "precondition: the stranger must not be enrolled in the namespace"
     );
     let err = gov.apply_signed_op(&del(&stranger_sk, s1, 1)).unwrap_err();
@@ -2358,7 +2758,7 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         format!("{err}").contains("GroupDeleted rejected"),
         "stranger should be rejected by the authorization check, got: {err}"
     );
-    assert!(load_group_meta(&store, &s1_gid).unwrap().is_some());
+    assert!(MetaRepository::new(&store).load(&s1_gid).unwrap().is_some());
 
     // A plain namespace member (no CAN_DELETE_SUBGROUP, not the owner, not an
     // admin) is also rejected — the distinct "member but unauthorized" case,
@@ -2370,12 +2770,12 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         format!("{err}").contains("GroupDeleted rejected"),
         "plain member should be rejected by the authorization check, got: {err}"
     );
-    assert!(load_group_meta(&store, &s1_gid).unwrap().is_some());
+    assert!(MetaRepository::new(&store).load(&s1_gid).unwrap().is_some());
 
     // The subgroup's owner can cascade-delete it.
     gov.apply_signed_op(&del(&owner_sk, s1, 3))
         .expect("subgroup owner can delete it");
-    assert!(load_group_meta(&store, &s1_gid).unwrap().is_none());
+    assert!(MetaRepository::new(&store).load(&s1_gid).unwrap().is_none());
 
     // Re-applying the same GroupDeleted after the root meta is gone (the
     // crash-recovery shape: cascade finished, DAG head not yet advanced) must
@@ -2384,22 +2784,22 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     // skipped when the root meta is absent.
     gov.apply_signed_op(&del(&owner_sk, s1, 6))
         .expect("re-apply of GroupDeleted after the root meta is gone is an idempotent no-op");
-    assert!(load_group_meta(&store, &s1_gid).unwrap().is_none());
+    assert!(MetaRepository::new(&store).load(&s1_gid).unwrap().is_none());
 
     // A namespace admin can delete a subgroup they don't own (moderation).
     gov.apply_signed_op(&del(&admin_sk, s2, 4))
         .expect("namespace admin can delete any subgroup");
-    assert!(load_group_meta(&store, &s2_gid).unwrap().is_none());
+    assert!(MetaRepository::new(&store).load(&s2_gid).unwrap().is_none());
 
     // A namespace member holding CAN_DELETE_SUBGROUP can delete a subgroup.
-    set_member_capability(
-        &store,
-        &ns_gid,
-        &janitor_pk,
-        MemberCapabilities::CAN_DELETE_SUBGROUP,
-    )
-    .unwrap();
+    CapabilitiesRepository::new(&store)
+        .set_member_capability(
+            &ns_gid,
+            &janitor_pk,
+            MemberCapabilities::CAN_DELETE_SUBGROUP,
+        )
+        .unwrap();
     gov.apply_signed_op(&del(&janitor_sk, s3, 5))
         .expect("CAN_DELETE_SUBGROUP holder can delete a subgroup");
-    assert!(load_group_meta(&store, &s3_gid).unwrap().is_none());
+    assert!(MetaRepository::new(&store).load(&s3_gid).unwrap().is_none());
 }

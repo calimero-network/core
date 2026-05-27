@@ -14,7 +14,7 @@
 //! [`ReadinessCache::await_first_fresh_beacon`], plus `join_namespace`
 //! / `await_namespace_ready`) lives in Phase 8, partially in this
 //! module and partially in [`crate::join_namespace`].
-
+use calimero_context::group_store::NamespaceRepository;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -558,16 +558,14 @@ impl ReadinessManager {
         use calimero_node_primitives::sync::BroadcastMessage;
 
         let group_id = calimero_context_config::types::ContextGroupId::from(ns_id);
-        let identity =
-            match calimero_context::group_store::get_namespace_identity(&self.datastore, &group_id)
-            {
-                Ok(Some(id)) => id,
-                Ok(None) => return, // No identity for this namespace yet — skip.
-                Err(err) => {
-                    tracing::debug!(?err, ?ns_id, "ReadinessBeacon: identity load failed");
-                    return;
-                }
-            };
+        let identity = match NamespaceRepository::new(&self.datastore).identity(&group_id) {
+            Ok(Some(id)) => id,
+            Ok(None) => return, // No identity for this namespace yet — skip.
+            Err(err) => {
+                tracing::debug!(?err, ?ns_id, "ReadinessBeacon: identity load failed");
+                return;
+            }
+        };
         let (peer_pubkey, mut sk_bytes, mut sender_key) = identity;
         // `sender_key` is unused on the beacon path — zeroize immediately.
         // `sk_bytes` is consumed into `PrivateKey::from(...)` below;

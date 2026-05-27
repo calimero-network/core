@@ -1,3 +1,4 @@
+use crate::group_store::{MembershipRepository, MetaRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse};
 use eyre::bail;
@@ -14,15 +15,15 @@ impl Handler<GetMemberCapabilitiesRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| -> eyre::Result<GetMemberCapabilitiesResponse> {
-            if group_store::load_group_meta(&self.datastore, &group_id)?.is_none() {
+            if MetaRepository::new(&self.datastore)
+                .load(&group_id)?
+                .is_none()
+            {
                 bail!("group '{group_id:?}' not found");
             }
 
-            let Some(capabilities) = group_store::get_effective_member_capabilities(
-                &self.datastore,
-                &group_id,
-                &member,
-            )?
+            let Some(capabilities) = MembershipRepository::new(&self.datastore)
+                .effective_capabilities(&group_id, &member)?
             else {
                 bail!("identity is not a member of group '{group_id:?}'");
             };

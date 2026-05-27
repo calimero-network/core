@@ -1,3 +1,4 @@
+use crate::group_store::{MetaRepository, MetadataRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::ListNamespacesForApplicationRequest;
 
@@ -18,14 +19,13 @@ impl Handler<ListNamespacesForApplicationRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let result = (|| {
-            let entries = group_store::enumerate_all_groups(&self.datastore, 0, usize::MAX)?;
+            let entries = MetaRepository::new(&self.datastore).enumerate_all(0, usize::MAX)?;
             let namespaces = collect_namespace_summaries(
                 entries,
                 Some(application_id),
                 |group_id| self.node_namespace_identity(group_id),
                 |group_id, meta, node_identity| {
-                    group_store::build_namespace_summary(
-                        &self.datastore,
+                    MetadataRepository::new(&self.datastore).build_namespace_summary(
                         group_id,
                         meta,
                         node_identity,

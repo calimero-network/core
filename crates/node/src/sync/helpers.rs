@@ -1,7 +1,6 @@
 //! Common helper functions for sync protocols.
 //!
 //! **DRY Principle**: Extract repeated logic from protocol implementations.
-
 use calimero_node_primitives::sync::TreeLeafData;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;

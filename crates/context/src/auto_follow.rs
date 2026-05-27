@@ -34,7 +34,6 @@
 //! a follow-up: for `ReadOnlyTee` it will reuse the TDX attestation
 //! flow from `fleet_join.rs`; for regular roles it requires a new
 //! admission op since existing `MemberAdded` must be admin-signed.
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -48,6 +47,7 @@ use tokio::task::AbortHandle;
 use tracing::{debug, info, warn};
 
 use crate::group_store;
+use crate::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use crate::op_events::{self, OpEvent};
 
 /// Token-bucket rate limit for auto-follow emissions.
@@ -458,7 +458,7 @@ async fn handle_auto_follow_enabled(
 /// or `None` if this node has no identity for that namespace (meaning
 /// we're not a member, so auto-follow doesn't apply).
 fn self_pk_for_group(store: &Store, group_id: &ContextGroupId) -> Option<PublicKey> {
-    match group_store::resolve_namespace_identity(store, group_id) {
+    match NamespaceRepository::new(store).resolve_identity(group_id) {
         Ok(Some((pk, _, _))) => Some(pk),
         Ok(None) => None,
         Err(err) => {
@@ -478,7 +478,7 @@ fn should_auto_follow_contexts(
     group_id: &ContextGroupId,
     member: &PublicKey,
 ) -> bool {
-    match group_store::get_group_member_value(store, group_id, member) {
+    match MembershipRepository::new(store).member_value(group_id, member) {
         Ok(Some(v)) => v.auto_follow.contexts,
         Ok(None) => false,
         Err(err) => {
@@ -612,8 +612,7 @@ mod tests {
             ContextRegisteredDecision, BACKFILL_LIMIT,
         };
         use crate::group_store::{
-            add_group_member, register_context_in_group, save_group_meta, set_member_auto_follow,
-            store_namespace_identity,
+            register_context_in_group, MembershipRepository, MetaRepository, NamespaceRepository,
         };
 
         fn test_store() -> Store {
@@ -644,10 +643,15 @@ mod tests {
             let store = test_store();
             let sk = PrivateKey::random(rng);
             let pk = sk.public_key();
-            save_group_meta(&store, &gid, &sample_meta(pk)).expect("save_group_meta");
-            store_namespace_identity(&store, &gid, &pk, &sk, &[0u8; 32])
+            MetaRepository::new(&store)
+                .save(&gid, &sample_meta(pk))
+                .expect("save_group_meta");
+            NamespaceRepository::new(&store)
+                .store_identity(&gid, &pk, &sk, &[0u8; 32])
                 .expect("store_namespace_identity");
-            add_group_member(&store, &gid, &pk, GroupMemberRole::Member).expect("add member");
+            MembershipRepository::new(&store)
+                .add_member(&gid, &pk, GroupMemberRole::Member)
+                .expect("add member");
             (store, sk, pk)
         }
 
@@ -676,16 +680,16 @@ mod tests {
             // Post-#2422 the default for new members is `contexts: true`;
             // explicitly toggle it back to false to exercise the
             // `NotAutoFollowing` decision branch.
-            set_member_auto_follow(
-                &store,
-                &gid,
-                &pk,
-                AutoFollowFlags {
-                    contexts: false,
-                    subgroups: false,
-                },
-            )
-            .expect("set_member_auto_follow");
+            MembershipRepository::new(&store)
+                .set_auto_follow(
+                    &gid,
+                    &pk,
+                    AutoFollowFlags {
+                        contexts: false,
+                        subgroups: false,
+                    },
+                )
+                .expect("set_member_auto_follow");
 
             assert_eq!(
                 decide_on_context_registered(&store, gid.to_bytes(), &context_id),
@@ -698,16 +702,16 @@ mod tests {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0x55u8; 32]);
             let (store, _sk, pk) = seed_self_member(&mut rng, gid);
-            set_member_auto_follow(
-                &store,
-                &gid,
-                &pk,
-                AutoFollowFlags {
-                    contexts: true,
-                    subgroups: false,
-                },
-            )
-            .expect("set_member_auto_follow");
+            MembershipRepository::new(&store)
+                .set_auto_follow(
+                    &gid,
+                    &pk,
+                    AutoFollowFlags {
+                        contexts: true,
+                        subgroups: false,
+                    },
+                )
+                .expect("set_member_auto_follow");
 
             let context_id = ContextId::from([0x66u8; 32]);
             let mut handle = store.handle();
@@ -737,16 +741,16 @@ mod tests {
             let mut rng = OsRng;
             let gid = ContextGroupId::from([0x77u8; 32]);
             let (store, _sk, pk) = seed_self_member(&mut rng, gid);
-            set_member_auto_follow(
-                &store,
-                &gid,
-                &pk,
-                AutoFollowFlags {
-                    contexts: true,
-                    subgroups: false,
-                },
-            )
-            .expect("set_member_auto_follow");
+            MembershipRepository::new(&store)
+                .set_auto_follow(
+                    &gid,
+                    &pk,
+                    AutoFollowFlags {
+                        contexts: true,
+                        subgroups: false,
+                    },
+                )
+                .expect("set_member_auto_follow");
 
             let context_id = ContextId::from([0x88u8; 32]);
             assert_eq!(

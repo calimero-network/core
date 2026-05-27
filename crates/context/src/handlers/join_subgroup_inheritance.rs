@@ -1,3 +1,4 @@
+use crate::group_store::{GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -28,23 +29,20 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 // local meta we can't resolve the namespace or know what we'd
                 // be joining. Caller's recovery is to sync the namespace
                 // (`POST /namespaces/:id/sync`) first.
-                if group_store::load_group_meta(&datastore, &group_id)?.is_none() {
+                if MetaRepository::new(&datastore).load(&group_id)?.is_none() {
                     return Err(JoinSubgroupInheritanceError::GroupNotFound.into());
                 }
 
                 // Resolve the joiner's namespace identity. `None` here means
                 // the caller isn't a member of the parent namespace at all —
                 // they can't inherit membership into any subgroup.
-                let (joiner_identity, sk_bytes) =
-                    group_store::resolve_namespace_identity(&datastore, &group_id)?
-                        .map(|(pk, sk, _)| (pk, sk))
-                        .ok_or(JoinSubgroupInheritanceError::NoNamespaceIdentity)?;
+                let (joiner_identity, sk_bytes) = NamespaceRepository::new(&datastore)
+                    .resolve_identity(&group_id)?
+                    .map(|(pk, sk, _)| (pk, sk))
+                    .ok_or(JoinSubgroupInheritanceError::NoNamespaceIdentity)?;
 
-                let membership_path = group_store::check_group_membership_path(
-                    &datastore,
-                    &group_id,
-                    &joiner_identity,
-                )?;
+                let membership_path = MembershipRepository::new(&datastore)
+                    .check_path(&group_id, &joiner_identity)?;
 
                 match membership_path {
                     group_store::MembershipPath::Direct => {
@@ -74,7 +72,7 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                     }
                 }
 
-                let ns_id = group_store::resolve_namespace(&datastore, &group_id)?;
+                let ns_id = NamespaceRepository::new(&datastore).resolve(&group_id)?;
                 let signer_sk = PrivateKey::from(sk_bytes);
 
                 // Two side-effects must succeed for the endpoint to honour
@@ -91,8 +89,9 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                 // (1) but failed (2) — e.g. transient publish error — must
                 // be safe to retry without re-fetching the key, and must
                 // still re-attempt the publish.
-                let key_already_local =
-                    group_store::load_current_group_key(&datastore, &group_id)?.is_some();
+                let key_already_local = GroupKeyring::new(&datastore, group_id)
+                    .load_current_key()?
+                    .is_some();
                 if !key_already_local {
                     // Direct-stream key fetch: ask any peer holding the
                     // subgroup key for it via the dedicated
@@ -112,8 +111,8 @@ impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
                         .await?;
                     let envelope: KeyEnvelope = borsh::from_slice(&envelope_bytes)
                         .map_err(|e| eyre::eyre!("decode KeyEnvelope from peer response: {e}"))?;
-                    let group_key = group_store::unwrap_group_key(&signer_sk, &envelope)?;
-                    let _key_id = group_store::store_group_key(&datastore, &group_id, &group_key)?;
+                    let group_key = GroupKeyring::unwrap_for_recipient(&signer_sk, &envelope)?;
+                    let _key_id = GroupKeyring::new(&datastore, group_id).store_key(&group_key)?;
                 } else {
                     info!(
                         ?group_id,

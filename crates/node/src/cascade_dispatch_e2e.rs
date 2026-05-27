@@ -8,7 +8,7 @@
 //! emitter-side RPC flow as a whole — walk → permission pre-scan →
 //! publish (cleartext `GroupOp::CascadeTargetApplicationSet` +
 //! optional `CascadeGroupMigrationSet`) → local apply → per-descendant
-//! `save_group_upgrade(InProgress)` → propagator spawn.
+//! `UpgradesRepository::new(InProgress).save()` → propagator spawn.
 //!
 //! Cross-peer convergence via real gossip is intentionally out of
 //! scope: that ships in #2494 (gated on `merobox#255`). The
@@ -17,12 +17,13 @@
 //! defaults so the local apply runs and the cascade engine can be
 //! observed end-to-end without standing up a libp2p transport.
 
+use calimero_context::group_store::{
+    MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
+    SigningKeysRepository, UpgradesRepository,
+};
 use std::time::Duration;
 
-use calimero_context::group_store::{
-    add_group_member, count_group_contexts, load_group_meta, load_group_upgrade, nest_group,
-    register_context_in_group, save_group_meta, save_group_upgrade, store_group_signing_key,
-};
+use calimero_context::group_store::register_context_in_group;
 use calimero_context_client::group::UpgradeGroupRequest;
 use calimero_context_client::messages::MigrationParams;
 use calimero_context_config::types::ContextGroupId;
@@ -88,8 +89,12 @@ fn provision_group(
     app_key: [u8; 32],
     target: ApplicationId,
 ) {
-    save_group_meta(store, gid, &meta_for(admin, app_key, target)).expect("save_group_meta");
-    add_group_member(store, gid, &admin, GroupMemberRole::Admin).expect("add admin");
+    MetaRepository::new(store)
+        .save(gid, &meta_for(admin, app_key, target))
+        .expect("save_group_meta");
+    MembershipRepository::new(store)
+        .add_member(gid, &admin, GroupMemberRole::Admin)
+        .expect("add admin");
 }
 
 /// Install an `ApplicationMeta` keyed by `app_id` whose `bytecode`
@@ -186,8 +191,12 @@ fn provision_namespace(
     };
     provision_group(store, &g2, admin_pk, g2_app_key, g2_target);
 
-    nest_group(store, &ns, &g1).expect("nest g1");
-    nest_group(store, &ns, &g2).expect("nest g2");
+    NamespaceRepository::new(store)
+        .nest(&ns, &g1)
+        .expect("nest g1");
+    NamespaceRepository::new(store)
+        .nest(&ns, &g2)
+        .expect("nest g2");
 
     install_application(store, app_id_v1(), APP_KEY_V1, "0.1.0");
     install_application(store, app_id_v2(), APP_KEY_V2, "0.2.0");
@@ -215,7 +224,9 @@ fn provision_namespace(
     // requester on the signed group. We stash it under NS only; the
     // descendant `save_group_upgrade` writes don't need a per-group
     // signing key.
-    store_group_signing_key(store, &ns, &admin_pk, admin_sk).expect("store signing key");
+    SigningKeysRepository::new(store)
+        .store_key(&ns, &admin_pk, admin_sk)
+        .expect("store signing key");
 
     CascadeFixture {
         admin_pk,
@@ -289,7 +300,8 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
     // which runs the `CascadeTargetApplicationSet` apply arm before
     // the publish gate.
     for gid in [&fx.ns, &fx.g1, &fx.g2] {
-        let meta = load_group_meta(&node.store, gid)
+        let meta = MetaRepository::new(&node.store)
+            .load(gid)
             .expect("load_group_meta")
             .expect("meta exists");
         assert_eq!(
@@ -322,7 +334,8 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
     // for the contract.
     for gid in [&fx.ns, &fx.g1, &fx.g2] {
         let observed = wait_until(|| {
-            load_group_upgrade(&node.store, gid)
+            UpgradesRepository::new(&node.store)
+                .load(gid)
                 .ok()
                 .flatten()
                 .is_some()
@@ -333,7 +346,8 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
             "per-descendant GroupUpgradeValue must exist for {}",
             hex::encode(gid.to_bytes())
         );
-        let upgrade = load_group_upgrade(&node.store, gid)
+        let upgrade = UpgradesRepository::new(&node.store)
+            .load(gid)
             .expect("load_group_upgrade")
             .expect("upgrade row");
         match upgrade.status {
@@ -342,8 +356,9 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
                 completed: _,
                 failed: _,
             } => {
-                let expected_total =
-                    count_group_contexts(&node.store, gid).expect("count_group_contexts") as u32;
+                let expected_total = MetadataRepository::new(&node.store)
+                    .count_contexts(gid)
+                    .expect("count_group_contexts") as u32;
                 assert_eq!(
                     total,
                     expected_total,
@@ -388,23 +403,23 @@ async fn cascade_dispatch_e2e_write_gate_blocks_user_calls() {
     // Directly pin G1's status to InProgress — no cascade dispatch,
     // no propagator involvement. The gate reads this row at
     // execute-time and must refuse.
-    save_group_upgrade(
-        &node.store,
-        &fx.g1,
-        &GroupUpgradeValue {
-            from_version: "0.1.0".to_owned(),
-            to_version: "0.2.0".to_owned(),
-            migration: None,
-            initiated_at: 1_700_000_000,
-            initiated_by: fx.admin_pk,
-            status: GroupUpgradeStatus::InProgress {
-                total: 1,
-                completed: 0,
-                failed: 0,
+    UpgradesRepository::new(&node.store)
+        .save(
+            &fx.g1,
+            &GroupUpgradeValue {
+                from_version: "0.1.0".to_owned(),
+                to_version: "0.2.0".to_owned(),
+                migration: None,
+                initiated_at: 1_700_000_000,
+                initiated_by: fx.admin_pk,
+                status: GroupUpgradeStatus::InProgress {
+                    total: 1,
+                    completed: 0,
+                    failed: 0,
+                },
             },
-        },
-    )
-    .expect("save_group_upgrade InProgress for G1");
+        )
+        .expect("save_group_upgrade InProgress for G1");
 
     let err = node
         .context_client
@@ -467,7 +482,8 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
 
     // NS + G1 migrated.
     for gid in [&fx.ns, &fx.g1] {
-        let meta = load_group_meta(&node.store, gid)
+        let meta = MetaRepository::new(&node.store)
+            .load(gid)
             .expect("load_group_meta")
             .expect("meta exists");
         assert_eq!(
@@ -480,7 +496,8 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
     }
 
     // G2 untouched: predicate skip on heterogeneous app_key.
-    let meta_g2 = load_group_meta(&node.store, &fx.g2)
+    let meta_g2 = MetaRepository::new(&node.store)
+        .load(&fx.g2)
         .expect("load_group_meta g2")
         .expect("g2 meta exists");
     assert_eq!(
@@ -492,7 +509,7 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
     // No InProgress row for G2 (the matched-descendant loop never ran
     // for it). Reads must be `Ok(None)`.
     assert!(
-        load_group_upgrade(&node.store, &fx.g2)
+        UpgradesRepository::new(&node.store).load(&fx.g2)
             .expect("load_group_upgrade g2")
             .is_none(),
         "G2 must NOT have a GroupUpgradeValue row — predicate skip means no propagator and no status write"
@@ -501,7 +518,8 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
     // NS + G1 do have rows.
     for gid in [&fx.ns, &fx.g1] {
         assert!(
-            load_group_upgrade(&node.store, gid)
+            UpgradesRepository::new(&node.store)
+                .load(gid)
                 .expect("load_group_upgrade")
                 .is_some(),
             "{} must have a GroupUpgradeValue row",

@@ -1,3 +1,4 @@
+use crate::group_store::{MembershipRepository, MetadataRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{GroupContextEntry, ListGroupContextsRequest};
 use eyre::bail;
@@ -20,21 +21,17 @@ impl Handler<ListGroupContextsRequest> for ContextManager {
             let Some((node_identity, _)) = self.node_namespace_identity(&group_id) else {
                 bail!("node has no group identity configured");
             };
-            if !group_store::check_group_membership(&self.datastore, &group_id, &node_identity)? {
+            if !MembershipRepository::new(&self.datastore).is_member(&group_id, &node_identity)? {
                 bail!("node is not a member of group '{group_id:?}'");
             }
-            group_store::enumerate_group_contexts_with_names(
-                &self.datastore,
-                &group_id,
-                offset,
-                limit,
-            )
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|(context_id, name)| GroupContextEntry { context_id, name })
-                    .collect()
-            })
+            MetadataRepository::new(&self.datastore)
+                .enumerate_contexts_with_names(&group_id, offset, limit)
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|(context_id, name)| GroupContextEntry { context_id, name })
+                        .collect()
+                })
         })();
 
         ActorResponse::reply(result)

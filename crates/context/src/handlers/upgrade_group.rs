@@ -1,3 +1,5 @@
+use crate::group_store::SigningKeysRepository;
+use crate::group_store::{MembershipRepository, MetaRepository, UpgradesRepository};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -105,18 +107,15 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         // Auto-store signing key ONLY when the requester IS the node's own identity
         if let (Some(sk), Some((node_pk, _))) = (signing_key, node_identity) {
             if requester == node_pk {
-                let _ = group_store::store_group_signing_key(
-                    &self.datastore,
-                    &group_id,
-                    &requester,
-                    &sk,
-                );
+                let _ = SigningKeysRepository::new(&self.datastore)
+                    .store_key(&group_id, &requester, &sk);
             }
         }
 
         // Build contract call if signing_key is available (or from stored key)
         let effective_signing_key = signing_key.or_else(|| {
-            group_store::get_group_signing_key(&self.datastore, &group_id, &requester)
+            SigningKeysRepository::new(&self.datastore)
+                .get_key(&group_id, &requester)
                 .ok()
                 .flatten()
         });
@@ -186,11 +185,12 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         }
                     }
 
-                    let mut meta = group_store::load_group_meta(&datastore, &group_id)?
+                    let mut meta = MetaRepository::new(&datastore)
+                        .load(&group_id)?
                         .ok_or_else(|| eyre::eyre!("group not found"))?;
                     meta.target_application_id = target_application_id;
                     meta.migration = migration_bytes.clone();
-                    group_store::save_group_meta(&datastore, &group_id, &meta)?;
+                    MetaRepository::new(&datastore).save(&group_id, &meta)?;
 
                     // LazyOnAccess: contexts upgrade individually on demand; there is no single
                     // "all done" moment, so completed_at is None.
@@ -205,7 +205,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         status: completed_status.clone(),
                     };
 
-                    group_store::save_group_upgrade(&datastore, &group_id, &upgrade_value)?;
+                    UpgradesRepository::new(&datastore).save(&group_id, &upgrade_value)?;
 
                     info!(
                         ?group_id,
@@ -261,9 +261,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             status: initial_status.clone(),
         };
 
-        if let Err(err) =
-            group_store::save_group_upgrade(&self.datastore, &group_id, &upgrade_value)
-        {
+        if let Err(err) = UpgradesRepository::new(&self.datastore).save(&group_id, &upgrade_value) {
             return ActorResponse::reply(Err(err.into()));
         }
 
@@ -354,7 +352,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     );
                     // Clean up the InProgress record so the group can be retried
                     if let Err(cleanup_err) =
-                        group_store::delete_group_upgrade(&datastore, &group_id_clone)
+                        UpgradesRepository::new(&datastore).delete(&group_id_clone)
                     {
                         error!(
                             ?group_id,
@@ -374,11 +372,12 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                     );
 
                     // Update group's target_application_id
-                    let mut meta = group_store::load_group_meta(&datastore, &group_id_clone)?
+                    let mut meta = MetaRepository::new(&datastore)
+                        .load(&group_id_clone)?
                         .ok_or_else(|| eyre::eyre!("group not found after canary"))?;
 
                     meta.target_application_id = target_application_id;
-                    group_store::save_group_meta(&datastore, &group_id_clone, &meta)?;
+                    MetaRepository::new(&datastore).save(&group_id_clone, &meta)?;
 
                     // Update InProgress status (canary = 1 completed)
                     let status = GroupUpgradeStatus::InProgress {
@@ -483,19 +482,20 @@ fn validate_upgrade(
     has_migration: bool,
 ) -> eyre::Result<UpgradePreamble> {
     // 1. Group must exist
-    let meta = group_store::load_group_meta(datastore, group_id)?
+    let meta = MetaRepository::new(datastore)
+        .load(group_id)?
         .ok_or_else(|| eyre::eyre!("group not found"))?;
 
     // 2. Requester must be admin
-    group_store::require_group_admin(datastore, group_id, requester)?;
+    MembershipRepository::new(datastore).require_admin(group_id, requester)?;
 
     // 3. Verify node holds the key (skip if raw key was provided)
     if !has_raw_signing_key {
-        group_store::require_group_signing_key(datastore, group_id, requester)?;
+        SigningKeysRepository::new(datastore).require_key(group_id, requester)?;
     }
 
     // 4. No active upgrade in progress
-    if let Some(existing) = group_store::load_group_upgrade(datastore, group_id)? {
+    if let Some(existing) = UpgradesRepository::new(datastore).load(group_id)? {
         if matches!(existing.status, GroupUpgradeStatus::InProgress { .. }) {
             bail!("an upgrade is already in progress for this group");
         }
@@ -759,9 +759,9 @@ pub(crate) fn update_upgrade_status(
     group_id: &ContextGroupId,
     status: GroupUpgradeStatus,
 ) -> eyre::Result<()> {
-    if let Some(mut upgrade) = group_store::load_group_upgrade(datastore, group_id)? {
+    if let Some(mut upgrade) = UpgradesRepository::new(datastore).load(group_id)? {
         upgrade.status = status;
-        group_store::save_group_upgrade(datastore, group_id, &upgrade)?;
+        UpgradesRepository::new(datastore).save(group_id, &upgrade)?;
     }
     Ok(())
 }
@@ -803,7 +803,7 @@ fn dispatch_cascade(
     // re-implement the subset of checks that do apply: group exists,
     // requester is admin, signing key is available, no concurrent
     // upgrade in progress on the signed group, and target differs.
-    let meta = match group_store::load_group_meta(&actor.datastore, &group_id) {
+    let meta = match MetaRepository::new(&actor.datastore).load(&group_id) {
         Ok(Some(m)) => m,
         Ok(None) => {
             return ActorResponse::reply(Err(eyre::eyre!("group not found")));
@@ -811,13 +811,15 @@ fn dispatch_cascade(
         Err(err) => return ActorResponse::reply(Err(err)),
     };
 
-    if let Err(err) = group_store::require_group_admin(&actor.datastore, &group_id, &requester) {
+    if let Err(err) =
+        MembershipRepository::new(&actor.datastore).require_admin(&group_id, &requester)
+    {
         return ActorResponse::reply(Err(err));
     }
 
     let has_migration = migration.is_some();
 
-    if let Some(existing) = match group_store::load_group_upgrade(&actor.datastore, &group_id) {
+    if let Some(existing) = match UpgradesRepository::new(&actor.datastore).load(&group_id) {
         Ok(v) => v,
         Err(err) => return ActorResponse::reply(Err(err)),
     } {
@@ -866,7 +868,7 @@ fn dispatch_cascade(
     if let (Some(sk), Some((node_pk, _))) = (signing_key, node_identity) {
         if requester == node_pk {
             if let Err(err) =
-                group_store::store_group_signing_key(&actor.datastore, &group_id, &requester, &sk)
+                SigningKeysRepository::new(&actor.datastore).store_key(&group_id, &requester, &sk)
             {
                 warn!(
                     target: "calimero::cascade",
@@ -887,7 +889,9 @@ fn dispatch_cascade(
     // surfacing as a less clear failure deep in publish.
     let effective_signing_key = match signing_key {
         Some(sk) => sk,
-        None => match group_store::get_group_signing_key(&actor.datastore, &group_id, &requester) {
+        None => match crate::group_store::SigningKeysRepository::new(&actor.datastore)
+            .get_key(&group_id, &requester)
+        {
             Ok(Some(sk)) => sk,
             Ok(None) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
@@ -941,7 +945,9 @@ fn dispatch_cascade(
 
     let mut pre_spawn_totals = Vec::with_capacity(matched_descendants.len());
     for gid in &matched_descendants {
-        let total = match group_store::count_group_contexts(&actor.datastore, gid) {
+        let total = match crate::group_store::MetadataRepository::new(&actor.datastore)
+            .count_contexts(gid)
+        {
             Ok(c) => c as u32,
             Err(err) => return ActorResponse::reply(Err(err)),
         };
@@ -1019,7 +1025,7 @@ fn dispatch_cascade(
                     failed: 0,
                 },
             };
-            if let Err(err) = group_store::save_group_upgrade(&datastore, gid, &upgrade_value) {
+            if let Err(err) = UpgradesRepository::new(&datastore).save(gid, &upgrade_value) {
                 error!(
                     ?gid,
                     ?err,
@@ -1096,7 +1102,7 @@ fn dispatch_cascade(
         // per-descendant propagators write their own statuses; we
         // surface the signed group's initial status here for the RPC
         // response.
-        let signed_status = match group_store::load_group_upgrade(&datastore, &group_id) {
+        let signed_status = match UpgradesRepository::new(&datastore).load(&group_id) {
             Ok(Some(v)) => v.status,
             _ => GroupUpgradeStatus::InProgress {
                 total: pre_spawn_totals.first().copied().unwrap_or(0),

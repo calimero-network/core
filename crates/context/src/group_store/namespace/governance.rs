@@ -1,3 +1,6 @@
+use crate::group_store::{
+    DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+};
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, NamespaceOp, RootOp,
     SignedGroupOp, SignedNamespaceOp,
@@ -18,13 +21,9 @@ use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retr
 use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::super::{
-    add_group_member, apply_group_op_mutations, clear_denied, decrypt_group_op,
-    get_local_gov_nonce, is_group_admin, is_group_admin_or_has_capability,
-    load_current_group_key_record, load_group_key_by_id, load_group_meta,
-    restore_member_context_identities, save_group_meta, set_local_gov_nonce, store_group_key,
-    unwrap_group_key, PermissionChecker,
+    apply_group_op_mutations, get_local_gov_nonce, restore_member_context_identities,
+    set_local_gov_nonce, PermissionChecker,
 };
-use super::core::get_namespace_identity_record;
 use super::dag::{NamespaceDagService, NamespaceHead};
 use super::membership::NamespaceMembershipService;
 use super::op_log::NamespaceOpLogService;
@@ -81,7 +80,8 @@ pub(crate) fn classify_report_readiness(
     known_subscribers: usize,
 ) -> PublishReadiness {
     let authoritative_ack = report.acked_by.iter().any(|pk| {
-        super::super::membership::is_authoritative_namespace_identity(store, namespace_id, pk)
+        MembershipRepository::new(store)
+            .is_authoritative_namespace_identity(namespace_id, pk)
             .unwrap_or(false)
     });
     classify_publish_readiness(authoritative_ack, report.acked_by.len(), known_subscribers)
@@ -199,19 +199,23 @@ impl<'a> NamespaceGovernance<'a> {
                         // store, or the retry walk.
                         let mut apply_kd =
                             || -> EyreResult<Option<super::super::DivergenceReport>> {
-                                if let Some(identity) = get_namespace_identity_record(
-                                    self.store, &ns_id,
-                                )
-                                .map_err(|e| eyre::eyre!("get_namespace_identity_record: {e}"))?
+                                if let Some(identity) = NamespaceRepository::new(self.store)
+                                    .identity_record(&ns_id)
+                                    .map_err(|e| {
+                                        eyre::eyre!("get_namespace_identity_record: {e}")
+                                    })?
                                 {
                                     let recipient_sk = PrivateKey::from(identity.private_key);
                                     if envelope.recipient == recipient_sk.public_key() {
-                                        match unwrap_group_key(&recipient_sk, envelope) {
+                                        match GroupKeyring::unwrap_for_recipient(
+                                            &recipient_sk,
+                                            envelope,
+                                        ) {
                                             Ok(group_key) => {
                                                 let gid = ContextGroupId::from(*group_id);
-                                                let key_id =
-                                                    store_group_key(self.store, &gid, &group_key)
-                                                        .map_err(|e| {
+                                                let key_id = GroupKeyring::new(self.store, gid)
+                                                    .store_key(&group_key)
+                                                    .map_err(|e| {
                                                         eyre::eyre!("store_group_key: {e}")
                                                     })?;
                                                 tracing::info!(
@@ -330,7 +334,10 @@ impl<'a> NamespaceGovernance<'a> {
                     } => {
                         let gid = signed_invitation.invitation.group_id;
                         let group_id_typed = ContextGroupId::from(gid);
-                        if load_current_group_key_record(self.store, &group_id_typed)?.is_some() {
+                        if GroupKeyring::new(self.store, group_id_typed)
+                            .load_current_key_record()?
+                            .is_some()
+                        {
                             result.pending_deliveries.push(PendingKeyDelivery {
                                 namespace_id: op.namespace_id,
                                 group_id: group_id_typed.to_bytes(),
@@ -347,7 +354,10 @@ impl<'a> NamespaceGovernance<'a> {
                         // match), so by the time we get here the path is
                         // confirmed Inherited.
                         let group_id_typed = ContextGroupId::from(*group_id);
-                        if load_current_group_key_record(self.store, &group_id_typed)?.is_some() {
+                        if GroupKeyring::new(self.store, group_id_typed)
+                            .load_current_key_record()?
+                            .is_some()
+                        {
                             result.pending_deliveries.push(PendingKeyDelivery {
                                 namespace_id: op.namespace_id,
                                 group_id: group_id_typed.to_bytes(),
@@ -372,7 +382,7 @@ impl<'a> NamespaceGovernance<'a> {
                         // never replicate to peers — symptom: post-rejoin
                         // sync diverges in the kick/leave-rejoin e2e.
                         // Idempotent on a member who was never denied.
-                        clear_denied(self.store, &group_id_typed, member)?;
+                        DenyListRepository::new(self.store).clear(&group_id_typed, member)?;
                         // Local rejoiner recovery: restore any per-context
                         // `ContextIdentity` rows that a prior `MemberLeft`
                         // cascade deleted. The local-rejoiner anti-spoof
@@ -408,14 +418,14 @@ impl<'a> NamespaceGovernance<'a> {
                 // saw `Open` but the receiver has already applied a flip
                 // to `Restricted`, the fallback still resolves the key
                 // because both keyrings persist their entries.
-                let resolved_key = match load_group_key_by_id(self.store, &group_id_typed, key_id)?
-                {
-                    Some(k) => Some(k),
-                    None => {
-                        let ns_id_typed = ContextGroupId::from(self.namespace_id);
-                        load_group_key_by_id(self.store, &ns_id_typed, key_id)?
-                    }
-                };
+                let resolved_key =
+                    match GroupKeyring::new(self.store, group_id_typed).load_key_by_id(key_id)? {
+                        Some(k) => Some(k),
+                        None => {
+                            let ns_id_typed = ContextGroupId::from(self.namespace_id);
+                            GroupKeyring::new(self.store, ns_id_typed).load_key_by_id(key_id)?
+                        }
+                    };
 
                 if let Some(group_key) = resolved_key {
                     // Surface any post-apply hash divergence reported by
@@ -440,14 +450,16 @@ impl<'a> NamespaceGovernance<'a> {
 
                 if let Some(rotation) = key_rotation {
                     let ns_id = ContextGroupId::from(op.namespace_id);
-                    if let Some(identity) = get_namespace_identity_record(self.store, &ns_id)? {
+                    if let Some(identity) =
+                        NamespaceRepository::new(self.store).identity_record(&ns_id)?
+                    {
                         let recipient_sk = PrivateKey::from(identity.private_key);
                         for envelope in &rotation.envelopes {
                             if envelope.recipient == recipient_sk.public_key() {
-                                match unwrap_group_key(&recipient_sk, envelope) {
+                                match GroupKeyring::unwrap_for_recipient(&recipient_sk, envelope) {
                                     Ok(new_key) => {
-                                        let _ =
-                                            store_group_key(self.store, &group_id_typed, &new_key)?;
+                                        let _ = GroupKeyring::new(self.store, group_id_typed)
+                                            .store_key(&new_key)?;
                                         tracing::info!(
                                             group_id = %hex::encode(group_id),
                                             "stored rotated group key"
@@ -888,7 +900,7 @@ impl<'a> NamespaceGovernance<'a> {
         // and ALWAYS ensure the admin member row exists. A later `KeyDelivery`
         // re-enters here and repairs whichever half a previous partial seed left
         // behind. Both writes are individually idempotent, so re-running is safe.
-        let meta_existed = load_group_meta(self.store, &gid)?.is_some();
+        let meta_existed = MetaRepository::new(self.store).load(&gid)?.is_some();
         if !meta_existed {
             let meta = calimero_store::key::GroupMetaValue {
                 app_key: [0u8; 32],
@@ -902,13 +914,18 @@ impl<'a> NamespaceGovernance<'a> {
                 migration: None,
                 auto_join: true,
             };
-            save_group_meta(self.store, &gid, &meta)?;
+            MetaRepository::new(self.store).save(&gid, &meta)?;
         }
 
-        let member_existed =
-            super::super::get_group_member_role(self.store, &gid, founder)?.is_some();
+        let member_existed = MembershipRepository::new(self.store)
+            .role_of(&gid, founder)?
+            .is_some();
         if !member_existed {
-            add_group_member(self.store, &gid, founder, GroupMemberRole::Admin)?;
+            MembershipRepository::new(self.store).add_member(
+                &gid,
+                founder,
+                GroupMemberRole::Admin,
+            )?;
         }
 
         // Nothing to do (and nothing to log) if both halves were already
@@ -1002,7 +1019,7 @@ impl<'a> NamespaceGovernance<'a> {
         group_key: &[u8; 32],
         encrypted: &EncryptedGroupOp,
     ) -> EyreResult<Option<super::super::DivergenceReport>> {
-        let inner_op = decrypt_group_op(group_key, encrypted)?;
+        let inner_op = GroupKeyring::decrypt_op(group_key, encrypted)?;
 
         let signed_group_op = SignedGroupOp {
             version: calimero_context_client::local_governance::SIGNED_GROUP_OP_SCHEMA_VERSION,
@@ -1204,7 +1221,7 @@ impl<'a> NamespaceGovernance<'a> {
 
     fn require_namespace_admin(&self, signer: &PublicKey) -> EyreResult<()> {
         let ns_gid = ContextGroupId::from(self.namespace_id);
-        if !is_group_admin(self.store, &ns_gid, signer)? {
+        if !MembershipRepository::new(self.store).is_admin(&ns_gid, signer)? {
             bail!(
                 "signer {} is not an admin of namespace {}",
                 signer,
@@ -1276,10 +1293,9 @@ impl<'a> NamespaceGovernance<'a> {
         // creator's authority, and only the root group's capability rows are
         // readable by all namespace members (see the capability's doc).
         let ns_gid = ContextGroupId::from(self.namespace_id);
-        let authorized = is_group_admin(self.store, &ns_gid, &op.signer)?
+        let authorized = MembershipRepository::new(self.store).is_admin(&ns_gid, &op.signer)?
             || (parent_id == self.namespace_id
-                && is_group_admin_or_has_capability(
-                    self.store,
+                && MembershipRepository::new(self.store).is_admin_or_has_capability(
                     &ns_gid,
                     &op.signer,
                     calimero_context_config::MemberCapabilities::CAN_CREATE_SUBGROUP,
@@ -1294,9 +1310,13 @@ impl<'a> NamespaceGovernance<'a> {
         }
 
         // Verify parent exists in this namespace (root or previously-created subgroup).
-        let parent_meta = load_group_meta(self.store, &parent_gid)?.ok_or_else(|| {
-            eyre::eyre!("GroupCreated rejected: parent_id '{parent_gid:?}' not found in namespace")
-        })?;
+        let parent_meta = MetaRepository::new(self.store)
+            .load(&parent_gid)?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "GroupCreated rejected: parent_id '{parent_gid:?}' not found in namespace"
+                )
+            })?;
 
         // The originating node's `create_group` handler pre-populates
         // `GroupMeta` (and related state) BEFORE publishing this op, so a
@@ -1311,7 +1331,7 @@ impl<'a> NamespaceGovernance<'a> {
         // ensure parent edge + child index + admin membership are present.
         // These are idempotent puts — a second apply is a no-op with
         // identical effect, so true replay is still safe.
-        let meta_existed = load_group_meta(self.store, &gid)?.is_some();
+        let meta_existed = MetaRepository::new(self.store).load(&gid)?.is_some();
         if !meta_existed {
             // Inherit application ID from the immediate parent (matches
             // mero-drive folder mental model: a subfolder runs the same app
@@ -1326,7 +1346,7 @@ impl<'a> NamespaceGovernance<'a> {
                 created_at: 0,
                 auto_join: false,
             };
-            save_group_meta(self.store, &gid, &meta)?;
+            MetaRepository::new(self.store).save(&gid, &meta)?;
         } else {
             tracing::debug!(
                 group_id = %hex::encode(group_id),
@@ -1351,7 +1371,11 @@ impl<'a> NamespaceGovernance<'a> {
             handle.put(&GroupParentRef::new(group_id), &parent_id)?;
             handle.put(&GroupChildIndex::new(parent_id, group_id), &())?;
         }
-        add_group_member(self.store, &gid, &op.signer, GroupMemberRole::Admin)?;
+        MembershipRepository::new(self.store).add_member(
+            &gid,
+            &op.signer,
+            GroupMemberRole::Admin,
+        )?;
 
         notify_op_event(OpEvent::SubgroupCreated {
             namespace_id: self.namespace_id,
@@ -1370,7 +1394,7 @@ impl<'a> NamespaceGovernance<'a> {
         self.require_namespace_admin(&op.signer)?;
         let child = ContextGroupId::from(child_group_id);
         let new_parent = ContextGroupId::from(new_parent_id);
-        match super::core::reparent_group(self.store, &child, &new_parent)? {
+        match NamespaceRepository::new(self.store).reparent(&child, &new_parent)? {
             super::core::ReparentOutcome::Reparented { old_parent } => {
                 notify_op_event(OpEvent::SubgroupReparented {
                     namespace_id: self.namespace_id,
@@ -1431,7 +1455,7 @@ impl<'a> NamespaceGovernance<'a> {
         // cascade.) A `GroupDeleted` for a group that never existed locally
         // likewise reads `None` here and is a harmless no-op below.
         let ns_gid = ContextGroupId::from(self.namespace_id);
-        if let Some(root_meta) = load_group_meta(self.store, &root_gid)? {
+        if let Some(root_meta) = MetaRepository::new(self.store).load(&root_gid)? {
             if root_meta.owner_identity != op.signer {
                 PermissionChecker::new(self.store, ns_gid)
                     .require_can_delete_subgroup(&op.signer)
@@ -1456,7 +1480,8 @@ impl<'a> NamespaceGovernance<'a> {
         // a group NOT in payload, the check fails (correct rejection).
         // Contexts are always set-compared (order-insensitive) with the same
         // subset rule.
-        let local_payload = super::core::collect_subtree_for_cascade(self.store, &root_gid)?;
+        let local_payload =
+            NamespaceRepository::new(self.store).collect_subtree_for_cascade(&root_gid)?;
         let local_groups: std::collections::BTreeSet<[u8; 32]> = local_payload
             .descendant_groups
             .iter()
@@ -1528,7 +1553,7 @@ impl<'a> NamespaceGovernance<'a> {
             // Capture parent before delete_group_local_rows runs (it deletes
             // GroupMeta but leaves parent edges; we still need them to clean
             // up the child-index entry on the parent below).
-            let parent_for_cleanup = super::core::get_parent_group(self.store, &gid)?;
+            let parent_for_cleanup = NamespaceRepository::new(self.store).parent(&gid)?;
             super::super::delete_group_local_rows(self.store, &gid)?;
             if let Some(parent) = parent_for_cleanup {
                 let mut handle = self.store.handle();
@@ -1556,10 +1581,11 @@ impl<'a> NamespaceGovernance<'a> {
     ) -> EyreResult<()> {
         self.require_namespace_admin(&op.signer)?;
         let ns_gid = ContextGroupId::from(self.namespace_id);
-        let mut meta = load_group_meta(self.store, &ns_gid)?
+        let mut meta = MetaRepository::new(self.store)
+            .load(&ns_gid)?
             .ok_or_else(|| eyre::eyre!("namespace root group not found"))?;
         meta.admin_identity = new_admin;
-        save_group_meta(self.store, &ns_gid, &meta)?;
+        MetaRepository::new(self.store).save(&ns_gid, &meta)?;
         Ok(())
     }
 
@@ -1613,7 +1639,7 @@ impl<'a> NamespaceGovernance<'a> {
         // op is being applied in namespace A. Pin `gid` to this
         // namespace — matches the implicit assumption in the sibling
         // `MemberJoined` apply path.
-        let resolved_ns = super::core::resolve_namespace(self.store, &gid)?;
+        let resolved_ns = NamespaceRepository::new(self.store).resolve(&gid)?;
         if resolved_ns.to_bytes() != self.namespace_id {
             eyre::bail!(
                 "MemberJoinedOpen rejected: group_id {:?} resolves to namespace {:?}, \
@@ -1623,7 +1649,7 @@ impl<'a> NamespaceGovernance<'a> {
                 ContextGroupId::from(self.namespace_id)
             );
         }
-        match super::super::check_group_membership_path(self.store, &gid, &member)? {
+        match MembershipRepository::new(self.store).check_path(&gid, &member)? {
             super::super::MembershipPath::Inherited { .. } => Ok(()),
             super::super::MembershipPath::Direct => {
                 // Direct members go through `MemberJoined` or `add_group_members`
