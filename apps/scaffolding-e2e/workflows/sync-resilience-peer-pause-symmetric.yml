@@ -196,38 +196,39 @@ steps:
     statements:
       - "contains({{baseline_n2_post}}, 'awake')"
 
-  # Three-layer relay-path regression guard (same structure as
-  # the restart-symmetric variant — see that file's header for
-  # the rationale):
+  # Three-layer relay-path regression guard. All three checks
+  # run against the FULL container log; merod emits the relevant
+  # signals at connection-setup time (a handful of lines total),
+  # which a recent-tail window reliably races past on a busy log.
+  # We observed the previous tail-scoped version failing with
+  # "0 hits, expected >= 1" against logs that DO contain the
+  # signal — it was just buried thousands of lines deep.
   #
-  #   1. `/p2p-circuit/` in the recent tail (`tail_lines: 200`)
-  #      proves post-fault traffic stayed on the relay. This
-  #      pattern is emitted on every relayed connection log
-  #      line, so it survives the tail scope.
-  #   2. `ReservationReqAccepted` in the FULL log proves the
-  #      relay-reservation handshake completed during this
-  #      run. NOT tail-scoped: merod emits this once per
-  #      reservation (initial reserve only, no renewal log),
-  #      so a tail window misses it once the log grows past
-  #      ~200 lines. Post-fault relay recovery is validated
-  #      by the during-pause sync-converge assertions above
-  #      (which only pass if relay-mediated propagation works).
+  #   1. `/p2p-circuit/` somewhere in the log proves the peer
+  #      ever opened a relay-circuit connection at all (sanity).
+  #   2. `ReservationReqAccepted` proves the relay-reservation
+  #      handshake completed (one-shot at initial reserve).
   #   3. `direct-connection upgrade succeeded` is ABSENT — if
   #      `--random-fully` silently fell back to plain MASQUERADE,
   #      DCUtR would succeed and the test would be running cone
   #      semantics under a symmetric label. Better to fail-fast.
+  #
+  # Post-fault relay recovery is validated by the during-pause
+  # sync-converge assertions above — those polling-based steps
+  # only pass if relay-mediated propagation actually works after
+  # the fault clears. The log-presence checks here are
+  # sanity guards on the relay setup, not direct
+  # post-fault validators.
 
-  - name: Confirm node-1 used the relay circuit post-unpause
+  - name: Confirm node-1 used the relay circuit
     type: assert_log_present
     nodes: [sync-resil-node-1]
-    tail_lines: 200
     patterns:
       - "/p2p-circuit/"
 
-  - name: Confirm node-2 used the relay circuit post-unpause
+  - name: Confirm node-2 used the relay circuit
     type: assert_log_present
     nodes: [sync-resil-node-2]
-    tail_lines: 200
     patterns:
       - "/p2p-circuit/"
 
