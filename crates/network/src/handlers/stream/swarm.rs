@@ -1,4 +1,4 @@
-use actix::StreamHandler;
+use actix::{AsyncContext, StreamHandler};
 use calimero_network_primitives::messages::NetworkEvent;
 use eyre::eyre;
 use libp2p::core::ConnectedPoint;
@@ -41,7 +41,7 @@ impl StreamHandler<FromSwarm> for NetworkManager {
     }
 
     #[expect(clippy::too_many_lines, reason = "Enum with many variants")]
-    fn handle(&mut self, FromSwarm(event): FromSwarm, _ctx: &mut Self::Context) {
+    fn handle(&mut self, FromSwarm(event): FromSwarm, ctx: &mut Self::Context) {
         #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
         match event {
             SwarmEvent::Behaviour(event) => match event {
@@ -163,10 +163,39 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                         // workflows assume. Issue the discover via the
                         // force-path here so the throttle gets
                         // bypassed for this event-driven case.
-                        // No-op if we have no rendezvous peers
-                        // configured (mdns-only deployments).
                         let actions = self.discovery.state.on_regular_peer_disconnected();
                         self.execute_reachability_actions(actions);
+
+                        // Delayed re-fires. The immediate discover
+                        // above usually misses the target: a container
+                        // restart of the disconnected peer takes ~3-5s
+                        // for the new merod process to come up, dial
+                        // the rendezvous server, and re-register its
+                        // record. Our immediate query lands in that
+                        // gap and the rendezvous server returns only
+                        // ourselves (the peer's old registration was
+                        // evicted when the relay control connection
+                        // closed; the new one hasn't been written yet).
+                        //
+                        // Three re-fires at 5s / 15s / 30s cover the
+                        // typical restart-window observed in CI
+                        // (~3-5s warm, up to ~15-20s on a contended
+                        // runner). Each re-fire bypasses the throttle
+                        // via the force-path. The cost is bounded —
+                        // at most 4 queries to the boot-node per
+                        // disconnect event, regardless of fleet size.
+                        // No-op if we have no rendezvous peers
+                        // configured (mdns-only deployments).
+                        for delay_secs in [5_u64, 15, 30] {
+                            ctx.run_later(
+                                core::time::Duration::from_secs(delay_secs),
+                                move |actor, _ctx| {
+                                    let actions =
+                                        actor.discovery.state.on_regular_peer_disconnected();
+                                    actor.execute_reachability_actions(actions);
+                                },
+                            );
+                        }
                     }
                 }
             }
