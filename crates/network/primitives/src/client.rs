@@ -35,9 +35,11 @@ pub fn is_no_peers_subscribed_error(err: &eyre::Report) -> bool {
 use crate::blob_types::BlobAuth;
 use crate::messages::{
     AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, MeshStats, NetworkMessage,
-    OpenStream, PeerCount, Publish, QueryBlob, RequestBlob, SendSpecializedNodeInvitationResponse,
-    SendSpecializedNodeVerificationRequest, Subscribe, Unsubscribe,
+    NetworkStatus, OpenStream, PeerCount, Publish, QueryBlob, RequestBlob,
+    SendSpecializedNodeInvitationResponse, SendSpecializedNodeVerificationRequest, Subscribe,
+    Unsubscribe,
 };
+use crate::network_status::NetworkStatusSnapshot;
 use crate::specialized_node_invite::{SpecializedNodeInvitationResponse, VerificationRequest};
 use crate::stream::Stream;
 
@@ -200,6 +202,23 @@ impl NetworkClient {
         self.network_manager
             .send(NetworkMessage::MeshStats {
                 request: MeshStats,
+                outcome: tx,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        rx.await.expect("Mailbox not to be dropped")
+    }
+
+    /// Snapshot of the local node's libp2p connectivity state. Feeds
+    /// `GET /admin-api/network/status` and the corresponding
+    /// `meroctl network status` CLI.
+    pub async fn network_status(&self) -> NetworkStatusSnapshot {
+        let (tx, rx) = oneshot::channel();
+
+        self.network_manager
+            .send(NetworkMessage::NetworkStatus {
+                request: NetworkStatus,
                 outcome: tx,
             })
             .await

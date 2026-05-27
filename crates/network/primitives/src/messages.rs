@@ -54,6 +54,7 @@ use libp2p::{Multiaddr, StreamProtocol};
 use tokio::sync::oneshot;
 
 use crate::blob_types::BlobAuth;
+use crate::network_status::NetworkStatusSnapshot;
 use crate::specialized_node_invite::{SpecializedNodeInvitationResponse, VerificationRequest};
 use crate::stream::Stream;
 
@@ -132,6 +133,11 @@ pub enum NetworkMessage {
     MeshStats {
         request: MeshStats,
         outcome: oneshot::Sender<<MeshStats as actix::Message>::Result>,
+    },
+    /// Snapshot the swarm connectivity state for `GET /admin-api/network/status`.
+    NetworkStatus {
+        request: NetworkStatus,
+        outcome: oneshot::Sender<<NetworkStatus as actix::Message>::Result>,
     },
     /// Announce blob availability to the DHT.
     AnnounceBlob {
@@ -237,6 +243,19 @@ pub struct MeshStats;
 
 impl actix::Message for MeshStats {
     type Result = Vec<(TopicHash, usize)>;
+}
+
+/// Request a snapshot of the local node's libp2p connectivity state —
+/// listen addresses, external addresses, relay reservations,
+/// rendezvous registrations, DCUtR upgrade outcomes per peer, and the
+/// most recent AutoNAT v2 probe result. Used by
+/// `GET /admin-api/network/status` and by integration tests that want
+/// typed assertions instead of grepping logs.
+#[derive(Clone, Copy, Debug)]
+pub struct NetworkStatus;
+
+impl actix::Message for NetworkStatus {
+    type Result = NetworkStatusSnapshot;
 }
 
 /// Request to open a direct stream to a peer.

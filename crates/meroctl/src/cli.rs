@@ -24,6 +24,7 @@ mod context;
 mod dev;
 mod group;
 mod namespace;
+mod network;
 mod node;
 mod peers;
 mod tee;
@@ -37,6 +38,7 @@ use context::ContextCommand;
 use dev::DevCommand;
 use group::GroupCommand;
 use namespace::NamespaceCommand;
+use network::NetworkCommand;
 use node::NodeCommand;
 use peers::PeersCommand;
 use tee::TeeCommand;
@@ -94,6 +96,7 @@ pub enum SubCommands {
     #[command(alias = "ns")]
     Namespace(NamespaceCommand),
     Call(CallCommand),
+    Network(NetworkCommand),
     Peers(PeersCommand),
     Tee(TeeCommand),
     #[command(subcommand)]
@@ -169,6 +172,7 @@ impl RootCommand {
             SubCommands::Group(group) => group.run(&mut environment).await,
             SubCommands::Namespace(ns) => ns.run(&mut environment).await,
             SubCommands::Call(call) => call.run(&mut environment).await,
+            SubCommands::Network(network) => network.run(&mut environment).await,
             SubCommands::Peers(peers) => peers.run(&mut environment).await,
             SubCommands::Tee(tee) => tee.run(&mut environment).await,
             SubCommands::Node(node) => {
