@@ -1294,7 +1294,20 @@ impl<S: StorageAdaptor> Interface<S> {
                         %id,
                         "Remote action produced no storage change (save_internal returned None)"
                     );
-                    // we didn't save anything, so we skip updating the ancestors
+                    // save_internal short-circuited because stored.updated_at >
+                    // incoming.updated_at: nothing changed locally, but the
+                    // apply still "happened" from the network's perspective —
+                    // we received and acknowledged this delta. Push
+                    // Action::Compare so this node's current Merkle state for
+                    // `id` ships in the next outbound delta and peers can
+                    // reconcile via state-based sync. Without this, two nodes
+                    // that concurrently merge the same entity (each holding
+                    // the locally-newer side) keep emitting deltas the other
+                    // drops, and the Merkle root divergence stalls until an
+                    // unrelated trigger forces a hash-comparison sweep.
+                    if S::participates_in_sync() {
+                        crate::delta::push_action(Action::Compare { id });
+                    }
                     return Ok(());
                 };
 
