@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_stream::stream;
 use calimero_context_config::types::GovernancePosition;
 use calimero_crypto::SharedKey;
-use calimero_network_primitives::client::NetworkClient;
+use calimero_network_primitives::client::{is_no_peers_subscribed_error, NetworkClient};
 use calimero_network_primitives::config::GOSSIPSUB_MESH_N_LOW;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::NodeEvent;
@@ -391,6 +391,19 @@ impl NodeClient {
     }
 
     /// Publish raw payload on the namespace topic `ns/<hex(namespace_id)>`.
+    ///
+    /// # Why this path keeps the mesh-peer wait (unlike `broadcast`)
+    ///
+    /// `broadcast` / `broadcast_heartbeat` dropped their `mesh_peer_count == 0`
+    /// gate and silence `PublishError::NoPeersSubscribedToTopic` because state
+    /// deltas have a sync-pull recovery path (HashComparison via heartbeats):
+    /// a drop into an empty topic is recoverable by the next pull. Governance
+    /// ops carry no such recovery — a `ContextRegistered` lost on cold start
+    /// cannot be re-derived by the receiver, only re-published. So the
+    /// publisher-side wait stays: we poll for at least one mesh peer up to
+    /// `MAX_WAIT` before publishing, log when we give up, and propagate any
+    /// publish error (including `NoPeersSubscribedToTopic`) so the caller can
+    /// decide whether to retry/re-announce.
     pub async fn publish_on_namespace(
         &self,
         namespace_id: [u8; 32],
@@ -436,6 +449,13 @@ impl NodeClient {
     /// Kept separate from [`publish_on_namespace`](Self::publish_on_namespace)
     /// so the up-front wait-then-publish semantics other callers rely on are
     /// untouched; this is the opt-in, per-cycle building block.
+    ///
+    /// Like [`publish_on_namespace`](Self::publish_on_namespace), this method
+    /// propagates `PublishError::NoPeersSubscribedToTopic` to the caller
+    /// rather than silencing it — that's the exact "publish into an empty
+    /// mesh" signal the re-announce loop needs to know it must keep trying.
+    /// State-delta paths (`broadcast` / `broadcast_heartbeat`) silence the
+    /// same error because they have sync-pull recovery; governance does not.
     pub async fn publish_on_namespace_now(
         &self,
         namespace_id: [u8; 32],
@@ -486,10 +506,6 @@ impl NodeClient {
             "Sending state delta"
         );
 
-        if self.get_peers_count(Some(&context.id)).await == 0 {
-            return Ok(());
-        }
-
         let shared_key = SharedKey::from_sk(sender_key);
         let nonce = rand::thread_rng().gen();
 
@@ -516,9 +532,28 @@ impl NodeClient {
 
         let topic = TopicHash::from_raw(context.id);
 
-        let _ignored = self.network_client.publish(topic, payload).await?;
-
-        Ok(())
+        // Previously this returned early when `mesh_peer_count == 0`,
+        // which silently dropped state deltas during the cold-start
+        // window where peers are subscribed-but-not-yet-mesh. With
+        // `flood_publish(true)` (#2352), gossipsub itself decides
+        // reachability, so the application-level gate was both wrong
+        // (missed flood-eligible peers) and silent (no logs). Attempt
+        // the publish unconditionally and let gossipsub report the
+        // actual outcome; convert the one cold-start error variant
+        // to a debug log because the receiver's sync-pull path
+        // (HashComparison via heartbeats) recovers any drop.
+        match self.network_client.publish(topic, payload).await {
+            Ok(_) => Ok(()),
+            Err(err) if is_no_peers_subscribed_error(&err) => {
+                debug!(
+                    context_id = %context.id,
+                    delta_id = ?delta_id,
+                    "no peers subscribed to context topic, state delta dropped (sync-pull will recover)"
+                );
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn broadcast_heartbeat(
@@ -527,10 +562,6 @@ impl NodeClient {
         root_hash: calimero_primitives::hash::Hash,
         dag_heads: Vec<[u8; 32]>,
     ) -> eyre::Result<()> {
-        if self.get_peers_count(Some(context_id)).await == 0 {
-            return Ok(());
-        }
-
         let payload = BroadcastMessage::HashHeartbeat {
             context_id: *context_id,
             root_hash,
@@ -540,9 +571,21 @@ impl NodeClient {
         let payload = borsh::to_vec(&payload)?;
         let topic = TopicHash::from_raw(*context_id);
 
-        let _ignored = self.network_client.publish(topic, payload).await?;
-
-        Ok(())
+        // See `broadcast`: drop the application-level zero-peers gate so
+        // gossipsub's `flood_publish` decides reachability, and silence
+        // the cold-start `NoPeersSubscribed` variant — the next
+        // heartbeat tick (~5 s) carries fresh state regardless.
+        match self.network_client.publish(topic, payload).await {
+            Ok(_) => Ok(()),
+            Err(err) if is_no_peers_subscribed_error(&err) => {
+                debug!(
+                    %context_id,
+                    "no peers subscribed to context topic, heartbeat dropped (next tick will carry fresh state)"
+                );
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Mesh peer count for the namespace topic `ns/<hex>` — used by callers
