@@ -96,10 +96,38 @@ jobs:
           RUST_LOG: debug
         run: |
           mkdir -p restart-snapshots
+          # Background route-watcher: every 2s, dump
+          # `ip route show` from inside node-1's netns. We
+          # want to see the route table BEFORE the restart and
+          # AFTER, in particular whether the default route
+          # injected by merobox's NAT topology setup
+          # (`ip route replace default via <gateway-IP>`)
+          # survives `docker restart`.
+          (
+            for i in $(seq 1 120); do
+              ts=$(date -u +%H:%M:%S)
+              cid=$(docker ps --filter "name=^sync-resil-node-1$" --format "{{.ID}}" 2>/dev/null | head -1)
+              if [ -n "$cid" ]; then
+                echo "=== $ts cid=$cid ip route show inside sync-resil-node-1 netns ==="
+                # Run a one-shot sidecar in the client's netns
+                # (the client image might not have `ip` — use
+                # alpine + apk like merobox does).
+                docker run --rm --network "container:$cid" \
+                  alpine:3.19 sh -c "apk add --quiet --no-cache iproute2 >/dev/null 2>&1; ip route show; echo '--- ip addr ---'; ip -4 addr" 2>&1 | head -25
+              fi
+              sleep 2
+            done
+          ) > /tmp/route-watch.log 2>&1 &
+          ROUTE_WATCHER=$!
+
           merobox bootstrap run /tmp/repro/minimal-restart.yml \
             --image ghcr.io/calimero-network/merod:edge \
             --e2e-mode \
             || echo "(merobox exited non-zero — expected if stop_all_nodes raced)"
+
+          kill $ROUTE_WATCHER 2>/dev/null || true
+          wait 2>/dev/null || true
+          cp /tmp/route-watch.log . || true
 
       - name: Collect graceful-stop container logs
         if: always()
@@ -121,6 +149,23 @@ jobs:
           echo ""
           echo "=== final-logs/ contents ==="
           ls -la final-logs/ 2>&1 || echo "(empty)"
+
+      - name: Show route-watcher timeline (key diagnostic)
+        if: always()
+        run: |
+          # The whole point of v6: see whether the default
+          # route inside node-1's netns survives `docker
+          # restart`. Pre-restart entries should show
+          # `default via <gateway-IP>`. If post-restart
+          # entries show a different gateway (Docker's
+          # default bridge) or no default route, that's the
+          # bug.
+          if [ -f /tmp/route-watch.log ]; then
+            echo "=== Full route-watcher timeline ==="
+            cat /tmp/route-watch.log | head -200
+          else
+            echo "(no route-watch.log found)"
+          fi
 
       - name: Analyze post-restart node-1 connectivity
         if: always()
