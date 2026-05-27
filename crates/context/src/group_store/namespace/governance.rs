@@ -167,6 +167,31 @@ impl<'a> NamespaceGovernance<'a> {
     /// semantics as the existing v1/v2 deployment. The bypass closes once
     /// every signer has rolled forward and stopped emitting zero hashes;
     /// no schema bump needed.
+    ///
+    /// **Known limitation:** there is no runtime enforcement that a
+    /// signer post-upgrade cannot emit `[0u8; 32]` to skip the check.
+    /// Defending against that case is not the purpose of this guard —
+    /// signature verification and the per-op authorization checks
+    /// (`require_namespace_admin`, capability checks, membership
+    /// recompute on the receiver) remain in force regardless of the
+    /// hash value. The staleness guard is a convergence aid for
+    /// concurrent-signer races between *honest* signers, not a
+    /// defence against adversarial signers — those are caught at the
+    /// authorization layer.
+    ///
+    /// # TOCTOU window between sign and apply
+    ///
+    /// Callers compute this hash, then sign, then apply locally and
+    /// publish. Between the compute call and the local apply, another
+    /// op could land — but every governance signer in the codebase
+    /// runs through the same actor mailbox (the `NodeManager` actor for
+    /// node-issued ops, or a single per-namespace driver for receiver
+    /// paths), which serializes applies for a given namespace.
+    /// `read_head_record` + this hash compute + local apply therefore
+    /// run atomically with respect to other governance applies on the
+    /// same node. The window only matters for divergence *across* nodes,
+    /// which is exactly what the staleness check on the receive side is
+    /// for.
     fn state_hash_for_op(&self, op: &NamespaceOp) -> EyreResult<[u8; 32]> {
         let target_gid = match op {
             NamespaceOp::Group { group_id, .. } => ContextGroupId::from(*group_id),
@@ -676,6 +701,14 @@ impl<'a> NamespaceGovernance<'a> {
         assert_transport_ready(mesh, known, node_client.gossipsub_mesh_n_low())
             .map_err(|e| eyre::eyre!(e))?;
 
+        // No-local-apply path: nothing has mutated state on this node yet,
+        // so the current `state_hash_for_op` value IS the pre-apply view
+        // every receiver will compare against. Capture it here (rather
+        // than inside `publish_post_gate`) so the call shape stays uniform
+        // with the apply-first path below, which must capture before its
+        // local mutation runs.
+        let state_hash = self.state_hash_for_op(&op)?;
+
         // Quorum / no-local-apply path: a publish that never reaches a
         // quorum is a genuine failure — nothing was applied locally to
         // fall back on. `best_effort = false` keeps the hard error.
@@ -684,6 +717,7 @@ impl<'a> NamespaceGovernance<'a> {
             ack_router,
             signer_sk,
             op,
+            state_hash,
             topic,
             mesh,
             known,
@@ -701,12 +735,21 @@ impl<'a> NamespaceGovernance<'a> {
     /// passes `best_effort = true`: it has no gate of its own (the local
     /// apply is unconditional), so a publish failure here is non-fatal and
     /// the op propagates via sync rather than diverging on a retry.
+    ///
+    /// `state_hash` MUST be the receiver-equivalent pre-apply hash —
+    /// i.e. computed BEFORE the caller ran
+    /// `sign_apply_local_group_op_borsh`. The apply-first path computes
+    /// the hash inside its own scope (where the pre-apply state is still
+    /// visible) and passes it in here. Recomputing inside this function
+    /// would shift the hash forward and every member-mutating op would
+    /// permanently bail on the receiver's staleness check.
     pub(crate) async fn sign_and_publish_post_gate(
         &self,
         node_client: &calimero_node_primitives::client::NodeClient,
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
+        state_hash: [u8; 32],
         mesh: usize,
         known: usize,
         best_effort: bool,
@@ -717,6 +760,7 @@ impl<'a> NamespaceGovernance<'a> {
             ack_router,
             signer_sk,
             op,
+            state_hash,
             topic,
             mesh,
             known,
@@ -731,6 +775,10 @@ impl<'a> NamespaceGovernance<'a> {
     /// to feed the metric; the subscriber count is re-sampled at publish
     /// time (see below) so transient peer departures don't skew `min_acks`.
     ///
+    /// `state_hash` must be the pre-apply hash captured by the caller
+    /// before any local mutation. See `sign_and_publish_post_gate`'s doc
+    /// for the constraint and why we no longer recompute here.
+    ///
     /// `best_effort` selects the failure mode of the publish:
     /// * `false` (quorum / no-local-apply path) — a publish that gathers
     ///   no acks is a genuine `Err`; nothing was applied locally.
@@ -743,6 +791,7 @@ impl<'a> NamespaceGovernance<'a> {
         ack_router: &AckRouter,
         signer_sk: &PrivateKey,
         op: NamespaceOp,
+        state_hash: [u8; 32],
         topic: TopicHash,
         mesh: usize,
         known_at_gate: usize,
@@ -753,7 +802,6 @@ impl<'a> NamespaceGovernance<'a> {
         let observe_mesh = !matches!(op, NamespaceOp::Group { .. });
         let op_kind = op.op_kind_label();
         let op_timeout = timeout_for_namespace_op(&op);
-        let state_hash = self.state_hash_for_op(&op)?;
         let signed = SignedNamespaceOp::sign(
             signer_sk,
             self.namespace_id,
@@ -1363,17 +1411,30 @@ impl<'a> NamespaceGovernance<'a> {
         // capability checks in the executor arms below).
         if root_op_commits_to_namespace_state(root) && op.state_hash != [0u8; 32] {
             let ns_gid = ContextGroupId::from(self.namespace_id);
-            let current = MetaRepository::new(self.store).compute_state_hash(&ns_gid)?;
-            if op.state_hash != current {
-                tracing::warn!(
-                    namespace_id = %hex::encode(self.namespace_id),
-                    expected = %hex::encode(op.state_hash),
-                    actual = %hex::encode(current),
-                    nonce = op.nonce,
-                    signer = %op.signer,
-                    "namespace root op state_hash mismatch (signed against stale state; \
-                     applying anyway — see PR #2500 caveat)"
-                );
+            let repo = MetaRepository::new(self.store);
+            // Mirror the sign-side bypass: if the namespace meta row
+            // hasn't been seeded yet (cold-start, bootstrap, joiner
+            // catching up via backfill), there is no state to hash. The
+            // sign side falls through to `[0u8; 32]` for the same case,
+            // but a non-zero claim can still reach a node whose meta is
+            // not yet present (e.g. a peer that signed after their
+            // bootstrap finished but the joiner receives the op before
+            // applying the namespace genesis ops). Treat as a bypass —
+            // there is no honest claim we can refute. Authorization
+            // and signature verification remain in force.
+            if let Some(_meta) = repo.load(&ns_gid)? {
+                let current = repo.compute_state_hash(&ns_gid)?;
+                if op.state_hash != current {
+                    tracing::warn!(
+                        namespace_id = %hex::encode(self.namespace_id),
+                        expected = %hex::encode(op.state_hash),
+                        actual = %hex::encode(current),
+                        nonce = op.nonce,
+                        signer = %op.signer,
+                        "namespace root op state_hash mismatch (signed against stale state; \
+                         applying anyway — see PR #2500 caveat)"
+                    );
+                }
             }
         }
 
