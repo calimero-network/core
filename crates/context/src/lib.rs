@@ -43,14 +43,50 @@ mod lifecycle;
 // new crate and not re-exported.
 pub mod group_store {
     pub use calimero_governance_store::{
-        apply_local_signed_group_op, apply_signed_namespace_op, enumerate_group_contexts,
-        get_group_for_context, get_local_gov_nonce, get_op_head,
-        is_currently_authorized_for_context, membership_status_at, now_millis, read_op_log_after,
-        read_tee_admission_policy, register_context_in_group, sign_and_publish_namespace_op,
-        sign_apply_and_publish, sign_apply_and_publish_namespace_op, CapabilitiesRepository,
-        DenyListRepository, GroupKeyring, MembershipPath, MembershipRepository, MembershipStatus,
-        MetaRepository, MetadataRepository, NamespaceDagService, NamespaceGovernance,
-        NamespaceRepository, SigningKeysRepository, UpgradesRepository,
+        apply_local_signed_group_op,
+        apply_signed_namespace_op,
+        enumerate_group_contexts,
+        get_group_for_context,
+        get_local_gov_nonce,
+        get_op_head,
+        is_currently_authorized_for_context,
+        membership_status_at,
+        now_millis,
+        read_op_log_after,
+        read_tee_admission_policy,
+        register_context_in_group,
+        sign_and_publish_namespace_op,
+        sign_apply_and_publish,
+        sign_apply_and_publish_namespace_op,
+        // Typed errors (#2305). Bundled because external callers that
+        // downcast on `eyre::Report` need access to the error types; only
+        // adding the ones currently imported would surface the same
+        // missing-import error every time a new caller wants to match.
+        ApplyError,
+        CapabilitiesError,
+        // Repositories
+        CapabilitiesRepository,
+        ContextRegistrationError,
+        DenyListRepository,
+        GroupCreatedRejection,
+        GroupDeletedRejection,
+        GroupKeyring,
+        KeyringError,
+        MemberJoinedOpenRejection,
+        MembershipError,
+        MembershipPath,
+        MembershipRepository,
+        MembershipStatus,
+        MetaError,
+        MetaRepository,
+        MetadataRepository,
+        NamespaceDagService,
+        NamespaceError,
+        NamespaceGovernance,
+        NamespaceRepository,
+        SigningKeysError,
+        SigningKeysRepository,
+        UpgradesRepository,
     };
 }
 

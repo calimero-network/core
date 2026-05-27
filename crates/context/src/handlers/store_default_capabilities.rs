@@ -2,7 +2,7 @@ use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::StoreDefaultCapabilitiesRequest;
 use calimero_governance_store::CapabilitiesRepository;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<StoreDefaultCapabilitiesRequest> for ContextManager {
     type Result = ActorResponse<Self, <StoreDefaultCapabilitiesRequest as Message>::Result>;

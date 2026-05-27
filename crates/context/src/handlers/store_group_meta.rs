@@ -6,7 +6,7 @@ use calimero_primitives::context::GroupMemberRole;
 use calimero_store::key::GroupMetaValue;
 use tracing::{info, warn};
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<StoreGroupMetaRequest> for ContextManager {
     type Result = ActorResponse<Self, <StoreGroupMetaRequest as Message>::Result>;

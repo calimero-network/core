@@ -16,7 +16,7 @@ use eyre::bail;
 
 use calimero_primitives::identity::PrivateKey;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<DeleteContextRequest> for ContextManager {

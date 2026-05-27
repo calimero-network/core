@@ -1,7 +1,7 @@
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::StoreGroupContextRequest;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<StoreGroupContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <StoreGroupContextRequest as Message>::Result>;

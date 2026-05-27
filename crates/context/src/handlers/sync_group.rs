@@ -3,7 +3,7 @@ use calimero_context_client::group::{SyncGroupRequest, SyncGroupResponse};
 use calimero_governance_store::{MembershipRepository, MetaRepository, MetadataRepository};
 use tracing::{info, warn};
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<SyncGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <SyncGroupRequest as Message>::Result>;

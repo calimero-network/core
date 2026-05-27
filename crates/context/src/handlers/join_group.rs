@@ -16,7 +16,7 @@ use calimero_store::key;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 use calimero_governance_store::op_events::subscribe as subscribe_op_events;
 use calimero_governance_store::op_events::OpEvent;
 

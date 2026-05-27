@@ -15,7 +15,7 @@ use calimero_store::key::{self, GroupUpgradeStatus, GroupUpgradeValue};
 use eyre::bail;
 use tracing::{debug, error, info, warn};
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<UpgradeGroupRequest> for ContextManager {

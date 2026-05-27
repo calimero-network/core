@@ -11,7 +11,7 @@ use calimero_context_client::local_governance::{KeyEnvelope, NamespaceOp, RootOp
 use calimero_primitives::identity::PrivateKey;
 use tracing::{info, warn};
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<JoinSubgroupInheritanceRequest> for ContextManager {
     type Result = ActorResponse<Self, <JoinSubgroupInheritanceRequest as Message>::Result>;

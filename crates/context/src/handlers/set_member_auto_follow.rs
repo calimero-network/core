@@ -5,7 +5,7 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::SetMemberAutoFollowRequest;
 use calimero_context_client::local_governance::GroupOp;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<SetMemberAutoFollowRequest> for ContextManager {

@@ -22,12 +22,12 @@ pub struct ExecutionLabels {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct NamespaceRetryLabels {
-    pub status: String,
+    pub(crate) status: String,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub(crate) struct NamespaceDecodeLabels {
-    pub status: String,
+    pub(crate) status: String,
     pub(crate) kind: String,
 }
 

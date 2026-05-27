@@ -3,7 +3,7 @@ use calimero_context_client::group::StoreSubgroupVisibilityRequest;
 use calimero_context_config::VisibilityMode;
 use calimero_governance_store::CapabilitiesRepository;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<StoreSubgroupVisibilityRequest> for ContextManager {
     type Result = ActorResponse<Self, <StoreSubgroupVisibilityRequest as Message>::Result>;

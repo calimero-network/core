@@ -9,7 +9,6 @@ use eyre::bail;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
-use calimero_governance_store as group_store;
 use calimero_governance_store::registration_notify;
 
 use crate::ContextManager;

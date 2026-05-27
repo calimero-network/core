@@ -6,7 +6,7 @@ use calimero_context_client::group::SetSubgroupVisibilityRequest;
 use calimero_context_client::local_governance::GroupOp;
 use tracing::warn;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<SetSubgroupVisibilityRequest> for ContextManager {

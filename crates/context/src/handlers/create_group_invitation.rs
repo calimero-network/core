@@ -11,7 +11,7 @@ use calimero_primitives::identity::PrivateKey;
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<CreateGroupInvitationRequest> for ContextManager {
     type Result = ActorResponse<Self, <CreateGroupInvitationRequest as Message>::Result>;

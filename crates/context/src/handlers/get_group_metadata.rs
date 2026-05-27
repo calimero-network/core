@@ -2,7 +2,7 @@ use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::GetGroupMetadataRequest;
 use calimero_governance_store::MetadataRepository;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<GetGroupMetadataRequest> for ContextManager {
     type Result = ActorResponse<Self, <GetGroupMetadataRequest as Message>::Result>;

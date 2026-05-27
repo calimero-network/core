@@ -26,7 +26,7 @@ use tracing::{debug, error, warn};
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
 use crate::handlers::execute::{persist_signed_signatures, sign_authorized_actions};
-use crate::{group_store, ContextManager, ContextMeta};
+use crate::{ContextManager, ContextMeta};
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<CreateContextRequest> for ContextManager {
