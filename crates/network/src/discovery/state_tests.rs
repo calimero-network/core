@@ -604,6 +604,21 @@ fn test_multiple_listeners_map_to_distinct_relays() {
     assert_eq!(state.take_relay_listener(&listener_b), Some(relay_b));
 }
 
+/// Spin until the monotonic clock has strictly advanced past `prior`,
+/// bounded by a generous 100ms ceiling. Replaces `thread::sleep(2ms)`,
+/// which was flaky on slow CI where the kernel scheduler doesn't wake
+/// within the requested window and on Windows where `Instant`
+/// resolution is coarser than 1ms.
+fn wait_past(prior: std::time::Instant) {
+    let deadline = prior + std::time::Duration::from_millis(100);
+    while std::time::Instant::now() <= prior {
+        if std::time::Instant::now() > deadline {
+            panic!("clock failed to advance within 100ms — broken Instant");
+        }
+        std::hint::spin_loop();
+    }
+}
+
 #[test]
 fn record_dcutr_outcome_replaces_prior_observation() {
     let mut state = DiscoveryState::default();
@@ -623,7 +638,7 @@ fn record_dcutr_outcome_replaces_prior_observation() {
     assert!(matches!(first.status(), DcutrUpgradeStatus::Failed { .. }));
 
     // A subsequent success must overwrite the failure and bump the timestamp.
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    wait_past(first_at);
     state.record_dcutr_outcome(
         peer,
         DcutrUpgradeStatus::Succeeded {
@@ -658,7 +673,7 @@ fn record_autonat_test_keeps_only_the_freshest_probe() {
     );
     let first_at = state.last_autonat_test().expect("recorded").at;
 
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    wait_past(first_at);
     state.record_autonat_test(
         addr_two.clone(),
         AutonatTestResult::Reachable {
@@ -684,7 +699,7 @@ fn relay_reservation_status_change_bumps_last_state_change() {
         .map(|r| r.last_state_change())
         .expect("relay info initialized");
 
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    wait_past(baseline);
     state.update_relay_reservation_status(&relay, RelayReservationStatus::Accepted);
 
     let after = state
