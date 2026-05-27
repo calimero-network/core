@@ -1,15 +1,22 @@
-# Throwaway diagnostic workflow for the #2469 keypair-persistence
-# question. Run manually via `gh workflow run keypair-repro.yml` or
-# the Actions UI. Verdict line is at the bottom of the job log.
-# Delete this file once the question is answered (it's not part of
-# the e2e matrix).
+# Throwaway diagnostic workflow for #2469. ITERATION 2:
+#
+# Iteration 1 (run 26535918008) proved keypair persists across
+# `docker restart` for a single merod container — same peer-id
+# read from config.toml on disk both pre- and post-restart. So
+# the bug is NOT keypair-persistence.
+#
+# Iteration 2: spin up the actual NAT topology (boot-node + 2
+# client nodes + gateway) via merobox, restart node-1, then
+# DUMP EVERYTHING — pre-restart node-1, post-restart node-1,
+# boot-node, surviving node-2. We're looking for: does
+# post-restart node-1 successfully reconnect to boot-node?
+# Does it re-register with rendezvous? Earlier evidence said
+# node-2's rendezvous queries return empty for 60+ seconds
+# post-restart, but we never had node-1's own logs to see why.
+#
+# Delete this file once the question is answered.
 name: keypair-repro
 on:
-  # workflow_dispatch needs the file on the default branch to be
-  # invocable via the API. Adding the `push` trigger scoped to
-  # this throwaway branch + this file's path so we can iterate
-  # without first landing on master. Delete both this trigger
-  # and the file once the question is answered.
   workflow_dispatch:
   push:
     branches:
@@ -18,131 +25,147 @@ on:
       - .github/workflows/keypair-repro.yml
 
 jobs:
-  repro:
+  topology-repro:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Pull merod
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install merobox via APT
+        run: |
+          curl -sSL https://calimero-network.github.io/merobox/gpg.key \
+            | sudo tee /usr/share/keyrings/merobox.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/merobox.gpg] https://calimero-network.github.io/merobox stable main" \
+            | sudo tee /etc/apt/sources.list.d/merobox.list
+          sudo apt-get update -o Acquire::https::Timeout=20
+          sudo apt-get install -y merobox
+          merobox --version
+
+      - name: Pull merod image
         run: docker pull ghcr.io/calimero-network/merod:edge
 
-      - name: Reproduce keypair-persistence test
+      - name: Pull boot-node image
+        run: docker pull ghcr.io/calimero-network/boot-node:edge
+
+      - name: Run peer-restart workflow with merobox
+        # Catch the failure but keep going so we can dump logs.
+        # The whole point of this workflow is to capture the
+        # diagnostic data, not to make the merobox run succeed.
+        continue-on-error: true
+        env:
+          # Snapshot pre/post-restart logs to a known dir we'll
+          # archive. merobox 0.6.24 honors this env var (see
+          # merobox/commands/bootstrap/steps/restart.py).
+          MEROBOX_RESTART_LOG_DIR: ${{ github.workspace }}/restart-snapshots
+          RUST_LOG: debug
         run: |
-          set -e
-          DATA_DIR="$RUNNER_TEMP/repro-keypair-data"
-          CONTAINER="repro-keypair-merod"
-          IMAGE="ghcr.io/calimero-network/merod:edge"
+          set -eu
+          mkdir -p restart-snapshots docker-logs
+          cd apps/scaffolding-e2e
 
-          # The merod image runs as UID 10001. World-writable dir
-          # sidesteps the host-vs-container UID mismatch without
-          # needing chown (which would need sudo on macOS but is
-          # fine on the GH runner).
-          rm -rf "$DATA_DIR"
-          mkdir -p "$DATA_DIR"
-          chmod 0777 "$DATA_DIR"
+          # Background watcher: stream `docker logs -f` for every
+          # calimero node container to a file. Captures the
+          # surviving node-2's logs in real-time AND the boot-
+          # node's logs. The pre/post-restart node-1 logs land
+          # in restart-snapshots/ via merobox 0.6.24.
+          LOGDIR="$GITHUB_WORKSPACE/docker-logs"
+          mkdir -p "$LOGDIR"
+          STOP_FILE="$(mktemp)"
+          (
+            seen=""
+            while [ ! -f "$STOP_FILE" ]; do
+              for c in $(docker ps --filter "label=calimero.node=true" --format "{{.Names}}" 2>/dev/null | grep -v -- '-init$' || true); do
+                if ! echo "$seen" | grep -qw "$c"; then
+                  seen="$seen $c"
+                  echo "[watcher] following $c"
+                  docker logs -f "$c" > "$LOGDIR/$c.log" 2>&1 &
+                fi
+              done
+              # Also follow the boot-node (different label).
+              for c in $(docker ps --format "{{.Names}}" 2>/dev/null | grep "boot-node" || true); do
+                if ! echo "$seen" | grep -qw "$c"; then
+                  seen="$seen $c"
+                  echo "[watcher] following $c"
+                  docker logs -f "$c" > "$LOGDIR/$c.log" 2>&1 &
+                fi
+              done
+              sleep 1
+            done
+          ) &
+          WATCHER=$!
 
-          echo "=== Step 1: merod init ==="
-          docker run --rm \
-            -v "$DATA_DIR:/app/data" \
-            --entrypoint=merod \
-            "$IMAGE" \
-            --home /app/data --node test init \
-            --server-host 0.0.0.0 --server-port 2528 --swarm-port 2428
+          # Run merobox; ignore exit (we know it'll fail).
+          merobox bootstrap run workflows/sync-resilience-peer-restart.yml \
+            --image ghcr.io/calimero-network/merod:edge \
+            --e2e-mode \
+            || true
 
-          CONFIG_PEER_ID=$(grep '^peer_id' "$DATA_DIR/test/config.toml" | awk -F\" '{print $2}')
-          echo "ON-DISK peer_id: $CONFIG_PEER_ID"
+          touch "$STOP_FILE"
+          sleep 2
+          kill $WATCHER 2>/dev/null || true
+          # Reap any leftover docker-logs -f children.
+          for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
 
-          echo "=== Step 2: start merod, capture pre-restart runtime peer_id ==="
-          # RUST_LOG=debug elevates `libp2p_swarm` to emit
-          # `local_peer_id=...` at startup. Without it, libp2p
-          # is silent at INFO and we have to scrape the peer
-          # id from AutoNAT or subscription handler logs — both
-          # are slower-arriving and less reliable as a signal.
-          docker run -d --name "$CONTAINER" \
-            -v "$DATA_DIR:/app/data" \
-            -e RUST_LOG=debug \
-            --entrypoint=merod \
-            "$IMAGE" \
-            --home /app/data --node test run
+      - name: Analyze post-restart node-1 connectivity
+        if: always()
+        run: |
+          set -eu
+          echo "==================================================="
+          echo "Snapshot files (pre/post-restart node-1 logs):"
+          echo "==================================================="
+          ls -la "$GITHUB_WORKSPACE/restart-snapshots" 2>&1 || echo "no snapshots"
 
-          # The peer-id surfaces in two log lines:
-          #   * `INFO calimero_node::run: Peer ID: 12D3KooW...`
-          #     — emitted very early by cli::run, INFO level so
-          #     it appears regardless of RUST_LOG.
-          #   * `INFO libp2p_swarm: local_peer_id=12D3KooW...`
-          #     — emitted by libp2p, depends on RUST_LOG.
-          # Match on the cli::run line for robustness.
-          PRE_RESTART_PEER=""
-          for i in $(seq 1 30); do
-            PRE_RESTART_PEER=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'Peer ID: [A-Za-z0-9]+' | head -1 | awk '{print $3}')
-            [ -n "$PRE_RESTART_PEER" ] && break
-            sleep 1
-          done
+          echo ""
+          echo "==================================================="
+          echo "Watcher captures (boot-node + nodes, live streams):"
+          echo "==================================================="
+          ls -la "$GITHUB_WORKSPACE/docker-logs" 2>&1 || echo "no docker-logs"
 
-          if [ -z "$PRE_RESTART_PEER" ]; then
-            echo "✗ Pre-restart Peer ID never appeared"
-            docker logs "$CONTAINER" 2>&1 | tail -50
-            exit 1
-          fi
-          echo "PRE-RESTART runtime peer_id: $PRE_RESTART_PEER"
+          PRE=$(ls "$GITHUB_WORKSPACE/restart-snapshots"/*pre-restart*.log 2>/dev/null | head -1 || true)
+          POST=$(ls "$GITHUB_WORKSPACE/restart-snapshots"/*post-restart*.log 2>/dev/null | head -1 || true)
 
-          echo "=== Step 3: docker restart, capture post-restart runtime peer_id ==="
-          docker restart "$CONTAINER"
-
-          # Same grep pattern as pre-restart (`Peer ID: ...`).
-          # We need the SECOND occurrence — the first is the
-          # pre-restart container's startup, the second is the
-          # post-restart container's startup (docker logs
-          # returns the accumulated stream).
-          POST_RESTART_PEER=""
-          for i in $(seq 1 30); do
-            HITS=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'Peer ID: [A-Za-z0-9]+' | wc -l)
-            if [ "$HITS" -ge 2 ]; then
-              POST_RESTART_PEER=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'Peer ID: [A-Za-z0-9]+' | sed -n 2p | awk '{print $3}')
-              break
+          if [ -n "$PRE" ] && [ -n "$POST" ]; then
+            PRE_PEER=$(grep -oE 'Peer ID: [A-Za-z0-9]+' "$PRE" | head -1 | awk '{print $3}')
+            POST_PEER=$(grep -oE 'Peer ID: [A-Za-z0-9]+' "$POST" | head -1 | awk '{print $3}')
+            echo ""
+            echo "PRE-restart node-1 peer-id:  $PRE_PEER"
+            echo "POST-restart node-1 peer-id: $POST_PEER"
+            if [ "$PRE_PEER" = "$POST_PEER" ]; then
+              echo "✓ Keypair persists (expected per repro v2)."
+            else
+              echo "✗ Keypair changed across restart!"
             fi
-            sleep 1
-          done
 
-          if [ -z "$POST_RESTART_PEER" ]; then
-            echo "✗ Post-restart Peer ID never appeared (only $HITS occurrences)"
-            docker logs "$CONTAINER" 2>&1 | tail -80
-            exit 1
-          fi
-          echo "POST-RESTART runtime peer_id: $POST_RESTART_PEER"
+            echo ""
+            echo "=== POST-restart node-1: boot-node connection attempts ==="
+            grep -E "boot-node|Identify|Dialing|ConnectionEstablished|ConnectionClosed|Failed to dial|Establish connection" "$POST" | head -30 || echo "(no matches)"
 
-          echo ""
-          echo "============================================"
-          echo "=== VERDICT ==="
-          echo "============================================"
-          echo "on-disk (config.toml): $CONFIG_PEER_ID"
-          echo "pre-restart  (libp2p): $PRE_RESTART_PEER"
-          echo "post-restart (libp2p): $POST_RESTART_PEER"
-          echo ""
+            echo ""
+            echo "=== POST-restart node-1: rendezvous events ==="
+            grep -iE "rendezvous|register|register req|registration" "$POST" | head -20 || echo "(no matches)"
 
-          if [ "$CONFIG_PEER_ID" = "$PRE_RESTART_PEER" ] && [ "$PRE_RESTART_PEER" = "$POST_RESTART_PEER" ]; then
-            echo "✓ ALL THREE MATCH — keypair persists across restart."
-            echo "  The bug is NOT keypair-persistence. The post-restart"
-            echo "  container reads the same keypair from disk that init"
-            echo "  wrote. Look elsewhere: rendezvous re-register failing,"
-            echo "  or relay-reservation re-acquisition not happening."
-          elif [ "$PRE_RESTART_PEER" != "$POST_RESTART_PEER" ]; then
-            echo "✗ PRE-RESTART vs POST-RESTART DIFFER — keypair regenerates."
-            echo "  This IS the keypair-persistence bug. merod is generating"
-            echo "  a new keypair on the post-restart run despite the"
-            echo "  config.toml on disk having a valid identity section."
+            echo ""
+            echo "=== POST-restart node-1: relay-reservation events ==="
+            grep -iE "relay|reservation|circuit|hop" "$POST" | head -30 || echo "(no matches)"
+
+            echo ""
+            echo "=== POST-restart node-1: error / warn lines ==="
+            grep -iE "ERROR|WARN" "$POST" | head -30 || echo "(no matches)"
           else
-            echo "? Mismatch shape doesn't fit either hypothesis cleanly."
-            echo "  Inspect manually."
+            echo ""
+            echo "✗ Missing snapshots — pre=$PRE post=$POST"
+            echo "Check whether merobox got to the restart_container step."
           fi
 
-      - name: Dump final container logs (for forensic inspection)
+      - name: Upload all logs
         if: always()
-        run: |
-          echo "=== Last 200 lines of merod container logs (both incarnations) ==="
-          docker logs repro-keypair-merod 2>&1 | tail -200 || true
-
-      - name: Dump on-disk config (peer_id + keypair only)
-        if: always()
-        run: |
-          echo "=== config.toml [identity] section ==="
-          grep -E '^peer_id|^keypair' "$RUNNER_TEMP/repro-keypair-data/test/config.toml" 2>&1 || true
+        uses: actions/upload-artifact@v4
+        with:
+          name: keypair-repro-topology-${{ github.sha }}
+          path: |
+            ${{ github.workspace }}/restart-snapshots/
+            ${{ github.workspace }}/docker-logs/
+          retention-days: 7
+          if-no-files-found: warn
