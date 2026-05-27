@@ -19,7 +19,9 @@
 //! Collapsing these into `Option<GroupMemberRole>` (as the legacy
 //! `get_member_role` API does) makes "forgot to check" a silent runtime bug;
 //! [`MembershipStatus`] makes it a non-exhaustive-match warning.
-use crate::group_store::{GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository};
+use crate::group_store::{
+    ApplyError, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+};
 use std::collections::{HashSet, VecDeque};
 
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp, SignedNamespaceOp};
@@ -135,12 +137,7 @@ pub fn membership_status_at(
     // Cheap guard against malformed / attacker-crafted positions before
     // we do any store work. See [`MAX_GOVERNANCE_DAG_HEADS`].
     if position.governance_dag_heads.len() > MAX_GOVERNANCE_DAG_HEADS {
-        eyre::bail!(
-            "membership_status_at: governance_dag_heads length {} exceeds \
-             MAX_GOVERNANCE_DAG_HEADS={} (likely malformed or attacker-crafted)",
-            position.governance_dag_heads.len(),
-            MAX_GOVERNANCE_DAG_HEADS,
-        );
+        eyre::bail!(ApplyError::DagHeadsExceeded);
     }
 
     let group_id = position.group_id;
@@ -211,14 +208,10 @@ pub fn membership_status_at(
         // can't detect on its own.
         let local_state_hash = MetaRepository::new(store).compute_state_hash(&group_id)?;
         if local_state_hash != position.group_state_hash {
-            eyre::bail!(
-                "membership_status_at: group_state_hash mismatch — \
-                 heads match but state hashes differ \
-                 (group={:?}, position_hash={}, local_hash={})",
-                group_id,
-                hex::encode(position.group_state_hash),
-                hex::encode(local_state_hash),
-            );
+            eyre::bail!(ApplyError::StateHashMismatch {
+                expected: hex::encode(position.group_state_hash),
+                actual: hex::encode(local_state_hash),
+            });
         }
         // Direct membership (GroupMember row at the named group) — the
         // common case for Restricted subgroups and for explicit-add flows.

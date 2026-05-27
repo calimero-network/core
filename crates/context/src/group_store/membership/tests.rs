@@ -1403,10 +1403,12 @@ fn membership_status_at_branch1_state_hash_mismatch_bails() {
     let position = GovernancePosition::new(gid, [0xFF; 32], vec![]).unwrap();
 
     let err = membership_status_at(&store, &signer, &position).unwrap_err();
-    let msg = format!("{err}");
     assert!(
-        msg.contains("group_state_hash mismatch"),
-        "expected hash-mismatch error, got: {msg}"
+        matches!(
+            err.downcast_ref::<ApplyError>(),
+            Some(ApplyError::StateHashMismatch { .. })
+        ),
+        "expected hash-mismatch error, got: {err}"
     );
 }
 
@@ -1536,7 +1538,10 @@ fn membership_status_at_oversized_governance_dag_heads_runtime_guard() {
 
     let err = membership_status_at(&store, &signer, &position).unwrap_err();
     assert!(
-        format!("{err}").contains("MAX_GOVERNANCE_DAG_HEADS"),
+        matches!(
+            err.downcast_ref::<ApplyError>(),
+            Some(ApplyError::DagHeadsExceeded)
+        ),
         "expected oversize error, got: {err}"
     );
 }

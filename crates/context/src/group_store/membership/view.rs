@@ -1,4 +1,4 @@
-use crate::group_store::MembershipRepository;
+use crate::group_store::{MembershipError, MembershipRepository};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::GroupMemberRole;
 use calimero_primitives::identity::PublicKey;
@@ -56,6 +56,9 @@ impl<'a> GroupMembershipView<'a> {
         if self.is_admin(identity)? {
             return Ok(());
         }
-        bail!("identity {identity} is not an admin of this group")
+        bail!(MembershipError::NotAdmin {
+            group_id: format!("{:?}", self.group_id),
+            identity: format!("{identity:?}"),
+        })
     }
 }

@@ -18,6 +18,7 @@ mod context_registration;
 mod context_tree;
 mod contexts;
 mod deny_list;
+mod errors;
 mod governance_signer;
 mod group_governance_publisher;
 mod group_keys;
@@ -90,59 +91,13 @@ use self::upgrades::extract_application_id;
 // ---------------------------------------------------------------------------
 // Typed errors for group store operations
 // ---------------------------------------------------------------------------
+//
+// Domain-specific error enums live in `errors.rs`. Re-exported below.
 
-/// Structured errors for group store operations.
-///
-/// Replaces ad-hoc `bail!("string")` errors with matchable variants so callers
-/// can programmatically handle specific failure cases (e.g. treating `StaleNonce`
-/// as idempotent success rather than an error).
-#[derive(Debug, thiserror::Error)]
-pub enum GroupStoreError {
-    #[error("group {0} not found")]
-    GroupNotFound(String),
-
-    #[error("{identity} is not an admin of group {group_id}")]
-    NotAdmin { group_id: String, identity: String },
-
-    #[error("cannot remove the last admin of the group")]
-    LastAdmin,
-
-    #[error("cannot demote the last admin of the group")]
-    LastAdminDemotion,
-
-    #[error("nesting would create a cycle")]
-    NestingCycle,
-
-    #[error("group {0} already has a parent; unnest it first")]
-    AlreadyHasParent(String),
-
-    #[error("cannot nest a group under itself")]
-    SelfNesting,
-
-    #[error("state_hash mismatch: op signed against {expected}, current is {actual}")]
-    StateHashMismatch { expected: String, actual: String },
-
-    #[error("nonce {nonce} already processed (last: {last})")]
-    StaleNonce { nonce: u64, last: u64 },
-
-    #[error("namespace identity not found for {0}")]
-    NoNamespaceIdentity(String),
-
-    #[error("no group key stored for group {0}")]
-    NoGroupKey(String),
-
-    #[error("signing key not found for {identity} in group {group_id}")]
-    NoSigningKey { group_id: String, identity: String },
-
-    #[error("requester lacks permission to {operation} in group {group_id}")]
-    Unauthorized { group_id: String, operation: String },
-
-    #[error("unsupported group op variant")]
-    UnsupportedOp,
-
-    #[error("{0}")]
-    Other(String),
-}
+pub use self::errors::{
+    ApplyError, CapabilitiesError, ContextRegistrationError, GroupStoreError, KeyringError,
+    MembershipError, MetaError, NamespaceError, SigningKeysError, UpgradesError,
+};
 
 // ---------------------------------------------------------------------------
 // Prefix-scan helpers (DRY: replaces 15+ copy-pasted iteration loops)
@@ -1245,7 +1200,7 @@ fn apply_group_op_mutations(
         GroupOp::Noop => {}
         GroupOp::MemberAdded { member, role } => {
             if *role == GroupMemberRole::ReadOnlyTee {
-                bail!("ReadOnlyTee can only be assigned via MemberJoinedViaTeeAttestation");
+                bail!(MembershipError::ReadOnlyTeeViaAttestationOnly);
             }
             permissions.require_manage_members(signer, "add member")?;
             permissions.require_admin_to_add_admin(signer, role)?;
@@ -1293,11 +1248,9 @@ fn apply_group_op_mutations(
             // removed (or self-leave once that op exists).
             if let Some(meta) = MetaRepository::new(store).load(group_id)? {
                 if meta.owner_identity == *member {
-                    bail!(
-                        "cannot remove owner of group {}; owner must \
-                         TransferOwnership to a successor before removal",
-                        hex::encode(group_id.to_bytes())
-                    );
+                    bail!(MembershipError::OwnerImmuneFromRemoval(hex::encode(
+                        group_id.to_bytes()
+                    )));
                 }
             }
             membership_policy.ensure_not_last_admin_removal(member)?;
@@ -1345,7 +1298,7 @@ fn apply_group_op_mutations(
         }
         GroupOp::MemberRoleSet { member, role } => {
             if *role == GroupMemberRole::ReadOnlyTee {
-                bail!("ReadOnlyTee can only be assigned via MemberJoinedViaTeeAttestation");
+                bail!(MembershipError::ReadOnlyTeeViaAttestationOnly);
             }
             permissions.require_admin(signer)?;
             membership_policy.ensure_not_last_admin_demotion(member, role)?;
@@ -1422,10 +1375,10 @@ fn apply_group_op_mutations(
             // the other metadata ops (admin or CAN_MANAGE_METADATA).
             if signer == member {
                 if !MembershipRepository::new(store).is_member(group_id, signer)? {
-                    bail!(
-                        "signer {signer} is not a member of group {}",
-                        hex::encode(group_id.to_bytes())
-                    );
+                    bail!(MembershipError::NotMember {
+                        group_id: hex::encode(group_id.to_bytes()),
+                        identity: format!("{signer:?}"),
+                    });
                 }
             } else {
                 permissions.require_can_manage_metadata(signer)?;
@@ -1452,10 +1405,10 @@ fn apply_group_op_mutations(
             // group — otherwise we'd create orphaned `GroupContextMetadata`
             // rows for contexts in a different group (or no group at all).
             if get_group_for_context(store, context_id)? != Some(*group_id) {
-                bail!(
-                    "context {context_id} is not registered in group {}",
-                    hex::encode(group_id.to_bytes())
-                );
+                bail!(MembershipError::ContextNotInGroup {
+                    group_id: hex::encode(group_id.to_bytes()),
+                    context_id: format!("{context_id:?}"),
+                });
             }
             validate_metadata_payload(name.as_deref(), data).map_err(|e| eyre::eyre!(e))?;
             MetadataRepository::new(store).set_context(
@@ -1473,21 +1426,16 @@ fn apply_group_op_mutations(
             // Owner-only. Admins can no longer delete the group on their
             // own — only the owner can. Tightens the previous policy
             // (`require_admin`) which let any admin destroy the group.
-            let meta = MetaRepository::new(store).load(group_id)?.ok_or_else(|| {
-                eyre::eyre!(
-                    "cannot delete unknown group {}",
-                    hex::encode(group_id.to_bytes())
-                )
-            })?;
+            let meta = MetaRepository::new(store)
+                .load(group_id)?
+                .ok_or_else(|| MembershipError::UnknownGroup(hex::encode(group_id.to_bytes())))?;
             if meta.owner_identity != *signer {
-                bail!(
-                    "only the owner of group {} can delete it; \
-                     transfer ownership first if a non-owner needs to remove it",
-                    hex::encode(group_id.to_bytes())
-                );
+                bail!(MembershipError::OnlyOwnerCanTransfer(hex::encode(
+                    group_id.to_bytes()
+                )));
             }
             if MetadataRepository::new(store).count_contexts(group_id)? > 0 {
-                bail!("cannot delete group: one or more contexts are still registered");
+                bail!(UpgradesError::HasRegisteredContexts);
             }
             delete_group_local_rows(store, group_id)?;
         }
@@ -1533,10 +1481,9 @@ fn apply_group_op_mutations(
             // Reader resolves to root anyway, so a stored subgroup op would
             // be dead data; rejecting at apply time keeps state clean.
             if NamespaceRepository::new(store).parent(group_id)?.is_some() {
-                bail!(
-                    "TeeAdmissionPolicySet rejected on subgroup {group_id:?}: policy is \
-                     namespace-scoped, set it on the namespace root"
-                );
+                bail!(NamespaceError::TeePolicyNotOnSubgroup(format!(
+                    "{group_id:?}"
+                )));
             }
         }
         GroupOp::MemberJoinedViaTeeAttestation {
@@ -1551,7 +1498,7 @@ fn apply_group_op_mutations(
             role,
         } => {
             if *role != GroupMemberRole::ReadOnlyTee {
-                bail!("MemberJoinedViaTeeAttestation must use ReadOnlyTee role");
+                bail!(MembershipError::TeeRoleMustBeReadOnly);
             }
             membership_policy.require_tee_attestation_verifier_membership(signer)?;
             let policy = membership_policy.read_required_tee_admission_policy()?;
@@ -1586,14 +1533,17 @@ fn apply_group_op_mutations(
             // member can toggle their own. Non-admin, non-self attempts
             // are rejected.
             if !permissions.is_admin(signer)? && signer != target {
-                bail!("only group admin or the target member can set auto-follow");
+                bail!(MembershipError::AutoFollowAuthFailed);
             }
             // Target must already be a group member.
             if MembershipRepository::new(store)
                 .role_of(group_id, target)?
                 .is_none()
             {
-                bail!("target is not a member of this group");
+                bail!(MembershipError::NotMember {
+                    group_id: format!("{group_id:?}"),
+                    identity: format!("{target:?}"),
+                });
             }
             let flags = calimero_store::key::AutoFollowFlags {
                 contexts: *auto_follow_contexts,
@@ -1617,7 +1567,7 @@ fn apply_group_op_mutations(
             // No capability check beyond self-equality — any member can
             // leave themselves without admin involvement.
             if signer != member {
-                bail!("MemberLeft is self-leave only: signer must equal the leaving member");
+                bail!(MembershipError::SelfLeaveOnly);
             }
 
             // Direct-row check. If `signer` is only an inherited member
@@ -1628,21 +1578,17 @@ fn apply_group_op_mutations(
                 .role_of(group_id, member)?
                 .is_none()
             {
-                bail!(
-                    "member is not a direct member of group {}; \
-                     leave the parent group where the membership anchor lives",
-                    hex::encode(group_id.to_bytes())
-                );
+                bail!(MembershipError::MemberNotDirect(hex::encode(
+                    group_id.to_bytes()
+                )));
             }
 
             // Owner cannot self-leave. Must TransferOwnership first.
             if let Some(meta) = MetaRepository::new(store).load(group_id)? {
                 if meta.owner_identity == *member {
-                    bail!(
-                        "owner of group {} cannot self-leave; \
-                         transfer ownership to a successor first",
-                        hex::encode(group_id.to_bytes())
-                    );
+                    bail!(MembershipError::OwnerCannotSelfLeave(hex::encode(
+                        group_id.to_bytes()
+                    )));
                 }
             }
 
@@ -1672,11 +1618,9 @@ fn apply_group_op_mutations(
                     {
                         if let Some(sub_meta) = MetaRepository::new(store).load(sub)? {
                             if sub_meta.owner_identity == *member {
-                                bail!(
-                                    "cannot leave namespace: leaver owns subgroup {}; \
-                                     transfer ownership of every owned scope first",
-                                    hex::encode(sub.to_bytes())
-                                );
+                                bail!(MembershipError::OwnerOwnsSubgroup(hex::encode(
+                                    sub.to_bytes()
+                                )));
                             }
                         }
                         let sub_policy = MembershipPolicy::new(store, *sub);
@@ -1749,19 +1693,14 @@ fn apply_group_op_mutations(
         }
         GroupOp::TransferOwnership { new_owner } => {
             // Owner-only — current owner is the only signer who can transfer.
-            let mut meta = MetaRepository::new(store).load(group_id)?.ok_or_else(|| {
-                eyre::eyre!(
-                    "cannot transfer ownership of unknown group {}",
-                    hex::encode(group_id.to_bytes())
-                )
-            })?;
+            let mut meta = MetaRepository::new(store)
+                .load(group_id)?
+                .ok_or_else(|| MembershipError::UnknownGroup(hex::encode(group_id.to_bytes())))?;
 
             if meta.owner_identity != *signer {
-                bail!(
-                    "only the current owner of group {} can transfer ownership; \
-                     signer is not the owner",
-                    hex::encode(group_id.to_bytes())
-                );
+                bail!(MembershipError::OnlyOwnerCanTransfer(hex::encode(
+                    group_id.to_bytes()
+                )));
             }
 
             // The new owner must already be an Admin of the group. Transfer
@@ -2035,7 +1974,7 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     // (`namespace_governance::apply_signed_op`), which surfaces the
     // report via `NamespaceApplyOutcome::Applied { divergence }`.
     if !handled {
-        bail!("unsupported group op variant for local apply");
+        bail!(ApplyError::UnsupportedOp);
     }
 
     let content_hash = op
@@ -2086,9 +2025,7 @@ pub fn sign_apply_local_group_op_borsh(
     op: GroupOp,
 ) -> EyreResult<SignedOpOutput> {
     let last = get_local_gov_nonce(store, group_id, &signer_sk.public_key())?.unwrap_or(0);
-    let nonce = last
-        .checked_add(1)
-        .ok_or_else(|| eyre::eyre!("group governance nonce overflow"))?;
+    let nonce = last.checked_add(1).ok_or(ApplyError::NonceOverflow)?;
     let parent_hashes = get_op_head(store, group_id)?
         .map(|h| h.dag_heads.clone())
         .unwrap_or_default();

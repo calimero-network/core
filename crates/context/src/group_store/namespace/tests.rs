@@ -2131,7 +2131,10 @@ fn execute_group_created_rejects_self_parent() {
     let gov = NamespaceGovernance::new(&store, ns_id);
     let err = gov.apply_signed_op(&op).unwrap_err();
     assert!(
-        format!("{err}").contains("self-parent"),
+        matches!(
+            err.downcast_ref::<NamespaceError>(),
+            Some(NamespaceError::SelfParentEdge)
+        ),
         "expected self-parent rejection, got: {err}"
     );
 }
@@ -2398,7 +2401,10 @@ fn reparent_group_rejects_cycle() {
         .reparent(&a, &b)
         .unwrap_err();
     assert!(
-        format!("{err}").contains("cycle") || format!("{err}").contains("namespace root"),
+        matches!(
+            err.downcast_ref::<NamespaceError>(),
+            Some(NamespaceError::ReparentCycle { .. } | NamespaceError::RootHasNoParent(_))
+        ),
         "expected cycle or root error, got: {err}"
     );
 }
@@ -2419,7 +2425,10 @@ fn reparent_group_rejects_root() {
         .reparent(&root, &other)
         .unwrap_err();
     assert!(
-        format!("{err}").contains("namespace root") || format!("{err}").contains("no parent"),
+        matches!(
+            err.downcast_ref::<NamespaceError>(),
+            Some(NamespaceError::RootHasNoParent(_))
+        ),
         "expected root rejection, got: {err}"
     );
 }
@@ -2444,7 +2453,10 @@ fn reparent_group_rejects_nonexistent_new_parent() {
         .reparent(&child, &phantom)
         .unwrap_err();
     assert!(
-        format!("{err}").contains("not found") || format!("{err}").contains("does not exist"),
+        matches!(
+            err.downcast_ref::<NamespaceError>(),
+            Some(NamespaceError::ReparentTargetMissing(_))
+        ),
         "expected new-parent-not-found, got: {err}"
     );
 }
@@ -2599,7 +2611,13 @@ fn governance_group_created_honors_can_create_subgroup_at_root_only() {
         .apply_signed_op(&create(&stranger_sk, chan, ns_id, 1))
         .unwrap_err();
     assert!(
-        format!("{err}").contains("GroupCreated rejected"),
+        matches!(
+            err.downcast_ref::<ApplyError>(),
+            Some(ApplyError::GroupCreatedRejected { .. })
+        ) || matches!(
+            err.downcast_ref::<NamespaceError>(),
+            Some(NamespaceError::SelfParentEdge)
+        ),
         "stranger should be rejected by the authorization check, got: {err}"
     );
     assert!(MetaRepository::new(&store)
@@ -2755,7 +2773,13 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
     );
     let err = gov.apply_signed_op(&del(&stranger_sk, s1, 1)).unwrap_err();
     assert!(
-        format!("{err}").contains("GroupDeleted rejected"),
+        matches!(
+            err.downcast_ref::<ApplyError>(),
+            Some(ApplyError::GroupDeletedRejected { .. })
+        ) || matches!(
+            err.downcast_ref::<NamespaceError>(),
+            Some(NamespaceError::CannotDeleteRoot(_))
+        ),
         "stranger should be rejected by the authorization check, got: {err}"
     );
     assert!(MetaRepository::new(&store).load(&s1_gid).unwrap().is_some());
@@ -2767,7 +2791,13 @@ fn governance_group_deleted_owner_admin_or_cap_only() {
         .apply_signed_op(&del(&plain_member_sk, s1, 2))
         .unwrap_err();
     assert!(
-        format!("{err}").contains("GroupDeleted rejected"),
+        matches!(
+            err.downcast_ref::<ApplyError>(),
+            Some(ApplyError::GroupDeletedRejected { .. })
+        ) || matches!(
+            err.downcast_ref::<NamespaceError>(),
+            Some(NamespaceError::CannotDeleteRoot(_))
+        ),
         "plain member should be rejected by the authorization check, got: {err}"
     );
     assert!(MetaRepository::new(&store).load(&s1_gid).unwrap().is_some());

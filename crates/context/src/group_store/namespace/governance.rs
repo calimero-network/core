@@ -1,5 +1,6 @@
 use crate::group_store::{
-    DenyListRepository, GroupKeyring, MembershipRepository, MetaRepository, NamespaceRepository,
+    ApplyError, CapabilitiesError, DenyListRepository, GroupKeyring, MembershipError,
+    MembershipRepository, MetaRepository, NamespaceError, NamespaceRepository,
 };
 use calimero_context_client::local_governance::{
     hash_scoped_namespace, AckRouter, EncryptedGroupOp, GroupOp, NamespaceOp, RootOp,
@@ -1222,11 +1223,10 @@ impl<'a> NamespaceGovernance<'a> {
     fn require_namespace_admin(&self, signer: &PublicKey) -> EyreResult<()> {
         let ns_gid = ContextGroupId::from(self.namespace_id);
         if !MembershipRepository::new(self.store).is_admin(&ns_gid, signer)? {
-            bail!(
-                "signer {} is not an admin of namespace {}",
-                signer,
-                hex::encode(self.namespace_id)
-            );
+            bail!(MembershipError::NotAdmin {
+                group_id: hex::encode(self.namespace_id),
+                identity: format!("{signer}"),
+            });
         }
         Ok(())
     }
@@ -1278,11 +1278,7 @@ impl<'a> NamespaceGovernance<'a> {
         // for subgroups. Reject self-parent to make that invariant explicit
         // — a self-parent edge would cause resolve_namespace to cycle.
         if group_id == parent_id {
-            eyre::bail!(
-                "GroupCreated rejected: self-parent edge (group_id == parent_id). \
-                 Namespace roots must not emit GroupCreated — their existence is \
-                 recorded by the namespace-identity setup path."
-            );
+            eyre::bail!(NamespaceError::SelfParentEdge);
         }
 
         // Authorization. Namespace-root admins may create a subgroup at any
@@ -1301,12 +1297,14 @@ impl<'a> NamespaceGovernance<'a> {
                     calimero_context_config::MemberCapabilities::CAN_CREATE_SUBGROUP,
                 )?);
         if !authorized {
-            bail!(
-                "GroupCreated rejected: signer {} is neither an admin of namespace {} \
-                 nor a member holding CAN_CREATE_SUBGROUP at the namespace root",
-                op.signer,
-                hex::encode(self.namespace_id)
-            );
+            bail!(ApplyError::GroupCreatedRejected {
+                reason: format!(
+                    "signer {} is neither an admin of namespace {} nor a member holding \
+                     CAN_CREATE_SUBGROUP at the namespace root",
+                    op.signer,
+                    hex::encode(self.namespace_id)
+                ),
+            });
         }
 
         // Verify parent exists in this namespace (root or previously-created subgroup).
@@ -1421,9 +1419,7 @@ impl<'a> NamespaceGovernance<'a> {
     ) -> EyreResult<()> {
         let root_gid = ContextGroupId::from(root_group_id);
         if root_group_id == self.namespace_id {
-            eyre::bail!(
-                "cannot delete the namespace root '{root_gid:?}' (use delete_namespace instead)"
-            );
+            eyre::bail!(NamespaceError::CannotDeleteRoot(format!("{root_gid:?}")));
         }
 
         // Authorization. Cascade-delete is allowed for: the owner of the
@@ -1459,11 +1455,11 @@ impl<'a> NamespaceGovernance<'a> {
             if root_meta.owner_identity != op.signer {
                 PermissionChecker::new(self.store, ns_gid)
                     .require_can_delete_subgroup(&op.signer)
-                    .map_err(|e| {
-                        eyre::eyre!(
-                            "GroupDeleted rejected: {e} (or be the owner of subgroup {})",
+                    .map_err(|e| ApplyError::GroupDeletedRejected {
+                        reason: format!(
+                            "{e} (or be the owner of subgroup {})",
                             hex::encode(root_group_id)
-                        )
+                        ),
                     })?;
             }
         }
@@ -1495,15 +1491,19 @@ impl<'a> NamespaceGovernance<'a> {
             cascade_context_ids.iter().copied().collect();
         if !local_groups.is_subset(&payload_groups) {
             let extra: Vec<_> = local_groups.difference(&payload_groups).collect();
-            eyre::bail!(
-                "GroupDeleted cascade divergence: local subtree has groups not in payload: {extra:?}"
-            );
+            eyre::bail!(ApplyError::GroupDeletedRejected {
+                reason: format!(
+                    "cascade divergence: local subtree has groups not in payload: {extra:?}"
+                ),
+            });
         }
         if !local_contexts.is_subset(&payload_contexts) {
             let extra: Vec<_> = local_contexts.difference(&payload_contexts).collect();
-            eyre::bail!(
-                "GroupDeleted cascade divergence: local subtree has contexts not in payload: {extra:?}"
-            );
+            eyre::bail!(ApplyError::GroupDeletedRejected {
+                reason: format!(
+                    "cascade divergence: local subtree has contexts not in payload: {extra:?}"
+                ),
+            });
         }
         // Inverse direction is *not* an error — it's the expected shape on a
         // crash-recovery re-apply (the local subtree shrank since the op was
@@ -1583,7 +1583,7 @@ impl<'a> NamespaceGovernance<'a> {
         let ns_gid = ContextGroupId::from(self.namespace_id);
         let mut meta = MetaRepository::new(self.store)
             .load(&ns_gid)?
-            .ok_or_else(|| eyre::eyre!("namespace root group not found"))?;
+            .ok_or(NamespaceError::RootMissing)?;
         meta.admin_identity = new_admin;
         MetaRepository::new(self.store).save(&ns_gid, &meta)?;
         Ok(())
@@ -1624,11 +1624,9 @@ impl<'a> NamespaceGovernance<'a> {
         group_id: [u8; 32],
     ) -> EyreResult<()> {
         if op.signer != member {
-            eyre::bail!(
-                "MemberJoinedOpen rejected: outer signer {} doesn't match member {}",
-                op.signer,
-                member
-            );
+            eyre::bail!(ApplyError::MemberJoinedOpenRejected {
+                reason: format!("outer signer {} doesn't match member {}", op.signer, member),
+            });
         }
         let gid = ContextGroupId::from(group_id);
         // Cross-namespace forgery guard: without this check, an attacker
@@ -1641,25 +1639,26 @@ impl<'a> NamespaceGovernance<'a> {
         // `MemberJoined` apply path.
         let resolved_ns = NamespaceRepository::new(self.store).resolve(&gid)?;
         if resolved_ns.to_bytes() != self.namespace_id {
-            eyre::bail!(
-                "MemberJoinedOpen rejected: group_id {:?} resolves to namespace {:?}, \
-                 not this namespace {:?}",
-                gid,
-                resolved_ns,
-                ContextGroupId::from(self.namespace_id)
-            );
+            eyre::bail!(ApplyError::MemberJoinedOpenRejected {
+                reason: format!(
+                    "group_id {:?} resolves to namespace {:?}, not this namespace {:?}",
+                    gid,
+                    resolved_ns,
+                    ContextGroupId::from(self.namespace_id)
+                ),
+            });
         }
         match MembershipRepository::new(self.store).check_path(&gid, &member)? {
             super::super::MembershipPath::Inherited { .. } => Ok(()),
             super::super::MembershipPath::Direct => {
                 // Direct members go through `MemberJoined` or `add_group_members`
                 // — they shouldn't be using this op.
-                eyre::bail!(
-                    "MemberJoinedOpen rejected: signer {} is a direct member of {:?}; \
-                     use MemberJoined or add_group_members instead",
-                    member,
-                    gid
-                );
+                eyre::bail!(ApplyError::MemberJoinedOpenRejected {
+                    reason: format!(
+                        "signer {member} is a direct member of {gid:?}; use MemberJoined \
+                         or add_group_members instead"
+                    ),
+                });
             }
             super::super::MembershipPath::None => {
                 eyre::bail!(

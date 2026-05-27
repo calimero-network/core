@@ -13,7 +13,7 @@ use eyre::{bail, Result as EyreResult};
 use super::super::namespace::MAX_NAMESPACE_DEPTH;
 use super::super::{
     collect_keys_with_prefix, collect_keys_with_prefix_paginated, count_keys_with_prefix,
-    GroupStoreError,
+    CapabilitiesError, MembershipError,
 };
 
 /// Typed Repository for the membership cluster — direct member rows,
@@ -105,7 +105,10 @@ impl<'a> MembershipRepository<'a> {
         let key = GroupMember::new(group_id.to_bytes(), *identity);
         let existing = handle
             .get(&key)?
-            .ok_or_else(|| eyre::eyre!("member not found in group"))?;
+            .ok_or_else(|| MembershipError::MemberNotFound {
+                group_id: format!("{group_id:?}"),
+                member: format!("{identity:?}"),
+            })?;
         handle.put(
             &key,
             &GroupMemberValue {
@@ -185,10 +188,7 @@ impl<'a> MembershipRepository<'a> {
             }
             current = parent;
         }
-        bail!(
-            "check_group_membership exceeded MAX_NAMESPACE_DEPTH ({MAX_NAMESPACE_DEPTH}); \
-             possible cycle in store"
-        )
+        bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH))
     }
 
     /// Returns `true` if `identity` is a member of `group_id` either
@@ -283,10 +283,7 @@ impl<'a> MembershipRepository<'a> {
             current = parent;
         }
         if !terminated {
-            bail!(
-                "enumerate_inherited_members exceeded MAX_NAMESPACE_DEPTH \
-                 ({MAX_NAMESPACE_DEPTH}); possible cycle in store"
-            );
+            bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH));
         }
         Ok(result)
     }
@@ -331,10 +328,7 @@ impl<'a> MembershipRepository<'a> {
             }
             current = parent;
         }
-        bail!(
-            "is_inherited_admin exceeded MAX_NAMESPACE_DEPTH ({MAX_NAMESPACE_DEPTH}); \
-             possible cycle in store"
-        )
+        bail!(MembershipError::DepthExceeded(MAX_NAMESPACE_DEPTH))
     }
 
     pub fn is_admin(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<bool> {
@@ -351,7 +345,7 @@ impl<'a> MembershipRepository<'a> {
 
     pub fn require_admin(&self, group_id: &ContextGroupId, identity: &PublicKey) -> EyreResult<()> {
         if !self.is_admin(group_id, identity)? {
-            bail!(GroupStoreError::NotAdmin {
+            bail!(MembershipError::NotAdmin {
                 group_id: format!("{group_id:?}"),
                 identity: format!("{identity:?}"),
             });
@@ -406,7 +400,7 @@ impl<'a> MembershipRepository<'a> {
         operation: &str,
     ) -> EyreResult<()> {
         if !self.is_admin_or_has_capability(group_id, identity, capability_bit)? {
-            bail!(GroupStoreError::Unauthorized {
+            bail!(CapabilitiesError::Unauthorized {
                 group_id: format!("{group_id:?}"),
                 operation: operation.to_owned(),
             });
@@ -425,9 +419,13 @@ impl<'a> MembershipRepository<'a> {
         let handle = self.store.handle();
         let mut count = 0usize;
         for key in keys {
-            let val: GroupMemberValue = handle
-                .get(&key)?
-                .ok_or_else(|| eyre::eyre!("member key exists but value is missing"))?;
+            let val: GroupMemberValue =
+                handle
+                    .get(&key)?
+                    .ok_or_else(|| MembershipError::MissingMemberValue {
+                        group_id: format!("{group_id:?}"),
+                        identity: format!("{:?}", key.identity()),
+                    })?;
             if val.role == GroupMemberRole::Admin {
                 count += 1;
             }
@@ -453,9 +451,13 @@ impl<'a> MembershipRepository<'a> {
         let handle = self.store.handle();
         let mut results = Vec::new();
         for key in keys {
-            let val: GroupMemberValue = handle
-                .get(&key)?
-                .ok_or_else(|| eyre::eyre!("member key exists but value is missing"))?;
+            let val: GroupMemberValue =
+                handle
+                    .get(&key)?
+                    .ok_or_else(|| MembershipError::MissingMemberValue {
+                        group_id: format!("{group_id:?}"),
+                        identity: format!("{:?}", key.identity()),
+                    })?;
             results.push((key.identity(), val.role));
         }
         Ok(results)
