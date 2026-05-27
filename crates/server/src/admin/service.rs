@@ -29,6 +29,7 @@ use crate::admin::handlers::context::{
     leave_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::generate_context_identity;
+use crate::admin::handlers::network;
 use crate::admin::handlers::packages::{get_latest_version, list_packages, list_versions};
 use crate::admin::handlers::peers::get_peers_count_handler;
 use crate::admin::handlers::usage;
@@ -153,6 +154,8 @@ pub(crate) fn setup(
         )
         // Per-namespace usage (counts + on-disk bytes)
         .route("/usage", get(usage::handler))
+        // libp2p connectivity snapshot (relays, rendezvous, DCUtR, AutoNAT)
+        .route("/network/status", get(network::status::handler))
         // Network info
         .route("/peers", get(get_peers_count_handler))
         // Blob management

@@ -1,5 +1,6 @@
 use super::EventHandler;
 use crate::autonat::{Event, TestResult};
+use crate::discovery::state::AutonatTestResult;
 use crate::NetworkManager;
 use owo_colors::OwoColorize;
 use tracing::{debug, info, warn};
@@ -13,6 +14,23 @@ impl EventHandler<Event> for NetworkManager {
                 result,
                 ..
             } => {
+                // Record the freshest probe outcome on the discovery state
+                // so the admin-api network-status snapshot can answer
+                // "is this node behind NAT?" without log scraping. We
+                // intentionally keep history depth = 1 here; ops cares
+                // about the current state, not a probe log.
+                let snapshot_result = match &result {
+                    TestResult::Reachable { addr } => {
+                        AutonatTestResult::Reachable { addr: addr.clone() }
+                    }
+                    TestResult::Failed { error } => AutonatTestResult::Failed {
+                        reason: error.to_string(),
+                    },
+                };
+                self.discovery
+                    .state
+                    .record_autonat_test(tested_addr.clone(), snapshot_result);
+
                 match result {
                     TestResult::Reachable { addr } => {
                         info!(

@@ -8,6 +8,7 @@ pub mod identity;
 pub mod list_packages;
 pub mod list_versions;
 pub mod namespaces;
+pub mod network;
 pub mod packages;
 pub mod peers;
 pub mod tee;

@@ -479,6 +479,15 @@ impl NodeClient {
         self.network_client.mesh_peer_count(topic).await
     }
 
+    /// Snapshot of the local node's libp2p connectivity state — relays,
+    /// rendezvous registrations, DCUtR upgrade outcomes, AutoNAT v2
+    /// reachability. Backs `GET /admin-api/network/status`.
+    pub async fn network_status(
+        &self,
+    ) -> calimero_network_primitives::network_status::NetworkStatusSnapshot {
+        self.network_client.network_status().await
+    }
+
     pub async fn broadcast(
         &self,
         context: &Context,
