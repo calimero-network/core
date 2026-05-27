@@ -487,6 +487,25 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let own_hash = Sha256::digest(&data).into();
 
+        // ENTRY-BEFORE-PARENT (#2319 follow-up): pre-write Key::Entry so
+        // the parent's children list never advertises an id that has no
+        // backing entry. Mirrors the apply_action fix at line 1267 (PR
+        // #2472 / `cf7b2b61`), which closed the same race window on the
+        // delta-apply path but left this local-write path — used by
+        // `CollectionMut::insert` (collections.rs:527), i.e. every
+        // WASM-side `chars.insert` — with the old order.
+        //
+        // The bytes we write here are the borsh-encoded `data` before
+        // `save_raw` re-stamps the metadata (signature placeholder /
+        // nonce for User and Shared storage). `save_raw` → `save_internal`
+        // below overwrites Key::Entry with the final stamped bytes. The
+        // pre-write is a redundant overwrite — the cost of closing the
+        // window. Readers that interleave between this write and the
+        // final save see locally-consistent bytes that may carry a
+        // not-yet-stamped signature; verification only happens on
+        // remote-action apply via `apply_action`, never on local read.
+        let _ignored = S::storage_write(Key::Entry(child.id()), &data);
+
         <Index<S>>::add_child_to(
             parent_id,
             ChildInfo::new(child.id(), own_hash, child.element().metadata.clone()),
@@ -2265,6 +2284,16 @@ impl<S: StorageAdaptor> Interface<S> {
                 // `Root<T>` entry — attach as a child of the system
                 // root so the index hierarchy stays consistent with
                 // the layout `Root::new` produces locally.
+                //
+                // ENTRY-BEFORE-PARENT (#2319 follow-up): pre-write
+                // Key::Entry so `Id::root()`'s children list never
+                // advertises an id without a backing entry. The
+                // matching `storage_write(Key::Entry(id), merged)`
+                // below would otherwise leave a window in which
+                // `find_by_id(id)` returns `None` for an id that the
+                // root's children advertises. Same rationale as the
+                // apply_action fix at line 1267.
+                let _ignored = S::storage_write(Key::Entry(id), merged);
                 <Index<S>>::add_child_to(
                     Id::root(),
                     ChildInfo::new(id, [0_u8; 32], metadata.clone()),
