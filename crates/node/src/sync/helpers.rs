@@ -325,37 +325,62 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         // before this fix.
         let parent_id = leaf.metadata.parent_id.map(Id::new).unwrap_or(root_id);
 
-        // For a freshly-pulled nested entity the parent may not yet exist
-        // locally — when the sender's `index.parent_id()` points at a
-        // parent we haven't pulled yet (HashComparison walks the tree
-        // top-down but a single EntityPush batch can deliver a child
-        // before its parent due to BFS-vs-DFS ordering and batch
-        // boundaries). The previous version built a
-        // `Action::Update { id: parent_id, data: vec![], ancestors: vec![],
-        // metadata: Metadata::default() }` placeholder here and called
-        // `apply_action` on it. That action has empty ancestors → falls
-        // into apply_action's no-parent branch (the same orphan path
-        // documented at `calimero_storage::interface::apply_action`
-        // ORPHAN_ADD), which doesn't create an index entry for the
-        // entity, so the subsequent `save_internal` errors with
-        // `IndexNotFound(parent_id)` and the whole leaf application
-        // fails with "Failed to apply pushed entity" (#2319 follow-up).
+        // Ensure the chosen parent has an index. For a freshly-pulled
+        // nested entity the parent may not yet exist locally — when the
+        // sender's `index.parent_id()` points at a parent we haven't
+        // pulled yet (HashComparison walks the tree top-down but a
+        // single EntityPush batch can deliver a child before its parent
+        // due to BFS-vs-DFS ordering and batch boundaries), create a
+        // placeholder index here so `Action::Add { ancestors: [parent] }`
+        // has something to attach to.
         //
-        // The placeholder is no longer needed: the child's
+        // ROOT-ONLY (#2319 follow-up): the previous version applied this
+        // placeholder unconditionally as `Action::Update { ancestors:
+        // vec![], data: vec![] }`. For non-root parents that action falls
+        // into `apply_action`'s no-parent branch (the
+        // `calimero_storage::orphan_add` path), which doesn't create the
+        // index entry, so `save_internal` errored
+        // `IndexNotFound(parent_id)` and the whole leaf application
+        // failed with "Failed to apply pushed entity" — exactly the
+        // residual scaffolding-e2e flake. We now gate the placeholder on
+        // `parent_id.is_root()`, where `apply_action` takes the
+        // `id.is_root()` branch and `save_internal` writes empty
+        // `Key::Entry(root_id)` so the root's `own_hash =
+        // Sha256::digest(empty)` matches the sender's (the sender's root
+        // is created the same way via the producer's
+        // `init_root`/equivalent path).
+        //
+        // For non-root parents, the child's
         // `Action::Add { ancestors: vec![ChildInfo(parent_id, …)] }`
-        // below carries the parent in its ancestor list, and
-        // `apply_action`'s ancestor loop (interface.rs ~1227) already
+        // constructed below already carries the parent in its ancestor
+        // list, and `apply_action`'s ancestor loop (interface.rs ~1227)
         // calls `Index::add_root(parent_clone)` for any ancestor that
         // doesn't have a local index entry yet. The placeholder hash
-        // ([0; 32]) and default metadata we'd compute below are exactly
-        // what that loop sets too, so removing this block is equivalent
-        // to keeping it on the happy path and strictly correct on the
-        // path where it previously errored.
-        //
-        // When the parent itself arrives via a later push, it'll go
-        // through the Update path (existing entity, see line below)
-        // and its real data + metadata replaces the placeholder; the
-        // child's `parent_id` link is preserved across that.
+        // ([0; 32]) and default metadata that loop installs are the same
+        // values this block would have computed, and `save_internal`'s
+        // post-merge `update_hash_for` updates the placeholder's
+        // `own_hash` to match the real bytes once the parent's own leaf
+        // arrives via a later push (which then goes through the Update
+        // branch, see the `existing_index.is_some()` arm above).
+        if parent_id.is_root()
+            && Index::<MainStorage>::get_index(parent_id)
+                .ok()
+                .flatten()
+                .is_none()
+        {
+            let parent_init = Action::Update {
+                id: parent_id,
+                data: vec![],
+                ancestors: vec![],
+                metadata: Metadata::default(),
+            };
+            // #2266: snapshot leaf push has no `CausalDelta` in scope —
+            // these bytes come from a peer who already verified them.
+            // Empty ctx → verifier falls back to v2 stored-writers, which
+            // is the safe semantic for already-verified replicated state.
+            Interface::<MainStorage>::apply_action(parent_init, &ApplyContext::empty())?;
+        }
+
         let parent_hash = Index::<MainStorage>::get_hashes_for(parent_id)
             .ok()
             .flatten()
