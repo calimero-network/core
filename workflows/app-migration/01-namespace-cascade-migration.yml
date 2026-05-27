@@ -218,14 +218,19 @@ steps:
     migrate_method: migrate_v1_to_v2
     cascade: true
 
-  - name: Wait for cascade + migration to apply on both nodes
-    type: wait_for_sync
-    context_id: "{{ctx_id}}"
-    nodes:
-      - app-migration-cascade-1
-      - app-migration-cascade-2
-    timeout: 90
-    trigger_sync: true
+  # Fixed wait, NOT wait_for_sync: cascade is published async, and
+  # the per-context migration propagator spawns after publish. A
+  # root_hash-based wait_for_sync polled here exits in 0.00s
+  # vacuously synced — both nodes still hold the identical v1 root
+  # at the first poll because node 1's local migration hasn't
+  # rewritten its root yet, so there's nothing to "wait" for. The
+  # fixed wait covers (a) gossip propagation of CascadeTargetApplicationSet
+  # + CascadeGroupMigrationSet, (b) per-context migration apply on
+  # both nodes, (c) docker stdout flush so assert_log_present can
+  # see the "Executing migration" log line.
+  - name: Wait for cascade + migration to apply + log flush on both nodes
+    type: wait
+    seconds: 15
 
   # Phase 7a: Both nodes' local meta for BOTH layers must reflect v2.
   - name: Node 1 reads namespace root info
