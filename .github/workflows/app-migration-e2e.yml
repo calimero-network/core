@@ -116,7 +116,7 @@ jobs:
   scenario:
     name: ${{ matrix.workflow }}
     needs: build
-    runs-on: ubuntu-24.04-4cpu
+    runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 15
     strategy:
       fail-fast: false
