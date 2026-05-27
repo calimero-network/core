@@ -1,0 +1,230 @@
+name: 12 — Scenario "field remove with archive" (v1 → v2-archive)
+description: >
+  Realistic per-context migration for the field-remove-with-archive
+  scenario. v1 carries a `legacy_note: LwwRegister<String>` that v2
+  drops from the active schema — but the migration ARCHIVES the v1
+  value into a new `archived_legacy: UnorderedMap<String,
+  LwwRegister<String>>` keyed by "latest", so data isn't lost (it just
+  moves out of the active schema into an explicit archive sibling).
+  This differs from `03-scenario-remove-field`, which drops the v1
+  value outright. Topology: namespace + one subgroup + one context in
+  the subgroup. Upgrade is `upgrade_group(group=subgroup, target=v2,
+  migrate=migrate_v1_to_v2)` — per-context (cascade=false).
+
+  Negative assertions: after the upgrade, the v1-only methods
+  `set_legacy_note` and `get_legacy_note` must NOT be callable (the
+  v2 binary doesn't export them).
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-archive
+  base_port: 9340
+  base_rpc_port: 9440
+
+steps:
+  - name: Install scenario-field-remove-archive-v1
+    type: install_application
+    node: app-migration-archive-1
+    path: apps/migrations/scenario-field-remove-archive-v1/res/scenario_field_remove_archive_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-field-remove-archive-v2
+    type: install_application
+    node: app-migration-archive-1
+    path: apps/migrations/scenario-field-remove-archive-v2/res/scenario_field_remove_archive_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Create namespace (v1)
+    type: create_namespace
+    node: app-migration-archive-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "archive-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-archive-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Set v1 name
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: set_name
+    args:
+      name: "contract-A"
+
+  - name: Set v1 legacy_note (will be archived in v2)
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: set_legacy_note
+    args:
+      note: "legacy-data-do-not-discard"
+
+  - name: Bump counter (v1, 1/3)
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: bump_counter
+
+  - name: Bump counter (v1, 2/3)
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: bump_counter
+
+  - name: Bump counter (v1, 3/3)
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: bump_counter
+
+  - name: Sanity-check v1 state shape
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "name": "contract-A", "legacy_note": "legacy-data-do-not-discard", "counter": 3}})'
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-archive-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade subgroup v1 → v2 (per-context, not cascade)
+    type: upgrade_group
+    node: app-migration-archive-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  - name: Wait for upgrade + migration to apply
+    type: wait
+    seconds: 8
+
+  - name: Assert migration handler ran end-to-end
+    type: assert_log_present
+    nodes:
+      - app-migration-archive-1
+    patterns:
+      - "Executing migration"
+      - "migrate_v1_to_v2"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Read post-migration schema_info
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 schema (legacy archived, name + counter preserved)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"name": "contract-A", "counter": 3}})'
+      - 'json_subset({{v2_schema}}, {"output": {"archived_latest": "legacy-data-do-not-discard"}})'
+
+  - name: Read archived legacy value via v2 get_archived
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: get_archived
+    args:
+      key: "latest"
+    outputs:
+      archived_value: result
+
+  - name: Assert archived value carried v1 legacy_note
+    type: json_assert
+    statements:
+      - 'json_equal({{archived_value}}, {"output": "legacy-data-do-not-discard"})'
+
+  # Negative: v1-only setter no longer exported by v2.
+  - name: Negative — set_legacy_note (v1) is gone in v2
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: set_legacy_note
+    args:
+      note: "should-fail-post-upgrade"
+    expected_failure: true
+
+  # Negative: v1-only getter no longer exported by v2.
+  - name: Negative — get_legacy_note (v1) is gone in v2
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: get_legacy_note
+    expected_failure: true
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-archive-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-archive-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-archive-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

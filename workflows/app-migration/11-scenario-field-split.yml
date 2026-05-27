@@ -1,0 +1,219 @@
+name: 11 — Scenario "field split" (v1 → v2-field-split)
+description: >
+  Realistic per-context migration for the field-split scenario.
+  v1 carries a single `address: LwwRegister<String>` field; v2 splits
+  it into three structured fields `street`, `city`, `postcode`.
+  `migrate_v1_to_v2` parses each v1 address by splitting on ", ":
+  exactly 3 parts populate street/city/postcode, anything else falls
+  back to street = whole address with city/postcode empty.
+  Topology: namespace + one subgroup + one context. Upgrade is
+  `upgrade_group(group=subgroup, target=v2, migrate=migrate_v1_to_v2)`
+  — per-context (cascade=false). Acts as the schema-reshape row of
+  the per-scenario matrix.
+
+  Negative assertions: pre-upgrade, the v2-only `set_street` is not
+  exported by v1; post-upgrade, the v1-only `set_address` is gone in v2.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-split
+  base_port: 9330
+  base_rpc_port: 9430
+
+steps:
+  - name: Install scenario-field-split-v1
+    type: install_application
+    node: app-migration-split-1
+    path: apps/migrations/scenario-field-split-v1/res/scenario_field_split_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-field-split-v2
+    type: install_application
+    node: app-migration-split-1
+    path: apps/migrations/scenario-field-split-v2/res/scenario_field_split_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Create namespace (v1)
+    type: create_namespace
+    node: app-migration-split-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-split-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-split-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "field-split-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-split-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Write v1 state — set_name
+    type: call
+    node: app-migration-split-1
+    context_id: "{{ctx_id}}"
+    method: set_name
+    args:
+      name: "customer-7"
+
+  - name: Write v1 state — set_address (3-part comma-separated)
+    type: call
+    node: app-migration-split-1
+    context_id: "{{ctx_id}}"
+    method: set_address
+    args:
+      address: "221B Baker Street, London, NW1 6XE"
+
+  - name: Sanity-check v1 state shape
+    type: call
+    node: app-migration-split-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "name": "customer-7", "address": "221B Baker Street, London, NW1 6XE"}})'
+
+  # Negative: v2-only setter not yet callable under v1.
+  - name: Negative — set_street is not exported by v1
+    type: call
+    node: app-migration-split-1
+    context_id: "{{ctx_id}}"
+    method: set_street
+    args:
+      street: "should-fail-pre-upgrade"
+    expected_failure: true
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-split-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade subgroup v1 → v2 (per-context, not cascade)
+    type: upgrade_group
+    node: app-migration-split-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  - name: Wait for upgrade + migration to apply
+    type: wait
+    seconds: 8
+
+  - name: Assert migration handler ran end-to-end
+    type: assert_log_present
+    nodes:
+      - app-migration-split-1
+    patterns:
+      - "Executing migration"
+      - "migrate_v1_to_v2"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Read post-migration schema_info
+    type: call
+    node: app-migration-split-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 schema (address parsed into three fields, name preserved)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"name": "customer-7"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"street": "221B Baker Street", "city": "London", "postcode": "NW1 6XE"}})'
+
+  - name: v2-only set_postcode now callable
+    type: call
+    node: app-migration-split-1
+    context_id: "{{ctx_id}}"
+    method: set_postcode
+    args:
+      postcode: "NW1 6XF"
+
+  - name: Read updated v2 schema_info
+    type: call
+    node: app-migration-split-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_after: result
+
+  - name: Assert v2-only postcode update round-trips
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_after}}, {"output": {"postcode": "NW1 6XF"}})'
+
+  # Negative: v1-only setter is no longer callable under v2.
+  - name: Negative — set_address is gone in v2
+    type: call
+    node: app-migration-split-1
+    context_id: "{{ctx_id}}"
+    method: set_address
+    args:
+      address: "should-fail-post-upgrade"
+    expected_failure: true
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-split-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-split-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-split-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-split-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-split-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

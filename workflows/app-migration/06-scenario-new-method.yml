@@ -1,0 +1,228 @@
+name: 06 — Scenario "new method" (v1 → v2-new-method, no migrate)
+description: >
+  Realistic per-context upgrade for the new-method scenario.
+  v1 → v2-new-method adds a new exported method (`clear_items`) while
+  keeping the borsh state layout BYTE-IDENTICAL (same field names,
+  same types, same order). Because the layout is unchanged, no
+  `#[app::migrate]` is needed — the v2 binary deserializes the v1
+  state bytes directly. Topology: namespace + one subgroup + one
+  context in the subgroup. Upgrade is `upgrade_group(group=subgroup,
+  target=v2)` with `migrate_method` omitted entirely.
+
+  Negative assertion: before the upgrade, the v2-only method
+  `clear_items` must NOT be callable (the binary doesn't export it
+  under v1). After the upgrade it must be callable and drain the
+  preserved item map.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-newmethod
+  base_port: 9280
+  base_rpc_port: 9380
+
+steps:
+  - name: Install scenario-new-method-v1
+    type: install_application
+    node: app-migration-newmethod-1
+    path: apps/migrations/scenario-new-method-v1/res/scenario_new_method_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-new-method-v2
+    type: install_application
+    node: app-migration-newmethod-1
+    path: apps/migrations/scenario-new-method-v2/res/scenario_new_method_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Create namespace (v1)
+    type: create_namespace
+    node: app-migration-newmethod-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-newmethod-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-newmethod-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "new-method-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-newmethod-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Write v1 item k1
+    type: call
+    node: app-migration-newmethod-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k1"
+      value: "v1"
+
+  - name: Write v1 item k2
+    type: call
+    node: app-migration-newmethod-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k2"
+      value: "v2"
+
+  - name: Increment counter (v1)
+    type: call
+    node: app-migration-newmethod-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Increment counter again (v1)
+    type: call
+    node: app-migration-newmethod-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Sanity-check v1 state shape
+    type: call
+    node: app-migration-newmethod-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "items_len": 2}})'
+
+  # Negative: v2-only method not yet callable under v1.
+  - name: Negative — clear_items is not exported by v1
+    type: call
+    node: app-migration-newmethod-1
+    context_id: "{{ctx_id}}"
+    method: clear_items
+    expected_failure: true
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-newmethod-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade subgroup v1 → v2 (no migrate; layout unchanged)
+    type: upgrade_group
+    node: app-migration-newmethod-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+
+  - name: Wait for upgrade to apply
+    type: wait
+    seconds: 8
+
+  - name: Read post-upgrade schema_info
+    type: call
+    node: app-migration-newmethod-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 schema (version bumped, v1 data preserved byte-identical)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "items_len": 2}})'
+
+  - name: Assert v1 item map preserved under v2
+    type: call
+    node: app-migration-newmethod-1
+    context_id: "{{ctx_id}}"
+    method: get_item
+    args:
+      key: "k1"
+    outputs:
+      preserved_item: result
+
+  - name: Assert preserved v1 item value
+    type: json_assert
+    statements:
+      - 'json_equal({{preserved_item}}, {"output": "v1"})'
+
+  - name: v2-only clear_items now callable
+    type: call
+    node: app-migration-newmethod-1
+    context_id: "{{ctx_id}}"
+    method: clear_items
+    outputs:
+      cleared_count: result
+
+  - name: Assert clear_items returned 2
+    type: json_assert
+    statements:
+      - 'json_equal({{cleared_count}}, {"output": 2})'
+
+  - name: Read schema_info after clear
+    type: call
+    node: app-migration-newmethod-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_after_clear: result
+
+  - name: Assert items map drained
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_after_clear}}, {"output": {"schema_version": "2.0.0", "items_len": 0}})'
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-newmethod-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-newmethod-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-newmethod-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-newmethod-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-newmethod-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

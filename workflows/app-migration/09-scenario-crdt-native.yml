@@ -1,0 +1,250 @@
+name: 09 — Scenario "crdt-native" (v1 → v2-add-crdt-collection)
+description: >
+  Realistic per-context migration for the CRDT-collection-typed field
+  scenario. v1 → v2 adds a `tags: Vector<LwwRegister<String>>` to the
+  state struct. Unlike scalar field addition, the `Vector` type has its
+  own internal field-name handle, so borsh deserialize of v1 bytes
+  under v2's schema would fail with EOF when it tries to read the
+  missing `tags` field. The `migrate_v1_to_v2` handler reconstructs the
+  v2 state, carrying over the v1 `items` and `title`, and seeds the new
+  `tags` Vector empty. Topology: namespace + one subgroup + one context
+  in the subgroup. Upgrade is `upgrade_group(group=subgroup, target=v2,
+  migrate=migrate_v1_to_v2)` — per-context (cascade=false). Acts as the
+  CRDT-collection-add row of the per-scenario matrix.
+
+  Negative assertion: before the upgrade, the v2-only method `push_tag`
+  must NOT be callable (the binary doesn't export it under v1). After
+  the upgrade it must be callable and round-trip.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-crdt
+  base_port: 9310
+  base_rpc_port: 9410
+
+steps:
+  - name: Install scenario-crdt-native-v1
+    type: install_application
+    node: app-migration-crdt-1
+    path: apps/migrations/scenario-crdt-native-v1/res/scenario_crdt_native_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-crdt-native-v2
+    type: install_application
+    node: app-migration-crdt-1
+    path: apps/migrations/scenario-crdt-native-v2/res/scenario_crdt_native_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Create namespace (v1)
+    type: create_namespace
+    node: app-migration-crdt-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-crdt-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-crdt-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "crdt-native-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-crdt-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Write v1 title
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: set_title
+    args:
+      title: "crdt-scenario-doc"
+
+  - name: Write item to v1 map
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k1"
+      value: "v1"
+
+  - name: Sanity-check v1 state shape
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "title": "crdt-scenario-doc", "tag_count": 0}})'
+
+  # Negative: v2-only method not yet callable under v1.
+  - name: Negative — push_tag is not exported by v1
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: push_tag
+    args:
+      tag: "should-fail-pre-upgrade"
+    expected_failure: true
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-crdt-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade subgroup v1 → v2 (per-context, not cascade)
+    type: upgrade_group
+    node: app-migration-crdt-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  - name: Wait for upgrade + migration to apply
+    type: wait
+    seconds: 8
+
+  - name: Assert migration handler ran end-to-end
+    type: assert_log_present
+    nodes:
+      - app-migration-crdt-1
+    patterns:
+      - "Executing migration"
+      - "migrate_v1_to_v2"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Read post-migration schema_info
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 schema (CRDT-native field seeded empty, v1 data preserved)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"title": "crdt-scenario-doc"}})'
+      - 'json_subset({{v2_schema}}, {"output": {"tag_count": 0}})'
+
+  - name: Push first tag (v2-only)
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: push_tag
+    args:
+      tag: "first-tag"
+
+  - name: Push second tag (v2-only)
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: push_tag
+    args:
+      tag: "second-tag"
+
+  - name: Read tag_count after pushes
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: tag_count
+    outputs:
+      tag_count_after: result
+
+  - name: Assert two tags present
+    type: json_assert
+    statements:
+      - 'json_equal({{tag_count_after}}, {"output": 2})'
+
+  - name: Read first tag via get_tag(0)
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: get_tag
+    args:
+      index: 0
+    outputs:
+      tag_zero: result
+
+  - name: Assert first tag value
+    type: json_assert
+    statements:
+      - 'json_equal({{tag_zero}}, {"output": "first-tag"})'
+
+  - name: Assert v1 item map preserved through migration
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: get_item
+    args:
+      key: "k1"
+    outputs:
+      preserved_item: result
+
+  - name: Assert preserved v1 item value
+    type: json_assert
+    statements:
+      - 'json_equal({{preserved_item}}, {"output": "v1"})'
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-crdt-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-crdt-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-crdt-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-crdt-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

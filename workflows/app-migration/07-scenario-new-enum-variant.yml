@@ -1,0 +1,206 @@
+name: 07 — Scenario "new enum variant" (v1 → v2 append-only enum)
+description: >
+  Borsh encodes enums by discriminant INDEX (0, 1, 2, ...). Appending
+  a new variant at the END of an existing enum preserves every
+  pre-existing variant's index, so v1-encoded state bytes deserialize
+  unchanged under v2 — no migration function is required. v1's `Status`
+  has {Active=0, Paused=1}; v2's `Status` is {Active=0, Paused=1,
+  Archived=2}. The upgrade is `upgrade_group(group=subgroup, target=v2)`
+  with NO `migrate_method`. Topology: namespace + one subgroup + one
+  context in the subgroup.
+
+  Negative assertion: before the upgrade, the v2-only setter
+  `set_status_archived` must NOT be callable (v1 doesn't export it).
+  Post-upgrade, the implicit (non-migrating) decode preserves the v1
+  `Paused` status because its borsh index didn't shift.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-newenum
+  base_port: 9290
+  base_rpc_port: 9390
+
+steps:
+  - name: Install scenario-new-enum-variant-v1
+    type: install_application
+    node: app-migration-newenum-1
+    path: apps/migrations/scenario-new-enum-variant-v1/res/scenario_new_enum_variant_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-new-enum-variant-v2
+    type: install_application
+    node: app-migration-newenum-1
+    path: apps/migrations/scenario-new-enum-variant-v2/res/scenario_new_enum_variant_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Create namespace (v1)
+    type: create_namespace
+    node: app-migration-newenum-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-newenum-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-newenum-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "new-enum-variant-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-newenum-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Write v1 state — set status to Paused
+    type: call
+    node: app-migration-newenum-1
+    context_id: "{{ctx_id}}"
+    method: set_status_paused
+
+  - name: Write item to v1 map
+    type: call
+    node: app-migration-newenum-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k1"
+      value: "v1"
+
+  - name: Sanity-check v1 state shape
+    type: call
+    node: app-migration-newenum-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "status": "Paused"}})'
+
+  # Negative: v2-only setter not yet callable under v1.
+  - name: Negative — set_status_archived is not exported by v1
+    type: call
+    node: app-migration-newenum-1
+    context_id: "{{ctx_id}}"
+    method: set_status_archived
+    expected_failure: true
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-newenum-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade subgroup v1 → v2 (no migrate — append-only enum is borsh-compatible)
+    type: upgrade_group
+    node: app-migration-newenum-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+
+  - name: Wait for upgrade to apply
+    type: wait
+    seconds: 8
+
+  - name: Read post-upgrade schema_info
+    type: call
+    node: app-migration-newenum-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 schema_version AND v1 status preserved (append-only enum stable)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "status": "Paused"}})'
+
+  - name: Assert v1 item map preserved through implicit decode
+    type: call
+    node: app-migration-newenum-1
+    context_id: "{{ctx_id}}"
+    method: get_item
+    args:
+      key: "k1"
+    outputs:
+      preserved_item: result
+
+  - name: Assert preserved v1 item value
+    type: json_assert
+    statements:
+      - 'json_equal({{preserved_item}}, {"output": "v1"})'
+
+  - name: v2-only set_status_archived now callable
+    type: call
+    node: app-migration-newenum-1
+    context_id: "{{ctx_id}}"
+    method: set_status_archived
+
+  - name: Read schema_info after archiving
+    type: call
+    node: app-migration-newenum-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_archived: result
+
+  - name: Assert v2-only Archived variant round-trips
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_archived}}, {"output": {"schema_version": "2.0.0", "status": "Archived"}})'
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-newenum-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-newenum-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-newenum-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-newenum-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-newenum-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

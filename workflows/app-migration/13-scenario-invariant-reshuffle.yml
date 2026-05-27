@@ -1,0 +1,237 @@
+name: 13 — Scenario "invariant reshuffle" (v1 → v2-normalize-stats)
+description: >
+  Per-context migration for the invariant-reshuffle scenario. v1 carries a
+  denormalized counter pair: `global_count: LwwRegister<u64>` at the top
+  level and `per_item_counts: UnorderedMap<String, LwwRegister<u64>>`. The
+  implicit invariant `global_count == sum(per_item_counts)` is easy to
+  violate because each `record(item)` call independently bumps both
+  fields. v2 normalizes the pair into a `stats: Stats { total, per_item }`
+  substruct and enforces the invariant via a single `record` method that
+  atomically bumps both. The migration re-derives `total` by summing the
+  v1 per-item values rather than trusting v1's redundant `global_count`,
+  guaranteeing the v2 invariant holds from the first byte of v2 state.
+  Topology: namespace + one subgroup + one context, coordinated upgrade
+  policy, per-context upgrade (cascade=false).
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-reshuffle
+  base_port: 9350
+  base_rpc_port: 9450
+
+steps:
+  - name: Install scenario-invariant-reshuffle-v1
+    type: install_application
+    node: app-migration-reshuffle-1
+    path: apps/migrations/scenario-invariant-reshuffle-v1/res/scenario_invariant_reshuffle_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-invariant-reshuffle-v2
+    type: install_application
+    node: app-migration-reshuffle-1
+    path: apps/migrations/scenario-invariant-reshuffle-v2/res/scenario_invariant_reshuffle_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Create namespace (v1)
+    type: create_namespace
+    node: app-migration-reshuffle-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-reshuffle-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-reshuffle-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "reshuffle-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-reshuffle-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Record apple (v1, 1/3)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "apple"
+
+  - name: Record apple (v1, 2/3)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "apple"
+
+  - name: Record apple (v1, 3/3)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "apple"
+
+  - name: Record banana (v1, 1/2)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "banana"
+
+  - name: Record banana (v1, 2/2)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "banana"
+
+  - name: Record cherry (v1)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "cherry"
+
+  - name: Sanity-check v1 schema
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 denormalized counter is in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "global_count": 6}})'
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-reshuffle-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  - name: Upgrade subgroup v1 → v2 (per-context, not cascade)
+    type: upgrade_group
+    node: app-migration-reshuffle-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  - name: Wait for upgrade + migration to apply
+    type: wait
+    seconds: 8
+
+  - name: Assert migration handler ran end-to-end
+    type: assert_log_present
+    nodes:
+      - app-migration-reshuffle-1
+    patterns:
+      - "Executing migration"
+      - "migrate_v1_to_v2"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Read post-migration schema_info
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 schema (total re-derived from per-item sums)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "total": 6}})'
+
+  - name: Record apple under v2 (single entry point bumps total + per_item atomically)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "apple"
+    outputs:
+      new_total: result
+
+  - name: Assert v2 record returned new total = 7
+    type: json_assert
+    statements:
+      - 'json_equal({{new_total}}, {"output": 7})'
+
+  - name: Read apple count under v2
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: get_item_count
+    args:
+      item: "apple"
+    outputs:
+      apple_count: result
+
+  - name: Assert apple count = 4 (3 from v1 carried over + 1 from v2 record)
+    type: json_assert
+    statements:
+      - 'json_equal({{apple_count}}, {"output": 4})'
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-reshuffle-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-reshuffle-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-reshuffle-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-reshuffle-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

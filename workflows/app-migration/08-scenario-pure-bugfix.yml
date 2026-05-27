@@ -1,0 +1,248 @@
+name: 08 — Scenario "pure bugfix" (v1 → v2, no state change)
+description: >
+  Realistic per-context upgrade for the pure-bugfix scenario.
+  v2 has the byte-identical borsh layout of v1 (same field names,
+  types, order) — only the body of an exported method (`sum_all_values`)
+  differs: v1 has an off-by-one bug that adds 1 to the total, v2 fixes
+  it. Because the state struct is unchanged, no `#[app::migrate]` is
+  needed and the upgrade carries no `migrate_method`; existing v1 state
+  bytes decode as v2 directly.
+
+  Topology: namespace + one subgroup + one context in the subgroup.
+  Upgrade is `upgrade_group(group=subgroup, target=v2)` — per-context
+  (cascade=false), no migrate handler. Acts as the "code-only" row of
+  the per-scenario matrix.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-bugfix
+  base_port: 9300
+  base_rpc_port: 9400
+
+steps:
+  - name: Install scenario-pure-bugfix-v1
+    type: install_application
+    node: app-migration-bugfix-1
+    path: apps/migrations/scenario-pure-bugfix-v1/res/scenario_pure_bugfix_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-pure-bugfix-v2
+    type: install_application
+    node: app-migration-bugfix-1
+    path: apps/migrations/scenario-pure-bugfix-v2/res/scenario_pure_bugfix_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Create namespace (v1)
+    type: create_namespace
+    node: app-migration-bugfix-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-bugfix-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-bugfix-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "pure-bugfix-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Create context in subgroup (v1)
+    type: create_context
+    node: app-migration-bugfix-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Wait for context propagation
+    type: wait
+    seconds: 3
+
+  - name: Write v1 item k1=10
+    type: call
+    node: app-migration-bugfix-1
+    context_id: "{{ctx_id}}"
+    method: add_value
+    args:
+      key: "k1"
+      value: 10
+
+  - name: Write v1 item k2=20
+    type: call
+    node: app-migration-bugfix-1
+    context_id: "{{ctx_id}}"
+    method: add_value
+    args:
+      key: "k2"
+      value: 20
+
+  - name: Write v1 item k3=30
+    type: call
+    node: app-migration-bugfix-1
+    context_id: "{{ctx_id}}"
+    method: add_value
+    args:
+      key: "k3"
+      value: 30
+
+  - name: Call sum_all_values (v1, buggy)
+    type: call
+    node: app-migration-bugfix-1
+    context_id: "{{ctx_id}}"
+    method: sum_all_values
+    outputs:
+      v1_sum: result
+
+  - name: Assert v1 sum reflects the off-by-one bug (10+20+30+1 = 61)
+    type: json_assert
+    statements:
+      - 'json_equal({{v1_sum}}, {"output": 61})'
+
+  - name: Sanity-check v1 schema_info
+    type: call
+    node: app-migration-bugfix-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "last_sum": 61}})'
+
+  - name: Set upgrade policy to coordinated
+    type: update_group_settings
+    node: app-migration-bugfix-1
+    group_id: "{{group_id}}"
+    upgrade_policy: coordinated
+
+  # Pure-bugfix: state struct is byte-identical, so no migrate_method is
+  # supplied. Existing v1 state bytes must decode as v2 directly.
+  - name: Upgrade subgroup v1 → v2 (per-context, no migrate handler)
+    type: upgrade_group
+    node: app-migration-bugfix-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+
+  - name: Wait for upgrade to apply
+    type: wait
+    seconds: 8
+
+  - name: Read post-upgrade schema_info
+    type: call
+    node: app-migration-bugfix-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 schema (version bumped, last_sum preserved from v1)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "last_sum": 61}})'
+
+  - name: Call sum_all_values (v2, bug fixed)
+    type: call
+    node: app-migration-bugfix-1
+    context_id: "{{ctx_id}}"
+    method: sum_all_values
+    outputs:
+      v2_sum: result
+
+  - name: Assert v2 sum no longer has the off-by-one (10+20+30 = 60)
+    type: json_assert
+    statements:
+      - 'json_equal({{v2_sum}}, {"output": 60})'
+
+  - name: Get preserved item k1
+    type: call
+    node: app-migration-bugfix-1
+    context_id: "{{ctx_id}}"
+    method: get_value
+    args:
+      key: "k1"
+    outputs:
+      preserved_k1: result
+
+  - name: Assert preserved k1 = 10
+    type: json_assert
+    statements:
+      - 'json_equal({{preserved_k1}}, {"output": 10})'
+
+  - name: Get preserved item k2
+    type: call
+    node: app-migration-bugfix-1
+    context_id: "{{ctx_id}}"
+    method: get_value
+    args:
+      key: "k2"
+    outputs:
+      preserved_k2: result
+
+  - name: Assert preserved k2 = 20
+    type: json_assert
+    statements:
+      - 'json_equal({{preserved_k2}}, {"output": 20})'
+
+  - name: Get preserved item k3
+    type: call
+    node: app-migration-bugfix-1
+    context_id: "{{ctx_id}}"
+    method: get_value
+    args:
+      key: "k3"
+    outputs:
+      preserved_k3: result
+
+  - name: Assert preserved k3 = 30
+    type: json_assert
+    statements:
+      - 'json_equal({{preserved_k3}}, {"output": 30})'
+
+  - name: Delete context
+    type: delete_context
+    node: app-migration-bugfix-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-bugfix-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-bugfix-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-bugfix-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-bugfix-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
