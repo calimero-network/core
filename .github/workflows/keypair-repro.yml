@@ -1,0 +1,120 @@
+# Throwaway diagnostic workflow for the #2469 keypair-persistence
+# question. Run manually via `gh workflow run keypair-repro.yml` or
+# the Actions UI. Verdict line is at the bottom of the job log.
+# Delete this file once the question is answered (it's not part of
+# the e2e matrix).
+name: keypair-repro
+on:
+  workflow_dispatch:
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Pull merod
+        run: docker pull ghcr.io/calimero-network/merod:edge
+
+      - name: Reproduce keypair-persistence test
+        run: |
+          set -e
+          DATA_DIR="$RUNNER_TEMP/repro-keypair-data"
+          CONTAINER="repro-keypair-merod"
+          IMAGE="ghcr.io/calimero-network/merod:edge"
+
+          # The merod image runs as UID 10001. World-writable dir
+          # sidesteps the host-vs-container UID mismatch without
+          # needing chown (which would need sudo on macOS but is
+          # fine on the GH runner).
+          rm -rf "$DATA_DIR"
+          mkdir -p "$DATA_DIR"
+          chmod 0777 "$DATA_DIR"
+
+          echo "=== Step 1: merod init ==="
+          docker run --rm \
+            -v "$DATA_DIR:/app/data" \
+            --entrypoint=merod \
+            "$IMAGE" \
+            --home /app/data --node test init \
+            --server-host 0.0.0.0 --server-port 2528 --swarm-port 2428
+
+          CONFIG_PEER_ID=$(grep '^peer_id' "$DATA_DIR/test/config.toml" | awk -F\" '{print $2}')
+          echo "ON-DISK peer_id: $CONFIG_PEER_ID"
+
+          echo "=== Step 2: start merod, capture pre-restart runtime peer_id ==="
+          docker run -d --name "$CONTAINER" \
+            -v "$DATA_DIR:/app/data" \
+            --entrypoint=merod \
+            "$IMAGE" \
+            --home /app/data --node test run
+
+          PRE_RESTART_PEER=""
+          for i in $(seq 1 30); do
+            PRE_RESTART_PEER=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'local_peer_id=[A-Za-z0-9]+' | head -1 | cut -d= -f2)
+            [ -n "$PRE_RESTART_PEER" ] && break
+            sleep 1
+          done
+
+          if [ -z "$PRE_RESTART_PEER" ]; then
+            echo "✗ Pre-restart local_peer_id never appeared"
+            docker logs "$CONTAINER" 2>&1 | tail -30
+            exit 1
+          fi
+          echo "PRE-RESTART runtime peer_id: $PRE_RESTART_PEER"
+
+          echo "=== Step 3: docker restart, capture post-restart runtime peer_id ==="
+          docker restart "$CONTAINER"
+
+          POST_RESTART_PEER=""
+          for i in $(seq 1 30); do
+            HITS=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'local_peer_id=[A-Za-z0-9]+' | wc -l)
+            if [ "$HITS" -ge 2 ]; then
+              POST_RESTART_PEER=$(docker logs "$CONTAINER" 2>&1 | grep -oE 'local_peer_id=[A-Za-z0-9]+' | sed -n 2p | cut -d= -f2)
+              break
+            fi
+            sleep 1
+          done
+
+          if [ -z "$POST_RESTART_PEER" ]; then
+            echo "✗ Post-restart local_peer_id never appeared"
+            docker logs "$CONTAINER" 2>&1 | tail -50
+            exit 1
+          fi
+          echo "POST-RESTART runtime peer_id: $POST_RESTART_PEER"
+
+          echo ""
+          echo "============================================"
+          echo "=== VERDICT ==="
+          echo "============================================"
+          echo "on-disk (config.toml): $CONFIG_PEER_ID"
+          echo "pre-restart  (libp2p): $PRE_RESTART_PEER"
+          echo "post-restart (libp2p): $POST_RESTART_PEER"
+          echo ""
+
+          if [ "$CONFIG_PEER_ID" = "$PRE_RESTART_PEER" ] && [ "$PRE_RESTART_PEER" = "$POST_RESTART_PEER" ]; then
+            echo "✓ ALL THREE MATCH — keypair persists across restart."
+            echo "  The bug is NOT keypair-persistence. The post-restart"
+            echo "  container reads the same keypair from disk that init"
+            echo "  wrote. Look elsewhere: rendezvous re-register failing,"
+            echo "  or relay-reservation re-acquisition not happening."
+          elif [ "$PRE_RESTART_PEER" != "$POST_RESTART_PEER" ]; then
+            echo "✗ PRE-RESTART vs POST-RESTART DIFFER — keypair regenerates."
+            echo "  This IS the keypair-persistence bug. merod is generating"
+            echo "  a new keypair on the post-restart run despite the"
+            echo "  config.toml on disk having a valid identity section."
+          else
+            echo "? Mismatch shape doesn't fit either hypothesis cleanly."
+            echo "  Inspect manually."
+          fi
+
+      - name: Dump final container logs (for forensic inspection)
+        if: always()
+        run: |
+          echo "=== Last 200 lines of merod container logs (both incarnations) ==="
+          docker logs repro-keypair-merod 2>&1 | tail -200 || true
+
+      - name: Dump on-disk config (peer_id + keypair only)
+        if: always()
+        run: |
+          echo "=== config.toml [identity] section ==="
+          grep -E '^peer_id|^keypair' "$RUNNER_TEMP/repro-keypair-data/test/config.toml" 2>&1 || true
