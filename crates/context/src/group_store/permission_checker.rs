@@ -6,7 +6,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::GroupStoreError;
+use super::{CapabilitiesError, MembershipError};
 
 /// Authorization service for group governance operations.
 ///
@@ -45,8 +45,8 @@ impl<'a> PermissionChecker<'a> {
         // fallback. Falling through to `membership.require_admin` here
         // would just re-run `is_group_admin` to format an error. Bail
         // directly with the same shape `require_group_admin` uses, so
-        // callers that match on `GroupStoreError::NotAdmin` keep working.
-        bail!(GroupStoreError::NotAdmin {
+        // callers that match on `MembershipError::NotAdmin` keep working.
+        bail!(MembershipError::NotAdmin {
             group_id: format!("{:?}", self.group_id),
             identity: format!("{:?}", identity),
         });
@@ -61,7 +61,7 @@ impl<'a> PermissionChecker<'a> {
         // `require_group_admin_or_capability` would just redo the same
         // store reads to format an error. Bail directly with the same
         // diagnostic shape.
-        bail!(GroupStoreError::Unauthorized {
+        bail!(CapabilitiesError::Unauthorized {
             group_id: format!("{:?}", self.group_id),
             operation: operation.to_owned(),
         });
@@ -75,7 +75,7 @@ impl<'a> PermissionChecker<'a> {
         if self.can_manage_application(identity)? {
             return Ok(());
         }
-        bail!(GroupStoreError::Unauthorized {
+        bail!(CapabilitiesError::Unauthorized {
             group_id: format!("{:?}", self.group_id),
             operation: operation.to_owned(),
         });
@@ -96,8 +96,10 @@ impl<'a> PermissionChecker<'a> {
         if self.is_authorized_with_capability(identity, MemberCapabilities::CAN_CREATE_CONTEXT)? {
             return Ok(());
         }
-
-        bail!("only group admin or members with CAN_CREATE_CONTEXT can register a context")
+        bail!(CapabilitiesError::Unauthorized {
+            group_id: format!("{:?}", self.group_id),
+            operation: "register context (CAN_CREATE_CONTEXT)".into(),
+        })
     }
 
     /// `self.group_id` is the *parent* group here: a creator may make a
@@ -109,7 +111,10 @@ impl<'a> PermissionChecker<'a> {
         if self.is_authorized_with_capability(identity, MemberCapabilities::CAN_CREATE_SUBGROUP)? {
             return Ok(());
         }
-        bail!("only group admin or members with CAN_CREATE_SUBGROUP can create a subgroup")
+        bail!(CapabilitiesError::Unauthorized {
+            group_id: format!("{:?}", self.group_id),
+            operation: "create subgroup (CAN_CREATE_SUBGROUP)".into(),
+        })
     }
 
     /// `self.group_id` is the namespace root: a member may cascade-delete a
@@ -118,7 +123,10 @@ impl<'a> PermissionChecker<'a> {
         if self.is_authorized_with_capability(identity, MemberCapabilities::CAN_DELETE_SUBGROUP)? {
             return Ok(());
         }
-        bail!("only namespace admin or members with CAN_DELETE_SUBGROUP can delete a subgroup")
+        bail!(CapabilitiesError::Unauthorized {
+            group_id: format!("{:?}", self.group_id),
+            operation: "delete subgroup (CAN_DELETE_SUBGROUP)".into(),
+        })
     }
 
     /// `self.group_id` is the subgroup whose visibility is being changed.
@@ -128,9 +136,10 @@ impl<'a> PermissionChecker<'a> {
         {
             return Ok(());
         }
-        bail!(
-            "only group admin or members with CAN_MANAGE_VISIBILITY can change subgroup visibility"
-        )
+        bail!(CapabilitiesError::Unauthorized {
+            group_id: format!("{:?}", self.group_id),
+            operation: "change subgroup visibility (CAN_MANAGE_VISIBILITY)".into(),
+        })
     }
 
     /// Allow if `identity` is a group admin (incl. inherited admin) or holds
@@ -141,7 +150,10 @@ impl<'a> PermissionChecker<'a> {
         if self.is_authorized_with_capability(identity, MemberCapabilities::CAN_MANAGE_METADATA)? {
             return Ok(());
         }
-        bail!("only group admin or members with CAN_MANAGE_METADATA can change group metadata")
+        bail!(CapabilitiesError::Unauthorized {
+            group_id: format!("{:?}", self.group_id),
+            operation: "change group metadata (CAN_MANAGE_METADATA)".into(),
+        })
     }
 
     /// Resolves "admin or holds `capability_bit`" with Open-subgroup
@@ -196,7 +208,10 @@ impl<'a> PermissionChecker<'a> {
         role: &GroupMemberRole,
     ) -> EyreResult<()> {
         if *role == GroupMemberRole::Admin && !self.is_admin(signer)? {
-            bail!("only admins can add new admins");
+            bail!(MembershipError::NotAdmin {
+                group_id: format!("{:?}", self.group_id),
+                identity: format!("{signer:?}"),
+            });
         }
         Ok(())
     }
@@ -207,14 +222,20 @@ impl<'a> PermissionChecker<'a> {
         member: &PublicKey,
     ) -> EyreResult<()> {
         if self.is_admin(member)? && !self.is_admin(signer)? {
-            bail!("only admins can remove other admins");
+            bail!(MembershipError::NotAdmin {
+                group_id: format!("{:?}", self.group_id),
+                identity: format!("{signer:?}"),
+            });
         }
         Ok(())
     }
 
     pub fn require_admin_or_self(&self, signer: &PublicKey, member: &PublicKey) -> EyreResult<()> {
         if !self.is_admin(signer)? && *signer != *member {
-            bail!("only group admin or the member can set member alias");
+            bail!(CapabilitiesError::Unauthorized {
+                group_id: format!("{:?}", self.group_id),
+                operation: "set member alias (admin or self only)".into(),
+            });
         }
         Ok(())
     }

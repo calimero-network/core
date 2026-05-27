@@ -5,7 +5,7 @@ use calimero_store::key::{GroupSigningKey, GroupSigningKeyValue, GROUP_SIGNING_K
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::{collect_keys_with_prefix, namespace::MAX_NAMESPACE_DEPTH, GroupStoreError};
+use super::{collect_keys_with_prefix, namespace::MAX_NAMESPACE_DEPTH, SigningKeysError};
 
 /// Typed Repository for per-group signing keys (used by local-identity
 /// signing during governance op publication).
@@ -64,7 +64,7 @@ impl<'a> SigningKeysRepository<'a> {
     /// Verify that the node holds a signing key for `requester` in this group.
     pub fn require_key(&self, group_id: &ContextGroupId, requester: &PublicKey) -> EyreResult<()> {
         if self.get_key(group_id, requester)?.is_none() {
-            bail!(GroupStoreError::NoSigningKey {
+            bail!(SigningKeysError::NotFound {
                 group_id: format!("{group_id:?}"),
                 identity: format!("{requester:?}"),
             });
@@ -142,10 +142,10 @@ mod tests {
         let repo = SigningKeysRepository::new(&store);
         let pk = PublicKey::from([0x01; 32]);
         let err = repo.require_key(&test_group_id(), &pk).unwrap_err();
-        assert!(
-            format!("{err}").contains("NoSigningKey")
-                || format!("{err}").to_lowercase().contains("signing")
-        );
+        assert!(matches!(
+            err.downcast_ref::<SigningKeysError>(),
+            Some(SigningKeysError::NotFound { .. })
+        ));
     }
 
     #[test]

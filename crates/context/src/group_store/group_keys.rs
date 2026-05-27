@@ -1,4 +1,4 @@
-use crate::group_store::MembershipRepository;
+use crate::group_store::{KeyringError, MembershipRepository};
 use calimero_context_client::local_governance::{
     EncryptedGroupOp, GroupOp, KeyEnvelope, KeyRotation,
 };
@@ -111,7 +111,7 @@ impl<'a> GroupKeyring<'a> {
 
         let ciphertext = shared_key
             .encrypt(plaintext, nonce)
-            .ok_or_else(|| eyre::eyre!("AES-GCM encryption failed"))?;
+            .ok_or(KeyringError::EncryptionFailed)?;
 
         Ok(EncryptedGroupOp { nonce, ciphertext })
     }
@@ -123,7 +123,7 @@ impl<'a> GroupKeyring<'a> {
         let shared_key = SharedKey::from_sk(&sk);
         let plaintext = shared_key
             .decrypt(encrypted.ciphertext.clone(), encrypted.nonce)
-            .ok_or_else(|| eyre::eyre!("failed to decrypt group op (bad sender_key or corrupt)"))?;
+            .ok_or(KeyringError::DecryptionFailed)?;
         borsh::from_slice(&plaintext).map_err(|e| {
             // "Unexpected length of input" on this path means the decrypted
             // plaintext length does not match the current `GroupOp` borsh
@@ -137,7 +137,7 @@ impl<'a> GroupKeyring<'a> {
                 error = %e,
                 "borsh decode inner GroupOp failed (codec/schema mismatch)"
             );
-            eyre::eyre!("borsh decode inner GroupOp: {e}")
+            KeyringError::InnerOpDecodeFailed(format!("{e}")).into()
         })
     }
 
@@ -148,8 +148,11 @@ impl<'a> GroupKeyring<'a> {
     ) -> EyreResult<KeyEnvelope> {
         use calimero_crypto::SharedKey;
 
-        let shared = SharedKey::new(sender_sk, recipient_pk)
-            .map_err(|e| eyre::eyre!("ECDH key agreement failed: {e:?}"))?;
+        let shared = SharedKey::new(sender_sk, recipient_pk).map_err(|e| {
+            KeyringError::KeyAgreementFailed {
+                details: format!("{e:?}"),
+            }
+        })?;
 
         let nonce: [u8; 12] = {
             use rand::Rng;
@@ -158,7 +161,7 @@ impl<'a> GroupKeyring<'a> {
 
         let ciphertext = shared
             .encrypt(group_key.to_vec(), nonce)
-            .ok_or_else(|| eyre::eyre!("AES-GCM encryption of group key failed"))?;
+            .ok_or(KeyringError::EncryptionFailed)?;
 
         Ok(KeyEnvelope {
             recipient: *recipient_pk,
@@ -174,18 +177,18 @@ impl<'a> GroupKeyring<'a> {
     ) -> EyreResult<[u8; 32]> {
         use calimero_crypto::SharedKey;
 
-        let shared = SharedKey::new(recipient_sk, &envelope.ephemeral_pk)
-            .map_err(|e| eyre::eyre!("ECDH key agreement failed: {e:?}"))?;
+        let shared = SharedKey::new(recipient_sk, &envelope.ephemeral_pk).map_err(|e| {
+            KeyringError::KeyAgreementFailed {
+                details: format!("{e:?}"),
+            }
+        })?;
 
         let plaintext = shared
             .decrypt(envelope.ciphertext.clone(), envelope.nonce)
-            .ok_or_else(|| eyre::eyre!("failed to decrypt key envelope (wrong recipient?)"))?;
+            .ok_or(KeyringError::DecryptionFailed)?;
 
         if plaintext.len() != 32 {
-            bail!(
-                "decrypted key envelope has wrong length: {}",
-                plaintext.len()
-            );
+            bail!(KeyringError::BadKeyLength(plaintext.len()));
         }
 
         let mut key = [0u8; 32];

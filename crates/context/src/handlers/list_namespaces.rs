@@ -98,8 +98,7 @@ mod tests {
 
     use super::{collect_namespace_summaries, paginate_namespaces};
     use crate::group_store::{
-        GroupStoreError, MembershipRepository, MetaRepository, MetadataRepository,
-        NamespaceRepository,
+        ApplyError, MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
     };
 
     fn test_summary(namespace_id: [u8; 32]) -> NamespaceSummary {
@@ -166,13 +165,14 @@ mod tests {
             entries,
             None,
             |_group_id| Some((PublicKey::from([0x05; 32]), [0u8; 32])),
-            |_group_id, _meta, _node_identity| Err(GroupStoreError::UnsupportedOp.into()),
+            |_group_id, _meta, _node_identity| Err(ApplyError::UnsupportedOp.into()),
         )
         .expect_err("builder errors should be propagated");
 
-        assert!(err
-            .to_string()
-            .contains(&GroupStoreError::UnsupportedOp.to_string()));
+        assert!(matches!(
+            err.downcast_ref::<ApplyError>(),
+            Some(ApplyError::UnsupportedOp)
+        ));
     }
 
     #[test]

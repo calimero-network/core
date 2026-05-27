@@ -1,4 +1,4 @@
-use crate::group_store::{MembershipRepository, MetaRepository};
+use crate::group_store::{MembershipRepository, MetaRepository, NamespaceError};
 use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -138,29 +138,24 @@ impl<'a> NamespaceRepository<'a> {
         child_group_id: &ContextGroupId,
     ) -> EyreResult<()> {
         if parent_group_id == child_group_id {
-            bail!("cannot nest a group under itself");
+            bail!(NamespaceError::SelfNesting);
         }
 
         if self.parent(child_group_id)?.is_some() {
-            bail!(
-                "group {:?} already has a parent; unnest it first",
-                child_group_id
-            );
+            bail!(NamespaceError::AlreadyHasParent(format!(
+                "{child_group_id:?}"
+            )));
         }
 
         let mut current = *parent_group_id;
         let mut depth = 0usize;
         while let Some(ancestor) = self.parent(&current)? {
             if ancestor == *child_group_id {
-                bail!("nesting would create a cycle");
+                bail!(NamespaceError::NestingCycle);
             }
             depth += 1;
             if depth > MAX_NAMESPACE_DEPTH {
-                bail!(
-                    "nesting depth exceeds MAX_NAMESPACE_DEPTH ({MAX_NAMESPACE_DEPTH}); \
-                     a tree this deep would also be unwalkable by every other \
-                     parent-chain operation (resolve, check_path, is_descendant_of)"
-                );
+                bail!(NamespaceError::DepthExceeded);
             }
             current = ancestor;
         }
@@ -356,9 +351,7 @@ impl<'a> NamespaceRepository<'a> {
                 None => return Ok(current),
             }
         }
-        eyre::bail!(
-            "namespace resolution exceeded max depth ({MAX_NAMESPACE_DEPTH}), possible circular reference"
-        )
+        eyre::bail!(NamespaceError::DepthExceeded)
     }
 
     /// Walk the subtree rooted at `root` and return:
@@ -401,20 +394,25 @@ impl<'a> NamespaceRepository<'a> {
         child: &ContextGroupId,
         new_parent: &ContextGroupId,
     ) -> EyreResult<ReparentOutcome> {
-        let old_parent = self.parent(child)?.ok_or_else(|| {
-            eyre::eyre!("cannot reparent the namespace root: '{child:?}' has no parent")
-        })?;
+        let old_parent = self
+            .parent(child)?
+            .ok_or_else(|| NamespaceError::RootHasNoParent(format!("{child:?}")))?;
 
         if old_parent == *new_parent {
             return Ok(ReparentOutcome::Unchanged);
         }
 
         if MetaRepository::new(self.store).load(new_parent)?.is_none() {
-            eyre::bail!("new parent group '{new_parent:?}' not found in this namespace");
+            eyre::bail!(NamespaceError::ReparentTargetMissing(format!(
+                "{new_parent:?}"
+            )));
         }
 
         if self.is_descendant_of(new_parent, child)? {
-            eyre::bail!("cycle: new_parent '{new_parent:?}' is a descendant of child '{child:?}'");
+            eyre::bail!(NamespaceError::ReparentCycle {
+                new_parent: format!("{new_parent:?}"),
+                child: format!("{child:?}"),
+            });
         }
 
         let mut handle = self.store.handle();
@@ -455,9 +453,7 @@ impl<'a> NamespaceRepository<'a> {
                 None => return Ok(false),
             }
         }
-        eyre::bail!(
-            "is_descendant_of exceeded MAX_NAMESPACE_DEPTH ({MAX_NAMESPACE_DEPTH}); possible cycle in store"
-        )
+        eyre::bail!(NamespaceError::DepthExceeded)
     }
 
     /// Read this node's identity for a namespace from the store.

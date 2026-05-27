@@ -5,7 +5,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 use eyre::{bail, Result as EyreResult};
 
-use super::super::{read_tee_admission_policy, GroupStoreError, TeeAdmissionPolicy};
+use super::super::{read_tee_admission_policy, MembershipError, TeeAdmissionPolicy};
 use super::policy_rules::{
     validate_tee_attestation_allowlists, MembershipPolicyRejection, TeeAllowlistPolicy,
     TeeAttestationClaims, TEE_REJECT_MRTD, TEE_REJECT_RTMR0, TEE_REJECT_RTMR1, TEE_REJECT_RTMR2,
@@ -41,7 +41,7 @@ impl<'a> MembershipPolicy<'a> {
         if self.membership.has_another_admin(member)? {
             return Ok(());
         }
-        bail!(GroupStoreError::LastAdmin);
+        bail!(MembershipError::LastAdmin);
     }
 
     pub fn ensure_not_last_admin_demotion(
@@ -58,7 +58,7 @@ impl<'a> MembershipPolicy<'a> {
         if self.membership.has_another_admin(member)? {
             return Ok(());
         }
-        bail!(GroupStoreError::LastAdminDemotion);
+        bail!(MembershipError::LastAdminDemotion);
     }
 
     pub fn require_tee_attestation_verifier_membership(
@@ -66,17 +66,14 @@ impl<'a> MembershipPolicy<'a> {
         signer: &PublicKey,
     ) -> EyreResult<()> {
         if !self.membership.is_member(signer)? {
-            bail!("TEE attestation verifier must be a group member");
+            bail!(MembershipError::TeeVerifierNotMember);
         }
         Ok(())
     }
 
     pub fn read_required_tee_admission_policy(&self) -> EyreResult<TeeAdmissionPolicy> {
-        read_tee_admission_policy(self.store, &self.group_id)?.ok_or_else(|| {
-            eyre::eyre!(
-                "MemberJoinedViaTeeAttestation rejected: no TeeAdmissionPolicySet exists for group"
-            )
-        })
+        read_tee_admission_policy(self.store, &self.group_id)?
+            .ok_or_else(|| MembershipError::NoTeeAdmissionPolicy.into())
     }
 
     pub fn validate_tee_attestation_allowlists(
