@@ -1,28 +1,10 @@
 //! `GroupOp::CascadeTargetApplicationSet` apply handler. Extracted from
 //! `apply_group_op_mutations` in #2304.
 
-#![allow(unused_imports)]
-
 use super::context::GroupApplyCtx;
-use crate::group_store::{
-    cascade_remove_member_from_group_tree, delete_group_local_rows, enumerate_group_contexts,
-    get_group_for_context, MAX_NAMESPACE_DEPTH,
-};
-use crate::group_store::{
-    ApplyError, CapabilitiesError, CapabilitiesRepository, ContextRegistrationError,
-    ContextRegistrationService, DenyListRepository, GroupKeyring, GroupSettingsService,
-    KeyringError, MembershipError, MembershipPolicy, MembershipRepository, MetaError,
-    MetaRepository, MetadataRepository, MigrationsRepository, NamespaceError, NamespaceRepository,
-    PermissionChecker, SigningKeysError, SigningKeysRepository, UpgradesRepository,
-};
-use calimero_context_client::local_governance::GroupOp;
-use calimero_context_config::types::ContextGroupId;
+use crate::group_store::{GroupSettingsService, PermissionChecker};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
-use calimero_primitives::identity::PublicKey;
-use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
 use eyre::{bail, Result as EyreResult};
-use std::collections::BTreeMap;
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
@@ -30,9 +12,9 @@ pub(crate) fn apply(
     app_key: &[u8; 32],
     target_application_id: &ApplicationId,
 ) -> EyreResult<()> {
-    let signer = ctx.signer;
-    let group_id = ctx.group_id;
-    let store = ctx.store;
+    let signer = ctx.signer();
+    let group_id = ctx.group_id();
+    let store = ctx.store();
 
     // Walk the descendant tree (incl. signed group) and apply the
     // settings mutation to every descendant whose current `app_key`
@@ -122,20 +104,9 @@ pub(crate) fn apply(
     }
     // Cascade variants don't produce per-op divergence reports —
     // the only producers today are MemberRemoved/MemberLeft.
-    // Fall through to the function-tail `Ok((true, divergence))`
-    // exit (rather than an early `return`) so the cascade arms
-    // share the same handled-flag convention as every other
-    // arm: the variant WAS recognised; a no-match outcome is a
-    // successful no-op, not unknown-variant. Returning
-    // `handled = false` here would make the caller
-    // `apply_local_signed_group_op` bail with
-    // "unsupported group op variant for local apply", which
-    // also breaks the concurrent-cascade safety case (loser
-    // cascade arrives with `from_app_key` no longer matching
-    // anything and is intended to be silently swallowed) AND
-    // the audit-log persistence path in
-    // `namespace/governance.rs` (only persists when
-    // `handled == true`).
-    ctx.divergence = None;
+    // The `divergence` field on the ctx stays as initialised
+    // (`None` from `GroupApplyCtx::new`); no need to reset it
+    // explicitly. A no-match outcome is a successful no-op, not
+    // unknown-variant, so the caller still sees `handled = true`.
     Ok(())
 }

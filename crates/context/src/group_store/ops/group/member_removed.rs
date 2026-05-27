@@ -1,33 +1,15 @@
 //! `GroupOp::MemberRemoved` apply handler. Extracted from
 //! `apply_group_op_mutations` in #2304.
 
-#![allow(unused_imports)]
-
-use super::super::super::contexts::restore_member_context_identities;
-use super::super::super::{
-    emit_auto_follow_set_if_enabled, now_millis, set_context_service_name,
-    verify_post_apply_state_hashes,
-};
+use super::super::super::verify_post_apply_state_hashes;
 use super::context::GroupApplyCtx;
 use crate::group_store::{
-    cascade_remove_member_from_group_tree, delete_group_local_rows, enumerate_group_contexts,
-    get_group_for_context, MAX_NAMESPACE_DEPTH,
+    cascade_remove_member_from_group_tree, DenyListRepository, MembershipError,
+    MembershipRepository, MetaRepository,
 };
-use crate::group_store::{
-    ApplyError, CapabilitiesError, CapabilitiesRepository, ContextRegistrationError,
-    ContextRegistrationService, DenyListRepository, GroupKeyring, GroupSettingsService,
-    KeyringError, MembershipError, MembershipPolicy, MembershipRepository, MetaError,
-    MetaRepository, MetadataRepository, MigrationsRepository, NamespaceError, NamespaceRepository,
-    PermissionChecker, SigningKeysError, SigningKeysRepository, UpgradesRepository,
-};
-use calimero_context_client::local_governance::GroupOp;
-use calimero_context_config::types::ContextGroupId;
-use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_primitives::metadata::{validate_metadata_payload, MetadataRecord};
 use eyre::{bail, Result as EyreResult};
-use std::collections::BTreeMap;
 
 pub(crate) fn apply(
     ctx: &mut GroupApplyCtx<'_>,
@@ -35,13 +17,13 @@ pub(crate) fn apply(
     expected_group_state_hash: &[u8; 32],
     expected_context_state_hashes: &[(ContextId, [u8; 32])],
 ) -> EyreResult<()> {
-    let signer = ctx.signer;
-    let group_id = ctx.group_id;
-    let store = ctx.store;
+    let signer = ctx.signer();
+    let group_id = ctx.group_id();
+    let store = ctx.store();
 
-    ctx.permissions
+    ctx.permissions()
         .require_manage_members(signer, "remove member")?;
-    ctx.permissions
+    ctx.permissions()
         .require_admin_to_remove_admin(signer, member)?;
     // Owner is immune to involuntary removal. Owner must
     // `TransferOwnership` first to step down, then they can be
@@ -53,7 +35,7 @@ pub(crate) fn apply(
             )));
         }
     }
-    ctx.membership_policy
+    ctx.membership_policy()
         .ensure_not_last_admin_removal(member)?;
     cascade_remove_member_from_group_tree(store, group_id, member)?;
     MembershipRepository::new(store).remove_member(group_id, member)?;

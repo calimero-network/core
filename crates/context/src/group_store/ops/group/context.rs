@@ -9,10 +9,11 @@
 //!   state-hash check (`MemberRemoved`, `MemberLeft`). Set by those
 //!   handlers; left `None` by every other op.
 //!
-//! The context borrows the store immutably — handlers obtain mutable
-//! store access through `store.handle()` or through the repository
-//! APIs that wrap it. The context itself is `&mut` only to allow
-//! ops to set `divergence`.
+//! Field visibility note: only `divergence` is `pub(crate)` mutable.
+//! Every other field is private and exposed through read-only
+//! accessor methods. This keeps handlers from accidentally
+//! re-binding the authorization context (`signer`, `group_id`,
+//! `store`) within a dispatch call.
 
 use crate::group_store::{
     ContextRegistrationService, DivergenceReport, GroupSettingsService, MembershipPolicy,
@@ -23,13 +24,13 @@ use calimero_primitives::identity::PublicKey;
 use calimero_store::Store;
 
 pub(crate) struct GroupApplyCtx<'a> {
-    pub(crate) store: &'a Store,
-    pub(crate) group_id: &'a ContextGroupId,
-    pub(crate) signer: &'a PublicKey,
-    pub(crate) permissions: PermissionChecker<'a>,
-    pub(crate) membership_policy: MembershipPolicy<'a>,
-    pub(crate) settings: GroupSettingsService<'a>,
-    pub(crate) context_registration: ContextRegistrationService<'a>,
+    store: &'a Store,
+    group_id: &'a ContextGroupId,
+    signer: &'a PublicKey,
+    permissions: PermissionChecker<'a>,
+    membership_policy: MembershipPolicy<'a>,
+    settings: GroupSettingsService<'a>,
+    context_registration: ContextRegistrationService<'a>,
     /// Populated by post-apply hash-check arms (`MemberRemoved`,
     /// `MemberLeft`) when the recomputed local state diverges from
     /// the signed claim. The dispatcher forwards this up the apply
@@ -54,5 +55,33 @@ impl<'a> GroupApplyCtx<'a> {
             context_registration: ContextRegistrationService::new(store, *group_id),
             divergence: None,
         }
+    }
+
+    pub(crate) fn store(&self) -> &'a Store {
+        self.store
+    }
+
+    pub(crate) fn group_id(&self) -> &'a ContextGroupId {
+        self.group_id
+    }
+
+    pub(crate) fn signer(&self) -> &'a PublicKey {
+        self.signer
+    }
+
+    pub(crate) fn permissions(&self) -> &PermissionChecker<'a> {
+        &self.permissions
+    }
+
+    pub(crate) fn membership_policy(&self) -> &MembershipPolicy<'a> {
+        &self.membership_policy
+    }
+
+    pub(crate) fn settings(&self) -> &GroupSettingsService<'a> {
+        &self.settings
+    }
+
+    pub(crate) fn context_registration(&self) -> &ContextRegistrationService<'a> {
+        &self.context_registration
     }
 }
