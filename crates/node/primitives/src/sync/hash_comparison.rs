@@ -346,7 +346,33 @@ pub struct LeafMetadata {
     pub collection_id: [u8; 32],
 
     /// Optional parent entity ID (for nested structures).
+    ///
+    /// Kept for backward compatibility with peers that ship only the
+    /// immediate parent; new senders also populate `ancestors` below so
+    /// the receiver can rebuild the entire chain at once.
     pub parent_id: Option<[u8; 32]>,
+
+    /// Full ancestor chain from immediate parent up to (but not
+    /// including) the system root, ordered immediate-parent first.
+    /// Mirrors what `calimero_storage::index::Index::get_ancestors_of`
+    /// returns on the sender — see `LeafMetadata::with_ancestors`.
+    ///
+    /// Populated by HC and LevelWise sender paths since #2319 follow-up.
+    /// Empty means "this peer didn't ship a chain" — `apply_leaf_with_crdt_merge`
+    /// then falls back to the single-`parent_id` reconstruction path.
+    ///
+    /// Without this field, when a receiver gets a leaf whose immediate
+    /// parent doesn't have a local index entry yet (BFS-vs-DFS batch
+    /// ordering in EntityPush), `apply_action`'s ancestor loop creates
+    /// the parent via `Index::add_root(parent_clone)` — i.e. as a
+    /// top-level root entity, parent_id=None. That's the wrong tree
+    /// position; the receiver's Merkle hash for the misplaced ancestor
+    /// then diverges from the sender's, and HashComparison can't heal
+    /// the divergence because every repair attempt reintroduces the
+    /// same misplacement. With this field, the loop sees the full
+    /// `[parent, grandparent, …, root_child]` and `add_child_to`s each
+    /// to the next up — correct topology.
+    pub ancestors: Vec<calimero_storage::entities::ChildInfo>,
 
     /// Authorization triple for `Shared` / `User` storage entities —
     /// the access-control list + signature data the receiver needs to
@@ -384,6 +410,7 @@ impl LeafMetadata {
             version: 0,
             collection_id,
             parent_id: None,
+            ancestors: Vec::new(),
             authorization: None,
         }
     }
@@ -446,6 +473,20 @@ impl LeafMetadata {
     #[must_use]
     pub fn with_parent(mut self, parent_id: [u8; 32]) -> Self {
         self.parent_id = Some(parent_id);
+        self
+    }
+
+    /// Set the full ancestor chain (immediate parent first, root_child
+    /// last; root itself excluded — matches `Index::get_ancestors_of`).
+    ///
+    /// HC and LevelWise senders populate this so the receiver's
+    /// `apply_action` ancestor loop has the chain it needs to attach
+    /// each missing ancestor to its real parent instead of falling
+    /// back to `add_root` (which places intermediate ancestors at the
+    /// wrong tree level, diverging the Merkle root — see field doc).
+    #[must_use]
+    pub fn with_ancestors(mut self, ancestors: Vec<calimero_storage::entities::ChildInfo>) -> Self {
+        self.ancestors = ancestors;
         self
     }
 }

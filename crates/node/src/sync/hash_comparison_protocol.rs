@@ -917,6 +917,18 @@ fn collect_leaves_recursive(
             if let Some(parent_id) = index.parent_id() {
                 metadata = metadata.with_parent(*parent_id.as_bytes());
             }
+            // #2319 follow-up: ship the full ancestor chain alongside
+            // `parent_id`. Same trust model as the existing `parent_id`
+            // wire — not cryptographically signed; HC sync is for
+            // repairing drifted tree shapes, so a signed commitment to a
+            // single shape would reject every legitimate repair. See
+            // `LeafMetadata::ancestors` field doc for why this matters
+            // for nested entities (without the chain the receiver's
+            // ancestor loop calls `add_root` for any missing
+            // grandparent, misplacing the subtree).
+            if let Ok(ancestors) = Index::<MainStorage>::get_ancestors_of(entity_id) {
+                metadata = metadata.with_ancestors(ancestors);
+            }
             if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
                 metadata = metadata.with_authorization(auth);
             }
@@ -1070,6 +1082,11 @@ fn get_local_tree_node(
                 .with_created_at(index.metadata.created_at());
             if let Some(parent_id) = index.parent_id() {
                 metadata = metadata.with_parent(*parent_id.as_bytes());
+            }
+            // #2319 follow-up: full ancestor chain — see the matching
+            // block in `collect_leaves_recursive` for rationale.
+            if let Ok(ancestors) = Index::<MainStorage>::get_ancestors_of(entity_id) {
+                metadata = metadata.with_ancestors(ancestors);
             }
             if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
                 metadata = metadata.with_authorization(auth);

@@ -430,8 +430,15 @@ impl<S: StorageAdaptor> Index<S> {
             .ok_or(StorageError::IndexNotFound(id))
     }
 
-    /// Returns ancestors from immediate parent to root.
-    pub(crate) fn get_ancestors_of(id: Id) -> Result<Vec<ChildInfo>, StorageError> {
+    /// Returns ancestors from immediate parent to root (root itself excluded).
+    ///
+    /// Public so sync code outside the storage crate (the HashComparison /
+    /// LevelWise leaf builders in `calimero-node`) can carry the full
+    /// ancestor chain on the wire — see `LeafMetadata::ancestors`. This
+    /// is the same read the storage layer already exposes indirectly via
+    /// `Index::get_index(id)`, so promoting the helper to `pub` doesn't
+    /// widen the data surface.
+    pub fn get_ancestors_of(id: Id) -> Result<Vec<ChildInfo>, StorageError> {
         let mut ancestors = Vec::new();
         let mut current_id = id;
 

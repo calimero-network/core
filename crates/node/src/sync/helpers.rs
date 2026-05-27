@@ -381,37 +381,56 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
             Interface::<MainStorage>::apply_action(parent_init, &ApplyContext::empty())?;
         }
 
-        let parent_hash = Index::<MainStorage>::get_hashes_for(parent_id)
-            .ok()
-            .flatten()
-            .map(|(full, _)| full)
-            .unwrap_or([0; 32]);
-        let parent_metadata = Index::<MainStorage>::get_index(parent_id)
-            .ok()
-            .flatten()
-            .map(|idx| idx.metadata.clone())
-            .unwrap_or_default();
-
-        let ancestor = ChildInfo::new(parent_id, parent_hash, parent_metadata);
+        // Prefer the full ancestor chain shipped by the sender (#2319
+        // follow-up). Without the chain, the apply_action ancestor
+        // loop falls back to `Index::add_root(parent_clone)` for any
+        // missing grandparent — placing intermediate ancestors at
+        // the wrong tree level and diverging the Merkle root for
+        // nested-collection entities. With the chain populated, the
+        // loop runs `add_child_to(grandparent, parent)` recursively
+        // up to root_child and `add_root(root_child)` — correct
+        // topology.
+        //
+        // Legacy fallback: if the wire didn't carry `ancestors`
+        // (older peers), reconstruct a single-element chain from
+        // `parent_id`. Same behaviour as before the chain
+        // extension; bounds the worst case to a tree misplacement
+        // for ancestors above the immediate parent.
+        let ancestors = if !leaf.metadata.ancestors.is_empty() {
+            leaf.metadata.ancestors.clone()
+        } else {
+            let parent_hash = Index::<MainStorage>::get_hashes_for(parent_id)
+                .ok()
+                .flatten()
+                .map(|(full, _)| full)
+                .unwrap_or([0; 32]);
+            let parent_metadata = Index::<MainStorage>::get_index(parent_id)
+                .ok()
+                .flatten()
+                .map(|idx| idx.metadata.clone())
+                .unwrap_or_default();
+            vec![ChildInfo::new(parent_id, parent_hash, parent_metadata)]
+        };
 
         // Tree-shape integrity NOT cryptographically asserted here:
-        // `ancestor.merkle_hash` is fetched live from the local
-        // index, so `Interface::apply_action`'s
-        // `verify_ancestor_integrity` always passes on this path
-        // (the hash matches what's locally stored). This is the
-        // documented design trade-off: HashComparison sync runs
-        // precisely because tree shapes have drifted between
-        // peers, so asserting "the signer observed the same
-        // parent hash" would reject every legitimate divergence
-        // repair. Authorization (the signature inside
-        // `metadata.storage_type`) still verifies — what we
-        // forgo is sender-vs-receiver agreement on the parent's
-        // subtree hash. The delta-replay path carries the
-        // signer's ancestor list and does check it.
+        // the chain's `merkle_hash` values come either from the
+        // peer's wire (not signed; see `LeafMetadata::ancestors`
+        // field doc on the trust model) or from the receiver's own
+        // index (legacy fallback above) — in either case
+        // `verify_ancestor_integrity` is informational only on this
+        // path. This is the documented design trade-off:
+        // HashComparison sync runs precisely because tree shapes
+        // have drifted between peers, so asserting "the signer
+        // observed the same parent hash" would reject every
+        // legitimate divergence repair. Authorization (the
+        // signature inside `metadata.storage_type`) still verifies
+        // — what we forgo is sender-vs-receiver agreement on the
+        // ancestor chain's subtree hashes. The delta-replay path
+        // carries the signer's ancestor list and does check it.
         Action::Add {
             id: entity_id,
             data: leaf.value.clone(),
-            ancestors: vec![ancestor],
+            ancestors,
             metadata,
         }
     };
