@@ -9,12 +9,12 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use tracing::{info, warn};
 
-use crate::governance_broadcast::ObserveDelivery;
-use crate::group_store;
-use crate::group_store::{
+use crate::ContextManager;
+use calimero_governance_store;
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::{
     GroupKeyring, MembershipRepository, NamespaceRepository, SigningKeysRepository,
 };
-use crate::ContextManager;
 
 /// Publish a `RootOp::KeyDelivery` wrapping the namespace group key for
 /// `member`, signed with the verifier's namespace identity (`signer_sk`).
@@ -55,7 +55,7 @@ async fn deliver_group_key_to_member(
     // `maybe_publish_key_delivery`. Best-effort: an unformed mesh downgrades
     // readiness rather than failing, and the announcer re-announces (re-admit)
     // to retry.
-    let report = group_store::sign_and_publish_namespace_op(
+    let report = calimero_governance_store::sign_and_publish_namespace_op(
         store,
         node_client,
         ack_router,
@@ -109,7 +109,10 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
 
         let node_sk = node_identity.map(|(_, sk)| sk);
 
-        let policy = match group_store::read_tee_admission_policy(&self.datastore, &group_id) {
+        let policy = match calimero_governance_store::read_tee_admission_policy(
+            &self.datastore,
+            &group_id,
+        ) {
             Ok(Some(p)) => p,
             Ok(None) => {
                 return ActorResponse::reply(Err(eyre::eyre!(
@@ -163,7 +166,8 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
             Err(e) => return ActorResponse::reply(Err(e)),
         }
 
-        match group_store::is_quote_hash_used(&self.datastore, &group_id, &quote_hash) {
+        match calimero_governance_store::is_quote_hash_used(&self.datastore, &group_id, &quote_hash)
+        {
             Ok(true) => {
                 return ActorResponse::reply(Err(eyre::eyre!("TEE attestation quote already used")))
             }
@@ -195,7 +199,7 @@ impl Handler<AdmitTeeNodeRequest> for ContextManager {
                     PrivateKey::from(effective_signing_key.ok_or_else(|| {
                         eyre::eyre!("no signing key available for TEE admission")
                     })?);
-                let report = group_store::sign_apply_and_publish(
+                let report = calimero_governance_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,

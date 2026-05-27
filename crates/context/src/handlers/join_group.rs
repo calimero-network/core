@@ -1,4 +1,4 @@
-use crate::group_store::{
+use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
     SigningKeysRepository,
 };
@@ -16,9 +16,9 @@ use calimero_store::key;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 
-use crate::op_events::subscribe as subscribe_op_events;
-use crate::op_events::OpEvent;
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
+use calimero_governance_store::op_events::subscribe as subscribe_op_events;
+use calimero_governance_store::op_events::OpEvent;
 
 const NAMESPACE_MESH_GRACE: Duration = Duration::from_secs(2);
 
@@ -292,7 +292,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     member: joiner_identity,
                     signed_invitation: invitation.clone(),
                 });
-                match group_store::sign_and_publish_namespace_op(
+                match calimero_governance_store::sign_and_publish_namespace_op(
                     &datastore,
                     &node_client,
                     &ack_router,
@@ -429,7 +429,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                     && MetadataRepository::new(&datastore).group_metadata(&group_id)?.is_none()
                 {
                     MetadataRepository::new(&datastore).set_group(&group_id, &calimero_primitives::metadata::MetadataRecord {
-                            name: group_name.clone(), updated_at: group_store::now_millis(), updated_by: joiner_identity, ..Default::default()
+                            name: group_name.clone(), updated_at: calimero_governance_store::now_millis(), updated_by: joiner_identity, ..Default::default()
                         }, )?;
                 }
 
@@ -471,7 +471,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                         // and `get_group_for_context` returns `None`.
                         // Idempotent with the governance-op path.
                         for context_id in contexts {
-                            if let Err(err) = group_store::register_context_in_group(
+                            if let Err(err) = calimero_governance_store::register_context_in_group(
                                 &datastore, &group_id, context_id,
                             ) {
                                 warn!(
@@ -497,7 +497,7 @@ impl Handler<JoinGroupRequest> for ContextManager {
                                         .filter(|id| *id != zero_app)
                                 };
                                 let svc_name =
-                                    group_store::get_context_service_name(&datastore, context_id)?;
+                                    calimero_governance_store::get_context_service_name(&datastore, context_id)?;
                                 Some(ContextConfigParams {
                                     application_id: resolved,
                                     application_revision: 0,

@@ -1,4 +1,4 @@
-use crate::group_store::{
+use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MetaRepository, MigrationsRepository, NamespaceRepository,
 };
 use std::borrow::Cow;
@@ -48,8 +48,8 @@ use crate::error::ContextError;
 use crate::handlers::update_application::{
     create_storage_callbacks, update_application_id, update_application_with_migration,
 };
-use crate::metrics::ExecutionLabels;
 use crate::ContextManager;
+use calimero_governance_store::metrics::ExecutionLabels;
 
 pub mod storage;
 
@@ -166,9 +166,9 @@ impl Handler<ExecuteRequest> for ContextManager {
         // `Some(InProgress { .. })` blocks. This keeps the baseline (no
         // group, or group with no upgrade history) on the fast path.
         if !is_state_op {
-            match crate::group_store::get_group_for_context(&self.datastore, &context_id) {
+            match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
                 Ok(Some(group_id)) => {
-                    match crate::group_store::UpgradesRepository::new(&self.datastore)
+                    match calimero_governance_store::UpgradesRepository::new(&self.datastore)
                         .load(&group_id)
                     {
                         Ok(Some(upgrade)) => {
@@ -279,7 +279,7 @@ impl Handler<ExecuteRequest> for ContextManager {
         // Restricted ancestor, continue to use their own per-subgroup
         // key.
         let (sender_key, broadcast_key_id) =
-            match crate::group_store::get_group_for_context(&self.datastore, &context_id) {
+            match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
                 Ok(Some(gid)) => {
                     // Errors from `resolve_namespace` or
                     // `is_open_chain_to_namespace` mean we cannot reliably
@@ -1188,7 +1188,7 @@ fn compute_governance_position_for_context(
     datastore: &Store,
     context_id: &ContextId,
 ) -> Option<GovernancePosition> {
-    let group_id = match crate::group_store::get_group_for_context(datastore, context_id) {
+    let group_id = match calimero_governance_store::get_group_for_context(datastore, context_id) {
         Ok(Some(gid)) => gid,
         Ok(None) => return None,
         Err(err) => {
@@ -1214,7 +1214,8 @@ fn compute_governance_position_for_context(
         }
     };
 
-    let dag = crate::group_store::NamespaceDagService::new(datastore, namespace_id.to_bytes());
+    let dag =
+        calimero_governance_store::NamespaceDagService::new(datastore, namespace_id.to_bytes());
 
     // Double-read pattern: governance ops can apply between reading heads
     // and computing the state hash, producing an internally-inconsistent
@@ -2080,10 +2081,10 @@ fn maybe_lazy_upgrade(
     Option<String>,
     calimero_context_config::types::ContextGroupId,
 )> {
-    use crate::group_store;
+    use calimero_governance_store;
 
     // 1. Check if context belongs to a group
-    let group_id = match group_store::get_group_for_context(datastore, context_id) {
+    let group_id = match calimero_governance_store::get_group_for_context(datastore, context_id) {
         Ok(Some(gid)) => gid,
         Ok(None) => return None, // not in a group
         Err(err) => {

@@ -1,17 +1,17 @@
-use crate::group_store::{
-    MembershipRepository, MetaRepository, MetadataRepository, SigningKeysRepository,
-};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{CreateGroupInvitationRequest, CreateGroupInvitationResponse};
 use calimero_context_config::types::{
     GroupInvitationFromAdmin, SignedGroupOpenInvitation, SignerId,
 };
 use calimero_context_config::MemberCapabilities;
+use calimero_governance_store::{
+    MembershipRepository, MetaRepository, MetadataRepository, SigningKeysRepository,
+};
 use calimero_primitives::identity::PrivateKey;
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<CreateGroupInvitationRequest> for ContextManager {
     type Result = ActorResponse<Self, <CreateGroupInvitationRequest as Message>::Result>;

@@ -6,8 +6,8 @@ use calimero_context_client::local_governance::{SignedGroupOp, SignedNamespaceOp
 use calimero_dag::{ApplyError, CausalDelta, DeltaApplier};
 use calimero_store::Store;
 
-use crate::group_store;
-use crate::group_store::DivergenceReport;
+use calimero_governance_store;
+use calimero_governance_store::DivergenceReport;
 
 /// Applies a [`SignedGroupOp`] to the persistent group store.
 ///
@@ -26,7 +26,7 @@ impl GroupGovernanceApplier {
 #[async_trait::async_trait]
 impl DeltaApplier<SignedGroupOp> for GroupGovernanceApplier {
     async fn apply(&self, delta: &CausalDelta<SignedGroupOp>) -> Result<(), ApplyError> {
-        group_store::apply_local_signed_group_op(&self.store, &delta.payload)
+        calimero_governance_store::apply_local_signed_group_op(&self.store, &delta.payload)
             .map_err(|e| ApplyError::Application(e.to_string()))
     }
 }
@@ -104,8 +104,9 @@ impl NamespaceGovernanceApplier {
 #[async_trait::async_trait]
 impl DeltaApplier<SignedNamespaceOp> for NamespaceGovernanceApplier {
     async fn apply(&self, delta: &CausalDelta<SignedNamespaceOp>) -> Result<(), ApplyError> {
-        let outcome = group_store::apply_signed_namespace_op(&self.store, &delta.payload)
-            .map_err(|e| ApplyError::Application(e.to_string()))?;
+        let outcome =
+            calimero_governance_store::apply_signed_namespace_op(&self.store, &delta.payload)
+                .map_err(|e| ApplyError::Application(e.to_string()))?;
         if let Some(report) = outcome.divergence {
             // Last-writer-wins on the outbox. The applier instance
             // is single-flight per actor message turn, so multiple

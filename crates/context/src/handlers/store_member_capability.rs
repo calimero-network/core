@@ -1,8 +1,8 @@
-use crate::group_store::CapabilitiesRepository;
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::StoreMemberCapabilityRequest;
+use calimero_governance_store::CapabilitiesRepository;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<StoreMemberCapabilityRequest> for ContextManager {
     type Result = ActorResponse<Self, <StoreMemberCapabilityRequest as Message>::Result>;

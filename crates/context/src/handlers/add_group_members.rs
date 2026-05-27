@@ -1,4 +1,4 @@
-use crate::group_store::{GroupKeyring, NamespaceRepository};
+use calimero_governance_store::{GroupKeyring, NamespaceRepository};
 use std::sync::Arc;
 
 use actix::{ActorResponse, Handler, Message, WrapFuture};
@@ -6,9 +6,9 @@ use calimero_context_client::group::AddGroupMembersRequest;
 use calimero_context_client::local_governance::{GroupOp, NamespaceOp, RootOp};
 use tracing::{info, warn};
 
-use crate::governance_broadcast::ObserveDelivery;
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<AddGroupMembersRequest> for ContextManager {
     type Result = ActorResponse<Self, <AddGroupMembersRequest as Message>::Result>;
@@ -37,7 +37,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 for (identity, role) in &members {
-                    let report = group_store::sign_apply_and_publish(
+                    let report = calimero_governance_store::sign_apply_and_publish(
                         &datastore,
                         &node_client,
                         &ack_router,
@@ -69,7 +69,7 @@ impl Handler<AddGroupMembersRequest> for ContextManager {
                                 // and the report's `acked_by` cleanly
                                 // signals whether the recipient applied
                                 // and acked.
-                                if let Err(e) = group_store::sign_and_publish_namespace_op(
+                                if let Err(e) = calimero_governance_store::sign_and_publish_namespace_op(
                                     &datastore,
                                     &node_client,
                                     &ack_router,

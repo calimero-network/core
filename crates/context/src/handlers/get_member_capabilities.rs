@@ -1,10 +1,10 @@
-use crate::group_store::{MembershipRepository, MetaRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse};
+use calimero_governance_store::{MembershipRepository, MetaRepository};
 use eyre::bail;
 
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
 
 impl Handler<GetMemberCapabilitiesRequest> for ContextManager {
     type Result = ActorResponse<Self, <GetMemberCapabilitiesRequest as Message>::Result>;

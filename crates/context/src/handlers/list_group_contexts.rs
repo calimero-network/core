@@ -1,9 +1,9 @@
-use crate::group_store::{MembershipRepository, MetadataRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{GroupContextEntry, ListGroupContextsRequest};
+use calimero_governance_store::{MembershipRepository, MetadataRepository};
 use eyre::bail;
 
-use crate::{group_store, ContextManager};
+use crate::ContextManager;
 
 impl Handler<ListGroupContextsRequest> for ContextManager {
     type Result = ActorResponse<Self, <ListGroupContextsRequest as Message>::Result>;
