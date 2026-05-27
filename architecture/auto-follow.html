@@ -1,3 +1,29 @@
+Looking at the code diff, I can see that the main changes are:
+
+1. A new crate `calimero-governance-store` has been added
+2. The `crates/context/src/auto_follow.rs` file has been updated to use imports from `calimero_governance_store` instead of local modules like `crate::group_store` and `crate::op_events`
+
+Now I need to check if the HTML documentation file `architecture/auto-follow.html` needs updating based on these changes.
+
+Scanning through the HTML file, I find references to:
+- `crates/context/src/op_events.rs` in the "Key Files" section
+- `crates/context/src/auto_follow.rs` in the "Key Files" section
+- `crates/context/src/group_store/mod.rs` in the "Key Files" section
+- `crates/context/src/group_store/membership.rs` in the "Key Files" section
+- `crate::op_events` in the "Propagation" section text
+- `crate::group_store` in the "Flow" section text
+
+The code diff shows that:
+1. `op_events` has moved from `crates/context/src/op_events.rs` to `calimero_governance_store::op_events`
+2. Group store functionality has moved to `calimero_governance_store`
+3. The auto_follow.rs file now imports from `calimero_governance_store` instead of local crate modules
+
+The HTML file contains documentation that needs to be updated to reflect these module reorganizations. Specifically:
+- The "Key Files" section references to file paths need updating
+- Text references to module paths need updating
+
+Let me update the HTML file:
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -78,7 +104,7 @@ admin-or-self authorization:
 <h3>Propagation</h3>
 <p>
 The handler subscribes to an in-process op-apply event channel (module
-<code>context::op_events</code>). When a relevant op is applied to local state, an
+<code>calimero_governance_store::op_events</code>). When a relevant op is applied to local state, an
 <code>OpEvent</code> is broadcast and the handler emits the corresponding join op. Every emitted
 op is itself a DAG op, so offline catch-up comes for free via DAG replay — no separate
 reconcile loop.
@@ -219,19 +245,19 @@ broadcast), the next run of the handler walks the DAG and reconciles state.
 <div class="card gc">
 <h2>Key Files</h2>
 <ul>
-  <li><code>crates/context/src/op_events.rs</code> — op-apply event channel + <code>OpEvent</code>
+  <li><code>crates/governance-store/src/op_events.rs</code> — op-apply event channel + <code>OpEvent</code>
   enum.</li>
   <li><code>crates/context/src/auto_follow.rs</code> — handler task, rate limiter,
   <code>spawn</code>/<code>shutdown</code>.</li>
-  <li><code>crates/context/src/group_store/mod.rs</code> — <code>apply_group_op_mutations</code>
+  <li><code>crates/governance-store/src/group_store/mod.rs</code> — <code>apply_group_op_mutations</code>
   handles <code>MemberSetAutoFollow</code>.</li>
-  <li><code>crates/context/src/group_store/membership.rs</code> —
+  <li><code>crates/governance-store/src/group_store/membership.rs</code> —
   <code>set_member_auto_follow</code> helper.</li>
   <li><code>crates/context/primitives/src/local_governance/mod.rs</code> — the
   <code>MemberSetAutoFollow</code> op variant.</li>
   <li><code>crates/store/src/key/group/mod.rs</code> — <code>AutoFollowFlags</code> and the
   backward-compatible <code>BorshDeserialize</code> for <code>GroupMemberValue</code>.</li>
-  <li><code>crates/context/src/handlers/admit_tee_node.rs</code> — TEE admission publishes the
+  <li><code>crates/governance-store/src/handlers/admit_tee_node.rs</code> — TEE admission publishes the
   op only; flags are set by the admitted node itself.</li>
   <li><code>crates/server/src/admin/handlers/tee/fleet_join.rs</code> — after admission, the
   member publishes <code>MemberSetAutoFollow</code> signed by self.</li>
