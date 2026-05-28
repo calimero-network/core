@@ -644,6 +644,48 @@ impl SyncManager {
     /// empty set on any failure — context not registered to a group,
     /// store read error, or no meta written yet. Callers fall back to
     /// plain random peer selection on an empty set.
+    /// Returns the in-flight upgrade target application for `context_id`
+    /// when an application upgrade/migration is pending on THIS node —
+    /// i.e. the context's currently-bound application differs from its
+    /// group's `target_application_id`. `None` when the context is
+    /// already on its target (no pending upgrade) or any lookup fails.
+    ///
+    /// Used to gate context-STATE sync in both directions (outbound
+    /// `initiate_sync_inner` and the inbound stream handler). While an
+    /// upgrade is pending here, a peer that has ALREADY migrated must
+    /// not reconcile its new-application-version state onto this node:
+    /// HashComparison merges root entries by hash with no notion of
+    /// application version, so it would overwrite the pre-upgrade state
+    /// that this node's own (LazyOnAccess) migration must read as input
+    /// — the migrate fn would then try to decode already-migrated bytes
+    /// as the old shape and panic. This is the sync-side analogue of
+    /// the write-gate.
+    ///
+    /// Only per-context state reconciliation is gated. Governance sync
+    /// (the namespace DAG carrying the upgrade op itself) flows through
+    /// a different path and is unaffected, so this node still learns
+    /// about the upgrade and self-migrates on its next context access,
+    /// after which this returns `None` and state sync resumes.
+    fn pending_upgrade_target(
+        &self,
+        context_id: &ContextId,
+    ) -> Option<calimero_primitives::application::ApplicationId> {
+        let store = self.context_client.datastore_handle().into_inner();
+        let ctx_meta = store
+            .handle()
+            .get(&calimero_store::key::ContextMeta::new(*context_id))
+            .ok()
+            .flatten()?;
+        let current_app = ctx_meta.application.application_id();
+        let group_id = calimero_context::group_store::get_group_for_context(&store, context_id)
+            .ok()
+            .flatten()?;
+        let meta = MetaRepository::new(&store).load(&group_id).ok().flatten()?;
+        let target = meta.target_application_id;
+        (current_app != target && target != calimero_primitives::application::ZERO_APPLICATION_ID)
+            .then_some(target)
+    }
+
     fn anchor_identities_for_context(
         &self,
         context_id: &ContextId,
@@ -1412,6 +1454,25 @@ impl SyncManager {
             application_id = %context.application_id,
             "Starting sync session"
         );
+
+        // Sync-gate: if an application upgrade is pending on this context
+        // (our bound app != the group's target app), do NOT reconcile
+        // state with a peer — it may have already migrated, and merging
+        // its new-version state here would overwrite the pre-upgrade
+        // state our own LazyOnAccess migration must read as input. Skip
+        // as a clean no-op; we self-migrate on next access, after which
+        // the gate lifts. See `pending_upgrade_target`.
+        if let Some(target) = self.pending_upgrade_target(&context_id) {
+            info!(
+                %context_id,
+                %chosen_peer,
+                current_app = %context.application_id,
+                target_app = %target,
+                "Skipping context-state sync: application upgrade pending (gate); \
+                 node self-migrates on next access before reconciling"
+            );
+            return Ok(SyncProtocol::None);
+        }
 
         // Get application - if not found, we'll try to install it after blob sharing
         let mut application = self.node_client.get_application(&context.application_id)?;
