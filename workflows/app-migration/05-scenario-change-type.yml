@@ -171,11 +171,21 @@ steps:
     statements:
       - 'json_subset({{v4_schema}}, {"output": {"schema_version": "4.0.0", "details": "typechange-scenario", "counter": "3"}})'
 
-  - name: Set upgrade policy to coordinated
+  # LazyOnAccess: each node migrates its OWN byte-identical v4 state
+  # on next access. The migration write path emits no DAG delta (full
+  # root replacement, not CRDT-mergeable), so migrated bytes do not
+  # propagate over sync — each node must self-migrate. Under
+  # `coordinated` only the emitter migrates and the receiver is left
+  # with v4 bytes behind a v5 app pointer → "Not all bytes read"
+  # panic. The per-context TargetApplicationSet + GroupMigrationSet
+  # ops set both `target_application_id` and the `migration` method on
+  # the subgroup's GroupMeta, which each receiver's
+  # `maybe_lazy_upgrade` reads to self-migrate.
+  - name: Set upgrade policy to lazy-on-access
     type: update_group_settings
     node: app-migration-typechange-1
     group_id: "{{group_id}}"
-    upgrade_policy: coordinated
+    upgrade_policy: lazy_on_access
 
   # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
   - name: Upgrade subgroup v4 → v5 (counter u64 → String)
@@ -190,17 +200,10 @@ steps:
     type: wait
     seconds: 15
 
-  - name: Assert migration handler ran (node 1)
-    type: assert_log_present
-    nodes:
-      - app-migration-typechange-1
-    patterns:
-      - "Executing migration"
-      - "migrate_v4_to_v5"
-      - "Migrated state written successfully"
-    min_matches: 1
-
-  - name: Read post-migration schema_info on node 1
+  # These reads TRIGGER each node's lazy migration: schema_info is not
+  # a state op, so `maybe_lazy_upgrade` fires on each node, migrating
+  # its own v4 state to v5 before serving the read.
+  - name: Read post-migration schema_info on node 1 (triggers lazy migration)
     type: call
     node: app-migration-typechange-1
     context_id: "{{ctx_id}}"
@@ -208,13 +211,35 @@ steps:
     outputs:
       v5_schema_node1: result
 
-  - name: Read post-migration schema_info on node 2
+  - name: Read post-migration schema_info on node 2 (triggers lazy migration)
     type: call
     node: app-migration-typechange-2
     context_id: "{{ctx_id}}"
     method: schema_info
     outputs:
       v5_schema_node2: result
+
+  # Both nodes self-migrated via the lazy path — assert the migration
+  # logs on EACH after its triggering read above.
+  - name: Assert lazy migration ran on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-typechange-1
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-typechange-2
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
 
   - name: Assert v5 schema on node 1 (counter still "3", but now String-typed)
     type: json_assert

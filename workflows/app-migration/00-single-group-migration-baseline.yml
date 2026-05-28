@@ -162,11 +162,21 @@ steps:
     statements:
       - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "description": "set-before-migration", "counter": "1"}})'
 
-  - name: Set upgrade policy to coordinated
+  # LazyOnAccess: each node migrates its OWN byte-identical v1 state
+  # on next access. The migration write path emits no DAG delta (full
+  # root replacement, not CRDT-mergeable), so migrated bytes do not
+  # propagate over sync — each node must self-migrate. Under
+  # `coordinated` only the emitter migrates and the receiver is left
+  # with v1 bytes behind a v2 app pointer → "Not all bytes read"
+  # panic. The per-context TargetApplicationSet + GroupMigrationSet
+  # ops set both `target_application_id` and the `migration` method on
+  # the subgroup's GroupMeta, which each receiver's
+  # `maybe_lazy_upgrade` reads to self-migrate.
+  - name: Set upgrade policy to lazy-on-access
     type: update_group_settings
     node: app-migration-baseline-1
     group_id: "{{group_id}}"
-    upgrade_policy: coordinated
+    upgrade_policy: lazy_on_access
 
   # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
   - name: Upgrade with migrate_v1_to_v2
@@ -192,35 +202,10 @@ steps:
     node: app-migration-baseline-1
     group_id: "{{group_id}}"
 
-  # Three log patterns prove the migration ran end-to-end:
-  #   1. "Executing migration" — update_application handler entered the migrate path.
-  #   2. "migrate_v1_to_v2" — the right migrate function was invoked. We match
-  #      the bare method name (not "method=migrate_v1_to_v2") because tracing's
-  #      colorised output wraps the `=` in ANSI escape codes, so the literal
-  #      substring "method=migrate_..." never appears contiguously in the log.
-  #   3. "Migrated state written successfully" — write_migration_state hit the
-  #      post-fix success log. Pre-fix (#2433 regression) this line is absent
-  #      and "Failed to write migrated state" fires instead, so this pattern is
-  #      the actual regression guard. The Event::Migrated payload itself does
-  #      NOT appear in stdout (borsh-encoded binary on the event stream, not a
-  #      log line) — that's why we anchor on the handler's INFO/DEBUG output.
-  #
-  # Only the emitter (node 1) runs the per-context migration; node 2
-  # receives the post-migration state via context-sync gossip. A
-  # node-2 log assertion for "Executing migration" would always fail
-  # by design — cross-node convergence is verified via the node-2
-  # schema_info assertion below + the v2-only setter round-trip.
-  - name: Assert migration handler ran and state written (node 1)
-    type: assert_log_present
-    nodes:
-      - app-migration-baseline-1
-    patterns:
-      - "Executing migration"
-      - "migrate_v1_to_v2"
-      - "Migrated state written successfully"
-    min_matches: 1
-
-  - name: Read post-migration schema_info on node 1
+  # These reads TRIGGER each node's lazy migration: schema_info is not
+  # a state op, so `maybe_lazy_upgrade` fires on each node, migrating
+  # its own v1 state to v2 before serving the read.
+  - name: Read post-migration schema_info on node 1 (triggers lazy migration)
     type: call
     node: app-migration-baseline-1
     context_id: "{{ctx_id}}"
@@ -228,13 +213,35 @@ steps:
     outputs:
       v2_schema_node1: result
 
-  - name: Read post-migration schema_info on node 2
+  - name: Read post-migration schema_info on node 2 (triggers lazy migration)
     type: call
     node: app-migration-baseline-2
     context_id: "{{ctx_id}}"
     method: schema_info
     outputs:
       v2_schema_node2: result
+
+  # Both nodes self-migrated via the lazy path — assert the migration
+  # logs on EACH after its triggering read above.
+  - name: Assert lazy migration ran on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-baseline-1
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-baseline-2
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
 
   - name: Assert v2 schema on node 1 (v1 data preserved + notes seeded)
     type: json_assert
