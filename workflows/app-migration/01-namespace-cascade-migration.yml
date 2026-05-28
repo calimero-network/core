@@ -35,8 +35,16 @@ nodes:
   base_rpc_port: 9330
 
 steps:
-  # Phase 1: Install v1 + v2 binaries on BOTH nodes. Node 2 needs the
-  # WASM locally to execute the context post-upgrade.
+  # Phase 1: Install v1 + v2 binaries on the ADMIN node only.
+  #
+  # Realistic distribution: only the admin (node 1) holds the bytecode.
+  # Node 2 never runs install_application — it obtains both versions
+  # automatically: v1 when it joins the context (blob announced for the
+  # context, fetched over BlobShare on first execution), and v2 when the
+  # cascade upgrade announces the target blob (pulled during node 2's
+  # lazy migration; the sync-gate leaves BlobShare open for exactly this).
+  # App ids are content-addressed, so node 1's app_v1/app_v2 ids are the
+  # same ids node 2 resolves and fetches.
   - name: Install migration-suite-v1 on node 1
     type: install_application
     node: app-migration-cascade-1
@@ -45,12 +53,6 @@ steps:
     outputs:
       app_v1: applicationId
 
-  - name: Install migration-suite-v1 on node 2
-    type: install_application
-    node: app-migration-cascade-2
-    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
-    dev: true
-
   - name: Install migration-suite-v2-add-field on node 1
     type: install_application
     node: app-migration-cascade-1
@@ -58,12 +60,6 @@ steps:
     dev: true
     outputs:
       app_v2: applicationId
-
-  - name: Install migration-suite-v2-add-field on node 2
-    type: install_application
-    node: app-migration-cascade-2
-    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
-    dev: true
 
   # Phase 2: Node 1 builds namespace + subgroup + context. NO
   # pre-cascade alignment — cascade should work straight out of

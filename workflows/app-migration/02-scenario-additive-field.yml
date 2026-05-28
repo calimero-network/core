@@ -26,7 +26,18 @@ nodes:
   base_rpc_port: 9340
 
 steps:
-  # Phase 1: Install v1 + v2 binaries on BOTH nodes.
+  # Phase 1: Install v1 + v2 binaries on the ADMIN node only.
+  #
+  # Realistic distribution: only the admin (node 1) is given the
+  # bytecode. Node 2 never runs install_application — it must obtain
+  # both versions automatically:
+  #   - v1 when it joins the context (the app blob is announced for the
+  #     context and fetched over BlobShare on first execution), and
+  #   - v2 when node 1 upgrades the group (upgrade_group announces the
+  #     target blob; node 2 pulls it during its lazy migration — the
+  #     sync-gate intentionally leaves BlobShare open for this).
+  # App ids are content-addressed (blob_id of the bytecode), so node 1's
+  # captured app_v1/app_v2 ids are exactly the ids node 2 resolves.
   - name: Install migration-suite-v1 on node 1
     type: install_application
     node: app-migration-additive-1
@@ -35,12 +46,6 @@ steps:
     outputs:
       app_v1: applicationId
 
-  - name: Install migration-suite-v1 on node 2
-    type: install_application
-    node: app-migration-additive-2
-    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
-    dev: true
-
   - name: Install migration-suite-v2-add-field on node 1
     type: install_application
     node: app-migration-additive-1
@@ -48,12 +53,6 @@ steps:
     dev: true
     outputs:
       app_v2: applicationId
-
-  - name: Install migration-suite-v2-add-field on node 2
-    type: install_application
-    node: app-migration-additive-2
-    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
-    dev: true
 
   # Phase 2: Node 1 builds namespace + Open subgroup + context.
   - name: Create namespace (v1) on node 1
