@@ -79,35 +79,23 @@ pub fn migrate_v1_to_v2() -> ScenarioInvariantReshuffleV2 {
     // of truth, not preserved from a possibly-stale denormalized
     // field.
     //
-    // DETERMINISM: collect the source entries and sort by key BEFORE
-    // inserting into the new `per_item` map. `UnorderedMap::entries()`
-    // iteration order is NOT guaranteed identical across nodes (the
-    // synced v1 map can carry different internal element ids on each
-    // peer), and the new map assigns element ids by insertion order —
-    // so iterating-and-inserting in raw iteration order makes each
-    // node build a structurally-different `per_item` map (same logical
-    // content, different root hash). Every node runs this migrate fn
-    // independently against its own state (migration emits no delta),
-    // so a non-deterministic body diverges the post-migration roots
-    // and breaks subsequent cross-node sync. Sorting by key gives a
-    // canonical insertion order that's identical on every node. (`total`
-    // is order-independent, but we accumulate in the same loop.)
-    let mut entries: Vec<(String, LwwRegister<u64>)> = old_state
-        .per_item_counts
-        .entries()
-        .unwrap_or_else(|e| {
-            panic!(
-                "Migration failed: V1 per_item_counts iteration error {:?}",
-                e
-            );
-        })
-        .collect();
-    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
-
+    // Cross-node determinism is handled at the SDK layer, not here:
+    // `per_item` entries get key-derived ids (`compute_id(parent,
+    // key)`), so insertion order doesn't affect them; and the
+    // `#[app::migrate]` macro now calls `__assign_deterministic_ids()`
+    // on the returned state so the `total` LwwRegister (and any field
+    // materialised via `.into()`) gets a deterministic field-name id
+    // instead of a random one. Both nodes therefore land on identical
+    // v2 roots.
     let mut total: u64 = 0;
     let mut per_item: UnorderedMap<String, LwwRegister<u64>> =
         UnorderedMap::new_with_field_name("per_item");
-    for (k, v) in entries {
+    for (k, v) in old_state.per_item_counts.entries().unwrap_or_else(|e| {
+        panic!(
+            "Migration failed: V1 per_item_counts iteration error {:?}",
+            e
+        );
+    }) {
         let n = *v.get();
         total += n;
         per_item.insert(k, n.into()).unwrap_or_else(|e| {

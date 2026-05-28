@@ -80,7 +80,30 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             fn __migration_logic() #return_type #block
 
             // Execute migration and get new state
-            let new_state = __migration_logic();
+            let mut new_state = __migration_logic();
+
+            // Assign deterministic IDs to all collection fields based on
+            // field names — mirroring the `#[app::init]` wrapper
+            // (`logic/method.rs`). This enforces CIP Invariant I9: every
+            // node that runs this migrate fn independently (the
+            // LazyOnAccess cross-node model — migration emits no sync
+            // delta, so each peer re-derives v2 from its own
+            // byte-identical v1 state) must produce byte-identical v2
+            // state, or their roots diverge and post-migration writes
+            // never reconcile.
+            //
+            // Fields created via `new_with_field_name`/`new()` already
+            // carry the deterministic `compute_collection_id(None,
+            // field)` id, but fields materialised via `.into()` /
+            // `LwwRegister::new(...)` (e.g. `total: count.into()`) get a
+            // RANDOM id at construction. Without this reassignment those
+            // random ids are embedded in the borsh-serialised state the
+            // host writes to `ROOT_ENTRY_ID`, so two nodes migrating the
+            // same input land on different root hashes. `reassign_*`
+            // re-inserts entries under the deterministic id, and the
+            // host-side `storage.commit()` (update_application) flushes
+            // them. Idempotent: a no-op for already-deterministic fields.
+            new_state.__assign_deterministic_ids();
 
             // Serialize the new state
             let output_bytes = match ::calimero_sdk::borsh::to_vec(&new_state) {
@@ -142,6 +165,12 @@ mod tests {
         assert!(
             expanded.contains("event :: register"),
             "expected event::register call in expansion: {}",
+            expanded
+        );
+        assert!(
+            expanded.contains("__assign_deterministic_ids"),
+            "expected __assign_deterministic_ids call in expansion (CIP I9 cross-node \
+             determinism for migrate-created collections): {}",
             expanded
         );
     }
