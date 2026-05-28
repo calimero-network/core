@@ -162,9 +162,10 @@ where
     /// returned.
     ///
     pub fn iter(&self) -> Result<impl Iterator<Item = V> + '_, StoreError> {
-        // See the matching diagnostic on `UnorderedMap::entries` (#2319
-        // follow-up) — surfaces silent NotFound drops from the inner
-        // iterator instead of swallowing them via `.flatten().fuse()`.
+        // See the matching ITER_DROP diagnostic on
+        // `UnorderedMap::entries` — surfaces silent NotFound drops from
+        // the inner iterator instead of swallowing them via
+        // `.flatten().fuse()`.
         let collection_id = self.inner.id();
         Ok(self.inner.entries()?.filter_map(move |result| match result {
             Ok(item) => Some(item),

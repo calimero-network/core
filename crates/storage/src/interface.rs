@@ -487,13 +487,15 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let own_hash = Sha256::digest(&data).into();
 
-        // ENTRY-BEFORE-PARENT (#2319 follow-up): pre-write Key::Entry so
-        // the parent's children list never advertises an id that has no
-        // backing entry. Mirrors the apply_action fix at line 1267 (PR
-        // #2472 / `cf7b2b61`), which closed the same race window on the
-        // delta-apply path but left this local-write path — used by
-        // `CollectionMut::insert` (collections.rs:527), i.e. every
-        // WASM-side `chars.insert` — with the old order.
+        // ENTRY-BEFORE-PARENT: pre-write Key::Entry so the parent's
+        // children list never advertises an id that has no backing
+        // entry. The matching `add_child_to` in `apply_action`'s
+        // delta-apply path already pre-writes the entry; this is the
+        // local-write path (`CollectionMut::insert`, i.e. every
+        // WASM-side `chars.insert`) and needs the same order, otherwise
+        // a reader iterating the parent's children between the index
+        // update and the entry write sees the id but `find_by_id`
+        // returns `None`, silently dropping the child.
         //
         // Signature on the pre-written bytes: `data` here is the
         // borsh-encoded entity *before* `save_raw` re-stamps the metadata
@@ -1316,23 +1318,22 @@ impl<S: StorageAdaptor> Interface<S> {
                         )?;
                     } else {
                         // ORPHAN_ADD diagnostic: brand-new non-root entity
-                        // with empty `ancestors`. With this PR's wire
-                        // extension (`LeafMetadata.ancestors`) HC and
-                        // LevelWise senders carry the full chain, so this
+                        // with empty `ancestors`. Sync senders now carry
+                        // the full ancestor chain on the wire, so this
                         // path is only hit by legacy peers that ship just
-                        // `parent_id`. `save_internal` still writes
-                        // `Key::Entry(id)` but the parent's `children`
-                        // list never learns about it — the read path
-                        // skips the entry because it isn't advertised.
-                        // Warn loudly so the next reproduction names the
-                        // entity and the sending peer is identifiable as
-                        // legacy.
+                        // an immediate parent id. `save_internal` still
+                        // writes `Key::Entry(id)` but the parent's
+                        // `children` list never learns about it — the read
+                        // path skips the entry because it isn't
+                        // advertised. Warn loudly so the next reproduction
+                        // names the entity and the sending peer is
+                        // identifiable as legacy.
                         tracing::warn!(
                             target: "calimero_storage::orphan_add",
                             %id,
                             created_at = metadata.created_at,
                             updated_at = metadata.updated_at(),
-                            "ORPHAN_ADD: brand-new non-root entity with empty ancestors — legacy peer or pre-#2319 sync path"
+                            "ORPHAN_ADD: brand-new non-root entity with empty ancestors — legacy peer or pre-ancestor-chain sync path"
                         );
                     }
                 }

@@ -357,7 +357,7 @@ pub struct LeafMetadata {
     /// Mirrors what `calimero_storage::index::Index::get_ancestors_of`
     /// returns on the sender — see `LeafMetadata::with_ancestors`.
     ///
-    /// Populated by HC and LevelWise sender paths since #2319 follow-up.
+    /// Populated by the HashComparison and LevelWise sender paths.
     /// Empty means "this peer didn't ship a chain" — `apply_leaf_with_crdt_merge`
     /// then falls back to the single-`parent_id` reconstruction path.
     ///

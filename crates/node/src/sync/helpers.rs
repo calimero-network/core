@@ -360,9 +360,9 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         //
         // Legacy fallback for peers shipping only `parent_id`: a
         // one-element chain. `apply_action` will then `add_root`
-        // missing grandparents (the pre-#2319 behaviour), which can
-        // misplace deeply nested entities until the real ancestors
-        // arrive via their own leaf pushes.
+        // missing grandparents, which can misplace deeply nested
+        // entities until the real ancestors arrive via their own leaf
+        // pushes.
         let ancestors = if !leaf.metadata.ancestors.is_empty() {
             leaf.metadata.ancestors.clone()
         } else {

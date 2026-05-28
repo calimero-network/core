@@ -385,12 +385,12 @@ impl SyncManager {
                 if let Some(parent_id) = index.parent_id() {
                     metadata = metadata.with_parent(*parent_id.as_bytes());
                 }
-                // #2319 follow-up: carry the full ancestor chain. With
-                // only `parent_id` the receiver's `apply_action` ancestor
-                // loop falls back to `add_root(parent)` for any missing
-                // ancestor — wrong tree position → divergent Merkle root
-                // that HC can't heal. Empty-on-error keeps the legacy
-                // single-parent fallback in `apply_leaf_with_crdt_merge`.
+                // Carry the full ancestor chain. With only `parent_id`
+                // the receiver's `apply_action` ancestor loop falls back
+                // to `add_root(parent)` for any missing ancestor — wrong
+                // tree position → divergent Merkle root that HC can't
+                // heal. Empty-on-error keeps the legacy single-parent
+                // fallback in `apply_leaf_with_crdt_merge`.
                 if let Ok(ancestors) = Index::<MainStorage>::get_ancestors_of(entity_id) {
                     metadata = metadata.with_ancestors(ancestors);
                 }
