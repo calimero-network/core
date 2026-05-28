@@ -234,7 +234,17 @@ pub fn migrate_v1_to_v2() -> AppV2 {
     vector values via `.into()`, `LwwRegister::new(...)`) gets a
     deterministic zero `timestamp`/`node_id` instead of this node's
     `hlc_timestamp()`/`executor_id()`. `Element` update timestamps are
-    likewise zeroed.
+    likewise zeroed. This applies to the *whole* body, including any
+    explicit `LwwRegister::set()` you call on a carried-over register —
+    and that is intended, not a side effect: each node runs migrate at a
+    different wall-clock time (LazyOnAccess), so a real timestamp here
+    would diverge across nodes. The migration is a full root *replacement*
+    (`write_pre_merged_root_state` + `clear_pending_delta`), not a CRDT
+    merge, so a migrate-written value is never LWW-compared at migration
+    time — it simply becomes the new baseline, which a genuine
+    post-migration write (real timestamp > 0) then supersedes as expected.
+    If you need a migrate-written value to *win* against later writes,
+    encode that in the value/logic, not via timestamps.
   - `__assign_deterministic_ids()` re-keys every top-level collection to
     its field-name id AND re-keys `Vector`/`AuthoredVector` *elements* by
     append index — live `push` uses `Id::random()` (correct for
