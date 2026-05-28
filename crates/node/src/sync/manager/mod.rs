@@ -639,11 +639,6 @@ impl SyncManager {
         bail!("Failed to sync with any peer for context {}", context_id)
     }
 
-    /// Look up the trusted-anchor identity set for the group that owns
-    /// `context_id` (Owner, Admins, ReadOnlyTee members). Returns an
-    /// empty set on any failure — context not registered to a group,
-    /// store read error, or no meta written yet. Callers fall back to
-    /// plain random peer selection on an empty set.
     /// Returns the in-flight upgrade target application for `context_id`
     /// when an application upgrade/migration is pending on THIS node —
     /// i.e. the context's currently-bound application differs from its
@@ -682,10 +677,21 @@ impl SyncManager {
             .flatten()?;
         let meta = MetaRepository::new(&store).load(&group_id).ok().flatten()?;
         let target = meta.target_application_id;
-        (current_app != target && target != calimero_primitives::application::ZERO_APPLICATION_ID)
-            .then_some(target)
+        // Only gate a context that is bound to a REAL application and differs
+        // from the group target. A context with no app yet
+        // (`current_app == ZERO`, e.g. a freshly-joined node still
+        // bootstrapping its state) must be allowed to sync — gating it would
+        // block the very state sync it needs to come up. Likewise `target ==
+        // ZERO` means no upgrade is set.
+        let zero = calimero_primitives::application::ZERO_APPLICATION_ID;
+        (current_app != zero && target != zero && current_app != target).then_some(target)
     }
 
+    /// Look up the trusted-anchor identity set for the group that owns
+    /// `context_id` (Owner, Admins, ReadOnlyTee members). Returns an
+    /// empty set on any failure — context not registered to a group,
+    /// store read error, or no meta written yet. Callers fall back to
+    /// plain random peer selection on an empty set.
     fn anchor_identities_for_context(
         &self,
         context_id: &ContextId,
