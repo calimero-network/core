@@ -549,21 +549,35 @@ async fn execute_migration(
         .map_err(|e| eyre::eyre!("Migration task failed: {}", e))?;
     let outcome = outcome?;
 
-    // Commit Temporal-buffered writes (UnorderedMap entries, Vector
-    // pushes, sub-entity element saves, etc.) BEFORE the host-side root
-    // state write happens. Order matters: a panic between commit() and
-    // write_migration_state would leave the context with v2-shaped
-    // collection entries but a v1-shaped root entry, which is a less
-    // bad failure mode than the other way around (v2 root pointing at
-    // entries that were never written). If write_migration_state later
-    // fails the caller bails before publishing the upgrade op, and the
-    // committed orphan entries are harmless dead weight — they'd be
-    // garbage-collected by a follow-up migration run.
-    // `commit()` consumes `storage` and returns the inner `Store`
-    // handle; this path doesn't reuse it (it continues with the
-    // `datastore` already in scope), so the returned handle drops
-    // here. The `?` still propagates any commit failure — the commit
-    // itself is the load-bearing effect, not its return value.
+    // Three-step ordering, in sequence:
+    //   1. `outcome?` (above) propagates a WASM execution error (trap)
+    //      and returns BEFORE this commit, so a failed migrate never
+    //      commits its Temporal-buffered writes. (desired)
+    //   2. `storage.commit()` (here) flushes the Temporal-buffered writes
+    //      the migrate fn made: UnorderedMap entries, Vector pushes,
+    //      sub-entity element saves. Only the borsh-serialised root state
+    //      returned via `value_return` bypasses the Temporal; everything
+    //      else is lost without this commit (the regression that made
+    //      freshly-created collections look empty post-migration).
+    //   3. `write_migration_state` (in the caller) writes the new root
+    //      state — strictly after this commit.
+    //
+    // Why commit before the root write (step 2 before step 3): a failure
+    // between them leaves v2-shaped collection entries under a still-v1
+    // root, the less-bad failure mode (the reverse — a v2 root pointing
+    // at entries that were never written — is unrecoverable). On retry
+    // the caller bails before publishing the upgrade op and the migrate
+    // fn re-runs against the unchanged v1 root. Crucially, migrate IDs
+    // are deterministic (merge mode + key/index-derived `compute_id`), so
+    // the re-run writes to the SAME storage keys and overwrites the
+    // committed entries in place — the partial commit is idempotent, it
+    // does not accumulate orphans across retries.
+    //
+    // `commit()` consumes `storage` and returns the inner `Store` handle;
+    // this path doesn't reuse it (it continues with the `datastore`
+    // already in scope), so the returned handle drops here. The `?` still
+    // propagates any commit failure — the commit itself is the
+    // load-bearing effect, not its return value.
     storage
         .commit()
         .map_err(|e| eyre::eyre!("Failed to commit migration storage writes: {e}"))?;

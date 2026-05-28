@@ -281,18 +281,25 @@ steps:
       - 'equal("{{ns_target_app_node2}}", "{{app_v2}}")'
       - 'equal("{{sub_target_app_node2}}", "{{app_v2}}")'
 
-  # Phase 7b: Migration handler ran on the emitter (node 1).
+  # Phase 7b: the EAGER propagator migration ran on the emitter (node 1).
   #
-  # Only the cascade-emitting node runs the per-context migration:
-  # `dispatch_cascade` spawns `propagate_upgrade` per matched
-  # descendant on the emitter only, which calls `update_application`
-  # per context → migrate runs locally. Receiving peers (node 2
-  # here) apply the gossiped `CascadeTargetApplicationSet` op to
-  # flip their local `GroupMeta` (target_application_id + app_key
-  # → v2) and then catch up to node 1's post-migration context
-  # state via the standard context-sync gossip path. They do NOT
-  # re-run `migrate_v1_to_v2` locally, so a node-2 log assertion
-  # for "Executing migration" would always fail by design.
+  # Two distinct migration triggers exist; this step asserts only the
+  # first:
+  #   1. Eager propagator (emitter only): `dispatch_cascade` spawns
+  #      `propagate_upgrade` per matched descendant on the emitting node,
+  #      which calls `update_application` per context → migrate runs
+  #      locally on node 1.
+  #   2. Lazy on-access (every receiver): a receiver applies the gossiped
+  #      `CascadeTargetApplicationSet` op to flip its local `GroupMeta`
+  #      (target_application_id + app_key → v2), then SELF-migrates on its
+  #      next context access. The migrated state is NOT gossiped — a
+  #      migration is a full root replacement, not a CRDT-mergeable delta
+  #      (`clear_pending_delta`), so each receiver must re-run the migrate
+  #      fn against its own byte-identical v1 state. Phase 7b'' below
+  #      asserts node 2's lazy migration explicitly.
+  #
+  # So node 2 DOES run `migrate_v1_to_v2` — just via the lazy path, not
+  # the eager propagator. This step is intentionally emitter-scoped.
   - name: Assert migration ran on node 1
     type: assert_log_present
     nodes:
