@@ -111,7 +111,13 @@ where
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this vector
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
-        self.inner.reassign_deterministic_id_with_crdt_type(
+        // `_with_indexed_children` (not the plain `_with_crdt_type`): vector
+        // elements are inserted with `Id::random()` at `push` time, so the
+        // generic reassign — which only relocates the collection's own id —
+        // would leave per-node-random element ids behind and diverge when a
+        // migration re-runs the population independently on each node. The
+        // indexed variant re-keys each element by its append position.
+        self.inner.reassign_deterministic_id_with_indexed_children(
             field_name,
             CrdtType::vector(std::any::type_name::<V>()),
         );
@@ -684,5 +690,68 @@ mod tests {
         // Test large but safe index
         let result = super::validate_index_bounds(usize::MAX - 1);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn reassign_makes_vector_element_ids_deterministic() {
+        use crate::collections::{compute_collection_id, compute_id};
+        crate::env::reset_for_testing();
+
+        // `new()` => random collection id; each `push` => random element id.
+        let mut v = Vector::<String>::new();
+        v.push("a".to_owned()).unwrap();
+        v.push("b".to_owned()).unwrap();
+        v.push("c".to_owned()).unwrap();
+
+        let random_ids: Vec<_> = v.inner.children_cache().unwrap().iter().copied().collect();
+
+        v.reassign_deterministic_id("tags");
+
+        // After reassign every element id is a pure function of
+        // (field_name, append index) — no random/timestamp/executor input —
+        // so two replicas migrating byte-identical input converge on
+        // identical ids (CIP Invariant I9).
+        let parent = compute_collection_id(None, "tags");
+        let det_ids: Vec<_> = v.inner.children_cache().unwrap().iter().copied().collect();
+        assert_eq!(det_ids.len(), 3);
+        for (i, id) in det_ids.iter().enumerate() {
+            assert_eq!(
+                *id,
+                compute_id(parent, &(i as u64).to_le_bytes()),
+                "element {i} must be re-keyed to its index-derived id"
+            );
+        }
+        assert_ne!(random_ids, det_ids, "re-key must replace the random ids");
+        // Values and order survive the re-key.
+        assert_eq!(v.iter().unwrap().collect::<Vec<_>>(), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn reassign_preserves_vector_element_storage_type() {
+        use crate::collections::{compute_collection_id, compute_id, Entry};
+        use crate::entities::StorageType;
+        use crate::interface::Interface;
+        crate::env::reset_for_testing();
+
+        let mut v = Vector::<String>::new();
+        // `Frozen` stands in for `AuthoredVector`'s `User { owner }` stamp:
+        // a non-Public storage_type that must survive the migrate re-key,
+        // or per-entry ownership/authorization would be silently dropped.
+        let _ = v
+            .push_with_storage_type("x".to_owned(), StorageType::Frozen)
+            .unwrap();
+
+        v.reassign_deterministic_id("notes");
+
+        let parent = compute_collection_id(None, "notes");
+        let id = compute_id(parent, &0u64.to_le_bytes());
+        let entry = <Interface<MainStorage>>::find_by_id::<Entry<String>>(id)
+            .unwrap()
+            .expect("re-keyed entry must exist");
+        assert_eq!(entry.item, "x");
+        assert!(matches!(
+            entry.storage.metadata.storage_type,
+            StorageType::Frozen
+        ));
     }
 }

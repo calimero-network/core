@@ -6,16 +6,26 @@ description: >
   own internal field-name handle, so borsh deserialize of v1 bytes
   under v2's schema would fail with EOF when it tries to read the
   missing `tags` field. The `migrate_v1_to_v2` handler reconstructs the
-  v2 state, carrying over the v1 `items` and `title`, and seeds the new
-  `tags` Vector empty. Topology: namespace + one Open subgroup + one
-  context in the subgroup. Upgrade is `upgrade_group(group=subgroup,
-  target=v2, migrate=migrate_v1_to_v2)` — per-context (cascade=false).
-  Acts as the CRDT-collection-add row of the per-scenario matrix.
+  v2 state, carrying over the v1 `items` and `title`, and SEEDS the new
+  `tags` Vector during migrate from the sorted v1 item keys. Topology:
+  namespace + one Open subgroup + one context in the subgroup. Upgrade
+  is `upgrade_group(group=subgroup, target=v2, migrate=migrate_v1_to_v2)`
+  — per-context (cascade=false). Acts as the CRDT-collection-add row of
+  the per-scenario matrix.
+
+  Cross-node determinism: a `Vector` populated INSIDE a migrate is the
+  hard case — `push` mints `Id::random()` element ids on the live path,
+  but migrate re-runs independently on every node and emits no delta, so
+  random ids would diverge and double up on the next sync. The SDK
+  re-keys migrate-seeded Vector elements by append index (and zeroes the
+  per-element LwwRegister metadata via merge mode). The discriminating
+  assertion is `tag_count` AFTER a cross-node sync (Phase 7d): with
+  divergent ids the union would inflate the count; identical ids dedupe.
 
   Negative assertion: before the upgrade, the v2-only method `push_tag`
   must NOT be callable (the binary doesn't export it under v1). After
-  the upgrade Phase 7d pushes tags from node 1 and reads them back via
-  v2-only `tag_count` / `get_tag` on node 2 to prove convergence.
+  the upgrade Phase 7d pushes more tags from node 1 and reads them back
+  via v2-only `tag_count` / `get_tag` on node 2 to prove convergence.
 
 no_docker: false
 nuke_on_start: true
@@ -132,7 +142,7 @@ steps:
     args:
       title: "crdt-scenario-doc"
 
-  - name: Write item to v1 map
+  - name: Write item k1 to v1 map
     type: call
     node: app-migration-crdt-1
     context_id: "{{ctx_id}}"
@@ -140,6 +150,24 @@ steps:
     args:
       key: "k1"
       value: "v1"
+
+  - name: Write item k2 to v1 map
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k2"
+      value: "v2"
+
+  - name: Write item k3 to v1 map
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k3"
+      value: "v3"
 
   - name: Wait for v1 state to sync to node 2
     type: wait_for_sync
@@ -243,19 +271,19 @@ steps:
       - "Migrated state written successfully"
     min_matches: 1
 
-  - name: Assert v2 schema on node 1 (CRDT-native field seeded empty, v1 data preserved)
+  - name: Assert v2 schema on node 1 (tags seeded during migrate from 3 item keys, v1 data preserved)
     type: json_assert
     statements:
       - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0"}})'
       - 'json_subset({{v2_schema_node1}}, {"output": {"title": "crdt-scenario-doc"}})'
-      - 'json_subset({{v2_schema_node1}}, {"output": {"tag_count": 0}})'
+      - 'json_subset({{v2_schema_node1}}, {"output": {"tag_count": 3}})'
 
-  - name: Assert v2 schema on node 2 (same shape, proves migration reached node 2)
+  - name: Assert v2 schema on node 2 (same shape + same seeded tag_count, proves migration reached node 2)
     type: json_assert
     statements:
       - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0"}})'
       - 'json_subset({{v2_schema_node2}}, {"output": {"title": "crdt-scenario-doc"}})'
-      - 'json_subset({{v2_schema_node2}}, {"output": {"tag_count": 0}})'
+      - 'json_subset({{v2_schema_node2}}, {"output": {"tag_count": 3}})'
 
   - name: Assert v1 item map preserved through migration (node 1)
     type: call
@@ -272,7 +300,57 @@ steps:
     statements:
       - 'json_equal({{preserved_item}}, {"output": "v1"})'
 
-  # Phase 7d: v2-only setter on node 1 round-trips to node 2 via v2-only getter.
+  # Seeded-tag cross-node check: both nodes self-migrated INDEPENDENTLY
+  # and seeded `tags` from the same sorted v1 keys [k1,k2,k3]. Read the
+  # seeded values back on each node by index to confirm identical
+  # ordering/content. (Element-id divergence is caught by the post-sync
+  # tag_count below, not here — get_tag reads by position.)
+  - name: Read seeded tag(0) on node 1
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: get_tag
+    args:
+      index: 0
+    outputs:
+      seed0_node1: result
+
+  - name: Read seeded tag(0) on node 2
+    type: call
+    node: app-migration-crdt-2
+    context_id: "{{ctx_id}}"
+    method: get_tag
+    args:
+      index: 0
+    outputs:
+      seed0_node2: result
+
+  - name: Assert seeded tag(0) identical across nodes (migrate seeded same first key)
+    type: json_assert
+    statements:
+      - 'json_equal({{seed0_node1}}, {"output": "k1"})'
+      - 'json_equal({{seed0_node2}}, {"output": "k1"})'
+
+  - name: Read seeded tag(2) on node 2 (last sorted key)
+    type: call
+    node: app-migration-crdt-2
+    context_id: "{{ctx_id}}"
+    method: get_tag
+    args:
+      index: 2
+    outputs:
+      seed2_node2: result
+
+  - name: Assert seeded tag(2) value on node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{seed2_node2}}, {"output": "k3"})'
+
+  # Phase 7d: v2-only setter on node 1 appends to the migrate-seeded
+  # vector, then a cross-node sync reconciles BY ELEMENT ID. This is the
+  # discriminating check: if the two nodes' migrate-seeded elements had
+  # divergent (random) ids, the id-keyed union would inflate the count
+  # past 5 on the receiver; identical index-derived ids dedupe to 5.
   - name: Push first tag (v2-only) on node 1
     type: call
     node: app-migration-crdt-1
@@ -306,12 +384,12 @@ steps:
     outputs:
       tag_count_after_node1: result
 
-  - name: Assert two tags present on node 1
+  - name: Assert five tags present on node 1 (3 seeded + 2 pushed)
     type: json_assert
     statements:
-      - 'json_equal({{tag_count_after_node1}}, {"output": 2})'
+      - 'json_equal({{tag_count_after_node1}}, {"output": 5})'
 
-  - name: Read first tag via get_tag(0) on node 1
+  - name: Read tag(0) on node 1 (seeded element survives the appends)
     type: call
     node: app-migration-crdt-1
     context_id: "{{ctx_id}}"
@@ -321,12 +399,12 @@ steps:
     outputs:
       tag_zero_node1: result
 
-  - name: Assert first tag value on node 1
+  - name: Assert tag(0) is the seeded k1 on node 1
     type: json_assert
     statements:
-      - 'json_equal({{tag_zero_node1}}, {"output": "first-tag"})'
+      - 'json_equal({{tag_zero_node1}}, {"output": "k1"})'
 
-  - name: Read tag_count after pushes on node 2 (v2-only round-trip)
+  - name: Read tag_count after pushes on node 2 (id-keyed union must dedupe to 5)
     type: call
     node: app-migration-crdt-2
     context_id: "{{ctx_id}}"
@@ -334,12 +412,12 @@ steps:
     outputs:
       tag_count_after_node2: result
 
-  - name: Assert two tags reached node 2
+  - name: Assert five tags on node 2 — divergent migrate ids would inflate this
     type: json_assert
     statements:
-      - 'json_equal({{tag_count_after_node2}}, {"output": 2})'
+      - 'json_equal({{tag_count_after_node2}}, {"output": 5})'
 
-  - name: Read first tag via get_tag(0) on node 2
+  - name: Read tag(0) on node 2 (seeded k1 converged, not duplicated)
     type: call
     node: app-migration-crdt-2
     context_id: "{{ctx_id}}"
@@ -349,10 +427,10 @@ steps:
     outputs:
       tag_zero_node2: result
 
-  - name: Assert first tag value reached node 2
+  - name: Assert tag(0) is the seeded k1 on node 2
     type: json_assert
     statements:
-      - 'json_equal({{tag_zero_node2}}, {"output": "first-tag"})'
+      - 'json_equal({{tag_zero_node2}}, {"output": "k1"})'
 
   # Phase 8: Teardown.
   - name: Delete context

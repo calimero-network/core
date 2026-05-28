@@ -222,10 +222,41 @@ pub fn migrate_v1_to_v2() -> AppV2 {
   sync (it's a full root replacement, not a CRDT-mergeable delta). Two
   nodes that run the same migrate fn on the same v1 bytes must produce
   byte-identical v2 state, or their roots diverge and subsequent CRDT
-  sync breaks. Avoid wall-clock time, RNG, or iteration-order-dependent
-  logic over non-deterministic collections. Under the default
-  `LazyOnAccess` upgrade policy each node migrates on its next context
-  access (logged as `performing lazy upgrade before execution`).
+  sync breaks. Under the default `LazyOnAccess` upgrade policy each node
+  migrates on its next context access (logged as `performing lazy upgrade
+  before execution`).
+
+  The SDK macro removes the two *structural* sources of node-local
+  entropy for you:
+
+  - It runs the whole migrate body under storage **merge mode**, so any
+    `LwwRegister` created inside migrate (`total: count.into()`, map or
+    vector values via `.into()`, `LwwRegister::new(...)`) gets a
+    deterministic zero `timestamp`/`node_id` instead of this node's
+    `hlc_timestamp()`/`executor_id()`. `Element` update timestamps are
+    likewise zeroed.
+  - `__assign_deterministic_ids()` re-keys every top-level collection to
+    its field-name id AND re-keys `Vector`/`AuthoredVector` *elements* by
+    append index — live `push` uses `Id::random()` (correct for
+    concurrent appends, but it would diverge across independent
+    migrations).
+
+  You must still avoid these *app-level* sources of divergence:
+
+  - **Wall-clock / RNG / iteration-order-dependent logic.** Sort before
+    materialising an ordered structure from an unordered one if the
+    source iteration order isn't guaranteed identical across nodes (e.g.
+    the `crdt-native` scenario sorts the v1 item keys before seeding the
+    `tags` Vector).
+  - **`ReplicatedGrowableArray` populated inside migrate.** `RGA::insert`
+    stamps each char with a raw `env::hlc_timestamp()` read (NOT
+    suppressed by merge mode), so independent migrations mint different
+    `CharId`s and diverge. If you must seed an RGA during migrate, use
+    `insert_str_at_timestamp` with a fixed, input-derived timestamp.
+  - **`Counter`/`PNCounter`/`GCounter` increments inside migrate.** Each
+    increment is keyed by the executing node's id, so two nodes record
+    the same logical delta under different keys. Carry the old counter
+    across (`c: old.c`) rather than re-incrementing during migrate.
 
 End-to-end coverage of migration shapes lives in
 `workflows/app-migration/` (per-context migration, namespace cascade,

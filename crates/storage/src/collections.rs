@@ -293,6 +293,64 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             .expect("failed to add collection with new ID");
     }
 
+    /// Reassigns this collection's id to the deterministic field-name id
+    /// **and** re-keys every child entry to an index-derived deterministic
+    /// id, preserving each entry's [`StorageType`].
+    ///
+    /// `Vector` (and `AuthoredVector`, which wraps it) inserts children with
+    /// `Id::random()` at `push` time — concurrent appends from different
+    /// replicas must not collide, so a content-derived key is impossible.
+    /// That is correct for live operation (the random id rides along in the
+    /// sync delta, so every peer agrees), but it breaks migrations: a
+    /// `#[app::migrate]` re-runs independently on every node and emits no
+    /// delta (the LazyOnAccess model), so two replicas building the same
+    /// vector from byte-identical v1 state would otherwise mint *different*
+    /// random element ids and diverge. Re-keying by append index makes the
+    /// element ids a pure function of position, restoring CIP Invariant I9.
+    ///
+    /// Unlike the map/set path (entries are already keyed by `compute_id`
+    /// at insert, so their reassign can early-return once the collection id
+    /// is correct), this always re-keys the children: the *children* are
+    /// what carry the random ids, independent of the collection's own id.
+    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
+    pub(crate) fn reassign_deterministic_id_with_indexed_children(
+        &mut self,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) {
+        // Snapshot (value, storage_type) for every child in append order
+        // before mutating anything. `storage_type` carries the
+        // `AuthoredVector` per-entry owner stamp, which must survive the
+        // re-key or owner authorization would be lost.
+        let ordered_ids: Vec<Id> = self
+            .children_cache()
+            .expect("read children for reindex")
+            .iter()
+            .copied()
+            .collect();
+        let mut snapshot: Vec<(T, StorageType)> = Vec::with_capacity(ordered_ids.len());
+        for id in ordered_ids {
+            let entry = <Interface<S>>::find_by_id::<Entry<T>>(id)
+                .expect("read child entry for reindex")
+                .expect("vector child entry must exist");
+            snapshot.push((entry.item, entry.storage.metadata.storage_type));
+        }
+
+        // Drop the old random-id children, move the collection to its
+        // deterministic id, then re-insert each child under
+        // `compute_id(parent, index)`.
+        self.clear().expect("clear for reindex");
+        self.reassign_deterministic_id_with_crdt_type(field_name, crdt_type);
+
+        let parent = self.id();
+        for (index, (item, storage_type)) in snapshot.into_iter().enumerate() {
+            let id = compute_id(parent, &(index as u64).to_le_bytes());
+            let _reinserted = self
+                .insert_with_storage_type(Some(id), item, storage_type)
+                .expect("re-insert vector child during reindex");
+        }
+    }
+
     /// Inserts an item into the collection.
     fn insert(&mut self, id: Option<Id>, item: T) -> StoreResult<T> {
         self.insert_with_storage_type(id, item, StorageType::Public)

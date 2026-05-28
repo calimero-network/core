@@ -55,10 +55,36 @@ pub fn migrate_v1_to_v2() -> ScenarioCrdtNativeV2 {
         to_version: SCHEMA_VERSION_V2,
     });
 
+    // Seed `tags` DURING the migration by denormalising the v1 item keys
+    // into an ordered list. This is the cross-node-determinism stress
+    // case for a `Vector` POPULATED inside a migrate: every node runs
+    // migrate independently (LazyOnAccess emits no sync delta), so the
+    // seeded element ids must be a pure function of position — not
+    // `Id::random()` as `push` uses on the live path — or the two
+    // replicas' `tags` diverge and double up on the next sync. The SDK
+    // guarantees this: `#[app::migrate]` runs under storage merge mode
+    // (zeroes the per-element `LwwRegister` node_id/timestamp) and
+    // `__assign_deterministic_ids()` re-keys each Vector element by its
+    // append index. Keys are sorted so the seed order is canonical
+    // regardless of the v1 map's internal iteration order.
+    let mut keys: Vec<String> = old_state
+        .items
+        .entries()
+        .unwrap_or_else(|e| panic!("Migration failed: V1 items iteration error {:?}", e))
+        .map(|(k, _v)| k)
+        .collect();
+    keys.sort();
+
+    let mut tags: Vector<LwwRegister<String>> = Vector::new_with_field_name("tags");
+    for k in keys {
+        tags.push(k.into())
+            .unwrap_or_else(|e| panic!("Migration failed: V2 tags seed error {:?}", e));
+    }
+
     ScenarioCrdtNativeV2 {
         items: old_state.items,
         title: old_state.title,
-        tags: Vector::new_with_field_name("tags"),
+        tags,
     }
 }
 
