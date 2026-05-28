@@ -30,16 +30,23 @@ and the namespace-cascade additions designed in
 | `06-scenario-new-method.yml` | **New method** — v2 adds `clear_items()`. State byte-identical, no migrate needed. Negative pre-upgrade: `clear_items` not exported by v1. | No |
 | `07-scenario-new-enum-variant.yml` | **New enum variant** — v2 appends `Archived` to `Status` enum. Borsh indices preserved, no migrate needed. Asserts pre-existing `Paused` value survives byte-for-byte; new variant becomes settable. | No |
 | `08-scenario-pure-bugfix.yml` | **Pure bugfix** — v2 has byte-identical state, internal logic-only fix (v1 `sum_all_values` has off-by-one, v2 doesn't). Asserts state preserved + observable behavior change. | No |
-| `09-scenario-crdt-native.yml` | **CRDT-native field growth** — v2 adds `tags: Vector<LwwRegister<String>>`. Migrate seeds empty Vector. | Yes |
+| `09-scenario-crdt-native.yml` | **CRDT-native field growth** — v2 adds `tags: Vector<LwwRegister<String>>`. Migrate **seeds the Vector** from the sorted v1 item keys, exercising cross-node determinism for a Vector populated *inside* a migrate (elements re-keyed by append index + `LwwRegister` metadata zeroed via merge mode). Discriminating check: `tag_count` dedups to 5 across nodes after a post-migrate sync — divergent element ids would inflate the union. | Yes |
 | `10-scenario-struct-to-enum.yml` | **Struct → enum** — v1 `Status { active: bool, reason: Option<String> }` → v2 `enum Status { Active, Inactive(String) }`. Migrate eliminates the impossible state (`active=true + reason=Some`). | Yes |
 | `11-scenario-field-split.yml` | **Field split** — v1 `address: String` → v2 `{ street, city, postcode }`. Migrate parses comma-separated v1 address; fallback assigns the whole string to `street`. | Yes |
 | `12-scenario-field-remove-archive.yml` | **Remove with archive** — v2 drops `legacy_note` but stashes the value in `archived_legacy: UnorderedMap<String, String>` under key `"latest"`. Companion to `03` (which discards). | Yes |
 | `13-scenario-invariant-reshuffle.yml` | **Invariant reshuffle** — v1 has denormalized `global_count` + `per_item_counts` (invariant easy to violate via two independent setters). v2 funnels both updates through a single `record()` method; migrate re-derives `total` from the per-item map (does NOT trust v1's `global_count`). | Yes |
 
-### Out of scope (not in this PR)
+### Out of scope (deferred from the original migration design plan)
+
+Tracked here as the canonical list of what the original plan called for but
+this PR does not cover. Each is a follow-up, not a gap in the shipped scope.
 
 * `serde-default-field` — borsh-backed state ignores `#[serde(default)]`, so this scenario from the original matrix doesn't have a meaningful borsh-level shape. Could be added later as an ABI-response scenario, not a state-migration one.
-* `Coordinated` multi-node upgrade policy — all scenarios use `lazy_on_access` (see below). Eager all-node `Coordinated` migration has no receiver-side migration trigger today and is a separate feature.
+* **`Coordinated` / `Automatic` multi-node upgrade policies** — all scenarios use `lazy_on_access` (see below), the only policy with a working cross-node migration trigger. `Automatic` and `Coordinated` share the eager-propagator path (which only migrates on the *emitting* node — receivers have no migration trigger), and `Coordinated`'s `deadline` field is currently inert (never read). For a migrate-carrying upgrade under these policies a receiver is left on v1 bytes behind a v2 pointer. Cheapest first step before implementing them: a **fail-fast guard** that rejects `upgrade_group` with a migrate fn under `Automatic`/`Coordinated`, instead of silently flipping the pointer and panicking receivers.
+* **Populated-during-migrate `RGA` and `Counter`** — determinism for these is an *app-author contract* (documented in `crates/sdk/AGENTS.md`), not auto-handled by the SDK the way `LwwRegister` (merge mode) and `Vector`/`AuthoredVector` (index re-key) now are. `RGA::insert` stamps a raw `env::hlc_timestamp()`; `Counter` increments are keyed by node id. Both diverge if populated inside a migrate; carry them across instead, or seed an `RGA` with `insert_str_at_timestamp` using a fixed input-derived timestamp.
+* **Other CRDT-type migrate paths** — `AuthoredMap`, `UserStorage`, `FrozenStorage`, `SharedStorage` aren't exercised by this matrix (their reassign hooks exist but no scenario migrates them).
+* **Concurrent migrations** — two upgrades racing on the same group/context. Not exercised; would need a merobox primitive to drive overlapping upgrades.
+* **Failed-migration recovery** — a migrate fn that panics/traps mid-way, then retry. The trap-aborts-leaving-v1-intact behaviour is by design, but the recovery/retry path isn't asserted end-to-end; would need new merobox primitives to inject a failing migrate.
 
 ## Cross-node migration model (why `lazy_on_access`)
 
@@ -72,6 +79,17 @@ diverging. No-migration scenarios (`06`, `07`, `08`) have byte-identical
 borsh layouts, so the lazy upgrade only swaps the application pointer
 (no migrate fn, no migration log) — verified via cross-node `schema_info`
 reads instead.
+
+**Application distribution (admin-only install).** Every scenario installs
+both the from- and to-version bytecode on the **admin node only**. Node 2
+never runs `install_application`; it auto-fetches the from-version when it
+joins the context and the to-version when the upgrade announces the target
+blob, pulling both over the `BlobShare` sync protocol (the sync-gate leaves
+`BlobShare` open during a pending upgrade for exactly this). App ids are
+content-addressed (`blob_id` of the bytecode), so node 1's `app_v1`/`app_v2`
+ids are the same ids node 2 resolves. This mirrors a real deployment —
+operators upgrade from one node — and exercises the bytecode-propagation
+path end-to-end rather than pre-seeding it.
 
 ## Fixtures
 
