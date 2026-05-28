@@ -26,7 +26,15 @@ nodes:
   base_rpc_port: 9370
 
 steps:
-  # Phase 1: Install v4 + v5 binaries on BOTH nodes.
+  # Phase 1: Install both binaries on the ADMIN node (node 1) only.
+  #
+  # Realistic distribution: node 2 never runs install_application. It
+  # auto-fetches the from-version when it joins the context and the
+  # to-version when the upgrade announces the target blob (pulled over
+  # BlobShare during its lazy migration; the sync-gate leaves BlobShare
+  # open for exactly this). App ids are content-addressed, so node 1's
+  # captured app ids are the same ids node 2 resolves. Proven by the
+  # 01/02 admin-only canary.
   - name: Install migration-suite-v4-rename-field on node 1
     type: install_application
     node: app-migration-typechange-1
@@ -35,12 +43,6 @@ steps:
     outputs:
       app_v4: applicationId
 
-  - name: Install migration-suite-v4-rename-field on node 2
-    type: install_application
-    node: app-migration-typechange-2
-    path: apps/migrations/migration-suite-v4-rename-field/res/migration_suite_v4_rename_field.wasm
-    dev: true
-
   - name: Install migration-suite-v5-change-type on node 1
     type: install_application
     node: app-migration-typechange-1
@@ -48,12 +50,6 @@ steps:
     dev: true
     outputs:
       app_v5: applicationId
-
-  - name: Install migration-suite-v5-change-type on node 2
-    type: install_application
-    node: app-migration-typechange-2
-    path: apps/migrations/migration-suite-v5-change-type/res/migration_suite_v5_change_type.wasm
-    dev: true
 
   # Phase 2: Node 1 builds namespace + Open subgroup + context.
   - name: Create namespace (v4) on node 1
