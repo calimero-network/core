@@ -1357,6 +1357,7 @@ impl DeltaStore {
 
         // Update context's dag_heads after the DAG has been updated
         let heads = dag.get_heads();
+        let heads_count = heads.len();
 
         // Get list of deltas that were pending but are now applied (cascade effect)
         let cascaded_deltas: Vec<[u8; 32]> = if !pending_before.is_empty() {
@@ -1370,6 +1371,16 @@ impl DeltaStore {
         let hold = lock_start.elapsed();
         drop(dag); // Release lock before calling context_client
         self.record_dag_write_lock_hold("add_delta_internal", hold, None, cascaded_deltas.len());
+
+        // Observe DAG head fan-out for #2356 item 2. The histogram drives
+        // the cap-mechanism decision (checkpoint vs periodic consolidation
+        // vs no cap) — currently we have no production data for what
+        // heads_count actually looks like post-#2238 / #2465.
+        //
+        // Recorded after `drop(dag)` so the (sub-microsecond) atomic
+        // observe doesn't extend the write-lock critical section every
+        // caller waits on.
+        crate::node_metrics::observe_dag_heads_count(heads_count);
 
         // Update persistence if delta applied. Preserve events until
         // the caller confirms handler execution via

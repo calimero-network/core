@@ -4,7 +4,7 @@
 //! This handler publishes `GroupOp::MemberLeft { member: signer }` via
 //! the existing local-governance pipeline. All apply-side validation
 //! (direct-row, owner, last-admin) lives in
-//! `crate::group_store::apply_group_op_mutations` so peers reject the
+//! `calimero_governance_store::apply_group_op_mutations` so peers reject the
 //! op identically to the publisher.
 //!
 //! No key rotation is attached. See the apply-arm comment for the
@@ -17,10 +17,10 @@ use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{LeaveGroupRequest, LeaveGroupResponse};
 use tracing::info;
 
-use crate::governance_broadcast::observe_handler_delivery;
-use crate::group_store;
-use crate::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use crate::ContextManager;
+use calimero_governance_store;
+use calimero_governance_store::governance_broadcast::observe_handler_delivery;
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 
 impl Handler<LeaveGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <LeaveGroupRequest as Message>::Result>;
@@ -111,7 +111,7 @@ impl Handler<LeaveGroupRequest> for ContextManager {
                 // (which enforces owner / last-admin / direct-row checks
                 // again) and broadcasts to peers. Errors at apply bubble
                 // up here as the user-facing failure.
-                let report = group_store::sign_apply_and_publish(
+                let report = calimero_governance_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,

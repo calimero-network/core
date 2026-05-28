@@ -1,13 +1,13 @@
-use crate::group_store::{MetaRepository, MetadataRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::{ListNamespacesRequest, NamespaceSummary};
 use calimero_context_config::types::ContextGroupId;
+use calimero_governance_store::{MetaRepository, MetadataRepository};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::GroupMetaValue;
 
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
 
 pub(crate) fn collect_namespace_summaries(
     entries: Vec<([u8; 32], GroupMetaValue)>,
@@ -97,9 +97,8 @@ mod tests {
     use calimero_store::Store;
 
     use super::{collect_namespace_summaries, paginate_namespaces};
-    use crate::group_store::{
-        GroupStoreError, MembershipRepository, MetaRepository, MetadataRepository,
-        NamespaceRepository,
+    use calimero_governance_store::{
+        ApplyError, MembershipRepository, MetaRepository, MetadataRepository, NamespaceRepository,
     };
 
     fn test_summary(namespace_id: [u8; 32]) -> NamespaceSummary {
@@ -166,13 +165,14 @@ mod tests {
             entries,
             None,
             |_group_id| Some((PublicKey::from([0x05; 32]), [0u8; 32])),
-            |_group_id, _meta, _node_identity| Err(GroupStoreError::UnsupportedOp.into()),
+            |_group_id, _meta, _node_identity| Err(ApplyError::UnsupportedOp.into()),
         )
         .expect_err("builder errors should be propagated");
 
-        assert!(err
-            .to_string()
-            .contains(&GroupStoreError::UnsupportedOp.to_string()));
+        assert!(matches!(
+            err.downcast_ref::<ApplyError>(),
+            Some(ApplyError::UnsupportedOp)
+        ));
     }
 
     #[test]

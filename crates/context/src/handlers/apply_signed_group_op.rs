@@ -1,8 +1,8 @@
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::messages::ApplySignedGroupOpRequest;
 
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
 
 impl Handler<ApplySignedGroupOpRequest> for ContextManager {
     type Result = ActorResponse<Self, <ApplySignedGroupOpRequest as Message>::Result>;
@@ -16,7 +16,7 @@ impl Handler<ApplySignedGroupOpRequest> for ContextManager {
 
         ActorResponse::r#async(
             async move {
-                match group_store::apply_local_signed_group_op(&datastore, &op) {
+                match calimero_governance_store::apply_local_signed_group_op(&datastore, &op) {
                     Ok(()) => Ok(true),
                     Err(e) => {
                         tracing::debug!(%e, "failed to apply group op");

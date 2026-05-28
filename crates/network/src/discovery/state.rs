@@ -10,6 +10,7 @@ use std::time::Instant;
 use libp2p::core::transport::ListenerId;
 use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::Cookie;
+use libp2p::swarm::ConnectionId;
 use libp2p::{Multiaddr, PeerId, StreamProtocol};
 use multiaddr::Protocol;
 use tracing::info;
@@ -44,10 +45,31 @@ pub struct DiscoveryState {
     /// allocation).
     relay_listeners: HashMap<ListenerId, PeerId>,
     reachability_state: ReachabilityState,
+    /// Most recent AutoNAT v2 client probe outcome. Overwritten on every
+    /// probe; `None` until the first probe lands. Surfaced via
+    /// `meroctl network status` so operators can answer "is this node
+    /// behind NAT?" without trawling `RUST_LOG=debug`.
+    last_autonat_test: Option<AutonatTest>,
+}
+
+/// Latest AutoNAT client test outcome retained for introspection.
+/// One slot only — we don't keep history; the value is the freshest
+/// observation. The address tested and the result are both reported.
+#[derive(Clone, Debug)]
+pub struct AutonatTest {
+    pub tested_addr: Multiaddr,
+    pub result: AutonatTestResult,
+    pub at: Instant,
+}
+
+#[derive(Clone, Debug)]
+pub enum AutonatTestResult {
+    Reachable { addr: Multiaddr },
+    Failed { reason: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReachabilityState {
+pub enum ReachabilityState {
     Unknown,
     Reachable,
     Unreachable,
@@ -63,6 +85,7 @@ impl Default for DiscoveryState {
             confirmed_external_addresses: HashSet::new(),
             relay_listeners: HashMap::new(),
             reachability_state: ReachabilityState::Unknown,
+            last_autonat_test: None,
         }
     }
 }
@@ -256,6 +279,7 @@ impl DiscoveryState {
                     discoveries,
                     relay: None,
                     rendezvous: None,
+                    dcutr: None,
                 });
             }
         }
@@ -404,6 +428,44 @@ impl DiscoveryState {
         _ = self.peers.entry(*peer_id).or_default();
     }
 
+    /// Record the outcome of a DCUtR hole-punch attempt with `peer_id`.
+    /// Ensures the peer exists in the registry first — a dcutr event can
+    /// fire for a peer we don't otherwise track (no identify yet, no
+    /// rendezvous discovery), and we still want to surface the result.
+    pub(crate) fn record_dcutr_outcome(&mut self, peer_id: PeerId, status: DcutrUpgradeStatus) {
+        self.peers.entry(peer_id).or_default().update_dcutr(status);
+    }
+
+    /// Record the outcome of the most recent AutoNAT client probe.
+    /// Overwrites any prior observation — callers wanting history should
+    /// read `last_autonat_test` between calls.
+    pub(crate) fn record_autonat_test(
+        &mut self,
+        tested_addr: Multiaddr,
+        result: AutonatTestResult,
+    ) {
+        self.last_autonat_test = Some(AutonatTest {
+            tested_addr,
+            result,
+            at: Instant::now(),
+        });
+    }
+
+    pub(crate) fn last_autonat_test(&self) -> Option<&AutonatTest> {
+        self.last_autonat_test.as_ref()
+    }
+
+    pub(crate) const fn reachability_state(&self) -> ReachabilityState {
+        self.reachability_state
+    }
+
+    /// Iterate over `(peer_id, info)` pairs for every peer we track.
+    /// Used by the network-status snapshot builder to enumerate relay,
+    /// rendezvous and dcutr state in one pass.
+    pub(crate) fn iter_peers(&self) -> impl Iterator<Item = (&PeerId, &PeerInfo)> {
+        self.peers.iter()
+    }
+
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "Cannot use saturating_add() due to non-specific integer type"
@@ -464,6 +526,11 @@ pub struct PeerInfo {
     discoveries: HashSet<PeerDiscoveryMechanism>,
     relay: Option<PeerRelayInfo>,
     rendezvous: Option<PeerRendezvousInfo>,
+    /// Latest DCUtR hole-punch outcome observed for this peer. `None`
+    /// means we've never seen a dcutr event (either the peer isn't
+    /// reachable over a relay we attempted to upgrade, or the upgrade
+    /// hasn't happened yet). Populated by the dcutr swarm-event handler.
+    dcutr: Option<PeerDcutrInfo>,
 }
 
 impl PeerInfo {
@@ -499,6 +566,10 @@ impl PeerInfo {
         self.relay.as_ref()
     }
 
+    pub(crate) const fn dcutr(&self) -> Option<&PeerDcutrInfo> {
+        self.dcutr.as_ref()
+    }
+
     fn add_discovery_mechanism(&mut self, mechanism: PeerDiscoveryMechanism) {
         let _ = self.discoveries.insert(mechanism);
     }
@@ -509,19 +580,20 @@ impl PeerInfo {
         }
     }
 
-    const fn update_relay_reservation_status(&mut self, status: RelayReservationStatus) {
+    fn update_relay_reservation_status(&mut self, status: RelayReservationStatus) {
         if let Some(ref mut info) = self.relay {
             info.update_reservation_status(status);
         }
     }
 
-    const fn update_rendezvous_registartion_status(
-        &mut self,
-        status: RendezvousRegistrationStatus,
-    ) {
+    fn update_rendezvous_registartion_status(&mut self, status: RendezvousRegistrationStatus) {
         if let Some(ref mut info) = self.rendezvous {
             info.update_registration_status(status);
         }
+    }
+
+    fn update_dcutr(&mut self, status: DcutrUpgradeStatus) {
+        self.dcutr = Some(PeerDcutrInfo::new(status));
     }
 }
 
@@ -531,9 +603,23 @@ pub enum PeerDiscoveryMechanism {
     Rendezvous,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PeerRelayInfo {
     reservation_status: RelayReservationStatus,
+    /// Wall-clock instant of the most recent reservation status mutation,
+    /// or of struct creation if no mutation has occurred. Surfaced as
+    /// `last_state_change` in the network-status snapshot so operators
+    /// can tell a fresh transition from a stale one.
+    last_state_change: Instant,
+}
+
+impl Default for PeerRelayInfo {
+    fn default() -> Self {
+        Self {
+            reservation_status: RelayReservationStatus::default(),
+            last_state_change: Instant::now(),
+        }
+    }
 }
 
 impl PeerRelayInfo {
@@ -541,8 +627,13 @@ impl PeerRelayInfo {
         self.reservation_status
     }
 
-    const fn update_reservation_status(&mut self, status: RelayReservationStatus) {
+    pub(crate) const fn last_state_change(&self) -> Instant {
+        self.last_state_change
+    }
+
+    fn update_reservation_status(&mut self, status: RelayReservationStatus) {
         self.reservation_status = status;
+        self.last_state_change = Instant::now();
     }
 }
 
@@ -555,11 +646,28 @@ pub enum RelayReservationStatus {
     Expired,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PeerRendezvousInfo {
     cookie: Option<Cookie>,
     last_discovery_at: Option<Instant>,
     registration_status: RendezvousRegistrationStatus,
+    /// Wall-clock instant of the most recent registration status
+    /// mutation. Surfaced as `last_registered_at` in the network-status
+    /// snapshot (the name follows the issue spec — it reads as "last
+    /// time registration status changed", which is what an operator
+    /// debugging rendezvous churn cares about).
+    last_state_change: Instant,
+}
+
+impl Default for PeerRendezvousInfo {
+    fn default() -> Self {
+        Self {
+            cookie: None,
+            last_discovery_at: None,
+            registration_status: RendezvousRegistrationStatus::default(),
+            last_state_change: Instant::now(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -589,7 +697,45 @@ impl PeerRendezvousInfo {
         self.registration_status
     }
 
-    const fn update_registration_status(&mut self, status: RendezvousRegistrationStatus) {
-        self.registration_status = status;
+    pub(crate) const fn last_state_change(&self) -> Instant {
+        self.last_state_change
     }
+
+    fn update_registration_status(&mut self, status: RendezvousRegistrationStatus) {
+        self.registration_status = status;
+        self.last_state_change = Instant::now();
+    }
+}
+
+/// DCUtR (Direct Connection Upgrade through Relay) hole-punch outcome
+/// retained per peer. We keep only the latest observation — a failed
+/// upgrade followed by a successful retry should leave the peer in the
+/// `Succeeded` state. Populated by the dcutr swarm-event handler.
+#[derive(Clone, Debug)]
+pub struct PeerDcutrInfo {
+    status: DcutrUpgradeStatus,
+    at: Instant,
+}
+
+impl PeerDcutrInfo {
+    pub(crate) fn new(status: DcutrUpgradeStatus) -> Self {
+        Self {
+            status,
+            at: Instant::now(),
+        }
+    }
+
+    pub(crate) fn status(&self) -> &DcutrUpgradeStatus {
+        &self.status
+    }
+
+    pub(crate) const fn at(&self) -> Instant {
+        self.at
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum DcutrUpgradeStatus {
+    Succeeded { connection_id: ConnectionId },
+    Failed { reason: String },
 }
