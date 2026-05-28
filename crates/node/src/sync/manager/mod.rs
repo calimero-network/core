@@ -2938,6 +2938,43 @@ impl SyncManager {
             bail!("no owned identities found for context: {}", context.id);
         };
 
+        // Inbound sync-gate (mirror of the outbound gate in
+        // `initiate_sync_inner`): if an application upgrade is pending on
+        // this context, decline to SERVE context state. An ahead peer
+        // (already migrated, so its own outbound gate doesn't fire) could
+        // otherwise pull our pre-upgrade state as the initiator and adopt
+        // it over its newer migrated state. Only state-reconciliation
+        // requests are gated — BlobShare (target-app bytecode),
+        // governance/join/backfill payloads are left open because this
+        // node needs them to complete its OWN lazy migration. The
+        // initiator treats `NotMaterialized` as benign and retries; once
+        // this node self-migrates on next access the gate lifts and it
+        // serves normally. See `pending_upgrade_target`.
+        if matches!(
+            &payload,
+            InitPayload::DeltaRequest { .. }
+                | InitPayload::DagHeadsRequest { .. }
+                | InitPayload::SnapshotBoundaryRequest { .. }
+                | InitPayload::TreeNodeRequest { .. }
+                | InitPayload::LevelWiseRequest { .. }
+        ) {
+            if let Some(target) = self.pending_upgrade_target(&context_id) {
+                info!(
+                    %context_id,
+                    ?their_identity,
+                    target_app = %target,
+                    "Declining inbound context-state sync: application upgrade pending (gate)"
+                );
+                if let Err(err) = self
+                    .send(stream, &StreamMessage::NotMaterialized, None)
+                    .await
+                {
+                    error!(%err, %context_id, "failed to send NotMaterialized for upgrade-gated sync");
+                }
+                return Ok(Some(()));
+            }
+        }
+
         match payload {
             InitPayload::BlobShare { blob_id } => {
                 self.handle_blob_share_request(
