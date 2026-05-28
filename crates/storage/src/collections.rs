@@ -336,6 +336,19 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             snapshot.push((entry.item, entry.storage.metadata.storage_type));
         }
 
+        // Nothing materialised to re-key: only relocate the collection's own
+        // id (the plain reassign, which no-ops when the id already matches).
+        // Crucially we do NOT fall through to the destructive clear+reinsert
+        // below — so even if `children_cache()` ever returned an
+        // under-populated set (e.g. a borsh-deserialised collection whose
+        // index lookup transiently missed), we never clear children we
+        // didn't snapshot, and an empty vector stays empty. The clear path
+        // only runs when we hold a non-empty snapshot to restore from.
+        if snapshot.is_empty() {
+            self.reassign_deterministic_id_with_crdt_type(field_name, crdt_type);
+            return;
+        }
+
         // Drop the old random-id children, move the collection to its
         // deterministic id, then re-insert each child under
         // `compute_id(parent, index)`.

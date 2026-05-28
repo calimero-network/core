@@ -727,6 +727,29 @@ mod tests {
     }
 
     #[test]
+    fn reassign_on_empty_vector_relocates_id_without_data_loss() {
+        use crate::collections::compute_collection_id;
+        use crate::entities::Data;
+        crate::env::reset_for_testing();
+
+        // Empty vector: the indexed-children reassign must take the
+        // snapshot-empty fast path (relocate the collection id only) and
+        // never run the destructive clear+reinsert.
+        let mut v = Vector::<String>::new();
+        v.reassign_deterministic_id("empties");
+
+        assert_eq!(
+            v.inner.id(),
+            compute_collection_id(None, "empties"),
+            "empty vector should still get its deterministic collection id"
+        );
+        assert_eq!(v.len().unwrap(), 0);
+        // Still usable afterwards.
+        v.push("a".to_owned()).unwrap();
+        assert_eq!(v.len().unwrap(), 1);
+    }
+
+    #[test]
     fn reassign_preserves_vector_element_storage_type() {
         use crate::collections::{compute_collection_id, compute_id, Entry};
         use crate::entities::StorageType;
