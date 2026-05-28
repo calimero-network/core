@@ -251,6 +251,54 @@ fn test_rga_concurrent_inserts_deterministic() {
 }
 
 #[test]
+fn test_rga_linearization_is_merge_order_independent() {
+    // Two replicas that converge to the *same* character set must
+    // produce the *same* text, regardless of the order they merged the
+    // fragments in. This is the cross-replica convergence property that
+    // a synced Merkle root (which hashes the same set) relies on:
+    // same set ⇒ same hash ⇒ same `get_text`. The previous linear walk
+    // broke it because merging in different orders changes the
+    // underlying `entries()` storage-iteration order, and the old
+    // gap-fallback picked "any unplaced char" in that order — so the
+    // two replicas could read different text for an identical set.
+    use crate::collections::Mergeable;
+
+    env::reset_for_testing();
+
+    // Two independent fragments. Each is its own left-chain rooted at
+    // the document root, so the merged document is a forest under root
+    // (a branch the linearization must order deterministically).
+    let mut base = ReplicatedGrowableArray::new();
+    base.insert_str(0, "Hello").unwrap();
+
+    let mut frag = ReplicatedGrowableArray::new();
+    frag.insert_str(0, "XYZ").unwrap();
+
+    // Replica 1: merge base, then frag.
+    let mut r1 = ReplicatedGrowableArray::new();
+    r1.merge(&base).unwrap();
+    r1.merge(&frag).unwrap();
+
+    // Replica 2: merge frag, then base (opposite order).
+    let mut r2 = ReplicatedGrowableArray::new();
+    r2.merge(&frag).unwrap();
+    r2.merge(&base).unwrap();
+
+    let t1 = r1.get_text().unwrap();
+    let t2 = r2.get_text().unwrap();
+
+    assert_eq!(
+        t1, t2,
+        "RGA linearization must be independent of merge order (got {t1:?} vs {t2:?})"
+    );
+    // Both fragments survive the union in full.
+    assert_eq!(t1.len(), 8, "expected the union of both fragments");
+    for ch in "HelloXYZ".chars() {
+        assert!(t1.contains(ch), "missing {ch:?} in {t1:?}");
+    }
+}
+
+#[test]
 fn test_rga_unicode_support() {
     env::reset_for_testing();
 
