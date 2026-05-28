@@ -559,7 +559,12 @@ async fn execute_migration(
     // fails the caller bails before publishing the upgrade op, and the
     // committed orphan entries are harmless dead weight — they'd be
     // garbage-collected by a follow-up migration run.
-    let _store = storage
+    // `commit()` consumes `storage` and returns the inner `Store`
+    // handle; this path doesn't reuse it (it continues with the
+    // `datastore` already in scope), so the returned handle drops
+    // here. The `?` still propagates any commit failure — the commit
+    // itself is the load-bearing effect, not its return value.
+    storage
         .commit()
         .map_err(|e| eyre::eyre!("Failed to commit migration storage writes: {e}"))?;
 
