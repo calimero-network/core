@@ -216,6 +216,16 @@ pub fn migrate_v1_to_v2() -> AppV2 {
   failure) — matches the existing `migration-suite-v{2..5}-add-field`
   pattern. A panic traps the WASM and aborts the upgrade, leaving
   v1 state intact for retry.
+- **Must be deterministic.** In a multi-node context every node runs
+  this function independently against its own (already-synced,
+  byte-identical) v1 state — the migrated state is NOT propagated over
+  sync (it's a full root replacement, not a CRDT-mergeable delta). Two
+  nodes that run the same migrate fn on the same v1 bytes must produce
+  byte-identical v2 state, or their roots diverge and subsequent CRDT
+  sync breaks. Avoid wall-clock time, RNG, or iteration-order-dependent
+  logic over non-deterministic collections. Under the default
+  `LazyOnAccess` upgrade policy each node migrates on its next context
+  access (logged as `performing lazy upgrade before execution`).
 
 End-to-end coverage of migration shapes lives in
 `workflows/app-migration/` (per-context migration, namespace cascade,

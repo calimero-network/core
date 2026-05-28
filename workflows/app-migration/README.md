@@ -11,8 +11,8 @@ and the namespace-cascade additions designed in
 
 | File | What it proves |
 |---|---|
-| `00-single-group-migration-baseline.yml` | Single-node, single-group `v1 → v2` migration via `upgrade_group(cascade=false)`. **Regression guard for [#2433](https://github.com/calimero-network/core/pull/2433)** — the per-context migration write path that #2433 silently broke and PR-1 of the cascade train repairs. |
-| `01-namespace-cascade-migration.yml` | Single-node, namespace + one subgroup + one context, ONE `upgrade_group(cascade=true)` call. **Regression guard for the random-`app_key` bug** at namespace/subgroup creation (this PR's core fix). |
+| `00-single-group-migration-baseline.yml` | 2-node, single subgroup + one context, `v1 → v2` via `upgrade_group(cascade=false)`. **Regression guard for [#2433](https://github.com/calimero-network/core/pull/2433)** — the per-context migration write path that #2433 silently broke and PR-1 of the cascade train repairs. |
+| `01-namespace-cascade-migration.yml` | 2-node, namespace + one Open subgroup + one context, ONE `upgrade_group(cascade=true)` call. **Regression guard for the full `app_key` fix triangle** (originator derivation, remote-peer `GroupCreated` inheritance, joiner-side bootstrap) AND cross-node cascade convergence: asserts node 2's `GroupMeta` flips on both layers, the receiver-side `CascadeTargetApplicationSet: applied` log fires, and node 2 self-migrates via the lazy path. |
 
 ### Per-scenario migration matrix (`apps/migrations/migration-suite-v{1..5}` chain)
 
@@ -39,7 +39,39 @@ and the namespace-cascade additions designed in
 ### Out of scope (not in this PR)
 
 * `serde-default-field` — borsh-backed state ignores `#[serde(default)]`, so this scenario from the original matrix doesn't have a meaningful borsh-level shape. Could be added later as an ABI-response scenario, not a state-migration one.
-* Multi-node / joiner workflows — the joiner-side meta pre-population path (`crates/context/src/handlers/join_group.rs:108`) still seeds `app_key: [0u8; 32]`. Tracked as a follow-up; the cascade fix in this PR addresses the originator + remote-peer `GroupCreated`-apply paths.
+* `Coordinated` multi-node upgrade policy — all scenarios use `lazy_on_access` (see below). Eager all-node `Coordinated` migration has no receiver-side migration trigger today and is a separate feature.
+
+## Cross-node migration model (why `lazy_on_access`)
+
+Every scenario sets `upgrade_policy: lazy_on_access` and relies on each
+node migrating its **own** state independently. This is deliberate, not
+a workaround:
+
+* Migration is a **full root-state replacement**, not a CRDT-mergeable
+  delta. The migrate fn produces fully-resolved v2-shaped state, so
+  `write_migration_state` writes it via the pre-merged primitive and
+  **emits no DAG delta** (`clear_pending_delta`). The migrated bytes are
+  therefore *not* propagated over sync — a peer cannot receive another
+  node's migrated state, because merging a v1 root entry with a v2 root
+  entry at the shared fixed `ROOT_ENTRY_ID` would corrupt it.
+* Under `LazyOnAccess` (the SDK default — *"upgrade each context
+  transparently on its next execution"*) each node re-derives v2 by
+  running the migrate fn on its **own already-synced, byte-identical v1
+  state** on the first context access after the upgrade op gossips in.
+  Determinism guarantees every node lands on the same v2 root.
+* The upgrade op (`TargetApplicationSet` + `GroupMigrationSet`, or their
+  cascade equivalents) sets both `target_application_id` and the
+  `migration` method on the group's `GroupMeta`; each receiver's
+  `maybe_lazy_upgrade` reads those to self-migrate.
+
+**Observability:** the lazy path logs `performing lazy upgrade before
+execution`, then `Executing migration` / `Migrated state written
+successfully`. Migrating scenarios assert these on the receiver node
+via `assert_log_present`, proving it self-migrated rather than silently
+diverging. No-migration scenarios (`06`, `07`, `08`) have byte-identical
+borsh layouts, so the lazy upgrade only swaps the application pointer
+(no migrate fn, no migration log) — verified via cross-node `schema_info`
+reads instead.
 
 ## Fixtures
 
