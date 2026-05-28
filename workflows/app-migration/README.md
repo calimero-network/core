@@ -36,17 +36,10 @@ and the namespace-cascade additions designed in
 | `12-scenario-field-remove-archive.yml` | **Remove with archive** — v2 drops `legacy_note` but stashes the value in `archived_legacy: UnorderedMap<String, String>` under key `"latest"`. Companion to `03` (which discards). | Yes |
 | `13-scenario-invariant-reshuffle.yml` | **Invariant reshuffle** — v1 has denormalized `global_count` + `per_item_counts` (invariant easy to violate via two independent setters). v2 funnels both updates through a single `record()` method; migrate re-derives `total` from the per-item map (does NOT trust v1's `global_count`). | Yes |
 
-### Out of scope (deferred from the original migration design plan)
-
-Tracked here as the canonical list of what the original plan called for but
-this PR does not cover. Each is a follow-up, not a gap in the shipped scope.
+### Out of scope (not in this PR)
 
 * `serde-default-field` — borsh-backed state ignores `#[serde(default)]`, so this scenario from the original matrix doesn't have a meaningful borsh-level shape. Could be added later as an ABI-response scenario, not a state-migration one.
-* **`Coordinated` / `Automatic` multi-node upgrade policies** — all scenarios use `lazy_on_access` (see below), the only policy with a working cross-node migration trigger. `Automatic` and `Coordinated` share the eager-propagator path (which only migrates on the *emitting* node — receivers have no migration trigger), and `Coordinated`'s `deadline` field is currently inert (never read). For a migrate-carrying upgrade under these policies a receiver is left on v1 bytes behind a v2 pointer. Cheapest first step before implementing them: a **fail-fast guard** that rejects `upgrade_group` with a migrate fn under `Automatic`/`Coordinated`, instead of silently flipping the pointer and panicking receivers.
-* **Populated-during-migrate `RGA` and `Counter`** — determinism for these is an *app-author contract* (documented in `crates/sdk/AGENTS.md`), not auto-handled by the SDK the way `LwwRegister` (merge mode) and `Vector`/`AuthoredVector` (index re-key) now are. `RGA::insert` stamps a raw `env::hlc_timestamp()`; `Counter` increments are keyed by node id. Both diverge if populated inside a migrate; carry them across instead, or seed an `RGA` with `insert_str_at_timestamp` using a fixed input-derived timestamp.
-* **Other CRDT-type migrate paths** — `AuthoredMap`, `UserStorage`, `FrozenStorage`, `SharedStorage` aren't exercised by this matrix (their reassign hooks exist but no scenario migrates them).
-* **Concurrent migrations** — two upgrades racing on the same group/context. Not exercised; would need a merobox primitive to drive overlapping upgrades.
-* **Failed-migration recovery** — a migrate fn that panics/traps mid-way, then retry. The trap-aborts-leaving-v1-intact behaviour is by design, but the recovery/retry path isn't asserted end-to-end; would need new merobox primitives to inject a failing migrate.
+* `Coordinated` multi-node upgrade policy — all scenarios use `lazy_on_access` (see below). Eager all-node `Coordinated` migration has no receiver-side migration trigger today and is a separate feature.
 
 ## Cross-node migration model (why `lazy_on_access`)
 
