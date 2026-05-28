@@ -200,11 +200,23 @@ steps:
     statements:
       - 'json_subset({{v1_schema_node2}}, {"output": {"schema_version": "1.0.0", "description": "set-before-cascade", "counter": "1"}})'
 
-  - name: Set upgrade policy to coordinated on node 1
+  # LazyOnAccess is the cross-node migration model: each node
+  # migrates its OWN (already-synced, byte-identical) v1 state on its
+  # next context access. The migration write path deliberately emits
+  # no DAG delta (it's a full root replacement, not a CRDT-mergeable
+  # change — see `clear_pending_delta` in update_application), so the
+  # migrated bytes do NOT propagate over sync; each node must
+  # re-derive v2 state locally. Under `coordinated` only the emitter
+  # migrates and receivers are left with v1 bytes behind a v2 app
+  # pointer → "Not all bytes read" panic on first read. The cascade
+  # ops set both `target_application_id` AND the `migration` method
+  # on every descendant's GroupMeta, which is what each receiver's
+  # `maybe_lazy_upgrade` reads to self-migrate.
+  - name: Set upgrade policy to lazy-on-access on node 1
     type: update_group_settings
     node: app-migration-cascade-1
     group_id: "{{namespace_id}}"
-    upgrade_policy: coordinated
+    upgrade_policy: lazy_on_access
 
   # Phase 6: ONE cascade call from node 1 against the namespace root.
   # The cascade engine emits a single signed CascadeTargetApplicationSet
@@ -330,13 +342,34 @@ steps:
     outputs:
       v2_schema_node1: result
 
-  - name: Node 2 reads post-migration schema_info
+  # This read is what TRIGGERS node 2's lazy migration: schema_info
+  # is not a state op, so `maybe_lazy_upgrade` fires, sees node 2's
+  # context still on v1 while the group's target is v2 (+ a pending
+  # `migrate_v1_to_v2` method in GroupMeta), and runs the migration
+  # against node 2's own byte-identical v1 state before serving the
+  # read. The result is therefore already the migrated v2 shape.
+  - name: Node 2 reads post-migration schema_info (triggers lazy migration)
     type: call
     node: app-migration-cascade-2
     context_id: "{{ctx_id}}"
     method: schema_info
     outputs:
       v2_schema_node2: result
+
+  # Phase 7b'': Receiver-side migration ran ON node 2 (lazy upgrade).
+  # Proves node 2 self-migrated rather than passively receiving state
+  # — the lazy path logs `performing lazy upgrade before execution`
+  # then the same `Executing migration` / `Migrated state written
+  # successfully` lines the emitter's eager propagator logs.
+  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-cascade-2
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
 
   - name: Assert v2 schema on node 1 (v1 data preserved + notes seeded)
     type: json_assert
