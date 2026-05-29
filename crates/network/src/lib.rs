@@ -7,6 +7,7 @@
     reason = "Currently necessary due to code structure"
 )]
 use std::collections::hash_map::HashMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use actix::{Actor, AsyncContext, Context};
@@ -74,6 +75,7 @@ impl NetworkManager {
         config: &NetworkConfig,
         event_dispatcher: Arc<dyn NetworkEventDispatcher>,
         prom_registry: &mut Registry,
+        reserved_topics: BTreeSet<String>,
     ) -> eyre::Result<Self> {
         let swarm = Behaviour::build_swarm(config)?;
 
@@ -86,6 +88,7 @@ impl NetworkManager {
             } else {
                 &[]
             },
+            reserved_topics,
         )
         .await?;
 

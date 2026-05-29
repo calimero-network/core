@@ -1,20 +1,38 @@
 use core::net::Ipv4Addr;
 use core::time::Duration;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use calimero_network_primitives::config::{AutonatConfig, RelayConfig, RendezvousConfig};
 use eyre::{bail, ContextCompat, Result as EyreResult, WrapErr as _};
 use libp2p::rendezvous::client::RegisterError;
+use libp2p::rendezvous::Namespace;
 use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
 use tracing::{debug, error};
 
 use super::NetworkManager;
 use crate::discovery::state::{
-    DiscoveryState, ReachabilityActions, RelayReservationStatus, RendezvousRegistrationStatus,
+    rendezvous_key_for_topic, under_connected_rendezvous_keys, DiscoveryState, ReachabilityActions,
+    RelayReservationStatus, RendezvousRegistrationStatus,
 };
 
 pub mod state;
+
+// Persistent relevant-peer address cache. Methods are exercised by the
+// module's own unit tests and wired into the swarm/command layer in the
+// next slice (record-on-connect, export/import commands, node-side file
+// persistence); allow dead_code until that lands so the foundation can
+// be reviewed independently.
+#[allow(dead_code)]
+pub(crate) mod peer_cache;
+
+/// Max rendezvous `discover` requests issued in a single
+/// `rendezvous_discover` call. Bounds the per-tick discovery fan-out so a
+/// node that belongs to many under-connected overlays doesn't flood the
+/// rendezvous server in one pass; the rotating
+/// [`Discovery::rendezvous_discover_cursor`] ensures every under-connected
+/// key is eventually covered across successive ticks.
+const RENDEZVOUS_DISCOVER_BUDGET: usize = 8;
 
 #[derive(Debug)]
 pub struct Discovery {
@@ -23,6 +41,20 @@ pub struct Discovery {
     pub(crate) relay_config: RelayConfig,
     pub(crate) advertise: Option<AdvertiseState>,
     pub(crate) _autonat_config: AutonatConfig,
+    /// Rotating offset into the under-connected rendezvous-key list, so
+    /// successive `rendezvous_discover` calls cover different keys when
+    /// there are more under-connected overlays than the per-call budget
+    /// (`RENDEZVOUS_DISCOVER_BUDGET`). Without rotation, keys past the
+    /// budget would be starved of discovery forever on a node that
+    /// belongs to many namespaces/groups.
+    pub(crate) rendezvous_discover_cursor: usize,
+    /// Subscribed gossipsub topics that must NOT be mapped to a
+    /// per-overlay rendezvous key — currently the specialized-node
+    /// invite topic, which every node subscribes to. Registering all
+    /// nodes under one invite-topic key would recreate the global
+    /// fan-out we're eliminating. Every other subscribed topic
+    /// (`ns/`, `group/`, or a bare context id) is treated as an overlay.
+    pub(crate) reserved_topics: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -37,6 +69,7 @@ impl Discovery {
         relay_config: &RelayConfig,
         autonat_config: &AutonatConfig,
         listening_on: &[Multiaddr],
+        reserved_topics: BTreeSet<String>,
     ) -> EyreResult<Self> {
         let advertise = if listening_on.is_empty() {
             None
@@ -63,6 +96,8 @@ impl Discovery {
             relay_config: relay_config.clone(),
             advertise,
             _autonat_config: autonat_config.clone(),
+            rendezvous_discover_cursor: 0,
+            reserved_topics,
         };
 
         Ok(this)
@@ -86,11 +121,67 @@ impl Discovery {
 }
 
 impl NetworkManager {
-    // Sends rendezvous discovery request to the rendezvous peer.
+    /// Rendezvous keys for every overlay topic this node currently
+    /// follows — `ns/<hex>`, `group/<hex>`, and bare context ids — minus
+    /// the reserved (non-overlay) topics. Used for registration so
+    /// co-members can find us under the exact namespace/group/context key.
+    fn overlay_rendezvous_keys(&self) -> Vec<Namespace> {
+        let reserved = &self.discovery.reserved_topics;
+        self.swarm
+            .behaviour()
+            .gossipsub
+            .topics()
+            .filter(|topic| !reserved.contains(topic.as_str()))
+            .filter_map(|topic| rendezvous_key_for_topic(topic.as_str()))
+            .collect()
+    }
+
+    /// Rendezvous keys for overlay topics where we currently have **no
+    /// connected mesh peer** — the demand-driven discovery set. A topic
+    /// that already has a co-member in its mesh can sync through it, so
+    /// re-discovering it would only add rendezvous load. This keeps
+    /// discovery cost proportional to how many overlays are starved
+    /// (≈0 in steady state; a burst only right after restart/partition).
+    fn under_connected_overlay_keys(&self) -> Vec<Namespace> {
+        let reserved = &self.discovery.reserved_topics;
+        let gossipsub = &self.swarm.behaviour().gossipsub;
+        // Count connected SUBSCRIBERS per topic (the full peer-topics
+        // set), not grafted mesh peers. A topic with a connected
+        // subscriber can already sync through it even if the mesh is
+        // momentarily thin (GRAFT lag / churn), so it isn't
+        // under-connected — counting the mesh instead would re-trigger
+        // discovery on healthy-but-unmeshed topics.
+        let mut subscriber_counts: HashMap<String, usize> = HashMap::new();
+        for (_peer, topics) in gossipsub.all_peers() {
+            for topic in topics {
+                *subscriber_counts
+                    .entry(topic.as_str().to_owned())
+                    .or_default() += 1;
+            }
+        }
+        let topics: Vec<(String, usize)> = gossipsub
+            .topics()
+            .filter(|topic| !reserved.contains(topic.as_str()))
+            .map(|topic| {
+                let count = subscriber_counts.get(topic.as_str()).copied().unwrap_or(0);
+                (topic.as_str().to_owned(), count)
+            })
+            .collect();
+        under_connected_rendezvous_keys(topics.iter().map(|(t, c)| (t.as_str(), *c)))
+    }
+
+    // Sends rendezvous discovery requests to the rendezvous peer, one per
+    // overlay key we're under-connected on, so `discover` returns only
+    // co-members of our namespaces/groups rather than the whole network.
+    //
     // Throttled via `discovery_rpm` unless `force == true` — see the
     // `rendezvous_discover_force` field on `ReachabilityActions` for
     // when callers should bypass the throttle (event-driven recovery
     // paths where the throttle floor exceeds the recovery budget).
+    // Bounded per call by `RENDEZVOUS_DISCOVER_BUDGET` with a rotating
+    // cursor so a node in many namespaces covers every under-connected
+    // key across ticks without flooding the server in one pass.
+    //
     // This function expects that the rendezvous peer is already
     // connected.
     pub(crate) fn rendezvous_discover(
@@ -98,36 +189,49 @@ impl NetworkManager {
         rendezvous_peer: &PeerId,
         force: bool,
     ) -> EyreResult<()> {
-        let peer_info = self
+        let throttled = self
             .discovery
             .state
             .get_peer_info(rendezvous_peer)
-            .wrap_err_with(|| format!("Failed to get peer info for {rendezvous_peer}"))?;
+            .wrap_err_with(|| format!("Failed to get peer info for {rendezvous_peer}"))?
+            .is_rendezvous_discover_throttled(self.discovery.rendezvous_config.discovery_rpm);
 
-        if !force
-            && peer_info
-                .is_rendezvous_discover_throttled(self.discovery.rendezvous_config.discovery_rpm)
-        {
+        if !force && throttled {
             return Ok(());
         }
 
-        self.swarm.behaviour_mut().rendezvous.discover(
-            Some(self.discovery.rendezvous_config.namespace.clone()),
-            peer_info
-                .rendezvous()
-                .and_then(|info| info.cookie())
-                .cloned(),
-            None,
-            *rendezvous_peer,
-        );
+        let mut keys = self.under_connected_overlay_keys();
+        if keys.is_empty() {
+            return Ok(());
+        }
 
-        debug!(
-            %rendezvous_peer,
-            ?peer_info,
-            force,
-            rendezvous_namespace=%(self.discovery.rendezvous_config.namespace),
-            "Sent discover request to rendezvous node"
-        );
+        // Rotate so successive calls cover keys past the budget. Discover
+        // with a fresh cookie (`None`) under each key — per-overlay sets
+        // are small, so a full poll each time is cheap and avoids
+        // per-(peer, namespace) cookie bookkeeping; the `Discovered`
+        // handler dedups the returned peers before dialing.
+        let cursor = self.discovery.rendezvous_discover_cursor % keys.len();
+        keys.rotate_left(cursor);
+        let budget = RENDEZVOUS_DISCOVER_BUDGET.min(keys.len());
+        self.discovery.rendezvous_discover_cursor = self
+            .discovery
+            .rendezvous_discover_cursor
+            .wrapping_add(budget);
+
+        for key in keys.into_iter().take(budget) {
+            self.swarm.behaviour_mut().rendezvous.discover(
+                Some(key.clone()),
+                None,
+                None,
+                *rendezvous_peer,
+            );
+            debug!(
+                %rendezvous_peer,
+                rendezvous_namespace = %key,
+                force,
+                "Sent per-overlay discover request to rendezvous node"
+            );
+        }
 
         Ok(())
     }
@@ -165,49 +269,68 @@ impl NetworkManager {
         }
     }
 
-    // Sends rendezvous registration request to rendezvous peer if one is required.
-    // If there are no external addresses for the node, the registration is considered successful.
-    // This function expectes that the rendezvous peer is already connected.
+    // Registers our external addresses with `rendezvous_peer` under one
+    // key per overlay we belong to (`/calimero/ns/<hex>`,
+    // `/calimero/grp/<hex>`), so co-members discovering under that exact
+    // key find us — instead of one global namespace that returns every
+    // node on the network. A node that belongs to no overlay yet (fresh,
+    // pre-join) registers under nothing and simply isn't discoverable
+    // until it joins something, which is correct: there's nothing to
+    // discover it for.
+    //
+    // If there are no external addresses for the node, registration is
+    // considered successful. Expects the rendezvous peer to be connected.
     pub(crate) fn rendezvous_register(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
-        let peer_info = self
-            .discovery
-            .state
-            .get_peer_info(rendezvous_peer)
-            .wrap_err("Failed to get peer info")?;
-
+        // `registrations_limit` gates how many rendezvous *peers* we
+        // register with (infra fan-out), independent of how many overlay
+        // keys we register under with each.
         if !self.discovery.state.is_rendezvous_registration_required(
             self.discovery.rendezvous_config.registrations_limit,
         ) {
             return Ok(());
         }
 
-        if let Err(err) = self.swarm.behaviour_mut().rendezvous.register(
-            self.discovery.rendezvous_config.namespace.clone(),
-            *rendezvous_peer,
-            None,
-        ) {
-            match err {
-                RegisterError::NoExternalAddresses => {
+        let keys = self.overlay_rendezvous_keys();
+        if keys.is_empty() {
+            debug!(
+                %rendezvous_peer,
+                "No overlay topics to register under yet; skipping rendezvous registration"
+            );
+            return Ok(());
+        }
+
+        let mut registered_any = false;
+        for key in keys {
+            match self.swarm.behaviour_mut().rendezvous.register(
+                key.clone(),
+                *rendezvous_peer,
+                None,
+            ) {
+                Ok(()) => {
+                    registered_any = true;
+                    debug!(
+                        %rendezvous_peer,
+                        rendezvous_namespace = %key,
+                        "Sent register request to rendezvous node"
+                    );
+                }
+                Err(RegisterError::NoExternalAddresses) => {
+                    // No external addresses yet — nothing to register
+                    // anywhere this round; stop early, the next
+                    // reachability/identify event retries.
                     debug!("No external addresses to register at rendezvous");
                     return Ok(());
                 }
-                err @ RegisterError::FailedToMakeRecord(_) => {
-                    bail!(err)
-                }
+                Err(err @ RegisterError::FailedToMakeRecord(_)) => bail!(err),
             }
         }
 
-        debug!(
-            %rendezvous_peer,
-            ?peer_info,
-            rendezvous_namespace=%(self.discovery.rendezvous_config.namespace),
-            "Sent register request to rendezvous node"
-        );
-
-        self.discovery.state.update_rendezvous_registration_status(
-            rendezvous_peer,
-            RendezvousRegistrationStatus::Requested,
-        );
+        if registered_any {
+            self.discovery.state.update_rendezvous_registration_status(
+                rendezvous_peer,
+                RendezvousRegistrationStatus::Requested,
+            );
+        }
 
         Ok(())
     }
@@ -215,21 +338,30 @@ impl NetworkManager {
     // We unregister from a rendezvous peer if we were previously registered.
     // This function expectes that the rendezvous peer is already connected.
     pub(crate) fn rendezvous_unregister(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
-        let peer_info = self
+        let status = self
             .discovery
             .state
             .get_peer_info(rendezvous_peer)
             .wrap_err("Failed to get peer info")?
             .rendezvous()
-            .wrap_err("Peer isn't rendezvous")?;
+            .wrap_err("Peer isn't rendezvous")?
+            .registration_status();
 
-        match peer_info.registration_status() {
+        match status {
             RendezvousRegistrationStatus::Registered => {
-                // Actively unregister from the rendezvous server
-                self.swarm.behaviour_mut().rendezvous.unregister(
-                    self.discovery.rendezvous_config.namespace.clone(),
-                    *rendezvous_peer,
-                );
+                // Actively unregister from the rendezvous server under
+                // every overlay key we registered under (mirrors
+                // `rendezvous_register`). Unregistering a key we aren't
+                // registered under is a harmless no-op on the server, so
+                // using our current overlay set is safe even if our
+                // membership shifted since registration; any stale
+                // server-side record TTLs out on its own.
+                for key in self.overlay_rendezvous_keys() {
+                    self.swarm
+                        .behaviour_mut()
+                        .rendezvous
+                        .unregister(key, *rendezvous_peer);
+                }
 
                 self.discovery.state.update_rendezvous_registration_status(
                     rendezvous_peer,
