@@ -1,13 +1,13 @@
-use crate::group_store::{
+use actix::{ActorResponse, Handler, Message};
+use calimero_context_client::group::{GetGroupInfoRequest, GroupInfoResponse};
+use calimero_governance_store::{
     CapabilitiesRepository, MembershipRepository, MetaRepository, MetadataRepository,
     UpgradesRepository,
 };
-use actix::{ActorResponse, Handler, Message};
-use calimero_context_client::group::{GetGroupInfoRequest, GroupInfoResponse};
 use eyre::bail;
 
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
 
 impl Handler<GetGroupInfoRequest> for ContextManager {
     type Result = ActorResponse<Self, <GetGroupInfoRequest as Message>::Result>;

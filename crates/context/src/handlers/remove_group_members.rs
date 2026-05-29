@@ -1,4 +1,4 @@
-use crate::group_store::MembershipRepository;
+use calimero_governance_store::MembershipRepository;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -9,9 +9,9 @@ use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use tracing::info;
 
-use crate::governance_broadcast::ObserveDelivery;
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<RemoveGroupMembersRequest> for ContextManager {
     type Result = ActorResponse<Self, <RemoveGroupMembersRequest as Message>::Result>;
@@ -60,7 +60,7 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
         ActorResponse::r#async(
             async move {
                 for identity in &members {
-                    let report = group_store::sign_apply_and_publish_removal(
+                    let report = calimero_governance_store::sign_apply_and_publish_removal(
                         &datastore,
                         &node_client,
                         &ack_router,
@@ -85,8 +85,12 @@ impl Handler<RemoveGroupMembersRequest> for ContextManager {
                     }
                 }
 
-                let contexts =
-                    group_store::enumerate_group_contexts(&datastore, &group_id, 0, usize::MAX)?;
+                let contexts = calimero_governance_store::enumerate_group_contexts(
+                    &datastore,
+                    &group_id,
+                    0,
+                    usize::MAX,
+                )?;
 
                 for context_id in &contexts {
                     if let Err(err) = context_client.sync_context_config(*context_id, None).await {

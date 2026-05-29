@@ -1,10 +1,10 @@
-use crate::group_store::{MetaRepository, MetadataRepository};
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::ListNamespacesForApplicationRequest;
+use calimero_governance_store::{MetaRepository, MetadataRepository};
 
-use crate::group_store;
 use crate::handlers::list_namespaces::{collect_namespace_summaries, paginate_namespaces};
 use crate::ContextManager;
+use calimero_governance_store;
 
 impl Handler<ListNamespacesForApplicationRequest> for ContextManager {
     type Result = ActorResponse<Self, <ListNamespacesForApplicationRequest as Message>::Result>;

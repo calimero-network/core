@@ -1,11 +1,11 @@
-use crate::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use actix::{ActorResponse, Handler, Message, WrapFuture};
 use calimero_context_client::group::{DeleteNamespaceRequest, DeleteNamespaceResponse};
+use calimero_governance_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use eyre::bail;
 use tracing::info;
 
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
 
 impl Handler<DeleteNamespaceRequest> for ContextManager {
     type Result = ActorResponse<Self, <DeleteNamespaceRequest as Message>::Result>;
@@ -76,13 +76,20 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
                 .copied()
                 .chain(std::iter::once(namespace_id));
             for gid in all_groups_iter {
-                for ctx in
-                    group_store::enumerate_group_contexts(&self.datastore, &gid, 0, usize::MAX)?
-                {
-                    group_store::unregister_context_from_group(&self.datastore, &gid, &ctx)?;
+                for ctx in calimero_governance_store::enumerate_group_contexts(
+                    &self.datastore,
+                    &gid,
+                    0,
+                    usize::MAX,
+                )? {
+                    calimero_governance_store::unregister_context_from_group(
+                        &self.datastore,
+                        &gid,
+                        &ctx,
+                    )?;
                 }
                 let parent_for_cleanup = NamespaceRepository::new(&self.datastore).parent(&gid)?;
-                group_store::delete_group_local_rows(&self.datastore, &gid)?;
+                calimero_governance_store::delete_group_local_rows(&self.datastore, &gid)?;
                 if let Some(parent) = parent_for_cleanup {
                     let mut handle = self.datastore.handle();
                     handle.delete(&calimero_store::key::GroupParentRef::new(gid.to_bytes()))?;
@@ -95,7 +102,10 @@ impl Handler<DeleteNamespaceRequest> for ContextManager {
 
             // Namespace-level rows: identity, DAG head, and every stored
             // governance op for this namespace.
-            group_store::delete_namespace_local_state(&self.datastore, &namespace_id)?;
+            calimero_governance_store::delete_namespace_local_state(
+                &self.datastore,
+                &namespace_id,
+            )?;
 
             Ok((total_groups, total_contexts))
         })();

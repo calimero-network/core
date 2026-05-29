@@ -11,13 +11,13 @@ use calimero_store::Store;
 use rand::Rng;
 use tracing::{info, warn};
 
-use crate::governance_broadcast::ObserveDelivery;
-use crate::group_store;
-use crate::group_store::{
+use crate::ContextManager;
+use calimero_governance_store;
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
+use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MembershipRepository, MetaRepository, MetadataRepository,
     SigningKeysRepository,
 };
-use crate::ContextManager;
 
 impl Handler<CreateGroupRequest> for ContextManager {
     type Result = ActorResponse<Self, <CreateGroupRequest as Message>::Result>;
@@ -90,8 +90,9 @@ impl Handler<CreateGroupRequest> for ContextManager {
                          namespace admin (delegated nested-subgroup creation is not yet supported)"
                     )));
                 }
-                if let Err(err) = group_store::PermissionChecker::new(&self.datastore, *parent_id)
-                    .require_can_create_subgroup(&admin_identity)
+                if let Err(err) =
+                    calimero_governance_store::PermissionChecker::new(&self.datastore, *parent_id)
+                        .require_can_create_subgroup(&admin_identity)
                 {
                     return ActorResponse::reply(Err(err));
                 }
@@ -179,7 +180,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                             &group_id,
                             &calimero_primitives::metadata::MetadataRecord {
                                 name: name.clone(),
-                                updated_at: group_store::now_millis(),
+                                updated_at: calimero_governance_store::now_millis(),
                                 updated_by: admin_identity,
                                 ..Default::default()
                             },
@@ -218,7 +219,7 @@ impl Handler<CreateGroupRequest> for ContextManager {
                         group_id: group_id.to_bytes(),
                         parent_id: parent_id.to_bytes(),
                     });
-                    match group_store::sign_apply_and_publish_namespace_op(
+                    match calimero_governance_store::sign_apply_and_publish_namespace_op(
                         &datastore,
                         &node_client,
                         &ack_router,

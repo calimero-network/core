@@ -1,4 +1,4 @@
-use crate::group_store::{
+use calimero_governance_store::{
     MembershipRepository, MetaRepository, NamespaceRepository, SigningKeysRepository,
 };
 use std::sync::Arc;
@@ -10,9 +10,9 @@ use calimero_primitives::identity::PrivateKey;
 use eyre::bail;
 use tracing::info;
 
-use crate::governance_broadcast::ObserveDelivery;
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
+use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
     type Result = ActorResponse<Self, <SetTeeAdmissionPolicyRequest as Message>::Result>;
@@ -103,7 +103,7 @@ impl Handler<SetTeeAdmissionPolicyRequest> for ContextManager {
                 let sk = PrivateKey::from(effective_signing_key.ok_or_else(|| {
                     eyre::eyre!("local group governance requires a signing key for the requester")
                 })?);
-                let report = group_store::sign_apply_and_publish(
+                let report = calimero_governance_store::sign_apply_and_publish(
                     &datastore,
                     &node_client,
                     &ack_router,

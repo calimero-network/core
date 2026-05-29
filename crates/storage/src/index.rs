@@ -430,8 +430,21 @@ impl<S: StorageAdaptor> Index<S> {
             .ok_or(StorageError::IndexNotFound(id))
     }
 
-    /// Returns ancestors from immediate parent to root.
-    pub(crate) fn get_ancestors_of(id: Id) -> Result<Vec<ChildInfo>, StorageError> {
+    /// Returns ancestors from immediate parent to root (root itself excluded).
+    ///
+    /// Public so sync code outside the storage crate (the HashComparison /
+    /// LevelWise leaf builders) can carry the full ancestor chain on the
+    /// wire so a receiver can reconstruct a nested entity at its correct
+    /// Merkle position. This is the same read the storage layer already
+    /// exposes indirectly via `Index::get_index(id)`, so promoting the
+    /// helper to `pub` doesn't widen the data surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IndexNotFound` if an ancestor referenced by a child's
+    /// `parent_id` has no index entry (a corrupt/partial tree), or a
+    /// `StorageError` if an index read fails.
+    pub fn get_ancestors_of(id: Id) -> Result<Vec<ChildInfo>, StorageError> {
         let mut ancestors = Vec::new();
         let mut current_id = id;
 

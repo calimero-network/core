@@ -1,9 +1,9 @@
-use crate::group_store::NamespaceRepository;
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_client::group::GetNamespaceIdentityRequest;
+use calimero_governance_store::NamespaceRepository;
 
-use crate::group_store;
 use crate::ContextManager;
+use calimero_governance_store;
 
 impl Handler<GetNamespaceIdentityRequest> for ContextManager {
     type Result = ActorResponse<Self, <GetNamespaceIdentityRequest as Message>::Result>;

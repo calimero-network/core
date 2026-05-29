@@ -851,6 +851,13 @@ fn get_nodes_at_level(
                     if let Some(parent_id) = child_index.parent_id() {
                         metadata = metadata.with_parent(*parent_id.as_bytes());
                     }
+                    // Full ancestor chain — same rationale and trust
+                    // model as in
+                    // `hash_comparison_protocol::collect_leaves_recursive`.
+                    if let Ok(ancestors) = Index::<MainStorage>::get_ancestors_of(child_storage_id)
+                    {
+                        metadata = metadata.with_ancestors(ancestors);
+                    }
                     if let Some(auth) =
                         crate::sync::helpers::wire_authorization_for(&child_index.metadata)
                     {
