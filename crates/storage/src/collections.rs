@@ -413,7 +413,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             // Try to load children from index
             // After CRDT sync, newly created collections might not have index entries yet
             // In that case, start with an empty set
-            let children = match <Interface<S>>::child_info_for(self.id()) {
+            let children: IndexSet<Id> = match <Interface<S>>::child_info_for(self.id()) {
                 Ok(info) => info.into_iter().map(|c| c.id()).collect(),
                 Err(StorageError::IndexNotFound(_)) => {
                     // Collection was just created/synced, no children yet

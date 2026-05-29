@@ -246,7 +246,30 @@ where
     /// returned.
     ///
     pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
-        Ok(self.inner.entries()?.flatten().fuse())
+        // ITER_DROP diagnostic: the inner iterator yields `Result<…>`;
+        // an `Err` means the parent's children list advertises an id
+        // whose entry can't be loaded (e.g. `NotFound` from a
+        // partially-written ancestor or an orphan from a divergent
+        // sync). Skipping silently is the established CRDT-iter
+        // contract (`.flatten().fuse()` did this), but logging gives
+        // future races a precise anchor instead of a downstream
+        // content mismatch.
+        let collection_id = self.inner.id();
+        Ok(self.inner.entries()?.filter_map(move |result| match result {
+            Ok(entry) => Some(entry),
+            Err(error) => {
+                tracing::error!(
+                    target: "calimero_storage::iter_drop",
+                    %collection_id,
+                    %error,
+                    collection_type = "UnorderedMap",
+                    "ITER_DROP: parent's child list advertises an id whose entry could not be loaded — \
+                     likely entry-before-parent ordering race or storage inconsistency. \
+                     Caller will see a truncated iteration."
+                );
+                None
+            }
+        }).fuse())
     }
 
     /// Get the number of entries in the map.
