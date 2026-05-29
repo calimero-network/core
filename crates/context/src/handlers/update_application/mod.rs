@@ -433,6 +433,16 @@ pub(crate) async fn update_application_with_migration(
         )
         .await?;
 
+        // MIGRATE_DEBUG2507: dump the exact wasm-returned state bytes so we can
+        // diff node1 vs node2 and see whether the divergence is already present
+        // in the bytes the migrate fn produced (vs introduced at materialisation).
+        info!(
+            %context_id,
+            len = new_state_bytes.len(),
+            hex = %new_state_bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "MIGRATE_DEBUG2507 wasm-returned new_state_bytes"
+        );
+
         // Log migration logs
         for log_line in &migration_logs {
             info!(%context_id, migration_log = %log_line, "Migration log");
@@ -847,6 +857,29 @@ fn write_migration_state(
             let root_hash = Index::<MainStorage>::get_hashes_for(Id::root())?
                 .map(|(full_hash, _)| full_hash)
                 .unwrap_or([0; 32]);
+
+            // MIGRATE_DEBUG2507: dump the post-migrate tree (root children +
+            // one level of grandchildren) with merkle hashes, so node1-vs-node2
+            // diff shows exactly which subtree/entity diverges.
+            if let Ok(children) = Index::<MainStorage>::get_children_of(Id::root()) {
+                for c in &children {
+                    info!(
+                        child_id = %c.id(),
+                        merkle = %c.merkle_hash().iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                        "MIGRATE_DEBUG2507 root-child"
+                    );
+                    if let Ok(grandchildren) = Index::<MainStorage>::get_children_of(c.id()) {
+                        for g in &grandchildren {
+                            info!(
+                                parent = %c.id(),
+                                gc_id = %g.id(),
+                                merkle = %g.merkle_hash().iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                                "MIGRATE_DEBUG2507 grandchild"
+                            );
+                        }
+                    }
+                }
+            }
 
             Ok(Some(root_hash))
         })();
