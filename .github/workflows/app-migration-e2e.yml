@@ -76,7 +76,10 @@ jobs:
         with:
           toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: app-migration-e2e
+          # Share the e2e-rust-apps cache bucket: this job builds the same
+          # native x86_64 merod release binary, so it rides that workflow's
+          # already-warm dependency cache instead of a private cold one.
+          shared-key: e2e-rust-apps
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build local merod image
