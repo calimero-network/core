@@ -13,13 +13,12 @@ use calimero_network_primitives::{
 use calimero_node_primitives::client::NodeClient;
 use futures_util::{SinkExt, StreamExt};
 use libp2p::PeerId;
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
-// Timeout and flow control settings for blob serving
+// Timeout settings for blob serving
 const BLOB_SERVE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes total
 const CHUNK_SEND_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
-const FLOW_CONTROL_DELAY: Duration = Duration::from_millis(10); // Small delay between chunks
 
 // Replay protection window (30 seconds past, 10 seconds future)
 const MAX_REQUEST_AGE_SECS: u64 = 30;
@@ -82,7 +81,6 @@ pub async fn handle_blob_protocol_stream(
 /// 3. Send empty chunk to signal end
 ///
 /// Features:
-/// - Flow control (delay every 10 chunks)
 /// - Timeouts (5 min total, 30 sec per chunk)
 /// - Binary chunk encoding for efficiency
 async fn handle_blob_request_stream(
@@ -185,12 +183,6 @@ async fn handle_blob_request_stream(
                         .await
                         .map_err(|_| eyre::eyre!("Timeout sending chunk {}", chunk_count))?
                         .map_err(|e| eyre::eyre!("Failed to send blob chunk: {}", e))?;
-
-                        // Add small delay for flow control to prevent overwhelming receiver
-                        if chunk_count % 10 == 0 {
-                            // Every 10 chunks (~10MB), add a small pause
-                            sleep(FLOW_CONTROL_DELAY).await;
-                        }
                     }
                     Err(e) => {
                         warn!(%peer_id, error = %e, "Failed to read blob chunk");
