@@ -38,11 +38,28 @@ pub fn in_merge_mode() -> bool {
 ///
 /// During merge mode, timestamp generation is disabled to ensure
 /// deterministic results across nodes.
+///
+/// **Re-entrant.** Restores the *prior* flag value on exit rather than
+/// unconditionally clearing it. This matters when an outer scope already
+/// holds merge mode (e.g. the `#[app::migrate]` macro wraps the whole
+/// migrate body) and an inner storage op opens its own `with_merge_mode`
+/// (the CRDT merge dispatch in `interface.rs`/`merge.rs`): an
+/// unconditional `set(false)` on the inner exit would silently clear
+/// merge mode for the *remainder of the outer body*, so any trailing
+/// `LwwRegister::new()` (e.g. `total: count.into()` in a migrate) would
+/// then bake a node-local HLC + executor_id into the serialised state and
+/// diverge across nodes. The restore-on-exit (incl. unwind) keeps nesting
+/// correct.
 pub fn with_merge_mode<R>(f: impl FnOnce() -> R) -> R {
-    MERGE_MODE.with(|m| m.set(true));
-    let result = f();
-    MERGE_MODE.with(|m| m.set(false));
-    result
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MERGE_MODE.with(|m| m.set(self.0));
+        }
+    }
+
+    let _restore = Restore(MERGE_MODE.with(|m| m.replace(true)));
+    f()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
