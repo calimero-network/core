@@ -140,10 +140,20 @@ impl NodeClient {
                 "Blob not found locally, attempting network discovery"
             );
 
-            const MAX_RETRIES: usize = 3;
-            const RETRY_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
+            // Poll the DHT quickly at first and widen the gap only if the record
+            // stays missing. The blob record is usually available within a few
+            // hundred ms on a warm cluster; a flat multi-second wait otherwise
+            // dominates time-to-first-byte even when both peers are local.
+            const MAX_RETRIES: usize = 6;
+            const INITIAL_RETRY_DELAY: core::time::Duration =
+                core::time::Duration::from_millis(100);
+            const MAX_RETRY_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
 
             for attempt in 1..=MAX_RETRIES {
+                let retry_delay = INITIAL_RETRY_DELAY
+                    .saturating_mul(1_u32.checked_shl((attempt - 1) as u32).unwrap_or(u32::MAX))
+                    .min(MAX_RETRY_DELAY);
+
                 tracing::debug!(
                     blob_id = %blob_id,
                     context_id = %context_id,
@@ -167,7 +177,7 @@ impl NodeClient {
                             "Failed to query DHT for blob"
                         );
                         if attempt < MAX_RETRIES {
-                            tokio::time::sleep(RETRY_DELAY).await;
+                            tokio::time::sleep(retry_delay).await;
                             continue;
                         }
                         return Err(e);
@@ -182,7 +192,7 @@ impl NodeClient {
                         "No peers found with blob"
                     );
                     if attempt < MAX_RETRIES {
-                        tokio::time::sleep(RETRY_DELAY).await;
+                        tokio::time::sleep(retry_delay).await;
                         continue;
                     }
                     return Ok(None);
@@ -265,10 +275,10 @@ impl NodeClient {
                         blob_id = %blob_id,
                         context_id = %context_id,
                         attempt,
-                        "All peers failed, retrying in {} seconds",
-                        RETRY_DELAY.as_secs()
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "All peers failed, retrying after backoff"
                     );
-                    tokio::time::sleep(RETRY_DELAY).await;
+                    tokio::time::sleep(retry_delay).await;
                 }
             }
 
