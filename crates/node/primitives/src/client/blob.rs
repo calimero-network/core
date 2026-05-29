@@ -140,8 +140,23 @@ impl NodeClient {
                 "Blob not found locally, attempting network discovery"
             );
 
-            const MAX_RETRIES: usize = 3;
-            const RETRY_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
+            // Poll the DHT quickly at first and widen the gap only if the record
+            // stays missing. The blob record is usually available within a few
+            // hundred ms on a warm cluster; a flat multi-second wait otherwise
+            // dominates time-to-first-byte even when both peers are local.
+            const MAX_RETRIES: usize = 6;
+            const INITIAL_RETRY_DELAY: core::time::Duration =
+                core::time::Duration::from_millis(100);
+            const MAX_RETRY_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
+
+            // 100ms, doubling per attempt, capped at MAX_RETRY_DELAY. The
+            // `.min(31)` bounds the shift so it stays well-defined if
+            // MAX_RETRIES is ever raised past 32.
+            let backoff = |attempt: usize| {
+                INITIAL_RETRY_DELAY
+                    .saturating_mul(1_u32 << (attempt as u32 - 1).min(31))
+                    .min(MAX_RETRY_DELAY)
+            };
 
             for attempt in 1..=MAX_RETRIES {
                 tracing::debug!(
@@ -167,7 +182,7 @@ impl NodeClient {
                             "Failed to query DHT for blob"
                         );
                         if attempt < MAX_RETRIES {
-                            tokio::time::sleep(RETRY_DELAY).await;
+                            tokio::time::sleep(backoff(attempt)).await;
                             continue;
                         }
                         return Err(e);
@@ -182,7 +197,7 @@ impl NodeClient {
                         "No peers found with blob"
                     );
                     if attempt < MAX_RETRIES {
-                        tokio::time::sleep(RETRY_DELAY).await;
+                        tokio::time::sleep(backoff(attempt)).await;
                         continue;
                     }
                     return Ok(None);
@@ -261,14 +276,15 @@ impl NodeClient {
 
                 // If we reach here, all peers failed for this attempt
                 if attempt < MAX_RETRIES {
+                    let retry_delay = backoff(attempt);
                     tracing::info!(
                         blob_id = %blob_id,
                         context_id = %context_id,
                         attempt,
-                        "All peers failed, retrying in {} seconds",
-                        RETRY_DELAY.as_secs()
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "All peers failed, retrying after backoff"
                     );
-                    tokio::time::sleep(RETRY_DELAY).await;
+                    tokio::time::sleep(retry_delay).await;
                 }
             }
 
