@@ -1,0 +1,223 @@
+name: Frozen + RGA convergence repro
+description: >
+  Focused repro for the frozen-storage sync divergence (#scaffolding-e2e
+  "Frozen data cannot be updated" split-brain). A frozen entry added early
+  syncs cleanly, but a later multi-collection op sequence (RGA document
+  edits + a title change) makes one node's view of that earlier frozen
+  entry diverge: `compare_trees` emits an `Action::Update` for the frozen
+  element, which the storage layer categorically rejects, and the node can
+  never reconcile. This workflow isolates that sequence with explicit
+  cross-node convergence checks so the failure surfaces directly at the
+  final `wait_for_sync` instead of being buried in the full e2e suite.
+
+force_pull_image: false
+
+nodes:
+  count: 3
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: e2e-node
+
+steps:
+  # --- Setup: 3-node mesh ---
+  - name: Install application on node-1
+    type: install_application
+    node: e2e-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create mesh with node-2
+    type: create_mesh
+    context_node: e2e-node-1
+    application_id: "{{app_id}}"
+    path: res/scaffolding_e2e.wasm
+    nodes:
+      - e2e-node-2
+    capability: member
+    outputs:
+      context_id: contextId
+      node1_key: memberPublicKey
+      group_id: groupId
+
+  - name: Create namespace invitation for node-3
+    type: create_namespace_invitation
+    node: e2e-node-1
+    namespace_id: "{{group_id}}"
+    outputs:
+      open_invitation_3: invitation
+
+  - name: Join namespace - node-3
+    type: join_namespace
+    node: e2e-node-3
+    namespace_id: "{{group_id}}"
+    invitation: "{{open_invitation_3}}"
+    outputs:
+      node3_key: memberIdentity
+
+  - name: Wait for sync after node-3 joins
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    trigger_sync: true
+
+  # --- Frozen entry added early (this part syncs cleanly) ---
+  - name: Add frozen value on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    method: add_frozen
+    args:
+      value: "Immutable data"
+    outputs:
+      frozen_hash: result.output
+
+  - name: Wait for sync after frozen add
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    trigger_sync: true
+
+  - name: Get frozen value on node-3 (sanity - synced cleanly)
+    type: call
+    node: e2e-node-3
+    context_id: "{{context_id}}"
+    method: get_frozen
+    args:
+      hash_hex: "{{frozen_hash}}"
+    outputs:
+      frozen_value_node3: result
+
+  - name: Assert frozen value present on node-3
+    type: json_assert
+    statements:
+      - 'json_equal({{frozen_value_node3}}, {"output": "Immutable data"})'
+
+  # --- Multi-collection churn: RGA document edits from several nodes ---
+  - name: RGA insert text on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    method: rga_insert_text
+    args:
+      position: 0
+      text: "Hello"
+
+  - name: Wait for sync after node-1 insert
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    trigger_sync: true
+
+  - name: RGA append text on node-2
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    method: rga_append_text
+    args:
+      text: " brave new World"
+
+  - name: RGA append text on node-3
+    type: call
+    node: e2e-node-3
+    context_id: "{{context_id}}"
+    method: rga_append_text
+    args:
+      text: " of frozen bugs"
+
+  - name: Wait for sync after concurrent appends
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    trigger_sync: true
+
+  - name: RGA delete text on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    method: rga_delete_text
+    args:
+      start: 0
+      end: 5
+
+  - name: Wait for sync after delete
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 60
+    trigger_sync: true
+
+  # --- The trigger: a title change (LWW) driving a whole-tree sync ---
+  - name: Set document title on node-1
+    type: call
+    node: e2e-node-1
+    context_id: "{{context_id}}"
+    method: rga_set_title
+    args:
+      new_title: "E2E Test Document"
+
+  # This is the convergence check that fails in the full e2e suite: after
+  # the title change the whole-tree sync walks the frozen entry and (on the
+  # divergent node) tries to Update it, which is rejected — so the nodes
+  # never converge and this step times out.
+  - name: Wait for sync after title change (CONVERGENCE CHECK)
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - e2e-node-1
+      - e2e-node-2
+      - e2e-node-3
+    timeout: 90
+    trigger_sync: true
+
+  # --- Post-convergence assertions: the frozen entry is still consistent ---
+  - name: Get frozen value on node-2 after title change
+    type: call
+    node: e2e-node-2
+    context_id: "{{context_id}}"
+    method: get_frozen
+    args:
+      hash_hex: "{{frozen_hash}}"
+    outputs:
+      frozen_after_node2: result
+
+  - name: Assert frozen value still present on node-2
+    type: json_assert
+    statements:
+      - 'json_equal({{frozen_after_node2}}, {"output": "Immutable data"})'
+
+  - name: Get frozen value on node-3 after title change
+    type: call
+    node: e2e-node-3
+    context_id: "{{context_id}}"
+    method: get_frozen
+    args:
+      hash_hex: "{{frozen_hash}}"
+    outputs:
+      frozen_after_node3: result
+
+  - name: Assert frozen value still present on node-3
+    type: json_assert
+    statements:
+      - 'json_equal({{frozen_after_node3}}, {"output": "Immutable data"})'
+
+stop_all_nodes: true
