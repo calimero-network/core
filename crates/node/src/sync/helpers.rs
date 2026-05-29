@@ -325,21 +325,20 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         // before this fix.
         let parent_id = leaf.metadata.parent_id.map(Id::new).unwrap_or(root_id);
 
-        // Ensure the chosen parent has an index. For a freshly-pulled
-        // nested entity the parent may not yet exist locally — when the
-        // sender's `index.parent_id()` points at a parent we haven't
-        // pulled yet (HashComparison walks the tree top-down but a
-        // single EntityPush batch can deliver a child before its parent
-        // due to BFS-vs-DFS ordering and batch boundaries), create a
-        // placeholder index here so `Action::Add { ancestors: [parent] }`
-        // has something to attach to. When the parent itself arrives via
-        // a later push it'll go through the Update path (existing entity)
-        // and its real data + metadata replaces the placeholder; the
-        // child's `parent_id` link is preserved across that.
-        if Index::<MainStorage>::get_index(parent_id)
-            .ok()
-            .flatten()
-            .is_none()
+        // Initialise the context root entry if it's not in the local
+        // index yet. `apply_action`'s `id.is_root()` branch then runs
+        // `add_root` and `save_internal` writes empty `Key::Entry(root_id)`
+        // so the root's `own_hash = Sha256::digest(empty)` matches the
+        // sender's (which produced its root the same way via `init_root`
+        // or equivalent). Without this, the receiver's root own_hash
+        // stays `[0; 32]` and diverges from the sender's. Gated on
+        // `parent_id.is_root()` because non-root parents are now handled
+        // by the wire-supplied ancestor chain (see comment below).
+        if parent_id.is_root()
+            && Index::<MainStorage>::get_index(parent_id)
+                .ok()
+                .flatten()
+                .is_none()
         {
             let parent_init = Action::Update {
                 id: parent_id,
@@ -354,37 +353,51 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
             Interface::<MainStorage>::apply_action(parent_init, &ApplyContext::empty())?;
         }
 
-        let parent_hash = Index::<MainStorage>::get_hashes_for(parent_id)
-            .ok()
-            .flatten()
-            .map(|(full, _)| full)
-            .unwrap_or([0; 32]);
-        let parent_metadata = Index::<MainStorage>::get_index(parent_id)
-            .ok()
-            .flatten()
-            .map(|idx| idx.metadata.clone())
-            .unwrap_or_default();
-
-        let ancestor = ChildInfo::new(parent_id, parent_hash, parent_metadata);
+        // Prefer the wire-supplied ancestor chain (immediate parent →
+        // root_child, root excluded). `apply_action`'s ancestor loop
+        // walks it in reverse and links each entry to the next up,
+        // placing intermediate ancestors at the correct tree level.
+        //
+        // Legacy fallback for peers shipping only `parent_id`: a
+        // one-element chain. `apply_action` will then `add_root`
+        // missing grandparents, which can misplace deeply nested
+        // entities until the real ancestors arrive via their own leaf
+        // pushes.
+        let ancestors = if !leaf.metadata.ancestors.is_empty() {
+            leaf.metadata.ancestors.clone()
+        } else {
+            let parent_hash = Index::<MainStorage>::get_hashes_for(parent_id)
+                .ok()
+                .flatten()
+                .map(|(full, _)| full)
+                .unwrap_or([0; 32]);
+            let parent_metadata = Index::<MainStorage>::get_index(parent_id)
+                .ok()
+                .flatten()
+                .map(|idx| idx.metadata.clone())
+                .unwrap_or_default();
+            vec![ChildInfo::new(parent_id, parent_hash, parent_metadata)]
+        };
 
         // Tree-shape integrity NOT cryptographically asserted here:
-        // `ancestor.merkle_hash` is fetched live from the local
-        // index, so `Interface::apply_action`'s
-        // `verify_ancestor_integrity` always passes on this path
-        // (the hash matches what's locally stored). This is the
-        // documented design trade-off: HashComparison sync runs
-        // precisely because tree shapes have drifted between
-        // peers, so asserting "the signer observed the same
-        // parent hash" would reject every legitimate divergence
-        // repair. Authorization (the signature inside
-        // `metadata.storage_type`) still verifies — what we
-        // forgo is sender-vs-receiver agreement on the parent's
-        // subtree hash. The delta-replay path carries the
-        // signer's ancestor list and does check it.
+        // the chain's `merkle_hash` values come either from the
+        // peer's wire (not signed; see `LeafMetadata::ancestors`
+        // field doc on the trust model) or from the receiver's own
+        // index (legacy fallback above) — in either case
+        // `verify_ancestor_integrity` is informational only on this
+        // path. This is the documented design trade-off:
+        // HashComparison sync runs precisely because tree shapes
+        // have drifted between peers, so asserting "the signer
+        // observed the same parent hash" would reject every
+        // legitimate divergence repair. Authorization (the
+        // signature inside `metadata.storage_type`) still verifies
+        // — what we forgo is sender-vs-receiver agreement on the
+        // ancestor chain's subtree hashes. The delta-replay path
+        // carries the signer's ancestor list and does check it.
         Action::Add {
             id: entity_id,
             data: leaf.value.clone(),
-            ancestors: vec![ancestor],
+            ancestors,
             metadata,
         }
     };
