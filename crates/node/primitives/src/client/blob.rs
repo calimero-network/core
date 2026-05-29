@@ -276,14 +276,15 @@ impl NodeClient {
 
                 // If we reach here, all peers failed for this attempt
                 if attempt < MAX_RETRIES {
+                    let retry_delay = backoff(attempt);
                     tracing::info!(
                         blob_id = %blob_id,
                         context_id = %context_id,
                         attempt,
-                        retry_delay_ms = backoff(attempt).as_millis(),
+                        retry_delay_ms = retry_delay.as_millis(),
                         "All peers failed, retrying after backoff"
                     );
-                    tokio::time::sleep(backoff(attempt)).await;
+                    tokio::time::sleep(retry_delay).await;
                 }
             }
 
