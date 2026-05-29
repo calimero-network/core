@@ -2961,6 +2961,7 @@ impl SyncManager {
             InitPayload::DeltaRequest { .. }
                 | InitPayload::DagHeadsRequest { .. }
                 | InitPayload::SnapshotBoundaryRequest { .. }
+                | InitPayload::SnapshotStreamRequest { .. }
                 | InitPayload::TreeNodeRequest { .. }
                 | InitPayload::LevelWiseRequest { .. }
         ) {

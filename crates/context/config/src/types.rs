@@ -865,6 +865,23 @@ fn default_invited_role() -> u8 {
 /// up with `target_application_id = ZERO` for the group, while the
 /// originator has the real value — causing `compute_group_state_hash`
 /// to diverge persistently between peers.
+///
+/// # Wire-format compatibility (lockstep assumption)
+///
+/// The `#[serde(default, skip_serializing_if = ...)]` on the trailing
+/// `Option` fields makes them **JSON**-backwards-compatible only — that
+/// is the JSON-RPC path (`calimero-client-py`). Borsh ignores serde
+/// attributes: appending a field to a borsh struct is NOT wire-compatible
+/// (an old peer decoding a new payload errors on trailing bytes; a new
+/// peer decoding an old payload hits EOF on the option tag). This struct
+/// also rides the **binary P2P wire** — `create_recursive_invitations`
+/// embeds it in a `SignedNamespaceOp`. So mixed-version peers exchanging
+/// these namespace ops over borsh will reject each other's gossip. That
+/// is an **accepted lockstep-upgrade assumption** (the same one that
+/// applied when `application_id` was added the same way): a namespace
+/// must run a single core version across its peers during a migration.
+/// If true rolling-version compat is ever needed, give this struct an
+/// explicit version tag rather than relying on serde defaults.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Deserialize, Serialize)]
 pub struct SignedGroupOpenInvitation {
     /// The open invitation to the group.
@@ -890,6 +907,21 @@ pub struct SignedGroupOpenInvitation {
     /// `application_id` above; same null-safety: `None` for
     /// backwards compatibility with pre-field invitations, joiners
     /// fall back to zero + the existing self-heal path.
+    ///
+    /// # Trust model
+    ///
+    /// This field is **unsigned** (it sits below `inviter_signature`), so
+    /// the inviter is trusted to pin it honestly. A malicious or buggy
+    /// inviter sending `Some(wrong_value)` is accepted by the joiner
+    /// without verification — the local-bytecode re-derivation in
+    /// `join_group` only fires for the `None` case, not to override a
+    /// present-but-wrong value. The blast radius is bounded: a wrong
+    /// `app_key` makes the `from_app_key` cascade predicate skip the
+    /// subtree for that one joiner's view (a cascade **DoS** for that
+    /// peer), NOT state corruption or an auth bypass. Anyone adding
+    /// further cascade-gated semantics keyed on `app_key` must keep this
+    /// in mind — or move to always re-deriving locally and ignoring the
+    /// wire value, which would close the forge vector entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_key: Option<[u8; 32]>,
 }
