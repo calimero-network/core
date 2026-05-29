@@ -10,6 +10,8 @@ use std::collections::hash_map::HashMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use calimero_store::Store;
+
 use actix::{Actor, AsyncContext, Context};
 use calimero_network_primitives::config::NetworkConfig;
 use calimero_network_primitives::messages::NetworkEventDispatcher;
@@ -35,6 +37,7 @@ mod discovery;
 mod handlers;
 
 use behaviour::Behaviour;
+use discovery::peer_cache::PeerAddrCache;
 use discovery::Discovery;
 use handlers::stream::rendezvous::RendezvousTick;
 use handlers::stream::swarm::FromSwarm;
@@ -47,6 +50,15 @@ pub struct NetworkManager {
     swarm: Box<Swarm<Behaviour>>,
     event_dispatcher: Arc<dyn NetworkEventDispatcher>,
     discovery: Discovery,
+    /// Persistent cache of addresses for peers that share our overlays,
+    /// for fast reconnect on restart. Recorded on connect, loaded+dialed
+    /// on startup, re-persisted on the rendezvous tick. See the
+    /// `peer_cache_*` methods on the discovery impl.
+    peer_cache: PeerAddrCache,
+    /// Datastore handle the peer cache is persisted to (a node-local
+    /// blob under a `Generic` key — the datastore-backed peerstore
+    /// pattern). `None` disables persistence (tests / no store).
+    store: Option<Store>,
     pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<()>>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<()>>>,
     pending_blob_queries: HashMap<QueryId, oneshot::Sender<eyre::Result<Vec<PeerId>>>>,
@@ -76,6 +88,7 @@ impl NetworkManager {
         event_dispatcher: Arc<dyn NetworkEventDispatcher>,
         prom_registry: &mut Registry,
         reserved_topics: BTreeSet<String>,
+        store: Option<Store>,
     ) -> eyre::Result<Self> {
         let swarm = Behaviour::build_swarm(config)?;
 
@@ -96,6 +109,8 @@ impl NetworkManager {
             swarm: Box::new(swarm),
             event_dispatcher,
             discovery,
+            peer_cache: PeerAddrCache::default(),
+            store,
             pending_dial: HashMap::default(),
             pending_bootstrap: HashMap::default(),
             pending_blob_queries: HashMap::new(),
@@ -147,5 +162,10 @@ impl Actor for NetworkManager {
             ))
             .map(RendezvousTick::from),
         );
+
+        // Fast reconnect: dial peers we cached from a previous run before
+        // rendezvous rediscovery has a chance to run. Best-effort and
+        // deduped at the swarm level; stale entries fail and age out.
+        self.load_peer_cache_and_dial();
     }
 }

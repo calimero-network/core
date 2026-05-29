@@ -4,13 +4,20 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use calimero_network_primitives::config::{AutonatConfig, RelayConfig, RendezvousConfig};
 use eyre::{bail, ContextCompat, Result as EyreResult, WrapErr as _};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use calimero_store::key::Generic as GenericKey;
+use calimero_store::slice::Slice;
+use calimero_store::types::GenericData;
 use libp2p::rendezvous::client::RegisterError;
 use libp2p::rendezvous::Namespace;
+use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use super::NetworkManager;
+use crate::discovery::peer_cache::{PeerAddrCache, PersistedPeer};
 use crate::discovery::state::{
     rendezvous_key_for_topic, under_connected_rendezvous_keys, DiscoveryState, ReachabilityActions,
     RelayReservationStatus, RendezvousRegistrationStatus,
@@ -18,12 +25,21 @@ use crate::discovery::state::{
 
 pub mod state;
 
-// Persistent relevant-peer address cache. Methods are exercised by the
-// module's own unit tests and wired into the swarm/command layer in the
-// next slice (record-on-connect, export/import commands, node-side file
-// persistence); allow dead_code until that lands so the foundation can
-// be reviewed independently.
-#[allow(dead_code)]
+/// How long a cached peer address stays dial-worthy without being seen
+/// again. A day comfortably covers laptop-sleep / overnight-restart while
+/// aging out peers that have genuinely left.
+const PEER_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// Fixed node-local datastore key for the single peer-cache blob. The
+/// whole relevant-peer set is stored as one value under this key in the
+/// `Generic` column (raw-bytes codec).
+fn peer_cache_store_key() -> GenericKey {
+    GenericKey::new(*b"calimero-peercch", [0u8; 32])
+}
+
+// Persistent relevant-peer address cache: recorded on connect, loaded +
+// dialed on startup, and re-persisted on the rendezvous tick (see the
+// `peer_cache_*` methods below).
 pub(crate) mod peer_cache;
 
 /// Max rendezvous `discover` requests issued in a single
@@ -168,6 +184,127 @@ impl NetworkManager {
             })
             .collect();
         under_connected_rendezvous_keys(topics.iter().map(|(t, c)| (t.as_str(), *c)))
+    }
+
+    /// Current wall-clock unix seconds, used for peer-cache freshness so
+    /// the cache survives process restarts (a monotonic `Instant`
+    /// wouldn't). Saturates to 0 if the clock is before the epoch.
+    fn now_unix_secs(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Record the address we just connected to `peer_id` on into the
+    /// peer cache. Records BOTH direct and relayed-circuit addresses
+    /// (unlike the discovery book, which keeps direct only) — a relayed
+    /// circuit address is re-dialable after a restart if the peer
+    /// re-reserves on the same relay, so it's worth caching for NAT'd
+    /// co-members.
+    pub(crate) fn record_connected_addr(&mut self, peer_id: PeerId, addr: Multiaddr) {
+        let now = self.now_unix_secs();
+        self.peer_cache.record(peer_id, addr, now);
+    }
+
+    /// Connected peers subscribed to at least one of our own
+    /// (non-reserved) overlay topics — the relevant set to persist/dial.
+    fn current_overlay_subscribers(&self) -> std::collections::BTreeSet<PeerId> {
+        let reserved = &self.discovery.reserved_topics;
+        let gossipsub = &self.swarm.behaviour().gossipsub;
+        let our_overlays: std::collections::BTreeSet<String> = gossipsub
+            .topics()
+            .filter(|t| !reserved.contains(t.as_str()))
+            .map(|t| t.as_str().to_owned())
+            .collect();
+        let mut out = std::collections::BTreeSet::new();
+        for (peer, topics) in gossipsub.all_peers() {
+            if topics.iter().any(|t| our_overlays.contains(t.as_str())) {
+                let _ = out.insert(*peer);
+            }
+        }
+        out
+    }
+
+    /// Persist the relevant, still-fresh peer cache to the datastore
+    /// (best-effort), under a fixed node-local `Generic` key — the
+    /// datastore-backed peerstore pattern. Called from the rendezvous
+    /// tick. A failed write just means a slower reconnect next restart,
+    /// so failures are debug-logged, not propagated. Skips writing when
+    /// there are no relevant peers, to avoid churning the blob while the
+    /// node is idle/peerless.
+    pub(crate) fn persist_peer_cache(&self) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let relevant = self.current_overlay_subscribers();
+        if relevant.is_empty() {
+            return;
+        }
+        let records =
+            self.peer_cache
+                .to_persisted(&relevant, self.now_unix_secs(), PEER_CACHE_TTL_SECS);
+        let bytes = match serde_json::to_vec(&records) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                debug!(?err, "failed to serialize peer cache");
+                return;
+            }
+        };
+        let key = peer_cache_store_key();
+        let data = GenericData::from(Slice::from(bytes));
+        let mut handle = store.handle();
+        if let Err(err) = handle.put(&key, &data) {
+            debug!(?err, "failed to persist peer cache to store");
+        }
+    }
+
+    /// Load the persisted peer cache from the datastore and dial the
+    /// still-fresh relevant peers, so a restarted node reconnects to its
+    /// collaborators immediately instead of waiting a rendezvous
+    /// round-trip. Dials are deduped at the swarm level
+    /// (`DisconnectedAndNotDialing`); stale cached addresses that fail are
+    /// evicted by the discovery book's failure threshold, and rendezvous
+    /// supplies fresh ones. Best-effort: a missing or corrupt blob is
+    /// ignored.
+    pub(crate) fn load_peer_cache_and_dial(&mut self) {
+        let now = self.now_unix_secs();
+        let records: Vec<PersistedPeer> = {
+            let Some(store) = self.store.as_ref() else {
+                return;
+            };
+            let key = peer_cache_store_key();
+            match store.handle().get(&key) {
+                Ok(Some(data)) => match serde_json::from_slice(data.as_ref()) {
+                    Ok(records) => records,
+                    Err(err) => {
+                        debug!(?err, "ignoring corrupt peer cache blob in store");
+                        return;
+                    }
+                },
+                Ok(None) => return, // nothing cached yet
+                Err(err) => {
+                    debug!(?err, "failed to read peer cache from store");
+                    return;
+                }
+            }
+        };
+        self.peer_cache = PeerAddrCache::from_persisted(records, now, PEER_CACHE_TTL_SECS);
+
+        let candidates = self.peer_cache.dial_candidates(now, PEER_CACHE_TTL_SECS);
+        let count = candidates.len();
+        for candidate in candidates {
+            let opts = DialOpts::peer_id(candidate.peer_id)
+                .condition(PeerCondition::DisconnectedAndNotDialing)
+                .addresses(candidate.addrs)
+                .build();
+            if let Err(err) = self.swarm.dial(opts) {
+                debug!(peer_id = %candidate.peer_id, ?err, "peer-cache startup dial skipped");
+            }
+        }
+        if count > 0 {
+            info!(count, "dialing cached peers on startup for fast reconnect");
+        }
     }
 
     // Sends rendezvous discovery requests to the rendezvous peer, one per

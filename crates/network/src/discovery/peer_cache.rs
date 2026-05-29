@@ -30,9 +30,21 @@
 //!      (the discovery book's existing failure-eviction threshold), so a
 //!      stale cached address can't wedge reconnection.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use libp2p::{Multiaddr, PeerId};
+use serde::{Deserialize, Serialize};
+use tracing::debug;
+
+/// On-disk form of a cached peer. `PeerId`/`Multiaddr` are stored as
+/// strings so the file is human-readable and we don't depend on libp2p's
+/// optional serde features. Unparseable entries are skipped on load.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PersistedPeer {
+    pub(crate) peer_id: String,
+    pub(crate) addrs: Vec<String>,
+    pub(crate) last_seen_secs: u64,
+}
 
 /// Max addresses retained per peer, most-recent-first. A peer rarely
 /// needs more than one good address; a small cap tolerates an in-flight
@@ -77,9 +89,56 @@ impl PeerAddrCache {
         entry.addrs.truncate(MAX_ADDRS_PER_PEER);
     }
 
-    /// Drop `peer_id` entirely (e.g. it left every overlay we share).
-    pub(crate) fn forget(&mut self, peer_id: &PeerId) {
-        let _removed = self.peers.remove(peer_id);
+    /// Serialize the relevant, still-fresh entries for persistence to
+    /// disk. Filters by `relevant` (current overlay co-members) and TTL,
+    /// then renders ids/addrs as strings.
+    pub(crate) fn to_persisted(
+        &self,
+        relevant: &BTreeSet<PeerId>,
+        now_secs: u64,
+        ttl_secs: u64,
+    ) -> Vec<PersistedPeer> {
+        self.snapshot_relevant_fresh(relevant, now_secs, ttl_secs)
+            .into_iter()
+            .map(|p| PersistedPeer {
+                peer_id: p.peer_id.to_base58(),
+                addrs: p.addrs.iter().map(Multiaddr::to_string).collect(),
+                last_seen_secs: p.last_seen_secs,
+            })
+            .collect()
+    }
+
+    /// Rebuild a cache from a loaded snapshot, parsing string ids/addrs
+    /// and dropping any that are malformed or past `ttl_secs`. Malformed
+    /// entries are logged at debug and skipped rather than failing the
+    /// whole load — a corrupt line shouldn't lose the rest of the cache.
+    pub(crate) fn from_persisted(
+        records: Vec<PersistedPeer>,
+        now_secs: u64,
+        ttl_secs: u64,
+    ) -> Self {
+        let entries = records
+            .into_iter()
+            .filter_map(|r| {
+                let peer_id = match r.peer_id.parse::<PeerId>() {
+                    Ok(p) => p,
+                    Err(err) => {
+                        debug!(peer_id = %r.peer_id, ?err, "skipping unparseable cached peer id");
+                        return None;
+                    }
+                };
+                let addrs: Vec<Multiaddr> = r.addrs.iter().filter_map(|a| a.parse().ok()).collect();
+                if addrs.is_empty() {
+                    return None;
+                }
+                Some(CachedPeer {
+                    peer_id,
+                    addrs,
+                    last_seen_secs: r.last_seen_secs,
+                })
+            })
+            .collect();
+        Self::load_fresh(entries, now_secs, ttl_secs)
     }
 
     /// Replace the cache contents from a loaded snapshot, keeping only
@@ -253,10 +312,50 @@ mod tests {
     }
 
     #[test]
-    fn forget_removes_peer() {
+    fn persisted_round_trips_through_strings() {
         let mut c = PeerAddrCache::default();
         c.record(peer(1), addr("/ip4/1.1.1.1/tcp/1"), 100);
-        c.forget(&peer(1));
-        assert!(c.dial_candidates(100, 1000).is_empty());
+        c.record(peer(1), addr("/ip4/2.2.2.2/tcp/2"), 150);
+        let relevant = std::collections::BTreeSet::from([peer(1)]);
+
+        let records = c.to_persisted(&relevant, 150, 1000);
+        // JSON serialize/deserialize as the node-side persistence would.
+        let json = serde_json::to_string(&records).expect("serialize");
+        let back: Vec<PersistedPeer> = serde_json::from_str(&json).expect("deserialize");
+
+        let restored = PeerAddrCache::from_persisted(back, 150, 1000);
+        let got = restored.dial_candidates(150, 1000);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].peer_id, peer(1));
+        assert_eq!(
+            got[0].addrs,
+            vec![addr("/ip4/2.2.2.2/tcp/2"), addr("/ip4/1.1.1.1/tcp/1")],
+            "address order (newest-first) survives the round trip"
+        );
+    }
+
+    #[test]
+    fn from_persisted_skips_malformed_and_expired() {
+        let records = vec![
+            PersistedPeer {
+                peer_id: "not-a-peer-id".to_owned(),
+                addrs: vec!["/ip4/1.1.1.1/tcp/1".to_owned()],
+                last_seen_secs: 100,
+            },
+            PersistedPeer {
+                peer_id: peer(2).to_base58(),
+                addrs: vec!["garbage-addr".to_owned()],
+                last_seen_secs: 100,
+            },
+            PersistedPeer {
+                peer_id: peer(3).to_base58(),
+                addrs: vec!["/ip4/3.3.3.3/tcp/3".to_owned()],
+                last_seen_secs: 100,
+            },
+        ];
+        let c = PeerAddrCache::from_persisted(records, 150, 1000);
+        let got = c.dial_candidates(150, 1000);
+        assert_eq!(got.len(), 1, "only the well-formed entry survives");
+        assert_eq!(got[0].peer_id, peer(3));
     }
 }

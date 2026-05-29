@@ -132,12 +132,16 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // global fan-out).
     let reserved_topics = BTreeSet::from([config.specialized_node.invite_topic.clone()]);
 
-    // Create NetworkManager with channel-based dispatcher for reliable event delivery
+    // Create NetworkManager with channel-based dispatcher for reliable
+    // event delivery. The datastore handle backs the peer-address cache
+    // (datastore-backed peerstore) so a restart can dial known
+    // co-members immediately for fast reconnect.
     let network_manager = NetworkManager::new(
         &config.network,
         Arc::new(network_event_sender),
         &mut registry,
         reserved_topics,
+        Some(datastore.clone()),
     )
     .await?;
 

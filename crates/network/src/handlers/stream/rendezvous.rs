@@ -69,6 +69,11 @@ impl StreamHandler<RendezvousTick> for NetworkManager {
                 error!(%err, "Failed to perform rendezvous discover");
             }
         }
+
+        // Snapshot the relevant peer addresses to disk so a restart can
+        // dial them immediately. Piggybacks the discovery tick (~15s);
+        // best-effort and skipped when we have no relevant peers.
+        self.persist_peer_cache();
     }
 
     fn finished(&mut self, _ctx: &mut Self::Context) {
