@@ -1812,3 +1812,190 @@ fn test_e2e_counter_sync_with_isolated_storage() {
 
     println!("\n✅ Counter sync test PASSED!");
 }
+
+// ---------------------------------------------------------------------------
+// Frozen-storage sync robustness suite.
+//
+// Investigation of the intermittent scaffolding-e2e "Frozen data cannot be
+// updated" split-brain established that the straightforward frozen paths
+// converge deterministically (own_hash is content-only; merkle children are
+// id-sorted). These tests lock that in as regression guards so a future
+// change that makes frozen sync order- or path-dependent fails fast here
+// rather than as a rare e2e flake.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod frozen_sync_robustness {
+    use super::*;
+    use crate::address::Id;
+    use crate::collections::{FrozenStorage, Root};
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::MainStorage;
+
+    type NodeStorage = MainStorage;
+
+    fn root_full_hash() -> [u8; 32] {
+        Index::<NodeStorage>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(f, _)| f)
+            .unwrap_or([0; 32])
+    }
+
+    fn init_frozen(executor: [u8; 32]) {
+        reset_delta_context();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(executor);
+        let mut r = Root::<FrozenStorage<String>, NodeStorage>::new_internal(FrozenStorage::new);
+        r.reassign_deterministic_id("frozen_items");
+        r.commit();
+    }
+
+    /// Two nodes independently inserting the SAME frozen value converge.
+    #[test]
+    #[serial]
+    fn independent_same_value_converges() {
+        env::reset_for_testing();
+        clear_merge_registry();
+        register_crdt_merge::<FrozenStorage<String>>();
+
+        init_frozen([1; 32]);
+        let mut n1 = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
+        n1.insert("payload".to_string()).unwrap();
+        let d1 = borsh::to_vec(&*n1).unwrap();
+        Interface::<NodeStorage>::save_raw(Id::root(), d1, Metadata::default()).unwrap();
+        let h1 = root_full_hash();
+        drop(n1);
+
+        env::reset_for_testing();
+        init_frozen([2; 32]);
+        let mut n2 = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
+        n2.insert("payload".to_string()).unwrap();
+        let d2 = borsh::to_vec(&*n2).unwrap();
+        Interface::<NodeStorage>::save_raw(Id::root(), d2, Metadata::default()).unwrap();
+        let h2 = root_full_hash();
+
+        assert_eq!(h1, h2, "same frozen value on two nodes must converge");
+    }
+
+    /// Re-inserting the same value is idempotent (content-addressed).
+    #[test]
+    #[serial]
+    fn reinsert_same_value_is_idempotent() {
+        env::reset_for_testing();
+        clear_merge_registry();
+        register_crdt_merge::<FrozenStorage<String>>();
+        init_frozen([1; 32]);
+
+        let mut n1 = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
+        let k1 = n1.insert("dup".to_string()).unwrap();
+        let d1 = borsh::to_vec(&*n1).unwrap();
+        Interface::<NodeStorage>::save_raw(Id::root(), d1, Metadata::default()).unwrap();
+        let after_first = root_full_hash();
+
+        let k2 = n1.insert("dup".to_string()).unwrap();
+        let d2 = borsh::to_vec(&*n1).unwrap();
+        Interface::<NodeStorage>::save_raw(Id::root(), d2, Metadata::default()).unwrap();
+        let after_second = root_full_hash();
+
+        assert_eq!(k1, k2, "same content must produce the same key");
+        assert_eq!(
+            after_first, after_second,
+            "re-inserting identical frozen content must be a no-op"
+        );
+    }
+
+    /// Creator → applier (via delta sync) converge for a single frozen entry.
+    #[test]
+    #[serial]
+    fn create_then_apply_converges() {
+        env::reset_for_testing();
+        clear_merge_registry();
+        register_crdt_merge::<FrozenStorage<String>>();
+
+        // Node-1 creates + captures delta.
+        init_frozen([1; 32]);
+        let init = root_full_hash();
+        reset_delta_context();
+        set_current_heads(vec![init]);
+        env::set_executor_id([1; 32]);
+        let mut n1 = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
+        n1.insert("synced".to_string()).unwrap();
+        let d1 = borsh::to_vec(&*n1).unwrap();
+        Interface::<NodeStorage>::save_raw(Id::root(), d1, Metadata::default()).unwrap();
+        let h1 = root_full_hash();
+        let delta = commit_causal_delta(&h1).unwrap();
+        drop(n1);
+
+        // Node-2 fresh init + applies the delta.
+        env::reset_for_testing();
+        init_frozen([2; 32]);
+        let init2 = root_full_hash();
+        assert_eq!(init, init2, "init must match");
+        reset_delta_context();
+        set_current_heads(vec![init2]);
+        env::set_executor_id([2; 32]);
+        if let Some(delta) = delta {
+            let payload = borsh::to_vec(&StorageDelta::Actions(delta.actions)).unwrap();
+            Root::<FrozenStorage<String>, NodeStorage>::sync(&payload, &ApplyContext::empty())
+                .expect("applying a frozen Add delta must not error");
+        }
+        assert_eq!(h1, root_full_hash(), "creator and applier must converge");
+    }
+
+    /// Applying two frozen Adds in either order yields the same state
+    /// (delta-application-order independence — the property whose
+    /// violation would manifest as the intermittent e2e divergence).
+    #[test]
+    #[serial]
+    fn delta_apply_order_independent() {
+        fn apply_in_order(values: &[&str]) -> [u8; 32] {
+            env::reset_for_testing();
+            clear_merge_registry();
+            register_crdt_merge::<FrozenStorage<String>>();
+
+            // Build one delta per value on a "producer" node.
+            let mut deltas = Vec::new();
+            init_frozen([1; 32]);
+            let mut head = root_full_hash();
+            for v in values {
+                reset_delta_context();
+                set_current_heads(vec![head]);
+                env::set_executor_id([1; 32]);
+                let mut n = Root::<FrozenStorage<String>, NodeStorage>::fetch().unwrap();
+                n.insert((*v).to_string()).unwrap();
+                let d = borsh::to_vec(&*n).unwrap();
+                Interface::<NodeStorage>::save_raw(Id::root(), d, Metadata::default()).unwrap();
+                head = root_full_hash();
+                let delta = commit_causal_delta(&head).unwrap();
+                drop(n);
+                if let Some(delta) = delta {
+                    deltas.push(delta.actions);
+                }
+            }
+
+            // Apply those deltas to a fresh consumer node in the given order.
+            env::reset_for_testing();
+            init_frozen([2; 32]);
+            let base = root_full_hash();
+            for actions in &deltas {
+                reset_delta_context();
+                set_current_heads(vec![base]);
+                env::set_executor_id([2; 32]);
+                let payload = borsh::to_vec(&StorageDelta::Actions(actions.clone())).unwrap();
+                Root::<FrozenStorage<String>, NodeStorage>::sync(&payload, &ApplyContext::empty())
+                    .expect("frozen delta apply must not error");
+            }
+            root_full_hash()
+        }
+
+        let forward = apply_in_order(&["alpha", "beta", "gamma"]);
+        let reverse = apply_in_order(&["gamma", "beta", "alpha"]);
+        assert_eq!(
+            forward, reverse,
+            "frozen entries must converge regardless of delta application order"
+        );
+    }
+}

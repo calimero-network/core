@@ -140,6 +140,9 @@ jobs:
           - workflow: scaffolding-e2e
             file: workflows/e2e.yml
             app: scaffolding-e2e
+          - workflow: frozen-rga-convergence
+            file: workflows/frozen-rga-convergence.yml
+            app: scaffolding-e2e
           - workflow: groups
             file: workflows/groups.yml
             app: scaffolding-e2e
