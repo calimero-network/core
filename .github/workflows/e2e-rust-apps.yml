@@ -286,6 +286,69 @@ jobs:
           - workflow: auto-follow-asymmetric-context-membership
             file: workflows/auto-follow/asymmetric-context-membership.yml
             app: scaffolding-e2e
+          # Sync-resilience smoke tests using the docker fault-injection
+          # primitives. Each workflow YAML uses
+          # `topology: { type: nat }` from merobox 0.6.19+ —
+          # peers sit on an internal LAN bridge behind a NAT
+          # gateway, with no direct path between siblings. The only
+          # way to reach the boot-node (which doubles as the relay
+          # server) is via the gateway's MASQUERADE; Docker's
+          # `DOCKER-ISOLATION-STAGE-2` chain plus the client-side
+          # default-route override at the gateway make direct dial
+          # physically impossible. Every cross-client packet either
+          # uses the boot-node's relay circuit, or — in cone mode —
+          # gets upgraded to a direct one by DCUtR after the
+          # initial rendezvous lands. The previous incarnation of
+          # these workflows used `preserve_default_bootstrap: true` +
+          # `mdns: false` on a single Docker bridge, which gave
+          # "hopeful" relay coverage rather than enforced.
+          #
+          # NAT-topology coverage (merobox 0.6.19+ `topology:
+          # { type: nat }`):
+          #
+          #   * `-cone` variants — cone NAT (plain MASQUERADE).
+          #     DCUtR hole-punching may upgrade the relay-mediated
+          #     connection to a direct one; the relay path is still
+          #     exercised on the way up, and these tests run faster
+          #     because the post-rendezvous traffic shortcuts to
+          #     direct.
+          #   * `-symmetric` variants — symmetric NAT (MASQUERADE
+          #     --random-fully). DCUtR fails reliably, so every
+          #     cross-client packet stays on the boot-node's relay
+          #     circuit. These exercise the relay-reservation
+          #     recovery code path strictly — a regression in
+          #     relay-mediated sync surfaces as a test failure
+          #     here, while the cone variant might mask it via
+          #     the DCUtR-direct fallback.
+          #
+          # The same three scenarios (restart, pause, partition)
+          # are run under both NAT modes so we catch both relay-
+          # recovery-only regressions AND any DCUtR-upgrade-path
+          # regressions in the cone runs.
+          - workflow: sync-resilience-network-partition
+            file: workflows/sync-resilience-network-partition.yml
+            app: scaffolding-e2e
+          - workflow: sync-resilience-network-partition-symmetric
+            file: workflows/sync-resilience-network-partition-symmetric.yml
+            app: scaffolding-e2e
+          - workflow: sync-resilience-peer-restart
+            file: workflows/sync-resilience-peer-restart.yml
+            app: scaffolding-e2e
+          - workflow: sync-resilience-peer-restart-symmetric
+            file: workflows/sync-resilience-peer-restart-symmetric.yml
+            app: scaffolding-e2e
+          - workflow: sync-resilience-peer-pause
+            file: workflows/sync-resilience-peer-pause.yml
+            app: scaffolding-e2e
+          - workflow: sync-resilience-peer-pause-symmetric
+            file: workflows/sync-resilience-peer-pause-symmetric.yml
+            app: scaffolding-e2e
+          # sync-resilience-lossy-link.yml is tracked separately under
+          # #2468; it needs a custom merod image with iproute2 (`tc`)
+          # installed before it can land in CI. Adding it now would
+          # always-fail because the stock merod:edge image lacks
+          # iproute2 and inject_network_fault short-circuits with
+          # `tc: executable file not found`.
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -334,6 +397,15 @@ jobs:
           # Workaround tracked in calimero-network/merobox#207; once merobox
           # persists logs natively we'll remove this block (calimero/core#2179).
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"
+          # Point merobox's `restart_container` pre-restart snapshot
+          # (merobox 0.6.22+) at the same absolute LOGDIR. Without this
+          # env override, merobox writes the snapshot to a CWD-relative
+          # `docker-logs/` which resolves to `$GITHUB_WORKSPACE/apps/
+          # <app>/docker-logs/` (because the next line `cd`s into the
+          # app dir) — separate from the artifact-uploaded LOGDIR. The
+          # snapshot would then be invisible to the artifact uploader
+          # and post-restart debugging would stay blocked.
+          export MEROBOX_PRE_RESTART_LOG_DIR="$LOGDIR"
           WATCHER_STATE_DIR="$(mktemp -d)"
           (
               while [ ! -f "$WATCHER_STATE_DIR/stop" ]; do
@@ -377,12 +449,29 @@ jobs:
               exit 1
           fi
 
+      - name: List docker-logs/ before upload (debug)
+        if: always()
+        run: ls -la docker-logs/ 2>&1 || echo "docker-logs/ missing"
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ matrix.workflow }}-${{ github.sha }}
-          path: docker-logs/${{ matrix.workflow }}*
+          # `docker-logs/` (with a trailing slash) uploads the
+          # ENTIRE directory: the watcher-captured `docker logs -f`
+          # streams (`${matrix.workflow}-${container}.log`) AND
+          # merobox 0.6.22+'s pre-restart snapshots
+          # (`${container}.pre-restart-${utc-ts}.log` — see
+          # merobox#258). Each matrix entry runs on its own runner
+          # with its own `docker-logs/` dir, so this doesn't
+          # cross-contaminate. Earlier attempt used a two-pattern
+          # glob `docker-logs/${{ matrix.workflow }}*` +
+          # `docker-logs/*.pre-restart-*.log`, but the second
+          # pattern silently matched zero files via upload-artifact's
+          # multi-line path handling; uploading the whole directory
+          # sidesteps that and is unambiguous.
+          path: docker-logs/
           retention-days: 7
           if-no-files-found: ignore
 

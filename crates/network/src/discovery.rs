@@ -86,17 +86,27 @@ impl Discovery {
 }
 
 impl NetworkManager {
-    // Sends rendezvous discovery request to the rendezvous peer if not throttled.
-    // This function expectes that the rendezvous peer is already connected.
-    pub(crate) fn rendezvous_discover(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
+    // Sends rendezvous discovery request to the rendezvous peer.
+    // Throttled via `discovery_rpm` unless `force == true` — see the
+    // `rendezvous_discover_force` field on `ReachabilityActions` for
+    // when callers should bypass the throttle (event-driven recovery
+    // paths where the throttle floor exceeds the recovery budget).
+    // This function expects that the rendezvous peer is already
+    // connected.
+    pub(crate) fn rendezvous_discover(
+        &mut self,
+        rendezvous_peer: &PeerId,
+        force: bool,
+    ) -> EyreResult<()> {
         let peer_info = self
             .discovery
             .state
             .get_peer_info(rendezvous_peer)
-            .wrap_err("Failed to get peer info {}")?;
+            .wrap_err_with(|| format!("Failed to get peer info for {rendezvous_peer}"))?;
 
-        if peer_info
-            .is_rendezvous_discover_throttled(self.discovery.rendezvous_config.discovery_rpm)
+        if !force
+            && peer_info
+                .is_rendezvous_discover_throttled(self.discovery.rendezvous_config.discovery_rpm)
         {
             return Ok(());
         }
@@ -114,6 +124,7 @@ impl NetworkManager {
         debug!(
             %rendezvous_peer,
             ?peer_info,
+            force,
             rendezvous_namespace=%(self.discovery.rendezvous_config.namespace),
             "Sent discover request to rendezvous node"
         );
@@ -397,10 +408,19 @@ impl NetworkManager {
             }
         }
 
-        // Discover peers
+        // Discover peers — throttled path
         for peer_id in &actions.rendezvous_discover {
-            if let Err(err) = self.rendezvous_discover(peer_id) {
+            if let Err(err) = self.rendezvous_discover(peer_id, false) {
                 error!(%err, %peer_id, "Failed to discover via rendezvous");
+            }
+        }
+
+        // Discover peers — force path (bypasses throttle, for
+        // event-driven recovery from a lost peer connection where
+        // we can't afford to wait the discovery_rpm floor).
+        for peer_id in &actions.rendezvous_discover_force {
+            if let Err(err) = self.rendezvous_discover(peer_id, true) {
+                error!(%err, %peer_id, "Failed to force-discover via rendezvous");
             }
         }
 

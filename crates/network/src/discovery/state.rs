@@ -98,7 +98,22 @@ pub struct ReachabilityActions {
     pub rendezvous_register: Vec<PeerId>,
     pub rendezvous_unregister: Vec<PeerId>,
     pub relay_reservations: Vec<PeerId>,
+    /// Throttled rendezvous-discovery queue. The periodic
+    /// `discovery_interval` tick and steady-state reachability
+    /// transitions populate this; entries are gated by the
+    /// per-rendezvous-peer `discovery_rpm` throttle so a node
+    /// doesn't hammer the rendezvous server.
     pub rendezvous_discover: Vec<PeerId>,
+    /// Event-driven rendezvous re-discovery that bypasses the
+    /// `discovery_rpm` throttle. Used by paths where the throttle
+    /// floor (default 120s with rpm=0.5) is much longer than the
+    /// fault-recovery budget — most notably, losing the last
+    /// connection to a regular (non-rendezvous, non-relay) peer.
+    /// If we wait for the next throttled tick we miss the post-
+    /// restart peer's fresh registration and the upstream
+    /// `crates/node` sync layer parks on "No peers to sync with"
+    /// for the rest of the test budget (issue #2469 under NAT).
+    pub rendezvous_discover_force: Vec<PeerId>,
 }
 
 impl ReachabilityActions {
@@ -113,6 +128,7 @@ impl ReachabilityActions {
             || !self.rendezvous_unregister.is_empty()
             || !self.relay_reservations.is_empty()
             || !self.rendezvous_discover.is_empty()
+            || !self.rendezvous_discover_force.is_empty()
     }
 }
 
@@ -168,6 +184,7 @@ impl DiscoveryState {
             rendezvous_unregister: vec![],
             relay_reservations: vec![],
             rendezvous_discover: vec![],
+            rendezvous_discover_force: vec![],
         }
     }
 
@@ -184,6 +201,40 @@ impl DiscoveryState {
             rendezvous_unregister: rendezvous_peers.clone(),
             relay_reservations: relay_peers,
             rendezvous_discover: rendezvous_peers,
+            rendezvous_discover_force: vec![],
+        }
+    }
+
+    /// Called from `SwarmEvent::ConnectionClosed` when the last
+    /// connection to a regular peer (not a relay, not a rendezvous
+    /// peer, not an mdns-discovered peer) drops.
+    ///
+    /// The post-`docker restart` / post-pause / post-partition
+    /// scenarios all hit the same shape: peer A's connection to
+    /// peer B closes; B comes back with a fresh libp2p identity
+    /// state (new relay reservation, new `/p2p-circuit/`
+    /// multiaddr) and re-registers via rendezvous on the
+    /// boot-node; A has the boot-node connection but is throttled
+    /// out of querying rendezvous for ~120s (default
+    /// `discovery_rpm` is 0.5 = 1 query / 2 minutes), so A
+    /// doesn't pick up B's fresh registration until the throttle
+    /// expires. With a 120s sync-recovery budget, A never
+    /// rediscovers B and the upstream sync layer parks on
+    /// "No peers to sync with" indefinitely (issue #2469).
+    ///
+    /// Returns `rendezvous_discover_force` for every known
+    /// rendezvous peer, which `execute_reachability_actions`
+    /// dispatches via the force-path (throttle bypassed).
+    /// Empty-action no-op if we have no rendezvous peers to
+    /// query (e.g. local-only mdns discovery).
+    pub(crate) fn on_regular_peer_disconnected(&self) -> ReachabilityActions {
+        let rendezvous_peers: Vec<_> = self.get_rendezvous_peer_ids().collect();
+        if rendezvous_peers.is_empty() {
+            return ReachabilityActions::none();
+        }
+        ReachabilityActions {
+            rendezvous_discover_force: rendezvous_peers,
+            ..ReachabilityActions::none()
         }
     }
 

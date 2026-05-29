@@ -43,7 +43,7 @@ impl StreamHandler<RendezvousTick> for NetworkManager {
                         error!(%err, "Failed to dial rendezvous peer");
                     }
                 }
-            } else if let Err(err) = self.rendezvous_discover(&peer_id) {
+            } else if let Err(err) = self.rendezvous_discover(&peer_id, false) {
                 error!(%err, "Failed to perform rendezvous discover");
             }
         }
