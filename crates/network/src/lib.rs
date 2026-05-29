@@ -17,7 +17,7 @@ use calimero_utils_actix::actor;
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
 use libp2p::kad::QueryId;
-use libp2p::swarm::Swarm;
+use libp2p::swarm::{ConnectionId, Swarm};
 use libp2p::PeerId;
 use libp2p_metrics::Metrics;
 use prometheus_client::registry::Registry;
@@ -49,6 +49,19 @@ pub struct NetworkManager {
     pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<()>>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<()>>>,
     pending_blob_queries: HashMap<QueryId, oneshot::Sender<eyre::Result<Vec<PeerId>>>>,
+    // Consecutive ping failures per live connection. A silent network
+    // partition (no TCP FIN/RST — e.g. a cable pull, a Wi-Fi drop, or a
+    // Docker `network disconnect`) leaves a connection wedged "open" from
+    // libp2p's view: the kernel socket never errors, so no `ConnectionClosed`
+    // ever fires, and every recovery path keyed on `ConnectionClosed`
+    // (relay-reservation re-acquisition, regular-peer force-rediscovery)
+    // stays dormant while the peer is unreachable. The ping behaviour is the
+    // only subsystem that actively probes liveness, so we lean on it: count
+    // consecutive ping failures per connection and, once a connection trips
+    // `MAX_PING_FAILURES`, close it ourselves to synthesise the
+    // `ConnectionClosed` that the rest of the recovery machinery waits for.
+    // Reset to absent on the next ping success or when the connection closes.
+    ping_failures: HashMap<ConnectionId, u32>,
     metrics: Metrics,
 }
 
@@ -83,6 +96,7 @@ impl NetworkManager {
             pending_dial: HashMap::default(),
             pending_bootstrap: HashMap::default(),
             pending_blob_queries: HashMap::new(),
+            ping_failures: HashMap::default(),
             metrics: Metrics::new(prom_registry),
         };
 

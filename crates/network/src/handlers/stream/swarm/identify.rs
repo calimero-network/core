@@ -120,7 +120,7 @@ impl EventHandler<Event> for NetworkManager {
             }
 
             if self.discovery.state.is_peer_rendezvous(&peer_id) {
-                if let Err(err) = self.rendezvous_discover(&peer_id) {
+                if let Err(err) = self.rendezvous_discover(&peer_id, false) {
                     error!(%err, "Failed to perform rendezvous discovery");
                 }
 

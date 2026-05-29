@@ -1,0 +1,267 @@
+description: >
+  Strict counterpart to `sync-resilience-network-partition.yml`.
+  Same scenario (detach node-2 from the LAN bridge for ~35s while
+  node-1 writes, then reattach and verify catch-up), same
+  assertions, but the NAT gateway runs `iptables MASQUERADE
+  --random-fully` so DCUtR hole-punching can't predict a
+  consistent port for direct upgrade. Every cross-client packet
+  stays on the boot-node's relay circuit, before AND after the
+  partition.
+
+  Why this exists in addition to the cone variant
+  -----------------------------------------------
+
+  The partition + reconnect scenario is the harshest stressor for
+  relay-reservation recovery in CI:
+
+    1. node-2 is detached from the LAN bridge — every active
+       libp2p connection drops, including the circuit-relay
+       connection to the boot-node.
+    2. node-2's relay reservation on the boot-node is now stale
+       — the boot-node hasn't seen a keepalive in 15s and may
+       have evicted it.
+    3. On reattach, node-2 has to redial the boot-node, re-do
+       the reservation handshake, and re-establish the gossipsub
+       mesh for the context — all before sync can resume.
+
+  Under cone NAT, DCUtR could upgrade the post-recovery
+  circuit-relayed connection to a direct one, which means the
+  `wait_for_sync` step might succeed via the direct path even if
+  the relay-reservation re-registration silently broke. Symmetric
+  mode removes that escape hatch: if relay-reservation recovery
+  is broken, the test fails.
+
+  This is the workflow that #2446 + #2459's recovery work most
+  directly regression-tests. Combined with the strict relay-only
+  enforcement, a regression in the post-reattach
+  reservation-refresh sequence would surface here as a
+  catch-up timeout.
+name: Sync Resilience — Network Partition (NAT symmetric)
+
+force_pull_image: false
+
+topology:
+  type: nat
+  nat_mode: symmetric
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: sync-resil-node
+
+steps:
+  - name: Install application on node-1
+    type: install_application
+    node: sync-resil-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: sync-resil-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_node2: invitation
+
+  - name: Wait for namespace gossip (via relay)
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: sync-resil-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_node2}}'
+
+  - name: Node-2 joins context via group membership
+    type: join_context
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+
+  # ---------- Baseline ----------
+
+  - name: Write baseline key on node-1
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: baseline
+      value: pre_partition
+
+  - name: Wait for baseline to converge (via relay)
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Read baseline on node-2 (sanity)
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n2: result
+
+  - name: Assert baseline replicated
+    type: assert
+    statements:
+      - "contains({{baseline_n2}}, 'pre_partition')"
+
+  # ---------- Fault: detach node-2 from the LAN bridge ----------
+
+  - name: Disconnect node-2 from the LAN bridge
+    type: disconnect_node
+    node: sync-resil-node-2
+
+  - name: Write during-partition key on node-1
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: during_partition
+      value: written_while_partitioned_via_relay
+
+  # libp2p's ping behaviour marks a connection dead after the
+  # default keepalive timeout, which is ~30s for the swarm-level
+  # ping + ~15s for yamux. Holding the partition for 35s
+  # guarantees BOTH timers fire — without this, a 15s hold could
+  # let the relay-circuit connection silently survive as
+  # buffered retransmits (no traffic, no failures, no fault
+  # detection), and the "recovery" would just be the resumed
+  # circuit rather than a fresh reservation. Symmetric mode
+  # cares more than cone because there's no direct-path fallback
+  # to mask a missed reservation refresh.
+  - name: Hold the partition (libp2p ping timeout is ~30s)
+    type: wait
+    seconds: 35
+
+  - name: Reconnect node-2 to the LAN bridge
+    type: connect_node
+    node: sync-resil-node-2
+
+  # Symmetric: 20s buffer (vs 15s cone). Without DCUtR fallback,
+  # the relay-reservation re-register has to complete before the
+  # next packet to node-1 has anywhere to go.
+  - name: Wait for relay reservation to refresh after reconnect
+    type: wait
+    seconds: 20
+
+  # ---------- Catch-up ----------
+
+  - name: Wait for sync to catch up post-partition (via relay)
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 150
+    trigger_sync: true
+
+  - name: Read during-partition key on node-2
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: during_partition
+    outputs:
+      during_n2: result
+
+  - name: Assert node-2 caught up via the relay
+    type: assert
+    statements:
+      - "contains({{during_n2}}, 'written_while_partitioned_via_relay')"
+
+  - name: Read baseline key on node-2 post-partition
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n2_post: result
+
+  - name: Assert node-2 retained baseline across partition
+    type: assert
+    statements:
+      - "contains({{baseline_n2_post}}, 'pre_partition')"
+
+  # Three-layer relay-path regression guard (same structure as
+  # the restart-symmetric variant — see that file's header for
+  # the rationale). Partition is the harshest stressor:
+  #
+  #   1. `/p2p-circuit/` somewhere in the log proves the peer
+  #      ever opened a relay-circuit connection at all (sanity).
+  #      Full-log scope because merod emits this at connection-
+  #      setup time only — a tail window races past it.
+  #   2. `ReservationReqAccepted` proves the relay-reservation
+  #      handshake completed (one-shot at initial reserve).
+  #   3. `direct-connection upgrade succeeded` is ABSENT — if
+  #      `--random-fully` silently fell back, DCUtR would
+  #      succeed and the test would be running cone semantics
+  #      under a symmetric label.
+  #
+  # Post-partition relay recovery is validated by the
+  # post-partition sync-converge step above (which only passes
+  # if relay-mediated sync re-established after reattach). The
+  # log-presence checks here are sanity guards on relay setup,
+  # not direct post-fault validators.
+
+  - name: Confirm node-1 used the relay circuit
+    type: assert_log_present
+    nodes: [sync-resil-node-1]
+    patterns:
+      - "/p2p-circuit/"
+
+  - name: Confirm node-2 used the relay circuit
+    type: assert_log_present
+    nodes: [sync-resil-node-2]
+    patterns:
+      - "/p2p-circuit/"
+
+  - name: Confirm node-1 obtained a relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-1]
+    patterns:
+      - "ReservationReqAccepted"
+
+  - name: Confirm node-2 obtained a relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-2]
+    patterns:
+      - "ReservationReqAccepted"
+
+  - name: Confirm DCUtR did NOT upgrade (symmetric mode invariant)
+    type: assert_log_absent
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    patterns:
+      - "direct-connection upgrade succeeded"
+
+stop_all_nodes: true
