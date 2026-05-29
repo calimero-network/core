@@ -149,11 +149,16 @@ impl NodeClient {
                 core::time::Duration::from_millis(100);
             const MAX_RETRY_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
 
-            for attempt in 1..=MAX_RETRIES {
-                let retry_delay = INITIAL_RETRY_DELAY
-                    .saturating_mul(1_u32.checked_shl((attempt - 1) as u32).unwrap_or(u32::MAX))
-                    .min(MAX_RETRY_DELAY);
+            // 100ms, doubling per attempt, capped at MAX_RETRY_DELAY. The
+            // `.min(31)` bounds the shift so it stays well-defined if
+            // MAX_RETRIES is ever raised past 32.
+            let backoff = |attempt: usize| {
+                INITIAL_RETRY_DELAY
+                    .saturating_mul(1_u32 << (attempt as u32 - 1).min(31))
+                    .min(MAX_RETRY_DELAY)
+            };
 
+            for attempt in 1..=MAX_RETRIES {
                 tracing::debug!(
                     blob_id = %blob_id,
                     context_id = %context_id,
@@ -177,7 +182,7 @@ impl NodeClient {
                             "Failed to query DHT for blob"
                         );
                         if attempt < MAX_RETRIES {
-                            tokio::time::sleep(retry_delay).await;
+                            tokio::time::sleep(backoff(attempt)).await;
                             continue;
                         }
                         return Err(e);
@@ -192,7 +197,7 @@ impl NodeClient {
                         "No peers found with blob"
                     );
                     if attempt < MAX_RETRIES {
-                        tokio::time::sleep(retry_delay).await;
+                        tokio::time::sleep(backoff(attempt)).await;
                         continue;
                     }
                     return Ok(None);
@@ -275,10 +280,10 @@ impl NodeClient {
                         blob_id = %blob_id,
                         context_id = %context_id,
                         attempt,
-                        retry_delay_ms = retry_delay.as_millis(),
+                        retry_delay_ms = backoff(attempt).as_millis(),
                         "All peers failed, retrying after backoff"
                     );
-                    tokio::time::sleep(retry_delay).await;
+                    tokio::time::sleep(backoff(attempt)).await;
                 }
             }
 
