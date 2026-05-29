@@ -125,6 +125,15 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                     "Connection closed",
                 );
 
+                // Drop any ping-failure tally for this connection. The entry
+                // is normally already gone (cleared on a ping success, or by
+                // the ping handler right before it forced this close), but
+                // closes triggered by anything other than our ping watchdog
+                // (peer-initiated, transport error, restart) would otherwise
+                // leak a stale counter keyed on a connection id that will
+                // never be reused.
+                let _stale = self.ping_failures.remove(&connection_id);
+
                 if !self.swarm.is_connected(&peer_id) {
                     // Two mutually-exclusive branches keyed on the role
                     // of the disconnected peer:
