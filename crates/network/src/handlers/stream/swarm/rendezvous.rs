@@ -88,7 +88,7 @@ impl EventHandler<Event> for NetworkManager {
                         .is_none()
                     {
                         debug!(%rendezvous_node, "Discovering peers via rendezvous after registration");
-                        if let Err(err) = self.rendezvous_discover(&rendezvous_node) {
+                        if let Err(err) = self.rendezvous_discover(&rendezvous_node, false) {
                             error!(%err, "Failed to run rendezvous discovery after registration");
                         }
                     }

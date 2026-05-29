@@ -1,0 +1,255 @@
+description: >
+  Strict counterpart to `sync-resilience-peer-pause.yml`. Same
+  scenario (pause node-2 for ~60s while node-1 writes, then
+  unpause and verify catch-up), same assertions, but the NAT
+  gateway runs `iptables MASQUERADE --random-fully` so DCUtR
+  hole-punching can't predict a consistent port for direct
+  upgrade. Every cross-client packet stays on the boot-node's
+  relay circuit.
+
+  Why this exists in addition to the cone variant
+  -----------------------------------------------
+
+  Cone NAT lets DCUtR succeed shortly after the initial relay
+  handshake. The recovery assertions still fire (the reservation
+  re-registration on unpause IS exercised), but the cone variant
+  cannot detect a regression where post-unpause traffic is
+  staying on the relay because the direct upgrade ALSO works and
+  masks the issue.
+
+  Symmetric mode removes that masking: if a write doesn't make
+  it via `/p2p-circuit/`, it doesn't make it at all. Regressions
+  in relay-mediated sync (gossipsub circuit-aware routing,
+  RPC-over-relay framing, relay-client behaviour) surface here
+  as test failures; the cone variant would silently use the
+  DCUtR-direct path instead.
+
+  Pause is a worse stressor than restart for this code: the
+  client's relay reservation hasn't been explicitly torn down by
+  the boot-node — it's just become unreachable. On unpause, the
+  client side of the reservation may still think it's live while
+  the boot-node has expired it. That mismatch is what #2446's
+  recovery path was built to repair, and symmetric mode ensures
+  the repair is what actually carries the post-unpause traffic.
+name: Sync Resilience — Peer Pause (NAT symmetric)
+
+force_pull_image: false
+
+topology:
+  type: nat
+  nat_mode: symmetric
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: sync-resil-node
+
+steps:
+  - name: Install application on node-1
+    type: install_application
+    node: sync-resil-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: sync-resil-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_node2: invitation
+
+  - name: Wait for namespace gossip (via relay)
+    type: wait
+    seconds: 10
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: sync-resil-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_node2}}'
+
+  - name: Node-2 joins context via group membership
+    type: join_context
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+
+  # ---------- Baseline ----------
+
+  - name: Write baseline key on node-1
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: baseline
+      value: awake
+
+  - name: Wait for baseline to converge (via relay)
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Read baseline on node-2 (sanity)
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n2: result
+
+  - name: Assert baseline replicated
+    type: assert
+    statements:
+      - "contains({{baseline_n2}}, 'awake')"
+
+  # ---------- Fault: pause node-2 ----------
+
+  - name: Pause node-2 (simulate long sleep)
+    type: pause_container
+    container: sync-resil-node-2
+
+  - name: Write to node-1 while node-2 is paused
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: during_pause
+      value: written_while_paused_via_relay
+
+  - name: Wait while node-2 is paused (60s)
+    type: wait
+    seconds: 60
+
+  - name: Unpause node-2 (simulate wake)
+    type: unpause_container
+    container: sync-resil-node-2
+
+  # Symmetric: 20s buffer (vs 15s cone). Reservation re-register
+  # + mesh-via-relay rejoin take longer without the DCUtR
+  # fallback.
+  - name: Wait for relay reservation to re-form after unpause
+    type: wait
+    seconds: 20
+
+  # ---------- Catch-up ----------
+
+  - name: Wait for node-2 to catch up post-unpause (via relay)
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 150
+    trigger_sync: true
+
+  - name: Read during-pause key on node-2
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: during_pause
+    outputs:
+      during_n2: result
+
+  - name: Assert node-2 caught up via the relay
+    type: assert
+    statements:
+      - "contains({{during_n2}}, 'written_while_paused_via_relay')"
+
+  - name: Read baseline key on node-2 post-unpause
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n2_post: result
+
+  - name: Assert node-2 retained baseline across pause
+    type: assert
+    statements:
+      - "contains({{baseline_n2_post}}, 'awake')"
+
+  # Three-layer relay-path regression guard. All three checks
+  # run against the FULL container log; merod emits the relevant
+  # signals at connection-setup time (a handful of lines total),
+  # which a recent-tail window reliably races past on a busy log.
+  # We observed the previous tail-scoped version failing with
+  # "0 hits, expected >= 1" against logs that DO contain the
+  # signal — it was just buried thousands of lines deep.
+  #
+  #   1. `/p2p-circuit/` somewhere in the log proves the peer
+  #      ever opened a relay-circuit connection at all (sanity).
+  #   2. `ReservationReqAccepted` proves the relay-reservation
+  #      handshake completed (one-shot at initial reserve).
+  #   3. `direct-connection upgrade succeeded` is ABSENT — if
+  #      `--random-fully` silently fell back to plain MASQUERADE,
+  #      DCUtR would succeed and the test would be running cone
+  #      semantics under a symmetric label. Better to fail-fast.
+  #
+  # Post-fault relay recovery is validated by the during-pause
+  # sync-converge assertions above — those polling-based steps
+  # only pass if relay-mediated propagation actually works after
+  # the fault clears. The log-presence checks here are
+  # sanity guards on the relay setup, not direct
+  # post-fault validators.
+
+  - name: Confirm node-1 used the relay circuit
+    type: assert_log_present
+    nodes: [sync-resil-node-1]
+    patterns:
+      - "/p2p-circuit/"
+
+  - name: Confirm node-2 used the relay circuit
+    type: assert_log_present
+    nodes: [sync-resil-node-2]
+    patterns:
+      - "/p2p-circuit/"
+
+  - name: Confirm node-1 obtained a relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-1]
+    patterns:
+      - "ReservationReqAccepted"
+
+  - name: Confirm node-2 obtained a relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-2]
+    patterns:
+      - "ReservationReqAccepted"
+
+  - name: Confirm DCUtR did NOT upgrade (symmetric mode invariant)
+    type: assert_log_absent
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    patterns:
+      - "direct-connection upgrade succeeded"
+
+stop_all_nodes: true

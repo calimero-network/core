@@ -406,7 +406,29 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     }
 
     // Helper: Get all characters in RGA order (excludes deleted automatically via UnorderedMap)
+    //
+    // Linearizes the RGA into document order. The result must be a pure
+    // function of the character set — `(CharId, content, left)` for every
+    // live char — and nothing else. In particular it must NOT depend on
+    // the order `self.chars.entries()` happens to yield, because that is
+    // storage-iteration order and differs between replicas that hold the
+    // same logical set (insertion history, compaction). Two replicas with
+    // an identical character set therefore produce identical text — the
+    // property that lets the synced Merkle root (which hashes the same
+    // set) agree with what `get_text` returns. The previous linear walk
+    // broke this twice: its gap fallback picked "any unplaced char" in
+    // `entries()` order (replica-divergent), and the single-pointer walk
+    // couldn't place sibling subtrees of a branching node in order.
+    //
+    // Algorithm: standard RGA pre-order DFS over the tree induced by
+    // `left` edges. Siblings sharing a `left` origin are ordered by
+    // descending `CharId` (a later HLC at the same position sorts first,
+    // so sequential mid-document inserts land before the existing
+    // right-neighbour). Each node's whole subtree is emitted before its
+    // next sibling.
     fn get_ordered_chars(&self) -> Result<Vec<(CharId, RgaChar)>, StoreError> {
+        use std::collections::{BTreeMap, BTreeSet};
+
         // Get all non-deleted characters from UnorderedMap
         let chars: Vec<(CharId, RgaChar)> = self
             .chars
@@ -414,42 +436,62 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
             .map(|(key, char)| (key.id(), char))
             .collect();
 
-        // Build ordered list by following left-neighbor links from root
-        let mut ordered = Vec::new();
-        let mut current_left = CharId::root();
+        if chars.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        // Keep iterating until we've placed all characters
-        while ordered.len() < chars.len() {
-            // Find all characters that come after current_left
-            let mut candidates: Vec<_> = chars
-                .iter()
-                .filter(|(_, c)| c.left == current_left)
-                .filter(|(id, _)| !ordered.iter().any(|(placed_id, _)| placed_id == id))
-                .collect();
+        // Group children by their `left` origin. `BTreeMap` keys + the
+        // per-bucket sort below make the linearization independent of
+        // `entries()` order.
+        let mut children_by_left: BTreeMap<CharId, Vec<(CharId, RgaChar)>> = BTreeMap::new();
+        let present: BTreeSet<CharId> = chars.iter().map(|(id, _)| *id).collect();
+        for (id, c) in chars {
+            children_by_left.entry(c.left).or_default().push((id, c));
+        }
+        // Within each sibling group, highest CharId first (RGA tie-break).
+        for bucket in children_by_left.values_mut() {
+            bucket.sort_by_key(|(id, _)| std::cmp::Reverse(*id));
+        }
 
-            if candidates.is_empty() {
-                // No more characters for this left - find next unplaced char
-                // This handles concurrent insertions that created gaps
-                if let Some((next_id, next_char)) = chars
-                    .iter()
-                    .find(|(id, _)| !ordered.iter().any(|(placed_id, _)| placed_id == id))
-                {
-                    ordered.push((*next_id, next_char.clone()));
-                    current_left = *next_id;
-                } else {
-                    break;
+        // Traversal forest roots: the document root sentinel, plus any
+        // dangling origin (a `left` that references a char not in the set
+        // — a causal-delivery gap). Dangling origins are visited in
+        // ascending id order so the output stays deterministic even when
+        // the tree is malformed.
+        let mut roots: Vec<CharId> = vec![CharId::root()];
+        roots.extend(
+            children_by_left
+                .keys()
+                .copied()
+                .filter(|left| *left != CharId::root() && !present.contains(left)),
+        );
+
+        // Iterative pre-order DFS. Seed the stack with the forest's
+        // top-level children in reverse emit order so the first one pops
+        // first; on each pop, push the node's children in reverse so the
+        // highest-id sibling is processed (and its subtree fully emitted)
+        // before the next.
+        let mut stack: Vec<(CharId, RgaChar)> = roots
+            .iter()
+            .filter_map(|origin| children_by_left.get(origin))
+            .flat_map(|bucket| bucket.iter().cloned())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        let mut ordered = Vec::with_capacity(present.len());
+        let mut emitted: BTreeSet<CharId> = BTreeSet::new();
+        while let Some((id, c)) = stack.pop() {
+            // Guard against pathological cycles in `left` edges.
+            if !emitted.insert(id) {
+                continue;
+            }
+            ordered.push((id, c));
+            if let Some(bucket) = children_by_left.get(&id) {
+                for child in bucket.iter().rev() {
+                    stack.push(child.clone());
                 }
-            } else {
-                // Sort by CharId in REVERSE order (latest timestamp first)
-                // This ensures sequential mid-document insertions are placed correctly:
-                // When inserting at position 6 in "Hello World", the new characters
-                // should come BEFORE 'W', not after it, even though they have the same left neighbor.
-                candidates.sort_by_key(|(id, _)| std::cmp::Reverse(*id));
-
-                // Take the character with highest CharId (latest timestamp)
-                let (next_id, next_char) = candidates[0];
-                ordered.push((*next_id, next_char.clone()));
-                current_left = *next_id;
             }
         }
 

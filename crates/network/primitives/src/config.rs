@@ -288,7 +288,19 @@ impl Default for RendezvousConfig {
         Self {
             namespace: Namespace::from_static("/calimero/devnet/global"),
             discovery_rpm: 0.5,
-            discovery_interval: Duration::from_secs(90),
+            // Was 90s before #2469's NAT-recovery investigation.
+            // Cut to 15s so the periodic-tick recovery path picks
+            // up post-restart peer registrations within ~15s of
+            // the throttle window expiring, instead of waiting up
+            // to 90s for the next aligned tick. The throttle
+            // (`discovery_rpm = 0.5` = 120s floor per peer) still
+            // gates against hammering the rendezvous server in
+            // steady state — only one query goes out per 120s in
+            // the no-event case. The faster tick only matters
+            // when a recent event (peer disconnect, fresh
+            // registration) makes a new query worth doing; the
+            // throttle naturally suppresses the rest.
+            discovery_interval: Duration::from_secs(15),
             registrations_limit: 3,
         }
     }

@@ -487,6 +487,38 @@ impl<S: StorageAdaptor> Interface<S> {
 
         let own_hash = Sha256::digest(&data).into();
 
+        // ENTRY-BEFORE-PARENT: pre-write Key::Entry so the parent's
+        // children list never advertises an id that has no backing
+        // entry. The matching `add_child_to` in `apply_action`'s
+        // delta-apply path already pre-writes the entry; this is the
+        // local-write path (`CollectionMut::insert`, i.e. every
+        // WASM-side `chars.insert`) and needs the same order, otherwise
+        // a reader iterating the parent's children between the index
+        // update and the entry write sees the id but `find_by_id`
+        // returns `None`, silently dropping the child.
+        //
+        // Signature on the pre-written bytes: `data` here is the
+        // borsh-encoded entity *before* `save_raw` re-stamps the metadata
+        // (signature placeholder / nonce for User and Shared storage), so
+        // the entry briefly carries a placeholder/stale signature.
+        // `save_raw` → `save_internal` below overwrites the bytes with
+        // the freshly-stamped version.
+        //
+        // Why this is safe locally: no local read path verifies entity
+        // signatures. `Interface::find_by_id` (line ~1750) reads bytes
+        // and the index entry without invoking
+        // `verify_snapshot_entity_signature`; signature checks live
+        // exclusively in `apply_action`'s remote-apply path (Action::Add
+        // / Action::Update verification at lines ~611-1196), which never
+        // sees these bytes because they're not shipped to peers
+        // (`save_raw` emits the post-stamp Action). The invariant to
+        // preserve: any future caller that wants to verify a signature
+        // must do so via `apply_action`'s gate or by re-reading
+        // `Key::Entry` *after* `save_raw` returns. A direct
+        // signature-check on a `find_by_id` result would observe this
+        // window's placeholder; don't add one.
+        let _ignored = S::storage_write(Key::Entry(child.id()), &data);
+
         <Index<S>>::add_child_to(
             parent_id,
             ChildInfo::new(child.id(), own_hash, child.element().metadata.clone()),
@@ -1284,6 +1316,25 @@ impl<S: StorageAdaptor> Interface<S> {
                             parent.id(),
                             ChildInfo::new(id, placeholder_hash, metadata.clone()),
                         )?;
+                    } else {
+                        // ORPHAN_ADD diagnostic: brand-new non-root entity
+                        // with empty `ancestors`. Sync senders now carry
+                        // the full ancestor chain on the wire, so this
+                        // path is only hit by legacy peers that ship just
+                        // an immediate parent id. `save_internal` still
+                        // writes `Key::Entry(id)` but the parent's
+                        // `children` list never learns about it — the read
+                        // path skips the entry because it isn't
+                        // advertised. Warn loudly so the next reproduction
+                        // names the entity and the sending peer is
+                        // identifiable as legacy.
+                        tracing::warn!(
+                            target: "calimero_storage::orphan_add",
+                            %id,
+                            created_at = metadata.created_at,
+                            updated_at = metadata.updated_at(),
+                            "ORPHAN_ADD: brand-new non-root entity with empty ancestors — legacy peer or pre-ancestor-chain sync path"
+                        );
                     }
                 }
 
@@ -2265,6 +2316,16 @@ impl<S: StorageAdaptor> Interface<S> {
                 // `Root<T>` entry — attach as a child of the system
                 // root so the index hierarchy stays consistent with
                 // the layout `Root::new` produces locally.
+                //
+                // ENTRY-BEFORE-PARENT (#2319 follow-up): pre-write
+                // Key::Entry so `Id::root()`'s children list never
+                // advertises an id without a backing entry. The
+                // matching `storage_write(Key::Entry(id), merged)`
+                // below would otherwise leave a window in which
+                // `find_by_id(id)` returns `None` for an id that the
+                // root's children advertises. Same rationale as the
+                // apply_action fix at line 1267.
+                let _ignored = S::storage_write(Key::Entry(id), merged);
                 <Index<S>>::add_child_to(
                     Id::root(),
                     ChildInfo::new(id, [0_u8; 32], metadata.clone()),

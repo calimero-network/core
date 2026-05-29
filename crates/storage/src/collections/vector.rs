@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use super::{Collection, CrdtType};
 use crate::collections::error::StoreError;
+use crate::entities::Data;
 use crate::store::{MainStorage, StorageAdaptor};
 
 /// Validates that an index is safe for iterator arithmetic.
@@ -236,7 +237,26 @@ where
     /// returned.
     ///
     pub fn iter(&self) -> Result<impl Iterator<Item = V> + '_, StoreError> {
-        Ok(self.inner.entries()?.flatten().fuse())
+        // See the matching ITER_DROP diagnostic on
+        // `UnorderedMap::entries` — surfaces silent NotFound drops from
+        // the inner iterator instead of swallowing them via
+        // `.flatten().fuse()`.
+        let collection_id = self.inner.id();
+        Ok(self.inner.entries()?.filter_map(move |result| match result {
+            Ok(item) => Some(item),
+            Err(error) => {
+                tracing::error!(
+                    target: "calimero_storage::iter_drop",
+                    %collection_id,
+                    %error,
+                    collection_type = "Vector",
+                    "ITER_DROP: parent's child list advertises an id whose entry could not be loaded — \
+                     likely entry-before-parent ordering race or storage inconsistency. \
+                     Caller will see a truncated iteration."
+                );
+                None
+            }
+        }).fuse())
     }
 
     /// Get the last value in the vector.

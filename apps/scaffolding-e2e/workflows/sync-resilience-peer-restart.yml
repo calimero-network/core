@@ -1,0 +1,231 @@
+description: >
+  Sync-resilience smoke test: a peer is restarted mid-session; writes
+  made after the restart must converge to the other peer.
+
+  Topology
+  --------
+
+  Uses `topology: { type: nat, nat_mode: cone }` from
+  merobox 0.6.19+. Both peers sit on an internal LAN bridge behind a
+  NAT-gateway container; the only path to the public-bridge boot-node
+  is via the gateway's MASQUERADE. After the restart, node-1 has to
+  re-register its relay reservation with the boot-node — the exact
+  code path #2446's recovery work fixed — before node-2 can reach
+  it through the circuit. There is no direct-dial fallback because
+  Docker's `DOCKER-ISOLATION-STAGE-2` chain DROPs cross-bridge
+  traffic that doesn't transit the gateway, AND the clients'
+  default routes point at the gateway (no other path exists).
+
+  Why cone (not symmetric): cone NAT preserves source-port across
+  destinations, so DCUtR hole-punching has a chance to upgrade the
+  circuit-relayed connection to a direct one after the initial
+  rendezvous lands. The test still exercises the relay-reservation
+  path on the way up; the post-upgrade direct path is a bonus and
+  matches what most real-world consumer NATs do.
+
+  See `sync-resilience-peer-restart-symmetric.yml` for the strict
+  variant where MASQUERADE `--random-fully` blocks DCUtR and every
+  packet stays on the relay.
+
+  Catches the class of integration regressions that the unit-level
+  tests can't see: sync-protocol changes that break peer-restart
+  recovery, gossipsub topic-rejoin bugs, address-book staleness
+  after a restart, Borsh-deserialisation-mismatch class of bug that
+  broke test-merobox-integration for two weeks before
+  calimero-network/merobox#250 caught it, and the relay-reservation
+  re-registration the recovery work in
+  `crates/network/src/discovery/state.rs` exists for.
+name: Sync Resilience — Peer Restart (NAT cone)
+
+force_pull_image: false
+
+topology:
+  type: nat
+  nat_mode: cone
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: sync-resil-node
+
+steps:
+  # ---------- Setup: 2-node namespace + context ----------
+
+  - name: Install application on node-1
+    type: install_application
+    node: sync-resil-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: sync-resil-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: sync-resil-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_node2: invitation
+
+  - name: Wait for namespace gossip
+    type: wait
+    seconds: 5
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: sync-resil-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_node2}}'
+
+  - name: Node-2 joins context via group membership
+    type: join_context
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+
+  # ---------- Baseline: confirm sync works before the fault ----------
+
+  - name: Write baseline key on node-1
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: baseline
+      value: pre_restart
+
+  - name: Wait for baseline to converge
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read baseline on node-2 (sanity)
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n2: result
+
+  - name: Assert baseline replicated
+    type: assert
+    statements:
+      - "contains({{baseline_n2}}, 'pre_restart')"
+
+  # ---------- Fault: restart node-1 ----------
+
+  - name: Restart node-1 mid-session
+    type: restart_container
+    container: sync-resil-node-1
+    wait_healthy: true
+    timeout: 60
+
+  # wait_healthy confirms merod's admin endpoint is back up; it does
+  # NOT confirm that libp2p has re-dialled the boot-node, refreshed
+  # its relay reservation, and rejoined the gossipsub mesh for this
+  # context. The reservation alone is typically <500ms, mesh rejoin
+  # adds ~5s under NAT, and DCUtR upgrade (if it happens) needs both
+  # peers to exchange Connect messages over the relay first. 15s is
+  # the empirical settled-state ceiling on a CI runner.
+  - name: Wait for libp2p + relay reservation to re-form after restart
+    type: wait
+    seconds: 15
+
+  # ---------- Recovery: node-1 must come back and sync the next write ----------
+
+  - name: Write post-restart key on node-1
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: post_restart
+      value: recovered
+
+  - name: Wait for post-restart write to converge
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-resil-node-1
+      - sync-resil-node-2
+    timeout: 120
+    trigger_sync: true
+
+  - name: Read post-restart key on node-2
+    type: call
+    node: sync-resil-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: post_restart
+    outputs:
+      post_n2: result
+
+  - name: Assert post-restart write replicated
+    type: assert
+    statements:
+      - "contains({{post_n2}}, 'recovered')"
+
+  # Re-read the baseline key on node-1 post-restart. Catches the
+  # class of regression where the restarted node loses pre-restart
+  # state (storage persistence bug, fsck during restart, etc.).
+
+  - name: Read baseline key on node-1 post-restart
+    type: call
+    node: sync-resil-node-1
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n1_post: result
+
+  - name: Assert node-1 retained baseline across restart
+    type: assert
+    statements:
+      - "contains({{baseline_n1_post}}, 'pre_restart')"
+
+  # Relay-handshake sanity: assert `ReservationReqAccepted`
+  # appears in each client's log. merod emits this line ONCE per
+  # reservation (initial reserve, `renewal: false`); renewals
+  # don't re-emit it, so a `tail_lines` scope would race the log
+  # growth and miss the initial event entirely (observed in
+  # 0bc0181: node-1's log was 16k lines by assertion time, the
+  # reservation at line ~150 was outside any reasonable tail
+  # window). So we check the full log — proves the relay
+  # handshake completed during this run; the actual proof that
+  # relay-mediated sync recovered post-restart is the
+  # `Wait for post-restart write to converge` step above.
+
+  - name: Confirm node-1 obtained a relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-1]
+    patterns:
+      - "ReservationReqAccepted"
+
+  - name: Confirm node-2 obtained a relay reservation
+    type: assert_log_present
+    nodes: [sync-resil-node-2]
+    patterns:
+      - "ReservationReqAccepted"
+
+stop_all_nodes: true
