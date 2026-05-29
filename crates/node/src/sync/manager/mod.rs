@@ -68,6 +68,35 @@ impl std::fmt::Display for PeerNotMaterialized {
 
 impl std::error::Error for PeerNotMaterialized {}
 
+/// Typed marker returned by peer discovery when no peer is currently
+/// available to sync a context with (the context-topic mesh is empty and
+/// the namespace fallback found no follower).
+///
+/// Caught by `apply_session_result` and treated as benign — the same way
+/// as [`PeerNotMaterialized`]:
+/// - no `state.on_failure()` (failure_count stays put)
+/// - no exponential backoff
+/// - debug-only log (not warn)
+///
+/// "No peer right now" is a transient connectivity condition, not a sync
+/// failure: counting it would inflate `failure_count` (which the #C
+/// dispatch backoff keys on) and spam a misleading "applying exponential
+/// backoff" warn while the node is simply waiting for a co-member to
+/// (re)appear — exactly the post-restart window. The periodic tick keeps
+/// retrying; once a peer shows up the next attempt proceeds normally.
+#[derive(Debug, Clone, Copy)]
+pub struct NoPeersAvailable {
+    pub context_id: ContextId,
+}
+
+impl std::fmt::Display for NoPeersAvailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "No peers to sync with for context {}", self.context_id)
+    }
+}
+
+impl std::error::Error for NoPeersAvailable {}
+
 /// Network synchronization manager.
 ///
 /// Orchestrates sync protocols: full resync, delta sync, state sync.
@@ -2157,7 +2186,7 @@ impl SyncManager {
                     self.sync_config.parent_pull_additional_peers,
                     self.sync_config.parent_pull_budget,
                 );
-                let mut mesh_peers = self.sync_network.mesh_peers(topic.clone()).await;
+                let mut mesh_peers = self.sync_network.subscribed_peers(topic.clone()).await;
 
                 loop {
                     let after = delta_store_ref.get_missing_parents().await;
@@ -2168,7 +2197,7 @@ impl SyncManager {
                     let next_peer = match budget.next(&mesh_peers) {
                         super::parent_pull::NextPeer::Peer(p) => p,
                         super::parent_pull::NextPeer::RefetchMesh => {
-                            mesh_peers = self.sync_network.mesh_peers(topic.clone()).await;
+                            mesh_peers = self.sync_network.subscribed_peers(topic.clone()).await;
                             budget.record_refetch();
                             match budget.next(&mesh_peers) {
                                 super::parent_pull::NextPeer::Peer(p) => p,
@@ -3663,7 +3692,7 @@ impl SyncManager {
 
         let mut peers = Vec::new();
         for attempt in 1..=super::config::DEFAULT_MESH_RETRIES_UNINITIALIZED {
-            peers = self.sync_network.mesh_peers(topic.clone()).await;
+            peers = self.sync_network.subscribed_peers(topic.clone()).await;
             if !peers.is_empty() {
                 break;
             }
@@ -4039,7 +4068,7 @@ impl SyncManager {
 
         let topic =
             libp2p::gossipsub::TopicHash::from_raw(format!("ns/{}", hex::encode(namespace_id)));
-        let peers = self.sync_network.mesh_peers(topic).await;
+        let peers = self.sync_network.subscribed_peers(topic).await;
         let Some(peer) = peers.first() else {
             debug!(
                 namespace_id = %hex::encode(namespace_id),

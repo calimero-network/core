@@ -159,7 +159,11 @@ impl MockSyncNetwork {
 
 #[async_trait]
 impl SyncNetwork for MockSyncNetwork {
-    async fn mesh_peers(&self, _topic: TopicHash) -> Vec<PeerId> {
+    // Trait method is `subscribed_peers` (the sync layer now selects from
+    // the full subscriber set, not the grafted mesh); the mock's internal
+    // queue keeps its historical `mesh_peers_*` field names — they're just
+    // the response store and renaming them would churn unrelated tests.
+    async fn subscribed_peers(&self, _topic: TopicHash) -> Vec<PeerId> {
         *self.mesh_peers_calls.lock() += 1;
         // Pull out a borrow indicator under the lock and do the
         // (possibly-cloning) work after dropping it. Keeps the
@@ -228,17 +232,20 @@ mod tests {
             .push_mesh_peers(vec![peer_b]);
 
         let topic = TopicHash::from_raw("test");
-        assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_a]);
-        assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_b]);
+        assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_a]);
+        assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_b]);
         // Exhausted: last value repeats.
-        assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_b]);
-        assert_eq!(mock.mesh_peers(topic).await, vec![peer_b]);
+        assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_b]);
+        assert_eq!(mock.subscribed_peers(topic).await, vec![peer_b]);
     }
 
     #[tokio::test]
     async fn mesh_peers_empty_when_never_seeded() {
         let mock = MockSyncNetwork::default();
-        assert!(mock.mesh_peers(TopicHash::from_raw("x")).await.is_empty());
+        assert!(mock
+            .subscribed_peers(TopicHash::from_raw("x"))
+            .await
+            .is_empty());
     }
 
     /// Explicit boundary test for the `match queue.len()` arms in
@@ -255,11 +262,11 @@ mod tests {
 
         let topic = TopicHash::from_raw("test");
         // Call 1: 2 entries queued → pop_front returns first.
-        assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_a]);
+        assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_a]);
         // Call 2: 1 entry left → clone (not pop) the last entry.
-        assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_b]);
+        assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_b]);
         // Call 3: still 1 entry left (cloning didn't pop) → same value again.
-        assert_eq!(mock.mesh_peers(topic).await, vec![peer_b]);
+        assert_eq!(mock.subscribed_peers(topic).await, vec![peer_b]);
     }
 
     #[tokio::test]
@@ -321,7 +328,7 @@ mod tests {
         let mock = MockSyncNetwork::default();
         let peer = PeerId::random();
         mock.push_mesh_peers(vec![peer]);
-        let _ = mock.mesh_peers(TopicHash::from_raw("x")).await;
+        let _ = mock.subscribed_peers(TopicHash::from_raw("x")).await;
         mock.assert_all_consumed();
     }
 

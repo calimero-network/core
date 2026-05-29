@@ -2,6 +2,7 @@
 //!
 //! **Purpose**: Bootstraps the node with all required services and actors.
 //! **Main Function**: `start(NodeConfig)` - initializes and runs the node.
+use std::collections::BTreeSet;
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -124,11 +125,19 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     // Create arbiter pool for spawning actors across threads
     let mut arbiter_pool = ArbiterPool::new().await?;
 
+    // The specialized-node invite topic is subscribed by every node but
+    // is not an overlay we want per-key rendezvous registration for —
+    // reserve it so the discovery layer doesn't map it to a rendezvous
+    // key (which would register all nodes under one key and recreate the
+    // global fan-out).
+    let reserved_topics = BTreeSet::from([config.specialized_node.invite_topic.clone()]);
+
     // Create NetworkManager with channel-based dispatcher for reliable event delivery
     let network_manager = NetworkManager::new(
         &config.network,
         Arc::new(network_event_sender),
         &mut registry,
+        reserved_topics,
     )
     .await?;
 

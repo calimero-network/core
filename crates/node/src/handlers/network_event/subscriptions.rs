@@ -125,7 +125,28 @@ pub(super) fn handle_subscribed(
         return;
     }
 
-    info!("Peer '{}' subscribed to context '{}'", peer_id, context_id);
+    info!(
+        %context_id,
+        %peer_id,
+        "Peer subscribed to context, triggering sync"
+    );
+
+    // Trigger an immediate sync with the peer that just joined this
+    // context's mesh, instead of waiting up to a full periodic interval
+    // for the next tick to notice it. Mirrors the `group/` branch above.
+    // This is the per-context analogue of the post-restart recovery: the
+    // moment a co-member appears on the context topic, pull from them so
+    // a freshly (re)connected peer converges in ~one round-trip rather
+    // than one interval.
+    let node_client = manager.clients.node.clone();
+    let _ignored = ctx.spawn(
+        async move {
+            if let Err(err) = node_client.sync(Some(&context_id), Some(&peer_id)).await {
+                warn!(%context_id, %peer_id, ?err, "Failed to auto-sync after context subscription");
+            }
+        }
+        .into_actor(manager),
+    );
 }
 
 pub(super) fn handle_unsubscribed(
