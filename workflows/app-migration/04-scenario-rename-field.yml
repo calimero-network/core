@@ -1,0 +1,313 @@
+name: 04 — Scenario "rename field" (v3-remove-field → v4-rename-field, 2-node)
+description: >
+  2-node per-context migration for the rename-field scenario.
+  v3-remove-field has `description: LwwRegister<String>`. v4-rename-field
+  renames it to `details: LwwRegister<String>` — the field is the same
+  logical thing, but borsh would never line up automatically because
+  borsh ordering is positional, not nominal. `migrate_v3_to_v4`
+  explicitly forwards `old.description → new.details`, proving an
+  explicit-migrate rename works.
+
+  Asserts: pre-upgrade v3 has `description` set; post-upgrade v4 has
+  `details` (same value) on BOTH nodes and `description` is no longer
+  accepted by the v4 binary's setter / getter. Phase 7d round-trips
+  the renamed setter (`set_details` on node 1 → `get_details` on
+  node 2) as the cross-node convergence proof.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-rename
+  base_port: 9260
+  base_rpc_port: 9360
+
+steps:
+  # Phase 1: Install both binaries on the ADMIN node (node 1) only.
+  #
+  # Realistic distribution: node 2 never runs install_application. It
+  # auto-fetches the from-version when it joins the context and the
+  # to-version when the upgrade announces the target blob (pulled over
+  # BlobShare during its lazy migration; the sync-gate leaves BlobShare
+  # open for exactly this). App ids are content-addressed, so node 1's
+  # captured app ids are the same ids node 2 resolves. Proven by the
+  # 01/02 admin-only canary.
+  - name: Install migration-suite-v3-remove-field on node 1
+    type: install_application
+    node: app-migration-rename-1
+    path: apps/migrations/migration-suite-v3-remove-field/res/migration_suite_v3_remove_field.wasm
+    dev: true
+    outputs:
+      app_v3: applicationId
+
+  - name: Install migration-suite-v4-rename-field on node 1
+    type: install_application
+    node: app-migration-rename-1
+    path: apps/migrations/migration-suite-v4-rename-field/res/migration_suite_v4_rename_field.wasm
+    dev: true
+    outputs:
+      app_v4: applicationId
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context.
+  - name: Create namespace (v3) on node 1
+    type: create_namespace
+    node: app-migration-rename-1
+    application_id: "{{app_v3}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-rename-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-rename-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "rename-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-rename-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v3)
+    type: create_context
+    node: app-migration-rename-1
+    application_id: "{{app_v3}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: Invite node 2 to namespace; materialise subgroup + context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-rename-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-rename-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-rename-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-rename-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: Write v3 state on node 1, wait for node 2 to catch up.
+  - name: Set description (v3 — the field that gets renamed)
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "rename-scenario-original"
+
+  - name: Increment counter (v3)
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Wait for v3 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-rename-1
+      - app-migration-rename-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Sanity-check v3 schema on node 1
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v3_schema: result
+
+  - name: Assert v3 has description set
+    type: json_assert
+    statements:
+      - 'json_subset({{v3_schema}}, {"output": {"schema_version": "3.0.0", "description": "rename-scenario-original", "counter": "1"}})'
+
+  # LazyOnAccess: each node migrates its OWN byte-identical v3 state
+  # on next access. The migration write path emits no DAG delta (full
+  # root replacement, not CRDT-mergeable), so migrated bytes do not
+  # propagate over sync — each node must self-migrate. Under
+  # `coordinated` only the emitter migrates and the receiver is left
+  # with v3 bytes behind a v4 app pointer → "Not all bytes read"
+  # panic. The per-context TargetApplicationSet + GroupMigrationSet
+  # ops set both `target_application_id` and the `migration` method on
+  # the subgroup's GroupMeta, which each receiver's
+  # `maybe_lazy_upgrade` reads to self-migrate.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-rename-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
+  - name: Upgrade subgroup v3 → v4 (renames description → details)
+    type: upgrade_group
+    node: app-migration-rename-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v4}}"
+    migrate_method: migrate_v3_to_v4
+
+  # Fixed wait, NOT wait_for_sync (see scenario 01 rationale).
+  - name: Wait for upgrade + migration to apply + log flush
+    type: wait
+    seconds: 15
+
+  # These reads TRIGGER each node's lazy migration: schema_info is not
+  # a state op, so `maybe_lazy_upgrade` fires on each node, migrating
+  # its own v3 state to v4 before serving the read.
+  - name: Read post-migration schema_info on node 1 (triggers lazy migration)
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v4_schema_node1: result
+
+  - name: Read post-migration schema_info on node 2 (triggers lazy migration)
+    type: call
+    node: app-migration-rename-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v4_schema_node2: result
+
+  # Both nodes self-migrated via the lazy path — assert the migration
+  # logs on EACH after its triggering read above.
+  - name: Assert lazy migration ran on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-rename-1
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-rename-2
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert v4 schema on node 1 (description → details, value carried over)
+    type: json_assert
+    statements:
+      - 'json_subset({{v4_schema_node1}}, {"output": {"schema_version": "4.0.0", "details": "rename-scenario-original", "counter": "1"}})'
+
+  - name: Assert v4 schema on node 2 (same shape, proves migration reached node 2)
+    type: json_assert
+    statements:
+      - 'json_subset({{v4_schema_node2}}, {"output": {"schema_version": "4.0.0", "details": "rename-scenario-original", "counter": "1"}})'
+
+  # Phase 7d: v4 renamed setter on node 1 round-trips to node 2.
+  - name: Node 1 calls v4 set_details (renamed setter)
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: set_details
+    args:
+      details: "rename-scenario-updated-via-v4"
+
+  - name: Wait for v4 write to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-rename-1
+      - app-migration-rename-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads details back via v4 get_details
+    type: call
+    node: app-migration-rename-2
+    context_id: "{{ctx_id}}"
+    method: get_details
+    outputs:
+      details_after_node2: result
+
+  - name: Assert v4 round-trip on renamed field reached node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{details_after_node2}}, {"output": "rename-scenario-updated-via-v4"})'
+
+  # Negative: old setter / getter names are gone from v4 binary.
+  - name: Negative — set_description gone in v4
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "should-fail-old-name"
+    expected_failure: true
+
+  - name: Negative — get_description gone in v4
+    type: call
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    method: get_description
+    expected_failure: true
+
+  # Phase 8: Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-rename-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-rename-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-rename-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v3 on node 1
+    type: uninstall_application
+    node: app-migration-rename-1
+    application_id: "{{app_v3}}"
+
+  - name: Uninstall v4 on node 1
+    type: uninstall_application
+    node: app-migration-rename-1
+    application_id: "{{app_v4}}"
+
+stop_all_nodes: false

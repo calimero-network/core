@@ -1,0 +1,294 @@
+name: 03 — Scenario "remove field" (v2-add-field → v3-remove-field, 2-node)
+description: >
+  2-node per-context migration for the remove-field scenario.
+  v2-add-field → v3-remove-field drops the `notes: LwwRegister<String>`
+  added in v2. `migrate_v2_to_v3` reads the v2 state (including
+  `notes`) and constructs a v3 state without that field — the bytes
+  for `notes` are deliberately dropped on the floor. Asserts the v2
+  surviving fields are preserved on BOTH nodes and the v3 binary
+  refuses `set_notes` / `get_notes` (the methods no longer exist).
+
+  Note: this scenario is "remove without archive". The archival
+  variant (where the removed field's value is moved into a sibling
+  collection) is a SEPARATE scenario covered by the
+  `scenario-field-remove-archive` fixture pair added later in this PR.
+
+  Phase 7d (v3-only setter round-trip) is intentionally skipped: v3
+  introduces no new exported method — it strictly removes `notes`'s
+  setter/getter. Cross-node convergence is proven via the node-2
+  schema_info assertion alone.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-remove
+  base_port: 9250
+  base_rpc_port: 9350
+
+steps:
+  # Phase 1: Install both binaries on the ADMIN node (node 1) only.
+  #
+  # Realistic distribution: node 2 never runs install_application. It
+  # auto-fetches the from-version when it joins the context and the
+  # to-version when the upgrade announces the target blob (pulled over
+  # BlobShare during its lazy migration; the sync-gate leaves BlobShare
+  # open for exactly this). App ids are content-addressed, so node 1's
+  # captured app ids are the same ids node 2 resolves. Proven by the
+  # 01/02 admin-only canary.
+  - name: Install migration-suite-v2-add-field on node 1
+    type: install_application
+    node: app-migration-remove-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Install migration-suite-v3-remove-field on node 1
+    type: install_application
+    node: app-migration-remove-1
+    path: apps/migrations/migration-suite-v3-remove-field/res/migration_suite_v3_remove_field.wasm
+    dev: true
+    outputs:
+      app_v3: applicationId
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context.
+  - name: Create namespace (v2) on node 1
+    type: create_namespace
+    node: app-migration-remove-1
+    application_id: "{{app_v2}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-remove-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-remove-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "remove-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-remove-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v2)
+    type: create_context
+    node: app-migration-remove-1
+    application_id: "{{app_v2}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: Invite node 2 to namespace; materialise subgroup + context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-remove-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-remove-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-remove-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-remove-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: Write v2 state on node 1, wait for node 2 to catch up.
+  - name: Set description (v2)
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "remove-scenario"
+
+  - name: Increment counter (v2)
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Set notes (v2-only field that v3 drops)
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: set_notes
+    args:
+      notes: "value-that-will-be-dropped"
+
+  - name: Wait for v2 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-remove-1
+      - app-migration-remove-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Sanity-check v2 schema before migration on node 1
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema: result
+
+  - name: Assert v2 has notes set
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema}}, {"output": {"schema_version": "2.0.0", "notes": "value-that-will-be-dropped"}})'
+
+  # LazyOnAccess: each node migrates its OWN byte-identical v2 state
+  # on next access. The migration write path emits no DAG delta (full
+  # root replacement, not CRDT-mergeable), so migrated bytes do not
+  # propagate over sync — each node must self-migrate. Under
+  # `coordinated` only the emitter migrates and the receiver is left
+  # with v2 bytes behind a v3 app pointer → "Not all bytes read"
+  # panic. The per-context TargetApplicationSet + GroupMigrationSet
+  # ops set both `target_application_id` and the `migration` method on
+  # the subgroup's GroupMeta, which each receiver's
+  # `maybe_lazy_upgrade` reads to self-migrate.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-remove-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
+  - name: Upgrade subgroup v2 → v3 (drops notes field)
+    type: upgrade_group
+    node: app-migration-remove-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v3}}"
+    migrate_method: migrate_v2_to_v3
+
+  # Fixed wait, NOT wait_for_sync (see scenario 01 rationale).
+  - name: Wait for upgrade + migration to apply + log flush
+    type: wait
+    seconds: 15
+
+  # These reads TRIGGER each node's lazy migration: schema_info is not
+  # a state op, so `maybe_lazy_upgrade` fires on each node, migrating
+  # its own v2 state to v3 before serving the read.
+  - name: Read post-migration schema_info on node 1 (triggers lazy migration)
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v3_schema_node1: result
+
+  - name: Read post-migration schema_info on node 2 (triggers lazy migration)
+    type: call
+    node: app-migration-remove-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v3_schema_node2: result
+
+  # Both nodes self-migrated via the lazy path — assert the migration
+  # logs on EACH after its triggering read above.
+  - name: Assert lazy migration ran on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-remove-1
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-remove-2
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert v3 schema on node 1 (no notes field, v2 surviving fields preserved)
+    type: json_assert
+    statements:
+      - 'json_subset({{v3_schema_node1}}, {"output": {"schema_version": "3.0.0", "description": "remove-scenario", "counter": "1"}})'
+
+  - name: Assert v3 schema on node 2 (same shape, proves migration reached node 2)
+    type: json_assert
+    statements:
+      - 'json_subset({{v3_schema_node2}}, {"output": {"schema_version": "3.0.0", "description": "remove-scenario", "counter": "1"}})'
+
+  # Negative: v2 setter/getter for notes no longer exported by v3.
+  - name: Negative — set_notes is gone in v3
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: set_notes
+    args:
+      notes: "should-fail-post-remove"
+    expected_failure: true
+
+  - name: Negative — get_notes is gone in v3
+    type: call
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    method: get_notes
+    expected_failure: true
+
+  # Phase 7: Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-remove-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-remove-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-remove-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v2 on node 1
+    type: uninstall_application
+    node: app-migration-remove-1
+    application_id: "{{app_v2}}"
+
+  - name: Uninstall v3 on node 1
+    type: uninstall_application
+    node: app-migration-remove-1
+    application_id: "{{app_v3}}"
+
+stop_all_nodes: false

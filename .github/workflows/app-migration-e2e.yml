@@ -1,10 +1,11 @@
 name: App migration e2e
 
 # End-to-end coverage for the per-context application migration
-# pipeline and its later namespace-cascade extensions. Runs every
-# workflow under workflows/app-migration/ against a locally built
-# merod:local image, exercising the migration-suite fixtures under
-# apps/migrations/migration-suite-v*.
+# pipeline and its namespace-cascade extensions. One shared `build`
+# job compiles merod:local and every migration-suite + scenario-*
+# WASM fixture once; the `scenario` matrix fans those artifacts out
+# across one job per workflow under workflows/app-migration/ so every
+# scenario runs in parallel and reports its own pass/fail.
 
 permissions:
   contents: read
@@ -16,7 +17,9 @@ on:
       - "crates/context/src/handlers/update_application/**"
       - "crates/context/src/handlers/upgrade_group.rs"
       - "crates/context/src/handlers/apply_signed_group_op.rs"
+      - "crates/context/src/handlers/create_group.rs"
       - "crates/context/primitives/src/local_governance/**"
+      - "crates/governance-store/src/ops/**"
       - "crates/storage/src/interface.rs"
       - "crates/sdk/macros/**"
       - "apps/migrations/**"
@@ -31,7 +34,9 @@ on:
       - "crates/context/src/handlers/update_application/**"
       - "crates/context/src/handlers/upgrade_group.rs"
       - "crates/context/src/handlers/apply_signed_group_op.rs"
+      - "crates/context/src/handlers/create_group.rs"
       - "crates/context/primitives/src/local_governance/**"
+      - "crates/governance-store/src/ops/**"
       - "crates/storage/src/interface.rs"
       - "crates/sdk/macros/**"
       - "apps/migrations/**"
@@ -53,8 +58,11 @@ env:
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 jobs:
-  app-migration-e2e:
-    name: App migration e2e
+  # One shared build of merod:local + every migration-suite +
+  # scenario-* WASM fixture. Both are uploaded as artifacts so the
+  # downstream matrix jobs never re-compile Rust.
+  build:
+    name: Build merod
     runs-on: ubuntu-24.04-8cpu
     timeout-minutes: 20
     steps:
@@ -68,7 +76,10 @@ jobs:
         with:
           toolchain: stable
           targets: wasm32-unknown-unknown
-          shared-key: app-migration-e2e
+          # Share the e2e-rust-apps cache bucket: this job builds the same
+          # native x86_64 merod release binary, so it rides that workflow's
+          # already-warm dependency cache instead of a private cold one.
+          shared-key: e2e-rust-apps
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build local merod image
@@ -77,13 +88,86 @@ jobs:
           CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build migration-suite WASM fixtures
+      - name: Build all WASM fixtures
         run: bash workflows/app-migration/build-wasms.sh
+
+      - name: Save merod:local Docker image
+        run: |
+          mkdir -p image-artifact
+          docker save merod:local | gzip > image-artifact/merod-local.tar.gz
+          ls -la image-artifact/
+
+      - name: Upload merod image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-migration-merod-image
+          path: image-artifact/merod-local.tar.gz
+          retention-days: 1
+
+      - name: Upload WASM fixtures artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-migration-wasm-fixtures
+          path: apps/migrations/**/res/*.wasm
+          retention-days: 1
+          if-no-files-found: error
+
+  # Fan-out: one matrix entry per workflow YAML. Each entry downloads
+  # the pre-built image + fixtures, then runs exactly one merobox
+  # workflow. fail-fast disabled so a flaky scenario doesn't mask
+  # other failures in the same run.
+  scenario:
+    name: ${{ matrix.workflow }}
+    needs: build
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        workflow:
+          - 00-single-group-migration-baseline
+          - 01-namespace-cascade-migration
+          - 02-scenario-additive-field
+          - 03-scenario-remove-field
+          - 04-scenario-rename-field
+          - 05-scenario-change-type
+          - 06-scenario-new-method
+          - 07-scenario-new-enum-variant
+          - 08-scenario-pure-bugfix
+          - 09-scenario-crdt-native
+          - 10-scenario-struct-to-enum
+          - 11-scenario-field-split
+          - 12-scenario-field-remove-archive
+          - 13-scenario-invariant-reshuffle
+    env:
+      WORKFLOW: ${{ matrix.workflow }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Download merod image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-migration-merod-image
+          path: image-artifact
+
+      - name: Load merod:local Docker image
+        run: |
+          gunzip -c image-artifact/merod-local.tar.gz | docker load
+          docker images | grep merod || true
+
+      - name: Download WASM fixtures
+        uses: actions/download-artifact@v4
+        with:
+          name: app-migration-wasm-fixtures
+          path: apps/migrations
 
       - name: Setup merobox
         uses: ./.github/actions/setup-merobox
 
-      - name: Run app-migration workflows
+      - name: Run workflow
         run: |
           mkdir -p docker-logs
           LOGDIR="$GITHUB_WORKSPACE/docker-logs"
@@ -108,21 +192,11 @@ jobs:
 
           set +e
           set -o pipefail
-          overall_exit=0
-          for wf in workflows/app-migration/*.yml; do
-              name=$(basename "$wf" .yml | tr -cd 'A-Za-z0-9_-')
-              echo "::group::Running $name"
-              merobox bootstrap run "$wf" \
-                  --image merod:local \
-                  --e2e-mode \
-                  --verbose 2>&1 | tee "docker-logs/merobox-${name}.log"
-              wf_exit=${PIPESTATUS[0]}
-              echo "::endgroup::"
-              if [ "$wf_exit" -ne 0 ]; then
-                  echo "::error::Workflow $name failed with exit $wf_exit"
-                  overall_exit=$wf_exit
-              fi
-          done
+          merobox bootstrap run "workflows/app-migration/${WORKFLOW}.yml" \
+              --image merod:local \
+              --e2e-mode \
+              --verbose 2>&1 | tee "docker-logs/merobox-${WORKFLOW}.log"
+          wf_exit=${PIPESTATUS[0]}
           set +o pipefail
 
           touch "$WATCHER_STATE_DIR/stop"
@@ -131,13 +205,13 @@ jobs:
           for pid in $(jobs -p); do kill "$pid" 2>/dev/null || true; done
           wait 2>/dev/null || true
 
-          exit "$overall_exit"
+          exit "$wf_exit"
 
       - name: Upload docker logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: app-migration-e2e-docker-logs
+          name: app-migration-logs-${{ matrix.workflow }}
           path: docker-logs/
           retention-days: 7
           if-no-files-found: ignore

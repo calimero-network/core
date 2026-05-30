@@ -298,6 +298,22 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
     }
 
     let action = if existing_index.is_some() {
+        // Frozen entities are content-addressed and immutable: an entry
+        // that already exists locally is by definition the correct
+        // content (its id is derived from its content hash), so there is
+        // nothing to update. Critically, the storage layer categorically
+        // REJECTS `Action::Update` for `Frozen` ("Frozen data cannot be
+        // updated"). Emitting one here — e.g. when a bulk leaf push
+        // re-sends an already-present frozen leaf while repairing a
+        // divergence in a *sibling* entity — fails and aborts the ENTIRE
+        // HashComparison repair, leaving the actually-divergent entity
+        // unreconciled. That is the intermittent scaffolding-e2e "Frozen
+        // data cannot be updated" split-brain: a frozen leaf is the
+        // victim that blocks recovery, not the source of divergence.
+        // Skip it; the immutable entry is already present and correct.
+        if matches!(metadata.storage_type, StorageType::Frozen) {
+            return Ok(());
+        }
         // Update existing entity - storage layer handles CRDT merge
         Action::Update {
             id: entity_id,

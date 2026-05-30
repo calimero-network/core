@@ -516,11 +516,25 @@ async fn execute_migration(
         "Preparing to execute migration function"
     );
 
-    let mut storage = ContextStorage::from(datastore.clone(), context_id);
+    let storage = ContextStorage::from(datastore.clone(), context_id);
 
-    let outcome = global_runtime()
+    // Return the storage from the spawn_blocking closure so we can commit
+    // it on the outer side. Without this, every `env::storage_write` the
+    // WASM migrate fn made (e.g. `UnorderedMap::insert` on a newly-
+    // constructed CRDT field) is buffered in the `Temporal` layer wrapped
+    // by `ContextStorage`, then dropped uncommitted when the closure ends
+    // — only the borsh-serialised root state returned via `value_return`
+    // (which `write_migration_state` writes directly to the underlying
+    // datastore below, bypassing the Temporal) survives. That's why
+    // scalar fields survived migration end-to-end but every freshly-
+    // created collection looked empty post-migration (regression that
+    // surfaced in PR #2507's `scenario-field-remove-archive` and
+    // `scenario-invariant-reshuffle` workflows). Mirrors the
+    // execute-path commit (`crates/context/src/handlers/execute/mod.rs:1483`).
+    let (outcome, storage) = global_runtime()
         .spawn_blocking(move || {
-            module.run(
+            let mut storage = storage;
+            let outcome = module.run(
                 context_id,
                 executor_identity,
                 &method,
@@ -528,10 +542,45 @@ async fn execute_migration(
                 &mut storage,
                 None,
                 Some(node_client),
-            )
+            );
+            (outcome, storage)
         })
         .await
-        .map_err(|e| eyre::eyre!("Migration task failed: {}", e))??;
+        .map_err(|e| eyre::eyre!("Migration task failed: {}", e))?;
+    let outcome = outcome?;
+
+    // Three-step ordering, in sequence:
+    //   1. `outcome?` (above) propagates a WASM execution error (trap)
+    //      and returns BEFORE this commit, so a failed migrate never
+    //      commits its Temporal-buffered writes. (desired)
+    //   2. `storage.commit()` (here) flushes the Temporal-buffered writes
+    //      the migrate fn made: UnorderedMap entries, Vector pushes,
+    //      sub-entity element saves. Only the borsh-serialised root state
+    //      returned via `value_return` bypasses the Temporal; everything
+    //      else is lost without this commit (the regression that made
+    //      freshly-created collections look empty post-migration).
+    //   3. `write_migration_state` (in the caller) writes the new root
+    //      state — strictly after this commit.
+    //
+    // Why commit before the root write (step 2 before step 3): a failure
+    // between them leaves v2-shaped collection entries under a still-v1
+    // root, the less-bad failure mode (the reverse — a v2 root pointing
+    // at entries that were never written — is unrecoverable). On retry
+    // the caller bails before publishing the upgrade op and the migrate
+    // fn re-runs against the unchanged v1 root. Crucially, migrate IDs
+    // are deterministic (merge mode + key/index-derived `compute_id`), so
+    // the re-run writes to the SAME storage keys and overwrites the
+    // committed entries in place — the partial commit is idempotent, it
+    // does not accumulate orphans across retries.
+    //
+    // `commit()` consumes `storage` and returns the inner `Store` handle;
+    // this path doesn't reuse it (it continues with the `datastore`
+    // already in scope), so the returned handle drops here. The `?` still
+    // propagates any commit failure — the commit itself is the
+    // load-bearing effect, not its return value.
+    storage
+        .commit()
+        .map_err(|e| eyre::eyre!("Failed to commit migration storage writes: {e}"))?;
 
     // Extract the return value from the outcome.
     // `outcome.returns` is `Result<Option<Vec<u8>>, FunctionCallError>` where the

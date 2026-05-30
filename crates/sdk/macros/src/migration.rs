@@ -79,11 +79,45 @@ pub fn migrate_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#attrs)*
             fn __migration_logic() #return_type #block
 
-            // Execute migration and get new state
-            let new_state = __migration_logic();
+            // Run the migration body, assign deterministic collection
+            // ids, and serialise — all under storage *merge mode*.
+            //
+            // Migration runs independently on every node: the
+            // LazyOnAccess model emits no sync delta, so each peer
+            // re-derives the v2 root from its own byte-identical v1
+            // state. For the roots to match (CIP Invariant I9) the
+            // serialised bytes must be a pure function of the v1 input —
+            // no node-local entropy. Two sources of entropy are
+            // suppressed here:
+            //
+            //   1. Random collection ids. A collection materialised via
+            //      `UnorderedMap::new()` / `Vector::new()` (or `.into()`
+            //      on such a type) gets an `Id::random()` at
+            //      construction. `__assign_deterministic_ids()` re-keys
+            //      every top-level collection field to its
+            //      `compute_collection_id(None, field)` id (and re-keys
+            //      `Vector` elements by index), mirroring the
+            //      `#[app::init]` wrapper.
+            //
+            //   2. Node-local CRDT metadata. `LwwRegister::new(...)`
+            //      (reached via `.into()`, e.g. `total: count.into()`, or
+            //      as map/vector values) stamps `env::hlc_timestamp()` +
+            //      `env::executor_id()` into the *value* unless merge mode
+            //      is active; the same applies to `Element` update
+            //      timestamps. Merge mode forces the deterministic zero
+            //      stamp instead, exactly as `merge_root_state()` does for
+            //      the CRDT merge path. Without it two nodes bake their
+            //      own node_id/timestamp into the v2 root and diverge even
+            //      though the logical state is identical — this is what
+            //      the `invariant-reshuffle` scenario exercises.
+            let output_bytes = ::calimero_storage::env::with_merge_mode(|| {
+                let mut new_state = __migration_logic();
+                new_state.__assign_deterministic_ids();
+                ::calimero_sdk::borsh::to_vec(&new_state)
+            });
 
             // Serialize the new state
-            let output_bytes = match ::calimero_sdk::borsh::to_vec(&new_state) {
+            let output_bytes = match output_bytes {
                 Ok(b) => b,
                 Err(e) => {
                     ::calimero_sdk::env::panic_str(
@@ -142,6 +176,18 @@ mod tests {
         assert!(
             expanded.contains("event :: register"),
             "expected event::register call in expansion: {}",
+            expanded
+        );
+        assert!(
+            expanded.contains("__assign_deterministic_ids"),
+            "expected __assign_deterministic_ids call in expansion (CIP I9 cross-node \
+             determinism for migrate-created collections): {}",
+            expanded
+        );
+        assert!(
+            expanded.contains("with_merge_mode"),
+            "expected with_merge_mode wrap in expansion (CIP I9 cross-node determinism: \
+             suppresses LwwRegister/Element node-local timestamps during migrate): {}",
             expanded
         );
     }

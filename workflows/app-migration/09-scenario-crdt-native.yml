@@ -1,0 +1,460 @@
+name: 09 — Scenario "crdt-native" (v1 → v2-add-crdt-collection, 2-node)
+description: >
+  2-node per-context migration for the CRDT-collection-typed field
+  scenario. v1 → v2 adds a `tags: Vector<LwwRegister<String>>` to the
+  state struct. Unlike scalar field addition, the `Vector` type has its
+  own internal field-name handle, so borsh deserialize of v1 bytes
+  under v2's schema would fail with EOF when it tries to read the
+  missing `tags` field. The `migrate_v1_to_v2` handler reconstructs the
+  v2 state, carrying over the v1 `items` and `title`, and SEEDS the new
+  `tags` Vector during migrate from the sorted v1 item keys. Topology:
+  namespace + one Open subgroup + one context in the subgroup. Upgrade
+  is `upgrade_group(group=subgroup, target=v2, migrate=migrate_v1_to_v2)`
+  — per-context (cascade=false). Acts as the CRDT-collection-add row of
+  the per-scenario matrix.
+
+  Cross-node determinism: a `Vector` populated INSIDE a migrate is the
+  hard case — `push` mints `Id::random()` element ids on the live path,
+  but migrate re-runs independently on every node and emits no delta, so
+  random ids would diverge and double up on the next sync. The SDK
+  re-keys migrate-seeded Vector elements by append index (and zeroes the
+  per-element LwwRegister metadata via merge mode). The discriminating
+  assertion is `tag_count` AFTER a cross-node sync (Phase 7d): with
+  divergent ids the union would inflate the count; identical ids dedupe.
+
+  Negative assertion: before the upgrade, the v2-only method `push_tag`
+  must NOT be callable (the binary doesn't export it under v1). After
+  the upgrade Phase 7d pushes more tags from node 1 and reads them back
+  via v2-only `tag_count` / `get_tag` on node 2 to prove convergence.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-crdt
+  base_port: 9310
+  base_rpc_port: 9410
+
+steps:
+  # Phase 1: Install both binaries on the ADMIN node (node 1) only.
+  #
+  # Realistic distribution: node 2 never runs install_application. It
+  # auto-fetches the from-version when it joins the context and the
+  # to-version when the upgrade announces the target blob (pulled over
+  # BlobShare during its lazy migration; the sync-gate leaves BlobShare
+  # open for exactly this). App ids are content-addressed, so node 1's
+  # captured app ids are the same ids node 2 resolves. Proven by the
+  # 01/02 admin-only canary.
+  - name: Install scenario-crdt-native-v1 on node 1
+    type: install_application
+    node: app-migration-crdt-1
+    path: apps/migrations/scenario-crdt-native-v1/res/scenario_crdt_native_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-crdt-native-v2 on node 1
+    type: install_application
+    node: app-migration-crdt-1
+    path: apps/migrations/scenario-crdt-native-v2/res/scenario_crdt_native_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context.
+  - name: Create namespace (v1) on node 1
+    type: create_namespace
+    node: app-migration-crdt-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-crdt-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-crdt-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "crdt-native-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-crdt-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-crdt-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: Invite node 2 to namespace; materialise subgroup + context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-crdt-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-crdt-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-crdt-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-crdt-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: Write v1 state on node 1, wait for node 2 to catch up.
+  - name: Write v1 title
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: set_title
+    args:
+      title: "crdt-scenario-doc"
+
+  - name: Write item k1 to v1 map
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k1"
+      value: "v1"
+
+  - name: Write item k2 to v1 map
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k2"
+      value: "v2"
+
+  - name: Write item k3 to v1 map
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: set_item
+    args:
+      key: "k3"
+      value: "v3"
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-crdt-1
+      - app-migration-crdt-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Sanity-check v1 state shape on node 1
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "title": "crdt-scenario-doc", "tag_count": 0}})'
+
+  # Negative: v2-only method not yet callable under v1.
+  - name: Negative — push_tag is not exported by v1
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: push_tag
+    args:
+      tag: "should-fail-pre-upgrade"
+    expected_failure: true
+
+  # LazyOnAccess: each node migrates its OWN byte-identical v1 state
+  # on next access. The migration write path emits no DAG delta (full
+  # root replacement, not CRDT-mergeable), so migrated bytes do not
+  # propagate over sync — each node must self-migrate. Under
+  # `coordinated` only the emitter migrates and the receiver is left
+  # with v1 bytes behind a v2 app pointer → "Not all bytes read"
+  # panic. The per-context TargetApplicationSet + GroupMigrationSet
+  # ops set both `target_application_id` and the `migration` method on
+  # the subgroup's GroupMeta, which each receiver's
+  # `maybe_lazy_upgrade` reads to self-migrate.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-crdt-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
+  - name: Upgrade subgroup v1 → v2 (per-context, not cascade)
+    type: upgrade_group
+    node: app-migration-crdt-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  # Fixed wait, NOT wait_for_sync (see scenario 01 rationale).
+  - name: Wait for upgrade + migration to apply + log flush
+    type: wait
+    seconds: 15
+
+  # These reads TRIGGER each node's lazy migration: schema_info is not
+  # a state op, so `maybe_lazy_upgrade` fires on each node, migrating
+  # its own v1 state to v2 before serving the read.
+  - name: Read post-migration schema_info on node 1 (triggers lazy migration)
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node1: result
+
+  - name: Read post-migration schema_info on node 2 (triggers lazy migration)
+    type: call
+    node: app-migration-crdt-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  # Both nodes self-migrated via the lazy path — assert the migration
+  # logs on EACH after its triggering read above.
+  - name: Assert lazy migration ran on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-crdt-1
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-crdt-2
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert v2 schema on node 1 (tags seeded during migrate from 3 item keys, v1 data preserved)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema_node1}}, {"output": {"title": "crdt-scenario-doc"}})'
+      - 'json_subset({{v2_schema_node1}}, {"output": {"tag_count": 3}})'
+
+  - name: Assert v2 schema on node 2 (same shape + same seeded tag_count, proves migration reached node 2)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema_node2}}, {"output": {"title": "crdt-scenario-doc"}})'
+      - 'json_subset({{v2_schema_node2}}, {"output": {"tag_count": 3}})'
+
+  - name: Assert v1 item map preserved through migration (node 1)
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: get_item
+    args:
+      key: "k1"
+    outputs:
+      preserved_item: result
+
+  - name: Assert preserved v1 item value
+    type: json_assert
+    statements:
+      - 'json_equal({{preserved_item}}, {"output": "v1"})'
+
+  # Seeded-tag cross-node check: both nodes self-migrated INDEPENDENTLY
+  # and seeded `tags` from the same sorted v1 keys [k1,k2,k3]. Read the
+  # seeded values back on each node by index to confirm identical
+  # ordering/content. (Element-id divergence is caught by the post-sync
+  # tag_count below, not here — get_tag reads by position.)
+  - name: Read seeded tag(0) on node 1
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: get_tag
+    args:
+      index: 0
+    outputs:
+      seed0_node1: result
+
+  - name: Read seeded tag(0) on node 2
+    type: call
+    node: app-migration-crdt-2
+    context_id: "{{ctx_id}}"
+    method: get_tag
+    args:
+      index: 0
+    outputs:
+      seed0_node2: result
+
+  - name: Assert seeded tag(0) identical across nodes (migrate seeded same first key)
+    type: json_assert
+    statements:
+      - 'json_equal({{seed0_node1}}, {"output": "k1"})'
+      - 'json_equal({{seed0_node2}}, {"output": "k1"})'
+
+  - name: Read seeded tag(2) on node 2 (last sorted key)
+    type: call
+    node: app-migration-crdt-2
+    context_id: "{{ctx_id}}"
+    method: get_tag
+    args:
+      index: 2
+    outputs:
+      seed2_node2: result
+
+  - name: Assert seeded tag(2) value on node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{seed2_node2}}, {"output": "k3"})'
+
+  # Phase 7d: v2-only setter on node 1 appends to the migrate-seeded
+  # vector, then a cross-node sync reconciles BY ELEMENT ID. This is the
+  # discriminating check: if the two nodes' migrate-seeded elements had
+  # divergent (random) ids, the id-keyed union would inflate the count
+  # past 5 on the receiver; identical index-derived ids dedupe to 5.
+  - name: Push first tag (v2-only) on node 1
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: push_tag
+    args:
+      tag: "first-tag"
+
+  - name: Push second tag (v2-only) on node 1
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: push_tag
+    args:
+      tag: "second-tag"
+
+  - name: Wait for v2 tag writes to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-crdt-1
+      - app-migration-crdt-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read tag_count after pushes on node 1
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: tag_count
+    outputs:
+      tag_count_after_node1: result
+
+  - name: Assert five tags present on node 1 (3 seeded + 2 pushed)
+    type: json_assert
+    statements:
+      - 'json_equal({{tag_count_after_node1}}, {"output": 5})'
+
+  - name: Read tag(0) on node 1 (seeded element survives the appends)
+    type: call
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    method: get_tag
+    args:
+      index: 0
+    outputs:
+      tag_zero_node1: result
+
+  - name: Assert tag(0) is the seeded k1 on node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{tag_zero_node1}}, {"output": "k1"})'
+
+  - name: Read tag_count after pushes on node 2 (id-keyed union must dedupe to 5)
+    type: call
+    node: app-migration-crdt-2
+    context_id: "{{ctx_id}}"
+    method: tag_count
+    outputs:
+      tag_count_after_node2: result
+
+  - name: Assert five tags on node 2 — divergent migrate ids would inflate this
+    type: json_assert
+    statements:
+      - 'json_equal({{tag_count_after_node2}}, {"output": 5})'
+
+  - name: Read tag(0) on node 2 (seeded k1 converged, not duplicated)
+    type: call
+    node: app-migration-crdt-2
+    context_id: "{{ctx_id}}"
+    method: get_tag
+    args:
+      index: 0
+    outputs:
+      tag_zero_node2: result
+
+  - name: Assert tag(0) is the seeded k1 on node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{tag_zero_node2}}, {"output": "k1"})'
+
+  # Phase 8: Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-crdt-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-crdt-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-crdt-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1 on node 1
+    type: uninstall_application
+    node: app-migration-crdt-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2 on node 1
+    type: uninstall_application
+    node: app-migration-crdt-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

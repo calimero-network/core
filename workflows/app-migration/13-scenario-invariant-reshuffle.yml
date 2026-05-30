@@ -1,0 +1,398 @@
+name: 13 — Scenario "invariant reshuffle" (v1 → v2-normalize-stats, 2-node)
+description: >
+  2-node per-context migration for the invariant-reshuffle scenario. v1
+  carries a denormalized counter pair: `global_count: LwwRegister<u64>`
+  at the top level and `per_item_counts: UnorderedMap<String,
+  LwwRegister<u64>>`. The implicit invariant `global_count ==
+  sum(per_item_counts)` is easy to violate because each `record(item)`
+  call independently bumps both fields. v2 keeps the same two top-level
+  fields (`total` + `per_item`) but funnels all writes through a single
+  `record` method that atomically bumps both — the field shape stays
+  flat (a nested `Stats` substruct can't be used as a top-level
+  `#[app::state]` field because plain structs of collections don't
+  implement `Mergeable`). The migration re-derives `total` by summing
+  the v1 per-item values rather than trusting v1's redundant
+  `global_count`, guaranteeing the v2 invariant holds from the first
+  byte of v2 state. Topology: namespace + one Open subgroup + one
+  context, coordinated upgrade policy, per-context upgrade
+  (cascade=false).
+
+  Bug-2 cross-node guard: node 2 reads `get_item_count` for each v1
+  key after the migration to prove the migration's storage commit (the
+  `ContextStorage::commit()` after WASM migrate) plus context-sync
+  gossip both propagate the freshly populated `per_item` UnorderedMap,
+  not just the scalar `total`.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-reshuffle
+  base_port: 9350
+  base_rpc_port: 9450
+
+steps:
+  # Phase 1: Install both binaries on the ADMIN node (node 1) only.
+  #
+  # Realistic distribution: node 2 never runs install_application. It
+  # auto-fetches the from-version when it joins the context and the
+  # to-version when the upgrade announces the target blob (pulled over
+  # BlobShare during its lazy migration; the sync-gate leaves BlobShare
+  # open for exactly this). App ids are content-addressed, so node 1's
+  # captured app ids are the same ids node 2 resolves. Proven by the
+  # 01/02 admin-only canary.
+  - name: Install scenario-invariant-reshuffle-v1 on node 1
+    type: install_application
+    node: app-migration-reshuffle-1
+    path: apps/migrations/scenario-invariant-reshuffle-v1/res/scenario_invariant_reshuffle_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-invariant-reshuffle-v2 on node 1
+    type: install_application
+    node: app-migration-reshuffle-1
+    path: apps/migrations/scenario-invariant-reshuffle-v2/res/scenario_invariant_reshuffle_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context.
+  - name: Create namespace (v1) on node 1
+    type: create_namespace
+    node: app-migration-reshuffle-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-reshuffle-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-reshuffle-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "reshuffle-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-reshuffle-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-reshuffle-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: Invite node 2 to namespace; materialise subgroup + context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-reshuffle-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-reshuffle-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-reshuffle-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-reshuffle-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: Write v1 state on node 1, wait for node 2 to catch up.
+  - name: Record apple (v1, 1/3)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "apple"
+
+  - name: Record apple (v1, 2/3)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "apple"
+
+  - name: Record apple (v1, 3/3)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "apple"
+
+  - name: Record banana (v1, 1/2)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "banana"
+
+  - name: Record banana (v1, 2/2)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "banana"
+
+  - name: Record cherry (v1)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "cherry"
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-reshuffle-1
+      - app-migration-reshuffle-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Sanity-check v1 schema on node 1
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 denormalized counter is in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "global_count": 6}})'
+
+  # LazyOnAccess: each node migrates its OWN byte-identical v1 state
+  # on next access. The migration write path emits no DAG delta (full
+  # root replacement, not CRDT-mergeable), so migrated bytes do not
+  # propagate over sync — each node must self-migrate. Under
+  # `coordinated` only the emitter migrates and the receiver is left
+  # with v1 bytes behind a v2 app pointer → "Not all bytes read"
+  # panic. The per-context TargetApplicationSet + GroupMigrationSet
+  # ops set both `target_application_id` and the `migration` method on
+  # the subgroup's GroupMeta, which each receiver's
+  # `maybe_lazy_upgrade` reads to self-migrate.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-reshuffle-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
+  # Under LazyOnAccess this sets the target + migration method on the
+  # subgroup meta and returns WITHOUT running a propagator — no node
+  # migrates eagerly; each migrates on its next access below.
+  - name: Upgrade subgroup v1 → v2 (per-context, not cascade)
+    type: upgrade_group
+    node: app-migration-reshuffle-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  # Fixed wait, NOT wait_for_sync (see scenario 01 rationale): lets the
+  # target+migration meta gossip to node 2 before its lazy read.
+  - name: Wait for upgrade meta to gossip to node 2
+    type: wait
+    seconds: 15
+
+  # These reads TRIGGER each node's lazy migration: schema_info is not
+  # a state op, so `maybe_lazy_upgrade` fires on each node, migrating
+  # its own v1 state to v2 before serving the read.
+  - name: Read post-migration schema_info on node 1 (triggers lazy migration)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node1: result
+
+  - name: Read post-migration schema_info on node 2 (triggers lazy migration)
+    type: call
+    node: app-migration-reshuffle-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  # Both nodes self-migrated via the lazy path — assert the migration
+  # logs on EACH after its triggering read above.
+  - name: Assert lazy migration ran on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-reshuffle-1
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-reshuffle-2
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert v2 schema on node 1 (total re-derived from per-item sums)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0", "total": 6}})'
+
+  - name: Assert v2 schema on node 2 (bug-2 guard — re-derived total reached node 2)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0", "total": 6}})'
+
+  # Bug-2 guard: per_item map populated by migration must reach node 2.
+  - name: Read apple count on node 1 (post-migration, v1 data carried)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: get_item_count
+    args:
+      item: "apple"
+    outputs:
+      apple_count_node1: result
+
+  - name: Read apple count on node 2 (bug-2 guard — per_item entry reached node 2)
+    type: call
+    node: app-migration-reshuffle-2
+    context_id: "{{ctx_id}}"
+    method: get_item_count
+    args:
+      item: "apple"
+    outputs:
+      apple_count_node2: result
+
+  - name: Assert apple count = 3 on node 1 (carried over from v1)
+    type: json_assert
+    statements:
+      - 'json_equal({{apple_count_node1}}, {"output": 3})'
+
+  - name: Assert apple count = 3 round-trips to node 2 (per_item map sync guard)
+    type: json_assert
+    statements:
+      - 'json_equal({{apple_count_node2}}, {"output": 3})'
+
+  - name: Read banana count on node 2 (further per_item entry)
+    type: call
+    node: app-migration-reshuffle-2
+    context_id: "{{ctx_id}}"
+    method: get_item_count
+    args:
+      item: "banana"
+    outputs:
+      banana_count_node2: result
+
+  - name: Assert banana count = 2 on node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{banana_count_node2}}, {"output": 2})'
+
+  # Phase 7d: v2 record (single entry point) on node 1 round-trips to node 2.
+  - name: Record apple under v2 on node 1 (atomic bump of total + per_item)
+    type: call
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    method: record
+    args:
+      item: "apple"
+    outputs:
+      new_total: result
+
+  - name: Assert v2 record returned new total = 7
+    type: json_assert
+    statements:
+      - 'json_equal({{new_total}}, {"output": 7})'
+
+  - name: Wait for v2 record to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-reshuffle-1
+      - app-migration-reshuffle-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read apple count on node 2 after v2 record
+    type: call
+    node: app-migration-reshuffle-2
+    context_id: "{{ctx_id}}"
+    method: get_item_count
+    args:
+      item: "apple"
+    outputs:
+      apple_count_after_node2: result
+
+  - name: Assert apple count = 4 round-trips to node 2 (3 from v1 + 1 from v2)
+    type: json_assert
+    statements:
+      - 'json_equal({{apple_count_after_node2}}, {"output": 4})'
+
+  # Phase 8: Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-reshuffle-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-reshuffle-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-reshuffle-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1 on node 1
+    type: uninstall_application
+    node: app-migration-reshuffle-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2 on node 1
+    type: uninstall_application
+    node: app-migration-reshuffle-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

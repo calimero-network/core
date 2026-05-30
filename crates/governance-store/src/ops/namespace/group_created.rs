@@ -76,14 +76,20 @@ pub(crate) fn apply(
     // identical effect, so true replay is still safe.
     let meta_existed = MetaRepository::new(store).load(&gid)?.is_some();
     if !meta_existed {
-        // Inherit application ID from the immediate parent (matches
-        // mero-drive folder mental model: a subfolder runs the same app
-        // as its parent).
+        // Inherit application ID AND app_key from the immediate parent.
+        // target_application_id is inherited (matches mero-drive folder
+        // mental model: a subfolder runs the same app as its parent), so
+        // app_key (which on the originator is derived from that
+        // application's bytecode blob_id by `create_group::handle`) must
+        // be inherited too — otherwise the cascade predicate
+        // (from_app_key == descendant.app_key) would silently skip every
+        // remote-created subgroup the originator added. Zero-init here
+        // was the source of #2358-class cascade-skip bugs.
         let meta = calimero_store::key::GroupMetaValue {
             admin_identity: op.signer,
             owner_identity: op.signer,
             target_application_id: parent_meta.target_application_id,
-            app_key: [0u8; 32],
+            app_key: parent_meta.app_key,
             upgrade_policy: calimero_primitives::context::UpgradePolicy::default(),
             migration: None,
             created_at: 0,

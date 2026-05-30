@@ -1,0 +1,348 @@
+name: 12 — Scenario "field remove with archive" (v1 → v2-archive, 2-node)
+description: >
+  2-node per-context migration for the field-remove-with-archive
+  scenario. v1 carries a `legacy_note: LwwRegister<String>` that v2
+  drops from the active schema — but the migration ARCHIVES the v1
+  value into a new `archived_legacy: UnorderedMap<String,
+  LwwRegister<String>>` keyed by "latest", so data isn't lost (it just
+  moves out of the active schema into an explicit archive sibling).
+  This differs from `03-scenario-remove-field`, which drops the v1
+  value outright. Topology: namespace + one Open subgroup + one
+  context in the subgroup. Upgrade is `upgrade_group(group=subgroup,
+  target=v2, migrate=migrate_v1_to_v2)` — per-context (cascade=false).
+
+  Bug-2 cross-node guard: node 2 reads the new `archived_legacy` map
+  via `get_archived("latest")` to prove the migration's storage
+  commit (the `ContextStorage::commit()` after WASM migrate) plus
+  context-sync gossip both propagate the freshly inserted UnorderedMap
+  entry, not just the static fields.
+
+  Negative assertions: after the upgrade, the v1-only methods
+  `set_legacy_note` and `get_legacy_note` must NOT be callable (the
+  v2 binary doesn't export them).
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-archive
+  base_port: 9340
+  base_rpc_port: 9440
+
+steps:
+  # Phase 1: Install both binaries on the ADMIN node (node 1) only.
+  #
+  # Realistic distribution: node 2 never runs install_application. It
+  # auto-fetches the from-version when it joins the context and the
+  # to-version when the upgrade announces the target blob (pulled over
+  # BlobShare during its lazy migration; the sync-gate leaves BlobShare
+  # open for exactly this). App ids are content-addressed, so node 1's
+  # captured app ids are the same ids node 2 resolves. Proven by the
+  # 01/02 admin-only canary.
+  - name: Install scenario-field-remove-archive-v1 on node 1
+    type: install_application
+    node: app-migration-archive-1
+    path: apps/migrations/scenario-field-remove-archive-v1/res/scenario_field_remove_archive_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-field-remove-archive-v2 on node 1
+    type: install_application
+    node: app-migration-archive-1
+    path: apps/migrations/scenario-field-remove-archive-v2/res/scenario_field_remove_archive_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context.
+  - name: Create namespace (v1) on node 1
+    type: create_namespace
+    node: app-migration-archive-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "archive-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-archive-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-archive-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: Invite node 2 to namespace; materialise subgroup + context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-archive-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-archive-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-archive-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: Write v1 state on node 1, wait for node 2 to catch up.
+  - name: Set v1 name
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: set_name
+    args:
+      name: "contract-A"
+
+  - name: Set v1 legacy_note (will be archived in v2)
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: set_legacy_note
+    args:
+      note: "legacy-data-do-not-discard"
+
+  - name: Bump counter (v1, 1/3)
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: bump_counter
+
+  - name: Bump counter (v1, 2/3)
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: bump_counter
+
+  - name: Bump counter (v1, 3/3)
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: bump_counter
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-archive-1
+      - app-migration-archive-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Sanity-check v1 state shape on node 1
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "name": "contract-A", "legacy_note": "legacy-data-do-not-discard", "counter": 3}})'
+
+  # LazyOnAccess: each node migrates its OWN byte-identical v1 state
+  # on next access. The migration write path emits no DAG delta (full
+  # root replacement, not CRDT-mergeable), so migrated bytes do not
+  # propagate over sync — each node must self-migrate. Under
+  # `coordinated` only the emitter migrates and the receiver is left
+  # with v1 bytes behind a v2 app pointer → "Not all bytes read"
+  # panic. The per-context TargetApplicationSet + GroupMigrationSet
+  # ops set both `target_application_id` and the `migration` method on
+  # the subgroup's GroupMeta, which each receiver's
+  # `maybe_lazy_upgrade` reads to self-migrate.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-archive-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
+  # Under LazyOnAccess this sets the target + migration method on the
+  # subgroup meta and returns WITHOUT running a propagator — no node
+  # migrates eagerly; each migrates on its next access below.
+  - name: Upgrade subgroup v1 → v2 (per-context, not cascade)
+    type: upgrade_group
+    node: app-migration-archive-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  # Fixed wait, NOT wait_for_sync (see scenario 01 rationale): lets the
+  # target+migration meta gossip to node 2 before its lazy read.
+  - name: Wait for upgrade meta to gossip to node 2
+    type: wait
+    seconds: 15
+
+  # These reads TRIGGER each node's lazy migration: schema_info is not
+  # a state op, so `maybe_lazy_upgrade` fires on each node, migrating
+  # its own v1 state to v2 before serving the read.
+  - name: Read post-migration schema_info on node 1 (triggers lazy migration)
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node1: result
+
+  - name: Read post-migration schema_info on node 2 (triggers lazy migration)
+    type: call
+    node: app-migration-archive-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  # Both nodes self-migrated via the lazy path — assert the migration
+  # logs on EACH after its triggering read above.
+  - name: Assert lazy migration ran on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-archive-1
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-archive-2
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert v2 schema on node 1 (legacy archived, name + counter preserved)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema_node1}}, {"output": {"name": "contract-A", "counter": 3}})'
+      - 'json_subset({{v2_schema_node1}}, {"output": {"archived_latest": "legacy-data-do-not-discard"}})'
+
+  - name: Assert v2 schema on node 2 (bug-2 guard — archive map reached node 2)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0"}})'
+      - 'json_subset({{v2_schema_node2}}, {"output": {"name": "contract-A", "counter": 3}})'
+      - 'json_subset({{v2_schema_node2}}, {"output": {"archived_latest": "legacy-data-do-not-discard"}})'
+
+  - name: Read archived legacy value via v2 get_archived on node 1
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: get_archived
+    args:
+      key: "latest"
+    outputs:
+      archived_value_node1: result
+
+  - name: Read archived legacy value via v2 get_archived on node 2
+    type: call
+    node: app-migration-archive-2
+    context_id: "{{ctx_id}}"
+    method: get_archived
+    args:
+      key: "latest"
+    outputs:
+      archived_value_node2: result
+
+  - name: Assert archived value carried v1 legacy_note on node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{archived_value_node1}}, {"output": "legacy-data-do-not-discard"})'
+
+  - name: Assert archived value round-trips to node 2 (bug-2 storage-commit + sync guard)
+    type: json_assert
+    statements:
+      - 'json_equal({{archived_value_node2}}, {"output": "legacy-data-do-not-discard"})'
+
+  # Negative: v1-only setter no longer exported by v2.
+  - name: Negative — set_legacy_note (v1) is gone in v2
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: set_legacy_note
+    args:
+      note: "should-fail-post-upgrade"
+    expected_failure: true
+
+  # Negative: v1-only getter no longer exported by v2.
+  - name: Negative — get_legacy_note (v1) is gone in v2
+    type: call
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    method: get_legacy_note
+    expected_failure: true
+
+  # Phase 8: Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-archive-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-archive-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-archive-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1 on node 1
+    type: uninstall_application
+    node: app-migration-archive-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2 on node 1
+    type: uninstall_application
+    node: app-migration-archive-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
