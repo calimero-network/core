@@ -203,6 +203,25 @@ fn is_opaque_crdt_type(crdt_type: &calimero_primitives::crdt::CrdtType) -> bool 
 /// # Errors
 ///
 /// Returns error if storage operations fail.
+/// Whether a leaf that arrived with **no** wire-supplied ancestor chain can
+/// be placed safely using only its `parent_id`.
+///
+/// Safe iff the parent is the context root (`parent_is_root` — no
+/// intermediate ancestors, so a single-parent chain is exact) or the parent
+/// already exists locally (`parent_present_locally` — its ancestry is
+/// already established and `apply_action` links the leaf directly under it).
+///
+/// When neither holds, the single-parent fallback makes `apply_action`
+/// `add_root` the missing parent, placing a nested entity directly under the
+/// context root — the wrong Merkle position, which produces a root hash that
+/// diverges from peers holding the full chain while the DAG heads still
+/// match (the same-DAG-heads / different-root split-brain HashComparison
+/// cannot heal). The caller must then decline to place the leaf and reapply
+/// it once the parent has synced.
+fn empty_chain_placement_is_safe(parent_is_root: bool, parent_present_locally: bool) -> bool {
+    parent_is_root || parent_present_locally
+}
+
 pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) -> Result<()> {
     let entity_id = Id::new(leaf.key);
     let root_id = Id::new(*context_id.as_ref());
@@ -382,14 +401,39 @@ pub fn apply_leaf_with_crdt_merge(context_id: ContextId, leaf: &TreeLeafData) ->
         let ancestors = if !leaf.metadata.ancestors.is_empty() {
             leaf.metadata.ancestors.clone()
         } else {
+            // No wire-supplied chain. The single-parent fallback is only
+            // safe when this entity's position is already unambiguous
+            // locally: the parent is the context root (no intermediate
+            // ancestors), or the parent already exists in our index (so
+            // its ancestry is established and `apply_action` links this
+            // entity directly under it). Otherwise `apply_action` would
+            // `add_root(parent)` for the missing parent, placing this
+            // nested entity directly under the context root — the wrong
+            // Merkle position. That yields a root hash that diverges from
+            // peers holding the full chain while the DAG heads still
+            // match, the same-DAG-heads / different-root split-brain that
+            // HashComparison cannot heal (scaffolding-e2e run
+            // 26679287804). Decline to place it; a later round reapplies
+            // it once the parent collection has synced (the responder
+            // pushes containers before leaves).
+            let parent_index = Index::<MainStorage>::get_index(parent_id).ok().flatten();
+            if !empty_chain_placement_is_safe(parent_id.is_root(), parent_index.is_some()) {
+                tracing::warn!(
+                    %context_id,
+                    %entity_id,
+                    %parent_id,
+                    "HC apply: leaf arrived without an ancestor chain and its parent \
+                     is not present locally; deferring rather than guessing its tree \
+                     position (avoids a divergent root hash HashComparison cannot heal)"
+                );
+                return Ok(());
+            }
             let parent_hash = Index::<MainStorage>::get_hashes_for(parent_id)
                 .ok()
                 .flatten()
                 .map(|(full, _)| full)
                 .unwrap_or([0; 32]);
-            let parent_metadata = Index::<MainStorage>::get_index(parent_id)
-                .ok()
-                .flatten()
+            let parent_metadata = parent_index
                 .map(|idx| idx.metadata.clone())
                 .unwrap_or_default();
             vec![ChildInfo::new(parent_id, parent_hash, parent_metadata)]
@@ -719,5 +763,40 @@ mod tests {
     #[test]
     fn extract_author_no_authorization_returns_none() {
         assert_eq!(extract_author_from_leaf_authorization(None), None);
+    }
+}
+
+#[cfg(test)]
+mod empty_chain_placement_tests {
+    // Regression tests for the HashComparison receiver guard that prevents
+    // the same-DAG-heads / different-root split-brain (scaffolding-e2e run
+    // 26679287804): a nested entity pushed without its ancestor chain must
+    // not be guessed onto the context root.
+
+    #[test]
+    fn safe_when_parent_is_the_context_root() {
+        // Direct child of the root has no intermediate ancestors, so the
+        // single-parent fallback lands it at the correct Merkle position,
+        // whether or not the root entry is materialised locally yet.
+        assert!(super::empty_chain_placement_is_safe(true, false));
+        assert!(super::empty_chain_placement_is_safe(true, true));
+    }
+
+    #[test]
+    fn safe_when_nonroot_parent_already_exists_locally() {
+        // The parent collection is present, so its ancestry is already
+        // established and linking the leaf directly under it is exact.
+        assert!(super::empty_chain_placement_is_safe(false, true));
+    }
+
+    #[test]
+    fn unsafe_for_nested_entity_whose_parent_is_absent() {
+        // The bug: a non-root parent that is NOT present locally. Falling
+        // back to a single-parent chain makes `apply_action` `add_root` the
+        // missing parent and misplace the entity under the context root,
+        // producing a divergent root hash HashComparison cannot heal. The
+        // apply path must defer instead of placing it, so the predicate
+        // must report "unsafe" here.
+        assert!(!super::empty_chain_placement_is_safe(false, false));
     }
 }
