@@ -531,6 +531,55 @@ fn apply_local_signed_group_op_out_of_order_siblings_2516() {
     assert_eq!(next, 3, "author mints above the highest applied nonce");
 }
 
+/// The local-apply path (`apply_local_signed_group_op`, run under
+/// `governance_dag` on DAG-delta application) must dedup op-log appends by
+/// persisted content hash, matching the namespace receive path. This covers
+/// the narrow crash window in `store_nonce_window` where an applied
+/// above-floor nonce is lost from the persisted window and the op is then
+/// re-delivered via DAG replay: the nonce guard no longer short-circuits it,
+/// but the content-hash dedup must still prevent a duplicate op-log entry.
+#[test]
+fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+    let signer_sk = PrivateKey::random(&mut rng);
+    let signer_pk = signer_sk.public_key();
+
+    let op =
+        SignedGroupOp::sign(&signer_sk, gid_bytes, vec![], [0u8; 32], 1, GroupOp::Noop).unwrap();
+
+    apply_local_signed_group_op(&store, &op).unwrap();
+    assert_eq!(read_op_log_after(&store, &gid, 0, 10).unwrap().len(), 1);
+    assert_eq!(
+        get_local_gov_nonce(&store, &gid, &signer_pk).unwrap(),
+        Some(1)
+    );
+
+    // Simulate the lost-window crash: roll the persisted floor back to 0 so
+    // the nonce guard no longer dedups op 1 on re-delivery.
+    set_local_gov_nonce(&store, &gid, &signer_pk, 0).unwrap();
+
+    // Re-deliver the same op (DAG replay). It now passes the nonce guard and
+    // re-runs the mutation, but the content-hash dedup must skip the append.
+    apply_local_signed_group_op(&store, &op).unwrap();
+    assert_eq!(
+        read_op_log_after(&store, &gid, 0, 10).unwrap().len(),
+        1,
+        "replayed op must NOT append a duplicate op-log entry"
+    );
+    // The window is re-advanced, so a third delivery dedups at the guard.
+    assert_eq!(
+        get_local_gov_nonce(&store, &gid, &signer_pk).unwrap(),
+        Some(1)
+    );
+}
+
 #[test]
 fn reject_read_only_tee_via_member_added() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};

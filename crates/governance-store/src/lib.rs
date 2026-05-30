@@ -59,7 +59,7 @@ mod permission_checker;
 mod signing_keys;
 mod tee;
 mod upgrades;
-use self::local_state::persist_group_governance_progress;
+use self::local_state::{op_log_contains_content_hash, persist_group_governance_progress};
 
 pub use self::capabilities::CapabilitiesRepository;
 
@@ -1291,6 +1291,29 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     let content_hash = op
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+
+    // Record AFTER the apply succeeded above. `record` advances the floor
+    // through any now-contiguous run; for a sibling that arrived out of
+    // order (the #2516 case) it just adds to the above-floor set so the
+    // lower-nonce sibling still applies when it lands.
+    nonce_window.record(op.nonce);
+
+    // Idempotent op-log append, mirroring the namespace receive path
+    // (`apply_group_op_inner`). The nonce guard above short-circuits the
+    // common replay, but `store_nonce_window`'s two-key write is not atomic:
+    // a crash between the floor and above-set writes can drop an in-flight
+    // above-floor nonce from the persisted window, so a DAG replay (this
+    // function runs under `governance_dag`) can reach here for an op that is
+    // already in the log. Dedup against the PERSISTED op-log — the monotonic
+    // signal used everywhere else — so the re-apply re-persists the advanced
+    // window WITHOUT appending a duplicate entry. (The mutation above re-runs
+    // on replay; governance mutations are replay-safe by design, the same
+    // contract the namespace path and `retry_encrypted_ops_for_group` rely on.)
+    if op_log_contains_content_hash(store, &group_id, &content_hash)? {
+        store_nonce_window(store, &group_id, &op.signer, &nonce_window)?;
+        return Ok(());
+    }
+
     let head = get_op_head(store, &group_id)?;
     let next_seq = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
     let op_bytes = borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh: {e}"))?;
@@ -1313,11 +1336,6 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         );
         new_heads.drain(..excess);
     }
-    // Record AFTER the apply succeeded above. `record` advances the floor
-    // through any now-contiguous run; for a sibling that arrived out of
-    // order (the #2516 case) it just adds to the above-floor set so the
-    // lower-nonce sibling still applies when it lands.
-    let _newly = nonce_window.record(op.nonce);
     persist_group_governance_progress(
         store,
         &group_id,

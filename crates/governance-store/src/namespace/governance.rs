@@ -1388,7 +1388,7 @@ impl<'a> NamespaceGovernance<'a> {
         // when it arrives (the #2516 fix). The same post-apply ordering as the
         // old single-nonce write holds: a deferrable precondition failure
         // `Err`s above and leaves the window untouched, so the op retries.
-        let _newly = nonce_window.record(nonce);
+        nonce_window.record(nonce);
         store_nonce_window(self.store, group_id, signer, &nonce_window)?;
         Ok(divergence)
     }
