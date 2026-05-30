@@ -216,10 +216,7 @@ mod tests {
     /// Test that HashComparison maps to SnapshotSync (fallback category)
     #[test]
     fn test_from_primitives_hash_comparison() {
-        let primitive = PrimitivesSyncProtocol::HashComparison {
-            root_hash: [3; 32],
-            divergent_subtrees: vec![],
-        };
+        let primitive = PrimitivesSyncProtocol::HashComparison { root_hash: [3; 32] };
         let tracking: SyncProtocol = (&primitive).into();
         assert!(matches!(tracking, SyncProtocol::SnapshotSync));
     }
@@ -263,10 +260,7 @@ mod tests {
             PrimitivesSyncProtocol::DeltaSync {
                 missing_delta_ids: vec![],
             },
-            PrimitivesSyncProtocol::HashComparison {
-                root_hash: [0; 32],
-                divergent_subtrees: vec![],
-            },
+            PrimitivesSyncProtocol::HashComparison { root_hash: [0; 32] },
             PrimitivesSyncProtocol::Snapshot {
                 compressed: false,
                 verified: false,
