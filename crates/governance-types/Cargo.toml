@@ -23,6 +23,7 @@ thiserror.workspace = true
 
 calimero-context-config.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh"] }
+calimero-storage.workspace = true
 
 [dev-dependencies]
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }

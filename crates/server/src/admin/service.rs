@@ -228,6 +228,10 @@ pub(crate) fn setup(
             get(groups::get_group_upgrade_status::handler),
         )
         .route(
+            "/groups/:namespace_id/cascade-status",
+            get(groups::get_cascade_status::handler),
+        )
+        .route(
             "/groups/:group_id/upgrade/retry",
             post(groups::retry_group_upgrade::handler),
         )

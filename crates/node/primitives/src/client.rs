@@ -501,6 +501,9 @@ impl NodeClient {
         governance_position: Option<GovernancePosition>,
         key_id: [u8; 32],
         delta_signature: Option<[u8; 64]>,
+        // `GroupMeta.app_key` the sender is executing under. `None` for
+        // non-group contexts or when the meta row could not be resolved.
+        producing_app_key: Option<[u8; 32]>,
     ) -> eyre::Result<()> {
         info!(
             context_id=%context.id,
@@ -535,6 +538,7 @@ impl NodeClient {
             governance_position,
             key_id,
             delta_signature,
+            producing_app_key,
         };
 
         let payload = borsh::to_vec(&payload)?;

@@ -132,6 +132,13 @@ pub struct BufferedDelta {
     /// will never converge). 0 for snapshot-sync deltas, which are drained
     /// on a different schedule (sync completion).
     pub governance_drain_attempts: u8,
+    /// App-schema key the sender stamped onto the state-delta wire (Task 7).
+    /// Carried through the buffer so the HLC fence (Tasks 8/9) can still drop
+    /// a stale-schema delta that happened to be buffered during a snapshot
+    /// sync or governance-pending wait — without this field the drain path
+    /// would reconstruct the delta with `None` and bypass the fence. `None`
+    /// for legacy deltas / non-group contexts that carry no producing_app_key.
+    pub producing_app_key: Option<[u8; 32]>,
 }
 
 /// Maximum number of times the governance-pending drain may re-buffer the
@@ -326,6 +333,7 @@ mod tests {
             governance_position: None,
             delta_signature: None,
             governance_drain_attempts: 0,
+            producing_app_key: None,
         }
     }
 

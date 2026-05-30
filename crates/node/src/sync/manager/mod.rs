@@ -690,6 +690,17 @@ impl SyncManager {
     /// a different path and is unaffected, so this node still learns
     /// about the upgrade and self-migrates on its next context access,
     /// after which this returns `None` and state sync resumes.
+    ///
+    /// Gate vs fence: this function provides COARSE, active-upgrade-window
+    /// protection — it declines context-state sync while
+    /// `current_app != target`. The sticky `cascade_hlc` recorded on the
+    /// upgrade row (plus the post-`Completed` HLC fence in
+    /// `calimero_context::hlc_fence`) provides FINER, long-tail protection
+    /// that rejects late straggler / offline-writer state deltas even after
+    /// the upgrade completes. The two mechanisms cover DISJOINT time windows
+    /// (InProgress vs post-Completed), so there is no double-rejection. The
+    /// fence's `None`-boundary bypass means a context that has not yet applied
+    /// the cascade op is never fenced — this gate / lazy-upgrade handles it.
     fn pending_upgrade_target(
         &self,
         context_id: &ContextId,

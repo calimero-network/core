@@ -428,6 +428,251 @@ fn apply_local_signed_group_op_nonce_and_admin() {
     assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
 }
 
+/// Regression test for #2516: two concurrent same-signer governance ops are
+/// DAG siblings with consecutive nonces, so causal delivery imposes no order
+/// between them and they can land in either order. The old `nonce <= last`
+/// high-water-mark guard advanced on whichever higher nonce arrived first and
+/// then dropped the lower-nonce sibling forever (`lower <= last`). The
+/// windowed guard parks the higher nonce above the contiguous floor and still
+/// applies the lower one when it arrives — both ops land, and the floor closes
+/// the gap.
+#[test]
+fn apply_local_signed_group_op_out_of_order_siblings_2516() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    // Group meta is needed for the author-mint assertion at the end
+    // (`sign_apply_local_group_op_borsh` computes a state hash over it).
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let member_high = PrivateKey::random(&mut rng).public_key();
+    let member_low = PrivateKey::random(&mut rng).public_key();
+
+    // The HIGHER-nonce sibling (nonce 2) is delivered first.
+    let op_high = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        2,
+        GroupOp::MemberAdded {
+            member: member_high,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op_high).unwrap();
+    assert!(MembershipRepository::new(&store)
+        .is_member(&gid, &member_high)
+        .unwrap());
+
+    // Floor cannot advance past the missing nonce 1; the applied nonce sits
+    // in the above-floor set.
+    let window = load_nonce_window(&store, &gid, &admin_pk).unwrap();
+    assert_eq!(window.floor(), 0, "floor stuck behind the missing nonce 1");
+    assert!(window.contains(2), "nonce 2 recorded above the floor");
+
+    // The LOWER-nonce sibling (nonce 1) is delivered second. The old guard
+    // would have dropped it as `1 <= last(=2)`; the window applies it.
+    let op_low = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberAdded {
+            member: member_low,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op_low).unwrap();
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&gid, &member_low)
+            .unwrap(),
+        "lower-nonce sibling must NOT be dropped (the #2516 bug)"
+    );
+
+    // Both ops are durably logged and the gap has closed: floor == 2.
+    assert_eq!(read_op_log_after(&store, &gid, 0, 10).unwrap().len(), 2);
+    assert_eq!(
+        get_local_gov_nonce(&store, &gid, &admin_pk).unwrap(),
+        Some(2)
+    );
+
+    // Replays of either sibling are deduped — no third log entry.
+    apply_local_signed_group_op(&store, &op_high).unwrap();
+    apply_local_signed_group_op(&store, &op_low).unwrap();
+    assert_eq!(
+        read_op_log_after(&store, &gid, 0, 10).unwrap().len(),
+        2,
+        "replayed siblings must be deduped"
+    );
+
+    // The next op this node authors mints `max_applied + 1` (== 3), never
+    // reusing a nonce already inside the window.
+    let out = sign_apply_local_group_op_borsh(&store, &gid, &admin_sk, GroupOp::Noop).unwrap();
+    let next = borsh::from_slice::<SignedGroupOp>(&out.bytes)
+        .unwrap()
+        .nonce;
+    assert_eq!(next, 3, "author mints above the highest applied nonce");
+}
+
+/// The local-apply path (`apply_local_signed_group_op`, run under
+/// `governance_dag` on DAG-delta application) must dedup op-log appends by
+/// persisted content hash, matching the namespace receive path. This covers
+/// the narrow crash window in `store_nonce_window` where an applied
+/// above-floor nonce is lost from the persisted window and the op is then
+/// re-delivered via DAG replay: the nonce guard no longer short-circuits it,
+/// but the content-hash dedup must still prevent a duplicate op-log entry.
+///
+/// Uses a real MUTATING op (`MemberAdded`), not `Noop`, so it also exercises
+/// the replay-safety contract: `apply_group_op_mutations` re-runs on replay
+/// (before the content-hash dedup fires) and must NOT error — `add_member` is
+/// an idempotent upsert, so the re-applied op succeeds and the window is
+/// re-persisted rather than leaving the node stuck on the nonce.
+#[test]
+fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let member = PrivateKey::random(&mut rng).public_key();
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberAdded {
+            member,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+
+    apply_local_signed_group_op(&store, &op).unwrap();
+    assert!(MembershipRepository::new(&store)
+        .is_member(&gid, &member)
+        .unwrap());
+    assert_eq!(read_op_log_after(&store, &gid, 0, 10).unwrap().len(), 1);
+    assert_eq!(
+        get_local_gov_nonce(&store, &gid, &admin_pk).unwrap(),
+        Some(1)
+    );
+
+    // Simulate the lost-window crash: roll the persisted floor back to 0 so
+    // the nonce guard no longer dedups op 1 on re-delivery.
+    set_local_gov_nonce(&store, &gid, &admin_pk, 0).unwrap();
+
+    // Re-deliver the same op (DAG replay). It now passes the nonce guard and
+    // re-runs the (idempotent) mutation, but the content-hash dedup must skip
+    // the append — no error, no duplicate entry.
+    apply_local_signed_group_op(&store, &op).unwrap();
+    assert!(MembershipRepository::new(&store)
+        .is_member(&gid, &member)
+        .unwrap());
+    assert_eq!(
+        read_op_log_after(&store, &gid, 0, 10).unwrap().len(),
+        1,
+        "replayed op must NOT append a duplicate op-log entry"
+    );
+    // The window is re-advanced, so a third delivery dedups at the guard.
+    assert_eq!(
+        get_local_gov_nonce(&store, &gid, &admin_pk).unwrap(),
+        Some(1)
+    );
+}
+
+/// The full window (floor + above-set) round-trips through the single-key
+/// atomic store, including the out-of-order above-floor nonces.
+#[test]
+fn nonce_window_round_trips_through_single_key() {
+    use crate::nonce_window::NonceWindow;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x7Bu8; 32]);
+
+    let mut window = NonceWindow::new(4, []);
+    assert!(window.record(6));
+    assert!(window.record(8));
+    store_nonce_window(&store, &gid, &signer, &window).unwrap();
+
+    let reloaded = load_nonce_window(&store, &gid, &signer).unwrap();
+    assert_eq!(reloaded, window, "full window survives store + load");
+    assert_eq!(reloaded.floor(), 4);
+    assert_eq!(reloaded.above().collect::<Vec<_>>(), vec![6, 8]);
+    // get_local_gov_nonce reads the floor out of the same authoritative key.
+    assert_eq!(get_local_gov_nonce(&store, &gid, &signer).unwrap(), Some(4));
+}
+
+/// Migration: a pre-window database has only the legacy `GroupLocalGovNonce`
+/// floor. Both readers migrate from it, and the first `store_nonce_window`
+/// makes the window key authoritative (the stale legacy floor is then ignored).
+#[test]
+fn nonce_window_migrates_from_legacy_floor_key() {
+    use calimero_store::key::GroupLocalGovNonce;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x7Au8; 32]);
+
+    // Simulate a pre-window DB: only the legacy single-`u64` high-water mark.
+    {
+        let mut handle = store.handle();
+        handle
+            .put(&GroupLocalGovNonce::new(gid.to_bytes(), signer), &7u64)
+            .unwrap();
+    }
+
+    // Both readers migrate the legacy floor.
+    assert_eq!(get_local_gov_nonce(&store, &gid, &signer).unwrap(), Some(7));
+    let mut window = load_nonce_window(&store, &gid, &signer).unwrap();
+    assert_eq!(window.floor(), 7);
+    assert!(window.contains(7));
+    assert!(!window.contains(8));
+
+    // Recording an out-of-order nonce (gap at 8) persists the full window under
+    // the new key; the next load reads it, not the stale legacy floor.
+    assert!(window.record(9));
+    store_nonce_window(&store, &gid, &signer, &window).unwrap();
+
+    let reloaded = load_nonce_window(&store, &gid, &signer).unwrap();
+    assert_eq!(reloaded.floor(), 7);
+    assert!(
+        reloaded.contains(9),
+        "above-floor nonce survived via the authoritative window key"
+    );
+    assert_eq!(reloaded.max_applied(), 9);
+}
+
 #[test]
 fn reject_read_only_tee_via_member_added() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
@@ -1027,6 +1272,7 @@ fn save_load_delete_upgrade() {
             completed: 0,
             failed: 0,
         },
+        cascade_hlc: None,
     };
 
     UpgradesRepository::new(&store)
@@ -1063,6 +1309,7 @@ fn enumerate_in_progress_upgrades_filters_completed() {
                     completed: 2,
                     failed: 0,
                 },
+                cascade_hlc: None,
             },
         )
         .unwrap();
@@ -1079,6 +1326,7 @@ fn enumerate_in_progress_upgrades_filters_completed() {
                 status: GroupUpgradeStatus::Completed {
                     completed_at: Some(1_700_001_000),
                 },
+                cascade_hlc: None,
             },
         )
         .unwrap();

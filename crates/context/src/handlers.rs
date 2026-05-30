@@ -17,6 +17,7 @@ pub mod delete_group;
 pub mod delete_namespace;
 pub mod detach_context_from_group;
 pub mod execute;
+pub mod get_cascade_status;
 pub mod get_context_metadata;
 pub mod get_group_for_context;
 pub mod get_group_info;
@@ -243,6 +244,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::IssueNamespaceOwnershipProof { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::GetCascadeStatus { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }

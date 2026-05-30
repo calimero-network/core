@@ -716,6 +716,25 @@ pub enum BroadcastMessage<'a> {
         /// site is wired up in a follow-up, after which this tightens
         /// to required and `None` becomes a hard reject.
         delta_signature: Option<[u8; 64]>,
+
+        /// `GroupMeta.app_key` the sender was executing under at the
+        /// time this delta was produced. Derived from the context's
+        /// owning group's meta row (`app_key = blob_id(bytecode)`);
+        /// `None` for non-group contexts (no owning group) or when the
+        /// meta row cannot be resolved at send time.
+        ///
+        /// Receivers use this field to fence stale-schema deltas after
+        /// a cascade migration: a delta arriving with an `app_key` that
+        /// no longer matches the local group meta was authored by a node
+        /// still on the old schema and must be buffered / rejected.
+        /// The fence logic itself lives in a later task — this field
+        /// is stamped here so the wire carries the information.
+        ///
+        /// Lockstep wire addition: all merod nodes are expected to
+        /// upgrade together (same assumption as the cascade GroupOp
+        /// wire additions). `BroadcastMessage` is transient gossip and
+        /// is not persisted, so no stored-data migration is required.
+        producing_app_key: Option<[u8; 32]>,
     },
 
     /// Hash heartbeat for divergence detection

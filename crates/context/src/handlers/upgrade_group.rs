@@ -53,9 +53,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let node_sk = node_identity.map(|(_, sk)| sk);
         let signing_key = node_sk;
 
-        // Cascade path: emit `GroupOp::CascadeTargetApplicationSet`
-        // (+ optional `GroupOp::CascadeGroupMigrationSet`) and dispatch
-        // one `propagate_upgrade` per descendant subgroup whose current
+        // Cascade path: emit `GroupOp::CascadeUpgrade` and dispatch one
+        // `propagate_upgrade` per descendant subgroup whose current
         // `app_key` matches the signed group's current `app_key`.
         //
         // The single-group branch below stays bit-identical for
@@ -205,6 +204,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         initiated_at: now,
                         initiated_by: requester,
                         status: completed_status.clone(),
+                        cascade_hlc: None,
                     };
 
                     UpgradesRepository::new(&datastore).save(&group_id, &upgrade_value)?;
@@ -261,6 +261,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             initiated_at: now,
             initiated_by: requester,
             status: initial_status.clone(),
+            cascade_hlc: None,
         };
 
         if let Err(err) = UpgradesRepository::new(&self.datastore).save(&group_id, &upgrade_value) {
@@ -806,11 +807,17 @@ pub(crate) fn update_upgrade_status(
 
 /// Cascade variant of the upgrade-group flow.
 ///
-/// Emits [`GroupOp::CascadeTargetApplicationSet`] (and, when migration is
-/// requested, [`GroupOp::CascadeGroupMigrationSet`]) signed by the
-/// requester, then spawns one [`propagate_upgrade`] per descendant
-/// subgroup whose current `app_key` matches the signed group's current
-/// `app_key`.
+/// Emits a single [`GroupOp::CascadeUpgrade`] signed by the requester,
+/// then spawns one [`propagate_upgrade`] per descendant subgroup whose
+/// current `app_key` matches the signed group's current `app_key`.
+/// The atomic op carries `target_application_id`, `app_key`, `migration`,
+/// and `cascade_hlc` in one unit, eliminating the out-of-order apply bug
+/// of the legacy two-op path.
+///
+/// `cascade_hlc` IS stamped here at the initiator (once, deterministically)
+/// via `calimero_storage::env::hlc_timestamp()`, and is recorded as the
+/// fence boundary on every matched descendant's pre-spawn upgrade record.
+/// Every peer that applies the gossiped op records the same fence value.
 ///
 /// The walk used to enumerate matched descendants runs BEFORE the
 /// cascade op is published locally — by the time the apply arm runs,
@@ -819,11 +826,6 @@ pub(crate) fn update_upgrade_status(
 /// would find zero matches. Capturing the descendant list synchronously
 /// before publish is the simplest mechanism that respects the apply
 /// arm's own mutation.
-///
-/// Per-context status records and the PR-3 `cascade_hlc` field are NOT
-/// written here; those land in PR-3. The propagator's existing
-/// per-group `GroupUpgradeValue` write is the only status surface this
-/// flow updates, mirroring the single-group canary path.
 fn dispatch_cascade(
     actor: &mut ContextManager,
     group_id: ContextGroupId,
@@ -1005,40 +1007,13 @@ fn dispatch_cascade(
     let ack_router_for_publish = Arc::clone(&ack_router);
     let migration_bytes_for_publish = migration_bytes.clone();
 
+    // Stamp the cascade_hlc ONCE at the initiator so every receiver
+    // applies the same fence boundary (Task 3 apply handler stores this
+    // value verbatim; Task 4 carries it on the wire via CascadeUpgrade).
+    let cascade_hlc = calimero_storage::env::hlc_timestamp();
+
     let publish_task = async move {
         let sk = PrivateKey::from(effective_signing_key);
-
-        // ORDER MATTERS: emit `CascadeGroupMigrationSet` BEFORE
-        // `CascadeTargetApplicationSet`. Both ops use the same
-        // `from_app_key == descendant.app_key` walk predicate. The
-        // target-application op rewrites every matched descendant's
-        // `app_key` from `from_app_key` to `new_app_key`; if it ran
-        // first, the migration op's predicate would then match
-        // nothing (every descendant already moved to `new_app_key`)
-        // and the migration bytes would never reach the descendant
-        // metas — silently dropped on the emitter AND every
-        // receiver. The descendant `GroupMeta.migration` field is
-        // what `maybe_lazy_upgrade` reads to know which migrate
-        // method to run, so dropping it leaves receivers unable to
-        // self-migrate (they'd swap to the v2 app against
-        // un-migrated v1-shaped state). Emitting migration-set first
-        // — while descendants still hold `from_app_key` — lets both
-        // ops match the same descendant set.
-        if migration_bytes_for_publish.is_some() {
-            let report = calimero_governance_store::sign_apply_and_publish(
-                &datastore_for_publish,
-                &node_client_for_publish,
-                &ack_router_for_publish,
-                &group_id,
-                &sk,
-                GroupOp::CascadeGroupMigrationSet {
-                    from_app_key,
-                    migration: migration_bytes_for_publish.clone(),
-                },
-            )
-            .await?;
-            report.observe("upgrade_group", "CascadeGroupMigrationSet");
-        }
 
         let report = calimero_governance_store::sign_apply_and_publish(
             &datastore_for_publish,
@@ -1046,14 +1021,16 @@ fn dispatch_cascade(
             &ack_router_for_publish,
             &group_id,
             &sk,
-            GroupOp::CascadeTargetApplicationSet {
+            GroupOp::CascadeUpgrade {
                 from_app_key,
                 app_key: new_app_key,
                 target_application_id,
+                migration: migration_bytes_for_publish.clone(),
+                cascade_hlc,
             },
         )
         .await?;
-        report.observe("upgrade_group", "CascadeTargetApplicationSet");
+        report.observe("upgrade_group", "CascadeUpgrade");
 
         Ok::<_, eyre::Report>(())
     }
@@ -1081,6 +1058,7 @@ fn dispatch_cascade(
                     completed: 0,
                     failed: 0,
                 },
+                cascade_hlc: Some(cascade_hlc),
             };
             if let Err(err) = UpgradesRepository::new(&datastore).save(gid, &upgrade_value) {
                 error!(

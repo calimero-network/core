@@ -10,6 +10,7 @@ use calimero_server_primitives::admin::DeleteGroupApiRequest;
 use calimero_server_primitives::admin::DeleteGroupApiResponse;
 use calimero_server_primitives::admin::DetachContextFromGroupApiRequest;
 use calimero_server_primitives::admin::DetachContextFromGroupApiResponse;
+use calimero_server_primitives::admin::GetCascadeStatusApiResponse;
 use calimero_server_primitives::admin::GetGroupUpgradeStatusApiResponse;
 use calimero_server_primitives::admin::GetMemberCapabilitiesApiResponse;
 use calimero_server_primitives::admin::GetMetadataApiResponse;
@@ -233,6 +234,18 @@ where
         let response = self
             .connection
             .get(&format!("admin-api/groups/{group_id}/upgrade/status"))
+            .await?;
+        Ok(response)
+    }
+
+    /// Per-descendant cascade migration status across a namespace subtree.
+    pub async fn get_cascade_status(
+        &self,
+        namespace_id: &str,
+    ) -> Result<GetCascadeStatusApiResponse> {
+        let response = self
+            .connection
+            .get(&format!("admin-api/groups/{namespace_id}/cascade-status"))
             .await?;
         Ok(response)
     }

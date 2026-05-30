@@ -7,34 +7,104 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
-    GroupLocalGovNonce, GroupMemberContext, GroupOpHead, GroupOpHeadValue, GroupOpLog,
-    NamespaceGovHead, NamespaceGovOp, NamespaceIdentity, GROUP_MEMBER_CONTEXT_PREFIX,
-    GROUP_OP_LOG_PREFIX, NAMESPACE_GOV_OP_PREFIX,
+    GroupLocalGovNonce, GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue,
+    GroupMemberContext, GroupOpHead, GroupOpHeadValue, GroupOpLog, NamespaceGovHead,
+    NamespaceGovOp, NamespaceIdentity, GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX,
+    NAMESPACE_GOV_OP_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 use super::collect_keys_with_prefix;
+use crate::nonce_window::NonceWindow;
 
+/// Read the contiguous applied-nonce floor for a (group, signer), or `None` if
+/// nothing has ever been persisted.
+///
+/// Reads the floor out of the authoritative [`GroupLocalGovNonceWindow`],
+/// falling back to the legacy [`GroupLocalGovNonce`] high-water mark for
+/// databases written before the window existed. It returns the FLOOR ONLY —
+/// callers that need to know whether a specific (possibly out-of-order) nonce
+/// was applied must use [`load_nonce_window`] + [`NonceWindow::contains`].
 pub fn get_local_gov_nonce(
     store: &Store,
     group_id: &ContextGroupId,
     signer: &PublicKey,
 ) -> EyreResult<Option<u64>> {
     let handle = store.handle();
-    let key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
-    Ok(handle.get(&key)?)
+    let gid = group_id.to_bytes();
+    if let Some(window) = handle.get(&GroupLocalGovNonceWindow::new(gid, *signer))? {
+        return Ok(Some(window.floor));
+    }
+    // Legacy fallback: a pre-window database only has the single-`u64` key.
+    Ok(handle.get(&GroupLocalGovNonce::new(gid, *signer))?)
 }
 
+/// Force the persisted window to a bare floor with an empty above-set.
+///
+/// This is a coarse, floor-only seed — it CLOBBERS any out-of-order above-floor
+/// nonces — so it is NOT for the apply path; production advances go through
+/// [`store_nonce_window`], which persists the recorded window. It survives for
+/// migration seeding and for tests that need to force a specific floor (e.g.
+/// rolling it back to simulate a window that lost an entry). Writes the
+/// authoritative [`GroupLocalGovNonceWindow`] so [`get_local_gov_nonce`] and
+/// [`load_nonce_window`] observe it.
 pub fn set_local_gov_nonce(
     store: &Store,
     group_id: &ContextGroupId,
     signer: &PublicKey,
     nonce: u64,
 ) -> EyreResult<()> {
+    store_nonce_window(store, group_id, signer, &NonceWindow::new(nonce, []))
+}
+
+/// Load the applied-nonce window for a (group, signer).
+///
+/// Reads the authoritative [`GroupLocalGovNonceWindow`] (floor + above-set in
+/// one value). If it is absent, migrates from the legacy [`GroupLocalGovNonce`]
+/// floor — a pre-window database loads as `floor` with an empty above-set and
+/// dedups exactly like the old `nonce <= last` high-water-mark guard. Both
+/// absent → a fresh `(0, {})` window.
+pub fn load_nonce_window(
+    store: &Store,
+    group_id: &ContextGroupId,
+    signer: &PublicKey,
+) -> EyreResult<NonceWindow> {
+    let handle = store.handle();
+    let gid = group_id.to_bytes();
+    if let Some(window) = handle.get(&GroupLocalGovNonceWindow::new(gid, *signer))? {
+        return Ok(NonceWindow::new(window.floor, window.above));
+    }
+    let floor = handle
+        .get(&GroupLocalGovNonce::new(gid, *signer))?
+        .unwrap_or(0);
+    Ok(NonceWindow::new(floor, []))
+}
+
+/// Persist an applied-nonce window under [`GroupLocalGovNonceWindow`] as a
+/// SINGLE value, so the whole window (floor + above-set) lands in ONE atomic
+/// `put` — there is no cross-key crash window. A crash either leaves the prior
+/// value intact or commits the new one; it can never observe a half-written
+/// floor-without-above state, so neither an already-applied nonce can be
+/// resurrected as unapplied nor an unapplied one skipped.
+///
+/// The legacy [`GroupLocalGovNonce`] key is intentionally NOT written: it is
+/// read-only migration state, superseded by the window value on first store.
+pub fn store_nonce_window(
+    store: &Store,
+    group_id: &ContextGroupId,
+    signer: &PublicKey,
+    window: &NonceWindow,
+) -> EyreResult<()> {
     let mut handle = store.handle();
-    let key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
-    handle.put(&key, &nonce)?;
+    let key = GroupLocalGovNonceWindow::new(group_id.to_bytes(), *signer);
+    handle.put(
+        &key,
+        &GroupLocalGovNonceWindowValue {
+            floor: window.floor(),
+            above: window.above().collect(),
+        },
+    )?;
     Ok(())
 }
 
@@ -44,8 +114,11 @@ fn delete_local_gov_nonce_for_signer(
     signer: &PublicKey,
 ) -> EyreResult<()> {
     let mut handle = store.handle();
-    let key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
-    handle.delete(&key)?;
+    let gid = group_id.to_bytes();
+    handle.delete(&GroupLocalGovNonceWindow::new(gid, *signer))?;
+    // Drop the legacy floor key too, so a future signer reusing this
+    // (group, signer) doesn't inherit a stale migration floor.
+    handle.delete(&GroupLocalGovNonce::new(gid, *signer))?;
     Ok(())
 }
 
@@ -192,15 +265,16 @@ pub(crate) fn persist_group_governance_progress(
     group_id: &ContextGroupId,
     sequence: u64,
     signer: &PublicKey,
-    nonce: u64,
+    window: &NonceWindow,
     dag_heads: Vec<[u8; 32]>,
     op_bytes: &[u8],
 ) -> EyreResult<()> {
     persist_group_op_log_entry(store, group_id, sequence, dag_heads, op_bytes)?;
 
-    let mut handle = store.handle();
-    let nonce_key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
-    handle.put(&nonce_key, &nonce)?;
+    // Nonce window written LAST so the crash-safety ordering holds:
+    // entry → head → floor → above. An un-advanced window after a crash just
+    // replays the (idempotent) op; it never skips one.
+    store_nonce_window(store, group_id, signer, window)?;
 
     Ok(())
 }

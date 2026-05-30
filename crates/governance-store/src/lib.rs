@@ -53,12 +53,13 @@ mod meta;
 mod metadata;
 mod migrations;
 mod namespace;
+pub mod nonce_window;
 mod ops;
 mod permission_checker;
 mod signing_keys;
 mod tee;
 mod upgrades;
-use self::local_state::persist_group_governance_progress;
+use self::local_state::{op_log_contains_content_hash, persist_group_governance_progress};
 
 pub use self::capabilities::CapabilitiesRepository;
 
@@ -78,8 +79,9 @@ pub use self::group_keys::{GroupKeyring, StoredGroupKey};
 pub use self::group_settings::GroupSettingsService;
 pub use self::local_state::{
     delete_group_local_rows, delete_namespace_local_state, get_local_gov_nonce,
-    get_member_context_joins, get_op_head, read_op_log_after, remove_all_member_context_joins,
-    set_local_gov_nonce, track_member_context_join,
+    get_member_context_joins, get_op_head, load_nonce_window, read_op_log_after,
+    remove_all_member_context_joins, set_local_gov_nonce, store_nonce_window,
+    track_member_context_join,
 };
 pub use self::membership::MembershipRepository;
 pub use self::membership::{
@@ -373,9 +375,6 @@ impl<'a> GroupHandle<'a> {
     // --- Nonce ---
     pub fn get_local_gov_nonce(&self, signer: &PublicKey) -> EyreResult<Option<u64>> {
         get_local_gov_nonce(self.store, &self.group_id, signer)
-    }
-    pub fn set_local_gov_nonce(&self, signer: &PublicKey, nonce: u64) -> EyreResult<()> {
-        set_local_gov_nonce(self.store, &self.group_id, signer, nonce)
     }
 
     // --- Op log ---
@@ -1264,11 +1263,11 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         }
     }
 
-    let last = get_local_gov_nonce(store, &group_id, &op.signer)?.unwrap_or(0);
-    if op.nonce <= last {
+    let mut nonce_window = load_nonce_window(store, &group_id, &op.signer)?;
+    if nonce_window.contains(op.nonce) {
         tracing::debug!(
             nonce = op.nonce,
-            last_nonce = last,
+            floor = nonce_window.floor(),
             signer = %op.signer,
             "ignoring op with already-processed nonce"
         );
@@ -1289,6 +1288,38 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     let content_hash = op
         .content_hash()
         .map_err(|e| eyre::eyre!("content_hash: {e}"))?;
+
+    // Record AFTER the apply succeeded above. `record` advances the floor
+    // through any now-contiguous run; for a sibling that arrived out of
+    // order (the #2516 case) it just adds to the above-floor set so the
+    // lower-nonce sibling still applies when it lands.
+    nonce_window.record(op.nonce);
+
+    // Idempotent op-log append, mirroring the namespace receive path
+    // (`apply_group_op_inner`). The nonce guard above short-circuits the
+    // common replay, but `store_nonce_window`'s two-key write is not atomic:
+    // a crash between the floor and above-set writes can drop an in-flight
+    // above-floor nonce from the persisted window, so a DAG replay (this
+    // function runs under `governance_dag`) can reach here for an op that is
+    // already in the log. Dedup against the PERSISTED op-log — the monotonic
+    // signal used everywhere else — so the re-apply re-persists the advanced
+    // window WITHOUT appending a duplicate entry.
+    //
+    // REPLAY-SAFETY CONTRACT: the mutation above (`apply_group_op_mutations`)
+    // re-runs on this replay, BEFORE this dedup fires. That is safe because
+    // every group-op handler is idempotent on re-apply — e.g. `MemberAdded`
+    // resolves to `MembershipRepository::add_member`, an upsert (`put`) that
+    // succeeds whether or not the member row already exists and never errors
+    // on a duplicate. This is the same contract the namespace receive path and
+    // `retry_encrypted_ops_for_group` already depend on (both re-feed applied
+    // ops through the mutation path). A handler that instead errored on a
+    // duplicate would leave the window un-persisted and the node stuck
+    // retrying — so idempotency is a hard requirement for any new handler.
+    if op_log_contains_content_hash(store, &group_id, &content_hash)? {
+        store_nonce_window(store, &group_id, &op.signer, &nonce_window)?;
+        return Ok(());
+    }
+
     let head = get_op_head(store, &group_id)?;
     let next_seq = head.as_ref().map_or(1, |h| h.sequence.saturating_add(1));
     let op_bytes = borsh::to_vec(op).map_err(|e| eyre::eyre!("borsh: {e}"))?;
@@ -1312,7 +1343,13 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
         new_heads.drain(..excess);
     }
     persist_group_governance_progress(
-        store, &group_id, next_seq, &op.signer, op.nonce, new_heads, &op_bytes,
+        store,
+        &group_id,
+        next_seq,
+        &op.signer,
+        &nonce_window,
+        new_heads,
+        &op_bytes,
     )?;
 
     Ok(())
@@ -1333,7 +1370,12 @@ pub fn sign_apply_local_group_op_borsh(
     signer_sk: &PrivateKey,
     op: GroupOp,
 ) -> EyreResult<SignedOpOutput> {
-    let last = get_local_gov_nonce(store, group_id, &signer_sk.public_key())?.unwrap_or(0);
+    // Mint above the highest applied nonce, not just the contiguous floor:
+    // if this signer already has out-of-order siblings in its window
+    // (`above` non-empty), `max_applied` is higher than `floor`, so the next
+    // authored op gets a fresh nonce instead of colliding with one already in
+    // the gap.
+    let last = load_nonce_window(store, group_id, &signer_sk.public_key())?.max_applied();
     let nonce = last.checked_add(1).ok_or(ApplyError::NonceOverflow)?;
     let parent_hashes = get_op_head(store, group_id)?
         .map(|h| h.dag_heads.clone())

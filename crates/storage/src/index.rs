@@ -251,6 +251,25 @@ pub struct EntityIndex {
 }
 
 impl EntityIndex {
+    /// Builds a minimal index carrying just an id, for tests in
+    /// downstream crates that need a borsh-serializable `EntityIndex`
+    /// (e.g. snapshot generation, which discovers entities by
+    /// deserializing stored Index values). Hidden because the fields
+    /// are otherwise private and this is not part of the stable API.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn minimal_for_test(id: Id) -> Self {
+        Self {
+            id,
+            parent_id: None,
+            children: None,
+            full_hash: [0; 32],
+            own_hash: [0; 32],
+            metadata: Metadata::default(),
+            deleted_at: None,
+        }
+    }
+
     /// Returns the entity ID.
     #[must_use]
     pub fn id(&self) -> Id {

@@ -8,6 +8,7 @@ use calimero_primitives::context::{
     ContextId as PrimitiveContextId, GroupMemberRole, UpgradePolicy,
 };
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
+use calimero_storage::logical_clock::HybridTimestamp;
 use generic_array::sequence::Concat;
 use generic_array::typenum::{U1, U32, U8};
 use generic_array::GenericArray;
@@ -26,8 +27,17 @@ pub const GROUP_MEMBER_CAPABILITY_PREFIX: u8 = 0x26;
 pub const GROUP_DEFAULT_CAPS_PREFIX: u8 = 0x29;
 pub const GROUP_SUBGROUP_VIS_PREFIX: u8 = 0x2A;
 pub const GROUP_CONTEXT_LAST_MIGRATION_PREFIX: u8 = 0x2B;
-/// Last applied signed group-op nonce per `(group_id, signer)` for local governance replay protection.
+/// Legacy single-`u64` applied-nonce high-water mark per `(group_id, signer)`.
+/// Superseded by [`GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX`]; retained read-only so
+/// pre-window databases migrate their floor on first load. See
+/// `calimero-governance-store::nonce_window`.
 pub const GROUP_LOCAL_GOV_NONCE_PREFIX: u8 = 0x2C;
+/// Full applied-nonce window per `(group_id, signer)` — contiguous floor plus
+/// the sparse above-floor set — serialized as ONE value so it is written with a
+/// single atomic `put` (no cross-key crash window). Authoritative; takes
+/// precedence over the legacy [`GROUP_LOCAL_GOV_NONCE_PREFIX`] floor on load.
+/// See `calimero-governance-store::nonce_window`.
+pub const GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX: u8 = 0x3C;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GroupPrefix;
@@ -201,6 +211,76 @@ impl Debug for GroupLocalGovNonce {
             .field("signer", &self.signer())
             .finish()
     }
+}
+
+/// The full applied-nonce window for a (group, signer) — see
+/// `calimero-governance-store::nonce_window`. Holds a
+/// [`GroupLocalGovNonceWindowValue`] written with a single atomic `put`.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupLocalGovNonceWindow(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupLocalGovNonceWindow {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], signer: PrimitivePublicKey) -> Self {
+        Self(Key(GenericArray::from([
+            GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
+        ])
+        .concat(GenericArray::from(group_id))
+        .concat(GenericArray::from(*signer))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn signer(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        pk.into()
+    }
+}
+
+impl AsKeyParts for GroupLocalGovNonceWindow {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupLocalGovNonceWindow {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupLocalGovNonceWindow {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupLocalGovNonceWindow")
+            .field("group_id", &self.group_id())
+            .field("signer", &self.signer())
+            .finish()
+    }
+}
+
+/// Value for [`GroupLocalGovNonceWindow`]: the contiguous applied-nonce floor
+/// plus the sparse set of applied nonces above it. One value → one atomic write.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupLocalGovNonceWindowValue {
+    pub floor: u64,
+    pub above: Vec<u64>,
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -1307,7 +1387,7 @@ fn read_byte<R: borsh::io::Read>(reader: &mut R, buf: &mut [u8; 1]) -> borsh::io
 /// upgrades are tracked by semver version string from the local
 /// `ApplicationMeta`, not by application id.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize))]
 pub struct GroupUpgradeValue {
     /// Semver version of the application before the upgrade, read from the
     /// current application's `ApplicationMeta.version`.
@@ -1319,6 +1399,56 @@ pub struct GroupUpgradeValue {
     pub initiated_at: u64,
     pub initiated_by: PrimitivePublicKey,
     pub status: GroupUpgradeStatus,
+    /// Sticky cascade fence boundary: the HLC the originating `CascadeUpgrade`
+    /// op was stamped with, identical on every node that applied it. `None` for
+    /// non-cascade upgrades and pre-existing records. NEVER cleared once set
+    /// (survives `Completed`) — the boundary the state-delta HLC fence reads.
+    pub cascade_hlc: Option<HybridTimestamp>,
+}
+
+#[cfg(feature = "borsh")]
+impl BorshDeserialize for GroupUpgradeValue {
+    fn deserialize_reader<R: borsh::io::Read>(reader: &mut R) -> borsh::io::Result<Self> {
+        let from_version = String::deserialize_reader(reader)?;
+        let to_version = String::deserialize_reader(reader)?;
+        let migration = Option::<Vec<u8>>::deserialize_reader(reader)?;
+        let initiated_at = u64::deserialize_reader(reader)?;
+        let initiated_by = PrimitivePublicKey::deserialize_reader(reader)?;
+        let status = GroupUpgradeStatus::deserialize_reader(reader)?;
+        // Backward-compatible trailing field: absent in pre-existing records
+        // (LazyOnAccess path writes directly to Completed, so this field must
+        // live here rather than inside InProgress).
+        let cascade_hlc = {
+            let mut first = [0u8; 1];
+            if !read_byte(reader, &mut first)? {
+                // Clean EOF — legacy record with no cascade_hlc bytes.
+                None
+            } else {
+                // At least one byte is present; it is the Option discriminant.
+                // 0 = None, 1 = Some(HybridTimestamp).
+                let tag = first[0];
+                match tag {
+                    0 => None,
+                    1 => Some(HybridTimestamp::deserialize_reader(reader)?),
+                    _ => {
+                        return Err(borsh::io::Error::new(
+                            borsh::io::ErrorKind::InvalidData,
+                            "invalid Option tag for cascade_hlc",
+                        ))
+                    }
+                }
+            }
+        };
+        Ok(Self {
+            from_version,
+            to_version,
+            migration,
+            initiated_at,
+            initiated_by,
+            status,
+            cascade_hlc,
+        })
+    }
 }
 
 /// State machine for a group upgrade operation.
@@ -2040,6 +2170,7 @@ mod tests {
             GROUP_SUBGROUP_VIS_PREFIX,
             GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
             GROUP_LOCAL_GOV_NONCE_PREFIX,
+            GROUP_LOCAL_GOV_NONCE_WINDOW_PREFIX,
             GROUP_MEMBER_METADATA_PREFIX,
             GROUP_METADATA_PREFIX,
             GROUP_CONTEXT_METADATA_PREFIX,
@@ -2211,6 +2342,7 @@ mod tests {
                     completed: 3,
                     failed: 1,
                 },
+                cascade_hlc: None,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -2233,6 +2365,7 @@ mod tests {
                 }
                 other => panic!("expected InProgress, got {other:?}"),
             }
+            assert_eq!(decoded.cascade_hlc, None);
         }
 
         #[test]
@@ -2280,6 +2413,7 @@ mod tests {
                 status: GroupUpgradeStatus::Completed {
                     completed_at: Some(1_700_001_000),
                 },
+                cascade_hlc: None,
             };
 
             let bytes = to_vec(&value).expect("serialize");
@@ -2294,6 +2428,87 @@ mod tests {
                 }
                 other => panic!("expected Completed, got {other:?}"),
             }
+            assert_eq!(decoded.cascade_hlc, None);
         }
+    }
+}
+
+#[cfg(all(test, feature = "borsh"))]
+mod cascade_hlc_borsh_tests {
+    use borsh::{to_vec, BorshDeserialize, BorshSerialize};
+    use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
+    use calimero_storage::logical_clock::HybridTimestamp;
+
+    use super::{GroupUpgradeStatus, GroupUpgradeValue};
+
+    fn sample(cascade_hlc: Option<HybridTimestamp>) -> GroupUpgradeValue {
+        GroupUpgradeValue {
+            from_version: "1.0.0".to_owned(),
+            to_version: "2.0.0".to_owned(),
+            migration: Some(vec![1, 2, 3]),
+            initiated_at: 1_700_000_000,
+            initiated_by: PrimitivePublicKey::from([7u8; 32]),
+            status: GroupUpgradeStatus::Completed { completed_at: None },
+            cascade_hlc,
+        }
+    }
+
+    #[test]
+    fn roundtrips_with_populated_cascade_hlc() {
+        let value = sample(Some(HybridTimestamp::zero()));
+        let bytes = to_vec(&value).unwrap();
+        let decoded = GroupUpgradeValue::try_from_slice(&bytes).unwrap();
+        assert_eq!(decoded.cascade_hlc, Some(HybridTimestamp::zero()));
+        assert_eq!(decoded.to_version, "2.0.0");
+    }
+
+    #[test]
+    fn old_format_without_field_decodes_as_none() {
+        let mut legacy = Vec::new();
+        "1.0.0".to_owned().serialize(&mut legacy).unwrap();
+        "2.0.0".to_owned().serialize(&mut legacy).unwrap();
+        Some(vec![1u8, 2, 3]).serialize(&mut legacy).unwrap();
+        1_700_000_000u64.serialize(&mut legacy).unwrap();
+        PrimitivePublicKey::from([7u8; 32])
+            .serialize(&mut legacy)
+            .unwrap();
+        (GroupUpgradeStatus::Completed { completed_at: None })
+            .serialize(&mut legacy)
+            .unwrap();
+
+        let decoded = GroupUpgradeValue::try_from_slice(&legacy).unwrap();
+        assert_eq!(decoded.cascade_hlc, None);
+    }
+
+    #[test]
+    fn roundtrips_with_none_cascade_hlc() {
+        let value = sample(None);
+        let bytes = to_vec(&value).unwrap();
+        let decoded = GroupUpgradeValue::try_from_slice(&bytes).unwrap();
+        assert_eq!(decoded.cascade_hlc, None);
+        assert_eq!(decoded.to_version, "2.0.0");
+    }
+
+    #[test]
+    fn rejects_partial_cascade_hlc() {
+        let mut bytes = Vec::new();
+        "1.0.0".to_owned().serialize(&mut bytes).unwrap();
+        "2.0.0".to_owned().serialize(&mut bytes).unwrap();
+        Some(vec![1u8, 2, 3]).serialize(&mut bytes).unwrap();
+        1_700_000_000u64.serialize(&mut bytes).unwrap();
+        PrimitivePublicKey::from([7u8; 32])
+            .serialize(&mut bytes)
+            .unwrap();
+        (GroupUpgradeStatus::Completed { completed_at: None })
+            .serialize(&mut bytes)
+            .unwrap();
+        // Push the `Some` tag (0x01) with no HybridTimestamp body — truncated.
+        bytes.push(0x01u8);
+
+        let result = GroupUpgradeValue::try_from_slice(&bytes);
+        assert!(
+            result.is_err(),
+            "expected Err for truncated cascade_hlc body"
+        );
     }
 }
