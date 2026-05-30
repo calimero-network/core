@@ -385,14 +385,30 @@ impl SyncManager {
                 if let Some(parent_id) = index.parent_id() {
                     metadata = metadata.with_parent(*parent_id.as_bytes());
                 }
-                // Carry the full ancestor chain. With only `parent_id`
-                // the receiver's `apply_action` ancestor loop falls back
-                // to `add_root(parent)` for any missing ancestor — wrong
-                // tree position → divergent Merkle root that HC can't
-                // heal. Empty-on-error keeps the legacy single-parent
-                // fallback in `apply_leaf_with_crdt_merge`.
-                if let Ok(ancestors) = Index::<MainStorage>::get_ancestors_of(entity_id) {
-                    metadata = metadata.with_ancestors(ancestors);
+                // Carry the full ancestor chain so the receiver places the
+                // entity at its exact Merkle position. A non-root entity
+                // shipped without its chain forces the receiver's
+                // `apply_leaf_with_crdt_merge` empty-ancestors fallback,
+                // which `add_root`s the missing ancestors — wrong tree
+                // position → divergent Merkle root that HashComparison
+                // cannot heal (the same-DAG-heads / different-root
+                // split-brain). Surface the error loudly instead of
+                // silently shipping a leaf we couldn't resolve a chain for;
+                // the receiver-side guard then declines to guess its
+                // position rather than misplacing it.
+                match Index::<MainStorage>::get_ancestors_of(entity_id) {
+                    Ok(ancestors) => {
+                        metadata = metadata.with_ancestors(ancestors);
+                    }
+                    Err(err) => {
+                        warn!(
+                            %entity_id,
+                            ?err,
+                            "HC sender: could not resolve ancestor chain for leaf; \
+                             shipping with parent_id only (receiver will not guess \
+                             its tree position)"
+                        );
+                    }
                 }
                 if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
                     metadata = metadata.with_authorization(auth);
