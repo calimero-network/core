@@ -93,8 +93,8 @@ pub(crate) fn apply(
 
         // Stamp the sticky cascade fence onto the per-group upgrade
         // record. Load-or-default: a descendant with no prior upgrade
-        // record gets a fresh `Completed` record carrying only the fence
-        // and the cascade migration bytes. `cascade_hlc` is write-once.
+        // record gets a fresh `Completed` record carrying the fence and
+        // the cascade migration bytes. `cascade_hlc` is never cleared.
         let repo = UpgradesRepository::new(store);
         let mut value = repo.load(&gid)?.unwrap_or_else(|| GroupUpgradeValue {
             from_version: String::new(),
@@ -105,6 +105,11 @@ pub(crate) fn apply(
             status: GroupUpgradeStatus::Completed { completed_at: None },
             cascade_hlc: None,
         });
+        // Reflect THIS cascade's migration bytes on an existing record too, so
+        // the record's `migration` matches the `GroupMeta.migration` we just
+        // wrote (the authoritative source the migrate runs from); otherwise an
+        // existing record from a prior upgrade would carry stale migration bytes.
+        value.migration = migration.clone();
         value.cascade_hlc = Some(cascade_hlc);
         repo.save(&gid, &value)?;
 

@@ -621,6 +621,22 @@ async fn get_group_upgrade_status() {
 }
 
 #[tokio::test]
+async fn get_cascade_status() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/admin-api/groups/{GID}/cascade-status")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = make_client(&Url::parse(&server.uri()).unwrap());
+    let resp = client.get_cascade_status(GID).await.unwrap();
+
+    assert!(resp.data.is_empty());
+}
+
+#[tokio::test]
 async fn retry_group_upgrade() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
