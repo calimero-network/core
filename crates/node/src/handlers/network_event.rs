@@ -71,6 +71,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         governance_position,
                         key_id,
                         delta_signature,
+                        producing_app_key,
                     } => {
                         info!(
                             %context_id,
@@ -106,6 +107,10 @@ impl Handler<NetworkEvent> for NodeManager {
                                 governance_position,
                                 key_id,
                                 delta_signature,
+                                // Carry the sender-stamped producing_app_key
+                                // through so the fence check (Tasks 8/9) can
+                                // read it inside the apply path.
+                                producing_app_key,
                             },
                         };
 

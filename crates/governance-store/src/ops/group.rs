@@ -16,6 +16,7 @@ pub(crate) mod context;
 
 mod cascade_group_migration_set;
 mod cascade_target_application_set;
+mod cascade_upgrade;
 mod context_capability_granted;
 mod context_capability_revoked;
 mod context_detached;
@@ -140,6 +141,9 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             member_set_auto_follow::apply(ctx, target, auto_follow_contexts, auto_follow_subgroups)?
         }
         GroupOp::TransferOwnership { new_owner } => transfer_ownership::apply(ctx, new_owner)?,
+        // Deprecated legacy two-op cascade variants (see GroupOp docs):
+        // superseded by `CascadeUpgrade`, but their apply arms are retained for
+        // one release so in-flight / replayed ops from pre-upgrade peers still apply.
         GroupOp::CascadeTargetApplicationSet {
             from_app_key,
             app_key,
@@ -154,6 +158,20 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             from_app_key,
             migration,
         } => cascade_group_migration_set::apply(ctx, from_app_key, migration)?,
+        GroupOp::CascadeUpgrade {
+            from_app_key,
+            app_key,
+            target_application_id,
+            migration,
+            cascade_hlc,
+        } => cascade_upgrade::apply(
+            ctx,
+            from_app_key,
+            app_key,
+            target_application_id,
+            migration,
+            *cascade_hlc,
+        )?,
         // `GroupOp` is `#[non_exhaustive]` from a different crate,
         // so the wildcard is required by the compiler. When a new
         // variant is added in `calimero-governance-types`, it lands

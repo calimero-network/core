@@ -1272,6 +1272,7 @@ fn save_load_delete_upgrade() {
             completed: 0,
             failed: 0,
         },
+        cascade_hlc: None,
     };
 
     UpgradesRepository::new(&store)
@@ -1308,6 +1309,7 @@ fn enumerate_in_progress_upgrades_filters_completed() {
                     completed: 2,
                     failed: 0,
                 },
+                cascade_hlc: None,
             },
         )
         .unwrap();
@@ -1324,6 +1326,7 @@ fn enumerate_in_progress_upgrades_filters_completed() {
                 status: GroupUpgradeStatus::Completed {
                     completed_at: Some(1_700_001_000),
                 },
+                cascade_hlc: None,
             },
         )
         .unwrap();

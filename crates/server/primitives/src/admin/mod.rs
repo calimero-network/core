@@ -1869,10 +1869,9 @@ pub struct UpgradeGroupApiRequest {
     pub requester: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub migrate_method: Option<String>,
-    /// When `true`, the handler emits the cascade variant of the upgrade
-    /// op (`GroupOp::CascadeTargetApplicationSet` + optional
-    /// `GroupOp::CascadeGroupMigrationSet`) and dispatches the per-context
-    /// migration propagator against every descendant subgroup whose
+    /// When `true`, the handler emits the single atomic `GroupOp::CascadeUpgrade`
+    /// op (target + app_key + migration + fence `cascade_hlc`) and dispatches the
+    /// per-context migration propagator against every descendant subgroup whose
     /// current `app_key` matches the signed group's current `app_key`.
     ///
     /// Default: `false` — existing clients (e.g. PR-1's single-group
@@ -1920,6 +1919,30 @@ pub struct UpgradeGroupApiResponseData {
 #[serde(rename_all = "camelCase")]
 pub struct GetGroupUpgradeStatusApiResponse {
     pub data: Option<GroupUpgradeStatusApiData>,
+}
+
+/// Per-group cascade migration status entry returned by `get_cascade_status`.
+///
+/// Mirrors [`GroupUpgradeStatusApiData`] for the upgrade snapshot, augmented
+/// with `group_id` and the sticky `cascade_hlc` fence from the atomic
+/// `CascadeUpgrade` op (opaque display string; `None` for non-cascade upgrades).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CascadeStatusApiEntry {
+    /// Hex-encoded 32-byte group id.
+    pub group_id: String,
+    /// Upgrade snapshot for this group.
+    pub upgrade: GroupUpgradeStatusApiData,
+    /// HLC fence string from the atomic `CascadeUpgrade` op, or `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cascade_hlc: Option<String>,
+}
+
+/// Response returned by `GET .../groups/:namespace_id/cascade-status`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetCascadeStatusApiResponse {
+    pub data: Vec<CascadeStatusApiEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

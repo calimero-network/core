@@ -6,6 +6,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::PublicKey;
 use calimero_primitives::metadata::MetadataRecord;
+use calimero_storage::logical_clock::HybridTimestamp;
 use thiserror::Error as ThisError;
 
 use crate::messages::MigrationParams;
@@ -206,10 +207,10 @@ pub struct UpgradeGroupRequest {
     pub target_application_id: ApplicationId,
     pub requester: Option<PublicKey>,
     pub migration: Option<MigrationParams>,
-    /// When `true`, the handler emits the [`GroupOp::CascadeTargetApplicationSet`]
-    /// (and, if `migration` is set, [`GroupOp::CascadeGroupMigrationSet`])
-    /// variants that fan out to every descendant subgroup whose current
-    /// `app_key` matches the signed group's current `app_key`. When
+    /// When `true`, the handler emits the single atomic [`GroupOp::CascadeUpgrade`]
+    /// op (carrying `target_application_id`, `app_key`, `migration`, and the
+    /// fence `cascade_hlc`) that fans out to every descendant subgroup whose
+    /// current `app_key` matches the signed group's current `app_key`. When
     /// `false` (the default for `Default::default()` and for any caller
     /// that does not explicitly set it), the handler stays on the
     /// existing single-group path that emits the per-group
@@ -905,6 +906,38 @@ pub struct ListNamespacesForApplicationRequest {
 
 impl Message for ListNamespacesForApplicationRequest {
     type Result = eyre::Result<Vec<NamespaceSummary>>;
+}
+
+// ---------------------------------------------------------------------------
+// Cascade status query
+// ---------------------------------------------------------------------------
+
+/// Per-context cascade migration status across a namespace subtree.
+///
+/// Returned as one element per group (including the namespace root itself) by
+/// the `get_cascade_status` RPC.
+#[derive(Clone, Debug)]
+pub struct GetCascadeStatusRequest {
+    pub namespace_id: ContextGroupId,
+}
+
+impl Message for GetCascadeStatusRequest {
+    type Result = eyre::Result<Vec<CascadeStatusEntry>>;
+}
+
+/// One entry in the cascade-status response: upgrade info for a single group
+/// in the namespace subtree, plus the sticky HLC fence that the atomic
+/// `CascadeUpgrade` op stamped on it.
+#[derive(Clone, Debug)]
+pub struct CascadeStatusEntry {
+    pub group_id: ContextGroupId,
+    /// Full upgrade snapshot for the group (mirrors what `get_group_upgrade_status`
+    /// returns per-group), serialised here for every group in the subtree.
+    pub upgrade: GroupUpgradeInfo,
+    /// Sticky HLC fence written by `CascadeUpgrade`, if the group was part of
+    /// an atomic cascade. `None` for non-cascade upgrades and groups that have
+    /// no upgrade record.
+    pub cascade_hlc: Option<HybridTimestamp>,
 }
 
 impl From<calimero_store::key::GroupUpgradeValue> for GroupUpgradeInfo {
