@@ -125,13 +125,14 @@ impl Handler<ExecuteRequest> for ContextManager {
             Some(ContextAtomic::Held(ContextAtomicKey(guard))) => (Either::Left(guard), true),
         };
 
-        // Cascade-upgrade gate (PR-2): if this context belongs to a group whose
-        // upgrade is currently `InProgress`, refuse user-initiated calls. The
-        // propagator must finish (or be explicitly retried via
-        // `retry_group_upgrade`) before user traffic resumes, otherwise a
-        // call could land on a context whose group-mates have already
-        // migrated, producing cross-version state drift inside the same
-        // group — exactly what cascade is meant to prevent.
+        // Cascade-upgrade gate (PR-2 + PR-3): if this context belongs to a group
+        // whose upgrade is currently `InProgress`, refuse ALL writes — both
+        // user-initiated calls AND state-op writes (`__calimero_sync_next`).
+        // The propagator must finish (or be explicitly retried via
+        // `retry_group_upgrade`) before any traffic resumes, otherwise writes
+        // could land on a context whose group-mates have already migrated,
+        // producing cross-version state drift inside the same group — exactly
+        // what cascade is meant to prevent.
         //
         // Placed *after* `context.lock()` (which consumes the `context`
         // borrow on `self`) so that `&self.datastore` is reachable — same
@@ -139,15 +140,23 @@ impl Handler<ExecuteRequest> for ContextManager {
         // call below.
         //
         // Bypasses:
-        //   * `__calimero_sync_next` (state-sync replay): sync-layer
-        //     internal traffic, not a user call. The state it carries was
-        //     produced by some peer and is being replayed locally; it does
-        //     not write *new* mutations. Gating it would wedge the sync
-        //     pipeline and defeat the migration's ability to converge.
         //   * The propagator itself doesn't go through this handler — it
         //     routes via `UpdateApplicationRequest` →
         //     `handlers::update_application`, so no internal bypass field
         //     is needed for `propagate_upgrade` / `recover_in_progress_upgrades`.
+        //   * `LazyOnAccess` upgrades write `Completed` directly (never
+        //     `InProgress`), so `upgrade_blocks_write` returns `false` for
+        //     them and lazy migrations are never blocked.
+        //
+        // State-op (`__calimero_sync_next`) writes: PR-3 removes the PR-2
+        // bypass for state-ops. During `InProgress`, no new user writes are
+        // possible (user calls also blocked), so no new deltas are produced
+        // that would need to be replayed via `__calimero_sync_next`. Any
+        // in-flight state-ops that were already queued when `InProgress` was
+        // set are retried by the periodic sync cycle once the upgrade reaches
+        // `Completed` — no deadlock is possible.  The propagator's own
+        // migration writes go through `update_application_with_migration`
+        // (not via execute), so they are also unaffected.
         //
         // Granularity: gate is per-group, not per-context. PR-2 explicitly
         // chose this over per-context-HLC gating because the latter requires
@@ -155,61 +164,59 @@ impl Handler<ExecuteRequest> for ContextManager {
         // `GroupUpgradeStatus`) that is deferred to PR-3. The trade-off is
         // documented on `ExecuteError::UpgradeInProgress`.
         //
-        // Read vs write: PR-2 blocks *all* `call` invocations during
-        // `InProgress`, not just writes. The `call` path doesn't carry an
-        // intent flag and we cannot cheaply derive write-intent from the
-        // method name alone — better to block too much than to let a read
-        // observe a mid-migration partial-snapshot of the group. PR-3 or a
-        // follow-up can refine this if usability complaints surface.
+        // Read vs write: the gate blocks *all* invocations (reads and writes)
+        // during `InProgress`. The call path doesn't carry an intent flag and
+        // we cannot cheaply derive write-intent from the method name alone —
+        // better to block too much than to let a read observe a mid-migration
+        // partial-snapshot of the group.
         //
         // Absent status row = "no upgrade running" → allow. Only an explicit
-        // `Some(InProgress { .. })` blocks. This keeps the baseline (no
-        // group, or group with no upgrade history) on the fast path.
-        if !is_state_op {
-            match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
-                Ok(Some(group_id)) => {
-                    match calimero_governance_store::UpgradesRepository::new(&self.datastore)
-                        .load(&group_id)
-                    {
-                        Ok(Some(upgrade)) => {
-                            use calimero_store::key::GroupUpgradeStatus;
-                            if matches!(upgrade.status, GroupUpgradeStatus::InProgress { .. }) {
-                                warn!(
-                                    %context_id,
-                                    ?group_id,
-                                    method,
-                                    "refusing execute: group upgrade in progress"
-                                );
-                                return ActorResponse::reply(Err(
-                                    ExecuteError::UpgradeInProgress { group_id },
-                                ));
-                            }
-                        }
-                        Ok(None) => {
-                            // No upgrade row for this group → not in progress, allow.
-                        }
-                        Err(err) => {
-                            error!(
+        // `Some(InProgress { .. })` blocks (via `upgrade_blocks_write`). This
+        // keeps the baseline (no group, or group with no upgrade history) on
+        // the fast path.
+        match calimero_governance_store::get_group_for_context(&self.datastore, &context_id) {
+            Ok(Some(group_id)) => {
+                match calimero_governance_store::UpgradesRepository::new(&self.datastore)
+                    .load(&group_id)
+                {
+                    Ok(Some(upgrade)) => {
+                        if upgrade_blocks_write(&upgrade.status) {
+                            warn!(
                                 %context_id,
                                 ?group_id,
-                                %err,
-                                "cascade gate: failed to load GroupUpgradeStatus"
+                                method,
+                                is_state_op,
+                                "refusing execute: group upgrade in progress"
                             );
-                            return ActorResponse::reply(Err(ExecuteError::InternalError));
+                            return ActorResponse::reply(Err(ExecuteError::UpgradeInProgress {
+                                group_id,
+                            }));
                         }
                     }
+                    Ok(None) => {
+                        // No upgrade row for this group → not in progress, allow.
+                    }
+                    Err(err) => {
+                        error!(
+                            %context_id,
+                            ?group_id,
+                            %err,
+                            "cascade gate: failed to load GroupUpgradeStatus"
+                        );
+                        return ActorResponse::reply(Err(ExecuteError::InternalError));
+                    }
                 }
-                Ok(None) => {
-                    // Context not registered to any group → no cascade gate applies.
-                }
-                Err(err) => {
-                    error!(
-                        %context_id,
-                        %err,
-                        "cascade gate: failed to resolve owning group"
-                    );
-                    return ActorResponse::reply(Err(ExecuteError::InternalError));
-                }
+            }
+            Ok(None) => {
+                // Context not registered to any group → no cascade gate applies.
+            }
+            Err(err) => {
+                error!(
+                    %context_id,
+                    %err,
+                    "cascade gate: failed to resolve owning group"
+                );
+                return ActorResponse::reply(Err(ExecuteError::InternalError));
             }
         }
 
@@ -2066,6 +2073,29 @@ pub(crate) fn persist_signed_signatures(
     result
 }
 
+/// Returns `true` when a group-upgrade status should block ALL writes
+/// (both user calls and state-op writes such as `__calimero_sync_next`).
+///
+/// Only `GroupUpgradeStatus::InProgress` blocks.  `Completed` (with or
+/// without a timestamp) never blocks.  This is the single source of truth
+/// for the cascade-upgrade write-gate decision.
+///
+/// # Safety invariants
+///
+/// * `LazyOnAccess` upgrades write `Completed` directly (never `InProgress`),
+///   so this fn never returns `true` during a lazy migration.
+/// * The eager propagator's own writes go through `UpdateApplicationRequest`
+///   → `handlers::update_application`, which bypasses the execute gate
+///   entirely — no deadlock is possible.
+/// * Sync-pipeline (`__calimero_sync_next`) failures during `InProgress` are
+///   retried by the periodic sync cycle once the upgrade reaches `Completed`.
+fn upgrade_blocks_write(status: &calimero_store::key::GroupUpgradeStatus) -> bool {
+    matches!(
+        status,
+        calimero_store::key::GroupUpgradeStatus::InProgress { .. }
+    )
+}
+
 /// Checks if a context belongs to a group with LazyOnAccess policy and
 /// needs an upgrade or migration.
 ///
@@ -2145,4 +2175,44 @@ fn maybe_lazy_upgrade(
     );
 
     Some((meta.target_application_id, migrate_method, group_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_store::key::GroupUpgradeStatus;
+
+    use super::upgrade_blocks_write;
+
+    #[test]
+    fn upgrade_blocks_write_in_progress() {
+        let status = GroupUpgradeStatus::InProgress {
+            total: 5,
+            completed: 2,
+            failed: 0,
+        };
+        assert!(
+            upgrade_blocks_write(&status),
+            "InProgress should block writes"
+        );
+    }
+
+    #[test]
+    fn upgrade_blocks_write_completed() {
+        let status = GroupUpgradeStatus::Completed { completed_at: None };
+        assert!(
+            !upgrade_blocks_write(&status),
+            "Completed should not block writes"
+        );
+    }
+
+    #[test]
+    fn upgrade_blocks_write_completed_with_timestamp() {
+        let status = GroupUpgradeStatus::Completed {
+            completed_at: Some(1_700_000_000),
+        };
+        assert!(
+            !upgrade_blocks_write(&status),
+            "Completed (with timestamp) should not block writes"
+        );
+    }
 }
