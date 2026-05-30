@@ -299,6 +299,7 @@ pub enum GroupOp {
     ///
     /// Operationally invoked by an `upgrade_group` RPC with `cascade:
     /// true`. See `docs/superpowers/specs/2026-05-22-namespace-cascade-app-upgrade-design.md`.
+    #[deprecated(note = "use CascadeUpgrade")]
     CascadeTargetApplicationSet {
         from_app_key: [u8; 32],
         app_key: [u8; 32],
@@ -310,6 +311,7 @@ pub enum GroupOp {
     /// group AND on every descendant subgroup whose current `app_key`
     /// equals `from_app_key`. Same matching-predicate semantics as the
     /// target variant.
+    #[deprecated(note = "use CascadeUpgrade")]
     CascadeGroupMigrationSet {
         from_app_key: [u8; 32],
         migration: Option<Vec<u8>>,
