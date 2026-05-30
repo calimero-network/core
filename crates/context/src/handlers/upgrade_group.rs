@@ -1007,40 +1007,13 @@ fn dispatch_cascade(
     let ack_router_for_publish = Arc::clone(&ack_router);
     let migration_bytes_for_publish = migration_bytes.clone();
 
+    // Stamp the cascade_hlc ONCE at the initiator so every receiver
+    // applies the same fence boundary (Task 3 apply handler stores this
+    // value verbatim; Task 4 carries it on the wire via CascadeUpgrade).
+    let cascade_hlc = calimero_storage::env::hlc_timestamp();
+
     let publish_task = async move {
         let sk = PrivateKey::from(effective_signing_key);
-
-        // ORDER MATTERS: emit `CascadeGroupMigrationSet` BEFORE
-        // `CascadeTargetApplicationSet`. Both ops use the same
-        // `from_app_key == descendant.app_key` walk predicate. The
-        // target-application op rewrites every matched descendant's
-        // `app_key` from `from_app_key` to `new_app_key`; if it ran
-        // first, the migration op's predicate would then match
-        // nothing (every descendant already moved to `new_app_key`)
-        // and the migration bytes would never reach the descendant
-        // metas — silently dropped on the emitter AND every
-        // receiver. The descendant `GroupMeta.migration` field is
-        // what `maybe_lazy_upgrade` reads to know which migrate
-        // method to run, so dropping it leaves receivers unable to
-        // self-migrate (they'd swap to the v2 app against
-        // un-migrated v1-shaped state). Emitting migration-set first
-        // — while descendants still hold `from_app_key` — lets both
-        // ops match the same descendant set.
-        if migration_bytes_for_publish.is_some() {
-            let report = calimero_governance_store::sign_apply_and_publish(
-                &datastore_for_publish,
-                &node_client_for_publish,
-                &ack_router_for_publish,
-                &group_id,
-                &sk,
-                GroupOp::CascadeGroupMigrationSet {
-                    from_app_key,
-                    migration: migration_bytes_for_publish.clone(),
-                },
-            )
-            .await?;
-            report.observe("upgrade_group", "CascadeGroupMigrationSet");
-        }
 
         let report = calimero_governance_store::sign_apply_and_publish(
             &datastore_for_publish,
@@ -1048,14 +1021,16 @@ fn dispatch_cascade(
             &ack_router_for_publish,
             &group_id,
             &sk,
-            GroupOp::CascadeTargetApplicationSet {
+            GroupOp::CascadeUpgrade {
                 from_app_key,
                 app_key: new_app_key,
                 target_application_id,
+                migration: migration_bytes_for_publish.clone(),
+                cascade_hlc,
             },
         )
         .await?;
-        report.observe("upgrade_group", "CascadeTargetApplicationSet");
+        report.observe("upgrade_group", "CascadeUpgrade");
 
         Ok::<_, eyre::Report>(())
     }
@@ -1083,7 +1058,7 @@ fn dispatch_cascade(
                     completed: 0,
                     failed: 0,
                 },
-                cascade_hlc: None,
+                cascade_hlc: Some(cascade_hlc),
             };
             if let Err(err) = UpgradesRepository::new(&datastore).save(gid, &upgrade_value) {
                 error!(
