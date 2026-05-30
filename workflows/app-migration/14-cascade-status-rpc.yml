@@ -219,16 +219,21 @@ steps:
 
   - name: Assert cascade-status roll-up on BOTH nodes
     type: json_assert
+    # The status counts export as integers; merobox substitutes a `"{{var}}"`
+    # holding a non-string as the BARE value (the wrapping quotes are
+    # stripped), so `"{{status_total_node1}}"` becomes `2`, not `"2"`. Compare
+    # against bare integer literals — `equal(2, "2")` fails (int != string),
+    # `equal(2, 2)` passes.
     statements:
       # nothing left pending on either node
-      - 'equal("{{status_pending_node1}}", "0")'
-      - 'equal("{{status_pending_node2}}", "0")'
+      - 'equal("{{status_pending_node1}}", 0)'
+      - 'equal("{{status_pending_node2}}", 0)'
       # every reported group completed (completed == total)
       - 'equal("{{status_completed_node1}}", "{{status_total_node1}}")'
       - 'equal("{{status_completed_node2}}", "{{status_total_node2}}")'
       # the subtree is namespace root + 1 descendant subgroup = 2 groups
-      - 'equal("{{status_total_node1}}", "2")'
-      - 'equal("{{status_total_node2}}", "2")'
+      - 'equal("{{status_total_node1}}", 2)'
+      - 'equal("{{status_total_node2}}", 2)'
 
   # Phase 7: Teardown (node 1 holds admin authority).
   - name: Delete context
