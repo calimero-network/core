@@ -561,6 +561,14 @@ fn generate_assign_deterministic_ids_impl(
             || type_str.contains("UserStorage")
             || type_str.contains("FrozenStorage")
             || type_str.contains("SharedStorage")
+            // `AuthoredVector` is already matched by the `"Vector"` substring above;
+            // `AuthoredMap` is NOT a substring of any entry, so it must be listed
+            // explicitly or its outer wrapper id stays `Id::random()` and a
+            // freshly-constructed map (in `init`/`migrate`) diverges across nodes.
+            // Safe: the inner map is built with a deterministic id, so its
+            // `reassign` is an idempotent no-op (no clear+reinsert), and only the
+            // wrapper's id is canonicalised — owner stamps are preserved.
+            || type_str.contains("AuthoredMap")
     }
 
     // Generate reassign calls for each collection field
