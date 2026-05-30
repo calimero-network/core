@@ -144,6 +144,8 @@ jobs:
           - 16-scenario-user-storage
           - 17-scenario-frozen-storage
           - 18-scenario-shared-storage
+          - 19-scenario-authored-vector
+          - 20-scenario-unordered-set
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:

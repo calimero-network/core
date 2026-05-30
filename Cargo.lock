@@ -8794,6 +8794,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "scenario-authored-vector-v1"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "scenario-authored-vector-v2"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
 name = "scenario-crdt-native-v1"
 version = "0.0.0"
 dependencies = [
@@ -8985,6 +9005,26 @@ dependencies = [
 
 [[package]]
 name = "scenario-struct-to-enum-v2"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "scenario-unordered-set-v1"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "scenario-unordered-set-v2"
 version = "0.0.0"
 dependencies = [
  "calimero-sdk",

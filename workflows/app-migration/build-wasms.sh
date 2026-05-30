@@ -43,6 +43,10 @@ SUITES=(
     "apps/migrations/scenario-frozen-storage-v2"
     "apps/migrations/scenario-shared-storage-v1"
     "apps/migrations/scenario-shared-storage-v2"
+    "apps/migrations/scenario-authored-vector-v1"
+    "apps/migrations/scenario-authored-vector-v2"
+    "apps/migrations/scenario-unordered-set-v1"
+    "apps/migrations/scenario-unordered-set-v2"
 )
 
 for suite in "${SUITES[@]}"; do
