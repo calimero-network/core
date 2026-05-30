@@ -393,11 +393,16 @@ impl Handler<ExecuteRequest> for ContextManager {
         // Resolve the producing-app-key for the broadcast envelope. Runs
         // synchronously here so the `Option<[u8;32]>` (Copy) can be
         // captured by value in the async external_task closure below.
-        // Errors are soft-faults: a store failure here means the field
-        // arrives as `None` at receivers (they treat `None` as "no fence
-        // decision possible") instead of blocking the execute path.
         // `get_group_for_context` is called a second time internally;
         // that's one extra O(1) store read per execute, acceptable here.
+        //
+        // SECURITY TRADEOFF (fence hole, accepted): a store error here stamps
+        // `None` ⇒ this delta is not fenceable by receivers (they treat `None`
+        // as "no fence decision possible" and apply it). We accept that narrow
+        // hole as a liveness-over-strictness tradeoff for a transient/local
+        // store fault — failing execute on a store hiccup would harm liveness
+        // far more than the rare unfenceable delta — and surface it at `warn!`
+        // so the gap is observable rather than silent.
         let producing_app_key: Option<[u8; 32]> =
             match resolve_producing_app_key(&self.datastore, &context_id) {
                 Ok(v) => v,
@@ -2285,6 +2290,24 @@ mod tests {
         let store = fresh_store();
         // context_id was never registered in any group
         let context_id = ContextId::from([0xF3; 32]);
+
+        assert_eq!(
+            resolve_producing_app_key(&store, &context_id).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_producing_app_key_none_when_meta_absent() {
+        // Context is registered under a group, but no `GroupMetaValue` was
+        // ever written for that group — the resolver must return `None`
+        // (no app_key to stamp) rather than erroring.
+        let store = fresh_store();
+        let context_id = ContextId::from([0xF4; 32]);
+        let group_id = ContextGroupId::from([0xF5; 32]);
+
+        register_context_in_group(&store, &group_id, &context_id)
+            .expect("register_context_in_group");
 
         assert_eq!(
             resolve_producing_app_key(&store, &context_id).unwrap(),

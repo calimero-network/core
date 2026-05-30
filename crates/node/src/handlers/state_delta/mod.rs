@@ -552,10 +552,10 @@ fn state_delta_message_from_buffered(
         governance_position: buffered.governance_position,
         key_id: buffered.key_id,
         delta_signature: buffered.delta_signature,
-        // `BufferedDelta` predates this field; the producing_app_key is not
-        // stored in the buffer. Drain-path re-applies carry `None` — the fence
-        // check (Tasks 8/9) must tolerate `None` for this replay path.
-        producing_app_key: None,
+        // Carry the stamped producing_app_key through the drain-path re-apply
+        // so the HLC fence (Tasks 8/9) can still drop a buffered stale-schema
+        // delta. `None` only for legacy deltas that never carried the field.
+        producing_app_key: buffered.producing_app_key,
     }
 }
 
@@ -616,7 +616,7 @@ pub(crate) async fn apply_authorized_state_delta(
         governance_position,
         key_id,
         delta_signature,
-        producing_app_key: _,
+        producing_app_key,
     } = message;
 
     // Per-delta envelope signature verification. Closes the anti-
@@ -647,6 +647,32 @@ pub(crate) async fn apply_authorized_state_delta(
                 %err,
                 "Rejecting state delta — envelope signature verification failed"
             );
+            return Ok(());
+        }
+    }
+
+    // HLC fence (PR-3): drop a delta produced under a different app schema
+    // than the context now targets AND newer than the recorded cascade
+    // boundary. This is the common chokepoint for both direct delivery and
+    // the governance-pending drain re-apply (which reconstructs the message
+    // via `state_delta_message_from_buffered`, now carrying the buffered
+    // `producing_app_key`). A `None` producing_app_key is unfenceable and
+    // falls through (legacy deltas / non-group contexts / sender soft-fault).
+    if let Some(producing_app_key) = producing_app_key {
+        if calimero_context::hlc_fence::delta_is_fenced(
+            node_clients.context.datastore(),
+            &context_id,
+            producing_app_key,
+            hlc,
+        )? {
+            warn!(
+                %context_id,
+                %author_id,
+                delta_id = ?delta_id,
+                producing_app_key = %hex::encode(producing_app_key),
+                "Dropping state delta — HLC fence: stale schema after cascade migration"
+            );
+            crate::node_metrics::record_delta_outcome("fenced_stale_schema");
             return Ok(());
         }
     }
@@ -704,6 +730,7 @@ pub(crate) async fn apply_authorized_state_delta(
             governance_position: governance_position.clone(),
             delta_signature,
             governance_drain_attempts: 0,
+            producing_app_key,
         };
 
         if let Some(result) = node_state.buffer_delta(&context_id, buffered) {
@@ -740,6 +767,7 @@ pub(crate) async fn apply_authorized_state_delta(
                 governance_position: governance_position.clone(),
                 delta_signature,
                 governance_drain_attempts: 0,
+                producing_app_key,
             };
 
             if let Some(result) = node_state.buffer_delta(&context_id, buffered) {
@@ -1381,6 +1409,7 @@ pub async fn handle_state_delta(
                     governance_position: governance_position.clone(),
                     delta_signature,
                     governance_drain_attempts: 0,
+                    producing_app_key,
                 };
                 node_state.buffer_governance_pending(context_id, buffered);
                 return Ok(());
@@ -1915,6 +1944,118 @@ mod tests {
                 }
                 other => panic!("expected Mismatch, got {other:?}"),
             }
+        }
+    }
+
+    // ---- HLC fence (PR-3): the guard the receive path calls ----
+    //
+    // Exercises `calimero_context::hlc_fence::delta_is_fenced` against a
+    // store shaped exactly as the receive path sees it after a cascade
+    // migration (group meta `app_key` = current target + a completed
+    // upgrade row carrying `cascade_hlc`). Mirrors `group_id_check_tests`'
+    // store setup so a regression in the fence resolution (wrong app_key
+    // source, missing cascade boundary read) is caught here rather than at
+    // apply time.
+    mod fence_drop_tests {
+        use std::sync::Arc;
+
+        use calimero_context::group_store::{
+            register_context_in_group, MetaRepository, UpgradesRepository,
+        };
+        use calimero_context::hlc_fence::delta_is_fenced;
+        use calimero_context_config::types::ContextGroupId;
+        use calimero_primitives::application::ApplicationId;
+        use calimero_primitives::context::{ContextId, UpgradePolicy};
+        use calimero_primitives::identity::PublicKey;
+        use calimero_storage::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::key::{GroupMetaValue, GroupUpgradeStatus, GroupUpgradeValue};
+        use calimero_store::Store;
+        use core::num::NonZeroU128;
+
+        // App-schema keys: v1 is the *pre*-cascade schema, v2 is the schema
+        // the context now targets after the migration.
+        const APP_V1: [u8; 32] = [0x11; 32];
+        const APP_V2: [u8; 32] = [0x22; 32];
+
+        fn fresh_store() -> Store {
+            Store::new(Arc::new(InMemoryDB::owned()))
+        }
+
+        /// Build a store whose context [0xF1;32] lives under group [0xF2;32],
+        /// targets app schema v2, and — when `boundary` is `Some` — has a
+        /// completed cascade upgrade recording that HLC as the fence boundary.
+        fn cascaded_store(boundary: Option<HybridTimestamp>) -> (Store, ContextId) {
+            let store = fresh_store();
+            let context_id = ContextId::from([0xF1; 32]);
+            let group_id = ContextGroupId::from([0xF2; 32]);
+
+            register_context_in_group(&store, &group_id, &context_id)
+                .expect("register_context_in_group");
+
+            let dummy_pk = PublicKey::from([0xAB; 32]);
+            MetaRepository::new(&store)
+                .save(
+                    &group_id,
+                    &GroupMetaValue {
+                        app_key: APP_V2,
+                        target_application_id: ApplicationId::from([0xCC; 32]),
+                        upgrade_policy: UpgradePolicy::Automatic,
+                        created_at: 1_700_000_000,
+                        admin_identity: dummy_pk,
+                        owner_identity: dummy_pk,
+                        migration: None,
+                        auto_join: false,
+                    },
+                )
+                .expect("save group meta");
+
+            if let Some(cascade_hlc) = boundary {
+                UpgradesRepository::new(&store)
+                    .save(
+                        &group_id,
+                        &GroupUpgradeValue {
+                            from_version: "1.0.0".to_owned(),
+                            to_version: "2.0.0".to_owned(),
+                            migration: None,
+                            initiated_at: 1_700_000_000,
+                            initiated_by: dummy_pk,
+                            status: GroupUpgradeStatus::Completed { completed_at: None },
+                            cascade_hlc: Some(cascade_hlc),
+                        },
+                    )
+                    .expect("save group upgrade");
+            }
+
+            (store, context_id)
+        }
+
+        /// A `HybridTimestamp` strictly greater than `zero()` — a delta
+        /// produced after the cascade boundary at `zero()`.
+        fn hlc_after_zero() -> HybridTimestamp {
+            let id = ID::from(NonZeroU128::new(1).expect("1 is non-zero"));
+            HybridTimestamp::new(Timestamp::new(NTP64(1), id))
+        }
+
+        #[test]
+        fn drops_stale_v1_delta_after_cascade() {
+            // v1 schema (≠ current v2) + delta after boundary ⇒ fenced.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            assert!(delta_is_fenced(&store, &ctx, APP_V1, hlc_after_zero()).unwrap());
+        }
+
+        #[test]
+        fn keeps_current_v2_delta() {
+            // Delta produced under the current target schema ⇒ never fenced.
+            let (store, ctx) = cascaded_store(Some(HybridTimestamp::zero()));
+            assert!(!delta_is_fenced(&store, &ctx, APP_V2, hlc_after_zero()).unwrap());
+        }
+
+        #[test]
+        fn keeps_delta_when_no_cascade_recorded() {
+            // No cascade boundary ⇒ never fence, even a stale-schema delta.
+            let (store, ctx) = cascaded_store(None);
+            assert!(!delta_is_fenced(&store, &ctx, APP_V1, hlc_after_zero()).unwrap());
         }
     }
 }
@@ -2828,6 +2969,32 @@ pub async fn replay_buffered_delta(input: ReplayBufferedDeltaInput) -> Result<bo
                 );
                 return Ok(false);
             }
+        }
+    }
+
+    // HLC fence (PR-3), parallel to `apply_authorized_state_delta`. The
+    // snapshot-sync replay path does NOT funnel through that chokepoint —
+    // it carries its own duplicated verification chain — so the fence is
+    // applied here too. `BufferedDelta` now carries the stamped
+    // `producing_app_key` through snapshot-sync buffering, so a stale-schema
+    // delta buffered across a cascade migration is dropped on replay rather
+    // than silently applied. `None` is unfenceable and falls through.
+    if let Some(producing_app_key) = buffered.producing_app_key {
+        if calimero_context::hlc_fence::delta_is_fenced(
+            context_client.datastore(),
+            &context_id,
+            producing_app_key,
+            buffered.hlc,
+        )? {
+            warn!(
+                %context_id,
+                author = %buffered.author_id,
+                delta_id = ?delta_id,
+                producing_app_key = %hex::encode(producing_app_key),
+                "Dropping buffered state delta — HLC fence: stale schema after cascade migration"
+            );
+            crate::node_metrics::record_delta_outcome("fenced_stale_schema");
+            return Ok(false);
         }
     }
 
