@@ -1,10 +1,10 @@
 //! Scriptable mock for [`super::SyncNetwork`].
 //!
-//! Scope is "failure-path tests" — `mesh_peers` returns recorded
-//! peer lists; `open_stream` returns recorded errors (or a queued
-//! callback returning `eyre::Error`). Success-path tests that
-//! actually exchange messages need a real `Stream`, which is
-//! tracked as a separate follow-up (see `super` module doc).
+//! `mesh_peers` returns recorded peer lists; `open_stream` returns
+//! recorded errors, hangs, or — via `Stream::test_pair()` behind the
+//! `test-utils` feature — a real `Ok(Stream)`. The success arm lets
+//! tests cover the discovery loop's recovery path (a peer succeeds
+//! after earlier ones fail), not just its give-up paths.
 //!
 //! ## Exhaustion semantics
 //!
@@ -32,6 +32,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use calimero_network_primitives::stream::Stream;
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use parking_lot::Mutex;
@@ -41,6 +42,10 @@ use super::SyncNetwork;
 
 /// Per-call directive for a mocked `open_stream` response.
 pub(crate) enum OpenStreamResponse {
+    /// Hand back a successfully-opened stream — an in-memory
+    /// `Stream::test_pair()` end. Lets tests exercise the
+    /// "peer succeeds after earlier failures" recovery path.
+    Ok(Stream),
     /// Synthesise an error string.
     Err(String),
     /// Sleep for `Duration` then return `Err` — useful for
@@ -74,6 +79,23 @@ impl MockSyncNetwork {
     /// Queue a response for the next `mesh_peers` call.
     pub(crate) fn push_mesh_peers(&self, peers: Vec<PeerId>) -> &Self {
         self.mesh_peers_responses.lock().push_back(peers);
+        self
+    }
+
+    /// Queue a successful `open_stream` response.
+    ///
+    /// The returned `Stream` is one end of an in-memory
+    /// `Stream::test_pair()`; the other end is dropped immediately.
+    /// That's sufficient for the discovery loop, which only needs the
+    /// open to *succeed* (it doesn't exchange messages here — the
+    /// post-open protocol runs in the caller). Available because the
+    /// node enables `calimero-network-primitives/test-utils` on its
+    /// dev-dependency edge.
+    pub(crate) fn push_open_stream_ok(&self) -> &Self {
+        let (stream, _peer_end) = Stream::test_pair();
+        self.open_stream_responses
+            .lock()
+            .push_back(OpenStreamResponse::Ok(stream));
         self
     }
 
@@ -201,15 +223,13 @@ impl SyncNetwork for MockSyncNetwork {
         }
     }
 
-    async fn open_stream(
-        &self,
-        _peer_id: PeerId,
-    ) -> eyre::Result<calimero_network_primitives::stream::Stream> {
+    async fn open_stream(&self, _peer_id: PeerId) -> eyre::Result<Stream> {
         let response = self.open_stream_responses.lock().pop_front();
         match response {
             None => Err(eyre::eyre!(
                 "MockSyncNetwork: open_stream called with no queued response"
             )),
+            Some(OpenStreamResponse::Ok(stream)) => Ok(stream),
             Some(OpenStreamResponse::Err(msg)) => Err(eyre::eyre!(msg)),
             Some(OpenStreamResponse::SleepThenErr(sleep_for, msg)) => {
                 time::sleep(sleep_for).await;

@@ -485,4 +485,42 @@ mod tests {
         );
         mock.assert_all_consumed();
     }
+
+    /// The recovery path: earlier peers fail, then a later peer's
+    /// `open_stream` succeeds → the loop returns `Ok`. This is the one
+    /// outcome the mock previously couldn't script (it had no synthetic
+    /// `Ok(Stream)`), so the discovery loop's "fallback actually works"
+    /// behaviour went unverified. Backed now by an in-memory
+    /// `Stream::test_pair()` end.
+    #[tokio::test(start_paused = true)]
+    async fn peer_succeeds_after_earlier_failures_returns_ok() {
+        let mock = MockSyncNetwork::default();
+        // Three candidates in the (sticky) mesh; all are tried in
+        // round 1 since 3 < DEADLINE_MAX_PEERS_PER_ROUND.
+        mock.push_mesh_peers(vec![PeerId::random(), PeerId::random(), PeerId::random()]);
+        // The mock ignores peer identity and pops responses in order:
+        // the first two opens fail, the third succeeds.
+        mock.push_open_stream_err("peer down")
+            .push_open_stream_err("peer rejected")
+            .push_open_stream_ok();
+
+        let (open_timeout, retries, retry_delay) = defaults();
+        let result = open_namespace_join_stream(
+            &mock,
+            NAMESPACE_ID,
+            open_timeout,
+            retries,
+            retry_delay,
+            &no_excluded(),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "discovery loop should recover once a later peer's open succeeds"
+        );
+        // Exactly the three scripted opens were consumed — the loop
+        // stopped at the first success: no extra round, no leftovers.
+        mock.assert_all_consumed();
+    }
 }

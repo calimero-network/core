@@ -54,6 +54,11 @@ calimero-utils-actix.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 calimero-dag = { workspace = true, features = ["testing"] }
+# `test-utils` pulls in `Stream::test_pair()` so the sync mocks can
+# script a successful `open_stream` (`Ok(Stream)`). Dev-only edge:
+# production builds of the node take the plain `[dependencies]` entry
+# without the feature, so the in-memory transport is never compiled in.
+calimero-network-primitives = { workspace = true, features = ["test-utils"] }
 calimero-storage = { workspace = true, features = ["testing"] }
 ed25519-dalek.workspace = true
 parking_lot.workspace = true
