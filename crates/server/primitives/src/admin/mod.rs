@@ -1869,10 +1869,9 @@ pub struct UpgradeGroupApiRequest {
     pub requester: Option<PublicKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub migrate_method: Option<String>,
-    /// When `true`, the handler emits the cascade variant of the upgrade
-    /// op (`GroupOp::CascadeTargetApplicationSet` + optional
-    /// `GroupOp::CascadeGroupMigrationSet`) and dispatches the per-context
-    /// migration propagator against every descendant subgroup whose
+    /// When `true`, the handler emits the single atomic `GroupOp::CascadeUpgrade`
+    /// op (target + app_key + migration + fence `cascade_hlc`) and dispatches the
+    /// per-context migration propagator against every descendant subgroup whose
     /// current `app_key` matches the signed group's current `app_key`.
     ///
     /// Default: `false` — existing clients (e.g. PR-1's single-group
@@ -1939,7 +1938,7 @@ pub struct CascadeStatusApiEntry {
     pub cascade_hlc: Option<String>,
 }
 
-/// Response returned by `GET .../namespaces/:namespace_id/cascade-status`.
+/// Response returned by `GET .../groups/:namespace_id/cascade-status`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetCascadeStatusApiResponse {

@@ -10,8 +10,9 @@
 //! Harness helpers (`empty_store`/`meta`/`create_group`/consts) are copied
 //! verbatim from `cascade_apply_walk.rs`.
 
-use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 use std::sync::Arc;
+
+use calimero_context::group_store::{MembershipRepository, MetaRepository, NamespaceRepository};
 
 use calimero_context::group_store::{apply_local_signed_group_op, UpgradesRepository};
 use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
@@ -268,7 +269,8 @@ async fn cascade_upgrade_reverse_delivery_converges_atomically() {
 /// Delivering CascadeTargetApplicationSet BEFORE CascadeGroupMigrationSet
 /// rewrites every descendant's app_key away from `from_app_key`, so the
 /// migration-set predicate then matches nothing and `migration` is dropped.
-/// This assertion FAILS today (migration == None) — that red is the proof.
+/// The assertion below PASSES today (migration == None) — the green proves
+/// the bug exists: the two-op path silently drops migration on reverse delivery.
 /// Disposed of in Step 9 once the atomic op replaces the two-op path.
 #[test]
 #[ignore = "documents the pre-CascadeUpgrade two-op apply-order bug (xilosada core#2507 item #3); cascade no longer emits these ops — see cascade_upgrade.rs"]

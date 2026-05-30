@@ -207,10 +207,10 @@ pub struct UpgradeGroupRequest {
     pub target_application_id: ApplicationId,
     pub requester: Option<PublicKey>,
     pub migration: Option<MigrationParams>,
-    /// When `true`, the handler emits the [`GroupOp::CascadeTargetApplicationSet`]
-    /// (and, if `migration` is set, [`GroupOp::CascadeGroupMigrationSet`])
-    /// variants that fan out to every descendant subgroup whose current
-    /// `app_key` matches the signed group's current `app_key`. When
+    /// When `true`, the handler emits the single atomic [`GroupOp::CascadeUpgrade`]
+    /// op (carrying `target_application_id`, `app_key`, `migration`, and the
+    /// fence `cascade_hlc`) that fans out to every descendant subgroup whose
+    /// current `app_key` matches the signed group's current `app_key`. When
     /// `false` (the default for `Default::default()` and for any caller
     /// that does not explicitly set it), the handler stays on the
     /// existing single-group path that emits the per-group

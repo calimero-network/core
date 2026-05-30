@@ -299,7 +299,13 @@ pub enum GroupOp {
     ///
     /// Operationally invoked by an `upgrade_group` RPC with `cascade:
     /// true`. See `docs/superpowers/specs/2026-05-22-namespace-cascade-app-upgrade-design.md`.
-    #[deprecated(note = "use CascadeUpgrade")]
+    ///
+    /// DEPRECATED: superseded by [`Self::CascadeUpgrade`], which applies the
+    /// target + app_key + migration atomically in one op (no inter-op ordering
+    /// window). Do NOT emit this; the apply arm is retained for one release so
+    /// in-flight / replayed ops from pre-upgrade peers still apply. (Not marked
+    /// `#[deprecated]` because the enum's derived borsh/Debug impls reference
+    /// every variant and would warn at the derive site.)
     CascadeTargetApplicationSet {
         from_app_key: [u8; 32],
         app_key: [u8; 32],
@@ -311,7 +317,9 @@ pub enum GroupOp {
     /// group AND on every descendant subgroup whose current `app_key`
     /// equals `from_app_key`. Same matching-predicate semantics as the
     /// target variant.
-    #[deprecated(note = "use CascadeUpgrade")]
+    ///
+    /// DEPRECATED: superseded by [`Self::CascadeUpgrade`] (see that variant).
+    /// Do NOT emit; apply arm retained for one release for wire-compat.
     CascadeGroupMigrationSet {
         from_app_key: [u8; 32],
         migration: Option<Vec<u8>>,
@@ -322,6 +330,11 @@ pub enum GroupOp {
     /// reproduce the out-of-order apply bug. `cascade_hlc` is stamped once by the
     /// initiator so every node records an identical fence boundary. Lockstep
     /// wire addition (schema v7).
+    ///
+    /// `cascade_hlc` is the fence boundary read by the receive-path HLC fence
+    /// (`calimero_context::hlc_fence`): any context-state delta whose HLC
+    /// timestamp predates this value is rejected post-`Completed` to prevent
+    /// offline-writer stale-schema state from overwriting migrated state.
     CascadeUpgrade {
         from_app_key: [u8; 32],
         app_key: [u8; 32],

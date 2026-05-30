@@ -141,6 +141,9 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             member_set_auto_follow::apply(ctx, target, auto_follow_contexts, auto_follow_subgroups)?
         }
         GroupOp::TransferOwnership { new_owner } => transfer_ownership::apply(ctx, new_owner)?,
+        // Deprecated legacy two-op cascade variants (see GroupOp docs):
+        // superseded by `CascadeUpgrade`, but their apply arms are retained for
+        // one release so in-flight / replayed ops from pre-upgrade peers still apply.
         GroupOp::CascadeTargetApplicationSet {
             from_app_key,
             app_key,

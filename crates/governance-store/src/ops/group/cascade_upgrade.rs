@@ -15,8 +15,9 @@
 //! ordering dependency the receiver can split. It also stamps a sticky
 //! `cascade_hlc` fence onto each matched descendant's upgrade record:
 //! identical on every node that applies the op (the initiator stamps it
-//! once), it is the boundary the state-delta HLC fence reads. The field
-//! is write-once — never cleared, even on a record already `Completed`.
+//! once), it is the boundary the state-delta HLC fence reads. The field is
+//! never cleared to `None` (it survives a `Completed` record); a later cascade
+//! legitimately advances it to its own newer `cascade_hlc`.
 
 use super::context::GroupApplyCtx;
 use crate::{GroupSettingsService, PermissionChecker, UpgradesRepository};

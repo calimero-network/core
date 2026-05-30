@@ -215,9 +215,9 @@ steps:
     upgrade_policy: lazy_on_access
 
   # Phase 6: ONE cascade call from node 1 against the namespace root.
-  # The cascade engine emits a single signed CascadeTargetApplicationSet
-  # op on the namespace DAG; the apply path runs on every peer
-  # subscribed to the namespace (node 1 + node 2).
+  # The cascade engine emits a single atomic CascadeUpgrade op on the
+  # namespace DAG; the apply path runs on every peer subscribed to the
+  # namespace (node 1 + node 2).
   - name: Cascade namespace v1 → v2 (initiated by node 1)
     type: upgrade_group
     node: app-migration-cascade-1
@@ -232,10 +232,10 @@ steps:
   # vacuously synced — both nodes still hold the identical v1 root
   # at the first poll because node 1's local migration hasn't
   # rewritten its root yet, so there's nothing to "wait" for. The
-  # fixed wait covers (a) gossip propagation of CascadeTargetApplicationSet
-  # + CascadeGroupMigrationSet, (b) per-context migration apply on
-  # both nodes, (c) docker stdout flush so assert_log_present can
-  # see the "Executing migration" log line.
+  # fixed wait covers (a) gossip propagation of the atomic
+  # CascadeUpgrade op, (b) per-context migration apply on both nodes,
+  # (c) docker stdout flush so assert_log_present can see the
+  # "Executing migration" log line.
   - name: Wait for cascade + migration to apply + log flush on both nodes
     type: wait
     seconds: 15
@@ -286,7 +286,7 @@ steps:
   #      which calls `update_application` per context → migrate runs
   #      locally on node 1.
   #   2. Lazy on-access (every receiver): a receiver applies the gossiped
-  #      `CascadeTargetApplicationSet` op to flip its local `GroupMeta`
+  #      `CascadeUpgrade` op to flip its local `GroupMeta`
   #      (target_application_id + app_key → v2), then SELF-migrates on its
   #      next context access. The migrated state is NOT gossiped — a
   #      migration is a full root replacement, not a CRDT-mergeable delta
@@ -309,22 +309,22 @@ steps:
   # Phase 7b': Receiver-side cascade apply log on EACH node
   # separately.
   #
-  # `CascadeTargetApplicationSet: applied` is emitted at INFO level
-  # by the apply handler on EVERY peer whose local walk matches the
-  # signed-group + descendant subtree (emitter + every receiver
-  # that subscribes to the namespace topic). In this scenario the
-  # walk matches the namespace root + 1 descendant subgroup = 2
-  # log lines per node. Per-node assertions (rather than a single
-  # aggregated check) catch the asymmetric regression where node 1
-  # applies but node 2 silently drops the op — that case would
-  # still satisfy any aggregated threshold but is exactly the bug
-  # this PR's `app_key` fix triangle prevents.
+  # `CascadeUpgrade: applied` is emitted at INFO level by the apply
+  # handler on EVERY peer whose local walk matches the signed-group +
+  # descendant subtree (emitter + every receiver that subscribes to
+  # the namespace topic). In this scenario the walk matches the
+  # namespace root + 1 descendant subgroup = 2 log lines per node.
+  # Per-node assertions (rather than a single aggregated check) catch
+  # the asymmetric regression where node 1 applies but node 2 silently
+  # drops the op — that case would still satisfy any aggregated
+  # threshold but is exactly the bug this PR's `app_key` fix triangle
+  # prevents.
   - name: Assert cascade apply log on node 1 (emitter)
     type: assert_log_present
     nodes:
       - app-migration-cascade-1
     patterns:
-      - "CascadeTargetApplicationSet: applied"
+      - "CascadeUpgrade: applied"
     min_matches: 2
 
   - name: Assert cascade apply log on node 2 (receiver)
@@ -332,7 +332,7 @@ steps:
     nodes:
       - app-migration-cascade-2
     patterns:
-      - "CascadeTargetApplicationSet: applied"
+      - "CascadeUpgrade: applied"
     min_matches: 2
 
   # Phase 7c: Post-migration schema visible on BOTH nodes with v1

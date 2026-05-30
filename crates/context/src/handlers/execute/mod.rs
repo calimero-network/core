@@ -159,10 +159,11 @@ impl Handler<ExecuteRequest> for ContextManager {
         // (not via execute), so they are also unaffected.
         //
         // Granularity: gate is per-group, not per-context. PR-2 explicitly
-        // chose this over per-context-HLC gating because the latter requires
-        // a storage-layout change (`cascade_hlc` field on
-        // `GroupUpgradeStatus`) that is deferred to PR-3. The trade-off is
-        // documented on `ExecuteError::UpgradeInProgress`.
+        // chose this over per-context-HLC gating. The `cascade_hlc` field
+        // on the upgrade record now exists (added in PR-3) and provides the
+        // finer, post-`Completed` HLC fence for long-tail straggler rejection;
+        // the coarse per-group gate here covers the active-upgrade window.
+        // The trade-off is documented on `ExecuteError::UpgradeInProgress`.
         //
         // Read vs write: the gate blocks *all* invocations (reads and writes)
         // during `InProgress`. The call path doesn't carry an intent flag and

@@ -53,9 +53,8 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
         let node_sk = node_identity.map(|(_, sk)| sk);
         let signing_key = node_sk;
 
-        // Cascade path: emit `GroupOp::CascadeTargetApplicationSet`
-        // (+ optional `GroupOp::CascadeGroupMigrationSet`) and dispatch
-        // one `propagate_upgrade` per descendant subgroup whose current
+        // Cascade path: emit `GroupOp::CascadeUpgrade` and dispatch one
+        // `propagate_upgrade` per descendant subgroup whose current
         // `app_key` matches the signed group's current `app_key`.
         //
         // The single-group branch below stays bit-identical for
@@ -808,11 +807,17 @@ pub(crate) fn update_upgrade_status(
 
 /// Cascade variant of the upgrade-group flow.
 ///
-/// Emits [`GroupOp::CascadeTargetApplicationSet`] (and, when migration is
-/// requested, [`GroupOp::CascadeGroupMigrationSet`]) signed by the
-/// requester, then spawns one [`propagate_upgrade`] per descendant
-/// subgroup whose current `app_key` matches the signed group's current
-/// `app_key`.
+/// Emits a single [`GroupOp::CascadeUpgrade`] signed by the requester,
+/// then spawns one [`propagate_upgrade`] per descendant subgroup whose
+/// current `app_key` matches the signed group's current `app_key`.
+/// The atomic op carries `target_application_id`, `app_key`, `migration`,
+/// and `cascade_hlc` in one unit, eliminating the out-of-order apply bug
+/// of the legacy two-op path.
+///
+/// `cascade_hlc` IS stamped here at the initiator (once, deterministically)
+/// via `calimero_storage::env::hlc_timestamp()`, and is recorded as the
+/// fence boundary on every matched descendant's pre-spawn upgrade record.
+/// Every peer that applies the gossiped op records the same fence value.
 ///
 /// The walk used to enumerate matched descendants runs BEFORE the
 /// cascade op is published locally — by the time the apply arm runs,
@@ -821,11 +826,6 @@ pub(crate) fn update_upgrade_status(
 /// would find zero matches. Capturing the descendant list synchronously
 /// before publish is the simplest mechanism that respects the apply
 /// arm's own mutation.
-///
-/// Per-context status records and the PR-3 `cascade_hlc` field are NOT
-/// written here; those land in PR-3. The propagator's existing
-/// per-group `GroupUpgradeValue` write is the only status surface this
-/// flow updates, mirroring the single-group canary path.
 fn dispatch_cascade(
     actor: &mut ContextManager,
     group_id: ContextGroupId,
