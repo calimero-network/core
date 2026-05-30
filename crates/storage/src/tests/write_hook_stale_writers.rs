@@ -20,6 +20,10 @@ use core::num::NonZeroU128;
 
 use ed25519_dalek::SigningKey;
 
+use std::collections::BTreeSet;
+
+use calimero_primitives::identity::PublicKey;
+
 use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata};
 use crate::index::Index;
@@ -162,5 +166,106 @@ fn write_hook_relies_on_stale_stored_writers_for_rotation_detection() {
         2,
         "value-write with stale writer claim must NOT append \
          (relies on stored writers staying frozen at bootstrap)"
+    );
+}
+
+/// Regression: two distinct writers in the same `Shared` writer set each
+/// write a *different* value with the *same* nonce. Both nodes must converge
+/// to the SAME value regardless of the order the two writes arrive in.
+///
+/// Reproduces the intermittent `shared-storage` e2e split-brain ("Wait for
+/// post-rotation value to sync" — job 78652650934): after the writer set
+/// rotates from node-1 to node-2, node-2's post-rotation write was assigned
+/// a nonce equal to the value already stored on node-1, so node-1's
+/// Shared-upsert replay guard (`new_nonce <= last_nonce`) silently dropped
+/// it as an "authentic but no-op" stale action, leaving the two nodes
+/// permanently diverged on the same DAG heads.
+///
+/// The guard's correctness comment assumes `equal nonce + valid signature ⇒
+/// equal payload`. That holds for a SINGLE writer, but not across a writer
+/// set: a second writer can sign different bytes with the same nonce and its
+/// signature verifies too, so the equal-nonce silent-skip drops a
+/// genuinely-new write.
+///
+/// The required invariant is **order-independent convergence**: a node that
+/// applies A-then-B must end on the same value as a node that applies
+/// B-then-A. (The canonical equal-timestamp tiebreak in this codebase is
+/// "higher node_id wins" — see `LwwRegister::merge`.) Asserting "B always
+/// wins" would be wrong: LWW with "incoming wins on equal ts" flips
+/// symmetrically and still diverges.
+fn apply_two_shared_writes_in_order<const SCOPE: usize>(
+    first_data: &[u8],
+    first_sk: &SigningKey,
+    second_data: &[u8],
+    second_sk: &SigningKey,
+    writers: &BTreeSet<PublicKey>,
+    nonce: u64,
+) -> Vec<u8> {
+    crate::env::reset_for_testing();
+    let root = setup_root::<S<SCOPE>>();
+    let id = entity_id(0x49);
+
+    let first = build_signed_shared_action(
+        true,
+        id,
+        first_data.to_vec(),
+        writers.clone(),
+        nonce,
+        first_sk,
+        vec![root.clone()],
+    );
+    Interface::<S<SCOPE>>::apply_action(first, &ctx([0xA0; 32], nonce)).unwrap();
+
+    let second = build_signed_shared_action(
+        false,
+        id,
+        second_data.to_vec(),
+        writers.clone(),
+        nonce,
+        second_sk,
+        vec![],
+    );
+    Interface::<S<SCOPE>>::apply_action(second, &ctx([0xB0; 32], nonce)).unwrap();
+
+    Interface::<S<SCOPE>>::find_by_id_raw(id).expect("entity must exist after two writes")
+}
+
+// Regression guard for the shared-storage post-rotation split-brain
+// (e2e flake job 78652650934): fixed by the equal-HLC content-hash tiebreak
+// in `interface.rs` (`try_merge_non_root`'s `lww_pick`) + letting equal-nonce
+// writes fall through the Shared/User replay guard instead of being skipped.
+#[test]
+fn shared_equal_nonce_different_writers_converge_regardless_of_order() {
+    let alice_sk = make_signing_key(0xA1);
+    let bob_sk = make_signing_key(0xB2);
+    let alice = pubkey_of(&alice_sk);
+    let bob = pubkey_of(&bob_sk);
+    let writers: BTreeSet<PublicKey> = [alice, bob].into_iter().collect();
+    let nonce = hlc_at(0);
+
+    // Node X applies Alice's write then Bob's (same nonce, different data).
+    let x = apply_two_shared_writes_in_order::<409>(
+        b"alice-value",
+        &alice_sk,
+        b"bob-value",
+        &bob_sk,
+        &writers,
+        nonce,
+    );
+    // Node Y applies them in the opposite order.
+    let y = apply_two_shared_writes_in_order::<410>(
+        b"bob-value",
+        &bob_sk,
+        b"alice-value",
+        &alice_sk,
+        &writers,
+        nonce,
+    );
+
+    assert_eq!(
+        x, y,
+        "two writers at the same nonce must converge to the SAME value \
+         regardless of apply order (shared-storage post-rotation split-brain): \
+         A-then-B gave {x:?}, B-then-A gave {y:?}"
     );
 }
