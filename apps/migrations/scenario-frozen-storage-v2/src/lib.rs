@@ -9,10 +9,16 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 const SCHEMA_VERSION_V2: &str = "2.0.0";
 
 /// v2 carries the v1 `FrozenStorage` THROUGH the migrate (preserving every
-/// content-addressed entry) and adds a plain `migration_note` register seeded
-/// during migrate. Entries are NOT re-inserted: carrying the collection
-/// preserves the v1 content hashes byte-for-byte, so a document frozen under v1
-/// is still retrievable under the same hash on every node after migration.
+/// content-addressed entry) AND performs a real content-rewrite during the
+/// migrate: it freezes a NEW document derived from the carried `title`. This is
+/// the convergent case of build-during-migrate for an identity-bearing-looking
+/// type: `FrozenStorage` is content-addressed (`id = hash(value)`), so every
+/// node deriving the SAME content from the SAME carried state freezes it under
+/// an IDENTICAL hash — the new entry converges without any owner/identity
+/// stamp. `migration_doc_hash` records that hash (a plain `LwwRegister`, its
+/// per-replica metadata zeroed under migrate merge mode, and the hash string is
+/// itself deterministic) so workflows can assert the new entry is byte-identical
+/// across nodes.
 #[app::state(emits = for<'a> Event<'a>)]
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
@@ -20,6 +26,17 @@ pub struct ScenarioFrozenStorageV2 {
     documents: FrozenStorage<String>,
     title: LwwRegister<String>,
     migration_note: LwwRegister<String>,
+    /// Content hash (base58) of the document frozen DURING migrate. Identical
+    /// on every node because the derived content is a pure function of carried
+    /// state.
+    migration_doc_hash: LwwRegister<String>,
+}
+
+/// The document content frozen during migrate, derived deterministically from
+/// the carried `title` so every node produces byte-identical content (hence an
+/// identical content hash).
+fn derived_doc_content(title: &str) -> String {
+    format!("v2-derived::{title}")
 }
 
 #[app::event]
@@ -36,6 +53,7 @@ pub struct SchemaInfo {
     pub schema_version: String,
     pub title: String,
     pub migration_note: String,
+    pub migration_doc_hash: String,
 }
 
 #[derive(BorshDeserialize)]
@@ -76,14 +94,22 @@ pub fn migrate_v1_to_v2() -> ScenarioFrozenStorageV2 {
         to_version: SCHEMA_VERSION_V2,
     });
 
-    // Carry `documents` over unchanged — content hashes preserved. Only the new
-    // `migration_note` is seeded, and it is a plain `LwwRegister` (its
-    // per-replica metadata is zeroed under migrate merge mode), so the seed is
-    // deterministic across nodes.
+    // Carry `documents` over unchanged — v1 content hashes preserved — and ALSO
+    // freeze a new document derived from the carried `title` during the migrate.
+    // Because `FrozenStorage` is content-addressed, every node freezing the same
+    // derived content lands the same hash, so the new entry converges with no
+    // identity stamp. This is the real content-rewrite-during-migrate case.
+    let mut documents = old_state.documents;
+    let derived = derived_doc_content(old_state.title.get());
+    let new_hash = documents
+        .insert(derived)
+        .unwrap_or_else(|e| panic!("Migration failed: derived-doc freeze error {:?}", e));
+
     ScenarioFrozenStorageV2 {
-        documents: old_state.documents,
+        documents,
         title: old_state.title,
         migration_note: LwwRegister::new("migrated-v1-to-v2".to_owned()),
+        migration_doc_hash: LwwRegister::new(hash_to_string(new_hash)),
     }
 }
 
@@ -95,6 +121,7 @@ impl ScenarioFrozenStorageV2 {
             documents: FrozenStorage::new_with_field_name("documents"),
             title: LwwRegister::new("untitled".to_owned()),
             migration_note: LwwRegister::new(String::new()),
+            migration_doc_hash: LwwRegister::new(String::new()),
         }
     }
 
@@ -131,11 +158,18 @@ impl ScenarioFrozenStorageV2 {
         Ok(self.migration_note.get().clone())
     }
 
+    /// Base58 content hash of the document frozen DURING migrate. Identical on
+    /// every node (derived content is a pure function of carried state).
+    pub fn migration_doc_hash(&self) -> app::Result<String> {
+        Ok(self.migration_doc_hash.get().clone())
+    }
+
     pub fn schema_info(&self) -> app::Result<SchemaInfo> {
         Ok(SchemaInfo {
             schema_version: SCHEMA_VERSION_V2.to_owned(),
             title: self.title.get().clone(),
             migration_note: self.migration_note.get().clone(),
+            migration_doc_hash: self.migration_doc_hash.get().clone(),
         })
     }
 }

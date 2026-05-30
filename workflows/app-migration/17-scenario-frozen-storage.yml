@@ -260,6 +260,57 @@ steps:
       - 'json_equal({{doc_post_node1}}, {"output": "the-frozen-payload"})'
       - 'json_equal({{doc_post_node2}}, {"output": "the-frozen-payload"})'
 
+  # Discriminating assertion #2: a NEW document was frozen DURING migrate
+  # (derived from the carried title). Because FrozenStorage is content-addressed,
+  # both nodes derive the same content and land the same hash — build-during-
+  # migrate converges with no identity stamp.
+  - name: Read migrate-frozen doc hash on node 1
+    type: call
+    node: app-migration-frozen-1
+    context_id: "{{ctx_id}}"
+    method: migration_doc_hash
+    outputs:
+      mig_hash_node1: result
+
+  - name: Read migrate-frozen doc hash on node 2
+    type: call
+    node: app-migration-frozen-2
+    context_id: "{{ctx_id}}"
+    method: migration_doc_hash
+    outputs:
+      mig_hash_node2: result
+
+  - name: Assert the migrate-built content hash is identical across nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{mig_hash_node1}}, {{mig_hash_node2}})'
+
+  - name: Fetch the migrate-built doc by its hash on node 1
+    type: call
+    node: app-migration-frozen-1
+    context_id: "{{ctx_id}}"
+    method: get_doc
+    args:
+      hash_str: "{{mig_hash_node1}}"
+    outputs:
+      mig_doc_node1: result
+
+  - name: Fetch the migrate-built doc by its hash on node 2
+    type: call
+    node: app-migration-frozen-2
+    context_id: "{{ctx_id}}"
+    method: get_doc
+    args:
+      hash_str: "{{mig_hash_node2}}"
+    outputs:
+      mig_doc_node2: result
+
+  - name: Assert the migrate-built doc resolves to the derived content on BOTH nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{mig_doc_node1}}, {"output": "v2-derived::frozen-doc"})'
+      - 'json_equal({{mig_doc_node2}}, {"output": "v2-derived::frozen-doc"})'
+
   # Teardown.
   - name: Delete context
     type: delete_context
