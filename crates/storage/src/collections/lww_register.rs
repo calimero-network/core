@@ -192,3 +192,115 @@ impl<T: std::fmt::Display> std::fmt::Display for LwwRegister<T> {
         write!(f, "{}", self.value)
     }
 }
+
+#[cfg(test)]
+mod merge_mode_tests {
+    use super::*;
+    use crate::collections::{Root, UnorderedMap};
+    use crate::env;
+    use crate::logical_clock::HybridTimestamp;
+    use crate::store::MainStorage;
+
+    #[test]
+    fn lww_new_zeroes_timestamp_and_node_id_in_merge_mode() {
+        env::reset_for_testing();
+        env::set_executor_id([7; 32]);
+
+        // Outside merge mode: real, node-local stamp.
+        let outside = LwwRegister::new(5_u64);
+        assert_ne!(
+            outside.timestamp(),
+            HybridTimestamp::zero(),
+            "outside merge mode should use a real HLC"
+        );
+
+        // Inside merge mode: deterministic zero stamp.
+        let inside = env::with_merge_mode(|| LwwRegister::new(5_u64));
+        assert_eq!(
+            inside.timestamp(),
+            HybridTimestamp::zero(),
+            "LwwRegister::new inside merge mode must zero the timestamp"
+        );
+        assert_eq!(
+            inside.node_id(),
+            [0; 32],
+            "LwwRegister::new inside merge mode must zero the node_id"
+        );
+    }
+
+    #[test]
+    fn lww_via_into_is_byte_identical_across_executors_in_merge_mode() {
+        // Mirror the `total: count.into()` migrate path: two nodes with
+        // different executor ids must serialise identical bytes.
+        env::reset_for_testing();
+        env::set_executor_id([1; 32]);
+        let n1: LwwRegister<u64> = env::with_merge_mode(|| 6_u64.into());
+        let b1 = borsh::to_vec(&n1).unwrap();
+
+        env::reset_for_testing();
+        env::set_executor_id([2; 32]);
+        let n2: LwwRegister<u64> = env::with_merge_mode(|| 6_u64.into());
+        let b2 = borsh::to_vec(&n2).unwrap();
+
+        assert_eq!(
+            hex::encode(&b1),
+            hex::encode(&b2),
+            "LwwRegister built via .into() in merge mode must be byte-identical across executors"
+        );
+    }
+
+    /// A nested `with_merge_mode` (e.g. the CRDT merge dispatch firing while
+    /// a `#[app::migrate]` body holds the outer scope) must NOT clear merge
+    /// mode for the remainder of the outer scope. Regression guard for the
+    /// `invariant-reshuffle` divergence.
+    #[test]
+    fn nested_with_merge_mode_must_not_disable_outer_scope() {
+        env::reset_for_testing();
+        env::set_executor_id([9; 32]);
+
+        let (before, after) = env::with_merge_mode(|| {
+            let before = LwwRegister::new(1_u64);
+            // nested scope, mirrors a merge/apply opening its own merge mode
+            let _nested = env::with_merge_mode(|| LwwRegister::new(99_u64));
+            assert!(
+                env::in_merge_mode(),
+                "outer merge mode cleared by nested with_merge_mode"
+            );
+            let after = LwwRegister::new(2_u64); // like trailing `total: count.into()`
+            (before, after)
+        });
+
+        let zero = HybridTimestamp::zero();
+        assert_eq!(before.timestamp(), zero, "value before nested call");
+        assert_eq!(
+            after.timestamp(),
+            zero,
+            "value after nested call must still be zeroed"
+        );
+    }
+
+    /// Faithful repro of the scenario-13 migrate body order: populate an
+    /// `UnorderedMap` (whose insert path opens its own merge scope), THEN
+    /// build a trailing `LwwRegister` (`total: total.into()`). Before the
+    /// re-entrancy fix the map inserts cleared merge mode and the trailing
+    /// register baked a node-local HLC into the migrated root.
+    #[test]
+    fn trailing_lww_after_map_inserts_stays_zeroed_in_merge_mode() {
+        env::reset_for_testing();
+        env::set_executor_id([9; 32]);
+
+        let total: LwwRegister<u64> = env::with_merge_mode(|| {
+            let mut map = Root::new(|| UnorderedMap::<String, LwwRegister<u64>>::new());
+            map.insert("a".to_string(), 1_u64.into()).unwrap();
+            map.insert("b".to_string(), 2_u64.into()).unwrap();
+            assert!(
+                env::in_merge_mode(),
+                "merge mode flipped OFF during/after map inserts"
+            );
+            3_u64.into()
+        });
+
+        assert_eq!(total.timestamp(), HybridTimestamp::zero());
+        assert_eq!(total.node_id(), [0; 32]);
+    }
+}

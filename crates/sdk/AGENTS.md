@@ -138,6 +138,143 @@ pub enum Event<'a> {
 - Use `#[borsh(crate = "calimero_sdk::borsh")]` for borsh derives
 - Define `Event<'a>` enum with `#[app::event]` for event handling
 
+### `#[app::migrate]` — state-migration export
+
+Marks a stand-alone function as the WASM export the node runtime
+calls during `upgrade_group(target=v2, migrate_method=...)`. The
+function reads the old state via `calimero_sdk::state::read_raw()`,
+constructs the new state struct, and returns it; the SDK macro
+wraps it in the same `Root::new(...)` context as `#[app::init]` so
+collection writes made inside the migrate body persist correctly.
+
+```rust
+use calimero_sdk::app;
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::state::read_raw;
+use calimero_storage::collections::{LwwRegister, UnorderedMap};
+
+#[app::state(emits = for<'a> Event<'a>)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct AppV2 {
+    items: UnorderedMap<String, LwwRegister<String>>,
+    notes: LwwRegister<String>,  // new in v2
+}
+
+#[app::event]
+pub enum Event<'a> {
+    Migrated { from_version: &'a str, to_version: &'a str },
+}
+
+// Private borsh-deserialize shape matching the v1 state byte layout.
+// Field order MUST match v1's `#[app::state]` struct (borsh is
+// positional).
+#[derive(BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
+struct AppV1 {
+    items: UnorderedMap<String, LwwRegister<String>>,
+}
+
+#[app::migrate]
+pub fn migrate_v1_to_v2() -> AppV2 {
+    let old_bytes = read_raw().unwrap_or_else(|| {
+        panic!("Migration failed: no existing state.");
+    });
+    let old: AppV1 = BorshDeserialize::deserialize(&mut &old_bytes[..])
+        .unwrap_or_else(|e| panic!("V1 deserialize: {e:?}"));
+
+    app::emit!(Event::Migrated {
+        from_version: "1.0.0",
+        to_version: "2.0.0",
+    });
+
+    AppV2 {
+        items: old.items,
+        notes: LwwRegister::new("added in v2".to_owned()),
+    }
+}
+```
+
+**Key points:**
+
+- Free function, not a method on the state struct. The return type
+  is the v2 state struct, which determines the event emitter the
+  macro registers.
+- Read v1 state via `read_raw()` and deserialise into a private
+  borsh-only shadow struct of the v1 layout. Don't import the v1
+  crate's `#[app::state]` — it would pull in v1's full SDK surface.
+- Carrying a collection across versions: `items: old.items` —
+  the existing storage handle survives, no re-population needed.
+- Creating a NEW collection in migrate (e.g. archiving a removed
+  field into `UnorderedMap`): construct with
+  `UnorderedMap::new_with_field_name("...")` and insert as normal.
+  The SDK's macro wraps the migrate body in the same
+  `Root::new + __assign_deterministic_ids + commit` flow as
+  `#[app::init]`, so inserts persist to the same storage path a
+  later `&self` read computes for the same field.
+- Panic on unrecoverable inputs (corrupted state, deserialise
+  failure) — matches the existing `migration-suite-v{2..5}-add-field`
+  pattern. A panic traps the WASM and aborts the upgrade, leaving
+  v1 state intact for retry.
+- **Must be deterministic.** In a multi-node context every node runs
+  this function independently against its own (already-synced,
+  byte-identical) v1 state — the migrated state is NOT propagated over
+  sync (it's a full root replacement, not a CRDT-mergeable delta). Two
+  nodes that run the same migrate fn on the same v1 bytes must produce
+  byte-identical v2 state, or their roots diverge and subsequent CRDT
+  sync breaks. Under the default `LazyOnAccess` upgrade policy each node
+  migrates on its next context access (logged as `performing lazy upgrade
+  before execution`).
+
+  The SDK macro removes the two *structural* sources of node-local
+  entropy for you:
+
+  - It runs the whole migrate body under storage **merge mode**, so any
+    `LwwRegister` created inside migrate (`total: count.into()`, map or
+    vector values via `.into()`, `LwwRegister::new(...)`) gets a
+    deterministic zero `timestamp`/`node_id` instead of this node's
+    `hlc_timestamp()`/`executor_id()`. `Element` update timestamps are
+    likewise zeroed. This applies to the *whole* body, including any
+    explicit `LwwRegister::set()` you call on a carried-over register —
+    and that is intended, not a side effect: each node runs migrate at a
+    different wall-clock time (LazyOnAccess), so a real timestamp here
+    would diverge across nodes. The migration is a full root *replacement*
+    (`write_pre_merged_root_state` + `clear_pending_delta`), not a CRDT
+    merge, so a migrate-written value is never LWW-compared at migration
+    time — it simply becomes the new baseline, which a genuine
+    post-migration write (real timestamp > 0) then supersedes as expected.
+    If you need a migrate-written value to *win* against later writes,
+    encode that in the value/logic, not via timestamps.
+  - `__assign_deterministic_ids()` re-keys every top-level collection to
+    its field-name id AND re-keys `Vector`/`AuthoredVector` *elements* by
+    append index — live `push` uses `Id::random()` (correct for
+    concurrent appends, but it would diverge across independent
+    migrations).
+
+  You must still avoid these *app-level* sources of divergence:
+
+  - **Wall-clock / RNG / iteration-order-dependent logic.** Sort before
+    materialising an ordered structure from an unordered one if the
+    source iteration order isn't guaranteed identical across nodes (e.g.
+    the `crdt-native` scenario sorts the v1 item keys before seeding the
+    `tags` Vector).
+  - **`ReplicatedGrowableArray` populated inside migrate.** `RGA::insert`
+    stamps each char with a raw `env::hlc_timestamp()` read (NOT
+    suppressed by merge mode), so independent migrations mint different
+    `CharId`s and diverge. If you must seed an RGA during migrate, use
+    `insert_str_at_timestamp` with a fixed, input-derived timestamp.
+  - **`Counter`/`PNCounter`/`GCounter` increments inside migrate.** Each
+    increment is keyed by the executing node's id, so two nodes record
+    the same logical delta under different keys. Carry the old counter
+    across (`c: old.c`) rather than re-incrementing during migrate.
+
+End-to-end coverage of migration shapes lives in
+`workflows/app-migration/` (per-context migration, namespace cascade,
+12 schema-shape scenarios). See
+`apps/migrations/migration-suite-v{1..5}` (chain fixtures) and
+`apps/migrations/scenario-*-v{1,2}` (standalone scenario pairs) for
+concrete reference implementations.
+
 ## Patterns
 
 ### Basic Application

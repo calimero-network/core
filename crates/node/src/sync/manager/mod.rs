@@ -639,6 +639,54 @@ impl SyncManager {
         bail!("Failed to sync with any peer for context {}", context_id)
     }
 
+    /// Returns the in-flight upgrade target application for `context_id`
+    /// when an application upgrade/migration is pending on THIS node —
+    /// i.e. the context's currently-bound application differs from its
+    /// group's `target_application_id`. `None` when the context is
+    /// already on its target (no pending upgrade) or any lookup fails.
+    ///
+    /// Used to gate context-STATE sync in both directions (outbound
+    /// `initiate_sync_inner` and the inbound stream handler). While an
+    /// upgrade is pending here, a peer that has ALREADY migrated must
+    /// not reconcile its new-application-version state onto this node:
+    /// HashComparison merges root entries by hash with no notion of
+    /// application version, so it would overwrite the pre-upgrade state
+    /// that this node's own (LazyOnAccess) migration must read as input
+    /// — the migrate fn would then try to decode already-migrated bytes
+    /// as the old shape and panic. This is the sync-side analogue of
+    /// the write-gate.
+    ///
+    /// Only per-context state reconciliation is gated. Governance sync
+    /// (the namespace DAG carrying the upgrade op itself) flows through
+    /// a different path and is unaffected, so this node still learns
+    /// about the upgrade and self-migrates on its next context access,
+    /// after which this returns `None` and state sync resumes.
+    fn pending_upgrade_target(
+        &self,
+        context_id: &ContextId,
+    ) -> Option<calimero_primitives::application::ApplicationId> {
+        let store = self.context_client.datastore_handle().into_inner();
+        let ctx_meta = store
+            .handle()
+            .get(&calimero_store::key::ContextMeta::new(*context_id))
+            .ok()
+            .flatten()?;
+        let current_app = ctx_meta.application.application_id();
+        let group_id = calimero_context::group_store::get_group_for_context(&store, context_id)
+            .ok()
+            .flatten()?;
+        let meta = MetaRepository::new(&store).load(&group_id).ok().flatten()?;
+        let target = meta.target_application_id;
+        // Only gate a context that is bound to a REAL application and differs
+        // from the group target. A context with no app yet
+        // (`current_app == ZERO`, e.g. a freshly-joined node still
+        // bootstrapping its state) must be allowed to sync — gating it would
+        // block the very state sync it needs to come up. Likewise `target ==
+        // ZERO` means no upgrade is set.
+        let zero = calimero_primitives::application::ZERO_APPLICATION_ID;
+        (current_app != zero && target != zero && current_app != target).then_some(target)
+    }
+
     /// Look up the trusted-anchor identity set for the group that owns
     /// `context_id` (Owner, Admins, ReadOnlyTee members). Returns an
     /// empty set on any failure — context not registered to a group,
@@ -1412,6 +1460,25 @@ impl SyncManager {
             application_id = %context.application_id,
             "Starting sync session"
         );
+
+        // Sync-gate: if an application upgrade is pending on this context
+        // (our bound app != the group's target app), do NOT reconcile
+        // state with a peer — it may have already migrated, and merging
+        // its new-version state here would overwrite the pre-upgrade
+        // state our own LazyOnAccess migration must read as input. Skip
+        // as a clean no-op; we self-migrate on next access, after which
+        // the gate lifts. See `pending_upgrade_target`.
+        if let Some(target) = self.pending_upgrade_target(&context_id) {
+            info!(
+                %context_id,
+                %chosen_peer,
+                current_app = %context.application_id,
+                target_app = %target,
+                "Skipping context-state sync: application upgrade pending (gate); \
+                 node self-migrates on next access before reconciling"
+            );
+            return Ok(SyncProtocol::None);
+        }
 
         // Get application - if not found, we'll try to install it after blob sharing
         let mut application = self.node_client.get_application(&context.application_id)?;
@@ -2876,6 +2943,44 @@ impl SyncManager {
         else {
             bail!("no owned identities found for context: {}", context.id);
         };
+
+        // Inbound sync-gate (mirror of the outbound gate in
+        // `initiate_sync_inner`): if an application upgrade is pending on
+        // this context, decline to SERVE context state. An ahead peer
+        // (already migrated, so its own outbound gate doesn't fire) could
+        // otherwise pull our pre-upgrade state as the initiator and adopt
+        // it over its newer migrated state. Only state-reconciliation
+        // requests are gated — BlobShare (target-app bytecode),
+        // governance/join/backfill payloads are left open because this
+        // node needs them to complete its OWN lazy migration. The
+        // initiator treats `NotMaterialized` as benign and retries; once
+        // this node self-migrates on next access the gate lifts and it
+        // serves normally. See `pending_upgrade_target`.
+        if matches!(
+            &payload,
+            InitPayload::DeltaRequest { .. }
+                | InitPayload::DagHeadsRequest { .. }
+                | InitPayload::SnapshotBoundaryRequest { .. }
+                | InitPayload::SnapshotStreamRequest { .. }
+                | InitPayload::TreeNodeRequest { .. }
+                | InitPayload::LevelWiseRequest { .. }
+        ) {
+            if let Some(target) = self.pending_upgrade_target(&context_id) {
+                info!(
+                    %context_id,
+                    ?their_identity,
+                    target_app = %target,
+                    "Declining inbound context-state sync: application upgrade pending (gate)"
+                );
+                if let Err(err) = self
+                    .send(stream, &StreamMessage::NotMaterialized, None)
+                    .await
+                {
+                    error!(%err, %context_id, "failed to send NotMaterialized for upgrade-gated sync");
+                }
+                return Ok(Some(()));
+            }
+        }
 
         match payload {
             InitPayload::BlobShare { blob_id } => {

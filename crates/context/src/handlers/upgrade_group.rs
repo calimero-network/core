@@ -1,5 +1,7 @@
 use calimero_governance_store::SigningKeysRepository;
-use calimero_governance_store::{MembershipRepository, MetaRepository, UpgradesRepository};
+use calimero_governance_store::{
+    MembershipRepository, MetaRepository, MigrationsRepository, UpgradesRepository,
+};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -662,6 +664,33 @@ pub(crate) async fn propagate_upgrade(
             {
                 Ok(()) => {
                     completed += 1;
+                    // Mirror the lazy-upgrade path's marker write
+                    // (execute/mod.rs). When this eager propagator
+                    // migrates a context's state, record the
+                    // per-context migration marker so a subsequent
+                    // LazyOnAccess read on this same node sees the
+                    // context as already-migrated and does NOT re-run
+                    // `migrate` against the now-target-shaped state.
+                    // Without this, an emitter that both eager-migrates
+                    // here AND later serves a read under LazyOnAccess
+                    // would double-migrate (decode v2 bytes as v1).
+                    // Invariant: marker-set ⟺ context migrated to its
+                    // group's current target, regardless of which path
+                    // (eager propagator or lazy access) performed it.
+                    if let Some(ref params) = migration {
+                        if let Err(err) = MigrationsRepository::new(&datastore).set_last_migration(
+                            &group_id,
+                            context_id,
+                            &params.method,
+                        ) {
+                            warn!(
+                                ?group_id,
+                                %context_id,
+                                %err,
+                                "failed to record migration marker after eager propagator migration"
+                            );
+                        }
+                    }
                     debug!(
                         ?group_id,
                         %context_id,
@@ -979,21 +1008,22 @@ fn dispatch_cascade(
     let publish_task = async move {
         let sk = PrivateKey::from(effective_signing_key);
 
-        let report = calimero_governance_store::sign_apply_and_publish(
-            &datastore_for_publish,
-            &node_client_for_publish,
-            &ack_router_for_publish,
-            &group_id,
-            &sk,
-            GroupOp::CascadeTargetApplicationSet {
-                from_app_key,
-                app_key: new_app_key,
-                target_application_id,
-            },
-        )
-        .await?;
-        report.observe("upgrade_group", "CascadeTargetApplicationSet");
-
+        // ORDER MATTERS: emit `CascadeGroupMigrationSet` BEFORE
+        // `CascadeTargetApplicationSet`. Both ops use the same
+        // `from_app_key == descendant.app_key` walk predicate. The
+        // target-application op rewrites every matched descendant's
+        // `app_key` from `from_app_key` to `new_app_key`; if it ran
+        // first, the migration op's predicate would then match
+        // nothing (every descendant already moved to `new_app_key`)
+        // and the migration bytes would never reach the descendant
+        // metas — silently dropped on the emitter AND every
+        // receiver. The descendant `GroupMeta.migration` field is
+        // what `maybe_lazy_upgrade` reads to know which migrate
+        // method to run, so dropping it leaves receivers unable to
+        // self-migrate (they'd swap to the v2 app against
+        // un-migrated v1-shaped state). Emitting migration-set first
+        // — while descendants still hold `from_app_key` — lets both
+        // ops match the same descendant set.
         if migration_bytes_for_publish.is_some() {
             let report = calimero_governance_store::sign_apply_and_publish(
                 &datastore_for_publish,
@@ -1009,6 +1039,21 @@ fn dispatch_cascade(
             .await?;
             report.observe("upgrade_group", "CascadeGroupMigrationSet");
         }
+
+        let report = calimero_governance_store::sign_apply_and_publish(
+            &datastore_for_publish,
+            &node_client_for_publish,
+            &ack_router_for_publish,
+            &group_id,
+            &sk,
+            GroupOp::CascadeTargetApplicationSet {
+                from_app_key,
+                app_key: new_app_key,
+                target_application_id,
+            },
+        )
+        .await?;
+        report.observe("upgrade_group", "CascadeTargetApplicationSet");
 
         Ok::<_, eyre::Report>(())
     }

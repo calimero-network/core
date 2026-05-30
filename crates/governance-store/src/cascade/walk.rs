@@ -40,6 +40,14 @@ use crate::{MetaRepository, NamespaceRepository};
 pub struct WalkEntry {
     pub group_id: ContextGroupId,
     pub matched: bool,
+    /// The descendant's actual `app_key` value at walk time (or
+    /// `[0u8; 32]` if no `GroupMeta` was loadable for the group).
+    /// Surfaced primarily for diagnostic logging in the cascade apply
+    /// arms: when `matched == false`, this lets the skip log identify
+    /// *which* value the predicate compared against, distinguishing
+    /// "subtree app_key was never set" from "subtree was already at a
+    /// different version".
+    pub app_key: [u8; 32],
 }
 
 /// Walk the descendant tree of `signed_group_id` and evaluate the
@@ -89,13 +97,29 @@ pub fn walk_for_predicate(
         }
 
         let meta_opt = MetaRepository::new(store).load(&current)?;
+        // `matched` must use the original predicate shape — `None` meta
+        // returns `false` UNCONDITIONALLY, even when `from_app_key` is
+        // `[0u8; 32]`. The doc comment on `WalkEntry` (lines 36-38)
+        // explicitly preserves this invariant: a catching-up peer with
+        // a missing meta row must not be retroactively "matched" by a
+        // pathological `from_app_key == [0; 32]` op. A naive refactor
+        // to "default missing to zero, then compare" silently breaks
+        // that guarantee.
         let matched = meta_opt
             .as_ref()
             .map(|m| m.app_key == from_app_key)
             .unwrap_or(false);
+        // `app_key` is exposed for diagnostic logging only — defaulting
+        // to zero when meta is missing is fine here because the value
+        // is never compared against the predicate (the comparison above
+        // owns that). Distinguishes "subtree app_key was never seeded"
+        // (zero) from "subtree was already at a different version"
+        // (non-zero, non-matching) in the skip log.
+        let app_key = meta_opt.as_ref().map(|m| m.app_key).unwrap_or([0u8; 32]);
         out.push(WalkEntry {
             group_id: current,
             matched,
+            app_key,
         });
 
         // Push children for further descent. `list_child_groups` returns

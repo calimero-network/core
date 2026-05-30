@@ -497,6 +497,27 @@ impl ContextManager {
 
                     // Also update root_hash in case it changed
                     cached.meta.root_hash = meta.root_hash.into();
+
+                    // Refresh application_id too. A LazyOnAccess upgrade (or
+                    // a cascade target-application change) rewrites the
+                    // context's bound application in the DB out-of-band of
+                    // this in-memory cache. Callers (notably the execute
+                    // path's post-lazy-upgrade re-fetch) resolve the WASM
+                    // module from `application_id`; if the cache still holds
+                    // the pre-upgrade id, the method runs the OLD module
+                    // against the freshly-migrated (new-shaped) state — a
+                    // borsh "Not all bytes read" panic. Keeping app_id in
+                    // lockstep with the DB closes that window.
+                    let db_application_id = meta.application.application_id();
+                    if cached.meta.application_id != db_application_id {
+                        tracing::debug!(
+                            %context_id,
+                            old_application_id = %cached.meta.application_id,
+                            new_application_id = %db_application_id,
+                            "Refreshing application_id from database (cache was stale)"
+                        );
+                        cached.meta.application_id = db_application_id;
+                    }
                 }
 
                 Ok(Some(occupied.into_mut()))

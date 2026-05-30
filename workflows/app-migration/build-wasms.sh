@@ -12,8 +12,29 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
 SUITES=(
+    # Original v1..v5 chain (each vN migrates from vN-1).
     "apps/migrations/migration-suite-v1"
     "apps/migrations/migration-suite-v2-add-field"
+    "apps/migrations/migration-suite-v3-remove-field"
+    "apps/migrations/migration-suite-v4-rename-field"
+    "apps/migrations/migration-suite-v5-change-type"
+    # Per-scenario v1+v2 pairs (each pair is self-contained, no chain).
+    "apps/migrations/scenario-new-method-v1"
+    "apps/migrations/scenario-new-method-v2"
+    "apps/migrations/scenario-new-enum-variant-v1"
+    "apps/migrations/scenario-new-enum-variant-v2"
+    "apps/migrations/scenario-pure-bugfix-v1"
+    "apps/migrations/scenario-pure-bugfix-v2"
+    "apps/migrations/scenario-crdt-native-v1"
+    "apps/migrations/scenario-crdt-native-v2"
+    "apps/migrations/scenario-struct-to-enum-v1"
+    "apps/migrations/scenario-struct-to-enum-v2"
+    "apps/migrations/scenario-field-split-v1"
+    "apps/migrations/scenario-field-split-v2"
+    "apps/migrations/scenario-field-remove-archive-v1"
+    "apps/migrations/scenario-field-remove-archive-v2"
+    "apps/migrations/scenario-invariant-reshuffle-v1"
+    "apps/migrations/scenario-invariant-reshuffle-v2"
 )
 
 for suite in "${SUITES[@]}"; do

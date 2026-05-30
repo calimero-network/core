@@ -59,6 +59,7 @@ pub(crate) fn apply(
                 target: "calimero::cascade",
                 group_id = %hex::encode(entry.group_id.to_bytes()),
                 from_app_key = %hex::encode(from_app_key),
+                descendant_app_key = %hex::encode(entry.app_key),
                 "CascadeTargetApplicationSet: skip (app_key mismatch)"
             );
             continue;
@@ -74,6 +75,23 @@ pub(crate) fn apply(
         // path, but is cheap to leave in place).
         let entry_settings = GroupSettingsService::new(store, entry.group_id);
         entry_settings.set_target_application(signer, app_key, target_application_id)?;
+        // Match-success log. Mirrors the skip-log fields so the
+        // emitter (which both applies locally AND publishes the op)
+        // and the receivers (which apply on gossip-receive) both
+        // produce a consistent per-descendant trail of which
+        // descendant flipped, what `from_app_key` predicate matched
+        // it, and what `app_key` it landed on. Without this, the
+        // receiver's successful apply was silent and the only way
+        // to verify the cascade reached a remote peer was a
+        // post-hoc `get_group_info` round-trip.
+        tracing::info!(
+            target: "calimero::cascade",
+            group_id = %hex::encode(entry.group_id.to_bytes()),
+            from_app_key = %hex::encode(from_app_key),
+            app_key = %hex::encode(app_key),
+            %target_application_id,
+            "CascadeTargetApplicationSet: applied"
+        );
 
         // Per-context InProgress status + per-context migration
         // propagator dispatch are intentionally NOT performed here:

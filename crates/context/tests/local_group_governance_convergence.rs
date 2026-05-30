@@ -273,6 +273,7 @@ fn two_nodes_converge_on_namespace_member_joined() {
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
+        app_key: None,
     };
 
     let ns_op = SignedNamespaceOp::sign(
@@ -1619,6 +1620,7 @@ fn reapplying_namespace_op_keeps_dag_head_set_clean_and_position_embeddable() {
         invitation,
         inviter_signature: hex::encode(inv_sig.to_bytes()),
         application_id: None,
+        app_key: None,
     };
 
     let ns_op = SignedNamespaceOp::sign(

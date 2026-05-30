@@ -1,0 +1,315 @@
+name: 10 — Scenario "struct to enum" (v1 → v2-struct-to-enum, 2-node)
+description: >
+  2-node per-context migration for the struct-to-enum scenario.
+  v1 stores `status: LwwRegister<Status>` where `Status` is a struct
+  with `active: bool` + `reason: Option<String>` — a layout that
+  structurally allows the domain-impossible state
+  `active = true, reason = Some(_)`. v2 replaces `Status` with a
+  tagged enum (`Active` | `Inactive(String)`) that makes the
+  impossible state unrepresentable. `migrate_v1_to_v2` reads the
+  legacy struct via a private `LegacyStatus` decoder and maps each
+  v1 value to its equivalent v2 variant: `active = true` becomes
+  `Status::Active` (any spurious reason is dropped), `active = false`
+  becomes `Status::Inactive(reason)`. Topology: namespace + one Open
+  subgroup + one context in the subgroup. Upgrade is per-context
+  `upgrade_group(group=subgroup, target=v2,
+  migrate=migrate_v1_to_v2)`. Cross-node assertions prove the rewritten
+  enum shape reaches node 2 via context-sync gossip.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-struct2enum
+  base_port: 9320
+  base_rpc_port: 9420
+
+steps:
+  # Phase 1: Install both binaries on the ADMIN node (node 1) only.
+  #
+  # Realistic distribution: node 2 never runs install_application. It
+  # auto-fetches the from-version when it joins the context and the
+  # to-version when the upgrade announces the target blob (pulled over
+  # BlobShare during its lazy migration; the sync-gate leaves BlobShare
+  # open for exactly this). App ids are content-addressed, so node 1's
+  # captured app ids are the same ids node 2 resolves. Proven by the
+  # 01/02 admin-only canary.
+  - name: Install scenario-struct-to-enum-v1 on node 1
+    type: install_application
+    node: app-migration-struct2enum-1
+    path: apps/migrations/scenario-struct-to-enum-v1/res/scenario_struct_to_enum_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-struct-to-enum-v2 on node 1
+    type: install_application
+    node: app-migration-struct2enum-1
+    path: apps/migrations/scenario-struct-to-enum-v2/res/scenario_struct_to_enum_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context.
+  - name: Create namespace (v1) on node 1
+    type: create_namespace
+    node: app-migration-struct2enum-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-struct2enum-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-struct2enum-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "struct-to-enum-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-struct2enum-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-struct2enum-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: Invite node 2 to namespace; materialise subgroup + context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-struct2enum-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-struct2enum-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-struct2enum-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-struct2enum-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: Write v1 state on node 1, wait for node 2 to catch up.
+  - name: Set v1 name
+    type: call
+    node: app-migration-struct2enum-1
+    context_id: "{{ctx_id}}"
+    method: set_name
+    args:
+      name: "entity-1"
+
+  - name: Set v1 status to inactive with reason
+    type: call
+    node: app-migration-struct2enum-1
+    context_id: "{{ctx_id}}"
+    method: set_status_inactive
+    args:
+      reason: "under-maintenance"
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-struct2enum-1
+      - app-migration-struct2enum-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Sanity-check v1 state shape on node 1
+    type: call
+    node: app-migration-struct2enum-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema in place
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "name": "entity-1", "status_active": false, "status_reason": "under-maintenance"}})'
+
+  # LazyOnAccess: each node migrates its OWN byte-identical v1 state
+  # on next access. The migration write path emits no DAG delta (full
+  # root replacement, not CRDT-mergeable), so migrated bytes do not
+  # propagate over sync — each node must self-migrate. Under
+  # `coordinated` only the emitter migrates and the receiver is left
+  # with v1 bytes behind a v2 app pointer → "Not all bytes read"
+  # panic. The per-context TargetApplicationSet + GroupMigrationSet
+  # ops set both `target_application_id` and the `migration` method on
+  # the subgroup's GroupMeta, which each receiver's
+  # `maybe_lazy_upgrade` reads to self-migrate.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-struct2enum-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Phase 5: Per-context upgrade on the subgroup (cascade=false default).
+  # Under LazyOnAccess this sets the target + migration method on the
+  # subgroup meta and returns WITHOUT running a propagator — no node
+  # migrates eagerly; each migrates on its next access below.
+  - name: Upgrade subgroup v1 → v2 (per-context, not cascade)
+    type: upgrade_group
+    node: app-migration-struct2enum-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  # Fixed wait, NOT wait_for_sync (see scenario 01 rationale): lets the
+  # target+migration meta gossip to node 2 before its lazy read.
+  - name: Wait for upgrade meta to gossip to node 2
+    type: wait
+    seconds: 15
+
+  # These reads TRIGGER each node's lazy migration: schema_info is not
+  # a state op, so `maybe_lazy_upgrade` fires on each node, migrating
+  # its own v1 state to v2 before serving the read.
+  - name: Read post-migration schema_info on node 1 (triggers lazy migration)
+    type: call
+    node: app-migration-struct2enum-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node1: result
+
+  - name: Read post-migration schema_info on node 2 (triggers lazy migration)
+    type: call
+    node: app-migration-struct2enum-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  # Both nodes self-migrated via the lazy path — assert the migration
+  # logs on EACH after its triggering read above.
+  - name: Assert lazy migration ran on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-struct2enum-1
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-struct2enum-2
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert v2 schema on node 1 (struct collapsed to Inactive variant)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0", "name": "entity-1", "status_kind": "inactive", "status_reason": "under-maintenance"}})'
+
+  - name: Assert v2 schema on node 2 (same enum shape, proves rewrite reached node 2)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0", "name": "entity-1", "status_kind": "inactive", "status_reason": "under-maintenance"}})'
+
+  # Phase 7d: v2-only setter on node 1 round-trips to node 2.
+  - name: Flip status to Active under v2 on node 1
+    type: call
+    node: app-migration-struct2enum-1
+    context_id: "{{ctx_id}}"
+    method: set_status_active
+
+  - name: Wait for v2 write to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-struct2enum-1
+      - app-migration-struct2enum-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read schema_info after flip on node 1
+    type: call
+    node: app-migration-struct2enum-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_active_node1: result
+
+  - name: Read schema_info after flip on node 2
+    type: call
+    node: app-migration-struct2enum-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_active_node2: result
+
+  - name: Assert Active variant drops the reason payload on node 1
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_active_node1}}, {"output": {"schema_version": "2.0.0", "name": "entity-1", "status_kind": "active", "status_reason": null}})'
+
+  - name: Assert Active variant flip round-trips to node 2
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_active_node2}}, {"output": {"schema_version": "2.0.0", "name": "entity-1", "status_kind": "active", "status_reason": null}})'
+
+  # Phase 8: Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-struct2enum-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-struct2enum-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-struct2enum-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1 on node 1
+    type: uninstall_application
+    node: app-migration-struct2enum-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2 on node 1
+    type: uninstall_application
+    node: app-migration-struct2enum-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
