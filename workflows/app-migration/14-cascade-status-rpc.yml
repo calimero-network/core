@@ -221,12 +221,6 @@ steps:
 
   - name: Assert cascade-status roll-up on BOTH nodes
     type: json_assert
-    # json_assert runs json.loads on each arg. Quoting the placeholder
-    # (`"{{x}}"`) makes the resolved value the JSON string "2", which never
-    # equals the integer count. Leave the placeholder UNQUOTED so the resolved
-    # value parses as the JSON integer 2 — matching the bare integer literals
-    # below (and robust to whether substitution is string-replace or
-    # type-aware).
     statements:
       # nothing left pending on either node
       - "equal({{status_pending_node1}}, 0)"
