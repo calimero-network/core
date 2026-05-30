@@ -39,9 +39,9 @@ pub struct NonceWindow {
 
 impl NonceWindow {
     /// Build a window from persisted parts, normalising so the invariant
-    /// (`every element of `above` is `> floor`, and `floor + 1` is not in
-    /// `above`) holds even if the stored parts were written by an older
-    /// or buggier writer.
+    /// holds even if the stored parts were written by an older or buggier
+    /// writer: every element of `above` is `> floor`, and `floor + 1` is
+    /// not in `above`.
     #[must_use]
     pub fn new(floor: u64, above: impl IntoIterator<Item = u64>) -> Self {
         let mut window = Self {
@@ -93,10 +93,24 @@ impl NonceWindow {
     /// (a dedup — drop it). Advances the floor through any run that
     /// `nonce` made contiguous.
     pub fn record(&mut self, nonce: u64) -> bool {
+        // Governance nonces are minted as `max_applied() + 1`, so the first
+        // valid nonce is 1; nonce 0 is never authored. A fresh window has
+        // `floor == 0`, so `contains(0)` is already `true` and 0 is deduped
+        // here anyway — the assert just pins the invariant for callers on the
+        // receive path, which accept whatever nonce is on the wire.
+        debug_assert!(nonce > 0, "governance nonces must be >= 1, got {nonce}");
         if self.contains(nonce) {
             return false;
         }
-        let _inserted = self.above.insert(nonce);
+        // `contains` returned false, so `nonce` is not in `above` and the
+        // insert must be new. The insert runs unconditionally (NOT inside the
+        // `debug_assert!`, which would elide it in release); the assert only
+        // catches future invariant drift in debug builds.
+        let newly_inserted = self.above.insert(nonce);
+        debug_assert!(
+            newly_inserted,
+            "nonce {nonce} not in window per contains() but was already in the above-set"
+        );
         while self.above.remove(&(self.floor + 1)) {
             self.floor += 1;
         }

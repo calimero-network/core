@@ -68,13 +68,32 @@ pub fn load_nonce_window(
 /// the old key) and the above-floor set under [`GroupLocalGovNoncePending`]
 /// (deleted when empty so a closed gap leaves no stale row).
 ///
-/// The floor is written before the above-set. The two `put`s are not atomic
-/// (`calimero-store` has no transactional batch — see the CRASH-SAFETY
-/// INVARIANT on [`persist_group_op_log_entry`]), but a crash between them is
-/// self-healing: [`NonceWindow::new`] normalises inconsistent parts on the
-/// next load (drops below-floor entries, pulls the floor through any
-/// now-contiguous run), so neither ordering can resurrect an already-applied
-/// nonce or skip an unapplied one.
+/// The two `put`s are not atomic (`calimero-store` has no transactional
+/// batch — see the CRASH-SAFETY INVARIANT on [`persist_group_op_log_entry`]),
+/// so a crash can land between the floor write and the above-set write. This
+/// is safe because of an asymmetry in what each error direction costs:
+///
+/// - The floor written here is always `window.floor()`, which `record`
+///   advances ONLY through nonces that were actually applied, and the write
+///   happens AFTER the op applied. So the persisted floor can never exceed
+///   the true contiguous-applied count — a crash can never make `contains`
+///   report an UNAPPLIED nonce as applied. The op-dropping direction (the
+///   #2516 bug itself) is therefore impossible.
+/// - The only reachable post-crash error is the reverse: an above-floor nonce
+///   that WAS applied is missing from the persisted above-set, so `contains`
+///   returns false and the op is re-applied. The above-set is rewritten in
+///   full on every call, so at most the single nonce being committed during
+///   the crash is lost (older above entries were persisted by their own prior
+///   call) — the same "crash mid-commit" window the op-log entry write in
+///   [`persist_group_op_log_entry`] already has. Re-apply is tolerated: the
+///   namespace receive path dedups duplicate log entries via
+///   `op_log_contains_content_hash`, and `retry_encrypted_ops_for_group`
+///   re-feeds the whole log by design, so governance mutations are replay-safe.
+///
+/// On the next load [`NonceWindow::new`] normalises whatever parts survived
+/// (drops below-floor entries, pulls the floor through any now-contiguous
+/// run), so a stale above-set left by a crash in the floor-advance case is
+/// reconciled rather than trusted.
 pub fn store_nonce_window(
     store: &Store,
     group_id: &ContextGroupId,
