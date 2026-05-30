@@ -12,13 +12,13 @@
 //! `manager/mod.rs` + `manager/tests.rs` precedent for the same
 //! mod-dir layout.
 //!
-//! **`open_stream` mockability**: `Stream` is a concrete type wrapping
-//! a real `libp2p::Stream` and currently has no synthetic constructor.
-//! Mocks can return `Err(_)` from `open_stream` (sufficient for
-//! testing retry/timeout/error paths in the namespace-join discovery
-//! loop, the snapshot/delta-request open paths, etc.) but cannot
-//! return a synthetic `Ok(Stream)` until a `Stream::test_pair()`
-//! constructor lands — tracked as a follow-up.
+//! **`open_stream` mockability**: `Stream` wraps a real `libp2p::Stream`
+//! in production, but `Stream::test_pair()` (behind the network-primitives
+//! `test-utils` feature, which the node enables on its dev-dependency
+//! edge) backs it with an in-memory duplex pipe. Mocks can therefore
+//! script `Err(_)`/hang *and* a synthetic `Ok(Stream)`, covering both
+//! the retry/timeout/error paths and the success/recovery paths of the
+//! namespace-join discovery loop, snapshot/delta-request opens, etc.
 //!
 //! See #2406 + #2302 (sync extraction epic).
 //!
@@ -56,7 +56,8 @@ pub trait SyncNetwork: Send + Sync + 'static {
     /// Open a new substream to `peer_id` over the calimero protocol.
     ///
     /// Used by every sync initiator path. Mock impls can return
-    /// `Err(_)` to exercise the retry/timeout/error branches.
+    /// `Err(_)` to exercise the retry/timeout/error branches, or a
+    /// `Stream::test_pair()` end to exercise the success branch.
     async fn open_stream(&self, peer_id: PeerId) -> eyre::Result<Stream>;
 }
 
