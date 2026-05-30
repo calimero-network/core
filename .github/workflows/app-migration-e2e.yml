@@ -139,6 +139,7 @@ jobs:
           - 11-scenario-field-split
           - 12-scenario-field-remove-archive
           - 13-scenario-invariant-reshuffle
+          - 14-cascade-status-rpc
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:
