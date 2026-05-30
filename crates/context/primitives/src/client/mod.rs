@@ -23,27 +23,27 @@ use tokio::sync::oneshot;
 
 use crate::group::{
     AddGroupMembersRequest, AdmitTeeNodeRequest, BroadcastGroupLocalStateRequest,
-    CreateGroupInvitationRequest, CreateGroupInvitationResponse, CreateGroupRequest,
-    CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse, DeleteNamespaceRequest,
-    DeleteNamespaceResponse, DetachContextFromGroupRequest, GetContextMetadataRequest,
-    GetGroupForContextRequest, GetGroupInfoRequest, GetGroupMetadataRequest,
-    GetGroupUpgradeStatusRequest, GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse,
-    GetMemberMetadataRequest, GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse,
-    GroupSummary, GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest,
-    IssueOwnershipProofRequest, IssueOwnershipProofResponse, JoinContextRequest,
-    JoinContextResponse, JoinGroupRequest, JoinGroupResponse, JoinSubgroupInheritanceRequest,
-    JoinSubgroupInheritanceResponse, LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest,
-    LeaveGroupResponse, LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest,
-    ListGroupContextsRequest, ListGroupMembersRequest, ListGroupMembersResponse,
-    ListNamespacesForApplicationRequest, ListNamespacesRequest, NamespaceSummary,
-    RemoveGroupMembersRequest, RetryGroupUpgradeRequest, SetContextMetadataRequest,
-    SetDefaultCapabilitiesRequest, SetGroupMetadataRequest, SetMemberAutoFollowRequest,
-    SetMemberCapabilitiesRequest, SetMemberMetadataRequest, SetSubgroupVisibilityRequest,
-    SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest, StoreDefaultCapabilitiesRequest,
-    StoreGroupContextRequest, StoreGroupMetaRequest, StoreGroupMetadataRequest,
-    StoreMemberCapabilityRequest, StoreMemberMetadataRequest, StoreSubgroupVisibilityRequest,
-    SyncGroupRequest, SyncGroupResponse, UpdateGroupSettingsRequest, UpdateMemberRoleRequest,
-    UpgradeGroupRequest, UpgradeGroupResponse,
+    CascadeStatusEntry, CreateGroupInvitationRequest, CreateGroupInvitationResponse,
+    CreateGroupRequest, CreateGroupResponse, DeleteGroupRequest, DeleteGroupResponse,
+    DeleteNamespaceRequest, DeleteNamespaceResponse, DetachContextFromGroupRequest,
+    GetCascadeStatusRequest, GetContextMetadataRequest, GetGroupForContextRequest,
+    GetGroupInfoRequest, GetGroupMetadataRequest, GetGroupUpgradeStatusRequest,
+    GetMemberCapabilitiesRequest, GetMemberCapabilitiesResponse, GetMemberMetadataRequest,
+    GetNamespaceIdentityRequest, GroupContextEntry, GroupInfoResponse, GroupSummary,
+    GroupUpgradeInfo, IssueNamespaceOwnershipProofRequest, IssueOwnershipProofRequest,
+    IssueOwnershipProofResponse, JoinContextRequest, JoinContextResponse, JoinGroupRequest,
+    JoinGroupResponse, JoinSubgroupInheritanceRequest, JoinSubgroupInheritanceResponse,
+    LeaveContextRequest, LeaveContextResponse, LeaveGroupRequest, LeaveGroupResponse,
+    LeaveNamespaceRequest, LeaveNamespaceResponse, ListAllGroupsRequest, ListGroupContextsRequest,
+    ListGroupMembersRequest, ListGroupMembersResponse, ListNamespacesForApplicationRequest,
+    ListNamespacesRequest, NamespaceSummary, RemoveGroupMembersRequest, RetryGroupUpgradeRequest,
+    SetContextMetadataRequest, SetDefaultCapabilitiesRequest, SetGroupMetadataRequest,
+    SetMemberAutoFollowRequest, SetMemberCapabilitiesRequest, SetMemberMetadataRequest,
+    SetSubgroupVisibilityRequest, SetTeeAdmissionPolicyRequest, StoreContextMetadataRequest,
+    StoreDefaultCapabilitiesRequest, StoreGroupContextRequest, StoreGroupMetaRequest,
+    StoreGroupMetadataRequest, StoreMemberCapabilityRequest, StoreMemberMetadataRequest,
+    StoreSubgroupVisibilityRequest, SyncGroupRequest, SyncGroupResponse,
+    UpdateGroupSettingsRequest, UpdateMemberRoleRequest, UpgradeGroupRequest, UpgradeGroupResponse,
 };
 use crate::local_governance::AckRouter;
 use crate::messages::{
@@ -1586,6 +1586,12 @@ impl ContextClient {
         ListNamespacesForApplication,
         ListNamespacesForApplicationRequest,
         eyre::Result<Vec<NamespaceSummary>>
+    );
+    forward_to_actor!(
+        get_cascade_status,
+        GetCascadeStatus,
+        GetCascadeStatusRequest,
+        eyre::Result<Vec<CascadeStatusEntry>>
     );
 
     // --- Methods with custom parameter handling (not suitable for forward_to_actor!) ---
