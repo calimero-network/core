@@ -253,10 +253,7 @@ impl ProtocolSelector {
                             .await;
                         }
 
-                        Ok(Some(SyncProtocol::HashComparison {
-                            root_hash,
-                            divergent_subtrees: vec![],
-                        }))
+                        Ok(Some(SyncProtocol::HashComparison { root_hash }))
                     }
                     Err(e) => {
                         warn!(

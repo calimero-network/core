@@ -191,10 +191,7 @@ mod tests {
     #[test]
     fn test_sync_handshake_response_roundtrip() {
         let response = SyncHandshakeResponse::with_protocol(
-            SyncProtocol::HashComparison {
-                root_hash: [7; 32],
-                divergent_subtrees: vec![],
-            },
+            SyncProtocol::HashComparison { root_hash: [7; 32] },
             [8; 32],
             500,
         );

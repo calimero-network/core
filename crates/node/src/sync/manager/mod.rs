@@ -894,7 +894,7 @@ impl SyncManager {
         // so it matches the fixed `KNOWN_PROTOCOLS` set in
         // `PrometheusSyncMetrics::sanitize_protocol`. Formatting the
         // data-carrying `SyncProtocol` with `{:?}` would yield strings
-        // like `HashComparison { root_hash: [...], divergent_subtrees: [...] }`
+        // like `HashComparison { root_hash: [...] }`
         // which never match the sanitiser and would label every sync
         // `protocol="unknown"`, breaking the per-protocol slicing on
         // `sync_successes_total` and `sync_duration_seconds`.
