@@ -369,10 +369,11 @@ impl NetworkManager {
             let cursor = self.discovery.rendezvous_discover_cursor % keys.len();
             keys.rotate_left(cursor);
             let budget = RENDEZVOUS_DISCOVER_BUDGET.min(keys.len());
-            self.discovery.rendezvous_discover_cursor = self
-                .discovery
-                .rendezvous_discover_cursor
-                .wrapping_add(budget);
+            // Advance the cursor by the budget, kept bounded modulo the
+            // current key count so it never grows unboundedly and the
+            // start index stays well-defined even as the key set changes
+            // size between ticks.
+            self.discovery.rendezvous_discover_cursor = (cursor + budget) % keys.len();
 
             for key in keys.into_iter().take(budget) {
                 self.swarm.behaviour_mut().rendezvous.discover(

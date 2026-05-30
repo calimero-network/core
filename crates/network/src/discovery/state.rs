@@ -72,8 +72,12 @@ pub(crate) fn rendezvous_key_for_topic(topic: &str) -> Option<Namespace> {
 }
 
 /// Given the node's subscribed topics paired with their current
-/// connected-mesh-peer counts, return the rendezvous keys we are
-/// *under-connected* on — i.e. topics with zero connected mesh peers.
+/// connected-**subscriber** counts, return the rendezvous keys we are
+/// *under-connected* on — i.e. topics with zero connected subscribers.
+///
+/// The count is the full subscriber set (gossipsub `all_peers`), NOT the
+/// grafted mesh: a topic with a connected subscriber can sync through it
+/// even when the mesh is momentarily thin, so it isn't under-connected.
 ///
 /// These are the only keys worth spending a (paced) rendezvous discover
 /// on: a topic that already has a connected co-member can sync through
@@ -91,8 +95,8 @@ pub(crate) fn under_connected_rendezvous_keys<'a>(
 ) -> Vec<Namespace> {
     let mut keys = Vec::new();
     let mut seen = HashSet::new();
-    for (topic, mesh_peer_count) in topics {
-        if mesh_peer_count > 0 {
+    for (topic, subscriber_count) in topics {
+        if subscriber_count > 0 {
             continue;
         }
         if let Some(key) = rendezvous_key_for_topic(topic) {
@@ -569,9 +573,15 @@ impl DiscoveryState {
         &self,
         connected: impl IntoIterator<Item = &'a PeerId>,
     ) -> bool {
-        connected
-            .into_iter()
-            .any(|peer| !self.relay_index.contains(peer) && !self.rendezvous_index.contains(peer))
+        connected.into_iter().any(|peer| {
+            // All three infra indices are excluded: a node whose only
+            // connection is to a relay, a rendezvous server, OR a
+            // dedicated autonat server is still partitioned from the
+            // application overlay and must keep force-rediscovering.
+            !self.relay_index.contains(peer)
+                && !self.rendezvous_index.contains(peer)
+                && !self.autonat_index.contains(peer)
+        })
     }
 
     pub(crate) fn has_confirmed_external_addresses(&self) -> bool {

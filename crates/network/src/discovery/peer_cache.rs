@@ -19,16 +19,24 @@
 //!   When it doesn't work (peer moved relays, IP changed), the stale dial
 //!   fails, the address is dropped, and rendezvous supplies the fresh one.
 //!
-//! **Staleness / IP-change handling** is threefold and lives here + in the
-//! callers:
+//! **Wiring** (all live; see the `peer_cache_*` methods on the discovery
+//! `NetworkManager` impl): recorded on `ConnectionEstablished`, persisted
+//! to a node-local `Generic` datastore key on the rendezvous tick, and
+//! loaded + dialed on `started()`.
+//!
+//! **Staleness / IP-change handling** is threefold:
 //!   1. `record` overwrites a peer's entry with the freshest observed
 //!      address on every (re)connection — identify pushes listen-addr
 //!      updates, so an IP change is captured live, not on a timer.
-//!   2. `snapshot_fresh` / `retain_fresh` drop entries past a wall-clock
-//!      TTL so a peer we haven't seen in a long time ages out of the file.
-//!   3. The dialing caller evicts an address after repeated dial failures
-//!      (the discovery book's existing failure-eviction threshold), so a
-//!      stale cached address can't wedge reconnection.
+//!   2. TTL: `load_fresh` / `snapshot_relevant_fresh` drop entries past a
+//!      wall-clock TTL (24h), so a peer not seen recently ages out of the
+//!      blob entirely — including a relayed-circuit address whose relay
+//!      the peer has since left.
+//!   3. A stale cached address that's dialed and fails is deduped at the
+//!      swarm level (`DisconnectedAndNotDialing`) and re-supplied fresh by
+//!      rendezvous; a direct address additionally hits the discovery
+//!      book's failure-eviction threshold. The cache itself is a best-
+//!      effort hint — it never blocks reconnection, it only accelerates it.
 
 use std::collections::{BTreeSet, HashMap};
 

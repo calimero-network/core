@@ -977,7 +977,7 @@ fn test_rendezvous_key_rejects_overlong_topic() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_under_connected_includes_only_zero_mesh_topics() {
+fn test_under_connected_includes_only_zero_subscriber_topics() {
     let starved = "ns/aa";
     let healthy = "ns/bb";
     let keys = under_connected_rendezvous_keys([(starved, 0), (healthy, 3)]);

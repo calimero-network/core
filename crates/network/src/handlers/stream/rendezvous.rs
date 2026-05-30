@@ -33,11 +33,12 @@ impl StreamHandler<RendezvousTick> for NetworkManager {
         // fires after a restart (no connection was ever open this
         // process), so without this the node parks behind the throttle
         // while the sync layer reports "No peers to sync with".
-        let connected: Vec<libp2p::PeerId> = self.swarm.connected_peers().copied().collect();
+        // Disjoint immutable borrows (swarm vs discovery.state) — no Vec
+        // alloc needed; pass the connected-peers iterator straight in.
         let peerless = !self
             .discovery
             .state
-            .has_regular_connected_peer(connected.iter());
+            .has_regular_connected_peer(self.swarm.connected_peers());
 
         #[expect(clippy::needless_collect, reason = "Necessary here; false positive")]
         for peer_id in self
