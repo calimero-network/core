@@ -1182,4 +1182,141 @@ mod tests {
             PRED_GRACE
         ));
     }
+
+    #[test]
+    fn dispatch_decision_force_override_high_failure_count() {
+        // Regression: ensure `force=true` actually bypasses the exponential
+        // backoff, not just the interval floor. After many failures,
+        // backoff_delay is large (e.g. 2^7 = 128s). An explicit force
+        // request must override it entirely, not just skip to the next
+        // backoff tier.
+        let mut t = tracker(); // 5s interval, session_deadline 30s
+        let mut s = SyncState::new();
+        // Bump failure_count to 7 → 2^7 = 128s backoff
+        for _ in 0..7 {
+            s.on_failure("boom".to_owned());
+        }
+        assert_eq!(s.failure_count(), 7);
+        let large_backoff = s.backoff_delay();
+        assert_eq!(large_backoff, Duration::from_secs(128));
+        let _ = t.state.insert(ctx(1), s);
+
+        // `force=true` must override the 128s backoff and return Eligible.
+        match t.dispatch_decision(&ctx(1), true) {
+            DispatchDecision::Eligible {
+                forced_despite_recency: Some(_),
+                ..
+            } => {}
+            other => panic!("force=true must override 128s backoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_decision_respects_capped_exponential_backoff() {
+        // `backoff_delay()` is `2^min(failure_count, 8)` capped at 300s.
+        // The exponent caps the count at 8, so the practical maximum is
+        // 2^8 = 256s — the `.min(300)` never trips (256 < 300). After many
+        // failures the backoff floor settles at 256s, not 512s+.
+        let mut t = tracker();
+        let mut s = SyncState::new();
+        for _ in 0..9 {
+            s.on_failure("boom".to_owned());
+        }
+        let _ = t.state.insert(ctx(1), s);
+
+        match t.dispatch_decision(&ctx(1), false) {
+            DispatchDecision::Skip(SkipReason::LastSyncTooRecent { minimum, .. }) => {
+                assert_eq!(
+                    minimum,
+                    Duration::from_secs(256),
+                    "backoff caps at 2^8 = 256s (the exponent caps failure_count at 8)"
+                );
+            }
+            other => panic!("expected backoff-capped skip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_result_no_peers_then_real_error_escalates_failure_count() {
+        // Regression: verify that a transient NoPeersAvailable result
+        // doesn't bump failure_count, but a subsequent real error DOES.
+        // This tests the multi-outcome sequence: NoPeersAvailable (benign)
+        // followed by a real failure (should escalate).
+        let mut t = tracker();
+        t.record_dispatch_succeeded(ctx(1), true);
+
+        // First result: NoPeersAvailable (benign, no failure increment).
+        t.apply_result(no_peers_available_result(ctx(1)));
+        let s = t.state.get(&ctx(1)).unwrap();
+        assert_eq!(
+            s.failure_count(),
+            0,
+            "NoPeersAvailable must not increment failure_count"
+        );
+        // Manually clear the in-progress marker so the next dispatch attempt
+        // can happen (in real code, the dispatch loop would take the next
+        // eligible context from the list).
+        assert!(
+            s.last_sync().is_some(),
+            "NoPeersAvailable clears the marker"
+        );
+
+        // Now dispatch again with a real error.
+        let _ = t.state.get_mut(&ctx(1)).unwrap().take_last_sync();
+        t.record_dispatch_succeeded(ctx(1), false);
+        t.apply_result(err_result(ctx(1), "real sync error"));
+
+        // The real error must increment failure_count.
+        let s = t.state.get(&ctx(1)).unwrap();
+        assert_eq!(
+            s.failure_count(),
+            1,
+            "real error after NoPeersAvailable must bump failure_count to 1"
+        );
+    }
+
+    #[test]
+    fn dispatch_decision_first_sync_after_long_idle_is_eligible() {
+        // Regression: ensure that a context with no state (never synced)
+        // is always Eligible, even if it's the first check after an
+        // arbitrarily long idle. This catches any stale-timestamp or
+        // initialization bugs.
+        let t = tracker();
+        // No state for ctx(1) → first sync.
+        match t.dispatch_decision(&ctx(1), false) {
+            DispatchDecision::Eligible {
+                is_first_sync: true,
+                forced_despite_recency: None,
+            } => {}
+            other => panic!("no state must always be first-sync-eligible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_dispatch_succeeded_multiple_times_takes_last_sync_each_round() {
+        // Regression: ensure that a context can cycle through multiple
+        // in-flight / settled transitions correctly. After the first
+        // dispatch settles, a second dispatch must also work: take_last_sync
+        // clears it, and subsequent dispatches repeat the cycle.
+        let mut t = tracker();
+
+        // First dispatch succeeds → in-progress (last_sync = None).
+        t.record_dispatch_succeeded(ctx(1), true);
+        let s = t.state.get(&ctx(1)).unwrap();
+        assert!(s.last_sync().is_none());
+
+        // Result settles with success → last_sync = Some(_).
+        t.apply_result(ok_result(ctx(1)));
+        let s = t.state.get(&ctx(1)).unwrap();
+        assert!(s.last_sync().is_some());
+
+        // Next dispatch (not first-sync; context now has state).
+        // This clears last_sync again for the in-progress marker.
+        t.record_dispatch_succeeded(ctx(1), false);
+        let s = t.state.get(&ctx(1)).unwrap();
+        assert!(
+            s.last_sync().is_none(),
+            "second record_dispatch_succeeded must clear last_sync"
+        );
+    }
 }

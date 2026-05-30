@@ -1018,3 +1018,138 @@ fn test_under_connected_preserves_first_appearance_order() {
         "order should follow first appearance for predictable round-robin pacing"
     );
 }
+
+#[test]
+fn test_rendezvous_key_max_length_boundary() {
+    // Ensure we accept a valid key up to the 255-char rendezvous limit.
+    // A namespace prefix "/calimero/ns/" is 13 chars, leaving 242 chars for the id.
+    // Use exactly 242 hex chars to hit the boundary without exceeding it.
+    let hex_242 = "a".repeat(242);
+    let topic = format!("ns/{hex_242}");
+    let key = rendezvous_key_for_topic(&topic);
+    assert!(
+        key.is_some(),
+        "maximum-length valid topic (255 chars total) must be accepted"
+    );
+    assert_eq!(
+        key.unwrap(),
+        *format!("/calimero/ns/{hex_242}").as_str(),
+        "key derivation must match the composed prefix + id"
+    );
+}
+
+#[test]
+fn test_under_connected_mixed_healthy_and_starved_with_order_and_dedup() {
+    // A mix of topics with varying mesh_peer_count: some healthy (>0),
+    // some starved (0). Must return only the starved ones, in first-appearance
+    // order, with duplicates collapsed.
+    let topics = [
+        ("ns/aa", 1),    // healthy, skip
+        ("group/bb", 0), // starved, include (first appearance)
+        ("ctxid", 2),    // healthy, skip
+        ("ns/cc", 0),    // starved, include
+        ("group/bb", 0), // starved, duplicate of "group/bb", skip
+        ("ns/aa", 0), // starved, but first appearance as "ns/aa" was healthy; include new zero entry
+    ];
+
+    let keys = under_connected_rendezvous_keys(topics);
+
+    // Expected: group/bb (first appearance with 0), ns/cc (first starved ns topic),
+    // then ns/aa as starved (the topic's final state is 0, but its first appearance was
+    // healthy at index 0, so this is the starved appearance at index 5).
+    assert_eq!(
+        keys.len(),
+        3,
+        "should include all distinct starved keys, filtering out healthy ones"
+    );
+
+    // Verify order follows first *starved* appearance, not topic name order:
+    assert_eq!(
+        keys[0],
+        rendezvous_key_for_topic("group/bb").unwrap(),
+        "group/bb should appear first (first starved appearance at index 1)"
+    );
+    assert_eq!(
+        keys[1],
+        rendezvous_key_for_topic("ns/cc").unwrap(),
+        "ns/cc should appear second (second starved appearance at index 3)"
+    );
+    assert_eq!(
+        keys[2],
+        rendezvous_key_for_topic("ns/aa").unwrap(),
+        "ns/aa should appear third (first time it's starved, at index 5)"
+    );
+}
+
+#[test]
+fn test_under_connected_empty_input() {
+    // Calling with an empty topic list must return an empty result, not panic.
+    let keys = under_connected_rendezvous_keys(vec![]);
+    assert!(
+        keys.is_empty(),
+        "empty input must produce empty output, not panic or loop forever"
+    );
+}
+
+#[test]
+fn test_has_regular_connected_peer_multiple_regulars() {
+    // Multiple regular peers + infra peers: should be true if ANY regular is present.
+    let mut state = DiscoveryState::default();
+    let relay = PeerId::random();
+    let rendezvous = PeerId::random();
+    let regular_a = PeerId::random();
+    let regular_b = PeerId::random();
+
+    state.update_peer_protocols(&relay, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+    // regular_a and regular_b are never marked as relay/rendezvous
+
+    let connected = [relay, rendezvous, regular_a, regular_b];
+    assert!(
+        state.has_regular_connected_peer(connected.iter()),
+        "multiple regular peers alongside infra should return true"
+    );
+}
+
+#[test]
+fn test_has_regular_connected_peer_many_infra_one_regular() {
+    // An edge case: many infrastructure peers (relay + rendezvous + more),
+    // but exactly one regular peer hidden among them. Must still return true.
+    let mut state = DiscoveryState::default();
+    let relay_1 = PeerId::random();
+    let relay_2 = PeerId::random();
+    let rendezvous_1 = PeerId::random();
+    let rendezvous_2 = PeerId::random();
+    let regular = PeerId::random();
+
+    state.update_peer_protocols(&relay_1, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&relay_2, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&rendezvous_1, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&rendezvous_2, &[RENDEZVOUS_PROTOCOL_NAME]);
+    // regular never marked
+
+    let connected = [relay_1, rendezvous_1, relay_2, regular, rendezvous_2];
+    assert!(
+        state.has_regular_connected_peer(connected.iter()),
+        "single regular among many infra peers must be detected"
+    );
+}
+
+#[test]
+fn test_rendezvous_key_group_and_context_produce_distinct_keys() {
+    // The same hex id under group/ and a bare context should produce
+    // different keys (group uses /calimero/grp/, context uses /calimero/ctx/).
+    // This ensures a group and a context-topic with the same id don't collide.
+    let id = "8a6157eacc0e68d1786a585891866794d6fc5c11a199dbcb81ed33f5759a37a1";
+    let grp_key =
+        rendezvous_key_for_topic(&format!("group/{id}")).expect("group key should be valid");
+    let ctx_key = rendezvous_key_for_topic(id).expect("context key should be valid");
+
+    assert_ne!(
+        grp_key, ctx_key,
+        "group and bare-context topics with the same id must produce distinct keys \
+         to avoid cross-pollination"
+    );
+    assert!(grp_key.to_string().contains("/calimero/grp/"));
+    assert!(ctx_key.to_string().contains("/calimero/ctx/"));
+}

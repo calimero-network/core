@@ -215,3 +215,158 @@ async fn co_member_discovers_under_namespace_key_others_do_not() {
 
     outcome.expect("rendezvous round-trip did not complete (A registered, B should find it under ns_team but not ns_other)");
 }
+
+#[tokio::test]
+async fn client_discovered_under_global_and_per_namespace_keys_additive() {
+    let port_a = {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let p = l.local_addr().unwrap().port();
+        drop(l);
+        p
+    };
+    let port_b = {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let p = l.local_addr().unwrap().port();
+        drop(l);
+        p
+    };
+
+    let (mut server, server_peer, server_addr) = build_server().await;
+    let mut a = build_client(format!("/ip4/127.0.0.1/tcp/{port_a}").parse().unwrap()).await;
+    let mut b = build_client(format!("/ip4/127.0.0.1/tcp/{port_b}").parse().unwrap()).await;
+    let peer_a = *a.local_peer_id();
+
+    // A registers under BOTH:
+    // 1. the global namespace (from RendezvousConfig::default())
+    // 2. a per-namespace key (e.g., a topic/overlay A belongs to)
+    let global_ns = Namespace::from_static("/calimero/devnet/global");
+    let per_ns = ns(0x33); // A's per-overlay namespace
+
+    a.dial(server_addr.clone()).expect("A dial server");
+    b.dial(server_addr.clone()).expect("B dial server");
+
+    // Phase machine:
+    // RegisterGlobal: A registers under global namespace
+    // RegisterPerNs: A registers under per-namespace key
+    // DiscoverGlobal: B queries global namespace (must find A)
+    // DiscoverPerNs: B queries per-namespace key (must also find A)
+    #[derive(PartialEq)]
+    enum Phase {
+        RegisterGlobal,
+        RegisterPerNs,
+        DiscoverGlobal,
+        DiscoverPerNs,
+    }
+    let mut phase = Phase::RegisterGlobal;
+    let mut a_connected = false;
+    let mut b_connected = false;
+    let mut a_global_sent = false;
+    let mut a_per_ns_sent = false;
+    let mut found_a_global = false;
+    let mut found_a_per_ns = false;
+
+    let outcome = timeout(Duration::from_secs(45), async {
+        loop {
+            tokio::select! {
+                ev = server.next() => { let _ = ev; }
+                ev = a.next() => {
+                    if let Some(SwarmEvent::ConnectionEstablished { peer_id, .. }) = ev {
+                        if peer_id == server_peer { a_connected = true; }
+                    }
+                    if let Some(SwarmEvent::Behaviour(BehaviourEvent::Rendezvous(
+                        RzClientEvent::Registered { .. },
+                    ))) = ev
+                    {
+                        // After A registers under a key, move to the next phase.
+                        match phase {
+                            Phase::RegisterGlobal => {
+                                a_global_sent = true;
+                                phase = Phase::RegisterPerNs;
+                            }
+                            Phase::RegisterPerNs => {
+                                a_per_ns_sent = true;
+                                // Both registers done; now B can start discovering.
+                                if b_connected {
+                                    b.behaviour_mut().rendezvous.discover(
+                                        Some(global_ns.clone()),
+                                        None,
+                                        None,
+                                        server_peer,
+                                    );
+                                    phase = Phase::DiscoverGlobal;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                ev = b.next() => {
+                    if let Some(SwarmEvent::ConnectionEstablished { peer_id, .. }) = ev {
+                        if peer_id == server_peer { b_connected = true; }
+                    }
+                    if let Some(SwarmEvent::Behaviour(BehaviourEvent::Rendezvous(
+                        RzClientEvent::Discovered { registrations, .. },
+                    ))) = ev
+                    {
+                        let found_a = registrations
+                            .iter()
+                            .any(|r| r.record.peer_id() == peer_a);
+                        match phase {
+                            Phase::DiscoverGlobal => {
+                                if found_a {
+                                    found_a_global = true;
+                                    // Now discover A under the per-namespace key.
+                                    b.behaviour_mut().rendezvous.discover(
+                                        Some(per_ns.clone()),
+                                        None,
+                                        None,
+                                        server_peer,
+                                    );
+                                    phase = Phase::DiscoverPerNs;
+                                }
+                            }
+                            Phase::DiscoverPerNs => {
+                                if found_a {
+                                    found_a_per_ns = true;
+                                    return; // success
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            // Phase state machine for A's registrations.
+            if a_connected {
+                if !a_global_sent {
+                    a.behaviour_mut()
+                        .rendezvous
+                        .register(global_ns.clone(), server_peer, None)
+                        .expect("A register under global");
+                    a_global_sent = true;
+                } else if !a_per_ns_sent && phase == Phase::RegisterPerNs {
+                    a.behaviour_mut()
+                        .rendezvous
+                        .register(per_ns.clone(), server_peer, None)
+                        .expect("A register under per-namespace");
+                    a_per_ns_sent = true;
+                }
+            }
+        }
+    })
+    .await;
+
+    outcome.expect(
+        "A must register under BOTH global and per-namespace keys, \
+         and B must discover A under both (additive registration)",
+    );
+    assert!(
+        found_a_global,
+        "A must be discoverable under global namespace"
+    );
+    assert!(
+        found_a_per_ns,
+        "A must be discoverable under per-namespace key"
+    );
+}
