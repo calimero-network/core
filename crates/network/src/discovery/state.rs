@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use libp2p::core::transport::ListenerId;
 use libp2p::relay::HOP_PROTOCOL_NAME;
-use libp2p::rendezvous::Cookie;
+use libp2p::rendezvous::{Cookie, Namespace};
 use libp2p::swarm::ConnectionId;
 use libp2p::{Multiaddr, PeerId, StreamProtocol};
 use multiaddr::Protocol;
@@ -25,6 +25,88 @@ const RENDEZVOUS_PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/rendezvou
 /// race) without keeping a permanently broken address around long enough
 /// to waste many rendezvous-tick dial attempts.
 pub(crate) const DIAL_FAILURE_EVICTION_THRESHOLD: u8 = 3;
+
+/// Rendezvous-key prefixes for per-overlay registration/discovery.
+///
+/// Instead of one global rendezvous namespace (which returns every node
+/// on the network), a node registers and discovers under one key per
+/// overlay topic it follows. `discover` then returns only co-members of
+/// that exact namespace/group/context — relevant peers by construction,
+/// so we never fan out relayed dials at the whole network and never
+/// saturate the relay client's in-flight circuit cap.
+///
+/// The key is derived deterministically from the gossipsub topic string,
+/// so a registering member and a discovering peer that holds the same id
+/// (e.g. a joiner that learned `namespace_id` from an invite) compute the
+/// identical key without any extra coordination.
+const RENDEZVOUS_NS_PREFIX: &str = "/calimero/ns/";
+const RENDEZVOUS_GRP_PREFIX: &str = "/calimero/grp/";
+const RENDEZVOUS_CTX_PREFIX: &str = "/calimero/ctx/";
+
+/// Map a subscribed gossipsub topic to its rendezvous key.
+///
+/// - `ns/<hex>`     → `/calimero/ns/<hex>`
+/// - `group/<hex>`  → `/calimero/grp/<hex>`
+/// - bare `<id>`    → `/calimero/ctx/<id>` (a context-id topic)
+///
+/// The two structured topics already carry hex ids; a bare topic is a
+/// context id (the network layer treats it opaquely — both sides hold
+/// the identical context-topic string, so the derived keys match).
+///
+/// Returns `None` only when the resulting key exceeds the rendezvous
+/// 255-char namespace limit. Callers are responsible for not passing
+/// non-overlay topics (e.g. the configured specialized-node invite
+/// topic) — those are filtered upstream where the config is known.
+pub(crate) fn rendezvous_key_for_topic(topic: &str) -> Option<Namespace> {
+    let raw = if let Some(id) = topic.strip_prefix("ns/") {
+        format!("{RENDEZVOUS_NS_PREFIX}{id}")
+    } else if let Some(id) = topic.strip_prefix("group/") {
+        format!("{RENDEZVOUS_GRP_PREFIX}{id}")
+    } else {
+        format!("{RENDEZVOUS_CTX_PREFIX}{topic}")
+    };
+    // `Namespace::new` rejects keys over `MAX_NAMESPACE` (255). All our
+    // ids are <= 64 hex / ~44 bs58 chars plus a short prefix, so this
+    // only trips on a pathological topic; drop it rather than panic.
+    Namespace::new(raw).ok()
+}
+
+/// Given the node's subscribed topics paired with their current
+/// connected-**subscriber** counts, return the rendezvous keys we are
+/// *under-connected* on — i.e. topics with zero connected subscribers.
+///
+/// The count is the full subscriber set (gossipsub `all_peers`), NOT the
+/// grafted mesh: a topic with a connected subscriber can sync through it
+/// even when the mesh is momentarily thin, so it isn't under-connected.
+///
+/// These are the only keys worth spending a (paced) rendezvous discover
+/// on: a topic that already has a connected co-member can sync through
+/// it, so re-discovering would just add rendezvous load. This generalises
+/// the node-wide [`DiscoveryState::has_regular_connected_peer`] gate to
+/// per-overlay granularity, so discovery cost scales with how many of our
+/// collaborations currently lack peers (≈0 in steady state, spiking only
+/// after a restart/partition — exactly when we want it) rather than with
+/// total membership.
+///
+/// Duplicate keys (e.g. two malformed topics that map alike) are
+/// collapsed; order follows first appearance in `topics`.
+pub(crate) fn under_connected_rendezvous_keys<'a>(
+    topics: impl IntoIterator<Item = (&'a str, usize)>,
+) -> Vec<Namespace> {
+    let mut keys = Vec::new();
+    let mut seen = HashSet::new();
+    for (topic, subscriber_count) in topics {
+        if subscriber_count > 0 {
+            continue;
+        }
+        if let Some(key) = rendezvous_key_for_topic(topic) {
+            if seen.insert(key.clone()) {
+                keys.push(key);
+            }
+        }
+    }
+    keys
+}
 
 /// DiscoveryState is a struct that holds the state of the disovered peers.
 /// It holds the relay and rendezvous indexes to quickly check if a peer is a relay or rendezvous.
@@ -468,6 +550,38 @@ impl DiscoveryState {
 
     pub(crate) fn is_peer_rendezvous(&self, peer_id: &PeerId) -> bool {
         self.rendezvous_index.contains(peer_id)
+    }
+
+    /// Returns `true` if any peer in `connected` is a "regular" peer —
+    /// i.e. neither a relay nor a rendezvous infrastructure peer.
+    ///
+    /// A NAT'd node can hold connections to its relay and rendezvous
+    /// servers while having zero connections to application peers; in
+    /// that state it is effectively partitioned from the overlay even
+    /// though `connected_peers()` is non-empty. The rendezvous tick uses
+    /// this to decide whether to bypass the `discovery_rpm` throttle and
+    /// re-find peers aggressively.
+    ///
+    /// This is the post-restart analogue of the #2469
+    /// `on_regular_peer_disconnected` force-rediscovery: that path is
+    /// keyed on `SwarmEvent::ConnectionClosed`, which never fires after a
+    /// fresh restart (no connection was ever open this process), so a
+    /// just-restarted node would otherwise sit behind the 120s throttle
+    /// floor while the upstream sync layer parks on "No peers to sync
+    /// with".
+    pub(crate) fn has_regular_connected_peer<'a>(
+        &self,
+        connected: impl IntoIterator<Item = &'a PeerId>,
+    ) -> bool {
+        connected.into_iter().any(|peer| {
+            // All three infra indices are excluded: a node whose only
+            // connection is to a relay, a rendezvous server, OR a
+            // dedicated autonat server is still partitioned from the
+            // application overlay and must keep force-rediscovering.
+            !self.relay_index.contains(peer)
+                && !self.rendezvous_index.contains(peer)
+                && !self.autonat_index.contains(peer)
+        })
     }
 
     pub(crate) fn has_confirmed_external_addresses(&self) -> bool {

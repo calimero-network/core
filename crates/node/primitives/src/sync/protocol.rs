@@ -67,8 +67,6 @@ pub enum SyncProtocol {
     HashComparison {
         /// Root hash to compare against.
         root_hash: [u8; 32],
-        /// Subtree roots that differ (if known).
-        divergent_subtrees: Vec<[u8; 32]>,
     },
 
     /// Full state snapshot transfer.
@@ -205,7 +203,6 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
         return ProtocolSelection {
             protocol: SyncProtocol::HashComparison {
                 root_hash: remote.root_hash,
-                divergent_subtrees: vec![],
             },
             reason: "version mismatch, using safe fallback",
         };
@@ -241,7 +238,6 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
         return ProtocolSelection {
             protocol: SyncProtocol::HashComparison {
                 root_hash: remote.root_hash,
-                divergent_subtrees: vec![],
             },
             reason: "high divergence (>50%), using hash comparison with CRDT merge",
         };
@@ -290,7 +286,6 @@ pub fn select_protocol(local: &SyncHandshake, remote: &SyncHandshake) -> Protoco
     ProtocolSelection {
         protocol: SyncProtocol::HashComparison {
             root_hash: remote.root_hash,
-            divergent_subtrees: vec![],
         },
         reason: "default: using hash comparison",
     }
@@ -323,7 +318,6 @@ pub fn select_protocol_with_fallback(
     if local.has_state {
         let fallback = SyncProtocol::HashComparison {
             root_hash: remote.root_hash,
-            divergent_subtrees: vec![],
         };
         if is_protocol_supported(&fallback, remote_capabilities) {
             return ProtocolSelection {
@@ -356,10 +350,7 @@ mod tests {
             SyncProtocol::DeltaSync {
                 missing_delta_ids: vec![[1; 32], [2; 32]],
             },
-            SyncProtocol::HashComparison {
-                root_hash: [3; 32],
-                divergent_subtrees: vec![[4; 32]],
-            },
+            SyncProtocol::HashComparison { root_hash: [3; 32] },
             SyncProtocol::Snapshot {
                 compressed: true,
                 verified: false,
@@ -412,11 +403,7 @@ mod tests {
             SyncProtocolKind::DeltaSync
         );
         assert_eq!(
-            SyncProtocol::HashComparison {
-                root_hash: [2; 32],
-                divergent_subtrees: vec![]
-            }
-            .kind(),
+            SyncProtocol::HashComparison { root_hash: [2; 32] }.kind(),
             SyncProtocolKind::HashComparison
         );
         assert_eq!(
@@ -448,10 +435,7 @@ mod tests {
         );
 
         // Test From trait directly
-        let protocol = SyncProtocol::HashComparison {
-            root_hash: [3; 32],
-            divergent_subtrees: vec![],
-        };
+        let protocol = SyncProtocol::HashComparison { root_hash: [3; 32] };
         let kind: SyncProtocolKind = (&protocol).into();
         assert_eq!(kind, SyncProtocolKind::HashComparison);
     }
@@ -648,10 +632,7 @@ mod tests {
         // Supported (in default list)
         assert!(is_protocol_supported(&SyncProtocol::None, &caps));
         assert!(is_protocol_supported(
-            &SyncProtocol::HashComparison {
-                root_hash: [0; 32],
-                divergent_subtrees: vec![]
-            },
+            &SyncProtocol::HashComparison { root_hash: [0; 32] },
             &caps
         ));
 

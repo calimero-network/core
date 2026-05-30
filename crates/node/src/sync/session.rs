@@ -24,7 +24,7 @@ use calimero_primitives::context::ContextId;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
-use super::manager::PeerNotMaterialized;
+use super::manager::{NoPeersAvailable, PeerNotMaterialized};
 use super::tracking::{SyncProtocol as TrackingSyncProtocol, SyncState};
 use crate::sync_session_bridge::SyncSessionResult;
 
@@ -184,7 +184,17 @@ impl SessionTracker {
                     return DispatchDecision::Skip(SkipReason::AlreadyInProgress);
                 };
                 let time_since = last_sync.elapsed();
-                let minimum = self.dispatch_backoff;
+                // Honour the exponential backoff: after consecutive
+                // genuine failures, hold off for `2^failures` (capped at
+                // 300s) rather than retrying every `interval`. In steady
+                // state `backoff_delay()` is `2^0 = 1s` (< interval), so
+                // the floor stays `interval` and normal cadence is
+                // unchanged; it only stretches out after real errors.
+                // Benign outcomes (PeerNotMaterialized, NoPeersAvailable)
+                // don't bump `failure_count`, so a peerless context keeps
+                // retrying at `interval` instead of being pushed behind a
+                // 256s delay. `force` (explicit request) still overrides.
+                let minimum = self.dispatch_backoff.max(existing.backoff_delay());
                 if time_since < minimum {
                     if !force {
                         return DispatchDecision::Skip(SkipReason::LastSyncTooRecent {
@@ -354,6 +364,26 @@ impl SessionTracker {
                         // left, mixed-version cluster, etc.). Letting
                         // the next tick pick a different peer is the
                         // graceful recovery.
+                        s.on_not_materialized();
+                        return;
+                    }
+                    if err.downcast_ref::<NoPeersAvailable>().is_some() {
+                        // Transient: no co-member is connected for this
+                        // context right now (empty mesh + no namespace
+                        // fallback). This is a connectivity condition,
+                        // not a sync failure — counting it would inflate
+                        // failure_count (which the dispatch backoff keys
+                        // on) and emit a misleading "applying exponential
+                        // backoff" warn during the exact post-restart
+                        // window the node is waiting for a peer. Clear the
+                        // in-progress marker so the next tick retries once
+                        // discovery surfaces a peer; don't penalise.
+                        debug!(
+                            %context_id,
+                            ?took,
+                            "no peers to sync with this round — \
+                             waiting for a co-member, not a failure"
+                        );
                         s.on_not_materialized();
                         return;
                     }
@@ -582,10 +612,58 @@ mod tests {
                 time_since,
                 minimum,
             }) => {
+                // failure_count == 0 → backoff_delay (2^0 = 1s) is below
+                // the 5s interval, so the floor stays the interval.
                 assert_eq!(minimum, Duration::from_secs(5));
                 assert!(time_since < minimum);
             }
             other => panic!("expected LastSyncTooRecent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_decision_enforces_exponential_backoff_after_failures() {
+        // After consecutive genuine failures, the recency floor must
+        // stretch to the exponential backoff (2^failures, capped 300s)
+        // rather than staying at the fixed interval — the behaviour that
+        // was logged but never enforced before. tracker()'s interval is
+        // 5s; 3 failures → 2^3 = 8s > 5s, so `minimum` must be 8s.
+        let mut t = tracker();
+        let mut s = SyncState::new();
+        s.on_failure("boom".to_owned());
+        s.on_failure("boom".to_owned());
+        s.on_failure("boom".to_owned());
+        assert_eq!(s.failure_count(), 3);
+        let _ = t.state.insert(ctx(1), s);
+        match t.dispatch_decision(&ctx(1), false) {
+            DispatchDecision::Skip(SkipReason::LastSyncTooRecent { minimum, .. }) => {
+                assert_eq!(
+                    minimum,
+                    Duration::from_secs(8),
+                    "minimum must reflect the 2^3 backoff, not the 5s interval"
+                );
+            }
+            other => panic!("expected LastSyncTooRecent with backoff minimum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_decision_force_overrides_exponential_backoff() {
+        // An explicit (forced) request — e.g. a peer just subscribed to
+        // the context — must bypass the backoff floor too, not just the
+        // interval floor.
+        let mut t = tracker();
+        let mut s = SyncState::new();
+        for _ in 0..5 {
+            s.on_failure("boom".to_owned());
+        }
+        let _ = t.state.insert(ctx(1), s);
+        match t.dispatch_decision(&ctx(1), true) {
+            DispatchDecision::Eligible {
+                forced_despite_recency: Some(_),
+                ..
+            } => {}
+            other => panic!("force must override exponential backoff, got {other:?}"),
         }
     }
 
@@ -720,6 +798,52 @@ mod tests {
             took: Duration::from_millis(10),
             result: Ok(Err(eyre::Report::new(PeerNotMaterialized))),
         }
+    }
+
+    fn no_peers_available_result(context_id: ContextId) -> SyncSessionResult {
+        SyncSessionResult {
+            context_id,
+            peer_id: libp2p::PeerId::random(),
+            took: Duration::from_millis(10),
+            result: Ok(Err(eyre::Report::new(NoPeersAvailable { context_id }))),
+        }
+    }
+
+    #[test]
+    fn apply_result_no_peers_available_does_not_increment_failure_count() {
+        // "No peer right now" is transient connectivity, not a sync
+        // failure: it must not bump failure_count (which the dispatch
+        // backoff keys on) — otherwise a peerless context after restart
+        // would be pushed behind a 256s delay while it waits for a peer.
+        let mut t = tracker();
+        t.record_dispatch_succeeded(ctx(1), true);
+        t.apply_result(no_peers_available_result(ctx(1)));
+        let s = t.state.get(&ctx(1)).expect("state present");
+        assert_eq!(
+            s.failure_count(),
+            0,
+            "NoPeersAvailable must not count as a failure"
+        );
+    }
+
+    #[test]
+    fn apply_result_no_peers_available_clears_in_progress_marker() {
+        // Like PeerNotMaterialized: clear the in-progress marker so the
+        // next tick re-attempts as soon as discovery surfaces a peer,
+        // without waiting out the wedge-watchdog grace.
+        let mut t = tracker();
+        t.record_dispatch_succeeded(ctx(1), true);
+        assert!(
+            t.state.get(&ctx(1)).unwrap().last_sync().is_none(),
+            "precondition: in-progress (last_sync = None)"
+        );
+        t.apply_result(no_peers_available_result(ctx(1)));
+        let s = t.state.get(&ctx(1)).expect("state present");
+        assert!(
+            s.last_sync().is_some(),
+            "NoPeersAvailable must clear the in-progress marker"
+        );
+        assert_eq!(s.failure_count(), 0);
     }
 
     #[test]
@@ -1057,5 +1181,142 @@ mod tests {
             &ctx(3),
             PRED_GRACE
         ));
+    }
+
+    #[test]
+    fn dispatch_decision_force_override_high_failure_count() {
+        // Regression: ensure `force=true` actually bypasses the exponential
+        // backoff, not just the interval floor. After many failures,
+        // backoff_delay is large (e.g. 2^7 = 128s). An explicit force
+        // request must override it entirely, not just skip to the next
+        // backoff tier.
+        let mut t = tracker(); // 5s interval, session_deadline 30s
+        let mut s = SyncState::new();
+        // Bump failure_count to 7 → 2^7 = 128s backoff
+        for _ in 0..7 {
+            s.on_failure("boom".to_owned());
+        }
+        assert_eq!(s.failure_count(), 7);
+        let large_backoff = s.backoff_delay();
+        assert_eq!(large_backoff, Duration::from_secs(128));
+        let _ = t.state.insert(ctx(1), s);
+
+        // `force=true` must override the 128s backoff and return Eligible.
+        match t.dispatch_decision(&ctx(1), true) {
+            DispatchDecision::Eligible {
+                forced_despite_recency: Some(_),
+                ..
+            } => {}
+            other => panic!("force=true must override 128s backoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_decision_respects_capped_exponential_backoff() {
+        // `backoff_delay()` is `2^min(failure_count, 8)` capped at 300s.
+        // The exponent caps the count at 8, so the practical maximum is
+        // 2^8 = 256s — the `.min(300)` never trips (256 < 300). After many
+        // failures the backoff floor settles at 256s, not 512s+.
+        let mut t = tracker();
+        let mut s = SyncState::new();
+        for _ in 0..9 {
+            s.on_failure("boom".to_owned());
+        }
+        let _ = t.state.insert(ctx(1), s);
+
+        match t.dispatch_decision(&ctx(1), false) {
+            DispatchDecision::Skip(SkipReason::LastSyncTooRecent { minimum, .. }) => {
+                assert_eq!(
+                    minimum,
+                    Duration::from_secs(256),
+                    "backoff caps at 2^8 = 256s (the exponent caps failure_count at 8)"
+                );
+            }
+            other => panic!("expected backoff-capped skip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_result_no_peers_then_real_error_escalates_failure_count() {
+        // Regression: verify that a transient NoPeersAvailable result
+        // doesn't bump failure_count, but a subsequent real error DOES.
+        // This tests the multi-outcome sequence: NoPeersAvailable (benign)
+        // followed by a real failure (should escalate).
+        let mut t = tracker();
+        t.record_dispatch_succeeded(ctx(1), true);
+
+        // First result: NoPeersAvailable (benign, no failure increment).
+        t.apply_result(no_peers_available_result(ctx(1)));
+        let s = t.state.get(&ctx(1)).unwrap();
+        assert_eq!(
+            s.failure_count(),
+            0,
+            "NoPeersAvailable must not increment failure_count"
+        );
+        // Manually clear the in-progress marker so the next dispatch attempt
+        // can happen (in real code, the dispatch loop would take the next
+        // eligible context from the list).
+        assert!(
+            s.last_sync().is_some(),
+            "NoPeersAvailable clears the marker"
+        );
+
+        // Now dispatch again with a real error.
+        let _ = t.state.get_mut(&ctx(1)).unwrap().take_last_sync();
+        t.record_dispatch_succeeded(ctx(1), false);
+        t.apply_result(err_result(ctx(1), "real sync error"));
+
+        // The real error must increment failure_count.
+        let s = t.state.get(&ctx(1)).unwrap();
+        assert_eq!(
+            s.failure_count(),
+            1,
+            "real error after NoPeersAvailable must bump failure_count to 1"
+        );
+    }
+
+    #[test]
+    fn dispatch_decision_first_sync_after_long_idle_is_eligible() {
+        // Regression: ensure that a context with no state (never synced)
+        // is always Eligible, even if it's the first check after an
+        // arbitrarily long idle. This catches any stale-timestamp or
+        // initialization bugs.
+        let t = tracker();
+        // No state for ctx(1) → first sync.
+        match t.dispatch_decision(&ctx(1), false) {
+            DispatchDecision::Eligible {
+                is_first_sync: true,
+                forced_despite_recency: None,
+            } => {}
+            other => panic!("no state must always be first-sync-eligible, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_dispatch_succeeded_multiple_times_takes_last_sync_each_round() {
+        // Regression: ensure that a context can cycle through multiple
+        // in-flight / settled transitions correctly. After the first
+        // dispatch settles, a second dispatch must also work: take_last_sync
+        // clears it, and subsequent dispatches repeat the cycle.
+        let mut t = tracker();
+
+        // First dispatch succeeds → in-progress (last_sync = None).
+        t.record_dispatch_succeeded(ctx(1), true);
+        let s = t.state.get(&ctx(1)).unwrap();
+        assert!(s.last_sync().is_none());
+
+        // Result settles with success → last_sync = Some(_).
+        t.apply_result(ok_result(ctx(1)));
+        let s = t.state.get(&ctx(1)).unwrap();
+        assert!(s.last_sync().is_some());
+
+        // Next dispatch (not first-sync; context now has state).
+        // This clears last_sync again for the in-progress marker.
+        t.record_dispatch_succeeded(ctx(1), false);
+        let s = t.state.get(&ctx(1)).unwrap();
+        assert!(
+            s.last_sync().is_none(),
+            "second record_dispatch_succeeded must clear last_sync"
+        );
     }
 }

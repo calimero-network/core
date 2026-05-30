@@ -21,12 +21,21 @@ multiaddr.workspace = true
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true, features = ["compat"] }
 tracing.workspace = true
 
 calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-utils-actix.workspace = true
+
+[features]
+# Exposes `Stream::test_pair()` — an in-memory duplex-backed `Stream`
+# so downstream crates (e.g. node's sync mocks) can synthesize a real
+# `Ok(Stream)` in tests without a libp2p swarm. Off by default; enable
+# via a dev-dependency edge so production builds never carry it.
+# (`tokio/io-util` is enabled unconditionally on the dependency above —
+# `duplex` is what backs the in-memory pipe.)
+test-utils = []
 
 [dev-dependencies]
 libp2p = { workspace = true, features = ["autonat", "identify", "macros", "tcp", "tokio", "noise", "yamux"] }

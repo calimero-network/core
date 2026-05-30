@@ -123,6 +123,12 @@ pub enum NetworkMessage {
         request: MeshPeers,
         outcome: oneshot::Sender<<MeshPeers as actix::Message>::Result>,
     },
+    /// Get all connected peers SUBSCRIBED to a topic (the full
+    /// subscriber set, not just the grafted mesh).
+    SubscribedPeers {
+        request: SubscribedPeers,
+        outcome: oneshot::Sender<<SubscribedPeers as actix::Message>::Result>,
+    },
     /// Get the count of mesh peers for a topic.
     MeshPeerCount {
         request: MeshPeerCount,
@@ -228,6 +234,20 @@ impl actix::Message for MeshPeerCount {
 pub struct MeshPeers(pub TopicHash);
 
 impl actix::Message for MeshPeers {
+    type Result = Vec<PeerId>;
+}
+
+/// Returns the peer IDs of all CONNECTED peers subscribed to this topic —
+/// the full subscriber set from gossipsub's peer-topics table, populated
+/// on `SUBSCRIBE` (no GRAFT required). Distinct from [`MeshPeers`], which
+/// returns only the bounded grafted mesh: a peer can be connected and
+/// subscribed yet not (yet/still) in the mesh. Sync peer-selection uses
+/// this so it can reconcile with any subscribed peer it's connected to,
+/// independent of mesh health.
+#[derive(Clone, Debug)]
+pub struct SubscribedPeers(pub TopicHash);
+
+impl actix::Message for SubscribedPeers {
     type Result = Vec<PeerId>;
 }
 

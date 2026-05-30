@@ -1,10 +1,10 @@
 //! Scriptable mock for [`super::SyncNetwork`].
 //!
-//! Scope is "failure-path tests" — `mesh_peers` returns recorded
-//! peer lists; `open_stream` returns recorded errors (or a queued
-//! callback returning `eyre::Error`). Success-path tests that
-//! actually exchange messages need a real `Stream`, which is
-//! tracked as a separate follow-up (see `super` module doc).
+//! `mesh_peers` returns recorded peer lists; `open_stream` returns
+//! recorded errors, hangs, or — via `Stream::test_pair()` behind the
+//! `test-utils` feature — a real `Ok(Stream)`. The success arm lets
+//! tests cover the discovery loop's recovery path (a peer succeeds
+//! after earlier ones fail), not just its give-up paths.
 //!
 //! ## Exhaustion semantics
 //!
@@ -32,6 +32,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use calimero_network_primitives::stream::Stream;
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use parking_lot::Mutex;
@@ -41,6 +42,10 @@ use super::SyncNetwork;
 
 /// Per-call directive for a mocked `open_stream` response.
 pub(crate) enum OpenStreamResponse {
+    /// Hand back a successfully-opened stream — an in-memory
+    /// `Stream::test_pair()` end. Lets tests exercise the
+    /// "peer succeeds after earlier failures" recovery path.
+    Ok(Stream),
     /// Synthesise an error string.
     Err(String),
     /// Sleep for `Duration` then return `Err` — useful for
@@ -74,6 +79,23 @@ impl MockSyncNetwork {
     /// Queue a response for the next `mesh_peers` call.
     pub(crate) fn push_mesh_peers(&self, peers: Vec<PeerId>) -> &Self {
         self.mesh_peers_responses.lock().push_back(peers);
+        self
+    }
+
+    /// Queue a successful `open_stream` response.
+    ///
+    /// The returned `Stream` is one end of an in-memory
+    /// `Stream::test_pair()`; the other end is dropped immediately.
+    /// That's sufficient for the discovery loop, which only needs the
+    /// open to *succeed* (it doesn't exchange messages here — the
+    /// post-open protocol runs in the caller). Available because the
+    /// node enables `calimero-network-primitives/test-utils` on its
+    /// dev-dependency edge.
+    pub(crate) fn push_open_stream_ok(&self) -> &Self {
+        let (stream, _peer_end) = Stream::test_pair();
+        self.open_stream_responses
+            .lock()
+            .push_back(OpenStreamResponse::Ok(stream));
         self
     }
 
@@ -159,7 +181,11 @@ impl MockSyncNetwork {
 
 #[async_trait]
 impl SyncNetwork for MockSyncNetwork {
-    async fn mesh_peers(&self, _topic: TopicHash) -> Vec<PeerId> {
+    // Trait method is `subscribed_peers` (the sync layer now selects from
+    // the full subscriber set, not the grafted mesh); the mock's internal
+    // queue keeps its historical `mesh_peers_*` field names — they're just
+    // the response store and renaming them would churn unrelated tests.
+    async fn subscribed_peers(&self, _topic: TopicHash) -> Vec<PeerId> {
         *self.mesh_peers_calls.lock() += 1;
         // Pull out a borrow indicator under the lock and do the
         // (possibly-cloning) work after dropping it. Keeps the
@@ -197,15 +223,13 @@ impl SyncNetwork for MockSyncNetwork {
         }
     }
 
-    async fn open_stream(
-        &self,
-        _peer_id: PeerId,
-    ) -> eyre::Result<calimero_network_primitives::stream::Stream> {
+    async fn open_stream(&self, _peer_id: PeerId) -> eyre::Result<Stream> {
         let response = self.open_stream_responses.lock().pop_front();
         match response {
             None => Err(eyre::eyre!(
                 "MockSyncNetwork: open_stream called with no queued response"
             )),
+            Some(OpenStreamResponse::Ok(stream)) => Ok(stream),
             Some(OpenStreamResponse::Err(msg)) => Err(eyre::eyre!(msg)),
             Some(OpenStreamResponse::SleepThenErr(sleep_for, msg)) => {
                 time::sleep(sleep_for).await;
@@ -228,17 +252,20 @@ mod tests {
             .push_mesh_peers(vec![peer_b]);
 
         let topic = TopicHash::from_raw("test");
-        assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_a]);
-        assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_b]);
+        assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_a]);
+        assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_b]);
         // Exhausted: last value repeats.
-        assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_b]);
-        assert_eq!(mock.mesh_peers(topic).await, vec![peer_b]);
+        assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_b]);
+        assert_eq!(mock.subscribed_peers(topic).await, vec![peer_b]);
     }
 
     #[tokio::test]
     async fn mesh_peers_empty_when_never_seeded() {
         let mock = MockSyncNetwork::default();
-        assert!(mock.mesh_peers(TopicHash::from_raw("x")).await.is_empty());
+        assert!(mock
+            .subscribed_peers(TopicHash::from_raw("x"))
+            .await
+            .is_empty());
     }
 
     /// Explicit boundary test for the `match queue.len()` arms in
@@ -255,11 +282,11 @@ mod tests {
 
         let topic = TopicHash::from_raw("test");
         // Call 1: 2 entries queued → pop_front returns first.
-        assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_a]);
+        assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_a]);
         // Call 2: 1 entry left → clone (not pop) the last entry.
-        assert_eq!(mock.mesh_peers(topic.clone()).await, vec![peer_b]);
+        assert_eq!(mock.subscribed_peers(topic.clone()).await, vec![peer_b]);
         // Call 3: still 1 entry left (cloning didn't pop) → same value again.
-        assert_eq!(mock.mesh_peers(topic).await, vec![peer_b]);
+        assert_eq!(mock.subscribed_peers(topic).await, vec![peer_b]);
     }
 
     #[tokio::test]
@@ -321,7 +348,7 @@ mod tests {
         let mock = MockSyncNetwork::default();
         let peer = PeerId::random();
         mock.push_mesh_peers(vec![peer]);
-        let _ = mock.mesh_peers(TopicHash::from_raw("x")).await;
+        let _ = mock.subscribed_peers(TopicHash::from_raw("x")).await;
         mock.assert_all_consumed();
     }
 

@@ -1375,6 +1375,7 @@ dependencies = [
  "borsh",
  "calimero-network-primitives",
  "calimero-primitives",
+ "calimero-store",
  "calimero-utils-actix",
  "either",
  "eyre",

@@ -12,13 +12,13 @@
 //! `manager/mod.rs` + `manager/tests.rs` precedent for the same
 //! mod-dir layout.
 //!
-//! **`open_stream` mockability**: `Stream` is a concrete type wrapping
-//! a real `libp2p::Stream` and currently has no synthetic constructor.
-//! Mocks can return `Err(_)` from `open_stream` (sufficient for
-//! testing retry/timeout/error paths in the namespace-join discovery
-//! loop, the snapshot/delta-request open paths, etc.) but cannot
-//! return a synthetic `Ok(Stream)` until a `Stream::test_pair()`
-//! constructor lands — tracked as a follow-up.
+//! **`open_stream` mockability**: `Stream` wraps a real `libp2p::Stream`
+//! in production, but `Stream::test_pair()` (behind the network-primitives
+//! `test-utils` feature, which the node enables on its dev-dependency
+//! edge) backs it with an in-memory duplex pipe. Mocks can therefore
+//! script `Err(_)`/hang *and* a synthetic `Ok(Stream)`, covering both
+//! the retry/timeout/error paths and the success/recovery paths of the
+//! namespace-join discovery loop, snapshot/delta-request opens, etc.
 //!
 //! See #2406 + #2302 (sync extraction epic).
 //!
@@ -40,22 +40,31 @@ pub(crate) mod mock;
 /// wiring.
 #[async_trait]
 pub trait SyncNetwork: Send + Sync + 'static {
-    /// Return the current gossipsub mesh peers for `topic`.
+    /// Return the connected peers SUBSCRIBED to `topic` — the full
+    /// subscriber set, not just the grafted gossipsub mesh.
     ///
     /// Used by sync to discover sync peers and namespace-join targets.
-    async fn mesh_peers(&self, topic: TopicHash) -> Vec<PeerId>;
+    /// Deliberately the subscriber set rather than the mesh: a peer can
+    /// be connected and subscribed yet not (yet/still) in our mesh
+    /// (GRAFT lag, PRUNE, mesh churn under flaky relay links), and sync
+    /// must be able to reconcile with any connected subscriber regardless
+    /// of mesh health — otherwise a healthy 3-member context reports "no
+    /// peers" whenever the mesh is momentarily thin, and a malicious peer
+    /// occupying a mesh slot could starve sync discovery.
+    async fn subscribed_peers(&self, topic: TopicHash) -> Vec<PeerId>;
 
     /// Open a new substream to `peer_id` over the calimero protocol.
     ///
     /// Used by every sync initiator path. Mock impls can return
-    /// `Err(_)` to exercise the retry/timeout/error branches.
+    /// `Err(_)` to exercise the retry/timeout/error branches, or a
+    /// `Stream::test_pair()` end to exercise the success branch.
     async fn open_stream(&self, peer_id: PeerId) -> eyre::Result<Stream>;
 }
 
 #[async_trait]
 impl SyncNetwork for NetworkClient {
-    // Fully-qualified syntax — `NetworkClient::mesh_peers(self, …)`
-    // rather than `self.mesh_peers(…)` — is used here defensively.
+    // Fully-qualified syntax — `NetworkClient::subscribed_peers(self, …)`
+    // rather than `self.subscribed_peers(…)` — is used here defensively.
     // Rust's method resolution prefers inherent methods over trait
     // methods today, so both forms dispatch to the inherent method
     // and a rename would fail to compile under either form. The
@@ -64,8 +73,8 @@ impl SyncNetwork for NetworkClient {
     // bare-self form silently starts dispatching to this trait
     // method, recursing forever; the fully-qualified form fails to
     // compile instead — the failure mode we want.
-    async fn mesh_peers(&self, topic: TopicHash) -> Vec<PeerId> {
-        NetworkClient::mesh_peers(self, topic).await
+    async fn subscribed_peers(&self, topic: TopicHash) -> Vec<PeerId> {
+        NetworkClient::subscribed_peers(self, topic).await
     }
 
     async fn open_stream(&self, peer_id: PeerId) -> eyre::Result<Stream> {

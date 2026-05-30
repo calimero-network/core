@@ -50,6 +50,7 @@ tracing.workspace = true
 
 calimero-network-primitives.workspace = true
 calimero-primitives.workspace = true
+calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-utils-actix.workspace = true
 
 [dev-dependencies]

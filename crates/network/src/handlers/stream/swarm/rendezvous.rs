@@ -1,4 +1,5 @@
 use libp2p::rendezvous::client::Event;
+use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use owo_colors::OwoColorize;
 use tracing::{debug, error, warn};
 
@@ -39,17 +40,39 @@ impl EventHandler<Event> for NetworkManager {
                         continue;
                     }
 
+                    let addrs = registration.record.addresses().to_vec();
                     debug!(
                         %peer_id,
-                        addrs=?(registration.record.addresses()),
+                        ?addrs,
                         "Discovered new unconnected peer via rendezvous, attempting to dial it"
                     );
 
-                    for address in registration.record.addresses() {
-                        debug!(%peer_id, %address, "Dialing peer discovered via rendezvous");
-                        if let Err(err) = self.swarm.dial(address.clone()) {
-                            error!("Failed to dial peer: {:?}", err);
-                        }
+                    // Dial the peer ONCE, deduped at the swarm level.
+                    // `DisconnectedAndNotDialing` makes libp2p skip the
+                    // attempt if we are already connected or a dial to
+                    // this peer is already in flight. Without it, every
+                    // rendezvous-discovery cycle re-dials the same peers
+                    // — and while the node is peerless the tick discovers
+                    // every interval (~15s), so on the global rendezvous
+                    // namespace this fans relayed circuit dials past the
+                    // relay client's in-flight cap
+                    // (MAX_CONCURRENT_STREAMS_PER_CONNECTION = 10),
+                    // producing the "Dropping in-flight connect request
+                    // because we are at capacity" storm. Per-peer dedup
+                    // bounds the fan-out to one in-flight dial per peer.
+                    let opts = DialOpts::peer_id(peer_id)
+                        .condition(PeerCondition::DisconnectedAndNotDialing)
+                        .addresses(addrs)
+                        .build();
+                    if let Err(err) = self.swarm.dial(opts) {
+                        // Benign when the condition isn't met (already
+                        // connected / dialing) or the record carried no
+                        // addresses — debug, not error.
+                        debug!(
+                            %peer_id,
+                            ?err,
+                            "Did not dial rendezvous-discovered peer (already connected/dialing or no usable address)"
+                        );
                     }
                 }
             }

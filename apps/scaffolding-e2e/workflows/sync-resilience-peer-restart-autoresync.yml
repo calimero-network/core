@@ -1,0 +1,226 @@
+description: >
+  Sync-resilience regression test: a peer is restarted mid-session; after
+  the restart, a NEW key is written on the other peer, and the restarted
+  peer must auto-converge WITHOUT an explicit sync trigger (trigger_sync: false).
+
+  This is a stricter variant of `sync-resilience-peer-restart.yml` that
+  validates the post-restart auto-resync machinery. The parent test uses
+  `trigger_sync: true` to manually poke convergence; this test exercises
+  the passive discovery + automatic sync path, catching regressions where:
+
+  - The restarted peer fails to rejoin the gossipsub mesh for this context
+  - The peer loses interest in the context's topics after restart
+  - Peer-discovery (via rendezvous, DHT peer cache, etc.) breaks post-restart
+  - The background sync-state reconciliation thread hangs or crashes
+
+  Topology
+  --------
+
+  Uses `topology: { type: nat, nat_mode: cone }` (same as parent test).
+  Both peers sit on an internal LAN bridge behind a NAT-gateway container;
+  the only path to the public-bridge boot-node is via the gateway's
+  MASQUERADE. After the restart, node-2 has to discover node-1 via the
+  overlaid peer-discovery machinery — rendezvous registration, datastore
+  peer-cache lookups, or gossipsub heartbeat peer-exchange — and then
+  initiate sync automatically (no manual wait_for_sync trigger).
+
+  Why this matters
+  ----------------
+
+  The parent `sync-resilience-peer-restart.yml` manually triggers sync
+  with `trigger_sync: true`, which pokes the sync state machine and
+  forces a compare-and-push exchange. This test gates the passive path:
+  the restarted peer's libp2p stack must re-register itself and rejoin
+  the mesh, then the app layer's background sync engine must detect a
+  peer mismatch and converge WITHOUT external instrumentation. This
+  catches integration regressions in:
+
+  - `crates/network/src/discovery/state.rs` (rendezvous peer-discovery post-restart)
+  - `crates/network/src/handlers/stream/swarm/relay.rs` (relay reservation)
+  - Gossipsub mesh rejoin logic
+  - Background sync state-machine (peer-detection and state reconciliation)
+
+name: "Sync Resilience — Peer Restart Auto-Resync (NAT cone, passive trigger_sync false)"
+
+force_pull_image: false
+
+topology:
+  type: nat
+  nat_mode: cone
+
+nodes:
+  count: 2
+  image: ghcr.io/calimero-network/merod:edge
+  prefix: sync-autoresync-node
+
+steps:
+  # ---------- Setup: 2-node namespace + context ----------
+
+  - name: Install application on node-1
+    type: install_application
+    node: sync-autoresync-node-1
+    path: res/scaffolding_e2e.wasm
+    dev: true
+    outputs:
+      app_id: applicationId
+
+  - name: Create namespace on node-1
+    type: create_namespace
+    node: sync-autoresync-node-1
+    application_id: '{{app_id}}'
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Create context in namespace on node-1
+    type: create_context
+    node: sync-autoresync-node-1
+    application_id: '{{app_id}}'
+    group_id: '{{namespace_id}}'
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node-2
+    type: create_namespace_invitation
+    node: sync-autoresync-node-1
+    namespace_id: '{{namespace_id}}'
+    outputs:
+      invitation_node2: invitation
+
+  - name: Wait for namespace gossip
+    type: wait
+    seconds: 5
+
+  - name: Node-2 joins namespace
+    type: join_namespace
+    node: sync-autoresync-node-2
+    namespace_id: '{{namespace_id}}'
+    invitation: '{{invitation_node2}}'
+
+  - name: Node-2 joins context via group membership
+    type: join_context
+    node: sync-autoresync-node-2
+    context_id: '{{ctx_id}}'
+
+  # ---------- Baseline: confirm sync works before the fault ----------
+
+  - name: Write baseline key on node-1
+    type: call
+    node: sync-autoresync-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: baseline
+      value: pre_restart
+
+  - name: Wait for baseline to converge
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-autoresync-node-1
+      - sync-autoresync-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Read baseline on node-2 (sanity)
+    type: call
+    node: sync-autoresync-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n2: result
+
+  - name: Assert baseline replicated
+    type: assert
+    statements:
+      - "contains({{baseline_n2}}, 'pre_restart')"
+
+  # ---------- Fault: restart node-2 ----------
+
+  - name: Restart node-2 mid-session
+    type: restart_container
+    container: sync-autoresync-node-2
+    wait_healthy: true
+    timeout: 60
+
+  # wait_healthy confirms merod's admin endpoint is back up, but NOT
+  # that libp2p has re-dialled the boot-node, refreshed its relay
+  # reservation, or rejoined the gossipsub mesh. As in the parent test,
+  # 15s is the empirical settled-state ceiling; the restarted peer
+  # should have re-registered its relay reservation and re-joined
+  # gossipsub by this point.
+  - name: Wait for libp2p + relay reservation to re-form after restart
+    type: wait
+    seconds: 15
+
+  # ---------- Recovery: node-2 auto-discovers node-1 and auto-syncs ----------
+
+  # The regression gate: write on node-1 AFTER node-2 restarts.
+  # Node-2 must discover this write via automatic sync (trigger_sync: false),
+  # not manual poke. If peer-discovery or background sync-state machine
+  # is broken post-restart, this wait_for_sync will timeout.
+
+  - name: Write post-restart key on node-1 (after node-2 is down)
+    type: call
+    node: sync-autoresync-node-1
+    context_id: '{{ctx_id}}'
+    method: set
+    args:
+      key: post_restart_new
+      value: auto_discovery_test
+
+  # The critical assertion: trigger_sync: false. No manual sync poke.
+  # Node-2 must auto-discover node-1 via rendezvous/DHT/gossipsub peer-exchange
+  # and initiate sync automatically. Timeout ~90s to give the passive discovery
+  # machinery time to work (rendezvous registration, peer query, mesh rejoin,
+  # background state reconciliation loop). If this times out, post-restart
+  # peer-discovery or background sync is broken.
+  - name: Wait for post-restart write to auto-converge (NO trigger_sync)
+    type: wait_for_sync
+    context_id: '{{ctx_id}}'
+    nodes:
+      - sync-autoresync-node-1
+      - sync-autoresync-node-2
+    timeout: 90
+    trigger_sync: false
+
+  - name: Read post-restart key on node-2
+    type: call
+    node: sync-autoresync-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: post_restart_new
+    outputs:
+      post_n2: result
+
+  - name: Assert post-restart write auto-synced (proves passive path)
+    type: assert
+    statements:
+      - "contains({{post_n2}}, 'auto_discovery_test')"
+
+  # Sanity: node-2 still retained its pre-restart state.
+  - name: Read baseline key on node-2 post-restart
+    type: call
+    node: sync-autoresync-node-2
+    context_id: '{{ctx_id}}'
+    method: get
+    args:
+      key: baseline
+    outputs:
+      baseline_n2_post: result
+
+  - name: Assert node-2 retained baseline across restart
+    type: assert
+    statements:
+      - "contains({{baseline_n2_post}}, 'pre_restart')"
+
+  # Relay handshake sanity (same as parent test).
+  - name: Confirm node-2 obtained a relay reservation
+    type: assert_log_present
+    nodes: [sync-autoresync-node-2]
+    patterns:
+      - "ReservationReqAccepted"
+
+stop_all_nodes: true

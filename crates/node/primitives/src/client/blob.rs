@@ -153,8 +153,10 @@ impl NodeClient {
             // `.min(31)` bounds the shift so it stays well-defined if
             // MAX_RETRIES is ever raised past 32.
             let backoff = |attempt: usize| {
+                // `saturating_sub(1)` so the shift is underflow-safe even
+                // if the loop bounds ever start at 0 (today it's 1..=MAX).
                 INITIAL_RETRY_DELAY
-                    .saturating_mul(1_u32 << (attempt as u32 - 1).min(31))
+                    .saturating_mul(1_u32 << (attempt.saturating_sub(1) as u32).min(31))
                     .min(MAX_RETRY_DELAY)
             };
 

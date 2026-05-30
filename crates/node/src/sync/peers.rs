@@ -90,7 +90,7 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
     let mut final_attempt = 0u32;
     for attempt in 1..=max_retries {
         final_attempt = attempt;
-        peers = sync_network.mesh_peers(context_topic.clone()).await;
+        peers = sync_network.subscribed_peers(context_topic.clone()).await;
         if !peers.is_empty() {
             break;
         }
@@ -159,7 +159,7 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
     // subscribe arm — so the intersection equals "namespace peer
     // that has a local entry for this context".
     if let Some(ns_topic) = resolve_namespace_topic() {
-        let ns_peers = sync_network.mesh_peers(ns_topic).await;
+        let ns_peers = sync_network.subscribed_peers(ns_topic).await;
         if !ns_peers.is_empty() {
             // Two `mesh_peers` calls (ns_topic above, context_topic
             // below) are not snapshot-atomic — gossipsub state can
@@ -171,7 +171,7 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
             // correctness hazard, just a one-tick discovery delay.
             let ns_candidate_count = ns_peers.len();
             let ctx_subscribers: BTreeSet<PeerId> = sync_network
-                .mesh_peers(context_topic.clone())
+                .subscribed_peers(context_topic.clone())
                 .await
                 .into_iter()
                 .collect();
@@ -208,7 +208,13 @@ pub(crate) async fn discover_mesh_peers_with_namespace_fallback(
         ?elapsed,
         "Mesh peer discovery exhausted all retries (context mesh + namespace fallback)"
     );
-    eyre::bail!("No peers to sync with for context {}", context_id);
+    // Typed error so `apply_session_result` can recognise "no peer right
+    // now" as benign (no failure_count bump, no exponential-backoff warn)
+    // rather than a sync failure. Display still contains "No peers to
+    // sync with" for log/grep continuity.
+    Err(eyre::Error::new(super::manager::NoPeersAvailable {
+        context_id,
+    }))
 }
 
 /// Stable-partition `peers` so peers with an observed trusted-anchor
