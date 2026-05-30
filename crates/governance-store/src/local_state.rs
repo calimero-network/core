@@ -7,9 +7,10 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
-    GroupLocalGovNonce, GroupLocalGovNoncePending, GroupMemberContext, GroupOpHead,
-    GroupOpHeadValue, GroupOpLog, NamespaceGovHead, NamespaceGovOp, NamespaceIdentity,
-    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX, NAMESPACE_GOV_OP_PREFIX,
+    GroupLocalGovNonce, GroupLocalGovNonceWindow, GroupLocalGovNonceWindowValue,
+    GroupMemberContext, GroupOpHead, GroupOpHeadValue, GroupOpLog, NamespaceGovHead,
+    NamespaceGovOp, NamespaceIdentity, GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX,
+    NAMESPACE_GOV_OP_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
@@ -17,50 +18,53 @@ use eyre::Result as EyreResult;
 use super::collect_keys_with_prefix;
 use crate::nonce_window::NonceWindow;
 
-/// Read the contiguous floor only (the `GroupLocalGovNonce` high-water mark),
-/// NOT the full applied-nonce window. Callers that need to know whether a
-/// specific nonce was applied (including out-of-order ones above the floor)
-/// must use [`load_nonce_window`] + [`NonceWindow::contains`]. `None` means no
-/// floor has ever been persisted for this (group, signer).
+/// Read the contiguous applied-nonce floor for a (group, signer), or `None` if
+/// nothing has ever been persisted.
+///
+/// Reads the floor out of the authoritative [`GroupLocalGovNonceWindow`],
+/// falling back to the legacy [`GroupLocalGovNonce`] high-water mark for
+/// databases written before the window existed. It returns the FLOOR ONLY —
+/// callers that need to know whether a specific (possibly out-of-order) nonce
+/// was applied must use [`load_nonce_window`] + [`NonceWindow::contains`].
 pub fn get_local_gov_nonce(
     store: &Store,
     group_id: &ContextGroupId,
     signer: &PublicKey,
 ) -> EyreResult<Option<u64>> {
     let handle = store.handle();
-    let key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
-    Ok(handle.get(&key)?)
+    let gid = group_id.to_bytes();
+    if let Some(window) = handle.get(&GroupLocalGovNonceWindow::new(gid, *signer))? {
+        return Ok(Some(window.floor));
+    }
+    // Legacy fallback: a pre-window database only has the single-`u64` key.
+    Ok(handle.get(&GroupLocalGovNonce::new(gid, *signer))?)
 }
 
-/// Write ONLY the contiguous floor, leaving the above-floor set untouched.
+/// Force the persisted window to a bare floor with an empty above-set.
 ///
-/// This bypasses the [`NonceWindow`] abstraction and can desync the persisted
-/// window (floor moved, above-set stale), so it is NOT for the apply path —
-/// production writes go through [`store_nonce_window`], which persists the
-/// whole window. It survives only for backward-compatible floor seeding and
-/// for tests that need to force a specific floor (e.g. rolling it back to
-/// simulate a lost-window crash). Pair it with [`get_local_gov_nonce`], which
-/// likewise reads only the floor.
+/// This is a coarse, floor-only seed — it CLOBBERS any out-of-order above-floor
+/// nonces — so it is NOT for the apply path; production advances go through
+/// [`store_nonce_window`], which persists the recorded window. It survives for
+/// migration seeding and for tests that need to force a specific floor (e.g.
+/// rolling it back to simulate a window that lost an entry). Writes the
+/// authoritative [`GroupLocalGovNonceWindow`] so [`get_local_gov_nonce`] and
+/// [`load_nonce_window`] observe it.
 pub fn set_local_gov_nonce(
     store: &Store,
     group_id: &ContextGroupId,
     signer: &PublicKey,
     nonce: u64,
 ) -> EyreResult<()> {
-    let mut handle = store.handle();
-    let key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
-    handle.put(&key, &nonce)?;
-    Ok(())
+    store_nonce_window(store, group_id, signer, &NonceWindow::new(nonce, []))
 }
 
-/// Load the applied-nonce window for a (group, signer): the contiguous
-/// floor from [`GroupLocalGovNonce`] plus the sparse above-floor set from
-/// [`GroupLocalGovNoncePending`].
+/// Load the applied-nonce window for a (group, signer).
 ///
-/// Absent rows read as `0` / empty, so a node that only ever wrote the
-/// single-`u64` floor (pre-windowing, or a signer that never had a
-/// concurrency gap) loads with an empty above-set and dedups exactly like
-/// the old `nonce <= last` high-water-mark guard — no migration needed.
+/// Reads the authoritative [`GroupLocalGovNonceWindow`] (floor + above-set in
+/// one value). If it is absent, migrates from the legacy [`GroupLocalGovNonce`]
+/// floor — a pre-window database loads as `floor` with an empty above-set and
+/// dedups exactly like the old `nonce <= last` high-water-mark guard. Both
+/// absent → a fresh `(0, {})` window.
 pub fn load_nonce_window(
     store: &Store,
     group_id: &ContextGroupId,
@@ -68,50 +72,24 @@ pub fn load_nonce_window(
 ) -> EyreResult<NonceWindow> {
     let handle = store.handle();
     let gid = group_id.to_bytes();
+    if let Some(window) = handle.get(&GroupLocalGovNonceWindow::new(gid, *signer))? {
+        return Ok(NonceWindow::new(window.floor, window.above));
+    }
     let floor = handle
         .get(&GroupLocalGovNonce::new(gid, *signer))?
         .unwrap_or(0);
-    let above = handle
-        .get(&GroupLocalGovNoncePending::new(gid, *signer))?
-        .unwrap_or_default();
-    Ok(NonceWindow::new(floor, above))
+    Ok(NonceWindow::new(floor, []))
 }
 
-/// Persist an applied-nonce window: the floor under [`GroupLocalGovNonce`]
-/// (so the row stays a valid high-water mark for any reader that only knows
-/// the old key) and the above-floor set under [`GroupLocalGovNoncePending`]
-/// (deleted when empty so a closed gap leaves no stale row).
+/// Persist an applied-nonce window under [`GroupLocalGovNonceWindow`] as a
+/// SINGLE value, so the whole window (floor + above-set) lands in ONE atomic
+/// `put` — there is no cross-key crash window. A crash either leaves the prior
+/// value intact or commits the new one; it can never observe a half-written
+/// floor-without-above state, so neither an already-applied nonce can be
+/// resurrected as unapplied nor an unapplied one skipped.
 ///
-/// The two `put`s are not atomic (`calimero-store` has no transactional
-/// batch — see the CRASH-SAFETY INVARIANT on [`persist_group_op_log_entry`]),
-/// so a crash can land between the floor write and the above-set write. This
-/// is safe because of an asymmetry in what each error direction costs:
-///
-/// - The floor written here is always `window.floor()`, which `record`
-///   advances ONLY through nonces that were actually applied, and the write
-///   happens AFTER the op applied. So the persisted floor can never exceed
-///   the true contiguous-applied count — a crash can never make `contains`
-///   report an UNAPPLIED nonce as applied. The op-dropping direction (the
-///   #2516 bug itself) is therefore impossible.
-/// - The only reachable post-crash error is the reverse: an above-floor nonce
-///   that WAS applied is missing from the persisted above-set, so `contains`
-///   returns false and the op is re-applied. At most the SINGLE nonce being
-///   committed during the crash is lost — NOT the whole above-set. The crashed
-///   `put` simply does not execute, so the above-set key retains its prior
-///   persisted value (every earlier above entry was durably written by its own
-///   prior call, and each call adds at most one entry via `record`). So the
-///   reloaded set equals the set as of the last successful call, missing only
-///   the in-flight nonce — the same "crash mid-commit" window the op-log entry
-///   write in [`persist_group_op_log_entry`] already has. Re-apply is tolerated
-///   on BOTH apply paths: each dedups duplicate log entries via
-///   `op_log_contains_content_hash` (`apply_local_signed_group_op` and the
-///   namespace `apply_group_op_inner`), and `retry_encrypted_ops_for_group`
-///   re-feeds the whole log by design, so governance mutations are replay-safe.
-///
-/// On the next load [`NonceWindow::new`] normalises whatever parts survived
-/// (drops below-floor entries, pulls the floor through any now-contiguous
-/// run), so a stale above-set left by a crash in the floor-advance case is
-/// reconciled rather than trusted.
+/// The legacy [`GroupLocalGovNonce`] key is intentionally NOT written: it is
+/// read-only migration state, superseded by the window value on first store.
 pub fn store_nonce_window(
     store: &Store,
     group_id: &ContextGroupId,
@@ -119,17 +97,14 @@ pub fn store_nonce_window(
     window: &NonceWindow,
 ) -> EyreResult<()> {
     let mut handle = store.handle();
-    let gid = group_id.to_bytes();
-
-    handle.put(&GroupLocalGovNonce::new(gid, *signer), &window.floor())?;
-
-    let above_key = GroupLocalGovNoncePending::new(gid, *signer);
-    let above: Vec<u64> = window.above().collect();
-    if above.is_empty() {
-        handle.delete(&above_key)?;
-    } else {
-        handle.put(&above_key, &above)?;
-    }
+    let key = GroupLocalGovNonceWindow::new(group_id.to_bytes(), *signer);
+    handle.put(
+        &key,
+        &GroupLocalGovNonceWindowValue {
+            floor: window.floor(),
+            above: window.above().collect(),
+        },
+    )?;
     Ok(())
 }
 
@@ -140,10 +115,10 @@ fn delete_local_gov_nonce_for_signer(
 ) -> EyreResult<()> {
     let mut handle = store.handle();
     let gid = group_id.to_bytes();
+    handle.delete(&GroupLocalGovNonceWindow::new(gid, *signer))?;
+    // Drop the legacy floor key too, so a future signer reusing this
+    // (group, signer) doesn't inherit a stale migration floor.
     handle.delete(&GroupLocalGovNonce::new(gid, *signer))?;
-    // Drop the sibling above-floor set too, else a future signer reusing
-    // this (group, signer) would inherit stale out-of-order nonces.
-    handle.delete(&GroupLocalGovNoncePending::new(gid, *signer))?;
     Ok(())
 }
 

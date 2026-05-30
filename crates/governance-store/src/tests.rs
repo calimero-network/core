@@ -610,6 +610,69 @@ fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
     );
 }
 
+/// The full window (floor + above-set) round-trips through the single-key
+/// atomic store, including the out-of-order above-floor nonces.
+#[test]
+fn nonce_window_round_trips_through_single_key() {
+    use crate::nonce_window::NonceWindow;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x7Bu8; 32]);
+
+    let mut window = NonceWindow::new(4, []);
+    assert!(window.record(6));
+    assert!(window.record(8));
+    store_nonce_window(&store, &gid, &signer, &window).unwrap();
+
+    let reloaded = load_nonce_window(&store, &gid, &signer).unwrap();
+    assert_eq!(reloaded, window, "full window survives store + load");
+    assert_eq!(reloaded.floor(), 4);
+    assert_eq!(reloaded.above().collect::<Vec<_>>(), vec![6, 8]);
+    // get_local_gov_nonce reads the floor out of the same authoritative key.
+    assert_eq!(get_local_gov_nonce(&store, &gid, &signer).unwrap(), Some(4));
+}
+
+/// Migration: a pre-window database has only the legacy `GroupLocalGovNonce`
+/// floor. Both readers migrate from it, and the first `store_nonce_window`
+/// makes the window key authoritative (the stale legacy floor is then ignored).
+#[test]
+fn nonce_window_migrates_from_legacy_floor_key() {
+    use calimero_store::key::GroupLocalGovNonce;
+
+    let store = test_store();
+    let gid = test_group_id();
+    let signer = PublicKey::from([0x7Au8; 32]);
+
+    // Simulate a pre-window DB: only the legacy single-`u64` high-water mark.
+    {
+        let mut handle = store.handle();
+        handle
+            .put(&GroupLocalGovNonce::new(gid.to_bytes(), signer), &7u64)
+            .unwrap();
+    }
+
+    // Both readers migrate the legacy floor.
+    assert_eq!(get_local_gov_nonce(&store, &gid, &signer).unwrap(), Some(7));
+    let mut window = load_nonce_window(&store, &gid, &signer).unwrap();
+    assert_eq!(window.floor(), 7);
+    assert!(window.contains(7));
+    assert!(!window.contains(8));
+
+    // Recording an out-of-order nonce (gap at 8) persists the full window under
+    // the new key; the next load reads it, not the stale legacy floor.
+    assert!(window.record(9));
+    store_nonce_window(&store, &gid, &signer, &window).unwrap();
+
+    let reloaded = load_nonce_window(&store, &gid, &signer).unwrap();
+    assert_eq!(reloaded.floor(), 7);
+    assert!(
+        reloaded.contains(9),
+        "above-floor nonce survived via the authoritative window key"
+    );
+    assert_eq!(reloaded.max_applied(), 9);
+}
+
 #[test]
 fn reject_read_only_tee_via_member_added() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
