@@ -16,7 +16,7 @@ pub trait Storage: Reflect {
     fn has(&self, key: &Key) -> bool;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct InMemoryStorage {
     inner: BTreeMap<Key, Value>,
 }

@@ -590,3 +590,359 @@ fn test_rga_serialize_deserialize_single_insert() {
 
     assert_eq!(text, "Hello", "Single insert should be preserved");
 }
+
+/// Reproduction attempt for the `frozen-rga-convergence` e2e flake
+/// (run 26686441762, job 78655979358): node-1, after merging concurrent RGA
+/// appends, deletes a char and ends on a different root hash than receivers,
+/// which agree ("writer is the outlier"). Unlike
+/// `test_rga_delete_after_concurrent_appends_converges` (symmetric merge()
+/// path), this drives the asymmetric execute-then-broadcast-delta vs
+/// apply-delta path the e2e hits.
+///
+/// CRUCIAL: the base "Hello" is created ONCE (genesis executor) and replayed
+/// into every node via the same delta, so all nodes share identical CharIds.
+/// RGA CharIds derive from the executor-seeded HLC (env.rs), so if each node
+/// typed "Hello" under its own executor the chars would have distinct IDs and
+/// any later append would fail to anchor — a test artifact, not the product
+/// bug. The real system always syncs a shared base before concurrent edits.
+#[test]
+#[serial_test::serial]
+fn test_rga_delete_after_merge_delta_sync_converges() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::collections::{Mergeable, Root};
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::merge::register_crdt_merge;
+    use crate::store::MainStorage;
+
+    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+    struct RgaDoc {
+        content: ReplicatedGrowableArray,
+    }
+    impl Mergeable for RgaDoc {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.content.merge(&other.content)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    // Persist the current root payload and capture every action accumulated in
+    // the delta context since the last reset (child Add/DeleteRef from the op
+    // plus the root Update from save_raw). Mirrors the canonical capture in
+    // `test_e2e_counter_sync_with_isolated_storage` — we deliberately avoid
+    // `Root::commit()`, which drains the context before we can capture it.
+    let capture = |root_data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), root_data, Metadata::default()).unwrap();
+        let hash = root_hash();
+        commit_causal_delta(&hash)
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    // Replay a captured action list into the current (fresh) node's store.
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<RgaDoc, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    // Begin a fresh node with the global storage cleared and merge registered.
+    let fresh_node = |executor: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<RgaDoc>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(executor);
+    };
+
+    // === Genesis: shared base "Hello" captured as a delta every node imports.
+    fresh_node([9; 32]);
+    let mut g = Root::<RgaDoc, S>::new(|| RgaDoc {
+        content: ReplicatedGrowableArray::new_with_field_name("content"),
+    });
+    g.content.insert_str(0, "Hello").unwrap();
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base_actions = capture(g_data);
+    let base_hash = root_hash();
+
+    // === Node-2: import base, append " World", capture only the append delta.
+    fresh_node([2; 32]);
+    import(base_actions.clone());
+    assert_eq!(
+        Root::<RgaDoc, S>::fetch()
+            .unwrap()
+            .content
+            .get_text()
+            .unwrap(),
+        "Hello",
+        "node-2 must materialize the shared base before appending"
+    );
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let mut n2 = Root::<RgaDoc, S>::fetch().unwrap();
+    n2.content.insert_str(5, " World").unwrap();
+    let n2_data = borsh::to_vec(&*n2).unwrap();
+    drop(n2);
+    let append_actions = capture(n2_data);
+
+    // === Node-1: import base, merge node-2's append (-> "Hello World"),
+    // delete 'H', capture only the delete delta.
+    fresh_node([1; 32]);
+    import(base_actions.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    import(append_actions.clone());
+    let n1_merged_hash = root_hash();
+    assert_eq!(
+        Root::<RgaDoc, S>::fetch()
+            .unwrap()
+            .content
+            .get_text()
+            .unwrap(),
+        "Hello World",
+        "node-1 must merge node-2's append against the shared base"
+    );
+
+    reset_delta_context();
+    set_current_heads(vec![n1_merged_hash]);
+    let mut n1 = Root::<RgaDoc, S>::fetch().unwrap();
+    n1.content.delete(0).unwrap(); // delete 'H'
+    let n1_data = borsh::to_vec(&*n1).unwrap();
+    drop(n1);
+    let delete_actions = capture(n1_data);
+    let n1_final_hash = root_hash();
+    let n1_text = Root::<RgaDoc, S>::fetch()
+        .unwrap()
+        .content
+        .get_text()
+        .unwrap();
+
+    // === Node-2 (rebuilt): base + append already give "Hello World"; apply
+    // node-1's delete delta and compare with the writer.
+    fresh_node([2; 32]);
+    import(base_actions.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    import(append_actions.clone());
+    let n2_premerge_hash = root_hash();
+    assert_eq!(
+        n2_premerge_hash, n1_merged_hash,
+        "node-1 and node-2 must agree on the merged 'Hello World' hash before \
+         the delete"
+    );
+
+    reset_delta_context();
+    set_current_heads(vec![n2_premerge_hash]);
+    import(delete_actions);
+    let n2_final_hash = root_hash();
+    let n2_text = Root::<RgaDoc, S>::fetch()
+        .unwrap()
+        .content
+        .get_text()
+        .unwrap();
+
+    assert_eq!(
+        n1_text, n2_text,
+        "RGA text must converge after writer-deletes-then-broadcasts: \
+         node-1(writer)={n1_text:?} vs node-2(applies delete delta)={n2_text:?}"
+    );
+    assert_eq!(
+        n1_final_hash,
+        n2_final_hash,
+        "RGA root hash must converge after delete-delta sync \
+         (frozen-rga writer-is-outlier flake): node-1={} node-2={}",
+        hex::encode(n1_final_hash),
+        hex::encode(n2_final_hash),
+    );
+}
+
+/// Closer match to the `frozen-rga-convergence` e2e: TWO concurrent appends
+/// (node-2 and node-3, each anchored on the shared base) followed by a delete
+/// from node-1, all propagated as deltas. The e2e final state had node-2 and
+/// node-3 agreeing while node-1 (the deleter) was the outlier — so this drives
+/// the deltas through every node in a *different application order* and asserts
+/// all three converge on identical text AND root hash. If the storage delta
+/// path is order-independent here, the e2e divergence must live in the WASM
+/// execute path (Step B), not in `apply_action`.
+#[test]
+#[serial_test::serial]
+fn test_rga_concurrent_appends_then_delete_delta_sync_converges() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::collections::{Mergeable, Root};
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::merge::register_crdt_merge;
+    use crate::store::MainStorage;
+
+    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+    struct RgaDoc {
+        content: ReplicatedGrowableArray,
+    }
+    impl Mergeable for RgaDoc {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.content.merge(&other.content)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |root_data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), root_data, Metadata::default()).unwrap();
+        let hash = root_hash();
+        commit_causal_delta(&hash)
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<RgaDoc, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh_node = |executor: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<RgaDoc>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(executor);
+    };
+
+    // === Genesis: shared base "Hello" (identical CharIds on every node).
+    fresh_node([9; 32]);
+    let mut g = Root::<RgaDoc, S>::new(|| RgaDoc {
+        content: ReplicatedGrowableArray::new_with_field_name("content"),
+    });
+    g.content.insert_str(0, "Hello").unwrap();
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base_actions = capture(g_data);
+    let base_hash = root_hash();
+
+    // === node-2: concurrent append " World" at the tail (anchored on base).
+    fresh_node([2; 32]);
+    import(base_actions.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let mut n2 = Root::<RgaDoc, S>::fetch().unwrap();
+    n2.content.insert_str(5, " World").unwrap();
+    let n2_data = borsh::to_vec(&*n2).unwrap();
+    drop(n2);
+    let append_b = capture(n2_data);
+
+    // === node-3: concurrent append "!!!" at the tail (also anchored on base).
+    fresh_node([3; 32]);
+    import(base_actions.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let mut n3 = Root::<RgaDoc, S>::fetch().unwrap();
+    n3.content.insert_str(5, "!!!").unwrap();
+    let n3_data = borsh::to_vec(&*n3).unwrap();
+    drop(n3);
+    let append_c = capture(n3_data);
+
+    // Materialize a node from base + the given appends (in the given order),
+    // returning its (text, root_hash) after merging — no delete yet.
+    let merge_node = |executor: [u8; 32], appends: &[Vec<Action>]| -> (String, [u8; 32]) {
+        fresh_node(executor);
+        import(base_actions.clone());
+        for a in appends {
+            reset_delta_context();
+            set_current_heads(vec![base_hash]);
+            import(a.clone());
+        }
+        let text = Root::<RgaDoc, S>::fetch()
+            .unwrap()
+            .content
+            .get_text()
+            .unwrap();
+        (text, root_hash())
+    };
+
+    // === node-1 (writer): merge both appends [B, C], then delete 'H'.
+    let (n1_merged_text, n1_merged_hash) =
+        merge_node([1; 32], &[append_b.clone(), append_c.clone()]);
+    reset_delta_context();
+    set_current_heads(vec![n1_merged_hash]);
+    let mut n1 = Root::<RgaDoc, S>::fetch().unwrap();
+    n1.content.delete(0).unwrap(); // delete 'H'
+    let n1_data = borsh::to_vec(&*n1).unwrap();
+    drop(n1);
+    let delete_actions = capture(n1_data);
+    let n1_final_hash = root_hash();
+    let n1_text = Root::<RgaDoc, S>::fetch()
+        .unwrap()
+        .content
+        .get_text()
+        .unwrap();
+
+    // === node-2 receiver: appends applied [C, B] (opposite order) + delete.
+    let (n2_merged_text, n2_merged_hash) =
+        merge_node([2; 32], &[append_c.clone(), append_b.clone()]);
+    reset_delta_context();
+    set_current_heads(vec![n2_merged_hash]);
+    import(delete_actions.clone());
+    let n2_final_hash = root_hash();
+    let n2_text = Root::<RgaDoc, S>::fetch()
+        .unwrap()
+        .content
+        .get_text()
+        .unwrap();
+
+    // === node-3 receiver: appends applied [B, C] + delete.
+    let (n3_merged_text, n3_merged_hash) =
+        merge_node([3; 32], &[append_b.clone(), append_c.clone()]);
+    reset_delta_context();
+    set_current_heads(vec![n3_merged_hash]);
+    import(delete_actions);
+    let n3_final_hash = root_hash();
+    let n3_text = Root::<RgaDoc, S>::fetch()
+        .unwrap()
+        .content
+        .get_text()
+        .unwrap();
+
+    // Pre-delete merged state must be order-independent across all three nodes.
+    assert_eq!(
+        (n1_merged_text.as_str(), n1_merged_hash),
+        (n2_merged_text.as_str(), n2_merged_hash),
+        "merged concurrent-append state must be order-independent (n1 vs n2)"
+    );
+    assert_eq!(
+        (n1_merged_text.as_str(), n1_merged_hash),
+        (n3_merged_text.as_str(), n3_merged_hash),
+        "merged concurrent-append state must be order-independent (n1 vs n3)"
+    );
+
+    // After the delete delta, writer (n1) and both receivers (n2, n3) converge.
+    assert_eq!(
+        (n1_text.as_str(), n1_final_hash),
+        (n2_text.as_str(), n2_final_hash),
+        "writer n1 vs receiver n2 diverged after delete (frozen-rga outlier): \
+         n1={n1_text:?}/{} n2={n2_text:?}/{}",
+        hex::encode(n1_final_hash),
+        hex::encode(n2_final_hash),
+    );
+    assert_eq!(
+        (n1_text.as_str(), n1_final_hash),
+        (n3_text.as_str(), n3_final_hash),
+        "writer n1 vs receiver n3 diverged after delete (frozen-rga outlier): \
+         n1={n1_text:?}/{} n3={n3_text:?}/{}",
+        hex::encode(n1_final_hash),
+        hex::encode(n3_final_hash),
+    );
+}
