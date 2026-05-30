@@ -31,10 +31,10 @@ nodes:
   count: 2
   image: merod:local
   prefix: app-migration-status
-  # Continues the per-scenario base-port sequence (13 = 9350/9450) so this
-  # scenario's host ports don't collide with any sibling's.
-  base_port: 9360
-  base_rpc_port: 9460
+  # Above every sibling's range (00-13 occupy 9220-9351 P2P / 9320-9451 RPC)
+  # so this scenario's host ports can't collide with any of them.
+  base_port: 9460
+  base_rpc_port: 9560
 
 steps:
   # Phase 1: Install v1 + v2 binaries on the ADMIN node only (node 2
