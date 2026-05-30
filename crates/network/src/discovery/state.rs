@@ -529,7 +529,7 @@ impl DiscoveryState {
         let _ = self
             .peers
             .entry(*rendezvous_peer)
-            .and_modify(|info| info.update_rendezvous_registartion_status(status));
+            .and_modify(|info| info.update_rendezvous_registration_status(status));
     }
 
     pub(crate) fn get_peer_info(&self, peer_id: &PeerId) -> Option<&PeerInfo> {
@@ -808,7 +808,7 @@ impl PeerInfo {
         }
     }
 
-    fn update_rendezvous_registartion_status(&mut self, status: RendezvousRegistrationStatus) {
+    fn update_rendezvous_registration_status(&mut self, status: RendezvousRegistrationStatus) {
         if let Some(ref mut info) = self.rendezvous {
             info.update_registration_status(status);
         }

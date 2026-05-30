@@ -241,6 +241,31 @@ fn test_pending_rendezvous_registration_does_not_occupy_slot() {
 }
 
 #[test]
+fn test_pending_to_expired_transition_keeps_slot_free() {
+    let mut state = DiscoveryState::default();
+
+    let peer = PeerId::random();
+    state.update_peer_protocols(&peer, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    // Pending holds no slot, so registration is still required.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Pending);
+    assert!(
+        state.is_rendezvous_registration_required(1),
+        "Pending occupies no slot"
+    );
+
+    // Transitioning Pending -> Expired (e.g. an unregister/expiry path
+    // touching a never-registered peer) must not invent a slot: neither
+    // status counts, so registration stays required and the count is
+    // unchanged.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Expired);
+    assert!(
+        state.is_rendezvous_registration_required(1),
+        "Expired (like Pending) occupies no slot"
+    );
+}
+
+#[test]
 fn test_find_new_rendezvous_peer_nominates_pending() {
     let mut state = DiscoveryState::default();
 

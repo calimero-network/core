@@ -470,12 +470,27 @@ impl NetworkManager {
                     );
                 }
                 Err(RegisterError::NoExternalAddresses) => {
-                    // No external addresses yet — nothing to register
-                    // anywhere this round; stop early. Mark the peer Pending
-                    // so the discovery state reflects "tried, waiting on an
-                    // external address" rather than the misleading Requested.
-                    // The next ExternalAddrConfirmed fires
-                    // broadcast_rendezvous_registrations, which re-attempts.
+                    // `NoExternalAddresses` is a swarm-level condition: the
+                    // swarm has no confirmed external address to advertise,
+                    // which is independent of the rendezvous namespace. So
+                    // every remaining key in this loop would fail
+                    // identically — breaking early is safe, and it
+                    // necessarily fires on the *first* key, so
+                    // `registered_any` is always false here (no key went out
+                    // this round). Marking the peer Pending reflects "tried,
+                    // waiting on an external address" rather than the
+                    // misleading Requested; the next ExternalAddrConfirmed
+                    // fires broadcast_rendezvous_registrations, which
+                    // re-attempts.
+                    //
+                    // This may transition a previously Registered/Requested
+                    // peer to Pending (e.g. its external address expired and
+                    // a re-attempt now finds none). That is correct, not a
+                    // regression: with no external address there is nothing
+                    // backing any registration, and because the condition is
+                    // swarm-wide no other peer can hold a slot either, so the
+                    // freed slot cannot cause over-fan-out — all re-attempts
+                    // are Pending until an address returns.
                     trace!(%rendezvous_peer, "No external addresses to register at rendezvous; marking Pending");
                     self.discovery.state.update_rendezvous_registration_status(
                         rendezvous_peer,
