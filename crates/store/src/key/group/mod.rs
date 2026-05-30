@@ -28,6 +28,11 @@ pub const GROUP_SUBGROUP_VIS_PREFIX: u8 = 0x2A;
 pub const GROUP_CONTEXT_LAST_MIGRATION_PREFIX: u8 = 0x2B;
 /// Last applied signed group-op nonce per `(group_id, signer)` for local governance replay protection.
 pub const GROUP_LOCAL_GOV_NONCE_PREFIX: u8 = 0x2C;
+/// Out-of-order applied governance nonces above the contiguous floor
+/// stored under [`GROUP_LOCAL_GOV_NONCE_PREFIX`]. Sibling of the floor
+/// key so old single-`u64` rows load with an empty above-set (no
+/// migration). See `calimero-governance-store::nonce_window`.
+pub const GROUP_LOCAL_GOV_NONCE_PENDING_PREFIX: u8 = 0x3C;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GroupPrefix;
@@ -197,6 +202,68 @@ impl FromKeyParts for GroupLocalGovNonce {
 impl Debug for GroupLocalGovNonce {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupLocalGovNonce")
+            .field("group_id", &self.group_id())
+            .field("signer", &self.signer())
+            .finish()
+    }
+}
+
+/// Applied governance nonces above the contiguous floor for a
+/// (group, signer) — the sparse out-of-order set from
+/// `calimero-governance-store::nonce_window`. Sibling of
+/// [`GroupLocalGovNonce`]; absent row == empty set.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct GroupLocalGovNoncePending(Key<(GroupPrefix, GroupIdComponent, GroupIdComponent)>);
+
+impl GroupLocalGovNoncePending {
+    #[must_use]
+    pub fn new(group_id: [u8; 32], signer: PrimitivePublicKey) -> Self {
+        Self(Key(GenericArray::from([
+            GROUP_LOCAL_GOV_NONCE_PENDING_PREFIX,
+        ])
+        .concat(GenericArray::from(group_id))
+        .concat(GenericArray::from(*signer))))
+    }
+
+    #[must_use]
+    pub fn group_id(&self) -> [u8; 32] {
+        let mut id = [0; 32];
+        id.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[1..33]);
+        id
+    }
+
+    #[must_use]
+    pub fn signer(&self) -> PrimitivePublicKey {
+        let mut pk = [0; 32];
+        pk.copy_from_slice(&AsRef::<[_; 65]>::as_ref(&self.0)[33..]);
+        pk.into()
+    }
+}
+
+impl AsKeyParts for GroupLocalGovNoncePending {
+    type Components = (GroupPrefix, GroupIdComponent, GroupIdComponent);
+
+    fn column() -> Column {
+        Column::Group
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for GroupLocalGovNoncePending {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for GroupLocalGovNoncePending {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GroupLocalGovNoncePending")
             .field("group_id", &self.group_id())
             .field("signer", &self.signer())
             .finish()
@@ -2040,6 +2107,7 @@ mod tests {
             GROUP_SUBGROUP_VIS_PREFIX,
             GROUP_CONTEXT_LAST_MIGRATION_PREFIX,
             GROUP_LOCAL_GOV_NONCE_PREFIX,
+            GROUP_LOCAL_GOV_NONCE_PENDING_PREFIX,
             GROUP_MEMBER_METADATA_PREFIX,
             GROUP_METADATA_PREFIX,
             GROUP_CONTEXT_METADATA_PREFIX,

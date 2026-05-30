@@ -428,6 +428,109 @@ fn apply_local_signed_group_op_nonce_and_admin() {
     assert!(apply_local_signed_group_op(&store, &op_bad).is_err());
 }
 
+/// Regression test for #2516: two concurrent same-signer governance ops are
+/// DAG siblings with consecutive nonces, so causal delivery imposes no order
+/// between them and they can land in either order. The old `nonce <= last`
+/// high-water-mark guard advanced on whichever higher nonce arrived first and
+/// then dropped the lower-nonce sibling forever (`lower <= last`). The
+/// windowed guard parks the higher nonce above the contiguous floor and still
+/// applies the lower one when it arrives — both ops land, and the floor closes
+/// the gap.
+#[test]
+fn apply_local_signed_group_op_out_of_order_siblings_2516() {
+    use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    let mut rng = OsRng;
+    let store = test_store();
+    let gid = test_group_id();
+    let gid_bytes = gid.to_bytes();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    // Group meta is needed for the author-mint assertion at the end
+    // (`sign_apply_local_group_op_borsh` computes a state hash over it).
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
+
+    let member_high = PrivateKey::random(&mut rng).public_key();
+    let member_low = PrivateKey::random(&mut rng).public_key();
+
+    // The HIGHER-nonce sibling (nonce 2) is delivered first.
+    let op_high = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        2,
+        GroupOp::MemberAdded {
+            member: member_high,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op_high).unwrap();
+    assert!(MembershipRepository::new(&store)
+        .is_member(&gid, &member_high)
+        .unwrap());
+
+    // Floor cannot advance past the missing nonce 1; the applied nonce sits
+    // in the above-floor set.
+    let window = load_nonce_window(&store, &gid, &admin_pk).unwrap();
+    assert_eq!(window.floor(), 0, "floor stuck behind the missing nonce 1");
+    assert!(window.contains(2), "nonce 2 recorded above the floor");
+
+    // The LOWER-nonce sibling (nonce 1) is delivered second. The old guard
+    // would have dropped it as `1 <= last(=2)`; the window applies it.
+    let op_low = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberAdded {
+            member: member_low,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
+    apply_local_signed_group_op(&store, &op_low).unwrap();
+    assert!(
+        MembershipRepository::new(&store)
+            .is_member(&gid, &member_low)
+            .unwrap(),
+        "lower-nonce sibling must NOT be dropped (the #2516 bug)"
+    );
+
+    // Both ops are durably logged and the gap has closed: floor == 2.
+    assert_eq!(read_op_log_after(&store, &gid, 0, 10).unwrap().len(), 2);
+    assert_eq!(
+        get_local_gov_nonce(&store, &gid, &admin_pk).unwrap(),
+        Some(2)
+    );
+
+    // Replays of either sibling are deduped — no third log entry.
+    apply_local_signed_group_op(&store, &op_high).unwrap();
+    apply_local_signed_group_op(&store, &op_low).unwrap();
+    assert_eq!(
+        read_op_log_after(&store, &gid, 0, 10).unwrap().len(),
+        2,
+        "replayed siblings must be deduped"
+    );
+
+    // The next op this node authors mints `max_applied + 1` (== 3), never
+    // reusing a nonce already inside the window.
+    let out = sign_apply_local_group_op_borsh(&store, &gid, &admin_sk, GroupOp::Noop).unwrap();
+    let next = borsh::from_slice::<SignedGroupOp>(&out.bytes)
+        .unwrap()
+        .nonce;
+    assert_eq!(next, 3, "author mints above the highest applied nonce");
+}
+
 #[test]
 fn reject_read_only_tee_via_member_added() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};

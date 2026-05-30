@@ -23,8 +23,8 @@ use crate::metrics::{record_governance_publish_mesh_peers, record_namespace_retr
 use crate::op_events::{notify as notify_op_event, OpEvent};
 
 use super::super::{
-    apply_group_op_mutations, get_local_gov_nonce, restore_member_context_identities,
-    set_local_gov_nonce, PermissionChecker,
+    apply_group_op_mutations, load_nonce_window, restore_member_context_identities,
+    store_nonce_window, PermissionChecker,
 };
 use super::dag::{NamespaceDagService, NamespaceHead};
 use super::membership::NamespaceMembershipService;
@@ -1170,11 +1170,19 @@ impl<'a> NamespaceGovernance<'a> {
         // current state once the op has been applied. Running the staleness
         // check first would `bail!` on every such replay; running the nonce
         // dedup first cleanly short-circuits them to `Ok(None)`.
-        let last = get_local_gov_nonce(self.store, group_id, signer)?.unwrap_or(0);
-        if nonce <= last {
+        // Windowed dedup: a nonce is a duplicate iff it's at or below the
+        // contiguous floor OR already in the above-floor set. This is what
+        // fixes #2516 — two concurrent same-signer ops are DAG siblings with
+        // consecutive nonces, so they can arrive in either order. The old
+        // `nonce <= last` guard advanced a single high-water mark on the
+        // first to land and then dropped the lower-nonce sibling forever; the
+        // window holds the higher one in `above` and still applies the lower
+        // one when it arrives.
+        let mut nonce_window = load_nonce_window(self.store, group_id, signer)?;
+        if nonce_window.contains(nonce) {
             tracing::debug!(
                 nonce,
-                last_nonce = last,
+                floor = nonce_window.floor(),
                 signer = %signer,
                 "ignoring namespace group op with already-processed nonce"
             );
@@ -1303,7 +1311,7 @@ impl<'a> NamespaceGovernance<'a> {
             // The nonce guard above already short-circuits the common
             // re-receive; this content-hash check covers the retry path,
             // which re-applies via `decrypt_and_apply_group_op` (bypassing
-            // the nonce guard's `set_local_gov_nonce` on first apply).
+            // the nonce window's `record`/`store_nonce_window` on first apply).
             //
             // Dedup against the PERSISTED op-log, not the op-head's
             // `dag_heads`: scanning the log is monotonic, so an op that was
@@ -1373,7 +1381,15 @@ impl<'a> NamespaceGovernance<'a> {
         // for a deferrable precondition failure, and we deliberately DO advance
         // it for a successful apply — the security check against the policy is
         // never skipped, only made visible in time.
-        set_local_gov_nonce(self.store, group_id, signer, nonce)?;
+        // Record into the window loaded at the dedup guard above. `record`
+        // advances the contiguous floor through any run this nonce completed,
+        // or parks it in the above-floor set if an earlier sibling is still
+        // missing — so the missing sibling is NOT treated as already-processed
+        // when it arrives (the #2516 fix). The same post-apply ordering as the
+        // old single-nonce write holds: a deferrable precondition failure
+        // `Err`s above and leaves the window untouched, so the op retries.
+        let _newly = nonce_window.record(nonce);
+        store_nonce_window(self.store, group_id, signer, &nonce_window)?;
         Ok(divergence)
     }
 

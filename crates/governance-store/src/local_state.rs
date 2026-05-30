@@ -7,14 +7,15 @@ use calimero_context_config::types::ContextGroupId;
 use calimero_primitives::context::{ContextId, GroupMemberRole};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::{
-    GroupLocalGovNonce, GroupMemberContext, GroupOpHead, GroupOpHeadValue, GroupOpLog,
-    NamespaceGovHead, NamespaceGovOp, NamespaceIdentity, GROUP_MEMBER_CONTEXT_PREFIX,
-    GROUP_OP_LOG_PREFIX, NAMESPACE_GOV_OP_PREFIX,
+    GroupLocalGovNonce, GroupLocalGovNoncePending, GroupMemberContext, GroupOpHead,
+    GroupOpHeadValue, GroupOpLog, NamespaceGovHead, NamespaceGovOp, NamespaceIdentity,
+    GROUP_MEMBER_CONTEXT_PREFIX, GROUP_OP_LOG_PREFIX, NAMESPACE_GOV_OP_PREFIX,
 };
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 use super::collect_keys_with_prefix;
+use crate::nonce_window::NonceWindow;
 
 pub fn get_local_gov_nonce(
     store: &Store,
@@ -38,14 +39,74 @@ pub fn set_local_gov_nonce(
     Ok(())
 }
 
+/// Load the applied-nonce window for a (group, signer): the contiguous
+/// floor from [`GroupLocalGovNonce`] plus the sparse above-floor set from
+/// [`GroupLocalGovNoncePending`].
+///
+/// Absent rows read as `0` / empty, so a node that only ever wrote the
+/// single-`u64` floor (pre-windowing, or a signer that never had a
+/// concurrency gap) loads with an empty above-set and dedups exactly like
+/// the old `nonce <= last` high-water-mark guard — no migration needed.
+pub fn load_nonce_window(
+    store: &Store,
+    group_id: &ContextGroupId,
+    signer: &PublicKey,
+) -> EyreResult<NonceWindow> {
+    let handle = store.handle();
+    let gid = group_id.to_bytes();
+    let floor = handle
+        .get(&GroupLocalGovNonce::new(gid, *signer))?
+        .unwrap_or(0);
+    let above = handle
+        .get(&GroupLocalGovNoncePending::new(gid, *signer))?
+        .unwrap_or_default();
+    Ok(NonceWindow::new(floor, above))
+}
+
+/// Persist an applied-nonce window: the floor under [`GroupLocalGovNonce`]
+/// (so the row stays a valid high-water mark for any reader that only knows
+/// the old key) and the above-floor set under [`GroupLocalGovNoncePending`]
+/// (deleted when empty so a closed gap leaves no stale row).
+///
+/// The floor is written before the above-set. The two `put`s are not atomic
+/// (`calimero-store` has no transactional batch — see the CRASH-SAFETY
+/// INVARIANT on [`persist_group_op_log_entry`]), but a crash between them is
+/// self-healing: [`NonceWindow::new`] normalises inconsistent parts on the
+/// next load (drops below-floor entries, pulls the floor through any
+/// now-contiguous run), so neither ordering can resurrect an already-applied
+/// nonce or skip an unapplied one.
+pub fn store_nonce_window(
+    store: &Store,
+    group_id: &ContextGroupId,
+    signer: &PublicKey,
+    window: &NonceWindow,
+) -> EyreResult<()> {
+    let mut handle = store.handle();
+    let gid = group_id.to_bytes();
+
+    handle.put(&GroupLocalGovNonce::new(gid, *signer), &window.floor())?;
+
+    let above_key = GroupLocalGovNoncePending::new(gid, *signer);
+    let above: Vec<u64> = window.above().collect();
+    if above.is_empty() {
+        handle.delete(&above_key)?;
+    } else {
+        handle.put(&above_key, &above)?;
+    }
+    Ok(())
+}
+
 fn delete_local_gov_nonce_for_signer(
     store: &Store,
     group_id: &ContextGroupId,
     signer: &PublicKey,
 ) -> EyreResult<()> {
     let mut handle = store.handle();
-    let key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
-    handle.delete(&key)?;
+    let gid = group_id.to_bytes();
+    handle.delete(&GroupLocalGovNonce::new(gid, *signer))?;
+    // Drop the sibling above-floor set too, else a future signer reusing
+    // this (group, signer) would inherit stale out-of-order nonces.
+    handle.delete(&GroupLocalGovNoncePending::new(gid, *signer))?;
     Ok(())
 }
 
@@ -192,15 +253,16 @@ pub(crate) fn persist_group_governance_progress(
     group_id: &ContextGroupId,
     sequence: u64,
     signer: &PublicKey,
-    nonce: u64,
+    window: &NonceWindow,
     dag_heads: Vec<[u8; 32]>,
     op_bytes: &[u8],
 ) -> EyreResult<()> {
     persist_group_op_log_entry(store, group_id, sequence, dag_heads, op_bytes)?;
 
-    let mut handle = store.handle();
-    let nonce_key = GroupLocalGovNonce::new(group_id.to_bytes(), *signer);
-    handle.put(&nonce_key, &nonce)?;
+    // Nonce window written LAST so the crash-safety ordering holds:
+    // entry → head → floor → above. An un-advanced window after a crash just
+    // replays the (idempotent) op; it never skips one.
+    store_nonce_window(store, group_id, signer, window)?;
 
     Ok(())
 }

@@ -64,6 +64,11 @@ impl PredefinedEntry for key::GroupLocalGovNonce {
     type DataType<'a> = u64;
 }
 
+impl PredefinedEntry for key::GroupLocalGovNoncePending {
+    type Codec = Borsh;
+    type DataType<'a> = Vec<u64>;
+}
+
 impl PredefinedEntry for key::GroupContextMetadata {
     type Codec = Borsh;
     type DataType<'a> = calimero_primitives::metadata::MetadataRecord;
