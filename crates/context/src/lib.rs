@@ -30,6 +30,7 @@ pub mod config;
 pub mod error;
 pub mod governance_dag;
 pub mod handlers;
+pub mod hlc_fence;
 mod lifecycle;
 
 // Backward-compat re-export shims for the modules moved to
