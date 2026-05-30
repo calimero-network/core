@@ -140,6 +140,10 @@ jobs:
           - 12-scenario-field-remove-archive
           - 13-scenario-invariant-reshuffle
           - 14-cascade-status-rpc
+          - 15-scenario-authored-map
+          - 16-scenario-user-storage
+          - 17-scenario-frozen-storage
+          - 18-scenario-shared-storage
     env:
       WORKFLOW: ${{ matrix.workflow }}
     steps:

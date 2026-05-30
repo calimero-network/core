@@ -8774,6 +8774,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "scenario-authored-map-v1"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "scenario-authored-map-v2"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
 name = "scenario-crdt-native-v1"
 version = "0.0.0"
 dependencies = [
@@ -8825,6 +8845,26 @@ dependencies = [
 
 [[package]]
 name = "scenario-field-split-v2"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "scenario-frozen-storage-v1"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "scenario-frozen-storage-v2"
 version = "0.0.0"
 dependencies = [
  "calimero-sdk",
@@ -8914,6 +8954,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "scenario-shared-storage-v1"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "scenario-shared-storage-v2"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
 name = "scenario-struct-to-enum-v1"
 version = "0.0.0"
 dependencies = [
@@ -8925,6 +8985,26 @@ dependencies = [
 
 [[package]]
 name = "scenario-struct-to-enum-v2"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "scenario-user-storage-v1"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "scenario-user-storage-v2"
 version = "0.0.0"
 dependencies = [
  "calimero-sdk",

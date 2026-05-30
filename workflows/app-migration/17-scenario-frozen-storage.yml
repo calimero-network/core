@@ -1,0 +1,292 @@
+name: 17 — Scenario "frozen-storage" (v1 → v2 carry-through, 2-node)
+description: >
+  2-node per-context migration for a `FrozenStorage`-typed field — a
+  content-addressed immutable store keyed by the SHA256 of the value. v1
+  holds `documents: FrozenStorage<String>`; node 1 freezes a document and
+  captures its content hash. v2 carries the store THROUGH the migrate and
+  adds a `migration_note` register.
+
+  Discriminating assertion: after BOTH nodes self-migrate, fetching the
+  document by the SAME content hash returns the original bytes on EACH node
+  — proving the content-addressed entry (and its hash) round-trips through
+  migrate and stays convergent cross-node. The hash is a pure function of
+  the bytes, so a divergent migrate would change it and the fetch would
+  miss.
+
+  Per-context upgrade on the subgroup (cascade=false).
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-frozen
+  base_port: 9590
+  base_rpc_port: 9690
+
+steps:
+  - name: Install scenario-frozen-storage-v1 on node 1
+    type: install_application
+    node: app-migration-frozen-1
+    path: apps/migrations/scenario-frozen-storage-v1/res/scenario_frozen_storage_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-frozen-storage-v2 on node 1
+    type: install_application
+    node: app-migration-frozen-1
+    path: apps/migrations/scenario-frozen-storage-v2/res/scenario_frozen_storage_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Create namespace (v1) on node 1
+    type: create_namespace
+    node: app-migration-frozen-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-frozen-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-frozen-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "frozen-storage-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-frozen-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-frozen-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-frozen-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-frozen-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-frozen-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-frozen-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: node 1 freezes a document, capturing its content hash.
+  - name: Node 1 sets title
+    type: call
+    node: app-migration-frozen-1
+    context_id: "{{ctx_id}}"
+    method: set_title
+    args:
+      title: "frozen-doc"
+
+  - name: Node 1 freezes a document (captures content hash)
+    type: call
+    node: app-migration-frozen-1
+    context_id: "{{ctx_id}}"
+    method: freeze_doc
+    args:
+      value: "the-frozen-payload"
+    outputs:
+      doc_hash: output
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-frozen-1
+      - app-migration-frozen-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node 2 can fetch the frozen doc by hash (pre-migrate sanity)
+    type: call
+    node: app-migration-frozen-2
+    context_id: "{{ctx_id}}"
+    method: get_doc
+    args:
+      hash_str: "{{doc_hash}}"
+    outputs:
+      doc_pre_node2: result
+
+  - name: Assert pre-migrate fetch on node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{doc_pre_node2}}, {"output": "the-frozen-payload"})'
+
+  - name: Assert v1 schema on node 1
+    type: call
+    node: app-migration-frozen-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema shape
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "title": "frozen-doc"}})'
+
+  - name: Negative — migration_note is not exported by v1
+    type: call
+    node: app-migration-frozen-1
+    context_id: "{{ctx_id}}"
+    method: migration_note
+    expected_failure: true
+
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-frozen-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  - name: Upgrade subgroup v1 → v2 (per-context)
+    type: upgrade_group
+    node: app-migration-frozen-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  - name: Wait for upgrade + migration to apply + log flush
+    type: wait
+    seconds: 15
+
+  - name: Read post-migration schema_info on node 1 (triggers lazy migration)
+    type: call
+    node: app-migration-frozen-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node1: result
+
+  - name: Read post-migration schema_info on node 2 (triggers lazy migration)
+    type: call
+    node: app-migration-frozen-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  - name: Assert lazy migration ran on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-frozen-1
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-frozen-2
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert v2 schema on node 1 (title preserved + note seeded)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0", "title": "frozen-doc", "migration_note": "migrated-v1-to-v2"}})'
+
+  - name: Assert v2 schema on node 2 (same shape — migration reached node 2)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0", "title": "frozen-doc", "migration_note": "migrated-v1-to-v2"}})'
+
+  # Discriminating assertion: same content hash still resolves the bytes on
+  # BOTH nodes after they independently self-migrated.
+  - name: Fetch frozen doc by hash on node 1 (post-migrate)
+    type: call
+    node: app-migration-frozen-1
+    context_id: "{{ctx_id}}"
+    method: get_doc
+    args:
+      hash_str: "{{doc_hash}}"
+    outputs:
+      doc_post_node1: result
+
+  - name: Fetch frozen doc by hash on node 2 (post-migrate)
+    type: call
+    node: app-migration-frozen-2
+    context_id: "{{ctx_id}}"
+    method: get_doc
+    args:
+      hash_str: "{{doc_hash}}"
+    outputs:
+      doc_post_node2: result
+
+  - name: Assert content-addressed entry survived migrate on BOTH nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{doc_post_node1}}, {"output": "the-frozen-payload"})'
+      - 'json_equal({{doc_post_node2}}, {"output": "the-frozen-payload"})'
+
+  # Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-frozen-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-frozen-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-frozen-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-frozen-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-frozen-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

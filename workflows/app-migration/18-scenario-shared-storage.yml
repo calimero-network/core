@@ -1,0 +1,284 @@
+name: 18 — Scenario "shared-storage" (v1 → v2 carry-through, 2-node)
+description: >
+  2-node per-context migration for a `SharedStorage`-typed field — a single
+  shared value gated by a writer-set. v1 holds
+  `doc: SharedStorage<LwwRegister<String>>` whose writer-set is seeded at
+  init with the creating node (node 1). Node 1 writes the shared value;
+  node 2 is a member but NOT a writer (it can read, not write). v2 carries
+  the shared value AND its writer-set THROUGH the migrate and adds a
+  `migration_note` register.
+
+  Discriminating assertion: after BOTH nodes self-migrate, the shared value
+  reads identically on each node and `writer_count` is still 1 — proving the
+  value, the writer-set, and the read-gating round-trip through migrate and
+  stay convergent cross-node.
+
+  Per-context upgrade on the subgroup (cascade=false).
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-shared
+  base_port: 9600
+  base_rpc_port: 9700
+
+steps:
+  - name: Install scenario-shared-storage-v1 on node 1
+    type: install_application
+    node: app-migration-shared-1
+    path: apps/migrations/scenario-shared-storage-v1/res/scenario_shared_storage_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-shared-storage-v2 on node 1
+    type: install_application
+    node: app-migration-shared-1
+    path: apps/migrations/scenario-shared-storage-v2/res/scenario_shared_storage_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  - name: Create namespace (v1) on node 1
+    type: create_namespace
+    node: app-migration-shared-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key
+    type: get_namespace_identity
+    node: app-migration-shared-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup under namespace
+    type: create_group_in_namespace
+    node: app-migration-shared-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "shared-storage-scenario-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-shared-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-shared-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-shared-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-shared-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-shared-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-shared-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: node 1 (sole writer) writes the shared value.
+  - name: Node 1 sets title
+    type: call
+    node: app-migration-shared-1
+    context_id: "{{ctx_id}}"
+    method: set_title
+    args:
+      title: "shared-doc"
+
+  - name: Node 1 writes the shared value
+    type: call
+    node: app-migration-shared-1
+    context_id: "{{ctx_id}}"
+    method: set_doc
+    args:
+      value: "the-shared-value"
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-shared-1
+      - app-migration-shared-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Node 2 can read the shared value (pre-migrate sanity)
+    type: call
+    node: app-migration-shared-2
+    context_id: "{{ctx_id}}"
+    method: get_doc
+    outputs:
+      doc_pre_node2: result
+
+  - name: Assert pre-migrate read on node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{doc_pre_node2}}, {"output": "the-shared-value"})'
+
+  - name: Assert v1 schema on node 1 (one writer)
+    type: call
+    node: app-migration-shared-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v1_schema: result
+
+  - name: Assert v1 schema shape
+    type: json_assert
+    statements:
+      - 'json_subset({{v1_schema}}, {"output": {"schema_version": "1.0.0", "title": "shared-doc", "writer_count": 1}})'
+
+  - name: Negative — migration_note is not exported by v1
+    type: call
+    node: app-migration-shared-1
+    context_id: "{{ctx_id}}"
+    method: migration_note
+    expected_failure: true
+
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-shared-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  - name: Upgrade subgroup v1 → v2 (per-context)
+    type: upgrade_group
+    node: app-migration-shared-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+
+  - name: Wait for upgrade + migration to apply + log flush
+    type: wait
+    seconds: 15
+
+  - name: Read post-migration schema_info on node 1 (triggers lazy migration)
+    type: call
+    node: app-migration-shared-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node1: result
+
+  - name: Read post-migration schema_info on node 2 (triggers lazy migration)
+    type: call
+    node: app-migration-shared-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  - name: Assert lazy migration ran on node 1
+    type: assert_log_present
+    nodes:
+      - app-migration-shared-1
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert lazy migration ran on node 2 (receiver self-migrated)
+    type: assert_log_present
+    nodes:
+      - app-migration-shared-2
+    patterns:
+      - "performing lazy upgrade before execution"
+      - "Executing migration"
+      - "Migrated state written successfully"
+    min_matches: 1
+
+  - name: Assert v2 schema on node 1 (writer-set preserved + note seeded)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0", "title": "shared-doc", "writer_count": 1, "migration_note": "migrated-v1-to-v2"}})'
+
+  - name: Assert v2 schema on node 2 (same shape — migration reached node 2)
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0", "title": "shared-doc", "writer_count": 1, "migration_note": "migrated-v1-to-v2"}})'
+
+  # Discriminating assertion: shared value reads identically on both nodes
+  # after they independently self-migrated.
+  - name: Read shared value on node 1 (post-migrate)
+    type: call
+    node: app-migration-shared-1
+    context_id: "{{ctx_id}}"
+    method: get_doc
+    outputs:
+      doc_post_node1: result
+
+  - name: Read shared value on node 2 (post-migrate)
+    type: call
+    node: app-migration-shared-2
+    context_id: "{{ctx_id}}"
+    method: get_doc
+    outputs:
+      doc_post_node2: result
+
+  - name: Assert shared value + writer-set survived migrate on BOTH nodes
+    type: json_assert
+    statements:
+      - 'json_equal({{doc_post_node1}}, {"output": "the-shared-value"})'
+      - 'json_equal({{doc_post_node2}}, {"output": "the-shared-value"})'
+
+  # Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-shared-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-shared-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-shared-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1
+    type: uninstall_application
+    node: app-migration-shared-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2
+    type: uninstall_application
+    node: app-migration-shared-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
