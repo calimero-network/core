@@ -230,12 +230,11 @@ fn apply_two_shared_writes_in_order<const SCOPE: usize>(
     Interface::<S<SCOPE>>::find_by_id_raw(id).expect("entity must exist after two writes")
 }
 
+// Regression guard for the shared-storage post-rotation split-brain
+// (e2e flake job 78652650934): fixed by the equal-HLC content-hash tiebreak
+// in `interface.rs` (`try_merge_non_root`'s `lww_pick`) + letting equal-nonce
+// writes fall through the Shared/User replay guard instead of being skipped.
 #[test]
-#[ignore = "reproduces an open bug: Shared equal-nonce writes from different \
-            writers do not converge (interface.rs replay guard treats \
-            new_nonce == last_nonce as a no-op). Remove #[ignore] when the \
-            node_id equal-HLC tiebreak fix lands. See shared-storage e2e flake \
-            job 78652650934."]
 fn shared_equal_nonce_different_writers_converge_regardless_of_order() {
     let alice_sk = make_signing_key(0xA1);
     let bob_sk = make_signing_key(0xB2);
