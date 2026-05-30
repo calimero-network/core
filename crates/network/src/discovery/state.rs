@@ -532,6 +532,41 @@ impl DiscoveryState {
             .and_modify(|info| info.update_rendezvous_registration_status(status));
     }
 
+    /// Mark a rendezvous peer `Pending` (tried, blocked on a missing
+    /// external address) — but only when it isn't currently holding or
+    /// awaiting a registration. Returns `true` if the status changed.
+    ///
+    /// A `Requested` peer has an in-flight register whose `Registered`
+    /// confirmation is dropped if the status is no longer `Requested` when
+    /// it lands, so clobbering it to `Pending` would strand the
+    /// registration. A `Registered` peer still has a live server-side
+    /// record; flipping it to `Pending` would also free its fan-out slot
+    /// (`Pending` doesn't count), letting the node over-register. Both keep
+    /// their slot-holding status and transition out via their own
+    /// `Expired` event instead. Only idle peers (`Discovered`, `Expired`,
+    /// or already `Pending`) are moved to `Pending`.
+    pub(crate) fn mark_rendezvous_pending_if_idle(&mut self, rendezvous_peer: &PeerId) -> bool {
+        let current = self
+            .get_peer_info(rendezvous_peer)
+            .and_then(|info| info.rendezvous())
+            .map(|info| info.registration_status());
+
+        if matches!(
+            current,
+            Some(
+                RendezvousRegistrationStatus::Requested | RendezvousRegistrationStatus::Registered
+            )
+        ) {
+            return false;
+        }
+
+        self.update_rendezvous_registration_status(
+            rendezvous_peer,
+            RendezvousRegistrationStatus::Pending,
+        );
+        true
+    }
+
     pub(crate) fn get_peer_info(&self, peer_id: &PeerId) -> Option<&PeerInfo> {
         self.peers.get(peer_id)
     }

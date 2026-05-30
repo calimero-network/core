@@ -477,25 +477,29 @@ impl NetworkManager {
                     // identically — breaking early is safe, and it
                     // necessarily fires on the *first* key, so
                     // `registered_any` is always false here (no key went out
-                    // this round). Marking the peer Pending reflects "tried,
-                    // waiting on an external address" rather than the
-                    // misleading Requested; the next ExternalAddrConfirmed
-                    // fires broadcast_rendezvous_registrations, which
-                    // re-attempts.
+                    // this round).
                     //
-                    // This may transition a previously Registered/Requested
-                    // peer to Pending (e.g. its external address expired and
-                    // a re-attempt now finds none). That is correct, not a
-                    // regression: with no external address there is nothing
-                    // backing any registration, and because the condition is
-                    // swarm-wide no other peer can hold a slot either, so the
-                    // freed slot cannot cause over-fan-out — all re-attempts
-                    // are Pending until an address returns.
-                    trace!(%rendezvous_peer, "No external addresses to register at rendezvous; marking Pending");
-                    self.discovery.state.update_rendezvous_registration_status(
-                        rendezvous_peer,
-                        RendezvousRegistrationStatus::Pending,
-                    );
+                    // Mark the peer Pending ("tried, waiting on an external
+                    // address") rather than the misleading Requested; the
+                    // next ExternalAddrConfirmed fires
+                    // broadcast_rendezvous_registrations, which re-attempts.
+                    // But only if the peer is idle: `mark_..._if_idle` leaves
+                    // an already Requested/Registered peer untouched. A
+                    // re-broadcast can land here while a register is in
+                    // flight (status Requested); clobbering it to Pending
+                    // would make the Registered handler drop the incoming
+                    // confirmation (it requires status == Requested) and
+                    // would free a live slot, risking over-fan-out. Such
+                    // peers transition out via their own Expired event.
+                    if self
+                        .discovery
+                        .state
+                        .mark_rendezvous_pending_if_idle(rendezvous_peer)
+                    {
+                        trace!(%rendezvous_peer, "No external addresses to register at rendezvous; marked Pending");
+                    } else {
+                        trace!(%rendezvous_peer, "No external addresses to register at rendezvous; keeping in-flight registration status");
+                    }
                     return Ok(());
                 }
                 Err(err @ RegisterError::FailedToMakeRecord(_)) => bail!(err),

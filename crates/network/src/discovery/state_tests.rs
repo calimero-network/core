@@ -265,6 +265,55 @@ fn test_pending_to_expired_transition_keeps_slot_free() {
     );
 }
 
+fn rendezvous_status(state: &DiscoveryState, peer: &PeerId) -> RendezvousRegistrationStatus {
+    state.peers[peer]
+        .rendezvous
+        .as_ref()
+        .unwrap()
+        .registration_status()
+}
+
+#[test]
+fn test_mark_rendezvous_pending_if_idle_guards_slot_holders() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    state.update_peer_protocols(&peer, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    // Idle statuses (Discovered / Expired / already Pending) move to Pending.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Discovered);
+    assert!(state.mark_rendezvous_pending_if_idle(&peer));
+    assert_eq!(
+        rendezvous_status(&state, &peer),
+        RendezvousRegistrationStatus::Pending
+    );
+
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Expired);
+    assert!(state.mark_rendezvous_pending_if_idle(&peer));
+    assert_eq!(
+        rendezvous_status(&state, &peer),
+        RendezvousRegistrationStatus::Pending
+    );
+
+    // Requested must NOT be clobbered: a register is in flight, and the
+    // Registered event handler drops the confirmation unless status is
+    // still Requested. The call is a no-op and reports no change.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Requested);
+    assert!(!state.mark_rendezvous_pending_if_idle(&peer));
+    assert_eq!(
+        rendezvous_status(&state, &peer),
+        RendezvousRegistrationStatus::Requested
+    );
+
+    // Registered must NOT be clobbered: it holds a live server record and a
+    // fan-out slot that must keep counting.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Registered);
+    assert!(!state.mark_rendezvous_pending_if_idle(&peer));
+    assert_eq!(
+        rendezvous_status(&state, &peer),
+        RendezvousRegistrationStatus::Registered
+    );
+}
+
 #[test]
 fn test_find_new_rendezvous_peer_nominates_pending() {
     let mut state = DiscoveryState::default();
@@ -309,6 +358,14 @@ fn test_find_new_rendezvous_peer_prefers_pending_over_expired() {
     ids.sort();
     let expired_peer = ids[0];
     let pending_peer = ids[1];
+    // Pin the ordering assumption loudly: if get_rendezvous_peer_ids ever
+    // stops iterating in ascending PeerId order, this fails here rather
+    // than silently no longer exercising the early-return-over-candidate
+    // path.
+    assert!(
+        expired_peer < pending_peer,
+        "expired_peer must sort before pending_peer for this test to mean anything"
+    );
     state.update_peer_protocols(&expired_peer, &[RENDEZVOUS_PROTOCOL_NAME]);
     state.update_peer_protocols(&pending_peer, &[RENDEZVOUS_PROTOCOL_NAME]);
 
