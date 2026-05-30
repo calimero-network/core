@@ -27,6 +27,7 @@ use calimero_context_config::types::SignedGroupOpenInvitation;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, GroupMemberRole, UpgradePolicy};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_storage::logical_clock::HybridTimestamp;
 use ed25519_dalek::SignatureError;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -78,7 +79,15 @@ pub use wire::{
 /// rollout posture is operator-discipline: deploy v6 to every peer
 /// before triggering a cascade. See
 /// docs/superpowers/specs/2026-05-22-namespace-cascade-app-upgrade-design.md.
-pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 6;
+///
+/// Schema v7: replaces the two ordered cascade ops (`CascadeTargetApplicationSet`
+/// + `CascadeGroupMigrationSet`) with a single atomic `CascadeUpgrade` op
+/// that carries `cascade_hlc` — a fence timestamp stamped once by the
+/// initiator so every node records an identical boundary. This eliminates
+/// the out-of-order apply window that existed between the two v6 ops.
+/// Variant ordinal is appended after the v6 variants; v6 ordinals are
+/// preserved.
+pub const SIGNED_GROUP_OP_SCHEMA_VERSION: u8 = 7;
 
 /// Domain separation prefix for Ed25519 signatures over group ops.
 pub const GROUP_GOVERNANCE_SIGN_DOMAIN: &[u8] = b"calimero.group.v1";
@@ -305,6 +314,19 @@ pub enum GroupOp {
         from_app_key: [u8; 32],
         migration: Option<Vec<u8>>,
     },
+    /// Atomic namespace cascade upgrade. Applies target_application_id, app_key,
+    /// and migration in a SINGLE op per matched descendant (the
+    /// `from_app_key == descendant.app_key` walk predicate), so receivers cannot
+    /// reproduce the out-of-order apply bug. `cascade_hlc` is stamped once by the
+    /// initiator so every node records an identical fence boundary. Lockstep
+    /// wire addition (schema v7).
+    CascadeUpgrade {
+        from_app_key: [u8; 32],
+        app_key: [u8; 32],
+        target_application_id: ApplicationId,
+        migration: Option<Vec<u8>>,
+        cascade_hlc: HybridTimestamp,
+    },
 }
 
 impl GroupOp {
@@ -342,6 +364,7 @@ impl GroupOp {
             GroupOp::MemberSetAutoFollow { .. } => "member_set_auto_follow",
             GroupOp::CascadeTargetApplicationSet { .. } => "cascade_target_application_set",
             GroupOp::CascadeGroupMigrationSet { .. } => "cascade_group_migration_set",
+            GroupOp::CascadeUpgrade { .. } => "cascade_upgrade",
         }
     }
 }

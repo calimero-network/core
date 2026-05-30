@@ -154,6 +154,7 @@ pub(crate) fn dispatch(ctx: &mut GroupApplyCtx<'_>, op: &GroupOp) -> EyreResult<
             from_app_key,
             migration,
         } => cascade_group_migration_set::apply(ctx, from_app_key, migration)?,
+        GroupOp::CascadeUpgrade { .. } => eyre::bail!("CascadeUpgrade apply not yet implemented"),
         // `GroupOp` is `#[non_exhaustive]` from a different crate,
         // so the wildcard is required by the compiler. When a new
         // variant is added in `calimero-governance-types`, it lands

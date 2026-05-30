@@ -1360,6 +1360,7 @@ dependencies = [
  "borsh",
  "calimero-context-config",
  "calimero-primitives",
+ "calimero-storage",
  "ed25519-dalek",
  "rand 0.8.5",
  "sha2 0.10.9",
