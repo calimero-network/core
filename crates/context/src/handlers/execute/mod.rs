@@ -390,6 +390,27 @@ impl Handler<ExecuteRequest> for ContextManager {
                 }
             };
 
+        // Resolve the producing-app-key for the broadcast envelope. Runs
+        // synchronously here so the `Option<[u8;32]>` (Copy) can be
+        // captured by value in the async external_task closure below.
+        // Errors are soft-faults: a store failure here means the field
+        // arrives as `None` at receivers (they treat `None` as "no fence
+        // decision possible") instead of blocking the execute path.
+        // `get_group_for_context` is called a second time internally;
+        // that's one extra O(1) store read per execute, acceptable here.
+        let producing_app_key: Option<[u8; 32]> =
+            match resolve_producing_app_key(&self.datastore, &context_id) {
+                Ok(v) => v,
+                Err(err) => {
+                    warn!(
+                        ?context_id,
+                        %err,
+                        "resolve_producing_app_key failed, stamping None on broadcast"
+                    );
+                    None
+                }
+            };
+
         debug!(
             public_key = ?identity.public_key,
             public_key = %identity.public_key,
@@ -872,6 +893,10 @@ impl Handler<ExecuteRequest> for ContextManager {
                                     // the exact `signing_governance_position`
                                     // above, see the comment there.
                                     delta_signature,
+                                    // Resolved synchronously before this
+                                    // async closure; `Option<[u8;32]>` is
+                                    // Copy so captured by value automatically.
+                                    producing_app_key,
                                 )
                                 .await?;
                         }
@@ -2177,11 +2202,95 @@ fn maybe_lazy_upgrade(
     Some((meta.target_application_id, migrate_method, group_id))
 }
 
+/// The blob-derived app key the sender is executing under — `GroupMeta.app_key`
+/// for the context's owning group (`app_key = blob_id(bytecode)` at group
+/// creation / upgrade time).  This is the schema-version discriminator that
+/// changes on every app upgrade; `application_id` is version-stable and
+/// cannot distinguish v1 from v2 of the same application.
+///
+/// Returns `Some(app_key)` for group-context deltas; `None` for non-group
+/// contexts (no owning group) or when the group meta row cannot be loaded
+/// (store error is propagated to the caller as `Err`).
+///
+/// Stamped onto the state-delta broadcast so receivers can fence
+/// stale-schema deltas after a cascade migration.  The fence itself lives
+/// in Tasks 8/9 — this function is the testable store-boundary helper.
+fn resolve_producing_app_key(
+    datastore: &Store,
+    context_id: &ContextId,
+) -> eyre::Result<Option<[u8; 32]>> {
+    let Some(gid) = calimero_governance_store::get_group_for_context(datastore, context_id)? else {
+        return Ok(None);
+    };
+    Ok(MetaRepository::new(datastore)
+        .load(&gid)?
+        .map(|m| m.app_key))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_governance_store::{register_context_in_group, MetaRepository};
+    use calimero_primitives::application::ApplicationId;
+    use calimero_primitives::context::{ContextId, UpgradePolicy};
+    use calimero_primitives::identity::PublicKey;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::key::GroupMetaValue;
+    use calimero_store::Store;
+
+    use super::{resolve_producing_app_key, upgrade_blocks_write};
     use calimero_store::key::GroupUpgradeStatus;
 
-    use super::upgrade_blocks_write;
+    fn fresh_store() -> Store {
+        Store::new(Arc::new(InMemoryDB::owned()))
+    }
+
+    /// Construct a minimal `GroupMetaValue` with the given `app_key`.
+    fn group_meta_with_app_key(app_key: [u8; 32]) -> GroupMetaValue {
+        let dummy_pk = PublicKey::from([0xAB; 32]);
+        GroupMetaValue {
+            app_key,
+            target_application_id: ApplicationId::from([0xCC; 32]),
+            upgrade_policy: UpgradePolicy::Automatic,
+            created_at: 1_700_000_000,
+            admin_identity: dummy_pk,
+            owner_identity: dummy_pk,
+            migration: None,
+            auto_join: false,
+        }
+    }
+
+    #[test]
+    fn resolve_producing_app_key_returns_group_meta_app_key() {
+        let store = fresh_store();
+        let context_id = ContextId::from([0xF1; 32]);
+        let group_id = ContextGroupId::from([0xF2; 32]);
+
+        register_context_in_group(&store, &group_id, &context_id)
+            .expect("register_context_in_group");
+        MetaRepository::new(&store)
+            .save(&group_id, &group_meta_with_app_key([0x22; 32]))
+            .expect("save group meta");
+
+        assert_eq!(
+            resolve_producing_app_key(&store, &context_id).unwrap(),
+            Some([0x22; 32])
+        );
+    }
+
+    #[test]
+    fn resolve_producing_app_key_none_for_non_group_context() {
+        let store = fresh_store();
+        // context_id was never registered in any group
+        let context_id = ContextId::from([0xF3; 32]);
+
+        assert_eq!(
+            resolve_producing_app_key(&store, &context_id).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn upgrade_blocks_write_in_progress() {

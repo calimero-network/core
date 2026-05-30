@@ -251,6 +251,10 @@ pub(crate) struct StateDeltaMessage {
     pub(crate) governance_position: Option<GovernancePosition>,
     pub(crate) key_id: [u8; 32],
     pub(crate) delta_signature: Option<[u8; 64]>,
+    /// The `GroupMeta.app_key` the sender was executing under. `None` for
+    /// non-group contexts or when the sender could not resolve the meta row.
+    /// Receivers use this to fence stale-schema deltas (later tasks).
+    pub(crate) producing_app_key: Option<[u8; 32]>,
 }
 
 #[derive(Clone)]
@@ -548,6 +552,10 @@ fn state_delta_message_from_buffered(
         governance_position: buffered.governance_position,
         key_id: buffered.key_id,
         delta_signature: buffered.delta_signature,
+        // `BufferedDelta` predates this field; the producing_app_key is not
+        // stored in the buffer. Drain-path re-applies carry `None` — the fence
+        // check (Tasks 8/9) must tolerate `None` for this replay path.
+        producing_app_key: None,
     }
 }
 
@@ -608,6 +616,7 @@ pub(crate) async fn apply_authorized_state_delta(
         governance_position,
         key_id,
         delta_signature,
+        producing_app_key: _,
     } = message;
 
     // Per-delta envelope signature verification. Closes the anti-
@@ -1127,6 +1136,7 @@ pub async fn handle_state_delta(
         governance_position,
         key_id,
         delta_signature,
+        producing_app_key,
     } = message;
 
     let Some(context) = node_clients.context.get_context(&context_id)? else {
@@ -1414,6 +1424,10 @@ pub async fn handle_state_delta(
             governance_position,
             key_id,
             delta_signature,
+            // Carry the stamped producing_app_key through to the apply path
+            // so Tasks 8/9 can read it there. The cross-DAG check above is
+            // orthogonal to this field; it is not consumed there.
+            producing_app_key,
         },
     )
     .await
