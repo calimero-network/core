@@ -209,7 +209,7 @@ elif [ "$EVENT_NAME" = "push" ] && [ "$HEAD_BRANCH" = "master" ]; then
             echo "Master push touches release.yml trigger paths - waiting for release.yml on ${HEAD_SHA} to republish :edge${TAG_SUFFIX}"
 
             if [ "$PROFILING_MODE" = "--profiling" ]; then
-                MAX_WAIT=1800  # 30 minutes - profiling container build takes longer
+                MAX_WAIT=3600  # 60 minutes - profiling builds observed ~44min; 30min raced them
             else
                 MAX_WAIT=1200  # 20 minutes - same budget as the PR-branch path
             fi
@@ -234,8 +234,8 @@ elif [ "$EVENT_NAME" = "push" ] && [ "$HEAD_BRANCH" = "master" ]; then
                     if [ "$CONCLUSION" = "success" ]; then
                         echo "release.yml completed successfully after ${ELAPSED}s - :edge${TAG_SUFFIX} now resolves to ${HEAD_SHA}"
                     else
-                        echo "release.yml completed with conclusion: ${CONCLUSION}"
-                        echo "Falling back to :edge${TAG_SUFFIX} as-is (may be the previous commit's binary)"
+                        echo "::error::release.yml for ${HEAD_SHA} concluded ${CONCLUSION} - refusing to test against a stale :edge${TAG_SUFFIX} (the previous commit's binary). Fix the release build, then re-run."
+                        exit 1
                     fi
                     break
                 fi
@@ -253,16 +253,15 @@ elif [ "$EVENT_NAME" = "push" ] && [ "$HEAD_BRANCH" = "master" ]; then
             done
 
             if [ $ELAPSED -ge $MAX_WAIT ]; then
-                echo "Timeout waiting for release.yml after ${MAX_WAIT}s"
-                echo "Falling back to :edge${TAG_SUFFIX} as-is (may be the previous commit's binary)"
+                echo "::error::Timed out after ${MAX_WAIT}s waiting for release.yml to republish :edge${TAG_SUFFIX} for ${HEAD_SHA}."
+                echo "::error::Refusing to test against the previous commit's binary - that source/binary mismatch masqueraded as a fuzzy bug in run 26679287804. Re-run once release.yml has published the matching image."
+                exit 1
             fi
 
-            # Same final tag in all three exit paths (success, failure,
-            # timeout). Only the timing and the log message differ — the
-            # caller's `docker pull ghcr.io/.../merod:edge${TAG_SUFFIX}`
-            # works either way because :edge${TAG_SUFFIX} always exists
-            # (it points at the previous master commit's binary if the
-            # current one's release.yml hasn't repointed it yet).
+            # Only the success path reaches here: release.yml has repointed
+            # :edge${TAG_SUFFIX} at ${HEAD_SHA}, so the moving tag matches the
+            # checked-out source. The failure and timeout paths above exit
+            # non-zero rather than silently test the previous commit's binary.
             TAG="edge${TAG_SUFFIX}"
         fi
     fi
