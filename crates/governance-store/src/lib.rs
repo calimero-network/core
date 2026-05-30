@@ -376,9 +376,6 @@ impl<'a> GroupHandle<'a> {
     pub fn get_local_gov_nonce(&self, signer: &PublicKey) -> EyreResult<Option<u64>> {
         get_local_gov_nonce(self.store, &self.group_id, signer)
     }
-    pub fn set_local_gov_nonce(&self, signer: &PublicKey, nonce: u64) -> EyreResult<()> {
-        set_local_gov_nonce(self.store, &self.group_id, signer, nonce)
-    }
 
     // --- Op log ---
     pub fn get_op_head(&self) -> EyreResult<Option<GroupOpHeadValue>> {
@@ -1306,9 +1303,18 @@ pub fn apply_local_signed_group_op(store: &Store, op: &SignedGroupOp) -> EyreRes
     // function runs under `governance_dag`) can reach here for an op that is
     // already in the log. Dedup against the PERSISTED op-log — the monotonic
     // signal used everywhere else — so the re-apply re-persists the advanced
-    // window WITHOUT appending a duplicate entry. (The mutation above re-runs
-    // on replay; governance mutations are replay-safe by design, the same
-    // contract the namespace path and `retry_encrypted_ops_for_group` rely on.)
+    // window WITHOUT appending a duplicate entry.
+    //
+    // REPLAY-SAFETY CONTRACT: the mutation above (`apply_group_op_mutations`)
+    // re-runs on this replay, BEFORE this dedup fires. That is safe because
+    // every group-op handler is idempotent on re-apply — e.g. `MemberAdded`
+    // resolves to `MembershipRepository::add_member`, an upsert (`put`) that
+    // succeeds whether or not the member row already exists and never errors
+    // on a duplicate. This is the same contract the namespace receive path and
+    // `retry_encrypted_ops_for_group` already depend on (both re-feed applied
+    // ops through the mutation path). A handler that instead errored on a
+    // duplicate would leave the window un-persisted and the node stuck
+    // retrying — so idempotency is a hard requirement for any new handler.
     if op_log_contains_content_hash(store, &group_id, &content_hash)? {
         store_nonce_window(store, &group_id, &op.signer, &nonce_window)?;
         return Ok(());

@@ -17,6 +17,11 @@ use eyre::Result as EyreResult;
 use super::collect_keys_with_prefix;
 use crate::nonce_window::NonceWindow;
 
+/// Read the contiguous floor only (the `GroupLocalGovNonce` high-water mark),
+/// NOT the full applied-nonce window. Callers that need to know whether a
+/// specific nonce was applied (including out-of-order ones above the floor)
+/// must use [`load_nonce_window`] + [`NonceWindow::contains`]. `None` means no
+/// floor has ever been persisted for this (group, signer).
 pub fn get_local_gov_nonce(
     store: &Store,
     group_id: &ContextGroupId,
@@ -27,6 +32,15 @@ pub fn get_local_gov_nonce(
     Ok(handle.get(&key)?)
 }
 
+/// Write ONLY the contiguous floor, leaving the above-floor set untouched.
+///
+/// This bypasses the [`NonceWindow`] abstraction and can desync the persisted
+/// window (floor moved, above-set stale), so it is NOT for the apply path —
+/// production writes go through [`store_nonce_window`], which persists the
+/// whole window. It survives only for backward-compatible floor seeding and
+/// for tests that need to force a specific floor (e.g. rolling it back to
+/// simulate a lost-window crash). Pair it with [`get_local_gov_nonce`], which
+/// likewise reads only the floor.
 pub fn set_local_gov_nonce(
     store: &Store,
     group_id: &ContextGroupId,
@@ -81,13 +95,17 @@ pub fn load_nonce_window(
 ///   #2516 bug itself) is therefore impossible.
 /// - The only reachable post-crash error is the reverse: an above-floor nonce
 ///   that WAS applied is missing from the persisted above-set, so `contains`
-///   returns false and the op is re-applied. The above-set is rewritten in
-///   full on every call, so at most the single nonce being committed during
-///   the crash is lost (older above entries were persisted by their own prior
-///   call) — the same "crash mid-commit" window the op-log entry write in
-///   [`persist_group_op_log_entry`] already has. Re-apply is tolerated: the
-///   namespace receive path dedups duplicate log entries via
-///   `op_log_contains_content_hash`, and `retry_encrypted_ops_for_group`
+///   returns false and the op is re-applied. At most the SINGLE nonce being
+///   committed during the crash is lost — NOT the whole above-set. The crashed
+///   `put` simply does not execute, so the above-set key retains its prior
+///   persisted value (every earlier above entry was durably written by its own
+///   prior call, and each call adds at most one entry via `record`). So the
+///   reloaded set equals the set as of the last successful call, missing only
+///   the in-flight nonce — the same "crash mid-commit" window the op-log entry
+///   write in [`persist_group_op_log_entry`] already has. Re-apply is tolerated
+///   on BOTH apply paths: each dedups duplicate log entries via
+///   `op_log_contains_content_hash` (`apply_local_signed_group_op` and the
+///   namespace `apply_group_op_inner`), and `retry_encrypted_ops_for_group`
 ///   re-feeds the whole log by design, so governance mutations are replay-safe.
 ///
 /// On the next load [`NonceWindow::new`] normalises whatever parts survived

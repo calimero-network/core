@@ -538,6 +538,12 @@ fn apply_local_signed_group_op_out_of_order_siblings_2516() {
 /// above-floor nonce is lost from the persisted window and the op is then
 /// re-delivered via DAG replay: the nonce guard no longer short-circuits it,
 /// but the content-hash dedup must still prevent a duplicate op-log entry.
+///
+/// Uses a real MUTATING op (`MemberAdded`), not `Noop`, so it also exercises
+/// the replay-safety contract: `apply_group_op_mutations` re-runs on replay
+/// (before the content-hash dedup fires) and must NOT error — `add_member` is
+/// an idempotent upsert, so the re-applied op succeeds and the window is
+/// re-persisted rather than leaving the node stuck on the nonce.
 #[test]
 fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
     use calimero_context_client::local_governance::{GroupOp, SignedGroupOp};
@@ -548,26 +554,50 @@ fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
     let store = test_store();
     let gid = test_group_id();
     let gid_bytes = gid.to_bytes();
-    let signer_sk = PrivateKey::random(&mut rng);
-    let signer_pk = signer_sk.public_key();
+    let admin_sk = PrivateKey::random(&mut rng);
+    let admin_pk = admin_sk.public_key();
+    MetaRepository::new(&store)
+        .save(&gid, &test_meta())
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&gid, &admin_pk, GroupMemberRole::Admin)
+        .unwrap();
 
-    let op =
-        SignedGroupOp::sign(&signer_sk, gid_bytes, vec![], [0u8; 32], 1, GroupOp::Noop).unwrap();
+    let member = PrivateKey::random(&mut rng).public_key();
+    let op = SignedGroupOp::sign(
+        &admin_sk,
+        gid_bytes,
+        vec![],
+        [0u8; 32],
+        1,
+        GroupOp::MemberAdded {
+            member,
+            role: GroupMemberRole::Member,
+        },
+    )
+    .unwrap();
 
     apply_local_signed_group_op(&store, &op).unwrap();
+    assert!(MembershipRepository::new(&store)
+        .is_member(&gid, &member)
+        .unwrap());
     assert_eq!(read_op_log_after(&store, &gid, 0, 10).unwrap().len(), 1);
     assert_eq!(
-        get_local_gov_nonce(&store, &gid, &signer_pk).unwrap(),
+        get_local_gov_nonce(&store, &gid, &admin_pk).unwrap(),
         Some(1)
     );
 
     // Simulate the lost-window crash: roll the persisted floor back to 0 so
     // the nonce guard no longer dedups op 1 on re-delivery.
-    set_local_gov_nonce(&store, &gid, &signer_pk, 0).unwrap();
+    set_local_gov_nonce(&store, &gid, &admin_pk, 0).unwrap();
 
     // Re-deliver the same op (DAG replay). It now passes the nonce guard and
-    // re-runs the mutation, but the content-hash dedup must skip the append.
+    // re-runs the (idempotent) mutation, but the content-hash dedup must skip
+    // the append — no error, no duplicate entry.
     apply_local_signed_group_op(&store, &op).unwrap();
+    assert!(MembershipRepository::new(&store)
+        .is_member(&gid, &member)
+        .unwrap());
     assert_eq!(
         read_op_log_after(&store, &gid, 0, 10).unwrap().len(),
         1,
@@ -575,7 +605,7 @@ fn apply_local_signed_group_op_replay_does_not_duplicate_log_entry() {
     );
     // The window is re-advanced, so a third delivery dedups at the guard.
     assert_eq!(
-        get_local_gov_nonce(&store, &gid, &signer_pk).unwrap(),
+        get_local_gov_nonce(&store, &gid, &admin_pk).unwrap(),
         Some(1)
     );
 }
