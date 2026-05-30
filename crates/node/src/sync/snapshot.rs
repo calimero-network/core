@@ -876,6 +876,15 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     let mut entity_ids: Vec<Id> = Vec::new();
     for (key_result, value_result) in iter.entries() {
         let key = key_result?;
+        // Unwrap the value before the context filter. `IterEntries`
+        // reads the value eagerly inside `next()` and fuses the
+        // iterator (`done = true`) on a read error — so dropping a
+        // foreign-context `value_result` without unwrapping would
+        // swallow that error and silently truncate the scan,
+        // yielding an incomplete snapshot that still passes the
+        // `root_hash` recheck (which only covers *this* context).
+        // Propagating here matches the pre-#2133 fail-loud behavior.
+        let value = value_result?;
         if key.context_id() != context_id {
             continue;
         }
@@ -887,7 +896,6 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         // Entry values that happen to borsh-deserialize as a partial
         // EntityIndex. The borrowed value is dropped at the end of
         // the iteration — nothing about it is retained.
-        let value = value_result?;
         if let Ok(index_entity) =
             borsh::from_slice::<calimero_storage::index::EntityIndex>(value.value.as_ref())
         {
@@ -1076,8 +1084,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
 
     // Emit pass — materialise values for the requested page only.
     //
-    // Walk the cursor-skipped id list again, but this time
-    // point-look-up the Entry + Index *values* for each entity that
+    // Point-look-up the Entry + Index *values* for each entity that
     // lands on the page and serialize them. Resident value memory is
     // bounded to roughly one burst (`page_limit × byte_limit`)
     // because we stop the moment `page_limit` pages are filled — the
@@ -1086,11 +1093,16 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // re-checks `root_hash` after generation and discards the
     // snapshot on any change, so a torn read can never reach a peer.
     //
+    // `entity_ids` is id-sorted, so cursor-skipped entities form a
+    // contiguous prefix (`id ≤ cursor.last_key`). Binary-search past
+    // it with `partition_point` and iterate only the tail — on a
+    // resumed call near the end of a huge context this avoids walking
+    // (and re-hashing keys for) the millions of already-shipped ids
+    // the accounting pass already accounted for.
+    //
     // Pagination is atomic on entity boundaries — an entity's record
     // either fits entirely on the current page or moves to the next.
-    // The cursor records the last entity id fully committed to a
-    // page, so a resumed call (`id ≤ cursor`) skips exactly the
-    // already-shipped entities.
+    // The cursor records the last entity id fully committed to a page.
     //
     // **Invariant**: `last_id` is `Some` whenever the early-return
     // path fires. The early-return is gated on
@@ -1102,18 +1114,16 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // early-return always references a real, fully-committed entity
     // id; we never signal completion (cursor = None) with bundles
     // still pending.
+    let emit_start = match start_after_id {
+        Some(after) => entity_ids.partition_point(|id| *id.as_bytes() <= after),
+        None => 0,
+    };
     let mut pages: Vec<Vec<u8>> = Vec::new();
     let mut current_page: Vec<u8> = Vec::new();
     let mut last_id: Option<[u8; 32]> = None;
 
-    for id in &entity_ids {
+    for id in &entity_ids[emit_start..] {
         let id_bytes = *id.as_bytes();
-        if let Some(after) = start_after_id {
-            if id_bytes <= after {
-                continue;
-            }
-        }
-
         let index_key = StorageKey::Index(*id).to_bytes();
         let entry_key = StorageKey::Entry(*id).to_bytes();
         // Only fully-paired entities are shipped; orphans were
@@ -1124,15 +1134,27 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             continue;
         }
 
-        // Materialise the values now. A `None` here means the record
-        // was removed between the discovery scan and this lookup; the
-        // post-generation `root_hash` recheck will reject the whole
-        // snapshot, so skipping it is safe.
+        // Materialise the values now. A `None` means the record was
+        // removed between the Pass-1 scan and this live-store lookup
+        // (a concurrent delete). The post-generation `root_hash`
+        // recheck rejects the whole snapshot when state changed, so
+        // skipping the entity here is safe — but log it so the
+        // otherwise-silent skip is observable if it ever fires.
         let Some(index) = handle.get(&ContextStateKey::new(context_id, index_key))? else {
+            warn!(
+                %context_id, id = ?id_bytes,
+                "snapshot emit: Index value vanished between scan and read \
+                 (concurrent delete?) — skipping entity; root_hash recheck guards correctness"
+            );
             continue;
         };
         let index = index.value.to_vec();
         let Some(entry) = handle.get(&ContextStateKey::new(context_id, entry_key))? else {
+            warn!(
+                %context_id, id = ?id_bytes,
+                "snapshot emit: Entry value vanished between scan and read \
+                 (concurrent delete?) — skipping entity; root_hash recheck guards correctness"
+            );
             continue;
         };
         let entry = entry.value.to_vec();
