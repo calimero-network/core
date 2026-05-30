@@ -964,6 +964,21 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // flows into the "Streaming snapshot" info log; an earlier
     // per-page count shrank with each paginated call, misleading
     // operators).
+    //
+    // This is a Pass-1 *scan-time* figure and is deliberately not
+    // adjusted for emit-pass skips. It never crosses the wire — the
+    // `SnapshotPage` message carries only `page_count`/`sent_count`,
+    // so the receiver's progress tracking can't see it; it exists
+    // solely for the sender's operator log. If a concurrent delete
+    // removes an entity between Pass 1 and its emit-pass `handle.get`,
+    // the emit pass skips it (with a warning) and `total_entries`
+    // overcounts by one for that log line — but that same delete
+    // moves `root_hash`, so the post-generation recheck in
+    // `stream_snapshot_pages` discards the whole snapshot. No shipped
+    // snapshot ever emits fewer records than `total_entries` reports.
+    // Decrementing on skip would instead make the figure depend on
+    // which page window this call serves, breaking the
+    // stable-across-pages property operators rely on.
     let mut total_entries: u64 = 0;
     for id in &entity_ids {
         let id_bytes = *id.as_bytes();
