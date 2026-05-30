@@ -337,37 +337,57 @@ impl NetworkManager {
             return Ok(());
         }
 
-        let mut keys = self.under_connected_overlay_keys();
-        if keys.is_empty() {
-            return Ok(());
-        }
-
-        // Rotate so successive calls cover keys past the budget. Discover
-        // with a fresh cookie (`None`) under each key — per-overlay sets
-        // are small, so a full poll each time is cheap and avoids
-        // per-(peer, namespace) cookie bookkeeping; the `Discovered`
-        // handler dedups the returned peers before dialing.
-        let cursor = self.discovery.rendezvous_discover_cursor % keys.len();
-        keys.rotate_left(cursor);
-        let budget = RENDEZVOUS_DISCOVER_BUDGET.min(keys.len());
-        self.discovery.rendezvous_discover_cursor = self
+        // Global discovery (always): finds peers regardless of which
+        // overlays they share. This is the bootstrap / namespace-join
+        // path — a node joining a namespace it doesn't belong to yet must
+        // still be able to find that namespace's members, and that can't
+        // come from per-overlay discovery (it isn't a member). Uses the
+        // per-peer cookie for incremental results.
+        let global_cookie = self
             .discovery
-            .rendezvous_discover_cursor
-            .wrapping_add(budget);
+            .state
+            .get_peer_info(rendezvous_peer)
+            .and_then(|info| info.rendezvous())
+            .and_then(|rz| rz.cookie())
+            .cloned();
+        self.swarm.behaviour_mut().rendezvous.discover(
+            Some(self.discovery.rendezvous_config.namespace.clone()),
+            global_cookie,
+            None,
+            *rendezvous_peer,
+        );
 
-        for key in keys.into_iter().take(budget) {
-            self.swarm.behaviour_mut().rendezvous.discover(
-                Some(key.clone()),
-                None,
-                None,
-                *rendezvous_peer,
-            );
-            debug!(
-                %rendezvous_peer,
-                rendezvous_namespace = %key,
-                force,
-                "Sent per-overlay discover request to rendezvous node"
-            );
+        // Per-overlay discovery (additive): also pull co-members under the
+        // keys we're under-connected on, so steady-state discovery
+        // prioritises relevant peers. Paced with a rotating cursor so a
+        // node in many namespaces covers every key across ticks without
+        // flooding the server. Fresh cookie (`None`) per key — overlay
+        // sets are small, so full polls are cheap; the `Discovered`
+        // handler dedups before dialing.
+        let mut keys = self.under_connected_overlay_keys();
+        if !keys.is_empty() {
+            let cursor = self.discovery.rendezvous_discover_cursor % keys.len();
+            keys.rotate_left(cursor);
+            let budget = RENDEZVOUS_DISCOVER_BUDGET.min(keys.len());
+            self.discovery.rendezvous_discover_cursor = self
+                .discovery
+                .rendezvous_discover_cursor
+                .wrapping_add(budget);
+
+            for key in keys.into_iter().take(budget) {
+                self.swarm.behaviour_mut().rendezvous.discover(
+                    Some(key.clone()),
+                    None,
+                    None,
+                    *rendezvous_peer,
+                );
+                debug!(
+                    %rendezvous_peer,
+                    rendezvous_namespace = %key,
+                    force,
+                    "Sent per-overlay discover request to rendezvous node"
+                );
+            }
         }
 
         Ok(())
@@ -406,35 +426,30 @@ impl NetworkManager {
         }
     }
 
-    // Registers our external addresses with `rendezvous_peer` under one
-    // key per overlay we belong to (`/calimero/ns/<hex>`,
-    // `/calimero/grp/<hex>`), so co-members discovering under that exact
-    // key find us — instead of one global namespace that returns every
-    // node on the network. A node that belongs to no overlay yet (fresh,
-    // pre-join) registers under nothing and simply isn't discoverable
-    // until it joins something, which is correct: there's nothing to
-    // discover it for.
+    // Registers our external addresses with `rendezvous_peer` under the
+    // global namespace AND one key per overlay we belong to
+    // (`/calimero/ns/<hex>`, `/calimero/grp/<hex>`, `/calimero/ctx/<id>`).
+    //
+    // Global registration keeps us findable for the bootstrap /
+    // namespace-join path (a peer joining a namespace it doesn't share
+    // yet finds members via global discovery). The per-overlay keys let
+    // co-members find us under the exact namespace/group/context key, so
+    // steady-state discovery is relevant rather than network-wide.
     //
     // If there are no external addresses for the node, registration is
     // considered successful. Expects the rendezvous peer to be connected.
     pub(crate) fn rendezvous_register(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
         // `registrations_limit` gates how many rendezvous *peers* we
-        // register with (infra fan-out), independent of how many overlay
-        // keys we register under with each.
+        // register with (infra fan-out), independent of how many keys we
+        // register under with each.
         if !self.discovery.state.is_rendezvous_registration_required(
             self.discovery.rendezvous_config.registrations_limit,
         ) {
             return Ok(());
         }
 
-        let keys = self.overlay_rendezvous_keys();
-        if keys.is_empty() {
-            debug!(
-                %rendezvous_peer,
-                "No overlay topics to register under yet; skipping rendezvous registration"
-            );
-            return Ok(());
-        }
+        let mut keys = vec![self.discovery.rendezvous_config.namespace.clone()];
+        keys.extend(self.overlay_rendezvous_keys());
 
         let mut registered_any = false;
         for key in keys {
@@ -486,14 +501,16 @@ impl NetworkManager {
 
         match status {
             RendezvousRegistrationStatus::Registered => {
-                // Actively unregister from the rendezvous server under
-                // every overlay key we registered under (mirrors
-                // `rendezvous_register`). Unregistering a key we aren't
-                // registered under is a harmless no-op on the server, so
-                // using our current overlay set is safe even if our
-                // membership shifted since registration; any stale
-                // server-side record TTLs out on its own.
-                for key in self.overlay_rendezvous_keys() {
+                // Actively unregister from the rendezvous server under the
+                // global namespace AND every overlay key we registered
+                // under (mirrors `rendezvous_register`). Unregistering a
+                // key we aren't registered under is a harmless no-op on
+                // the server, so using our current overlay set is safe
+                // even if our membership shifted since registration; any
+                // stale server-side record TTLs out on its own.
+                let mut keys = vec![self.discovery.rendezvous_config.namespace.clone()];
+                keys.extend(self.overlay_rendezvous_keys());
+                for key in keys {
                     self.swarm
                         .behaviour_mut()
                         .rendezvous
