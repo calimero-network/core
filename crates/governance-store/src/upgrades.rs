@@ -99,6 +99,7 @@ mod tests {
             initiated_at: 1_700_000_000,
             initiated_by: PublicKey::from([0x01; 32]),
             status,
+            cascade_hlc: None,
         }
     }
 

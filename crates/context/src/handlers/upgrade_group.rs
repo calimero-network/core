@@ -205,6 +205,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
                         initiated_at: now,
                         initiated_by: requester,
                         status: completed_status.clone(),
+                        cascade_hlc: None,
                     };
 
                     UpgradesRepository::new(&datastore).save(&group_id, &upgrade_value)?;
@@ -261,6 +262,7 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
             initiated_at: now,
             initiated_by: requester,
             status: initial_status.clone(),
+            cascade_hlc: None,
         };
 
         if let Err(err) = UpgradesRepository::new(&self.datastore).save(&group_id, &upgrade_value) {
@@ -1081,6 +1083,7 @@ fn dispatch_cascade(
                     completed: 0,
                     failed: 0,
                 },
+                cascade_hlc: None,
             };
             if let Err(err) = UpgradesRepository::new(&datastore).save(gid, &upgrade_value) {
                 error!(
