@@ -1199,6 +1199,108 @@ fn replica_op_log_dedup_survives_head_pruning() {
     );
 }
 
+/// Regression test for #2516 on the namespace receive path (where concurrent
+/// same-signer contention is the norm). Two sibling group ops with consecutive
+/// nonces share the same (empty) DAG parent set, so they can arrive in either
+/// order. Delivering nonce 2 before nonce 1 must still apply BOTH: the old
+/// `nonce <= last` guard advanced to 2 on the first and then dropped nonce 1
+/// permanently; the windowed guard parks 2 above the floor and applies 1 when
+/// it lands.
+#[test]
+fn replica_concurrent_sibling_ops_apply_out_of_order_2516() {
+    use calimero_context_client::local_governance::{NamespaceOp, SignedNamespaceOp};
+    use calimero_primitives::identity::PrivateKey;
+    use rand::rngs::OsRng;
+
+    use super::NamespaceGovernance;
+
+    let store = test_store();
+    let mut rng = OsRng;
+
+    let signer_sk = PrivateKey::random(&mut rng);
+    let signer_pk = signer_sk.public_key();
+
+    let namespace_id = [0xC6u8; 32];
+    let ns_gid = ContextGroupId::from(namespace_id);
+
+    MetaRepository::new(&store)
+        .save(&ns_gid, &sample_meta_with_admin(signer_pk))
+        .unwrap();
+    MembershipRepository::new(&store)
+        .add_member(&ns_gid, &signer_pk, GroupMemberRole::Admin)
+        .unwrap();
+    let group_key = [0x5Cu8; 32];
+    let key_id = GroupKeyring::new(&store, ns_gid)
+        .store_key(&group_key)
+        .unwrap();
+
+    let gov = NamespaceGovernance::new(&store, namespace_id);
+
+    let make_policy_op = |mrtd: &str| GroupOp::TeeAdmissionPolicySet {
+        allowed_mrtd: vec![mrtd.to_owned()],
+        allowed_rtmr0: vec![],
+        allowed_rtmr1: vec![],
+        allowed_rtmr2: vec![],
+        allowed_rtmr3: vec![],
+        allowed_tcb_statuses: vec!["ok".to_owned()],
+        accept_mock: true,
+    };
+
+    // Both ops are DAG siblings: same empty parent set, consecutive nonces.
+    let sign_sibling = |inner: &GroupOp, nonce: u64| {
+        SignedNamespaceOp::sign(
+            &signer_sk,
+            namespace_id,
+            vec![],
+            [0u8; 32],
+            nonce,
+            NamespaceOp::Group {
+                group_id: namespace_id,
+                key_id,
+                encrypted: GroupKeyring::encrypt_op(&group_key, inner).unwrap(),
+                key_rotation: None,
+            },
+        )
+        .unwrap()
+    };
+
+    let inner_low = make_policy_op("mLow");
+    let inner_high = make_policy_op("mHigh");
+    let op_low = sign_sibling(&inner_low, 1);
+    let op_high = sign_sibling(&inner_high, 2);
+
+    // The HIGHER-nonce sibling is delivered first.
+    gov.apply_signed_op(&op_high).expect("apply nonce 2");
+    assert_eq!(
+        read_op_log_after(&store, &ns_gid, 0, 10).unwrap().len(),
+        1,
+        "first sibling logged"
+    );
+    let window = crate::load_nonce_window(&store, &ns_gid, &signer_pk).unwrap();
+    assert_eq!(window.floor(), 0, "floor held behind the missing nonce 1");
+    assert!(window.contains(2), "nonce 2 parked above the floor");
+
+    // The LOWER-nonce sibling is delivered second. The old guard would have
+    // dropped it as `1 <= last(=2)`.
+    gov.apply_signed_op(&op_low).expect("apply nonce 1");
+    assert_eq!(
+        read_op_log_after(&store, &ns_gid, 0, 10).unwrap().len(),
+        2,
+        "lower-nonce sibling must NOT be dropped (the #2516 bug)"
+    );
+    let window = crate::load_nonce_window(&store, &ns_gid, &signer_pk).unwrap();
+    assert_eq!(window.floor(), 2, "gap closed once both siblings applied");
+
+    // Replays of both siblings are deduped — no extra log entries.
+    gov.apply_signed_op(&op_high).expect("replay nonce 2");
+    gov.apply_signed_op(&op_low).expect("replay nonce 1");
+    assert_eq!(
+        read_op_log_after(&store, &ns_gid, 0, 10).unwrap().len(),
+        2,
+        "replayed siblings must be deduped"
+    );
+}
+
 #[test]
 fn replica_stale_head_does_not_overwrite_orphan_entry() {
     use calimero_context_client::local_governance::{
