@@ -529,7 +529,42 @@ impl DiscoveryState {
         let _ = self
             .peers
             .entry(*rendezvous_peer)
-            .and_modify(|info| info.update_rendezvous_registartion_status(status));
+            .and_modify(|info| info.update_rendezvous_registration_status(status));
+    }
+
+    /// Mark a rendezvous peer `Pending` (tried, blocked on a missing
+    /// external address) — but only when it isn't currently holding or
+    /// awaiting a registration. Returns `true` if the status changed.
+    ///
+    /// A `Requested` peer has an in-flight register whose `Registered`
+    /// confirmation is dropped if the status is no longer `Requested` when
+    /// it lands, so clobbering it to `Pending` would strand the
+    /// registration. A `Registered` peer still has a live server-side
+    /// record; flipping it to `Pending` would also free its fan-out slot
+    /// (`Pending` doesn't count), letting the node over-register. Both keep
+    /// their slot-holding status and transition out via their own
+    /// `Expired` event instead. Only idle peers (`Discovered`, `Expired`,
+    /// or already `Pending`) are moved to `Pending`.
+    pub(crate) fn mark_rendezvous_pending_if_idle(&mut self, rendezvous_peer: &PeerId) -> bool {
+        let current = self
+            .get_peer_info(rendezvous_peer)
+            .and_then(|info| info.rendezvous())
+            .map(|info| info.registration_status());
+
+        if matches!(
+            current,
+            Some(
+                RendezvousRegistrationStatus::Requested | RendezvousRegistrationStatus::Registered
+            )
+        ) {
+            return false;
+        }
+
+        self.update_rendezvous_registration_status(
+            rendezvous_peer,
+            RendezvousRegistrationStatus::Pending,
+        );
+        true
     }
 
     pub(crate) fn get_peer_info(&self, peer_id: &PeerId) -> Option<&PeerInfo> {
@@ -644,12 +679,69 @@ impl DiscoveryState {
                     match rendezvous_info.registration_status() {
                         RendezvousRegistrationStatus::Requested
                         | RendezvousRegistrationStatus::Registered => acc + 1,
+                        // `Pending` is not a real registration — it doesn't
+                        // occupy a slot, so the fan-out gate keeps re-attempting
+                        // until the registration actually lands.
                         RendezvousRegistrationStatus::Discovered
+                        | RendezvousRegistrationStatus::Pending
                         | RendezvousRegistrationStatus::Expired => acc,
                     }
                 })
             });
         sum < max
+    }
+
+    /// Nominate a rendezvous peer to (re)register with.
+    ///
+    /// Two priority tiers:
+    /// - **Eager (first match wins, returned immediately):** `Discovered`
+    ///   (never tried) and `Pending` (tried, waiting on an external
+    ///   address). These are *equal* priority — whichever the (PeerId-
+    ///   sorted) iteration reaches first is taken. There is deliberately
+    ///   no preference between them: `Pending` is not a failed peer, just
+    ///   one blocked on a transient missing-external-address condition, so
+    ///   there's no reason to deprioritize re-attempting it over a fresh
+    ///   `Discovered` peer.
+    /// - **Fallback:** an `Expired` peer, used only if no eager peer
+    ///   exists.
+    ///
+    /// Returns `None` when every known rendezvous peer is already
+    /// `Requested`/`Registered`.
+    ///
+    /// `Pending` must be nominated here, not skipped: when a slot frees
+    /// (e.g. another peer's registration `Expired`), this is the path that
+    /// re-drives a peer blocked on a missing external address. Skipping it
+    /// would strand that peer until the next `ExternalAddrConfirmed` —
+    /// which is exactly the slot it occupied as `Discovered` before the
+    /// `Pending` state existed. An eager peer wins over an already-found
+    /// `Expired` candidate via early return, independent of iteration
+    /// order.
+    pub(crate) fn find_new_rendezvous_peer(&self) -> Option<PeerId> {
+        let mut candidate = None;
+
+        for peer_id in self.get_rendezvous_peer_ids() {
+            let Some(peer_info) = self.get_peer_info(&peer_id) else {
+                continue;
+            };
+            let Some(rendezvous_info) = peer_info.rendezvous() else {
+                continue;
+            };
+            match rendezvous_info.registration_status() {
+                RendezvousRegistrationStatus::Discovered
+                | RendezvousRegistrationStatus::Pending => {
+                    // Registerable target holding no slot — take it now.
+                    return Some(peer_id);
+                }
+                RendezvousRegistrationStatus::Expired if candidate.is_none() => {
+                    candidate = Some(peer_id);
+                }
+                RendezvousRegistrationStatus::Requested
+                | RendezvousRegistrationStatus::Registered
+                | RendezvousRegistrationStatus::Expired => {}
+            }
+        }
+
+        candidate
     }
 
     #[expect(
@@ -751,7 +843,7 @@ impl PeerInfo {
         }
     }
 
-    fn update_rendezvous_registartion_status(&mut self, status: RendezvousRegistrationStatus) {
+    fn update_rendezvous_registration_status(&mut self, status: RendezvousRegistrationStatus) {
         if let Some(ref mut info) = self.rendezvous {
             info.update_registration_status(status);
         }
@@ -839,6 +931,12 @@ impl Default for PeerRendezvousInfo {
 pub enum RendezvousRegistrationStatus {
     #[default]
     Discovered,
+    /// We attempted to register but the swarm had no external address to
+    /// advertise yet, so nothing was actually sent. The registration is
+    /// queued and re-attempted on the next `ExternalAddrConfirmed`. Distinct
+    /// from `Discovered` (never tried) so observability reflects the truth:
+    /// engaged, waiting on an external address.
+    Pending,
     Requested,
     Registered,
     Expired,

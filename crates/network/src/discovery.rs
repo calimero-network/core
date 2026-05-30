@@ -14,7 +14,7 @@ use libp2p::rendezvous::Namespace;
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 use super::NetworkManager;
 use crate::discovery::peer_cache::{PeerAddrCache, PersistedPeer};
@@ -437,8 +437,10 @@ impl NetworkManager {
     // co-members find us under the exact namespace/group/context key, so
     // steady-state discovery is relevant rather than network-wide.
     //
-    // If there are no external addresses for the node, registration is
-    // considered successful. Expects the rendezvous peer to be connected.
+    // If there are no external addresses for the node yet, the rendezvous
+    // peer is marked `Pending` (queued, not registered) and the call returns
+    // Ok; the next `ExternalAddrConfirmed` re-attempts. Expects the rendezvous
+    // peer to be connected.
     pub(crate) fn rendezvous_register(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
         // `registrations_limit` gates how many rendezvous *peers* we
         // register with (infra fan-out), independent of how many keys we
@@ -468,10 +470,36 @@ impl NetworkManager {
                     );
                 }
                 Err(RegisterError::NoExternalAddresses) => {
-                    // No external addresses yet — nothing to register
-                    // anywhere this round; stop early, the next
-                    // reachability/identify event retries.
-                    debug!("No external addresses to register at rendezvous");
+                    // `NoExternalAddresses` is a swarm-level condition: the
+                    // swarm has no confirmed external address to advertise,
+                    // which is independent of the rendezvous namespace. So
+                    // every remaining key in this loop would fail
+                    // identically — breaking early is safe, and it
+                    // necessarily fires on the *first* key, so
+                    // `registered_any` is always false here (no key went out
+                    // this round).
+                    //
+                    // Mark the peer Pending ("tried, waiting on an external
+                    // address") rather than the misleading Requested; the
+                    // next ExternalAddrConfirmed fires
+                    // broadcast_rendezvous_registrations, which re-attempts.
+                    // But only if the peer is idle: `mark_..._if_idle` leaves
+                    // an already Requested/Registered peer untouched. A
+                    // re-broadcast can land here while a register is in
+                    // flight (status Requested); clobbering it to Pending
+                    // would make the Registered handler drop the incoming
+                    // confirmation (it requires status == Requested) and
+                    // would free a live slot, risking over-fan-out. Such
+                    // peers transition out via their own Expired event.
+                    if self
+                        .discovery
+                        .state
+                        .mark_rendezvous_pending_if_idle(rendezvous_peer)
+                    {
+                        trace!(%rendezvous_peer, "No external addresses to register at rendezvous; marked Pending");
+                    } else {
+                        trace!(%rendezvous_peer, "No external addresses to register at rendezvous; keeping in-flight registration status");
+                    }
                     return Ok(());
                 }
                 Err(err @ RegisterError::FailedToMakeRecord(_)) => bail!(err),
@@ -533,40 +561,14 @@ impl NetworkManager {
                     RendezvousRegistrationStatus::Expired,
                 );
             }
-            RendezvousRegistrationStatus::Discovered | RendezvousRegistrationStatus::Expired => {
-                // Nothing to unregister
+            RendezvousRegistrationStatus::Discovered
+            | RendezvousRegistrationStatus::Pending
+            | RendezvousRegistrationStatus::Expired => {
+                // Nothing to unregister (Pending never actually sent a record)
             }
         }
 
         Ok(())
-    }
-
-    // Finds a new rendezvous peer for registration.
-    // Prioritizes Discovered peers, falls back to dialing Expired peers if necessary.
-    // Returns Some(PeerId) if a suitable peer is found, None otherwise.
-    pub(crate) fn find_new_rendezvous_peer(&self) -> Option<PeerId> {
-        let mut candidate = None;
-
-        for peer_id in self.discovery.state.get_rendezvous_peer_ids() {
-            if let Some(peer_info) = self.discovery.state.get_peer_info(&peer_id) {
-                if let Some(rendezvous_info) = peer_info.rendezvous() {
-                    match rendezvous_info.registration_status() {
-                        RendezvousRegistrationStatus::Discovered => {
-                            // If we find a Discovered peer, return it right away
-                            return Some(peer_id);
-                        }
-                        RendezvousRegistrationStatus::Expired if candidate.is_none() => {
-                            candidate = Some(peer_id);
-                        }
-                        RendezvousRegistrationStatus::Requested
-                        | RendezvousRegistrationStatus::Registered
-                        | RendezvousRegistrationStatus::Expired => {}
-                    }
-                }
-            }
-        }
-
-        candidate
     }
 
     // Requests relay reservation on relay peer if one is required.

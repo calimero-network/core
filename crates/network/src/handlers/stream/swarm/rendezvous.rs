@@ -137,7 +137,7 @@ impl EventHandler<Event> for NetworkManager {
                     RendezvousRegistrationStatus::Expired,
                 );
 
-                if let Some(nominated_peer) = self.find_new_rendezvous_peer() {
+                if let Some(nominated_peer) = self.discovery.state.find_new_rendezvous_peer() {
                     if self.swarm.is_connected(&nominated_peer) {
                         if let Err(err) = self.rendezvous_register(&nominated_peer) {
                             error!(%err, "Failed to register with nominated rendezvous peer");

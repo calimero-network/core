@@ -121,6 +121,7 @@ fn map_relay_status(status: RelayReservationStatus) -> RelayReservationKind {
 fn map_rendezvous_status(status: RendezvousRegistrationStatus) -> RendezvousRegistrationKind {
     match status {
         RendezvousRegistrationStatus::Discovered => RendezvousRegistrationKind::Discovered,
+        RendezvousRegistrationStatus::Pending => RendezvousRegistrationKind::Pending,
         RendezvousRegistrationStatus::Requested => RendezvousRegistrationKind::Requested,
         RendezvousRegistrationStatus::Registered => RendezvousRegistrationKind::Registered,
         RendezvousRegistrationStatus::Expired => RendezvousRegistrationKind::Expired,
