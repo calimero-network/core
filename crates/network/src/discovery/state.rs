@@ -658,18 +658,29 @@ impl DiscoveryState {
 
     /// Nominate a rendezvous peer to (re)register with.
     ///
-    /// Prioritizes peers that want to register but hold no fan-out slot:
-    /// `Discovered` (never tried) and `Pending` (tried, waiting on an
-    /// external address) are returned eagerly, with an `Expired` peer as
-    /// the fallback. Returns `None` when every known rendezvous peer is
-    /// already `Requested`/`Registered`.
+    /// Two priority tiers:
+    /// - **Eager (first match wins, returned immediately):** `Discovered`
+    ///   (never tried) and `Pending` (tried, waiting on an external
+    ///   address). These are *equal* priority — whichever the (PeerId-
+    ///   sorted) iteration reaches first is taken. There is deliberately
+    ///   no preference between them: `Pending` is not a failed peer, just
+    ///   one blocked on a transient missing-external-address condition, so
+    ///   there's no reason to deprioritize re-attempting it over a fresh
+    ///   `Discovered` peer.
+    /// - **Fallback:** an `Expired` peer, used only if no eager peer
+    ///   exists.
+    ///
+    /// Returns `None` when every known rendezvous peer is already
+    /// `Requested`/`Registered`.
     ///
     /// `Pending` must be nominated here, not skipped: when a slot frees
     /// (e.g. another peer's registration `Expired`), this is the path that
     /// re-drives a peer blocked on a missing external address. Skipping it
     /// would strand that peer until the next `ExternalAddrConfirmed` —
     /// which is exactly the slot it occupied as `Discovered` before the
-    /// `Pending` state existed.
+    /// `Pending` state existed. An eager peer wins over an already-found
+    /// `Expired` candidate via early return, independent of iteration
+    /// order.
     pub(crate) fn find_new_rendezvous_peer(&self) -> Option<PeerId> {
         let mut candidate = None;
 

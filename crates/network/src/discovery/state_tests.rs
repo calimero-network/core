@@ -274,14 +274,21 @@ fn test_find_new_rendezvous_peer_nominates_pending() {
 fn test_find_new_rendezvous_peer_prefers_pending_over_expired() {
     let mut state = DiscoveryState::default();
 
-    let expired_peer = PeerId::random();
-    let pending_peer = PeerId::random();
+    // `get_rendezvous_peer_ids` iterates the BTreeSet in PeerId order, so
+    // assign roles deterministically: the Expired peer sorts *first* and
+    // is therefore encountered (and recorded as the fallback candidate)
+    // before the Pending peer. This proves the eager Pending peer wins via
+    // early return even when an Expired candidate was already found — the
+    // preference is not an artifact of iteration order.
+    let mut ids = [PeerId::random(), PeerId::random()];
+    ids.sort();
+    let expired_peer = ids[0];
+    let pending_peer = ids[1];
     state.update_peer_protocols(&expired_peer, &[RENDEZVOUS_PROTOCOL_NAME]);
     state.update_peer_protocols(&pending_peer, &[RENDEZVOUS_PROTOCOL_NAME]);
 
     // Expired = was registered, lapsed (fallback). Pending = registerable
-    // target holding no slot (eager). The eager target wins regardless of
-    // iteration order.
+    // target holding no slot (eager).
     state.update_rendezvous_registration_status(
         &expired_peer,
         RendezvousRegistrationStatus::Expired,
@@ -293,7 +300,7 @@ fn test_find_new_rendezvous_peer_prefers_pending_over_expired() {
     assert_eq!(
         state.find_new_rendezvous_peer(),
         Some(pending_peer),
-        "Pending (eager) is preferred over Expired (fallback)"
+        "Pending (eager) wins over an already-found Expired (fallback) candidate"
     );
 
     // With only an Expired peer left, it is the fallback nomination.
