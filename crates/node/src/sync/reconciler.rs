@@ -248,7 +248,7 @@ impl Reconciler {
         // verification against the signed expected still defends
         // against any anchor serving non-canonical state.
         let topic = TopicHash::from_raw(context_id);
-        let mut mesh_peers = self.sync_network.mesh_peers(topic).await;
+        let mut mesh_peers = self.sync_network.subscribed_peers(topic).await;
         let mesh_peer_count = mesh_peers.len();
         mesh_peers.shuffle(&mut rand::thread_rng());
         // Walk mesh peers explicitly so cache-miss skips are visible

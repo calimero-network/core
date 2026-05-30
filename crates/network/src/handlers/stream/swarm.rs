@@ -102,6 +102,14 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                     self.discovery.state.add_peer_addr(peer_id, remote);
                 }
 
+                // Record into the persistent peer cache regardless of
+                // relayed-ness — a relayed circuit address is still
+                // re-dialable after a restart if the peer re-reserves on
+                // the same relay, so it's worth caching for NAT'd
+                // co-members (the discovery book above keeps direct only).
+                let cache_addr = remote.clone();
+                self.record_connected_addr(peer_id, cache_addr);
+
                 if let ConnectedPoint::Dialer { .. } = endpoint {
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
                         let _ignored = sender.send(Ok(()));

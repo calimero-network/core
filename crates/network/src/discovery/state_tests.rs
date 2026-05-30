@@ -840,3 +840,316 @@ fn test_on_regular_peer_disconnected_includes_dual_role_peers() {
         "dual-role boot-node peers must be queued via their rendezvous role"
     );
 }
+
+// ---------------------------------------------------------------------------
+// has_regular_connected_peer — post-restart force-rediscovery gate
+//
+// The rendezvous tick uses this to decide whether to bypass the
+// `discovery_rpm` throttle. The contract:
+//
+//   - A connection set containing only infrastructure peers (relay and/or
+//     rendezvous) counts as "peerless" → returns false → tick bypasses the
+//     throttle and re-discovers every interval. This is the post-restart
+//     shape (no `ConnectionClosed` ever fires, so #2469 can't help).
+//   - Any single regular (non-relay, non-rendezvous) connection flips it to
+//     true → throttle re-engages so we don't hammer rendezvous once the
+//     overlay is healthy.
+//   - A dual-role HOP+RENDEZVOUS boot-node is infrastructure, not a regular
+//     peer — a node connected only to the boot-node is still partitioned.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_has_regular_connected_peer_empty_is_false() {
+    let state = DiscoveryState::default();
+    assert!(
+        !state.has_regular_connected_peer(std::iter::empty()),
+        "no connections at all → not connected to any regular peer"
+    );
+}
+
+#[test]
+fn test_has_regular_connected_peer_only_infra_is_false() {
+    // Connected solely to a relay and a rendezvous server — the exact
+    // post-restart NAT shape. Must read as peerless so the tick force-
+    // rediscovers instead of waiting the throttle floor.
+    let mut state = DiscoveryState::default();
+    let relay = PeerId::random();
+    let rendezvous = PeerId::random();
+    state.update_peer_protocols(&relay, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    let connected = [relay, rendezvous];
+    assert!(
+        !state.has_regular_connected_peer(connected.iter()),
+        "relay + rendezvous only → still partitioned from the app overlay"
+    );
+}
+
+#[test]
+fn test_has_regular_connected_peer_with_regular_is_true() {
+    let mut state = DiscoveryState::default();
+    let relay = PeerId::random();
+    let regular = PeerId::random();
+    state.update_peer_protocols(&relay, &[HOP_PROTOCOL_NAME]);
+    // `regular` is never classified as relay/rendezvous, so it stays a
+    // regular peer (the discriminator is index membership, not presence
+    // in the peers map).
+
+    let connected = [relay, regular];
+    assert!(
+        state.has_regular_connected_peer(connected.iter()),
+        "one regular connection alongside infra → overlay reachable"
+    );
+}
+
+#[test]
+fn test_has_regular_connected_peer_dual_role_bootnode_is_infra() {
+    // A single HOP+RENDEZVOUS boot-node is infrastructure. A node whose
+    // only connection is the boot-node is still effectively peerless and
+    // must keep force-rediscovering.
+    let mut state = DiscoveryState::default();
+    let boot_node = PeerId::random();
+    state.update_peer_protocols(&boot_node, &[HOP_PROTOCOL_NAME, RENDEZVOUS_PROTOCOL_NAME]);
+
+    let connected = [boot_node];
+    assert!(
+        !state.has_regular_connected_peer(connected.iter()),
+        "dual-role boot-node is infra, not a regular peer"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// rendezvous_key_for_topic — per-overlay rendezvous key derivation
+//
+// Each subscribed gossipsub topic maps to a distinct rendezvous key so
+// `discover` returns only co-members of that exact overlay. The mapping
+// must be deterministic so a registering member and a discovering peer
+// (which holds the same id) compute the identical key.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_rendezvous_key_for_namespace_topic() {
+    let hex = "8a6157eacc0e68d1786a585891866794d6fc5c11a199dbcb81ed33f5759a37a1";
+    let key = rendezvous_key_for_topic(&format!("ns/{hex}")).expect("namespace key");
+    assert_eq!(key, *format!("/calimero/ns/{hex}").as_str());
+}
+
+#[test]
+fn test_rendezvous_key_for_group_topic() {
+    let hex = "20d12aca439a5b44113a6e48fb6933699a65b0a282b4d8870c29e5c26ad40faf";
+    let key = rendezvous_key_for_topic(&format!("group/{hex}")).expect("group key");
+    assert_eq!(key, *format!("/calimero/grp/{hex}").as_str());
+}
+
+#[test]
+fn test_rendezvous_key_for_bare_context_topic() {
+    // A bare topic is a context id (bs58). The network layer treats it
+    // opaquely; both sides hold the identical string so the keys match.
+    let ctx = "3iBu7jgK54DETcmDzrJbwtexC74ykBpH84aRG6Hpvjqs";
+    let key = rendezvous_key_for_topic(ctx).expect("context key");
+    assert_eq!(key, *format!("/calimero/ctx/{ctx}").as_str());
+}
+
+#[test]
+fn test_rendezvous_key_distinct_per_kind_even_for_same_id() {
+    // Same hex under ns/ vs group/ must NOT collide — the prefix
+    // disambiguates, otherwise a namespace and a group with the same id
+    // would share a rendezvous key and cross-pollute discovery.
+    let hex = "aa".repeat(32);
+    let ns = rendezvous_key_for_topic(&format!("ns/{hex}")).unwrap();
+    let grp = rendezvous_key_for_topic(&format!("group/{hex}")).unwrap();
+    assert_ne!(ns, grp, "ns and group keys must differ for the same id");
+}
+
+#[test]
+fn test_rendezvous_key_rejects_overlong_topic() {
+    // A pathological topic that would push the key past the 255-char
+    // rendezvous limit is dropped (None) rather than panicking.
+    let huge = "z".repeat(300);
+    assert!(
+        rendezvous_key_for_topic(&huge).is_none(),
+        "over-length topic must map to None, not panic"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// under_connected_rendezvous_keys — demand-driven discovery selection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_under_connected_includes_only_zero_subscriber_topics() {
+    let starved = "ns/aa";
+    let healthy = "ns/bb";
+    let keys = under_connected_rendezvous_keys([(starved, 0), (healthy, 3)]);
+    assert_eq!(
+        keys,
+        vec![rendezvous_key_for_topic(starved).unwrap()],
+        "only the zero-mesh-peer topic should be selected for discovery"
+    );
+}
+
+#[test]
+fn test_under_connected_empty_when_all_healthy() {
+    let keys = under_connected_rendezvous_keys([("ns/aa", 1), ("group/bb", 2), ("ctxid", 5)]);
+    assert!(
+        keys.is_empty(),
+        "no discovery load when every overlay already has a connected peer"
+    );
+}
+
+#[test]
+fn test_under_connected_dedups_repeated_keys() {
+    // Two identical topics (or any that map alike) collapse to one key so
+    // we don't issue duplicate discover requests in the same pass.
+    let keys = under_connected_rendezvous_keys([("ns/aa", 0), ("ns/aa", 0)]);
+    assert_eq!(keys.len(), 1, "duplicate keys must be collapsed");
+}
+
+#[test]
+fn test_under_connected_preserves_first_appearance_order() {
+    let keys = under_connected_rendezvous_keys([("ns/aa", 0), ("group/bb", 0), ("ctxid", 0)]);
+    assert_eq!(
+        keys,
+        vec![
+            rendezvous_key_for_topic("ns/aa").unwrap(),
+            rendezvous_key_for_topic("group/bb").unwrap(),
+            rendezvous_key_for_topic("ctxid").unwrap(),
+        ],
+        "order should follow first appearance for predictable round-robin pacing"
+    );
+}
+
+#[test]
+fn test_rendezvous_key_max_length_boundary() {
+    // Ensure we accept a valid key up to the 255-char rendezvous limit.
+    // A namespace prefix "/calimero/ns/" is 13 chars, leaving 242 chars for the id.
+    // Use exactly 242 hex chars to hit the boundary without exceeding it.
+    let hex_242 = "a".repeat(242);
+    let topic = format!("ns/{hex_242}");
+    let key = rendezvous_key_for_topic(&topic);
+    assert!(
+        key.is_some(),
+        "maximum-length valid topic (255 chars total) must be accepted"
+    );
+    assert_eq!(
+        key.unwrap(),
+        *format!("/calimero/ns/{hex_242}").as_str(),
+        "key derivation must match the composed prefix + id"
+    );
+}
+
+#[test]
+fn test_under_connected_mixed_healthy_and_starved_with_order_and_dedup() {
+    // A mix of topics with varying mesh_peer_count: some healthy (>0),
+    // some starved (0). Must return only the starved ones, in first-appearance
+    // order, with duplicates collapsed.
+    let topics = [
+        ("ns/aa", 1),    // healthy, skip
+        ("group/bb", 0), // starved, include (first appearance)
+        ("ctxid", 2),    // healthy, skip
+        ("ns/cc", 0),    // starved, include
+        ("group/bb", 0), // starved, duplicate of "group/bb", skip
+        ("ns/aa", 0), // starved, but first appearance as "ns/aa" was healthy; include new zero entry
+    ];
+
+    let keys = under_connected_rendezvous_keys(topics);
+
+    // Expected: group/bb (first appearance with 0), ns/cc (first starved ns topic),
+    // then ns/aa as starved (the topic's final state is 0, but its first appearance was
+    // healthy at index 0, so this is the starved appearance at index 5).
+    assert_eq!(
+        keys.len(),
+        3,
+        "should include all distinct starved keys, filtering out healthy ones"
+    );
+
+    // Verify order follows first *starved* appearance, not topic name order:
+    assert_eq!(
+        keys[0],
+        rendezvous_key_for_topic("group/bb").unwrap(),
+        "group/bb should appear first (first starved appearance at index 1)"
+    );
+    assert_eq!(
+        keys[1],
+        rendezvous_key_for_topic("ns/cc").unwrap(),
+        "ns/cc should appear second (second starved appearance at index 3)"
+    );
+    assert_eq!(
+        keys[2],
+        rendezvous_key_for_topic("ns/aa").unwrap(),
+        "ns/aa should appear third (first time it's starved, at index 5)"
+    );
+}
+
+#[test]
+fn test_under_connected_empty_input() {
+    // Calling with an empty topic list must return an empty result, not panic.
+    let keys = under_connected_rendezvous_keys(vec![]);
+    assert!(
+        keys.is_empty(),
+        "empty input must produce empty output, not panic or loop forever"
+    );
+}
+
+#[test]
+fn test_has_regular_connected_peer_multiple_regulars() {
+    // Multiple regular peers + infra peers: should be true if ANY regular is present.
+    let mut state = DiscoveryState::default();
+    let relay = PeerId::random();
+    let rendezvous = PeerId::random();
+    let regular_a = PeerId::random();
+    let regular_b = PeerId::random();
+
+    state.update_peer_protocols(&relay, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&rendezvous, &[RENDEZVOUS_PROTOCOL_NAME]);
+    // regular_a and regular_b are never marked as relay/rendezvous
+
+    let connected = [relay, rendezvous, regular_a, regular_b];
+    assert!(
+        state.has_regular_connected_peer(connected.iter()),
+        "multiple regular peers alongside infra should return true"
+    );
+}
+
+#[test]
+fn test_has_regular_connected_peer_many_infra_one_regular() {
+    // An edge case: many infrastructure peers (relay + rendezvous + more),
+    // but exactly one regular peer hidden among them. Must still return true.
+    let mut state = DiscoveryState::default();
+    let relay_1 = PeerId::random();
+    let relay_2 = PeerId::random();
+    let rendezvous_1 = PeerId::random();
+    let rendezvous_2 = PeerId::random();
+    let regular = PeerId::random();
+
+    state.update_peer_protocols(&relay_1, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&relay_2, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&rendezvous_1, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&rendezvous_2, &[RENDEZVOUS_PROTOCOL_NAME]);
+    // regular never marked
+
+    let connected = [relay_1, rendezvous_1, relay_2, regular, rendezvous_2];
+    assert!(
+        state.has_regular_connected_peer(connected.iter()),
+        "single regular among many infra peers must be detected"
+    );
+}
+
+#[test]
+fn test_rendezvous_key_group_and_context_produce_distinct_keys() {
+    // The same hex id under group/ and a bare context should produce
+    // different keys (group uses /calimero/grp/, context uses /calimero/ctx/).
+    // This ensures a group and a context-topic with the same id don't collide.
+    let id = "8a6157eacc0e68d1786a585891866794d6fc5c11a199dbcb81ed33f5759a37a1";
+    let grp_key =
+        rendezvous_key_for_topic(&format!("group/{id}")).expect("group key should be valid");
+    let ctx_key = rendezvous_key_for_topic(id).expect("context key should be valid");
+
+    assert_ne!(
+        grp_key, ctx_key,
+        "group and bare-context topics with the same id must produce distinct keys \
+         to avoid cross-pollination"
+    );
+    assert!(grp_key.to_string().contains("/calimero/grp/"));
+    assert!(ctx_key.to_string().contains("/calimero/ctx/"));
+}

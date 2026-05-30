@@ -37,7 +37,7 @@ use crate::messages::{
     AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, MeshStats, NetworkMessage,
     NetworkStatus, OpenStream, PeerCount, Publish, QueryBlob, RequestBlob,
     SendSpecializedNodeInvitationResponse, SendSpecializedNodeVerificationRequest, Subscribe,
-    Unsubscribe,
+    SubscribedPeers, Unsubscribe,
 };
 use crate::network_status::NetworkStatusSnapshot;
 use crate::specialized_node_invite::{SpecializedNodeInvitationResponse, VerificationRequest};
@@ -186,6 +186,24 @@ impl NetworkClient {
         self.network_manager
             .send(NetworkMessage::MeshPeers {
                 request: MeshPeers(topic),
+                outcome: tx,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        rx.await.expect("Mailbox not to be dropped")
+    }
+
+    /// All connected peers subscribed to `topic` (the full subscriber
+    /// set, not just the grafted mesh — see [`SubscribedPeers`]). Sync
+    /// peer-selection uses this so it can reconcile with any connected
+    /// subscriber regardless of mesh membership.
+    pub async fn subscribed_peers(&self, topic: TopicHash) -> Vec<libp2p::PeerId> {
+        let (tx, rx) = oneshot::channel();
+
+        self.network_manager
+            .send(NetworkMessage::SubscribedPeers {
+                request: SubscribedPeers(topic),
                 outcome: tx,
             })
             .await

@@ -340,6 +340,9 @@ jobs:
           - workflow: sync-resilience-peer-restart-symmetric
             file: workflows/sync-resilience-peer-restart-symmetric.yml
             app: scaffolding-e2e
+          - workflow: sync-resilience-peer-restart-autoresync
+            file: workflows/sync-resilience-peer-restart-autoresync.yml
+            app: scaffolding-e2e
           - workflow: sync-resilience-peer-pause
             file: workflows/sync-resilience-peer-pause.yml
             app: scaffolding-e2e

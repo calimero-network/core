@@ -20,6 +20,7 @@ mod request_blob;
 mod send_specialized_node_invitation_response;
 mod send_specialized_node_verification_request;
 mod subscribe;
+mod subscribed_peers;
 mod unsubscribe;
 
 impl Handler<NetworkMessage> for NetworkManager {
@@ -52,6 +53,9 @@ impl Handler<NetworkMessage> for NetworkManager {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::MeshPeers { request, outcome } => {
+                self.forward_handler(ctx, request, outcome);
+            }
+            NetworkMessage::SubscribedPeers { request, outcome } => {
                 self.forward_handler(ctx, request, outcome);
             }
             NetworkMessage::MeshPeerCount { request, outcome } => {

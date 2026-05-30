@@ -103,7 +103,7 @@ pub(super) async fn open_namespace_join_stream(
             );
             break;
         }
-        let mut peers = sync_network.mesh_peers(topic.clone()).await;
+        let mut peers = sync_network.subscribed_peers(topic.clone()).await;
         // Filter excluded peers before shuffling so an excluded peer
         // doesn't get picked first and then `continue`'d — that would
         // burn a slot in the shuffle order. Filtering up-front also

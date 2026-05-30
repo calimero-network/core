@@ -15,7 +15,7 @@ use futures_util::StreamExt;
 use libp2p::gossipsub::{Event as GossipsubEvent, IdentTopic, PublishError};
 use libp2p::identity::Keypair;
 use libp2p::swarm::SwarmEvent;
-use libp2p::{Multiaddr, Swarm};
+use libp2p::{Multiaddr, PeerId, Swarm};
 use libp2p_swarm_test::SwarmExt;
 use tokio::time::timeout;
 
@@ -131,4 +131,104 @@ async fn two_swarms_deliver_payload_on_group_topic() {
     driver_a.abort();
 
     assert_eq!(data, b"hello-signed-group-op-payload");
+}
+
+/// The invariant the sync↔mesh decoupling relies on: a peer that is
+/// connected and has subscribed to a topic must appear in the **full
+/// subscriber set** (`all_peers` filtered by topic — what
+/// `SubscribedPeers` / `NetworkClient::subscribed_peers` returns), and
+/// that set is always a **superset of the grafted mesh** (`mesh_peers`).
+///
+/// Sync peer-selection moved from `mesh_peers` to `subscribed_peers` so a
+/// connected co-member is always selectable even before/without GRAFT;
+/// this test pins the underlying gossipsub semantics that makes that
+/// sound (subscribers ⊇ mesh, and a connected subscriber is visible).
+#[tokio::test]
+async fn subscribed_peers_is_superset_of_mesh_and_sees_connected_subscriber() {
+    let topic = IdentTopic::new(format!("ns/{}", hex::encode([0x07u8; 32])));
+
+    let listener_a = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port_a = listener_a.local_addr().unwrap().port();
+    drop(listener_a);
+    let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port_b = listener_b.local_addr().unwrap().port();
+    drop(listener_b);
+
+    let addr_a: Multiaddr = format!("/ip4/127.0.0.1/tcp/{port_a}").parse().unwrap();
+    let addr_b: Multiaddr = format!("/ip4/127.0.0.1/tcp/{port_b}").parse().unwrap();
+
+    let mut swarm_a =
+        Behaviour::build_swarm(&network_config(Keypair::generate_ed25519(), addr_a)).unwrap();
+    let mut swarm_b =
+        Behaviour::build_swarm(&network_config(Keypair::generate_ed25519(), addr_b)).unwrap();
+
+    swarm_a
+        .behaviour_mut()
+        .gossipsub
+        .subscribe(&topic)
+        .expect("subscribe A");
+    swarm_b
+        .behaviour_mut()
+        .gossipsub
+        .subscribe(&topic)
+        .expect("subscribe B");
+
+    async fn prime_listen_external(swarm: &mut Swarm<Behaviour>) {
+        loop {
+            let first: Vec<Multiaddr> = swarm.listeners().cloned().collect();
+            if let Some(addr) = first.into_iter().next() {
+                swarm.add_external_address(addr);
+                return;
+            }
+            swarm.next().await.expect("swarm event");
+        }
+    }
+    prime_listen_external(&mut swarm_a).await;
+    prime_listen_external(&mut swarm_b).await;
+
+    swarm_a.connect(&mut swarm_b).await;
+
+    let topic_hash = topic.hash();
+    let peer_b = *swarm_b.local_peer_id();
+
+    // Keep B alive/responsive in the background so identify + gossipsub
+    // control messages flow; we inspect A's view in the foreground.
+    let driver_b = tokio::spawn(async move { swarm_b.loop_on_next().await });
+
+    // Replicates the `SubscribedPeers` handler: full peer-topics set.
+    fn subscribers(swarm: &Swarm<Behaviour>, topic: &libp2p::gossipsub::TopicHash) -> Vec<PeerId> {
+        swarm
+            .behaviour()
+            .gossipsub
+            .all_peers()
+            .filter_map(|(peer, topics)| topics.contains(&topic).then_some(*peer))
+            .collect()
+    }
+
+    let result = timeout(Duration::from_secs(30), async {
+        loop {
+            let subs = subscribers(&swarm_a, &topic_hash);
+            if subs.contains(&peer_b) {
+                // Invariant: the grafted mesh is always a subset of the
+                // subscriber set — so selecting from subscribers can
+                // never miss a peer the mesh would have offered.
+                let mesh: Vec<PeerId> = swarm_a
+                    .behaviour()
+                    .gossipsub
+                    .mesh_peers(&topic_hash)
+                    .copied()
+                    .collect();
+                assert!(
+                    mesh.iter().all(|m| subs.contains(m)),
+                    "mesh_peers must be a subset of subscribed_peers (mesh={mesh:?}, subs={subs:?})"
+                );
+                return;
+            }
+            swarm_a.next().await.expect("swarm_a event");
+        }
+    })
+    .await;
+
+    driver_b.abort();
+    result.expect("A never observed B as a subscriber of the topic within 30s");
 }
