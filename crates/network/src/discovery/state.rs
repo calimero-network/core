@@ -644,7 +644,11 @@ impl DiscoveryState {
                     match rendezvous_info.registration_status() {
                         RendezvousRegistrationStatus::Requested
                         | RendezvousRegistrationStatus::Registered => acc + 1,
+                        // `Pending` is not a real registration — it doesn't
+                        // occupy a slot, so the fan-out gate keeps re-attempting
+                        // until the registration actually lands.
                         RendezvousRegistrationStatus::Discovered
+                        | RendezvousRegistrationStatus::Pending
                         | RendezvousRegistrationStatus::Expired => acc,
                     }
                 })
@@ -839,6 +843,12 @@ impl Default for PeerRendezvousInfo {
 pub enum RendezvousRegistrationStatus {
     #[default]
     Discovered,
+    /// We attempted to register but the swarm had no external address to
+    /// advertise yet, so nothing was actually sent. The registration is
+    /// queued and re-attempted on the next `ExternalAddrConfirmed`. Distinct
+    /// from `Discovered` (never tried) so observability reflects the truth:
+    /// engaged, waiting on an external address.
+    Pending,
     Requested,
     Registered,
     Expired,

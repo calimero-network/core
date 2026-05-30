@@ -14,7 +14,7 @@ use libp2p::rendezvous::Namespace;
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 use super::NetworkManager;
 use crate::discovery::peer_cache::{PeerAddrCache, PersistedPeer};
@@ -437,8 +437,10 @@ impl NetworkManager {
     // co-members find us under the exact namespace/group/context key, so
     // steady-state discovery is relevant rather than network-wide.
     //
-    // If there are no external addresses for the node, registration is
-    // considered successful. Expects the rendezvous peer to be connected.
+    // If there are no external addresses for the node yet, the rendezvous
+    // peer is marked `Pending` (queued, not registered) and the call returns
+    // Ok; the next `ExternalAddrConfirmed` re-attempts. Expects the rendezvous
+    // peer to be connected.
     pub(crate) fn rendezvous_register(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
         // `registrations_limit` gates how many rendezvous *peers* we
         // register with (infra fan-out), independent of how many keys we
@@ -469,9 +471,16 @@ impl NetworkManager {
                 }
                 Err(RegisterError::NoExternalAddresses) => {
                     // No external addresses yet — nothing to register
-                    // anywhere this round; stop early, the next
-                    // reachability/identify event retries.
-                    debug!("No external addresses to register at rendezvous");
+                    // anywhere this round; stop early. Mark the peer Pending
+                    // so the discovery state reflects "tried, waiting on an
+                    // external address" rather than the misleading Requested.
+                    // The next ExternalAddrConfirmed fires
+                    // broadcast_rendezvous_registrations, which re-attempts.
+                    trace!(%rendezvous_peer, "No external addresses to register at rendezvous; marking Pending");
+                    self.discovery.state.update_rendezvous_registration_status(
+                        rendezvous_peer,
+                        RendezvousRegistrationStatus::Pending,
+                    );
                     return Ok(());
                 }
                 Err(err @ RegisterError::FailedToMakeRecord(_)) => bail!(err),
@@ -533,8 +542,10 @@ impl NetworkManager {
                     RendezvousRegistrationStatus::Expired,
                 );
             }
-            RendezvousRegistrationStatus::Discovered | RendezvousRegistrationStatus::Expired => {
-                // Nothing to unregister
+            RendezvousRegistrationStatus::Discovered
+            | RendezvousRegistrationStatus::Pending
+            | RendezvousRegistrationStatus::Expired => {
+                // Nothing to unregister (Pending never actually sent a record)
             }
         }
 
@@ -558,7 +569,8 @@ impl NetworkManager {
                         RendezvousRegistrationStatus::Expired if candidate.is_none() => {
                             candidate = Some(peer_id);
                         }
-                        RendezvousRegistrationStatus::Requested
+                        RendezvousRegistrationStatus::Pending
+                        | RendezvousRegistrationStatus::Requested
                         | RendezvousRegistrationStatus::Registered
                         | RendezvousRegistrationStatus::Expired => {}
                     }

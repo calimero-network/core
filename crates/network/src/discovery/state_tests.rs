@@ -206,6 +206,41 @@ fn test_discovery_state_rendezvous_registration_required() {
 }
 
 #[test]
+fn test_pending_rendezvous_registration_does_not_occupy_slot() {
+    let mut state = DiscoveryState::default();
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+
+    state.update_peer_protocols(&peer1, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&peer2, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    // A peer that tried to register but had no external address yet is marked
+    // Pending. Like Discovered/Expired, Pending is NOT a real registration, so
+    // it must not satisfy the fan-out gate — otherwise the node would believe
+    // it is registered and never re-attempt once an external address arrives.
+    state.update_rendezvous_registration_status(&peer1, RendezvousRegistrationStatus::Pending);
+    assert!(
+        state.is_rendezvous_registration_required(1),
+        "Pending must not occupy a registration slot (registration still required)"
+    );
+
+    // Once the registration actually goes out (Requested), the slot is taken.
+    state.update_rendezvous_registration_status(&peer1, RendezvousRegistrationStatus::Requested);
+    assert!(
+        !state.is_rendezvous_registration_required(1),
+        "Requested occupies the slot (no further registration required at limit 1)"
+    );
+
+    // Sanity: a second Pending peer still doesn't count toward the limit.
+    state.update_rendezvous_registration_status(&peer2, RendezvousRegistrationStatus::Pending);
+    assert!(
+        !state.is_rendezvous_registration_required(1),
+        "Pending peer2 adds no slot; the single Requested peer already meets limit 1"
+    );
+}
+
+#[test]
 fn test_state_mutations() {
     let mut state = DiscoveryState::default();
     let peer_id = PeerId::random();
