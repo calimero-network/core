@@ -884,6 +884,20 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         // yielding an incomplete snapshot that still passes the
         // `root_hash` recheck (which only covers *this* context).
         // Propagating here matches the pre-#2133 fail-loud behavior.
+        //
+        // Deliberate tradeoff: because the State column is a single
+        // shared keyspace and the iterator fuses on the first bad
+        // read, a corrupt/unreadable record in *any* context aborts
+        // this context's snapshot with an error. That is the correct
+        // failure mode — a snapshot that fails is retried and never
+        // ships partial state, whereas "log the foreign error and
+        // continue" is impossible (the iterator is already fused, so
+        // the next `next()` returns `None` and we'd silently treat a
+        // truncated scan as complete → exactly the data-loss bug this
+        // unwrap prevents). We intentionally do NOT early-break once
+        // past this context's (contiguous) key range either: that
+        // would trade a recoverable failure for an ordering
+        // assumption whose violation would silently drop tail state.
         let value = value_result?;
         if key.context_id() != context_id {
             continue;
@@ -1311,7 +1325,10 @@ mod tests {
         let mut totals = Vec::new();
         let mut cursor: Option<SnapshotCursor> = None;
         // Bounded to keep a buggy cursor (that never advances) from
-        // looping forever — the assertions below catch the failure.
+        // looping forever. `completed` distinguishes "drained to
+        // cursor = None" from "hit the cap" so the latter fails with a
+        // clear message instead of masquerading as a dropped entity.
+        let mut completed = false;
         for _ in 0..10_000 {
             let (pages, next, total) =
                 generate_snapshot_pages(&handle, ctx, cursor.as_ref(), page_limit, byte_limit)
@@ -1327,9 +1344,17 @@ mod tests {
             }
             match next {
                 Some(c) => cursor = Some(c),
-                None => break,
+                None => {
+                    completed = true;
+                    break;
+                }
             }
         }
+        assert!(
+            completed,
+            "drain_all_pages hit its iteration cap before the cursor reached None — \
+             non-advancing cursor or unexpectedly many pages"
+        );
         (ids, totals)
     }
 
@@ -1369,6 +1394,7 @@ mod tests {
             generate_snapshot_pages(&store.handle(), ctx, None, DEFAULT_PAGE_LIMIT, 1 << 20)
                 .unwrap();
         assert!(cursor.is_none(), "single page should not request a resume");
+        assert_eq!(pages.len(), 1, "20 small entities should fit on one page");
         assert_eq!(total, 20);
 
         let mut got = BTreeSet::new();
@@ -1389,10 +1415,11 @@ mod tests {
         let expected: BTreeSet<[u8; 32]> = (0..50u16)
             .map(|i| {
                 let mut id = [0u8; 32];
-                // Spread across two leading bytes so sort order is
-                // exercised beyond a single byte.
-                id[0] = (i >> 8) as u8;
-                id[1] = (i & 0xff) as u8;
+                // Genuinely spread across the two leading bytes (id[0]
+                // in 0..7, id[1] in 0..7) so the id-sorted ordering is
+                // exercised beyond a single varying byte.
+                id[0] = (i / 8) as u8;
+                id[1] = (i % 8) as u8;
                 put_entity(&store, ctx, id, 200);
                 id
             })
@@ -1450,6 +1477,49 @@ mod tests {
         assert_eq!(ids, vec![good]);
         // total_entries counts complete (Index+Entry) entities only.
         assert!(totals.iter().all(|&t| t == 1), "{totals:?}");
+    }
+
+    #[test]
+    fn test_generate_snapshot_pages_page_limit_boundary_defers_entity() {
+        // Exercise the case where a single entity simultaneously
+        // triggers a page-break AND hits `page_limit`: the page is
+        // pushed and the call returns early *before* that entity's
+        // bytes are added to a page. The cursor must point at the
+        // last fully-committed entity so the deferred one is emitted
+        // (exactly once) on the next burst — not dropped.
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ctx = ContextId::from([5u8; 32]);
+        let expected: BTreeSet<[u8; 32]> = (0..4u8)
+            .map(|i| {
+                let mut id = [0u8; 32];
+                id[0] = i;
+                put_entity(&store, ctx, id, 200);
+                id
+            })
+            .collect();
+
+        // page_limit = 1 with a byte_limit that fits one ~330-byte
+        // entity record but not two forces a page-break + limit hit on
+        // every call, deferring each subsequent entity.
+        let (ids, totals) = drain_all_pages(&store, ctx, 1, 400);
+
+        assert_eq!(
+            ids.len(),
+            expected.len(),
+            "deferred entity dropped or duplicated"
+        );
+        let got: BTreeSet<[u8; 32]> = ids.iter().copied().collect();
+        assert_eq!(got, expected);
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(
+            ids, sorted,
+            "entities must arrive in id-sorted order across bursts"
+        );
+        assert!(
+            totals.iter().all(|&t| t == 4),
+            "total_entries drifted: {totals:?}"
+        );
     }
 
     #[test]
