@@ -1,0 +1,264 @@
+name: 14 — Cascade status RPC (get_cascade_status + assert_cascade_complete, 2-node)
+description: >
+  E2E coverage for the get_cascade_status RPC and the cascade-completion
+  assertion shipped in #2524 / merobox#272 (issue merobox#255). Reuses 01's proven 2-node
+  namespace-cascade setup (namespace + one Open descendant subgroup +
+  one context, node 2 joins via inheritance), runs ONE
+  upgrade_group(cascade=true), then drives the new merobox steps:
+
+    - assert_cascade_complete polls get_cascade_status on EACH node until
+      every group in the namespace subtree reports `completed`.
+    - get_cascade_status returns one entry per group (namespace root +
+      descendant subgroup); this asserts the roll-up on both the emitter
+      (node 1) and the receiver (node 2): pending == 0 and
+      completed == total, proving the atomic CascadeUpgrade op wrote a
+      Completed upgrade record on every matched descendant on BOTH peers.
+
+  Whereas 01 verifies the state-migration side of the cascade, this
+  scenario is the dedicated regression guard for the get_cascade_status
+  RPC surface (actor → ContextMessage → context client → admin HTTP
+  GET /groups/:namespace_id/cascade-status) and the cascade_hlc the atomic
+  op stamps per descendant.
+
+  Requires merobox >= 0.6.32 (get_cascade_status / assert_cascade_complete
+  steps; calimero-network/merobox#272).
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-status
+  # Above every sibling's range (00-13 occupy 9220-9351 P2P / 9320-9451 RPC)
+  # so this scenario's host ports can't collide with any of them.
+  base_port: 9460
+  base_rpc_port: 9560
+
+steps:
+  # Phase 1: Install v1 + v2 binaries on the ADMIN node only (node 2
+  # obtains v1 on context join and v2 during lazy migration — same
+  # content-addressed distribution as 01).
+  - name: Install migration-suite-v1 on node 1
+    type: install_application
+    node: app-migration-status-1
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install migration-suite-v2-add-field on node 1
+    type: install_application
+    node: app-migration-status-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context.
+  - name: Create namespace on node 1 (anchors app_v1)
+    type: create_namespace
+    node: app-migration-status-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-status-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create descendant Open subgroup on node 1
+    type: create_group_in_namespace
+    node: app-migration-status-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "cascade-status-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-status-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-status-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: Invite node 2, materialise inherited membership, join context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-status-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-status-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-status-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-status-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: Write v1 state on node 1, wait for node 2 to catch up.
+  - name: Node 1 writes v1 state (description)
+    type: call
+    node: app-migration-status-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "set-before-cascade"
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-status-1
+      - app-migration-status-2
+    timeout: 90
+    trigger_sync: true
+
+  # Phase 5: lazy-on-access upgrade policy, then ONE cascade.
+  - name: Set upgrade policy to lazy-on-access on node 1
+    type: update_group_settings
+    node: app-migration-status-1
+    group_id: "{{namespace_id}}"
+    upgrade_policy: lazy_on_access
+
+  - name: Cascade namespace v1 → v2 (initiated by node 1)
+    type: upgrade_group
+    node: app-migration-status-1
+    group_id: "{{namespace_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+    cascade: true
+
+  - name: Wait for cascade op to gossip + apply on both nodes
+    type: wait
+    seconds: 15
+
+  # Phase 6a: the cascade actually landed (sanity — makes the status
+  # assertions meaningful). Atomic CascadeUpgrade applies on the emitter
+  # AND every receiver subscribed to the namespace.
+  - name: Assert cascade apply log on node 1 (emitter)
+    type: assert_log_present
+    nodes:
+      - app-migration-status-1
+    patterns:
+      - "CascadeUpgrade: applied"
+    min_matches: 2
+
+  - name: Assert cascade apply log on node 2 (receiver)
+    type: assert_log_present
+    nodes:
+      - app-migration-status-2
+    patterns:
+      - "CascadeUpgrade: applied"
+    min_matches: 2
+
+  # Phase 6b: NEW — assert_cascade_complete polls get_cascade_status until
+  # every group in the subtree is `completed`, on EACH node independently.
+  # The atomic CascadeUpgrade op writes a Completed upgrade record per
+  # matched descendant on every peer that applies it, so both nodes
+  # converge to all_completed. Per-node assertions catch the asymmetric
+  # regression where the emitter completes but a receiver's records never
+  # populate.
+  - name: Assert cascade complete on node 1 (emitter)
+    type: assert_cascade_complete
+    node: app-migration-status-1
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 60
+    poll_interval: 2
+
+  - name: Assert cascade complete on node 2 (receiver)
+    type: assert_cascade_complete
+    node: app-migration-status-2
+    namespace_id: "{{namespace_id}}"
+    timeout_seconds: 90
+    poll_interval: 2
+
+  # Phase 6c: NEW — read get_cascade_status directly and assert the
+  # roll-up on both nodes. total = namespace root + 1 descendant subgroup
+  # = 2 groups, all completed, none pending.
+  - name: Read cascade status on node 1
+    type: get_cascade_status
+    node: app-migration-status-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      status_total_node1: total
+      status_completed_node1: completed
+      status_pending_node1: pending
+
+  - name: Read cascade status on node 2
+    type: get_cascade_status
+    node: app-migration-status-2
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      status_total_node2: total
+      status_completed_node2: completed
+      status_pending_node2: pending
+
+  - name: Assert cascade-status roll-up on BOTH nodes
+    type: json_assert
+    statements:
+      # nothing left pending on either node
+      - "equal({{status_pending_node1}}, 0)"
+      - "equal({{status_pending_node2}}, 0)"
+      # every reported group completed (completed == total)
+      - "equal({{status_completed_node1}}, {{status_total_node1}})"
+      - "equal({{status_completed_node2}}, {{status_total_node2}})"
+      # the subtree is namespace root + 1 descendant subgroup = 2 groups
+      - "equal({{status_total_node1}}, 2)"
+      - "equal({{status_total_node2}}, 2)"
+
+  # Phase 7: Teardown (node 1 holds admin authority).
+  - name: Delete context
+    type: delete_context
+    node: app-migration-status-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-status-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-status-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1 on node 1
+    type: uninstall_application
+    node: app-migration-status-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2 on node 1
+    type: uninstall_application
+    node: app-migration-status-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
