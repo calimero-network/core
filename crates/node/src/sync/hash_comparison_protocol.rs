@@ -1222,4 +1222,111 @@ mod tests {
             assert_eq!(leaf_data.value, b"app-root-state");
         });
     }
+
+    /// Regression guard for the frozen-storage HashComparison split-brain.
+    ///
+    /// `apply_leaf_with_crdt_merge` previously emitted `Action::Update` for
+    /// ANY entity that already existed locally — including `Frozen` ones.
+    /// The storage layer categorically rejects `Update` for `Frozen`
+    /// ("Frozen data cannot be updated"), so re-applying an already-present
+    /// frozen leaf (which a bulk leaf push does while repairing a divergent
+    /// sibling) aborted the ENTIRE repair and left the context permanently
+    /// split-brained. Frozen entries are content-addressed + immutable, so
+    /// an already-present one must be skipped, not updated. This test pins
+    /// that: re-applying an existing frozen leaf is a no-op success.
+    #[test]
+    fn apply_leaf_skips_existing_frozen_entry() {
+        use std::sync::Arc;
+
+        use calimero_node_primitives::sync::hash_comparison::{LeafMetadata, TreeLeafData};
+        use calimero_primitives::crdt::CrdtType;
+        use calimero_storage::action::Action;
+        use calimero_storage::entities::{ChildInfo, Metadata, StorageType};
+        use calimero_storage::interface::ApplyContext;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+        use sha2::{Digest, Sha256};
+
+        use crate::sync::helpers::apply_leaf_with_crdt_merge;
+
+        let context_id = ContextId::from([0xCA; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(&store, context_id, identity);
+
+        let root_id = Id::new(*context_id.as_ref());
+        let frozen_id = Id::new([0x42u8; 32]);
+
+        // Frozen content-addressed blob: [key_hash(32)][value][element_id(32)].
+        let value = b"immutable-frozen-payload".to_vec();
+        let key_hash: [u8; 32] = Sha256::digest(&value).into();
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&key_hash);
+        blob.extend_from_slice(&value);
+        blob.extend_from_slice(frozen_id.as_bytes());
+
+        with_runtime_env(runtime_env.clone(), || {
+            // Create the context root.
+            Interface::<MainStorage>::apply_action(
+                Action::Update {
+                    id: root_id,
+                    data: vec![],
+                    ancestors: vec![],
+                    metadata: Metadata::default(),
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("create root");
+
+            // Seed a Frozen entry as a child of root.
+            let root_hash = Index::<MainStorage>::get_hashes_for(root_id)
+                .ok()
+                .flatten()
+                .map(|(full, _)| full)
+                .unwrap_or([0; 32]);
+            let root_meta = Index::<MainStorage>::get_index(root_id)
+                .ok()
+                .flatten()
+                .map(|idx| idx.metadata.clone())
+                .unwrap_or_default();
+
+            let mut frozen_meta = Metadata::new(100, 100);
+            frozen_meta.storage_type = StorageType::Frozen;
+            frozen_meta.crdt_type = Some(CrdtType::FrozenStorage);
+
+            Interface::<MainStorage>::apply_action(
+                Action::Add {
+                    id: frozen_id,
+                    data: blob.clone(),
+                    ancestors: vec![ChildInfo::new(root_id, root_hash, root_meta)],
+                    metadata: frozen_meta,
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("seed frozen entry");
+
+            // A peer re-pushes the SAME frozen leaf (as happens during a
+            // bulk leaf push while repairing a sibling). Frozen leaves carry
+            // no wire authorization, so apply_leaf resolves storage_type from
+            // the existing (Frozen) entry and would otherwise emit Update.
+            let leaf = TreeLeafData::new(
+                *frozen_id.as_bytes(),
+                blob.clone(),
+                LeafMetadata::new(CrdtType::FrozenStorage, 100, *root_id.as_bytes()),
+            );
+
+            // Before the fix this returned Err("Frozen data cannot be
+            // updated"); after the fix it is a no-op success.
+            apply_leaf_with_crdt_merge(context_id, &leaf)
+                .expect("re-applying an existing frozen leaf must be a no-op, not a fatal Update");
+
+            // The frozen entry is still present and unchanged.
+            assert!(
+                Index::<MainStorage>::get_index(frozen_id)
+                    .unwrap()
+                    .is_some(),
+                "frozen entry must remain present after the skipped re-apply"
+            );
+        });
+    }
 }
