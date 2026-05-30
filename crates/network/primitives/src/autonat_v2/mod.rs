@@ -464,78 +464,120 @@ mod tests {
 
         switchable.connect(&mut server).await;
 
-        // Test initial state: switchable is client-only (regular client server interaction)
-        match drive(&mut switchable, &mut server).await {
-            (
-                [SwitchableNatEvent::Identify(_), SwitchableNatEvent::Identify(identify::Event::Received {
-                    info: first_srv_info,
-                    ..
-                }), SwitchableNatEvent::Autonat(Event::PeerHasServerSupport { .. }), SwitchableNatEvent::Identify(_), SwitchableNatEvent::Identify(identify::Event::Received {
-                    info: second_srv_info,
-                    ..
-                })],
-                [ServerEvent::Identify(_), ServerEvent::Identify(identify::Event::Received {
-                    info: first_switchable_info,
-                    ..
-                }), ServerEvent::Identify(_), ServerEvent::Identify(identify::Event::Received {
-                    info: second_switchable_info,
-                    ..
-                })],
-            ) => {
-                // First exchange: Switchable sees server has dial-request
-                assert!(
-                    first_srv_info
-                        .protocols
-                        .iter()
-                        .any(|p| p.as_ref() == "/libp2p/autonat/2/dial-request"),
-                    "First exchange: Server should advertise dial-request, got: {:?}",
-                    first_srv_info.protocols
-                );
+        // Test initial state: switchable is client-only (regular client server interaction).
+        //
+        // `drive` collects a fixed number of behaviour events from each swarm, but the
+        // relative order in which identify and autonat events interleave is timing-
+        // dependent. Assert on event *presence* and the causal order of the two identify
+        // exchanges rather than on an exact positional sequence, which would flake.
+        let (switchable_events, server_events): ([SwitchableNatEvent; 5], [ServerEvent; 4]) =
+            drive(&mut switchable, &mut server).await;
 
-                // First exchange: Server sees switchable has no autonat protocols yet
-                assert!(
-                    !first_switchable_info
-                        .protocols
-                        .iter()
-                        .any(|p| p.as_ref().contains("/libp2p/autonat/2/")),
-                    "First exchange: Switchable shouldn't have autonat protocols yet, got: {:?}",
-                    first_switchable_info.protocols
-                );
+        // Switchable must have observed the server's autonat server support at some point.
+        assert!(
+            switchable_events.iter().any(|e| matches!(
+                e,
+                SwitchableNatEvent::Autonat(Event::PeerHasServerSupport { .. })
+            )),
+            "Switchable should observe server's autonat support, got: {switchable_events:?}"
+        );
 
-                // Second exchange: Switchable sees server has no autonat protocols
-                assert!(
-                    !second_srv_info
-                        .protocols
-                        .iter()
-                        .any(|p| p.as_ref().contains("/libp2p/autonat/2/")),
-                    "Second exchange: Server shouldn't advertise autonat protocols, got: {:?}",
-                    second_srv_info.protocols
-                );
+        // The two identify infos each side received, in arrival order. The two exchanges
+        // are causally ordered (the second only happens after the switchable gains the
+        // dial-back protocol), so indexing them is safe even though autonat events may
+        // interleave around them.
+        let srv_infos: Vec<_> = switchable_events
+            .iter()
+            .filter_map(|e| match e {
+                SwitchableNatEvent::Identify(identify::Event::Received { info, .. }) => Some(info),
+                _ => None,
+            })
+            .collect();
+        let switchable_infos: Vec<_> = server_events
+            .iter()
+            .filter_map(|e| match e {
+                ServerEvent::Identify(identify::Event::Received { info, .. }) => Some(info),
+                _ => None,
+            })
+            .collect();
 
-                // Second exchange: Server sees switchable now has dial-back
-                assert!(
-                    second_switchable_info
-                        .protocols
-                        .iter()
-                        .any(|p| p.as_ref() == "/libp2p/autonat/2/dial-back"),
-                    "Second exchange: Switchable should advertise dial-back, got: {:?}",
-                    second_switchable_info.protocols
-                );
-            }
-            other => panic!("Unexpected events: {other:?}"),
+        assert_eq!(
+            srv_infos.len(),
+            2,
+            "expected two server identify exchanges, got: {switchable_events:?}"
+        );
+        assert_eq!(
+            switchable_infos.len(),
+            2,
+            "expected two switchable identify exchanges, got: {server_events:?}"
+        );
+
+        let (first_srv_info, second_srv_info) = (srv_infos[0], srv_infos[1]);
+        let (first_switchable_info, second_switchable_info) =
+            (switchable_infos[0], switchable_infos[1]);
+
+        // First exchange: Switchable sees server has dial-request
+        assert!(
+            first_srv_info
+                .protocols
+                .iter()
+                .any(|p| p.as_ref() == "/libp2p/autonat/2/dial-request"),
+            "First exchange: Server should advertise dial-request, got: {:?}",
+            first_srv_info.protocols
+        );
+
+        // First exchange: Server sees switchable has no autonat protocols yet
+        assert!(
+            !first_switchable_info
+                .protocols
+                .iter()
+                .any(|p| p.as_ref().contains("/libp2p/autonat/2/")),
+            "First exchange: Switchable shouldn't have autonat protocols yet, got: {:?}",
+            first_switchable_info.protocols
+        );
+
+        // Second exchange: Switchable sees server has no autonat protocols
+        assert!(
+            !second_srv_info
+                .protocols
+                .iter()
+                .any(|p| p.as_ref().contains("/libp2p/autonat/2/")),
+            "Second exchange: Server shouldn't advertise autonat protocols, got: {:?}",
+            second_srv_info.protocols
+        );
+
+        // Second exchange: Server sees switchable now has dial-back
+        assert!(
+            second_switchable_info
+                .protocols
+                .iter()
+                .any(|p| p.as_ref() == "/libp2p/autonat/2/dial-back"),
+            "Second exchange: Switchable should advertise dial-back, got: {:?}",
+            second_switchable_info.protocols
+        );
+
+        // Wait for server to complete the AutoNAT test. The address confirmation and the
+        // trailing autonat behaviour event can arrive in either order, so locate the
+        // confirmation by value rather than by position.
+        let (switchable_events, server_events): (
+            [SwarmEvent<SwitchableNatEvent>; 2],
+            [ServerEvent; 1],
+        ) = drive(&mut switchable, &mut server).await;
+
+        let confirmed_addr = switchable_events
+            .iter()
+            .find_map(|e| match e {
+                SwarmEvent::ExternalAddrConfirmed { address } => Some(address.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!("expected ExternalAddrConfirmed, got: {switchable_events:?}")
+            });
+
+        match &server_events[0] {
+            ServerEvent::Autonat(event) => assert!(matches!(event.result, Ok(()))),
+            other => panic!("expected server autonat result, got: {other:?}"),
         }
-
-        // Wait for server to complete the AutoNAT test
-        let confirmed_addr = match drive(&mut switchable, &mut server).await {
-            (
-                [SwarmEvent::ExternalAddrConfirmed { address }, SwarmEvent::Behaviour(SwitchableNatEvent::Autonat(_))],
-                [ServerEvent::Autonat(event)],
-            ) => {
-                assert!(matches!(event.result, Ok(())));
-                address
-            }
-            other => panic!("Unexpected events: {other:?}"),
-        };
 
         // Now switch to server mode
         switchable.behaviour_mut().autonat.enable_server().unwrap();
@@ -562,14 +604,24 @@ mod tests {
 
         // Disconnect from the server
         switchable.disconnect_peer_id(server_id).unwrap();
-        // Wait for the disconnect to complete
-        match drive(&mut switchable, &mut server).await {
-            (
-                [SwarmEvent::ConnectionClosed { .. }, SwarmEvent::ConnectionClosed { .. }],
-                [SwarmEvent::ConnectionClosed { .. }, SwarmEvent::ConnectionClosed { .. }],
-            ) => {}
-            other => panic!("Unexpected events: {other:?}"),
-        }
+        // Wait for the disconnect to complete. Both sides observe two connection-closed
+        // events; the order they're drained in is irrelevant.
+        let (switchable_events, server_events): (
+            [SwarmEvent<SwitchableNatEvent>; 2],
+            [SwarmEvent<ServerEvent>; 2],
+        ) = drive(&mut switchable, &mut server).await;
+        assert!(
+            switchable_events
+                .iter()
+                .all(|e| matches!(e, SwarmEvent::ConnectionClosed { .. })),
+            "Switchable should only see ConnectionClosed, got: {switchable_events:?}"
+        );
+        assert!(
+            server_events
+                .iter()
+                .all(|e| matches!(e, SwarmEvent::ConnectionClosed { .. })),
+            "Server should only see ConnectionClosed, got: {server_events:?}"
+        );
 
         // NOTE: there's a bug in the code that causes the autonat behaviour to not work correctly
         // AutoNAT Client behaviour never clears out the already confirmed address,
