@@ -755,31 +755,40 @@ impl<S: StorageAdaptor> Interface<S> {
                             return Err(StorageError::InvalidSignature);
                         }
 
-                        // Stale-or-equal: signature verified, but our
-                        // local state is already at or ahead of this
-                        // nonce. Drop silently — the action is
-                        // authentic, just older than what we already
-                        // have, which is the normal post-divergence
-                        // sync case (HashComparison can re-deliver
-                        // leaves whose newer twin already landed via
-                        // gossipsub; DAG-causal catchup can hand us an
-                        // older delta after a newer one). Treating
-                        // this as a hard `NonceReplay` Err propagates
-                        // through `Root::sync().expect("fatal: sync
-                        // failed")` and aborts the whole sync batch,
+                        // Strictly stale: signature verified, but our
+                        // local state is already AHEAD of this nonce.
+                        // Drop silently — the action is authentic, just
+                        // older than what we already have, the normal
+                        // post-divergence sync case (HashComparison can
+                        // re-deliver leaves whose newer twin already
+                        // landed via gossipsub; DAG-causal catchup can
+                        // hand us an older delta after a newer one).
+                        // Treating this as a hard `NonceReplay` Err
+                        // propagates through `Root::sync().expect("fatal:
+                        // sync failed")` and aborts the whole sync batch,
                         // blocking convergence.
                         //
+                        // The `==` (equal-nonce) case is deliberately NOT
+                        // skipped — kept symmetric with the Shared arm so
+                        // an equal-HLC write reaches `save_internal`, whose
+                        // equal-timestamp branch resolves the tie
+                        // deterministically by content hash
+                        // (`try_merge_non_root`'s `lww_pick`). A
+                        // byte-identical re-delivery is then a no-op
+                        // (equal hash), while genuinely-different concurrent
+                        // content converges identically on every replica.
+                        // Security is unaffected: a forged
+                        // different-data-same-nonce action fails the
+                        // signature check above (the signature commits to
+                        // the data), so only authentic writes fall through.
+                        //
                         // Gated by the same `nonce_check_disabled_for_testing`
-                        // bypass as the Shared arm so DAG-causal P5 tests
-                        // exercising out-of-order delivery see consistent
-                        // behaviour across User/Shared entities. When the
-                        // bypass is active (`skip_nonce = true`), the stale
-                        // action falls through to `save_internal`, which
-                        // has its own LWW-by-HLC guard
+                        // bypass as the Shared arm. When the bypass is active
+                        // (`skip_nonce = true`), stale actions fall through to
+                        // `save_internal`, whose LWW-by-HLC guard
                         // (`last_metadata.updated_at > metadata.updated_at`
-                        // ⇒ returns `Ok(None)`, no write). Storage state
-                        // is never downgraded regardless of which path
-                        // executes.
+                        // ⇒ `Ok(None)`, no write) keeps state from being
+                        // downgraded regardless of which path executes.
                         //
                         // Logged at WARN, not DEBUG: silent-skip on a
                         // signature-verified-but-stale action is an
@@ -788,13 +797,13 @@ impl<S: StorageAdaptor> Interface<S> {
                         // sync redelivery). Surface enough information
                         // for downstream monitoring to distinguish the
                         // two.
-                        if !skip_nonce && new_nonce <= last_nonce {
+                        if !skip_nonce && new_nonce < last_nonce {
                             tracing::warn!(
                                 %id,
                                 %owner,
                                 new_nonce,
                                 last_nonce,
-                                "User upsert: stale-or-equal nonce, signature verified \
+                                "User upsert: stale nonce, signature verified \
                                  — skipping save_internal (authentic but no-op)"
                             );
                             return Ok(());
@@ -935,25 +944,38 @@ impl<S: StorageAdaptor> Interface<S> {
                             return Err(StorageError::InvalidSignature);
                         }
 
-                        if !skip_nonce && new_nonce <= last_nonce {
-                            // Stale-or-equal: signature verified, but
-                            // our local state is already at or ahead
-                            // of this nonce. Drop silently. See the
-                            // User arm above for full rationale —
-                            // hard NonceReplay propagates through
-                            // `Root::sync().expect()` and aborts the
-                            // sync batch, blocking convergence after
-                            // a HashComparison or DAG-catchup delivers
-                            // a stale-but-authentic leaf whose newer
-                            // twin already landed via gossipsub.
+                        if !skip_nonce && new_nonce < last_nonce {
+                            // Strictly stale: signature verified, but our
+                            // local state is already AHEAD of this nonce.
+                            // Drop silently — an authentic but older write
+                            // whose newer twin already landed (HashComparison
+                            // re-delivery / DAG-catchup out-of-order). A hard
+                            // NonceReplay here would propagate through
+                            // `Root::sync().expect()` and abort the sync
+                            // batch, blocking convergence.
                             //
-                            // Logged at WARN — same audit rationale
-                            // as the User arm.
+                            // NOTE: the `==` (equal-nonce) case is
+                            // deliberately NOT skipped here. Two distinct
+                            // writers in a `Shared` set can stamp the same
+                            // HLC nonce on DIFFERENT content (e.g. after a
+                            // writer-set rotation); skipping the equal case
+                            // dropped the second writer's genuinely-new write
+                            // and left the cluster diverged on the same DAG
+                            // heads (the shared-storage post-rotation
+                            // split-brain). Equal nonce now falls through to
+                            // `save_internal`, whose equal-HLC branch resolves
+                            // the tie deterministically by content hash (see
+                            // `try_merge_non_root`'s `lww_pick`), so a
+                            // byte-identical re-delivery is a no-op while a
+                            // different-content concurrent write converges.
+                            //
+                            // Logged at WARN — same audit rationale as the
+                            // User arm.
                             tracing::warn!(
                                 %id,
                                 new_nonce,
                                 last_nonce,
-                                "Shared upsert: stale-or-equal nonce, signature verified \
+                                "Shared upsert: stale nonce, signature verified \
                                  — skipping save_internal (authentic but no-op)"
                             );
                             return Ok(());
@@ -2447,6 +2469,33 @@ impl<S: StorageAdaptor> Interface<S> {
         use crate::collections::crdt_meta::{CrdtType, MergeError};
         use crate::merge::{is_builtin_crdt, merge_by_crdt_type};
 
+        // Deterministic LWW pick. `incoming_timestamp > existing` ⇒ incoming;
+        // `<` ⇒ existing. The `==` (concurrent, same-HLC) case must be
+        // resolved IDENTICALLY on every replica regardless of which write it
+        // applied first, or two writers stamping the same HLC nanosecond
+        // (e.g. distinct writers in a `Shared` set after a rotation) leave the
+        // cluster permanently diverged on the same DAG heads (the
+        // shared-storage post-rotation split-brain). A plain "incoming wins"
+        // is NOT order-independent — it flips symmetrically. Break exact ties
+        // by content hash (higher `Sha256(data)` wins): node-independent, so
+        // all replicas converge. Equal data is a true no-op (either is fine).
+        let lww_pick = |existing: &[u8], incoming: &[u8]| -> Vec<u8> {
+            use core::cmp::Ordering;
+            match incoming_timestamp.cmp(&existing_timestamp) {
+                Ordering::Greater => incoming.to_vec(),
+                Ordering::Less => existing.to_vec(),
+                Ordering::Equal => {
+                    let inc_hash: [u8; 32] = Sha256::digest(incoming).into();
+                    let exi_hash: [u8; 32] = Sha256::digest(existing).into();
+                    if inc_hash >= exi_hash {
+                        incoming.to_vec()
+                    } else {
+                        existing.to_vec()
+                    }
+                }
+            }
+        };
+
         // Check if we have CRDT type metadata
         let Some(crdt_type) = &metadata.crdt_type else {
             // Legacy data - no CRDT type, use LWW
@@ -2455,11 +2504,7 @@ impl<S: StorageAdaptor> Interface<S> {
                 %id,
                 "No CRDT type metadata, falling back to LWW"
             );
-            return Ok(if incoming_timestamp >= existing_timestamp {
-                incoming.to_vec()
-            } else {
-                existing.to_vec()
-            });
+            return Ok(lww_pick(existing, incoming));
         };
 
         // For built-in types, merge in storage layer
@@ -2469,11 +2514,7 @@ impl<S: StorageAdaptor> Interface<S> {
             // HLC timestamps carried in metadata.
             let is_lww = matches!(crdt_type, CrdtType::LwwRegister { .. });
             if is_lww {
-                return Ok(if incoming_timestamp >= existing_timestamp {
-                    incoming.to_vec()
-                } else {
-                    existing.to_vec()
-                });
+                return Ok(lww_pick(existing, incoming));
             }
 
             let result =
@@ -2519,12 +2560,8 @@ impl<S: StorageAdaptor> Interface<S> {
             );
         }
 
-        // Fall back to LWW
-        Ok(if incoming_timestamp >= existing_timestamp {
-            incoming.to_vec()
-        } else {
-            existing.to_vec()
-        })
+        // Fall back to LWW (deterministic equal-HLC tiebreak — see `lww_pick`).
+        Ok(lww_pick(existing, incoming))
     }
 
     /// Saves raw serialized data with orphan checking.

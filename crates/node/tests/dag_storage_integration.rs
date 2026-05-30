@@ -574,13 +574,18 @@ async fn test_dag_storage_stress_many_deltas() {
     let id = Id::new([1; 32]);
     Index::<MainStorage>::add_root(ChildInfo::new(id, [10; 32], Metadata::default())).unwrap();
 
-    // Create 100 sequential deltas
+    // Create 100 sequential deltas. Each carries a strictly increasing HLC
+    // (`updated_at = i`) — a causally-later write has a higher timestamp, so
+    // "version 100" wins LWW on time. Using `Metadata::default()` here would
+    // stamp every write with the same HLC, forcing the equal-timestamp
+    // content-hash tiebreak (see `lww_pick`), which deterministically picks
+    // the highest-Sha256 payload ("version 32") rather than the latest write.
     for i in 1..=100 {
         let action = Action::Update {
             id,
             data: format!("version {}", i).into_bytes(),
             ancestors: vec![],
-            metadata: Metadata::default(),
+            metadata: Metadata::new(i as u64, i as u64),
         };
 
         let delta = CausalDelta::new_test([i as u8; 32], vec![[(i - 1) as u8; 32]], vec![action]);
