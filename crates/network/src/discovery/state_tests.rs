@@ -206,6 +206,198 @@ fn test_discovery_state_rendezvous_registration_required() {
 }
 
 #[test]
+fn test_pending_rendezvous_registration_does_not_occupy_slot() {
+    let mut state = DiscoveryState::default();
+
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+
+    state.update_peer_protocols(&peer1, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&peer2, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    // A peer that tried to register but had no external address yet is marked
+    // Pending. Like Discovered/Expired, Pending is NOT a real registration, so
+    // it must not satisfy the fan-out gate — otherwise the node would believe
+    // it is registered and never re-attempt once an external address arrives.
+    state.update_rendezvous_registration_status(&peer1, RendezvousRegistrationStatus::Pending);
+    assert!(
+        state.is_rendezvous_registration_required(1),
+        "Pending must not occupy a registration slot (registration still required)"
+    );
+
+    // Once the registration actually goes out (Requested), the slot is taken.
+    state.update_rendezvous_registration_status(&peer1, RendezvousRegistrationStatus::Requested);
+    assert!(
+        !state.is_rendezvous_registration_required(1),
+        "Requested occupies the slot (no further registration required at limit 1)"
+    );
+
+    // Sanity: a second Pending peer still doesn't count toward the limit.
+    state.update_rendezvous_registration_status(&peer2, RendezvousRegistrationStatus::Pending);
+    assert!(
+        !state.is_rendezvous_registration_required(1),
+        "Pending peer2 adds no slot; the single Requested peer already meets limit 1"
+    );
+}
+
+#[test]
+fn test_pending_to_expired_transition_keeps_slot_free() {
+    let mut state = DiscoveryState::default();
+
+    let peer = PeerId::random();
+    state.update_peer_protocols(&peer, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    // Pending holds no slot, so registration is still required.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Pending);
+    assert!(
+        state.is_rendezvous_registration_required(1),
+        "Pending occupies no slot"
+    );
+
+    // Transitioning Pending -> Expired (e.g. an unregister/expiry path
+    // touching a never-registered peer) must not invent a slot: neither
+    // status counts, so registration stays required and the count is
+    // unchanged.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Expired);
+    assert!(
+        state.is_rendezvous_registration_required(1),
+        "Expired (like Pending) occupies no slot"
+    );
+}
+
+fn rendezvous_status(state: &DiscoveryState, peer: &PeerId) -> RendezvousRegistrationStatus {
+    state.peers[peer]
+        .rendezvous
+        .as_ref()
+        .unwrap()
+        .registration_status()
+}
+
+#[test]
+fn test_mark_rendezvous_pending_if_idle_guards_slot_holders() {
+    let mut state = DiscoveryState::default();
+    let peer = PeerId::random();
+    state.update_peer_protocols(&peer, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    // Idle statuses (Discovered / Expired / already Pending) move to Pending.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Discovered);
+    assert!(state.mark_rendezvous_pending_if_idle(&peer));
+    assert_eq!(
+        rendezvous_status(&state, &peer),
+        RendezvousRegistrationStatus::Pending
+    );
+
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Expired);
+    assert!(state.mark_rendezvous_pending_if_idle(&peer));
+    assert_eq!(
+        rendezvous_status(&state, &peer),
+        RendezvousRegistrationStatus::Pending
+    );
+
+    // Requested must NOT be clobbered: a register is in flight, and the
+    // Registered event handler drops the confirmation unless status is
+    // still Requested. The call is a no-op and reports no change.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Requested);
+    assert!(!state.mark_rendezvous_pending_if_idle(&peer));
+    assert_eq!(
+        rendezvous_status(&state, &peer),
+        RendezvousRegistrationStatus::Requested
+    );
+
+    // Registered must NOT be clobbered: it holds a live server record and a
+    // fan-out slot that must keep counting.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Registered);
+    assert!(!state.mark_rendezvous_pending_if_idle(&peer));
+    assert_eq!(
+        rendezvous_status(&state, &peer),
+        RendezvousRegistrationStatus::Registered
+    );
+}
+
+#[test]
+fn test_find_new_rendezvous_peer_nominates_pending() {
+    let mut state = DiscoveryState::default();
+
+    let peer = PeerId::random();
+    state.update_peer_protocols(&peer, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    // A lone Pending peer (tried, blocked on a missing external address)
+    // must still be nominatable. The Expired-event handler relies on this
+    // to re-drive registration once a slot frees; skipping Pending would
+    // strand the peer until the next ExternalAddrConfirmed.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Pending);
+    assert_eq!(
+        state.find_new_rendezvous_peer(),
+        Some(peer),
+        "a Pending peer must be nominated, like Discovered"
+    );
+
+    // Once registration is in flight (Requested) or live (Registered) the
+    // peer occupies a slot and is no longer a nomination target.
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Requested);
+    assert_eq!(
+        state.find_new_rendezvous_peer(),
+        None,
+        "a Requested peer is not a nomination target"
+    );
+    state.update_rendezvous_registration_status(&peer, RendezvousRegistrationStatus::Registered);
+    assert_eq!(state.find_new_rendezvous_peer(), None);
+}
+
+#[test]
+fn test_find_new_rendezvous_peer_prefers_pending_over_expired() {
+    let mut state = DiscoveryState::default();
+
+    // `get_rendezvous_peer_ids` iterates the BTreeSet in PeerId order, so
+    // assign roles deterministically: the Expired peer sorts *first* and
+    // is therefore encountered (and recorded as the fallback candidate)
+    // before the Pending peer. This proves the eager Pending peer wins via
+    // early return even when an Expired candidate was already found — the
+    // preference is not an artifact of iteration order.
+    let mut ids = [PeerId::random(), PeerId::random()];
+    ids.sort();
+    let expired_peer = ids[0];
+    let pending_peer = ids[1];
+    // Pin the ordering assumption loudly: if get_rendezvous_peer_ids ever
+    // stops iterating in ascending PeerId order, this fails here rather
+    // than silently no longer exercising the early-return-over-candidate
+    // path.
+    assert!(
+        expired_peer < pending_peer,
+        "expired_peer must sort before pending_peer for this test to mean anything"
+    );
+    state.update_peer_protocols(&expired_peer, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&pending_peer, &[RENDEZVOUS_PROTOCOL_NAME]);
+
+    // Expired = was registered, lapsed (fallback). Pending = registerable
+    // target holding no slot (eager).
+    state.update_rendezvous_registration_status(
+        &expired_peer,
+        RendezvousRegistrationStatus::Expired,
+    );
+    state.update_rendezvous_registration_status(
+        &pending_peer,
+        RendezvousRegistrationStatus::Pending,
+    );
+    assert_eq!(
+        state.find_new_rendezvous_peer(),
+        Some(pending_peer),
+        "Pending (eager) wins over an already-found Expired (fallback) candidate"
+    );
+
+    // With only an Expired peer left, it is the fallback nomination.
+    state.update_rendezvous_registration_status(
+        &pending_peer,
+        RendezvousRegistrationStatus::Registered,
+    );
+    assert_eq!(
+        state.find_new_rendezvous_peer(),
+        Some(expired_peer),
+        "Expired peer is nominated when no eager target exists"
+    );
+}
+
+#[test]
 fn test_state_mutations() {
     let mut state = DiscoveryState::default();
     let peer_id = PeerId::random();

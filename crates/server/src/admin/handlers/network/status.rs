@@ -148,6 +148,7 @@ const fn relay_status_str(kind: RelayReservationKind) -> &'static str {
 const fn rendezvous_status_str(kind: RendezvousRegistrationKind) -> &'static str {
     match kind {
         RendezvousRegistrationKind::Discovered => "discovered",
+        RendezvousRegistrationKind::Pending => "pending",
         RendezvousRegistrationKind::Requested => "requested",
         RendezvousRegistrationKind::Registered => "registered",
         RendezvousRegistrationKind::Expired => "expired",

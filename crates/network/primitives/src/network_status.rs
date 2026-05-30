@@ -59,6 +59,7 @@ pub struct RendezvousEntry {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RendezvousRegistrationKind {
     Discovered,
+    Pending,
     Requested,
     Registered,
     Expired,
