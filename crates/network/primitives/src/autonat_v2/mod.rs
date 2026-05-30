@@ -630,8 +630,7 @@ mod tests {
         switchable.behaviour_mut().autonat = Behaviour::new(cfg);
         switchable.behaviour_mut().autonat.enable_server().unwrap();
 
-        // Conect againg with the server
-        // let _addr = switchable.listen().await;
+        // Connect again with the server
         let _addr = server.listen().with_tcp_addr_external().await;
         switchable.connect(&mut server).await;
 
