@@ -1,7 +1,7 @@
 name: 14 — Cascade status RPC (get_cascade_status + assert_cascade_complete, 2-node)
 description: >
   E2E coverage for the get_cascade_status RPC and the cascade-completion
-  assertion shipped in #2524 / merobox#255. Reuses 01's proven 2-node
+  assertion shipped in #2524 / merobox#272 (issue merobox#255). Reuses 01's proven 2-node
   namespace-cascade setup (namespace + one Open descendant subgroup +
   one context, node 2 joins via inheritance), runs ONE
   upgrade_group(cascade=true), then drives the new merobox steps:
@@ -31,8 +31,10 @@ nodes:
   count: 2
   image: merod:local
   prefix: app-migration-status
-  base_port: 9250
-  base_rpc_port: 9350
+  # Continues the per-scenario base-port sequence (13 = 9350/9450) so this
+  # scenario's host ports don't collide with any sibling's.
+  base_port: 9360
+  base_rpc_port: 9460
 
 steps:
   # Phase 1: Install v1 + v2 binaries on the ADMIN node only (node 2
