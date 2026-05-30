@@ -656,6 +656,48 @@ impl DiscoveryState {
         sum < max
     }
 
+    /// Nominate a rendezvous peer to (re)register with.
+    ///
+    /// Prioritizes peers that want to register but hold no fan-out slot:
+    /// `Discovered` (never tried) and `Pending` (tried, waiting on an
+    /// external address) are returned eagerly, with an `Expired` peer as
+    /// the fallback. Returns `None` when every known rendezvous peer is
+    /// already `Requested`/`Registered`.
+    ///
+    /// `Pending` must be nominated here, not skipped: when a slot frees
+    /// (e.g. another peer's registration `Expired`), this is the path that
+    /// re-drives a peer blocked on a missing external address. Skipping it
+    /// would strand that peer until the next `ExternalAddrConfirmed` —
+    /// which is exactly the slot it occupied as `Discovered` before the
+    /// `Pending` state existed.
+    pub(crate) fn find_new_rendezvous_peer(&self) -> Option<PeerId> {
+        let mut candidate = None;
+
+        for peer_id in self.get_rendezvous_peer_ids() {
+            let Some(peer_info) = self.get_peer_info(&peer_id) else {
+                continue;
+            };
+            let Some(rendezvous_info) = peer_info.rendezvous() else {
+                continue;
+            };
+            match rendezvous_info.registration_status() {
+                RendezvousRegistrationStatus::Discovered
+                | RendezvousRegistrationStatus::Pending => {
+                    // Registerable target holding no slot — take it now.
+                    return Some(peer_id);
+                }
+                RendezvousRegistrationStatus::Expired if candidate.is_none() => {
+                    candidate = Some(peer_id);
+                }
+                RendezvousRegistrationStatus::Requested
+                | RendezvousRegistrationStatus::Registered
+                | RendezvousRegistrationStatus::Expired => {}
+            }
+        }
+
+        candidate
+    }
+
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "Cannot use saturating_add() due to non-specific integer type"
