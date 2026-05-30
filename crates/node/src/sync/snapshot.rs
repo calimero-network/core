@@ -1,6 +1,6 @@
 //! Snapshot sync protocol for full state bootstrap.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use borsh::BorshDeserialize;
 use calimero_crypto::Nonce;
@@ -828,17 +828,33 @@ struct SnapshotBoundary {
 /// authenticate state-bearing records.
 ///
 /// Discovery flow:
-/// 1. Iterate all `ContextStateKey` records for this context.
+/// 1. Iterate all `ContextStateKey` records for this context once,
+///    retaining only their 32-byte hashed state keys plus the
+///    discovered entity ids — never the record *values*. The
+///    earlier implementation collected every key→value pair into a
+///    map up front, so a context with millions of keys would pull
+///    all of its state into memory on every paginated call before
+///    the cursor was even consulted (issue #2133). Values are now
+///    materialised lazily, one entity at a time, only for the
+///    bundles that actually land on the requested page.
 /// 2. For each record value, attempt borsh deserialization as
 ///    [`calimero_storage::index::EntityIndex`]; success identifies
-///    the record as `Key::Index(id)` and yields the entity id.
-/// 3. For each discovered id, look up `Key::Entry(id)` and
-///    `Key::RotationLog(id)` records by their hashed state keys
-///    and bundle them.
-/// 4. Records whose state-key doesn't match any discovered
-///    `Index`/`Entry`/`RotationLog` slot are dropped as orphans
-///    (with a warning) — a well-formed state tree shouldn't have
-///    any.
+///    the record as `Key::Index(id)` and yields the entity id. The
+///    value is dropped immediately after the id is extracted.
+/// 3. Entity ids are sorted (the canonical pagination order) and
+///    the cursor skips everything already shipped. For each id that
+///    falls on this page, `Key::Index(id)` and `Key::Entry(id)` are
+///    point-looked-up to materialise the bundle.
+/// 4. State keys that don't match any discovered `Index`/`Entry`
+///    slot are dropped as orphans (with a warning) — a well-formed
+///    state tree shouldn't have any.
+///
+/// **Read consistency:** the discovery scan uses a snapshot
+/// iterator, but the per-bundle value lookups in step 3 hit the
+/// live store. That is safe because `stream_snapshot_pages`
+/// re-reads `root_hash` after generation and rejects the snapshot
+/// with `InvalidBoundary` if the context mutated in the meantime, so
+/// a torn read can never be shipped to a peer.
 fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     handle: &calimero_store::Handle<L>,
     context_id: ContextId,
@@ -846,60 +862,56 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     page_limit: u16,
     byte_limit: u32,
 ) -> Result<(Vec<Vec<u8>>, Option<SnapshotCursor>, u64)> {
-    // Use snapshot iterator for consistent reads during iteration
+    // Pass 1 — single snapshot scan, memory bounded to keys + ids.
+    //
+    // Retain only the 32-byte hashed state keys (`present_keys`,
+    // for O(1) existence checks) and the discovered entity ids.
+    // Record *values* are deserialized to identify `Index` records
+    // and then dropped — never collected. The pre-#2133
+    // implementation built a full `state_key → value` map here, so
+    // a context with millions of keys pulled its entire state into
+    // memory on every paginated call.
     let mut iter = handle.iter_snapshot::<ContextStateKey>()?;
-
-    // Collect entries for this context into a state_key → value map
-    // for O(1) lookup by hashed key.
-    let mut all_records: BTreeMap<[u8; 32], Vec<u8>> = BTreeMap::new();
+    let mut present_keys: HashSet<[u8; 32]> = HashSet::new();
+    let mut entity_ids: Vec<Id> = Vec::new();
     for (key_result, value_result) in iter.entries() {
         let key = key_result?;
-        let value = value_result?;
-        if key.context_id() == context_id {
-            let _ = all_records.insert(key.state_key(), value.value.to_vec());
-        }
-    }
-    let total_records = all_records.len();
-
-    // Discover entity ids by trying to deserialize each value as
-    // `EntityIndex`. Cross-check against the expected hashed key
-    // (`Key::Index(id).to_bytes()`) to avoid false positives from
-    // Entry values that happen to borsh-deserialize as a partial
-    // EntityIndex.
-    //
-    // `consumed_keys` is intentionally populated ONLY in the
-    // bundling loop below — never here. That way the
-    // `unrecognized_count` at the end captures *every* state_key
-    // we didn't actually emit on the wire, and the orphan
-    // counters can be inspected as a subdivision of that total
-    // (a state_key contributes both to its specific orphan
-    // counter AND to `unrecognized_count`, which is the intended
-    // operator-visible behavior).
-    let mut entity_ids: Vec<Id> = Vec::new();
-    let mut consumed_keys: HashSet<[u8; 32]> = HashSet::new();
-    for (state_key, value) in &all_records {
-        let Ok(index_entity) =
-            borsh::from_slice::<calimero_storage::index::EntityIndex>(value.as_slice())
-        else {
+        if key.context_id() != context_id {
             continue;
-        };
-        let expected = StorageKey::Index(index_entity.id()).to_bytes();
-        if expected == *state_key {
-            entity_ids.push(index_entity.id());
         }
+        let state_key = key.state_key();
+
+        // Discover entity ids by trying to deserialize each value as
+        // `EntityIndex`. Cross-check against the expected hashed key
+        // (`Key::Index(id).to_bytes()`) to avoid false positives from
+        // Entry values that happen to borsh-deserialize as a partial
+        // EntityIndex. The borrowed value is dropped at the end of
+        // the iteration — nothing about it is retained.
+        let value = value_result?;
+        if let Ok(index_entity) =
+            borsh::from_slice::<calimero_storage::index::EntityIndex>(value.value.as_ref())
+        {
+            if StorageKey::Index(index_entity.id()).to_bytes() == state_key {
+                entity_ids.push(index_entity.id());
+            }
+        }
+
+        let _ = present_keys.insert(state_key);
     }
+    let total_records = present_keys.len();
     entity_ids.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
-    // Build per-entity bundles in canonical (id-sorted) order. Each
-    // bundle holds all `SnapshotRecord`s for one entity (the
-    // `Entity` Entry+Index pair plus its optional
-    // `Auxiliary::ROTATION_LOG`). Pagination is atomic on bundle
-    // boundaries — a bundle either fits entirely on the current
-    // page or moves to the next. Without this, the per-record
-    // pagination could split an entity across pages, and the
-    // cursor (which records the last entity id committed) would
-    // cause the resumed iteration to skip the entity outright,
-    // permanently dropping its Auxiliary records.
+    // Accounting pass — diagnostics only, keys not values.
+    //
+    // Walk every entity id and classify it from `present_keys`
+    // existence checks alone (no value reads). This reproduces the
+    // pre-#2133 bookkeeping exactly: `consumed_keys` collects every
+    // state_key we either ship in a bundle, deliberately skip
+    // (cursor / RotationLog), and `unrecognized_count` is the
+    // residual `total_records − consumed`. It is computed over the
+    // *full* id set on every call (independent of the page window)
+    // so the operator-visible warning stays stable across
+    // pagination.
     //
     // **Note on `SyncState`:** the sender doesn't look up
     // `Key::SyncState(id)` — no production codebase path actually
@@ -915,7 +927,7 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // `≤` (not `<`) is correct because the cursor records the
     // last fully-committed entity, not "next to emit."
     let start_after_id = start_cursor.map(|c| c.last_key);
-    let mut bundles: Vec<([u8; 32], Vec<SnapshotRecord>)> = Vec::new();
+    let mut consumed_keys: HashSet<[u8; 32]> = HashSet::new();
     // Specific anomaly counters. They subdivide `unrecognized_count`
     // computed below — a state_key flagged here is ALSO counted in
     // the residual unrecognized total. That's intentional: ops can
@@ -923,11 +935,30 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
     // Indexes (specific pattern), 5 were truly unrecognized."
     let mut orphan_index_without_entry: u64 = 0;
     let mut orphan_entry_without_index: u64 = 0;
+    // Count of records that would be emitted in a fresh (no-cursor)
+    // run — counts every entity's bundle, regardless of whether
+    // we're cursor-skipping it on this call. Stable across paginated
+    // calls so operators can monitor snapshot progress reliably (it
+    // flows into the "Streaming snapshot" info log; an earlier
+    // per-page count shrank with each paginated call, misleading
+    // operators).
+    let mut total_entries: u64 = 0;
     for id in &entity_ids {
         let id_bytes = *id.as_bytes();
         let index_key = StorageKey::Index(*id).to_bytes();
         let entry_key = StorageKey::Entry(*id).to_bytes();
         let rotation_log_key = StorageKey::RotationLog(*id).to_bytes();
+        let has_index = present_keys.contains(&index_key);
+        let has_entry = present_keys.contains(&entry_key);
+        let has_rotation_log = present_keys.contains(&rotation_log_key);
+
+        // An entity contributes 1 record (Entity bundling Entry +
+        // Index) — RotationLog Auxiliary isn't shipped per the
+        // #2387 security trade-off, so it doesn't contribute.
+        if has_index && has_entry {
+            total_entries += 1;
+        }
+
         if let Some(after) = start_after_id {
             if id_bytes <= after {
                 // Cursor-skipped — these keys were already shipped on
@@ -935,37 +966,30 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
                 // appear in the residual unrecognized count for the
                 // current page.
                 //
-                // Only insert keys that actually exist in
-                // `all_records`. Inserting a phantom key (e.g. a
-                // RotationLog state_key for an entity that doesn't
-                // have one) would push `consumed_keys.len()` past
-                // `total_records`, making the
-                // `saturating_sub` at the bottom return 0 and
-                // silently suppress the operator-visible
-                // unrecognized-records warning even when real
-                // orphans exist.
-                if all_records.contains_key(&index_key) {
+                // Only insert keys that actually exist. Inserting a
+                // phantom key (e.g. a RotationLog state_key for an
+                // entity that doesn't have one) would push
+                // `consumed_keys.len()` past `total_records`, making
+                // the `saturating_sub` below return 0 and silently
+                // suppress the operator-visible unrecognized-records
+                // warning even when real orphans exist.
+                if has_index {
                     let _ = consumed_keys.insert(index_key);
                 }
-                if all_records.contains_key(&entry_key) {
+                if has_entry {
                     let _ = consumed_keys.insert(entry_key);
                 }
-                if all_records.contains_key(&rotation_log_key) {
+                if has_rotation_log {
                     let _ = consumed_keys.insert(rotation_log_key);
                 }
                 continue;
             }
         }
 
-        let index_bytes = all_records.get(&index_key).cloned();
-        let entry_bytes = all_records.get(&entry_key).cloned();
-        let rotation_log_bytes = all_records.get(&rotation_log_key).cloned();
-
-        let mut bundle: Vec<SnapshotRecord> = Vec::new();
-
-        // Emit Entity record bundling Entry + Index (the common case
-        // — every persisted entity has both). Verification on the
-        // receiver runs against the metadata inside `index`.
+        // Classify the entity. An `Entity` record is shipped only
+        // when both Entry + Index exist (the common case — every
+        // persisted entity has both); verification on the receiver
+        // runs against the metadata inside `index`.
         //
         // **No orphan-as-Auxiliary fallback.** A previous iteration
         // shipped Index-without-Entry / Entry-without-Index as
@@ -976,26 +1000,20 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         // `Auxiliary { kind: INDEX, id, value: forged_index }` for
         // the same id and clobber the just-verified Index with a
         // forged one. Orphan Entry/Index in a well-formed state tree
-        // shouldn't exist anyway; if they do we drop them (debug
-        // log emitted below) rather than ship them on an unverified
-        // channel.
+        // shouldn't exist anyway; if they do we drop them (debug log
+        // below) rather than ship them on an unverified channel.
         //
         // `consumed_keys` is updated only on successful bundling /
         // explicit cursor skip. Orphan arms intentionally do NOT
         // insert the orphan key into `consumed_keys` so they flow
         // into the final `unrecognized_count` (the operator-visible
         // catch-all for non-bundle records).
-        match (index_bytes.clone(), entry_bytes.clone()) {
-            (Some(index), Some(entry)) => {
-                bundle.push(SnapshotRecord::Entity {
-                    id: id_bytes,
-                    entry,
-                    index,
-                });
+        match (has_index, has_entry) {
+            (true, true) => {
                 let _ = consumed_keys.insert(index_key);
                 let _ = consumed_keys.insert(entry_key);
             }
-            (Some(_), None) => {
+            (true, false) => {
                 debug!(
                     %context_id, id = ?id_bytes,
                     "dropping orphan Index (no matching Entry) — would be \
@@ -1003,20 +1021,19 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
                 );
                 orphan_index_without_entry += 1;
             }
-            (None, Some(_)) => {
+            (false, true) => {
                 // Structurally unreachable: `entity_ids` was derived
-                // from successful `EntityIndex` deserializations in
-                // `all_records`, so `index_bytes` is always `Some`
-                // here. Kept for exhaustiveness; if it ever does
-                // fire it indicates a discovery bug and we want it
-                // counted as an orphan.
+                // from successful `EntityIndex` deserializations, so
+                // `has_index` is always true here. Kept for
+                // exhaustiveness; if it ever does fire it indicates a
+                // discovery bug and we want it counted as an orphan.
                 debug!(
                     %context_id, id = ?id_bytes,
-                    "unreachable: entity_id without matching Index in all_records"
+                    "unreachable: entity_id without matching Index in present_keys"
                 );
                 orphan_entry_without_index += 1;
             }
-            (None, None) => {}
+            (false, false) => {}
         }
 
         // RotationLog is intentionally NOT shipped via snapshot.
@@ -1029,20 +1046,16 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         // points may fail to verify until per-entry rotation-log
         // signing lands — bounded edge case, documented in the
         // receiver's Auxiliary reject path.
-        if rotation_log_bytes.is_some() {
+        if has_rotation_log {
             // Mark the key consumed so the unrecognized-records
-            // warning at the bottom doesn't fire for it (we know
-            // about the record; we're choosing not to ship it).
+            // warning below doesn't fire for it (we know about the
+            // record; we're choosing not to ship it).
             let _ = consumed_keys.insert(rotation_log_key);
-        }
-
-        if !bundle.is_empty() {
-            bundles.push((id_bytes, bundle));
         }
     }
 
-    // Residual non-bundle records: state_keys present in
-    // `all_records` that weren't bundled and weren't cursor-skipped.
+    // Residual non-bundle records: state_keys present for this
+    // context that weren't bundled and weren't cursor-skipped.
     // Includes both the orphan_* anomalies counted above and any
     // truly unrecognized records (e.g. Entry blobs not paired with
     // any discoverable Index — we can't recover their entity id from
@@ -1061,59 +1074,81 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
         );
     }
 
-    // Count of records that would be emitted in a fresh (no-cursor)
-    // run — counts every entity's bundle, regardless of whether
-    // we're cursor-skipping it on this call. Stable across paginated
-    // calls so operators can monitor snapshot progress reliably
-    // (this value flows into the "Streaming snapshot" info log; the
-    // bot review pointed out that the old per-page-bundles count
-    // shrank with each paginated call, making the log misleading).
-    let total_entries: u64 = {
-        let mut count: u64 = 0;
-        for id in &entity_ids {
-            let index_key = StorageKey::Index(*id).to_bytes();
-            let entry_key = StorageKey::Entry(*id).to_bytes();
-            // An entity contributes 1 record (Entity bundling Entry +
-            // Index) — RotationLog Auxiliary isn't shipped per the
-            // #2387 security trade-off, so it doesn't contribute.
-            if all_records.contains_key(&index_key) && all_records.contains_key(&entry_key) {
-                count += 1;
-            }
-        }
-        count
-    };
-
-    // Serialize bundles into pages atomically. Cursor records the
-    // last entity id whose bundle was fully committed to a page.
+    // Emit pass — materialise values for the requested page only.
+    //
+    // Walk the cursor-skipped id list again, but this time
+    // point-look-up the Entry + Index *values* for each entity that
+    // lands on the page and serialize them. Resident value memory is
+    // bounded to roughly one burst (`page_limit × byte_limit`)
+    // because we stop the moment `page_limit` pages are filled — the
+    // whole point of #2133. The lookups hit the live store rather
+    // than the Pass-1 snapshot iterator; `stream_snapshot_pages`
+    // re-checks `root_hash` after generation and discards the
+    // snapshot on any change, so a torn read can never reach a peer.
+    //
+    // Pagination is atomic on entity boundaries — an entity's record
+    // either fits entirely on the current page or moves to the next.
+    // The cursor records the last entity id fully committed to a
+    // page, so a resumed call (`id ≤ cursor`) skips exactly the
+    // already-shipped entities.
     //
     // **Invariant**: `last_id` is `Some` whenever the early-return
-    // path inside the loop fires. The early-return is gated on
+    // path fires. The early-return is gated on
     // `pages.len() >= page_limit`, which only increases after a
-    // `pages.push(current_page)`; that push requires
-    // `current_page` to be non-empty, which only happens after a
-    // prior bundle's `current_page.extend(bundle_bytes)` — and
-    // that extend sets `last_id = Some(bundle_id)`. So the cursor
-    // emitted on early-return always references a real, fully-
-    // committed entity id; we never accidentally signal completion
-    // (cursor = None) when more bundles remain.
+    // `pages.push(current_page)`; that push requires `current_page`
+    // to be non-empty, which only happens after a prior entity's
+    // `current_page.extend(record_bytes)` — and that extend sets
+    // `last_id = Some(id_bytes)`. So the cursor emitted on
+    // early-return always references a real, fully-committed entity
+    // id; we never signal completion (cursor = None) with bundles
+    // still pending.
     let mut pages: Vec<Vec<u8>> = Vec::new();
     let mut current_page: Vec<u8> = Vec::new();
     let mut last_id: Option<[u8; 32]> = None;
 
-    for (bundle_id, bundle) in bundles.into_iter() {
-        // Pre-serialize the whole bundle so we know its size.
-        let mut bundle_bytes: Vec<u8> = Vec::new();
-        for record in &bundle {
-            let record_bytes = borsh::to_vec(record)?;
-            bundle_bytes.extend(record_bytes);
+    for id in &entity_ids {
+        let id_bytes = *id.as_bytes();
+        if let Some(after) = start_after_id {
+            if id_bytes <= after {
+                continue;
+            }
         }
 
-        // Page-break BEFORE adding this bundle if it would exceed
-        // byte_limit and the current page isn't empty. A bundle that
+        let index_key = StorageKey::Index(*id).to_bytes();
+        let entry_key = StorageKey::Entry(*id).to_bytes();
+        // Only fully-paired entities are shipped; orphans were
+        // diagnosed in the accounting pass and are intentionally
+        // dropped. The existence pre-check avoids a value lookup for
+        // ids that can't produce a bundle.
+        if !(present_keys.contains(&index_key) && present_keys.contains(&entry_key)) {
+            continue;
+        }
+
+        // Materialise the values now. A `None` here means the record
+        // was removed between the discovery scan and this lookup; the
+        // post-generation `root_hash` recheck will reject the whole
+        // snapshot, so skipping it is safe.
+        let Some(index) = handle.get(&ContextStateKey::new(context_id, index_key))? else {
+            continue;
+        };
+        let index = index.value.to_vec();
+        let Some(entry) = handle.get(&ContextStateKey::new(context_id, entry_key))? else {
+            continue;
+        };
+        let entry = entry.value.to_vec();
+
+        let record_bytes = borsh::to_vec(&SnapshotRecord::Entity {
+            id: id_bytes,
+            entry,
+            index,
+        })?;
+
+        // Page-break BEFORE adding this record if it would exceed
+        // byte_limit and the current page isn't empty. A record that
         // by itself exceeds byte_limit still goes on its own page —
-        // splitting would defeat atomicity, and oversized bundles
+        // splitting would defeat atomicity, and oversized records
         // are bounded by `MAX_ENTITY_DATA_SIZE` on the wire types.
-        if !current_page.is_empty() && (current_page.len() + bundle_bytes.len()) as u32 > byte_limit
+        if !current_page.is_empty() && (current_page.len() + record_bytes.len()) as u32 > byte_limit
         {
             pages.push(std::mem::take(&mut current_page));
             if pages.len() >= page_limit as usize {
@@ -1125,8 +1160,8 @@ fn generate_snapshot_pages<L: calimero_store::layer::ReadLayer>(
             }
         }
 
-        current_page.extend(bundle_bytes);
-        last_id = Some(bundle_id);
+        current_page.extend(record_bytes);
+        last_id = Some(id_bytes);
     }
 
     if !current_page.is_empty() {
@@ -1198,7 +1233,202 @@ fn collect_context_state_keys<L: calimero_store::layer::ReadLayer>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    use calimero_primitives::context::ContextId;
+    use calimero_storage::index::EntityIndex;
+    use calimero_store::db::InMemoryDB;
+    use calimero_store::Store;
+
     use super::*;
+
+    /// Persist a well-formed entity (Index + Entry pair) for `ctx`
+    /// into `store`, mirroring how production state is laid out: the
+    /// Index value is a borsh-serialized `EntityIndex` whose id
+    /// hashes to the Index state-key.
+    fn put_entity(store: &Store, ctx: ContextId, id_bytes: [u8; 32], entry_len: usize) {
+        let id = Id::new(id_bytes);
+        let index_bytes = borsh::to_vec(&EntityIndex::minimal_for_test(id)).unwrap();
+        // Entry payload is opaque to the sender; fill it with a
+        // recognizable byte so size-based pagination has something to
+        // chew on. It must NOT deserialize as an `EntityIndex` at the
+        // Entry state-key, which is guaranteed by the key cross-check
+        // in discovery regardless of the bytes here.
+        let entry_bytes = vec![0xEE_u8; entry_len];
+
+        let mut handle = store.handle();
+        let index_key = ContextStateKey::new(ctx, StorageKey::Index(id).to_bytes());
+        handle
+            .put(
+                &index_key,
+                &ContextStateValue::from(Slice::from(index_bytes)),
+            )
+            .unwrap();
+        let entry_key = ContextStateKey::new(ctx, StorageKey::Entry(id).to_bytes());
+        handle
+            .put(
+                &entry_key,
+                &ContextStateValue::from(Slice::from(entry_bytes)),
+            )
+            .unwrap();
+    }
+
+    /// Drive `generate_snapshot_pages` to exhaustion the way the real
+    /// streaming loop does — feeding each call's `next_cursor` back in
+    /// — and return every emitted entity id in arrival order plus the
+    /// `total_entries` reported on every call.
+    fn drain_all_pages(
+        store: &Store,
+        ctx: ContextId,
+        page_limit: u16,
+        byte_limit: u32,
+    ) -> (Vec<[u8; 32]>, Vec<u64>) {
+        let handle = store.handle();
+        let mut ids = Vec::new();
+        let mut totals = Vec::new();
+        let mut cursor: Option<SnapshotCursor> = None;
+        // Bounded to keep a buggy cursor (that never advances) from
+        // looping forever — the assertions below catch the failure.
+        for _ in 0..10_000 {
+            let (pages, next, total) =
+                generate_snapshot_pages(&handle, ctx, cursor.as_ref(), page_limit, byte_limit)
+                    .unwrap();
+            totals.push(total);
+            for page in &pages {
+                for record in decode_snapshot_records(page).unwrap() {
+                    match record {
+                        SnapshotRecord::Entity { id, .. } => ids.push(id),
+                        SnapshotRecord::Auxiliary { .. } => panic!("unexpected Auxiliary record"),
+                    }
+                }
+            }
+            match next {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        (ids, totals)
+    }
+
+    #[test]
+    fn test_generate_snapshot_pages_empty_context() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let handle = store.handle();
+        let ctx = ContextId::from([1u8; 32]);
+        let (pages, cursor, total) = generate_snapshot_pages(
+            &handle,
+            ctx,
+            None,
+            DEFAULT_PAGE_LIMIT,
+            DEFAULT_PAGE_BYTE_LIMIT,
+        )
+        .unwrap();
+        assert!(pages.is_empty());
+        assert!(cursor.is_none());
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_generate_snapshot_pages_single_page_round_trips_all_entities() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ctx = ContextId::from([2u8; 32]);
+        let expected: BTreeSet<[u8; 32]> = (0..20u8)
+            .map(|i| {
+                let mut id = [0u8; 32];
+                id[0] = i;
+                put_entity(&store, ctx, id, 16);
+                id
+            })
+            .collect();
+
+        // One generous page — everything fits, cursor signals done.
+        let (pages, cursor, total) =
+            generate_snapshot_pages(&store.handle(), ctx, None, DEFAULT_PAGE_LIMIT, 1 << 20)
+                .unwrap();
+        assert!(cursor.is_none(), "single page should not request a resume");
+        assert_eq!(total, 20);
+
+        let mut got = BTreeSet::new();
+        for page in &pages {
+            for record in decode_snapshot_records(page).unwrap() {
+                if let SnapshotRecord::Entity { id, .. } = record {
+                    let _ = got.insert(id);
+                }
+            }
+        }
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn test_generate_snapshot_pages_pagination_is_complete_and_dedup() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ctx = ContextId::from([3u8; 32]);
+        let expected: BTreeSet<[u8; 32]> = (0..50u16)
+            .map(|i| {
+                let mut id = [0u8; 32];
+                // Spread across two leading bytes so sort order is
+                // exercised beyond a single byte.
+                id[0] = (i >> 8) as u8;
+                id[1] = (i & 0xff) as u8;
+                put_entity(&store, ctx, id, 200);
+                id
+            })
+            .collect();
+
+        // Tight limits force many resume round-trips: one page per
+        // call, ~2 entities per page at 200-byte entries.
+        let (ids, totals) = drain_all_pages(&store, ctx, 1, 512);
+
+        // Every entity exactly once — no drops across page breaks, no
+        // duplicates from cursor overlap.
+        assert_eq!(ids.len(), expected.len(), "duplicate or dropped entity");
+        let got: BTreeSet<[u8; 32]> = ids.iter().copied().collect();
+        assert_eq!(got, expected);
+
+        // Entities arrive in canonical id-sorted order across pages.
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted, "pages must be emitted in id-sorted order");
+
+        // total_entries is stable across every paginated call.
+        assert!(
+            totals.iter().all(|&t| t == 50),
+            "total_entries drifted: {totals:?}"
+        );
+    }
+
+    #[test]
+    fn test_generate_snapshot_pages_drops_orphan_index_without_entry() {
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let ctx = ContextId::from([4u8; 32]);
+
+        // One complete entity ...
+        let mut good = [0u8; 32];
+        good[0] = 1;
+        put_entity(&store, ctx, good, 16);
+
+        // ... and an orphan Index with no matching Entry.
+        let mut orphan = [0u8; 32];
+        orphan[0] = 2;
+        let orphan_id = Id::new(orphan);
+        let mut handle = store.handle();
+        let orphan_key = ContextStateKey::new(ctx, StorageKey::Index(orphan_id).to_bytes());
+        let orphan_bytes = borsh::to_vec(&EntityIndex::minimal_for_test(orphan_id)).unwrap();
+        handle
+            .put(
+                &orphan_key,
+                &ContextStateValue::from(Slice::from(orphan_bytes)),
+            )
+            .unwrap();
+
+        let (ids, totals) =
+            drain_all_pages(&store, ctx, DEFAULT_PAGE_LIMIT, DEFAULT_PAGE_BYTE_LIMIT);
+        // Only the complete entity is shipped; the orphan is dropped.
+        assert_eq!(ids, vec![good]);
+        // total_entries counts complete (Index+Entry) entities only.
+        assert!(totals.iter().all(|&t| t == 1), "{totals:?}");
+    }
 
     #[test]
     fn test_decode_snapshot_records_empty() {
