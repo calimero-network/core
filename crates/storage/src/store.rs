@@ -238,15 +238,15 @@ impl StorageAdaptor for MainStorage {
         storage_write(key, value)
     }
 
-    // Ordered index, routed to the env layer (host functions in wasm, the
-    // RocksDB `SortedIndex` column on a node, an in-memory ordered map in
-    // native tests). Composite keys are `collection_id ‖ order_key` (unhashed),
-    // so the backend's byte order is the logical key order.
-    //
-    // NOTE: `index_supported()` is intentionally NOT overridden yet — it stays
-    // `false`, so `SortedMap` keeps using its in-memory sort and these methods
-    // are dormant until the node backs `Column::SortedIndex`. Flipping
-    // `index_supported()` to `true` is the single switch that activates them.
+    // Ordered index, routed to the env layer (host functions in wasm reaching
+    // the node's RocksDB `SortedIndex` column via `ContextStorage`; an
+    // in-memory ordered map in native tests). Composite keys are
+    // `collection_id ‖ order_key` (unhashed), so the backend's byte order is the
+    // logical key order — making range/prefix/pagination a native seek.
+
+    fn index_supported() -> bool {
+        true
+    }
 
     fn index_put(collection: Id, order_key: &[u8], entry: Id) {
         crate::env::storage_index_set(&index_key(collection, order_key), entry.as_bytes());
