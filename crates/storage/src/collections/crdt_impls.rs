@@ -312,8 +312,14 @@ where
 
 impl<K, V, S> Mergeable for SortedMap<K, V, S>
 where
-    K: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Ord + Clone + PartialEq,
-    V: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable,
+    K: borsh::BorshSerialize
+        + borsh::BorshDeserialize
+        + AsRef<[u8]>
+        + Ord
+        + Clone
+        + PartialEq
+        + 'static,
+    V: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable + 'static,
     S: StorageAdaptor,
 {
     /// Merge two sorted maps entry-by-entry.

@@ -72,8 +72,8 @@ where
 
 impl<K, V, S> Decomposable for SortedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Ord + Clone + PartialEq,
-    V: BorshSerialize + BorshDeserialize + Clone,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Ord + Clone + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + Clone + 'static,
     S: StorageAdaptor,
 {
     type Key = CompositeKey;

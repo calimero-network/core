@@ -3,8 +3,9 @@
 //! [`SortedMap`] stores its entries exactly like [`UnorderedMap`](super::UnorderedMap)
 //! — a single inner [`Collection`] of `(K, V)` pairs keyed by
 //! `compute_id(parent, key)` — so it inherits the *identical* CRDT merge
-//! semantics (add-wins keys, recursive value merge, per-key tombstones) and
-//! on-wire byte layout. Nothing extra is synced.
+//! semantics (add-wins keys, recursive value merge, per-key tombstones, and the
+//! nested-CRDT deterministic re-keying from [`super::rekey`]) and on-wire byte
+//! layout. Nothing extra is synced.
 //!
 //! What it adds is an **ordered view**. Because entry ids are
 //! `SHA256(parent ‖ key)`, entity-id order ≠ key order, and the underlying
@@ -47,6 +48,25 @@ use std::collections::BTreeMap;
 pub struct SortedMap<K, V, S: StorageAdaptor = MainStorage> {
     #[borsh(bound(serialize = "", deserialize = ""))]
     inner: Collection<(K, V), S>,
+}
+
+/// Re-key a nested sorted map (one stored as another collection's value)
+/// relative to its storage parent — mirrors [`UnorderedMap`](super::UnorderedMap)
+/// so a nested `SortedMap` value's children converge across nodes. See
+/// [`super::rekey`].
+impl<K, V, S> super::rekey::RekeyTarget for SortedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + 'static,
+    S: StorageAdaptor,
+{
+    fn rekey_relative_to(&mut self, parent_id: Id) {
+        self.reassign_deterministic_id_under(
+            parent_id,
+            "__nested_sorted_map",
+            CrdtType::sorted_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
+        );
+    }
 }
 
 impl<K, V, S> SortedMap<K, V, S>
@@ -112,6 +132,83 @@ where
         self.inner.element_mut().metadata.crdt_type = Some(crdt_type);
     }
 
+    /// Reassign the map's id + collection CRDT type to a deterministic value
+    /// keyed under `parent_id` (`None` = top-level / ROOT-relative). Shared
+    /// implementation behind the two `reassign_deterministic_id_*` entry points.
+    ///
+    /// Migration is: snapshot entries → clear (drops old-id entries) → reassign
+    /// the collection id → re-insert (each entry, and its own nested values via
+    /// `insert`'s re-key, gets a new deterministic id under the new parent). The
+    /// snapshot uses unordered iteration: re-insert order is irrelevant because
+    /// each entry's new id is a pure function of its key.
+    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
+    fn reassign_deterministic_id_keyed(
+        &mut self,
+        parent_id: Option<Id>,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) where
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
+    {
+        let new_id = super::compute_collection_id(parent_id, field_name);
+        let old_id = self.inner.id();
+
+        // If already has the correct ID, only ensure CRDT type is correct.
+        if old_id == new_id {
+            self.set_collection_crdt_type(crdt_type);
+            return;
+        }
+
+        // Snapshot all entries before migration (must do this before clearing).
+        let entries: Vec<(K, V)> = self
+            .iter_unordered()
+            .expect("failed to read entries for re-key")
+            .collect();
+
+        // Clear the collection (removes old entries with old IDs).
+        self.inner.clear().expect("failed to clear for re-key");
+
+        // Reassign the collection's ID (Collection's `_with_crdt_type` is itself
+        // just `_under(None, ..)`, so this single call covers both variants).
+        self.inner
+            .reassign_deterministic_id_under(parent_id, field_name, crdt_type);
+
+        // Re-insert all entries (they will get new IDs based on new parent ID).
+        for (key, value) in entries {
+            self.insert(key, value)
+                .expect("failed to re-insert entry during re-key");
+        }
+    }
+
+    /// Reassigns the map's ID and collection CRDT type to deterministic values.
+    pub(crate) fn reassign_deterministic_id_with_crdt_type(
+        &mut self,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) where
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
+    {
+        self.reassign_deterministic_id_keyed(None, field_name, crdt_type);
+    }
+
+    /// Like [`reassign_deterministic_id_with_crdt_type`], but keys the new id
+    /// relative to `parent_id` (for a map nested inside another entity).
+    ///
+    /// [`reassign_deterministic_id_with_crdt_type`]: Self::reassign_deterministic_id_with_crdt_type
+    pub(crate) fn reassign_deterministic_id_under(
+        &mut self,
+        parent_id: Id,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) where
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
+    {
+        self.reassign_deterministic_id_keyed(Some(parent_id), field_name, crdt_type);
+    }
+
     /// Reassigns the map's ID to a deterministic ID based on field name,
     /// migrating all existing entries to the new parent ID.
     ///
@@ -121,41 +218,15 @@ where
     ///
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this map
-    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
     pub fn reassign_deterministic_id(&mut self, field_name: &str)
     where
-        K: AsRef<[u8]> + PartialEq,
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
     {
-        let crdt_type =
-            CrdtType::sorted_map(std::any::type_name::<K>(), std::any::type_name::<V>());
-
-        let new_id = super::compute_collection_id(None, field_name);
-        let old_id = self.inner.id();
-
-        // If already has the correct ID, only ensure CRDT type is correct.
-        if old_id == new_id {
-            self.set_collection_crdt_type(crdt_type);
-            return;
-        }
-
-        // Collect all entries before migration (must do this before clearing).
-        let entries: Vec<(K, V)> = self
-            .iter_unordered()
-            .expect("failed to read entries for migration")
-            .collect();
-
-        // Clear the collection (removes old entries with old IDs).
-        self.inner.clear().expect("failed to clear for migration");
-
-        // Now reassign the collection's ID with the requested CRDT type.
-        self.inner
-            .reassign_deterministic_id_with_crdt_type(field_name, crdt_type);
-
-        // Re-insert all entries (they will get new IDs based on new parent ID).
-        for (key, value) in entries {
-            self.insert(key, value)
-                .expect("failed to re-insert entry during migration");
-        }
+        self.reassign_deterministic_id_with_crdt_type(
+            field_name,
+            CrdtType::sorted_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
+        );
     }
 
     /// Insert a key-value pair into the map.
@@ -169,7 +240,8 @@ where
     /// returned.
     pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, StoreError>
     where
-        K: AsRef<[u8]> + PartialEq,
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
     {
         self.insert_with_storage_type(key, value, StorageType::Public, None)
     }
@@ -185,14 +257,25 @@ where
     pub(crate) fn insert_with_storage_type(
         &mut self,
         key: K,
-        value: V,
+        mut value: V,
         storage_type: StorageType,
         custom_id: Option<Id>,
     ) -> Result<Option<V>, StoreError>
     where
-        K: AsRef<[u8]> + PartialEq,
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
     {
+        // Register this map type's nested-id re-key thunk, so a map stored as
+        // another collection's value (map-of-map) is re-keyed when that outer
+        // collection is itself stored (see `super::rekey`).
+        super::rekey::register_rekey::<Self>();
+
         let id = custom_id.unwrap_or_else(|| compute_id(self.inner.id(), key.as_ref()));
+
+        // Re-key any nested collections in `value` deterministically relative to
+        // this entry's (deterministic) id, so independently-created nested CRDTs
+        // converge across nodes instead of carrying per-node random ids.
+        super::rekey::rekey_nested_value(&mut value, id);
 
         if let Some(mut entry) = self.inner.get_mut(id)? {
             let (_, v) = &mut *entry;
@@ -638,15 +721,26 @@ where
 
 impl<K, V, S> Extend<(K, V)> for SortedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
-    V: BorshSerialize + BorshDeserialize,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + 'static,
     S: StorageAdaptor,
 {
     fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
+        // Register this map type's own re-key thunk, exactly as the other store
+        // paths do, so a map populated only via `extend`/`collect` is still
+        // re-keyed when it is itself nested as a value (map-of-map).
+        super::rekey::register_rekey::<Self>();
+
         let parent = self.inner.id();
 
-        let iter = iter.into_iter().map(|(k, v)| {
+        let iter = iter.into_iter().map(|(k, mut v)| {
             let id = compute_id(parent, k.as_ref());
+
+            // Re-key nested collections in the value relative to its entry id,
+            // matching `insert`/`VacantEntry::insert`. Without this, a nested CRDT
+            // bulk-inserted via `extend`/`collect` keeps a random internal id and
+            // two nodes that independently build the same entry never converge.
+            super::rekey::rekey_nested_value(&mut v, id);
 
             (Some(id), (k, v))
         });
@@ -657,8 +751,8 @@ where
 
 impl<K, V, S> FromIterator<(K, V)> for SortedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
-    V: BorshSerialize + BorshDeserialize,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + 'static,
     S: StorageAdaptor,
 {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
@@ -772,7 +866,10 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn or_insert(self, default: V) -> Result<ValueMut<'a, K, V, S>, StoreError> {
+    pub fn or_insert(self, default: V) -> Result<ValueMut<'a, K, V, S>, StoreError>
+    where
+        V: 'static,
+    {
         match self {
             Entry::Occupied(entry) => Ok(ValueMut {
                 entry_mut: entry.entry_mut,
@@ -791,6 +888,7 @@ where
     pub fn or_insert_with<F>(self, f: F) -> Result<ValueMut<'a, K, V, S>, StoreError>
     where
         F: FnOnce() -> V,
+        V: 'static,
     {
         match self {
             Entry::Occupied(entry) => Ok(ValueMut {
@@ -818,7 +916,13 @@ where
     }
 
     /// Replaces the value in the entry and returns the old value.
-    pub fn insert(&mut self, value: V) -> V {
+    pub fn insert(&mut self, mut value: V) -> V
+    where
+        V: 'static,
+    {
+        // Re-key nested collections in the replacement value relative to this
+        // entry's (stable, deterministic) id — same reason as `VacantEntry::insert`.
+        super::rekey::rekey_nested_value(&mut value, self.entry_mut.id());
         mem::replace(&mut self.entry_mut.1, value)
     }
 
@@ -846,8 +950,16 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn insert(self, value: V) -> Result<ValueMut<'a, K, V, S>, StoreError> {
+    pub fn insert(self, mut value: V) -> Result<ValueMut<'a, K, V, S>, StoreError>
+    where
+        V: 'static,
+    {
         let id = compute_id(self.map.inner.id(), self.key.as_ref());
+
+        // Re-key any nested collections in `value` deterministically relative to
+        // this entry's (deterministic) id — exactly as `insert_with_storage_type`
+        // does, so a nested CRDT stored via the Entry API converges across nodes.
+        super::rekey::rekey_nested_value(&mut value, id);
 
         drop(self.map.inner.insert(Some(id), (self.key, value))?);
 
@@ -903,7 +1015,7 @@ mod tests {
 
         // Insert deliberately out of order.
         for k in ["delta", "alpha", "charlie", "bravo", "echo"] {
-            drop(map.insert(k.to_owned(), k.to_uppercase()).unwrap());
+            map.insert(k.to_owned(), k.to_uppercase()).unwrap();
         }
 
         let keys: Vec<String> = map.keys().expect("keys failed").collect();
@@ -921,7 +1033,7 @@ mod tests {
     fn test_sorted_map_range() {
         let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
         for k in ["a", "b", "c", "d", "e", "f"] {
-            drop(map.insert(k.to_owned(), k.to_owned()).unwrap());
+            map.insert(k.to_owned(), k.to_owned()).unwrap();
         }
 
         // Half-open range [b, e).
@@ -953,7 +1065,7 @@ mod tests {
     fn test_sorted_map_prefix() {
         let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
         for k in ["user:alice", "user:bob", "post:1", "user:carol", "post:2"] {
-            drop(map.insert(k.to_owned(), String::new()).unwrap());
+            map.insert(k.to_owned(), String::new()).unwrap();
         }
 
         let users: Vec<String> = map
@@ -1004,7 +1116,7 @@ mod tests {
         assert!(map.last().unwrap().is_none());
 
         for k in ["m", "a", "z", "f"] {
-            drop(map.insert(k.to_owned(), k.to_owned()).unwrap());
+            map.insert(k.to_owned(), k.to_owned()).unwrap();
         }
 
         assert_eq!(map.first().unwrap().unwrap().0, "a");
@@ -1039,7 +1151,7 @@ mod tests {
     fn test_sorted_map_remove_updates_order() {
         let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
         for k in ["a", "b", "c", "d"] {
-            drop(map.insert(k.to_owned(), k.to_owned()).unwrap());
+            map.insert(k.to_owned(), k.to_owned()).unwrap();
         }
 
         drop(map.remove("b").unwrap());
@@ -1115,7 +1227,7 @@ mod tests {
     #[test]
     fn test_entry_occupied_is_used_in_match() {
         let mut map = Root::new(|| SortedMap::<_, _, MainStorage>::new());
-        drop(map.insert("k".to_owned(), "v".to_owned()).unwrap());
+        map.insert("k".to_owned(), "v".to_owned()).unwrap();
 
         let value = match map.entry("k".to_owned()).unwrap() {
             Entry::Occupied(e) => e.get().clone(),
