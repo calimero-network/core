@@ -61,16 +61,19 @@ static REGISTRY: LazyLock<RwLock<HashMap<TypeId, RekeyThunk>>> =
 /// cheap (a read-lock hit on the common already-registered path).
 pub(crate) fn register_rekey<T: RekeyTarget + 'static>() {
     let tid = TypeId::of::<T>();
+    // Recover from a poisoned lock rather than propagating the panic: the
+    // registry is an append-only map of independent fn pointers, so a thread
+    // that panicked mid-access left it in a usable state.
     if REGISTRY
         .read()
-        .expect("rekey registry poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .contains_key(&tid)
     {
         return;
     }
     REGISTRY
         .write()
-        .expect("rekey registry poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .entry(tid)
         .or_insert(|any: &mut dyn Any, parent: Id| {
             if let Some(t) = any.downcast_mut::<T>() {
@@ -85,7 +88,7 @@ pub(crate) fn register_rekey<T: RekeyTarget + 'static>() {
 pub(crate) fn rekey_nested_value<V: 'static>(value: &mut V, parent_id: Id) {
     let thunk = REGISTRY
         .read()
-        .expect("rekey registry poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .get(&TypeId::of::<V>())
         .copied();
     if let Some(thunk) = thunk {

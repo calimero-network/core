@@ -27,6 +27,7 @@ where
     V: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
     S: StorageAdaptor,
 {
+    #[expect(clippy::expect_used, reason = "fatal error if re-key migration fails")]
     fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
         let new_id = super::compute_collection_id(Some(parent_id), "__set");
         if self.inner.id() == new_id {
