@@ -448,6 +448,94 @@ impl VMHostFunctions<'_> {
 
         Ok(0)
     }
+
+    // === Ordered secondary index host functions (SortedMap, core#2559) ===
+    //
+    // These target the backend's ordered index keyspace (the RocksDB
+    // `SortedIndex` column on a node, a `BTreeMap` for `InMemoryStorage`). Keys
+    // are unhashed `collection ‖ order_key`, values are 32-byte entry ids.
+    // `SortedMap` is the only caller, via the `MainStorage` adaptor.
+
+    /// Insert/overwrite `key -> value` in the ordered index. Returns `1`.
+    pub fn storage_index_set(&mut self, key_ptr: u64, value_ptr: u64) -> VMLogicResult<u32> {
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
+        let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(value_ptr)? };
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
+        let value = self.read_guest_memory_slice(&value)?.to_vec();
+        trace!(target: "runtime::host::storage", op = "index_set", key_len = key.len(), "storage_index_set");
+        self.with_logic_mut(|logic| logic.storage.index_set(&key, &value));
+        Ok(1)
+    }
+
+    /// Remove `key` from the ordered index. Returns `1`.
+    pub fn storage_index_remove(&mut self, key_ptr: u64) -> VMLogicResult<u32> {
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
+        trace!(target: "runtime::host::storage", op = "index_del", key_len = key.len(), "storage_index_remove");
+        self.with_logic_mut(|logic| logic.storage.index_del(&key));
+        Ok(1)
+    }
+
+    /// Remove every ordered-index key beginning with `prefix`. Returns `1`.
+    pub fn storage_index_remove_prefix(&mut self, prefix_ptr: u64) -> VMLogicResult<u32> {
+        let prefix = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(prefix_ptr)? };
+        let prefix = self.read_guest_memory_slice(&prefix)?.to_vec();
+        trace!(target: "runtime::host::storage", op = "index_del_prefix", prefix_len = prefix.len(), "storage_index_remove_prefix");
+        self.with_logic_mut(|logic| logic.storage.index_del_prefix(&prefix));
+        Ok(1)
+    }
+
+    /// Scan the ordered index over `[lo, hi)`, skipping `offset` and capped at
+    /// `limit` (`u64::MAX` = unbounded). Encodes the resulting `(key, value)`
+    /// pairs into `register_id` using a length-prefixed format the guest
+    /// decodes (`count:u32`, then per pair `klen:u32, k, vlen:u32, v`, all
+    /// little-endian). Returns `1`.
+    pub fn storage_index_scan(
+        &mut self,
+        lo_ptr: u64,
+        hi_ptr: u64,
+        offset: u64,
+        limit: u64,
+        register_id: u64,
+    ) -> VMLogicResult<u32> {
+        let lo = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(lo_ptr)? };
+        let hi = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(hi_ptr)? };
+        let lo = self.read_guest_memory_slice(&lo)?.to_vec();
+        let hi = self.read_guest_memory_slice(&hi)?.to_vec();
+
+        let limit = (limit != u64::MAX).then_some(limit as usize);
+        let pairs = self
+            .borrow_logic()
+            .storage
+            .index_scan(&lo, &hi, offset as usize, limit);
+
+        trace!(
+            target: "runtime::host::storage",
+            op = "index_scan",
+            results = pairs.len(),
+            register_id,
+            "storage_index_scan"
+        );
+
+        let encoded = encode_index_pairs(&pairs);
+        self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, encoded))?;
+        Ok(1)
+    }
+}
+
+/// Encode ordered-index scan results into the length-prefixed wire format the
+/// guest (`calimero_sdk::env`) decodes: `count:u32`, then per pair
+/// `key_len:u32, key, value_len:u32, value` — all little-endian.
+fn encode_index_pairs(pairs: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(pairs.len() as u32).to_le_bytes());
+    for (key, value) in pairs {
+        out.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        out.extend_from_slice(key);
+        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        out.extend_from_slice(value);
+    }
+    out
 }
 
 #[cfg(test)]

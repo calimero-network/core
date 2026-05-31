@@ -182,6 +182,40 @@ pub fn storage_write(key: Key, value: &[u8]) -> bool {
     imp::storage_write(key, value)
 }
 
+// === Ordered secondary index (SortedMap, core#2559) ===
+//
+// Raw-byte ordered keyspace (the backend keeps keys sorted, so a range scan is
+// a native seek). Keys are the unhashed `collection ‖ order_key`. Node-local,
+// NOT synced. Only the `MainStorage` adaptor routes here; `PrivateStorage` and
+// the test mocks have their own index handling.
+
+/// Insert/overwrite `key -> value` in the ordered index.
+pub fn storage_index_set(key: &[u8], value: &[u8]) {
+    imp::storage_index_set(key, value);
+}
+
+/// Remove `key` from the ordered index.
+pub fn storage_index_remove(key: &[u8]) {
+    imp::storage_index_remove(key);
+}
+
+/// Remove every ordered-index key beginning with `prefix`.
+pub fn storage_index_remove_prefix(prefix: &[u8]) {
+    imp::storage_index_remove_prefix(prefix);
+}
+
+/// Scan the ordered index over `[lo, hi)`, ascending, after `offset`, capped at
+/// `limit` (`None` = unbounded). Returns `(key, value)` pairs.
+#[must_use]
+pub fn storage_index_scan(
+    lo: &[u8],
+    hi: &[u8],
+    offset: usize,
+    limit: Option<usize>,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    imp::storage_index_scan(lo, hi, offset, limit)
+}
+
 /// Reads data from node-local (private) persistent storage.
 ///
 /// Private storage is **NOT synchronised across nodes** — entries
@@ -403,6 +437,28 @@ mod calimero_vm {
         env::private_storage_write(&key.to_bytes(), value)
     }
 
+    /// Ordered-index ops (raw composite keys, no hashing — order must survive).
+    pub(super) fn storage_index_set(key: &[u8], value: &[u8]) {
+        env::storage_index_set(key, value);
+    }
+
+    pub(super) fn storage_index_remove(key: &[u8]) {
+        env::storage_index_remove(key);
+    }
+
+    pub(super) fn storage_index_remove_prefix(prefix: &[u8]) {
+        env::storage_index_remove_prefix(prefix);
+    }
+
+    pub(super) fn storage_index_scan(
+        lo: &[u8],
+        hi: &[u8],
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        env::storage_index_scan(lo, hi, offset, limit)
+    }
+
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
         env::random_bytes(buf)
@@ -539,6 +595,51 @@ mod mocked {
         } else {
             DefaultStore::storage_write(key, value)
         }
+    }
+
+    // Native ordered-index backend. A process-local `BTreeMap` standing in for
+    // the node's RocksDB `SortedIndex` column — enough for native tests; the
+    // node provides the durable, cross-run backing once wired. Keys are the raw
+    // composite `collection ‖ order_key`, so `BTreeMap` order == key order.
+    thread_local! {
+        static INDEX: RefCell<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> =
+            const { RefCell::new(std::collections::BTreeMap::new()) };
+    }
+
+    pub(super) fn storage_index_set(key: &[u8], value: &[u8]) {
+        INDEX.with(|index| {
+            let _ = index.borrow_mut().insert(key.to_vec(), value.to_vec());
+        });
+    }
+
+    pub(super) fn storage_index_remove(key: &[u8]) {
+        INDEX.with(|index| {
+            let _ = index.borrow_mut().remove(key);
+        });
+    }
+
+    pub(super) fn storage_index_remove_prefix(prefix: &[u8]) {
+        INDEX.with(|index| index.borrow_mut().retain(|k, _| !k.starts_with(prefix)));
+    }
+
+    pub(super) fn storage_index_scan(
+        lo: &[u8],
+        hi: &[u8],
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        INDEX.with(|index| {
+            let matched: Vec<(Vec<u8>, Vec<u8>)> = index
+                .borrow()
+                .range(lo.to_vec()..hi.to_vec())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let ordered = matched.into_iter().skip(offset);
+            match limit {
+                Some(n) => ordered.take(n).collect(),
+                None => ordered.collect(),
+            }
+        })
     }
 
     // Why these don't consult `RUNTIME_ENV` like their main-storage
@@ -703,5 +804,7 @@ mod mocked {
         crate::store::mocked::STORAGE.with(|storage| {
             storage.borrow_mut().clear();
         });
+        // Clear the native ordered-index mock too.
+        INDEX.with(|index| index.borrow_mut().clear());
     }
 }

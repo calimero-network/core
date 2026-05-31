@@ -237,6 +237,115 @@ impl StorageAdaptor for MainStorage {
     fn storage_write(key: Key, value: &[u8]) -> bool {
         storage_write(key, value)
     }
+
+    // Ordered index, routed to the env layer (host functions in wasm, the
+    // RocksDB `SortedIndex` column on a node, an in-memory ordered map in
+    // native tests). Composite keys are `collection_id ‖ order_key` (unhashed),
+    // so the backend's byte order is the logical key order.
+    //
+    // NOTE: `index_supported()` is intentionally NOT overridden yet — it stays
+    // `false`, so `SortedMap` keeps using its in-memory sort and these methods
+    // are dormant until the node backs `Column::SortedIndex`. Flipping
+    // `index_supported()` to `true` is the single switch that activates them.
+
+    fn index_put(collection: Id, order_key: &[u8], entry: Id) {
+        crate::env::storage_index_set(&index_key(collection, order_key), entry.as_bytes());
+    }
+
+    fn index_remove(collection: Id, order_key: &[u8]) {
+        crate::env::storage_index_remove(&index_key(collection, order_key));
+    }
+
+    fn index_clear(collection: Id) {
+        crate::env::storage_index_remove_prefix(collection.as_bytes());
+    }
+
+    fn index_range(
+        collection: Id,
+        start: core::ops::Bound<Vec<u8>>,
+        end: core::ops::Bound<Vec<u8>>,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Vec<(Vec<u8>, Id)> {
+        use core::ops::Bound::{Excluded, Included, Unbounded};
+        let prefix = collection.as_bytes();
+        // env scan is `[lo, hi)`; translate the inclusive/exclusive bounds into
+        // byte bounds (append 0x00 to make an inclusive end / exclusive start).
+        let lo = match start {
+            Included(k) => index_key(collection, &k),
+            Excluded(k) => {
+                let mut b = index_key(collection, &k);
+                b.push(0);
+                b
+            }
+            Unbounded => prefix.to_vec(),
+        };
+        let hi = match end {
+            Excluded(k) => index_key(collection, &k),
+            Included(k) => {
+                let mut b = index_key(collection, &k);
+                b.push(0);
+                b
+            }
+            Unbounded => prefix_upper_bound(prefix),
+        };
+        decode_index_hits(
+            prefix,
+            crate::env::storage_index_scan(&lo, &hi, offset, limit),
+        )
+    }
+
+    fn index_prefix(
+        collection: Id,
+        prefix: &[u8],
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Vec<(Vec<u8>, Id)> {
+        let coll = collection.as_bytes();
+        let lo = index_key(collection, prefix);
+        let hi = prefix_upper_bound(&lo);
+        decode_index_hits(
+            coll,
+            crate::env::storage_index_scan(&lo, &hi, offset, limit),
+        )
+    }
+}
+
+/// Build the ordered-index composite key `collection_id ‖ order_key`.
+fn index_key(collection: Id, order_key: &[u8]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(32 + order_key.len());
+    key.extend_from_slice(collection.as_bytes());
+    key.extend_from_slice(order_key);
+    key
+}
+
+/// The exclusive upper bound for a byte prefix: the smallest key that does NOT
+/// start with `prefix` (used to scan "all keys under this prefix"). For the
+/// all-`0xFF` corner (astronomically unlikely for a 32-byte id) we fall back to
+/// a longer all-`0xFF` key, which still bounds the scan.
+fn prefix_upper_bound(prefix: &[u8]) -> Vec<u8> {
+    let mut end = prefix.to_vec();
+    while let Some(&last) = end.last() {
+        if last == 0xFF {
+            let _ = end.pop();
+        } else {
+            *end.last_mut().expect("non-empty") += 1;
+            return end;
+        }
+    }
+    vec![0xFF; prefix.len() + 1]
+}
+
+/// Map raw `(composite_key, entry_id_bytes)` scan hits back to
+/// `(order_key, entry_id)` by stripping the `collection_id` prefix.
+fn decode_index_hits(prefix: &[u8], hits: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Id)> {
+    hits.into_iter()
+        .filter_map(|(composite, entry_bytes)| {
+            let order_key = composite.strip_prefix(prefix)?.to_vec();
+            let id: [u8; 32] = entry_bytes.as_slice().try_into().ok()?;
+            Some((order_key, Id::new(id)))
+        })
+        .collect()
 }
 
 /// Node-local (private) storage adaptor.
@@ -529,7 +638,7 @@ mod index_tests {
     use core::ops::Bound;
 
     use super::mocked::MockedStorage;
-    use super::StorageAdaptor;
+    use super::{MainStorage, StorageAdaptor};
     use crate::address::Id;
 
     // Dedicated mock scope for these tests (within calimero-storage's 0..1_000
@@ -676,6 +785,54 @@ mod index_tests {
         S::index_remove(c, b"k1");
         let after = S::index_range(c, Bound::Unbounded, Bound::Unbounded, 0, None);
         assert_eq!(keys(after), vec![b"k2".to_vec()]);
+    }
+
+    // `MainStorage`'s index methods build composite `collection ‖ order_key`
+    // keys and translate range bounds to byte bounds, routing through the env
+    // layer (here the native in-memory ordered mock). This pins that
+    // composite/bound/decode logic — the same code path the real host ABI and
+    // RocksDB `SortedIndex` column will exercise once `index_supported()` flips.
+    #[test]
+    #[serial_test::serial]
+    fn main_storage_index_routes_through_env() {
+        crate::env::reset_for_testing();
+        let c = Id::new([200u8; 32]);
+
+        MainStorage::index_put(c, b"charlie", Id::new([3; 32]));
+        MainStorage::index_put(c, b"alpha", Id::new([1; 32]));
+        MainStorage::index_put(c, b"bravo", Id::new([2; 32]));
+
+        // Full scan resolves order keys and entry ids, ascending.
+        let all = MainStorage::index_range(c, Bound::Unbounded, Bound::Unbounded, 0, None);
+        assert_eq!(
+            all,
+            vec![
+                (b"alpha".to_vec(), Id::new([1; 32])),
+                (b"bravo".to_vec(), Id::new([2; 32])),
+                (b"charlie".to_vec(), Id::new([3; 32])),
+            ]
+        );
+
+        // Half-open range [alpha, charlie).
+        let r = MainStorage::index_range(
+            c,
+            Bound::Included(b"alpha".to_vec()),
+            Bound::Excluded(b"charlie".to_vec()),
+            0,
+            None,
+        );
+        assert_eq!(keys(r), vec![b"alpha".to_vec(), b"bravo".to_vec()]);
+
+        // Prefix scan must not bleed into other keys.
+        MainStorage::index_put(c, b"al", Id::new([9; 32]));
+        let pre = MainStorage::index_prefix(c, b"al", 0, None);
+        assert_eq!(keys(pre), vec![b"al".to_vec(), b"alpha".to_vec()]);
+
+        // Clear drops the whole collection's index.
+        MainStorage::index_clear(c);
+        assert!(
+            MainStorage::index_range(c, Bound::Unbounded, Bound::Unbounded, 0, None).is_empty()
+        );
     }
 
     #[test]

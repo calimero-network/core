@@ -51,6 +51,19 @@ impl VMLogic<'_> {
             fn storage_read(key_ptr: u64, register_id: u64) -> u32;
             fn storage_remove(key_ptr: u64, register_id: u64) -> u32;
 
+            // Ordered secondary index (SortedMap, core#2559) — node-local,
+            // NOT synchronized; keys are unhashed `collection ‖ order_key`.
+            fn storage_index_set(key_ptr: u64, value_ptr: u64) -> u32;
+            fn storage_index_remove(key_ptr: u64) -> u32;
+            fn storage_index_remove_prefix(prefix_ptr: u64) -> u32;
+            fn storage_index_scan(
+                lo_ptr: u64,
+                hi_ptr: u64,
+                offset: u64,
+                limit: u64,
+                register_id: u64,
+            ) -> u32;
+
             // Private storage functions (node-local, NOT synchronized)
             fn private_storage_read(key_ptr: u64, register_id: u64) -> u32;
             fn private_storage_remove(key_ptr: u64, register_id: u64) -> u32;

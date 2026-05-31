@@ -29,6 +29,19 @@ wasm_imports! {
         fn storage_remove(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         fn storage_write(key: Ref<Buffer<'_>>, value: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         // --
+        // Ordered secondary index (SortedMap, core#2559) — node-local, NOT
+        // synchronized. Keys are the unhashed `collection ‖ order_key`.
+        fn storage_index_set(key: Ref<Buffer<'_>>, value: Ref<Buffer<'_>>) -> Bool;
+        fn storage_index_remove(key: Ref<Buffer<'_>>) -> Bool;
+        fn storage_index_remove_prefix(prefix: Ref<Buffer<'_>>) -> Bool;
+        fn storage_index_scan(
+            lo: Ref<Buffer<'_>>,
+            hi: Ref<Buffer<'_>>,
+            offset: PtrSizedInt,
+            limit: PtrSizedInt,
+            register_id: RegisterId
+        ) -> Bool;
+        // --
         // Private storage functions (node-local, NOT synchronized)
         fn private_storage_read(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         fn private_storage_remove(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
