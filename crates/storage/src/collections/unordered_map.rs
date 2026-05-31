@@ -141,20 +141,24 @@ where
         self.inner.element_mut().metadata.crdt_type = Some(crdt_type);
     }
 
-    /// Reassigns the map's ID and collection CRDT type to deterministic values.
+    /// Reassign the map's id + collection CRDT type to a deterministic value
+    /// keyed under `parent_id` (`None` = top-level / ROOT-relative). Shared
+    /// implementation behind the two `reassign_deterministic_id_*` entry points.
     ///
-    /// This is used by wrappers like RGA that store map entries but expose a
-    /// custom collection-level CRDT type.
+    /// Migration is: snapshot entries → clear (drops old-id entries) → reassign
+    /// the collection id → re-insert (each entry, and its own nested values via
+    /// `insert`'s re-key, gets a new deterministic id under the new parent).
     #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
-    pub(crate) fn reassign_deterministic_id_with_crdt_type(
+    fn reassign_deterministic_id_keyed(
         &mut self,
+        parent_id: Option<Id>,
         field_name: &str,
         crdt_type: CrdtType,
     ) where
         K: AsRef<[u8]> + PartialEq + 'static,
         V: 'static,
     {
-        let new_id = super::compute_collection_id(None, field_name);
+        let new_id = super::compute_collection_id(parent_id, field_name);
         let old_id = self.inner.id();
 
         // If already has the correct ID, only ensure CRDT type is correct.
@@ -163,24 +167,40 @@ where
             return;
         }
 
-        // Collect all entries before migration (must do this before clearing).
+        // Snapshot all entries before migration (must do this before clearing).
         let entries: Vec<(K, V)> = self
             .entries()
-            .expect("failed to read entries for migration")
+            .expect("failed to read entries for re-key")
             .collect();
 
         // Clear the collection (removes old entries with old IDs).
-        self.inner.clear().expect("failed to clear for migration");
+        self.inner.clear().expect("failed to clear for re-key");
 
-        // Now reassign the collection's ID with the requested CRDT type.
+        // Reassign the collection's ID (Collection's `_with_crdt_type` is itself
+        // just `_under(None, ..)`, so this single call covers both variants).
         self.inner
-            .reassign_deterministic_id_with_crdt_type(field_name, crdt_type);
+            .reassign_deterministic_id_under(parent_id, field_name, crdt_type);
 
         // Re-insert all entries (they will get new IDs based on new parent ID).
         for (key, value) in entries {
             self.insert(key, value)
-                .expect("failed to re-insert entry during migration");
+                .expect("failed to re-insert entry during re-key");
         }
+    }
+
+    /// Reassigns the map's ID and collection CRDT type to deterministic values.
+    ///
+    /// This is used by wrappers like RGA that store map entries but expose a
+    /// custom collection-level CRDT type.
+    pub(crate) fn reassign_deterministic_id_with_crdt_type(
+        &mut self,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) where
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
+    {
+        self.reassign_deterministic_id_keyed(None, field_name, crdt_type);
     }
 
     /// Like [`reassign_deterministic_id_with_crdt_type`], but keys the new id
@@ -189,7 +209,6 @@ where
     /// values, via `insert`'s re-key) stay reachable and deterministic.
     ///
     /// [`reassign_deterministic_id_with_crdt_type`]: Self::reassign_deterministic_id_with_crdt_type
-    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
     pub(crate) fn reassign_deterministic_id_under(
         &mut self,
         parent_id: Id,
@@ -199,23 +218,7 @@ where
         K: AsRef<[u8]> + PartialEq + 'static,
         V: 'static,
     {
-        let new_id = super::compute_collection_id(Some(parent_id), field_name);
-        let old_id = self.inner.id();
-        if old_id == new_id {
-            self.set_collection_crdt_type(crdt_type);
-            return;
-        }
-        let entries: Vec<(K, V)> = self
-            .entries()
-            .expect("failed to read entries for re-key")
-            .collect();
-        self.inner.clear().expect("failed to clear for re-key");
-        self.inner
-            .reassign_deterministic_id_under(Some(parent_id), field_name, crdt_type);
-        for (key, value) in entries {
-            self.insert(key, value)
-                .expect("failed to re-insert entry during re-key");
-        }
+        self.reassign_deterministic_id_keyed(Some(parent_id), field_name, crdt_type);
     }
 
     /// Reassigns the map's ID to a deterministic ID based on field name.
