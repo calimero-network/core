@@ -140,6 +140,16 @@ pub struct ReplicatedGrowableArray<S: StorageAdaptor = MainStorage> {
     pub(crate) chars: UnorderedMap<CharKey, RgaChar, S>,
 }
 
+/// Re-key the RGA's char map relative to its storage parent so an RGA stored as
+/// a collection value converges across nodes. See [`super::rekey`].
+impl<S: StorageAdaptor> super::rekey::RekeyTarget for ReplicatedGrowableArray<S> {
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        self.chars
+            .reassign_deterministic_id_under(parent_id, "__rga_chars", CrdtType::Rga);
+        self.chars.set_collection_crdt_type(CrdtType::Rga);
+    }
+}
+
 impl ReplicatedGrowableArray<MainStorage> {
     /// Create a new empty RGA with a random ID.
     ///
@@ -217,6 +227,9 @@ impl<S: StorageAdaptor> ReplicatedGrowableArray<S> {
     ///
     /// Returns error if position is out of bounds or storage operation fails
     pub fn insert(&mut self, pos: usize, content: char) -> Result<(), StoreError> {
+        // Register this RGA type's nested-id re-key thunk so an RGA stored as a
+        // collection value is re-keyed when the outer collection is stored.
+        super::rekey::register_rekey::<Self>();
         let timestamp = env::hlc_timestamp();
 
         // Find the left neighbor at the visible position

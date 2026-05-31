@@ -352,6 +352,20 @@ impl<S: StorageAdaptor> Index<S> {
         // here on the merge hot path.
         let children_vec = parent_index.children.get_or_insert_with(Vec::new);
         let new_entry = ChildInfo::new(child.id(), child_index.full_hash, child.metadata);
+        // Dedup by ID, not by `ChildInfo`'s `(created_at, id)` Ord. A child can
+        // be re-added with a CHANGED `created_at` (e.g. CRDT merge re-materialises
+        // an entity that two nodes first-created at different HLC times). The
+        // `(created_at, id)`-ordered `binary_search` below would then miss the
+        // existing same-id entry and `insert` a SECOND ChildInfo for the same id.
+        // `calculate_full_hash_for_children` hashes every child's `merkle_hash`
+        // (sorted by id), so a duplicate entry hashes that child twice → the
+        // parent's `full_hash` (and the root) diverges depending on the order the
+        // creating deltas were applied — the "same DAG, different root hash"
+        // family. Removing any existing same-id entry first guarantees at most
+        // one ChildInfo per id. For a healthy single-entry list this is identical
+        // to the old replace (so the hash is unchanged for converged data); it
+        // only eliminates the duplicate.
+        children_vec.retain(|c| c.id() != new_entry.id());
         match children_vec.binary_search(&new_entry) {
             Ok(pos) => children_vec[pos] = new_entry,
             Err(pos) => children_vec.insert(pos, new_entry),

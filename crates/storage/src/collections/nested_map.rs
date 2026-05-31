@@ -44,7 +44,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 /// Provides methods to modify nested maps without the get-modify-put pattern.
 pub trait NestedMapOps<K1, K2, V, S>
 where
-    K1: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + Clone,
+    K1: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + Clone + 'static,
     K2: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + Clone,
     V: BorshSerialize + BorshDeserialize + Clone,
     S: StorageAdaptor,
@@ -89,9 +89,9 @@ where
 /// Implementation for Map<K1, Map<K2, V>>
 impl<K1, K2, V, S> NestedMapOps<K1, K2, V, S> for UnorderedMap<K1, UnorderedMap<K2, V, S>, S>
 where
-    K1: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + Clone,
-    K2: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + Clone,
-    V: BorshSerialize + BorshDeserialize + Clone,
+    K1: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + Clone + 'static,
+    K2: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + Clone + 'static,
+    V: BorshSerialize + BorshDeserialize + Clone + 'static,
     S: StorageAdaptor,
 {
     fn insert_nested(

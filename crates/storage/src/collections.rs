@@ -28,6 +28,7 @@ pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageStrategy
 pub mod composite_key;
 mod crdt_impls;
 mod decompose_impls;
+pub(crate) mod rekey;
 pub use composite_key::CompositeKey;
 pub mod nested;
 pub use nested::{get_nested, insert_nested, insert_nested_decomposable, NestedConfig};
@@ -269,7 +270,27 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         field_name: &str,
         crdt_type: CrdtType,
     ) {
-        let new_id = compute_collection_id(None, field_name);
+        self.reassign_deterministic_id_under(None, field_name, crdt_type);
+    }
+
+    /// Like [`reassign_deterministic_id_with_crdt_type`], but derives the new
+    /// id relative to `parent_id` via `compute_collection_id(Some(parent), ..)`.
+    ///
+    /// Used when a collection is nested inside another entity (e.g. a `Counter`
+    /// stored as a map value): the nested collection's id must be a function of
+    /// the *parent entity's deterministic id* so every node mints the same id
+    /// and the children converge. With `parent_id == None` this is exactly the
+    /// top-level (ROOT-relative) reassignment.
+    ///
+    /// [`reassign_deterministic_id_with_crdt_type`]: Self::reassign_deterministic_id_with_crdt_type
+    #[expect(clippy::expect_used, reason = "fatal error if cleanup fails")]
+    pub(crate) fn reassign_deterministic_id_under(
+        &mut self,
+        parent_id: Option<Id>,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) {
+        let new_id = compute_collection_id(parent_id, field_name);
         let old_id = self.storage.id();
 
         // If already has the correct ID, nothing to do
@@ -318,6 +339,22 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         field_name: &str,
         crdt_type: CrdtType,
     ) {
+        self.reassign_deterministic_id_with_indexed_children_under(None, field_name, crdt_type);
+    }
+
+    /// Parent-relative variant of
+    /// [`reassign_deterministic_id_with_indexed_children`] for a vector nested
+    /// inside another entity (re-keys the collection id and its index-derived
+    /// children relative to `parent_id`).
+    ///
+    /// [`reassign_deterministic_id_with_indexed_children`]: Self::reassign_deterministic_id_with_indexed_children
+    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
+    pub(crate) fn reassign_deterministic_id_with_indexed_children_under(
+        &mut self,
+        parent_id: Option<Id>,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) {
         // Snapshot (value, storage_type) for every child in append order
         // before mutating anything. `storage_type` carries the
         // `AuthoredVector` per-entry owner stamp, which must survive the
@@ -345,7 +382,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // didn't snapshot, and an empty vector stays empty. The clear path
         // only runs when we hold a non-empty snapshot to restore from.
         if snapshot.is_empty() {
-            self.reassign_deterministic_id_with_crdt_type(field_name, crdt_type);
+            self.reassign_deterministic_id_under(parent_id, field_name, crdt_type);
             return;
         }
 
@@ -353,7 +390,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // deterministic id, then re-insert each child under
         // `compute_id(parent, index)`.
         self.clear().expect("clear for reindex");
-        self.reassign_deterministic_id_with_crdt_type(field_name, crdt_type);
+        self.reassign_deterministic_id_under(parent_id, field_name, crdt_type);
 
         let parent = self.id();
         for (index, (item, storage_type)) in snapshot.into_iter().enumerate() {

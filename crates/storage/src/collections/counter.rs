@@ -216,9 +216,36 @@ impl<const ALLOW_DECREMENT: bool> Counter<ALLOW_DECREMENT, MainStorage> {
     }
 }
 
+/// Re-key the counter's internal map(s) relative to its storage parent so two
+/// nodes that independently first-create the same nested counter derive the
+/// same internal-map id and their per-executor slots converge. See
+/// [`super::rekey`].
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> super::rekey::RekeyTarget
+    for Counter<ALLOW_DECREMENT, S>
+{
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        let crdt_type = if ALLOW_DECREMENT {
+            CrdtType::PnCounter
+        } else {
+            CrdtType::GCounter
+        };
+        self.positive
+            .reassign_deterministic_id_under(parent_id, "__counter_positive", crdt_type);
+        // GCounter's negative map is detached and never persisted — skip it.
+        if ALLOW_DECREMENT {
+            self.negative.reassign_deterministic_id_under(
+                parent_id,
+                "__counter_negative",
+                CrdtType::PnCounter,
+            );
+        }
+    }
+}
+
 impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S> {
     /// Creates a new counter (internal) - must use same visibility as UnorderedMap
     pub(super) fn new_internal() -> Self {
+        super::rekey::register_rekey::<Self>();
         Self {
             positive: UnorderedMap::new_internal(),
             // GCounter (ALLOW_DECREMENT = false): negative map is never used,

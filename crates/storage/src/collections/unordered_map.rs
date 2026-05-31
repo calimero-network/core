@@ -24,6 +24,25 @@ pub struct UnorderedMap<K, V, S: StorageAdaptor = MainStorage> {
     inner: Collection<(K, V), S>,
 }
 
+/// Re-key a nested map (a map stored as another collection's value) relative to
+/// its storage parent. `reassign_deterministic_id_under` re-inserts entries,
+/// which recurses the re-key into each entry's own nested collections. See
+/// [`super::rekey`].
+impl<K, V, S> super::rekey::RekeyTarget for UnorderedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + 'static,
+    S: StorageAdaptor,
+{
+    fn rekey_relative_to(&mut self, parent_id: Id) {
+        self.reassign_deterministic_id_under(
+            parent_id,
+            "__nested_map",
+            CrdtType::unordered_map(std::any::type_name::<K>(), std::any::type_name::<V>()),
+        );
+    }
+}
+
 impl<K, V, S> UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize,
@@ -132,7 +151,8 @@ where
         field_name: &str,
         crdt_type: CrdtType,
     ) where
-        K: AsRef<[u8]> + PartialEq,
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
     {
         let new_id = super::compute_collection_id(None, field_name);
         let old_id = self.inner.id();
@@ -163,6 +183,41 @@ where
         }
     }
 
+    /// Like [`reassign_deterministic_id_with_crdt_type`], but keys the new id
+    /// relative to `parent_id` (for a map nested inside another entity). Entries
+    /// are re-inserted under the new parent id, so they (and their own nested
+    /// values, via `insert`'s re-key) stay reachable and deterministic.
+    ///
+    /// [`reassign_deterministic_id_with_crdt_type`]: Self::reassign_deterministic_id_with_crdt_type
+    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
+    pub(crate) fn reassign_deterministic_id_under(
+        &mut self,
+        parent_id: Id,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) where
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
+    {
+        let new_id = super::compute_collection_id(Some(parent_id), field_name);
+        let old_id = self.inner.id();
+        if old_id == new_id {
+            self.set_collection_crdt_type(crdt_type);
+            return;
+        }
+        let entries: Vec<(K, V)> = self
+            .entries()
+            .expect("failed to read entries for re-key")
+            .collect();
+        self.inner.clear().expect("failed to clear for re-key");
+        self.inner
+            .reassign_deterministic_id_under(Some(parent_id), field_name, crdt_type);
+        for (key, value) in entries {
+            self.insert(key, value)
+                .expect("failed to re-insert entry during re-key");
+        }
+    }
+
     /// Reassigns the map's ID to a deterministic ID based on field name.
     ///
     /// This is called by the `#[app::state]` macro after `init()` returns to ensure
@@ -177,7 +232,8 @@ where
     #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
     pub fn reassign_deterministic_id(&mut self, field_name: &str)
     where
-        K: AsRef<[u8]> + PartialEq,
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
     {
         self.reassign_deterministic_id_with_crdt_type(
             field_name,
@@ -195,7 +251,8 @@ where
     ///
     pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, StoreError>
     where
-        K: AsRef<[u8]> + PartialEq,
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
     {
         // By default, add as the Public storage.
         self.insert_with_storage_type(key, value, StorageType::Public, None)
@@ -213,14 +270,25 @@ where
     pub(crate) fn insert_with_storage_type(
         &mut self,
         key: K,
-        value: V,
+        mut value: V,
         storage_type: StorageType,
         custom_id: Option<Id>,
     ) -> Result<Option<V>, StoreError>
     where
-        K: AsRef<[u8]> + PartialEq,
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
     {
+        // Register this map type's nested-id re-key thunk, so a map stored as
+        // another collection's value (map-of-map) is re-keyed when that outer
+        // collection is itself stored (see `super::rekey`).
+        super::rekey::register_rekey::<Self>();
+
         let id = custom_id.unwrap_or_else(|| compute_id(self.inner.id(), key.as_ref()));
+
+        // Re-key any nested collections in `value` deterministically relative to
+        // this entry's (deterministic) id, so independently-created nested CRDTs
+        // converge across nodes instead of carrying per-node random ids.
+        super::rekey::rekey_nested_value(&mut value, id);
 
         if let Some(mut entry) = self.inner.get_mut(id)? {
             let (_, v) = &mut *entry;

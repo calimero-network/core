@@ -1999,3 +1999,526 @@ mod frozen_sync_robustness {
         );
     }
 }
+
+/// Deterministic reproduction target for the Bug-B class: TWO nodes each
+/// increment the SAME `GCounter` (different executors) against a shared base,
+/// then exchange deltas. A correct CRDT must converge — same value AND same
+/// Merkle root — regardless of the order each node applies the two deltas.
+///
+/// This drives the real merge path the node's `apply_action` uses
+/// (`try_merge_non_root` -> `merge_by_crdt_type` -> `merge_g_counter`), via the
+/// capture-delta -> reset -> `Root::sync` flow. The base counter is created
+/// ONCE (genesis executor) and replayed into each node so they share identical
+/// collection ids — concurrent increments then add distinct per-executor slots.
+#[test]
+#[serial]
+fn test_gcounter_concurrent_increments_converge_via_delta_sync() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::MainStorage;
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), data, Metadata::default()).unwrap();
+        commit_causal_delta(&root_hash())
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<Counter, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh = |exec: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<Counter>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(exec);
+    };
+
+    // Genesis: empty counter base shared by every node (carries collection ids).
+    fresh([9; 32]);
+    let g = Root::<Counter, S>::new(Counter::new);
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base = capture(g_data);
+    let base_hash = root_hash();
+
+    // Capture node-A's increment (executor 1) against the shared base.
+    fresh([1; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let mut a = Root::<Counter, S>::fetch().unwrap();
+    a.increment().unwrap();
+    let a_data = borsh::to_vec(&*a).unwrap();
+    drop(a);
+    let delta_a = capture(a_data);
+
+    // Capture node-B's increment (executor 2) against the same shared base.
+    fresh([2; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let mut b = Root::<Counter, S>::fetch().unwrap();
+    b.increment().unwrap();
+    let b_data = borsh::to_vec(&*b).unwrap();
+    drop(b);
+    let delta_b = capture(b_data);
+
+    // node-A applies its own then B's delta (order A, B).
+    let materialize = |exec: [u8; 32], first: &[Action], second: &[Action]| -> (u64, [u8; 32]) {
+        fresh(exec);
+        import(base.clone());
+        reset_delta_context();
+        set_current_heads(vec![base_hash]);
+        import(first.to_vec());
+        reset_delta_context();
+        set_current_heads(vec![root_hash()]);
+        import(second.to_vec());
+        let val = Root::<Counter, S>::fetch().unwrap().value().unwrap();
+        (val, root_hash())
+    };
+
+    let (a_val, a_root) = materialize([1; 32], &delta_a, &delta_b);
+    let (b_val, b_root) = materialize([2; 32], &delta_b, &delta_a);
+
+    assert_eq!(a_val, 2, "node A must see both increments (GCounter sum)");
+    assert_eq!(b_val, 2, "node B must see both increments (GCounter sum)");
+    assert_eq!(
+        a_root,
+        b_root,
+        "GCounter root must converge regardless of delta apply order: A={} B={}",
+        hex::encode(a_root),
+        hex::encode(b_root),
+    );
+}
+
+/// Bug-B hypothesis probe: a CRDT NESTED inside an `UnorderedMap`
+/// (`UnorderedMap<String, Counter>` — the shape scaffolding-e2e's
+/// `increment_counter`/`increment_g_counter`/`add_tag` use). Two nodes
+/// concurrently increment the counter under the SAME key against a shared
+/// base, then exchange deltas. If the map merges its values via recursive CRDT
+/// merge, both nodes converge to value 2 with one root hash. If it LWW-replaces
+/// the value instead, they clobber (value 1) and/or diverge — which is the
+/// suspected `frozen-rga`/conformance failure mode for map-nested CRDTs.
+#[test]
+#[serial]
+fn test_nested_counter_in_map_concurrent_increments_converge() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::MainStorage;
+
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct NestedCounters {
+        counters: UnorderedMap<String, Counter>,
+    }
+    impl Mergeable for NestedCounters {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.counters.merge(&other.counters)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), data, Metadata::default()).unwrap();
+        commit_causal_delta(&root_hash())
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<NestedCounters, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh = |exec: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<NestedCounters>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(exec);
+    };
+    let incr = || {
+        let mut doc = Root::<NestedCounters, S>::fetch().unwrap();
+        let mut ctr = doc
+            .counters
+            .get(&"k".to_string())
+            .unwrap()
+            .unwrap_or_else(Counter::new);
+        ctr.increment().unwrap();
+        doc.counters.insert("k".to_string(), ctr).unwrap();
+        let data = borsh::to_vec(&*doc).unwrap();
+        drop(doc);
+        capture(data)
+    };
+
+    // Genesis: base with the "k" counter created once (shared ids), value 0.
+    fresh([9; 32]);
+    let mut g = Root::<NestedCounters, S>::new(|| NestedCounters {
+        counters: UnorderedMap::new_with_field_name("counters"),
+    });
+    g.counters.insert("k".to_string(), Counter::new()).unwrap();
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base = capture(g_data);
+    let base_hash = root_hash();
+
+    // node-A increment under "k" (executor 1).
+    fresh([1; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_a = incr();
+
+    // node-B increment under "k" (executor 2).
+    fresh([2; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_b = incr();
+
+    let value_of = || -> u64 {
+        Root::<NestedCounters, S>::fetch()
+            .unwrap()
+            .counters
+            .get(&"k".to_string())
+            .unwrap()
+            .map(|c| c.value().unwrap())
+            .unwrap_or(0)
+    };
+    let materialize = |exec: [u8; 32], first: &[Action], second: &[Action]| -> (u64, [u8; 32]) {
+        fresh(exec);
+        import(base.clone());
+        reset_delta_context();
+        set_current_heads(vec![base_hash]);
+        import(first.to_vec());
+        reset_delta_context();
+        set_current_heads(vec![root_hash()]);
+        import(second.to_vec());
+        (value_of(), root_hash())
+    };
+
+    let (a_val, a_root) = materialize([1; 32], &delta_a, &delta_b);
+    let (b_val, b_root) = materialize([2; 32], &delta_b, &delta_a);
+
+    assert_eq!(
+        a_val, 2,
+        "node A: nested counter under 'k' must sum both increments (got {a_val})"
+    );
+    assert_eq!(
+        b_val, 2,
+        "node B: nested counter under 'k' must sum both increments (got {b_val})"
+    );
+    assert_eq!(
+        a_root,
+        b_root,
+        "nested-counter root must converge regardless of apply order: A={} B={}",
+        hex::encode(a_root),
+        hex::encode(b_root),
+    );
+}
+
+/// Regression test for the nested-id re-key fix.
+///
+/// The key "k" is NOT pre-created in the shared base — each node creates it
+/// INDEPENDENTLY (via `get(...).unwrap_or_else(Counter::new)` + `insert`),
+/// exactly what scaffolding-e2e's `increment_g_counter`/`increment_counter`/
+/// `add_tag` do on first touch.
+///
+/// Before the fix the two nodes' counters never merged (value clobbered to 1):
+/// `Counter::new()` builds its internal `positive` map via
+/// `Collection::new(None)` → `Id::random()`, so each node's counter had a
+/// DIFFERENT random internal-map id and the per-executor count slots lived
+/// under different parents. `insert` now re-keys nested collections
+/// deterministically relative to the value's entity id
+/// (`rekey::rekey_nested_value`), so both nodes' slots share an id and the
+/// COUNTS converge to 2. This test asserts that value convergence.
+///
+/// NOTE: full ROOT-HASH convergence is a separate, still-open problem — see
+/// `test_nested_counter_first_touch_root_hash_converges`.
+#[test]
+#[serial]
+fn test_nested_counter_first_touch_concurrent_converges() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::MainStorage;
+
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct NestedCounters {
+        counters: UnorderedMap<String, Counter>,
+    }
+    impl Mergeable for NestedCounters {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.counters.merge(&other.counters)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), data, Metadata::default()).unwrap();
+        commit_causal_delta(&root_hash())
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<NestedCounters, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh = |exec: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<NestedCounters>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(exec);
+    };
+    let incr_create = || {
+        let mut doc = Root::<NestedCounters, S>::fetch().unwrap();
+        // First touch: key absent -> create a fresh Counter (the scaffolding path).
+        let mut ctr = doc
+            .counters
+            .get(&"k".to_string())
+            .unwrap()
+            .unwrap_or_else(Counter::new);
+        ctr.increment().unwrap();
+        doc.counters.insert("k".to_string(), ctr).unwrap();
+        let data = borsh::to_vec(&*doc).unwrap();
+        drop(doc);
+        capture(data)
+    };
+
+    // Genesis: EMPTY map (no "k"); only the map container is shared.
+    fresh([9; 32]);
+    let g = Root::<NestedCounters, S>::new(|| NestedCounters {
+        counters: UnorderedMap::new_with_field_name("counters"),
+    });
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base = capture(g_data);
+    let base_hash = root_hash();
+
+    fresh([1; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_a = incr_create();
+
+    fresh([2; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_b = incr_create();
+
+    let value_of = || -> u64 {
+        Root::<NestedCounters, S>::fetch()
+            .unwrap()
+            .counters
+            .get(&"k".to_string())
+            .unwrap()
+            .map(|c| c.value().unwrap())
+            .unwrap_or(0)
+    };
+    let materialize = |exec: [u8; 32], first: &[Action], second: &[Action]| -> (u64, [u8; 32]) {
+        fresh(exec);
+        import(base.clone());
+        reset_delta_context();
+        set_current_heads(vec![base_hash]);
+        import(first.to_vec());
+        reset_delta_context();
+        set_current_heads(vec![root_hash()]);
+        import(second.to_vec());
+        (value_of(), root_hash())
+    };
+
+    // node A applies [its own, then B]; node B applies [its own, then A] —
+    // opposite orders, the cross-node sync pattern.
+    let (a_val, a_root) = materialize([1; 32], &delta_a, &delta_b);
+    let (b_val, b_root) = materialize([2; 32], &delta_b, &delta_a);
+
+    // (1) Nested-id re-key: both nodes sum the two independently-created
+    // executor slots to 2 (previously one clobbered the other → 1).
+    assert_eq!(
+        a_val, 2,
+        "node A: independently-created 'k' counters must merge to 2 (got {a_val})"
+    );
+    assert_eq!(
+        b_val, 2,
+        "node B: independently-created 'k' counters must merge to 2 (got {b_val})"
+    );
+
+    // (2) Merkle child-dedup: the root HASH converges regardless of apply order.
+    // Before the `add_child_to` dedup fix the diverging parents had identical
+    // `own_hash` but different `full_hash` because a child re-added with a
+    // changed `created_at` was appended as a DUPLICATE `ChildInfo`, hashing that
+    // child twice in one order only.
+    assert_eq!(
+        a_root,
+        b_root,
+        "first-touch nested-counter root must converge regardless of apply order: A={} B={}",
+        hex::encode(a_root),
+        hex::encode(b_root),
+    );
+}
+
+/// Same first-touch scenario for an `UnorderedMap<String, UnorderedSet<String>>`
+/// (the scaffolding `crdt_tags`/`add_tag` shape): two nodes independently
+/// first-create the set under key "k", each adding a DIFFERENT tag, then
+/// exchange deltas. The nested-id re-key (`UnorderedSet: RekeyTarget`) makes
+/// both nodes' sets share an internal id, so the set UNION converges (both tags
+/// present) instead of one node's tag clobbering the other's. (Root-hash
+/// convergence is the same separate open issue as the counter case.)
+#[test]
+#[serial]
+fn test_nested_set_first_touch_concurrent_converges() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::MainStorage;
+
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct Tags {
+        tags: UnorderedMap<String, UnorderedSet<String>>,
+    }
+    impl Mergeable for Tags {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.tags.merge(&other.tags)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), data, Metadata::default()).unwrap();
+        commit_causal_delta(&root_hash())
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<Tags, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh = |exec: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<Tags>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(exec);
+    };
+    let add_tag = |tag: &str| -> Vec<Action> {
+        let mut doc = Root::<Tags, S>::fetch().unwrap();
+        let mut set = doc
+            .tags
+            .get(&"k".to_string())
+            .unwrap()
+            .unwrap_or_else(UnorderedSet::new);
+        let _ = set.insert(tag.to_string()).unwrap();
+        doc.tags.insert("k".to_string(), set).unwrap();
+        let data = borsh::to_vec(&*doc).unwrap();
+        drop(doc);
+        capture(data)
+    };
+
+    // Genesis: empty tags map (no "k").
+    fresh([9; 32]);
+    let g = Root::<Tags, S>::new(|| Tags {
+        tags: UnorderedMap::new_with_field_name("tags"),
+    });
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base = capture(g_data);
+    let base_hash = root_hash();
+
+    fresh([1; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_a = add_tag("rust");
+
+    fresh([2; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_b = add_tag("crdt");
+
+    let tag_count = || -> usize {
+        Root::<Tags, S>::fetch()
+            .unwrap()
+            .tags
+            .get(&"k".to_string())
+            .unwrap()
+            .map(|s| s.len().unwrap())
+            .unwrap_or(0)
+    };
+    let materialize = |exec: [u8; 32], first: &[Action], second: &[Action]| -> (usize, [u8; 32]) {
+        fresh(exec);
+        import(base.clone());
+        reset_delta_context();
+        set_current_heads(vec![base_hash]);
+        import(first.to_vec());
+        reset_delta_context();
+        set_current_heads(vec![root_hash()]);
+        import(second.to_vec());
+        (tag_count(), root_hash())
+    };
+
+    let (a_count, a_root) = materialize([1; 32], &delta_a, &delta_b);
+    let (b_count, b_root) = materialize([2; 32], &delta_b, &delta_a);
+
+    // Set union converges (nested-id re-key) ...
+    assert_eq!(
+        a_count, 2,
+        "node A: independently-created 'k' sets must union to 2 tags (got {a_count})"
+    );
+    assert_eq!(
+        b_count, 2,
+        "node B: independently-created 'k' sets must union to 2 tags (got {b_count})"
+    );
+    // ... and the root hash converges regardless of apply order (child-dedup).
+    assert_eq!(
+        a_root,
+        b_root,
+        "first-touch nested-set root must converge regardless of apply order: A={} B={}",
+        hex::encode(a_root),
+        hex::encode(b_root),
+    );
+}

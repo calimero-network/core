@@ -83,7 +83,10 @@ where
     ///
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this FrozenStorage
-    pub fn reassign_deterministic_id(&mut self, field_name: &str) {
+    pub fn reassign_deterministic_id(&mut self, field_name: &str)
+    where
+        T: 'static,
+    {
         use super::compute_collection_id;
         let new_id = compute_collection_id(None, field_name);
         self.storage.reassign_id_and_field_name(new_id, field_name);
@@ -116,7 +119,10 @@ where
     ///
     /// # Errors
     /// Returns a `StoreError` if serialization or storage fails.
-    pub fn insert(&mut self, value: T) -> Result<Hash, StoreError> {
+    pub fn insert(&mut self, value: T) -> Result<Hash, StoreError>
+    where
+        T: 'static,
+    {
         // Serialize the value to get its content-addressable key
         let data_bytes = borsh::to_vec(&value)
             .map_err(|e| StoreError::StorageError(StorageError::SerializationError(e)))?;
@@ -196,7 +202,7 @@ where
 // Implement Mergeable so it correctly merges in #[app::state]
 impl<T, S> Mergeable for FrozenStorage<T, S>
 where
-    T: BorshSerialize + BorshDeserialize + Clone,
+    T: BorshSerialize + BorshDeserialize + Clone + 'static,
     S: StorageAdaptor,
 {
     fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {

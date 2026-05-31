@@ -71,7 +71,10 @@ where
     ///
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this UserStorage
-    pub fn reassign_deterministic_id(&mut self, field_name: &str) {
+    pub fn reassign_deterministic_id(&mut self, field_name: &str)
+    where
+        T: 'static,
+    {
         use super::compute_collection_id;
         let new_id = compute_collection_id(None, field_name);
         self.storage.reassign_id_and_field_name(new_id, field_name);
@@ -102,7 +105,10 @@ where
     ///
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
-    pub fn insert(&mut self, value: T) -> Result<Option<T>, StoreError> {
+    pub fn insert(&mut self, value: T) -> Result<Option<T>, StoreError>
+    where
+        T: 'static,
+    {
         let executor_public_key: PublicKey = env::executor_id().into();
 
         // Construct the StorageType. It will be signed later, on the upper levels by
@@ -205,7 +211,7 @@ where
 // Implement Mergeable so it correctly merges in #[app::state]
 impl<T, S> Mergeable for UserStorage<T, S>
 where
-    T: BorshSerialize + BorshDeserialize + Mergeable,
+    T: BorshSerialize + BorshDeserialize + Mergeable + 'static,
     S: StorageAdaptor,
 {
     fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
