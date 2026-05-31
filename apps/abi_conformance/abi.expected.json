@@ -23,6 +23,24 @@
           }
         },
         {
+          "name": "sorted_counters",
+          "type": {
+            "kind": "map",
+            "key": {
+              "kind": "string"
+            },
+            "value": {
+              "kind": "record",
+              "fields": [],
+              "crdt_type": "lww_register",
+              "inner_type": {
+                "kind": "u32"
+              }
+            },
+            "crdt_type": "sorted_map"
+          }
+        },
+        {
           "name": "users",
           "type": {
             "kind": "list",
