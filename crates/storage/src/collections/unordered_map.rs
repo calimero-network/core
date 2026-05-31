@@ -611,11 +611,16 @@ where
 
 impl<K, V, S> Extend<(K, V)> for UnorderedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
     V: BorshSerialize + BorshDeserialize + 'static,
     S: StorageAdaptor,
 {
     fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
+        // Register this map type's own re-key thunk, exactly as the other store
+        // paths do, so a map populated only via `extend`/`collect` is still
+        // re-keyed when it is itself nested as a value (map-of-map).
+        super::rekey::register_rekey::<Self>();
+
         let parent = self.inner.id();
 
         let iter = iter.into_iter().map(|(k, mut v)| {
@@ -636,7 +641,7 @@ where
 
 impl<K, V, S> FromIterator<(K, V)> for UnorderedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
     V: BorshSerialize + BorshDeserialize + 'static,
     S: StorageAdaptor,
 {
