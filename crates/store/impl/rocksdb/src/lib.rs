@@ -212,6 +212,15 @@ impl Database<'_> for RocksDB {
         Ok(None)
     }
 
+    fn delete_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
+        let cf_handle = self.try_cf_handle(col)?;
+        // A single range tombstone over `[lo, hi)` — no per-key delete, no scan,
+        // and no unbounded in-memory key buffer.
+        self.db
+            .delete_range_cf(cf_handle, lo.as_ref(), hi.as_ref())?;
+        Ok(())
+    }
+
     fn approximate_size(&self, col: Column, start: Slice<'_>, end: Slice<'_>) -> EyreResult<u64> {
         let cf_handle = self.try_cf_handle(col)?;
         // `get_approximate_sizes_cf` samples SST metadata — no scan,

@@ -189,19 +189,26 @@ pub fn storage_write(key: Key, value: &[u8]) -> bool {
 // NOT synced. Only the `MainStorage` adaptor routes here; `PrivateStorage` and
 // the test mocks have their own index handling.
 
-/// Insert/overwrite `key -> value` in the ordered index.
-pub fn storage_index_set(key: &[u8], value: &[u8]) {
-    imp::storage_index_set(key, value);
+/// Insert/overwrite `key -> value` in the ordered index. Returns whether the
+/// backend persisted the write (so `SortedMap` can skip stamping a stale
+/// validity marker and rebuild on the next read instead).
+#[must_use]
+pub fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
+    imp::storage_index_set(key, value)
 }
 
-/// Remove `key` from the ordered index.
-pub fn storage_index_remove(key: &[u8]) {
-    imp::storage_index_remove(key);
+/// Remove `key` from the ordered index. Returns whether the write was
+/// persisted (see [`storage_index_set`]).
+#[must_use]
+pub fn storage_index_remove(key: &[u8]) -> bool {
+    imp::storage_index_remove(key)
 }
 
-/// Remove every ordered-index key beginning with `prefix`.
-pub fn storage_index_remove_prefix(prefix: &[u8]) {
-    imp::storage_index_remove_prefix(prefix);
+/// Remove every ordered-index key beginning with `prefix`. Returns whether the
+/// write was persisted (see [`storage_index_set`]).
+#[must_use]
+pub fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
+    imp::storage_index_remove_prefix(prefix)
 }
 
 /// Scan the ordered index over `[lo, hi)`, ascending, after `offset`, capped at
@@ -445,16 +452,16 @@ mod calimero_vm {
     }
 
     /// Ordered-index ops (raw composite keys, no hashing — order must survive).
-    pub(super) fn storage_index_set(key: &[u8], value: &[u8]) {
-        env::storage_index_set(key, value);
+    pub(super) fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
+        env::storage_index_set(key, value)
     }
 
-    pub(super) fn storage_index_remove(key: &[u8]) {
-        env::storage_index_remove(key);
+    pub(super) fn storage_index_remove(key: &[u8]) -> bool {
+        env::storage_index_remove(key)
     }
 
-    pub(super) fn storage_index_remove_prefix(prefix: &[u8]) {
-        env::storage_index_remove_prefix(prefix);
+    pub(super) fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
+        env::storage_index_remove_prefix(prefix)
     }
 
     pub(super) fn storage_index_scan(
@@ -617,20 +624,23 @@ mod mocked {
             const { RefCell::new(std::collections::BTreeMap::new()) };
     }
 
-    pub(super) fn storage_index_set(key: &[u8], value: &[u8]) {
+    pub(super) fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
         INDEX.with(|index| {
             let _ = index.borrow_mut().insert(key.to_vec(), value.to_vec());
         });
+        true
     }
 
-    pub(super) fn storage_index_remove(key: &[u8]) {
+    pub(super) fn storage_index_remove(key: &[u8]) -> bool {
         INDEX.with(|index| {
             let _ = index.borrow_mut().remove(key);
         });
+        true
     }
 
-    pub(super) fn storage_index_remove_prefix(prefix: &[u8]) {
+    pub(super) fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
         INDEX.with(|index| index.borrow_mut().retain(|k, _| !k.starts_with(prefix)));
+        true
     }
 
     pub(super) fn storage_index_scan(

@@ -83,13 +83,21 @@ impl ContextStorage {
         .build()
     }
 
+    /// Byte length of the context-id prefix stamped onto every index key.
+    /// Derived from the live id (not hardcoded) so the strip on readback stays
+    /// in lockstep with [`Self::index_key`].
+    fn index_prefix_len(&self) -> usize {
+        self.borrow_context_id().as_ref().len()
+    }
+
     /// Scope an ordered-index key to this context: `context_id ‖ key`. The
     /// `key` is the adaptor's `collection ‖ order_key`; prefixing the context
     /// keeps different contexts' indexes disjoint in the shared column.
     fn index_key(&self, key: &[u8]) -> Vec<u8> {
         let context = self.borrow_context_id();
-        let mut out = Vec::with_capacity(32 + key.len());
-        out.extend_from_slice(context.as_ref());
+        let context = context.as_ref();
+        let mut out = Vec::with_capacity(context.len() + key.len());
+        out.extend_from_slice(context);
         out.extend_from_slice(key);
         out
     }
@@ -182,30 +190,28 @@ impl Storage for ContextStorage {
     // handle (not the temporal transaction). Keys are `context_id ‖ collection
     // ‖ order_key` (all unhashed), so RocksDB's byte order is the key order.
 
-    fn index_set(&mut self, key: &[u8], value: &[u8]) {
+    fn index_set(&mut self, key: &[u8], value: &[u8]) -> bool {
         let full = self.index_key(key);
-        let _ = self
-            .borrow_index_store()
-            .raw_put(Column::SortedIndex, &full, value);
+        self.borrow_index_store()
+            .raw_put(Column::SortedIndex, &full, value)
+            .is_ok()
     }
 
-    fn index_del(&mut self, key: &[u8]) {
+    fn index_del(&mut self, key: &[u8]) -> bool {
         let full = self.index_key(key);
-        let _ = self
-            .borrow_index_store()
-            .raw_delete(Column::SortedIndex, &full);
+        self.borrow_index_store()
+            .raw_delete(Column::SortedIndex, &full)
+            .is_ok()
     }
 
-    fn index_del_prefix(&mut self, prefix: &[u8]) {
+    fn index_del_prefix(&mut self, prefix: &[u8]) -> bool {
         let lo = self.index_key(prefix);
         let hi = prefix_upper_bound(&lo);
-        let store = self.borrow_index_store();
-        // Unbounded: we need every key under the prefix to delete it.
-        if let Ok(pairs) = store.raw_scan(Column::SortedIndex, &lo, &hi, None) {
-            for (k, _) in pairs {
-                let _ = store.raw_delete(Column::SortedIndex, &k);
-            }
-        }
+        // One range tombstone over the prefix slice — no scan, no per-key
+        // delete, no unbounded buffer of the collection's keys.
+        self.borrow_index_store()
+            .raw_delete_range(Column::SortedIndex, &lo, &hi)
+            .is_ok()
     }
 
     fn index_scan(
@@ -224,10 +230,11 @@ impl Storage for ContextStorage {
             .borrow_index_store()
             .raw_scan(Column::SortedIndex, &full_lo, &full_hi, max)
             .unwrap_or_default();
-        // Strip the 32-byte context prefix to hand back the adaptor-level key.
+        // Strip the context-id prefix to hand back the adaptor-level key.
+        let plen = self.index_prefix_len();
         let stripped = pairs
             .into_iter()
-            .filter_map(|(k, v)| k.get(32..).map(|key| (key.to_vec(), v)))
+            .filter_map(|(k, v)| k.get(plen..).map(|key| (key.to_vec(), v)))
             .skip(offset);
         match limit {
             Some(n) => stripped.take(n).collect(),
@@ -242,8 +249,8 @@ impl Storage for ContextStorage {
             .borrow_index_store()
             .raw_last(Column::SortedIndex, &full_lo, &full_hi)
             .ok()??;
-        // Strip the 32-byte context prefix.
-        Some((k.get(32..)?.to_vec(), v))
+        // Strip the context-id prefix.
+        Some((k.get(self.index_prefix_len()..)?.to_vec(), v))
     }
 }
 

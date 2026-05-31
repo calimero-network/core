@@ -497,24 +497,32 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
 // so the backend keeps them in byte (= logical key) order. Only `SortedMap`
 // (via the `MainStorage` adaptor) calls these.
 
-/// Insert/overwrite `key -> value` in the ordered index.
+/// Insert/overwrite `key -> value` in the ordered index. Returns whether the
+/// host persisted the write (so the caller can avoid stamping a stale
+/// index-validity marker on failure).
 #[inline]
-pub fn storage_index_set(key: &[u8], value: &[u8]) {
-    let _ = unsafe {
-        sys::storage_index_set(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value)))
-    };
+pub fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
+    unsafe { sys::storage_index_set(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value))) }
+        .try_into()
+        .unwrap_or_else(expected_boolean)
 }
 
-/// Remove `key` from the ordered index.
+/// Remove `key` from the ordered index. Returns whether the host persisted the
+/// write (see [`storage_index_set`]).
 #[inline]
-pub fn storage_index_remove(key: &[u8]) {
-    let _ = unsafe { sys::storage_index_remove(Ref::new(&Buffer::from(key))) };
+pub fn storage_index_remove(key: &[u8]) -> bool {
+    unsafe { sys::storage_index_remove(Ref::new(&Buffer::from(key))) }
+        .try_into()
+        .unwrap_or_else(expected_boolean)
 }
 
-/// Remove every ordered-index key beginning with `prefix`.
+/// Remove every ordered-index key beginning with `prefix`. Returns whether the
+/// host persisted the write (see [`storage_index_set`]).
 #[inline]
-pub fn storage_index_remove_prefix(prefix: &[u8]) {
-    let _ = unsafe { sys::storage_index_remove_prefix(Ref::new(&Buffer::from(prefix))) };
+pub fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
+    unsafe { sys::storage_index_remove_prefix(Ref::new(&Buffer::from(prefix))) }
+        .try_into()
+        .unwrap_or_else(expected_boolean)
 }
 
 /// Scan the ordered index over `[lo, hi)`, ascending, after `offset` and
@@ -527,8 +535,10 @@ pub fn storage_index_scan(
     offset: usize,
     limit: Option<usize>,
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
-    // `usize::MAX` is the "unbounded" sentinel shared with the host.
-    let limit_raw = limit.unwrap_or(usize::MAX);
+    // Encode the limit as `n + 1`, with `0` = unbounded. A `MAX` sentinel would
+    // be ambiguous: `usize` is 32-bit on wasm32, so `usize::MAX` (`u32::MAX`)
+    // would not equal the host's `u64::MAX`. `0` is unambiguous on any width.
+    let limit_raw = limit.map_or(0, |n| n.saturating_add(1));
     let found: bool = unsafe {
         sys::storage_index_scan(
             Ref::new(&Buffer::from(lo)),

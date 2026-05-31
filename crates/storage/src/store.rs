@@ -141,20 +141,29 @@ pub trait StorageAdaptor: 'static {
     }
 
     /// Insert/update `collection ‖ order_key -> entry` in the ordered index.
-    /// Idempotent by `(collection, order_key)`.
-    fn index_put(collection: Id, order_key: &[u8], entry: Id) {
+    /// Idempotent by `(collection, order_key)`. Returns whether the write was
+    /// persisted, so `SortedMap` can avoid stamping a stale validity marker (and
+    /// rebuild on the next read instead) when a write is dropped. The inert
+    /// default reports `false`; it is never reached on the stamping path because
+    /// that path is gated on [`index_supported`](Self::index_supported).
+    fn index_put(collection: Id, order_key: &[u8], entry: Id) -> bool {
         let _ = (collection, order_key, entry);
+        false
     }
 
     /// Remove `collection ‖ order_key` from the ordered index. No-op if absent.
-    fn index_remove(collection: Id, order_key: &[u8]) {
+    /// Returns whether the write was persisted (see [`index_put`](Self::index_put)).
+    fn index_remove(collection: Id, order_key: &[u8]) -> bool {
         let _ = (collection, order_key);
+        false
     }
 
     /// Drop every index entry for `collection`. Used when rebuilding the index
-    /// from scratch (e.g. after a remote sync changed the entry set).
-    fn index_clear(collection: Id) {
+    /// from scratch (e.g. after a remote sync changed the entry set). Returns
+    /// whether the write was persisted (see [`index_put`](Self::index_put)).
+    fn index_clear(collection: Id) -> bool {
         let _ = collection;
+        false
     }
 
     /// Return `(order_key, entry_id)` pairs for `collection` whose order key
@@ -255,16 +264,16 @@ impl StorageAdaptor for MainStorage {
         true
     }
 
-    fn index_put(collection: Id, order_key: &[u8], entry: Id) {
-        crate::env::storage_index_set(&index_key(collection, order_key), entry.as_bytes());
+    fn index_put(collection: Id, order_key: &[u8], entry: Id) -> bool {
+        crate::env::storage_index_set(&index_key(collection, order_key), entry.as_bytes())
     }
 
-    fn index_remove(collection: Id, order_key: &[u8]) {
-        crate::env::storage_index_remove(&index_key(collection, order_key));
+    fn index_remove(collection: Id, order_key: &[u8]) -> bool {
+        crate::env::storage_index_remove(&index_key(collection, order_key))
     }
 
-    fn index_clear(collection: Id) {
-        crate::env::storage_index_remove_prefix(collection.as_bytes());
+    fn index_clear(collection: Id) -> bool {
+        crate::env::storage_index_remove_prefix(collection.as_bytes())
     }
 
     fn index_range(
@@ -591,28 +600,31 @@ pub mod mocked {
             true
         }
 
-        fn index_put(collection: Id, order_key: &[u8], entry: Id) {
+        fn index_put(collection: Id, order_key: &[u8], entry: Id) -> bool {
             INDEX.with(|index| {
                 let _ = index
                     .borrow_mut()
                     .insert((SCOPE, collection, order_key.to_vec()), entry);
             });
+            true
         }
 
-        fn index_remove(collection: Id, order_key: &[u8]) {
+        fn index_remove(collection: Id, order_key: &[u8]) -> bool {
             INDEX.with(|index| {
                 let _ = index
                     .borrow_mut()
                     .remove(&(SCOPE, collection, order_key.to_vec()));
             });
+            true
         }
 
-        fn index_clear(collection: Id) {
+        fn index_clear(collection: Id) -> bool {
             INDEX.with(|index| {
                 index
                     .borrow_mut()
                     .retain(|(scope, coll, _), _| !(*scope == SCOPE && *coll == collection));
             });
+            true
         }
 
         fn index_range(

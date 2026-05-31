@@ -73,6 +73,13 @@ impl Store {
         self.db.delete(col, Slice::from(key))
     }
 
+    /// Delete every raw key in `col` over `[lo, hi)` in one shot (a native
+    /// range tombstone on RocksDB). Used to drop a whole index slice on
+    /// `clear()` without buffering the key set.
+    pub fn raw_delete_range(&self, col: Column, lo: &[u8], hi: &[u8]) -> EyreResult<()> {
+        self.db.delete_range(col, Slice::from(lo), Slice::from(hi))
+    }
+
     /// Collect up to `max` `(key, value)` pairs in `col` over `[lo, hi)`,
     /// ascending by key (the backend's native order). One forward seek + walk,
     /// stopping after `max` items (`None` = unbounded) so a bounded query

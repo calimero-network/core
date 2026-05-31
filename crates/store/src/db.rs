@@ -101,6 +101,33 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
         Ok(last)
     }
 
+    /// Delete every key in `col` over `[lo, hi)` in one shot. Used to drop a
+    /// `SortedMap`'s whole index slice on `clear()` without materialising the
+    /// key set in memory first.
+    ///
+    /// The default buffers the in-range keys and deletes them one by one (so
+    /// backends without a native range delete still work); RocksDB overrides
+    /// this with `delete_range_cf`, a single range tombstone — `O(1)` write,
+    /// no per-key I/O and no unbounded buffer.
+    fn delete_range(&self, col: Column, lo: Slice<'_>, hi: Slice<'_>) -> EyreResult<()> {
+        let mut iter = self.iter(col)?;
+        let hi_bytes: Vec<u8> = hi.as_ref().to_vec();
+        let mut keys: Vec<Vec<u8>> = Vec::new();
+        let mut pos = iter.seek(lo)?.map(|k| k.as_ref().to_vec());
+        while let Some(key) = pos {
+            if key.as_slice() >= hi_bytes.as_slice() {
+                break;
+            }
+            keys.push(key);
+            pos = iter.next()?.map(|k| k.as_ref().to_vec());
+        }
+        drop(iter);
+        for key in keys {
+            self.delete(col, Slice::from(&key))?;
+        }
+        Ok(())
+    }
+
     /// Best-effort estimate of on-disk bytes stored in `col` for keys in
     /// `[start, end)`. Used by usage-reporting endpoints to measure
     /// per-group / per-context storage cheaply (RocksDB returns a real

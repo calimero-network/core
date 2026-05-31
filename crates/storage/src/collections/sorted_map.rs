@@ -41,6 +41,26 @@
 //! rebuild — wasted if you only ever point-access the map. `SortedMap` is the
 //! `BTreeMap` to `UnorderedMap`'s `HashMap`.
 //!
+//! # Key ordering contract
+//!
+//! `SortedMap` has two ordering sources that must agree:
+//!
+//! * the **on-disk index**, which seeks by `K`'s `AsRef<[u8]>` bytes (RocksDB
+//!   compares keys bytewise), and
+//! * the **in-memory fallback** / comparison impls (`PartialOrd`, `Ord`, `Eq`,
+//!   serialization), which use `K`'s [`Ord`].
+//!
+//! So `K`'s byte encoding **must be order-consistent with its `Ord`**: for all
+//! keys, `a.cmp(b) == a.as_ref().cmp(b.as_ref())`. This holds for `String`,
+//! `&str`, `Vec<u8>`, `[u8; N]` and any type whose `AsRef<[u8]>` is its
+//! lexicographic form — the only key types you can actually store (every write
+//! path bounds `K: AsRef<[u8]>`). A key whose `AsRef<[u8]>` disagrees with its
+//! `Ord` (e.g. a multi-byte integer stored little-endian, or a sign-flipped
+//! encoding) would make index-backed reads (`range`/`prefix`/`page`/`first`/
+//! `last`) and `Ord`-based reads (`entries`/`keys`/`values`) disagree — a usage
+//! error, not a supported configuration. Encode such keys big-endian (and
+//! offset-binary for signed values) so their bytes sort like their values.
+//!
 //! # CRDT-safety and the fallback
 //!
 //! The index is *not* synced — it is a derived materialised view of the
@@ -338,9 +358,13 @@ where
 
         if let Some(order_key) = order_key {
             // Done after the inner write so the collection's `full_hash` already
-            // reflects this insert when we stamp the validity marker.
-            S::index_put(collection, &order_key, id);
-            self.stamp_index_marker();
+            // reflects this insert when we stamp the validity marker. Only stamp
+            // if the index write was actually persisted — otherwise we leave the
+            // marker stale so the next ordered read rebuilds and self-heals,
+            // rather than trusting an index that's missing this key.
+            if S::index_put(collection, &order_key, id) {
+                self.stamp_index_marker();
+            }
         }
 
         Ok(None)
@@ -472,9 +496,9 @@ where
 
         // Keep the ordered index in step with the removal (no-op when the
         // adaptor doesn't back it). `entry.remove()` has already recomputed the
-        // collection's `full_hash`, so the stamped marker stays valid.
-        if S::index_supported() {
-            S::index_remove(self.inner.id(), key.as_ref());
+        // collection's `full_hash`, so the stamped marker stays valid — but only
+        // stamp if the index write landed; otherwise leave it stale to rebuild.
+        if S::index_supported() && S::index_remove(self.inner.id(), key.as_ref()) {
             self.stamp_index_marker();
         }
 
@@ -491,8 +515,7 @@ where
     pub fn clear(&mut self) -> Result<(), StoreError> {
         self.inner.clear()?;
 
-        if S::index_supported() {
-            S::index_clear(self.inner.id());
+        if S::index_supported() && S::index_clear(self.inner.id()) {
             self.stamp_index_marker();
         }
 
@@ -554,15 +577,25 @@ where
                 .map(|(order_key, _id)| order_key)
                 .collect();
 
-        // Drop stale keys, add missing ones — only the diff is written.
+        // Drop stale keys, add missing ones — only the diff is written. Track
+        // whether every write landed: if any was dropped, leave the marker stale
+        // so the next read retries the rebuild instead of trusting a partial one.
+        //
+        // `compute_id(collection, order_key)` reconstructs the *exact* entry id:
+        // an entry's id is `compute_id(collection, key.as_ref())` and the order
+        // key in `desired` is that same `key.as_ref()`, so this can't disagree
+        // with the stored entry — no need to read the entry to learn its id.
+        let mut persisted = true;
         for order_key in existing.difference(&desired) {
-            S::index_remove(collection, order_key);
+            persisted &= S::index_remove(collection, order_key);
         }
         for order_key in desired.difference(&existing) {
-            S::index_put(collection, order_key, compute_id(collection, order_key));
+            persisted &= S::index_put(collection, order_key, compute_id(collection, order_key));
         }
 
-        self.stamp_index_marker();
+        if persisted {
+            self.stamp_index_marker();
+        }
         Ok(())
     }
 
@@ -1204,8 +1237,11 @@ where
         drop(self.map.inner.insert(Some(id), (self.key, value))?);
 
         if let Some(order_key) = order_key {
-            S::index_put(collection, &order_key, id);
-            self.map.stamp_index_marker();
+            // Only stamp the validity marker if the index write landed; a dropped
+            // write leaves the marker stale so the next ordered read rebuilds.
+            if S::index_put(collection, &order_key, id) {
+                self.map.stamp_index_marker();
+            }
         }
 
         let entry_mut = self

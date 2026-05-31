@@ -25,6 +25,16 @@
 //! index overhead. Use `SortedSet` only when you need elements in order:
 //! `range(a..b)`, `prefix("user:")`, pagination, sorted iteration, or min/max.
 //! It is the `BTreeSet` to `UnorderedSet`'s `HashSet`.
+//!
+//! # Element ordering contract
+//!
+//! Like [`SortedMap`](super::SortedMap), `SortedSet` seeks the on-disk index by
+//! `V`'s `AsRef<[u8]>` bytes but falls back to (and compares with) `V`'s [`Ord`],
+//! so the two must agree: `a.cmp(b) == a.as_ref().cmp(b.as_ref())` for all
+//! elements. True for `String`/`&str`/`Vec<u8>`/`[u8; N]` and any type whose
+//! `AsRef<[u8]>` is its lexicographic form. Encode multi-byte integers
+//! big-endian (and signed values offset-binary) so their bytes sort like their
+//! values; an encoding that disagrees with `Ord` is a usage error.
 
 use core::borrow::Borrow;
 use core::fmt;
@@ -185,8 +195,12 @@ where
         let _ignored = self.inner.insert(Some(id), value)?;
 
         if let Some(order_key) = order_key {
-            S::index_put(collection, &order_key, id);
-            self.stamp_index_marker();
+            // Only stamp the validity marker if the index write landed; a dropped
+            // write leaves the marker stale so the next ordered read rebuilds and
+            // self-heals rather than trusting an index missing this element.
+            if S::index_put(collection, &order_key, id) {
+                self.stamp_index_marker();
+            }
         }
 
         Ok(true)
@@ -246,8 +260,9 @@ where
 
         let _ignored = entry.remove()?;
 
-        if S::index_supported() {
-            S::index_remove(self.inner.id(), value.as_ref());
+        // Only stamp if the index write landed; else leave the marker stale to
+        // force a rebuild on the next ordered read.
+        if S::index_supported() && S::index_remove(self.inner.id(), value.as_ref()) {
             self.stamp_index_marker();
         }
 
@@ -262,8 +277,7 @@ where
     /// will be returned.
     pub fn clear(&mut self) -> Result<(), StoreError> {
         self.inner.clear()?;
-        if S::index_supported() {
-            S::index_clear(self.inner.id());
+        if S::index_supported() && S::index_clear(self.inner.id()) {
             self.stamp_index_marker();
         }
         Ok(())
@@ -332,13 +346,19 @@ where
                 .into_iter()
                 .map(|(order_key, _id)| order_key)
                 .collect();
+        // Only stamp if every diff write landed; otherwise leave the marker
+        // stale so the next read retries the rebuild rather than trusting a
+        // partial index.
+        let mut persisted = true;
         for order_key in existing.difference(&desired) {
-            S::index_remove(collection, order_key);
+            persisted &= S::index_remove(collection, order_key);
         }
         for order_key in desired.difference(&existing) {
-            S::index_put(collection, order_key, compute_id(collection, order_key));
+            persisted &= S::index_put(collection, order_key, compute_id(collection, order_key));
         }
-        self.stamp_index_marker();
+        if persisted {
+            self.stamp_index_marker();
+        }
         Ok(())
     }
 

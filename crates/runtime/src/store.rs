@@ -27,20 +27,27 @@ pub trait Storage: Reflect {
     // ordered keyspace leaves these alone and `SortedMap` falls back to its
     // in-memory sort (the storage adaptor gates on `index_supported()`).
 
-    /// Insert/overwrite `key -> value` in the ordered index.
-    fn index_set(&mut self, key: &[u8], value: &[u8]) {
+    /// Insert/overwrite `key -> value` in the ordered index. Returns whether the
+    /// write was persisted, so the collection can avoid stamping its validity
+    /// marker (and force a rebuild instead) after a failed write.
+    fn index_set(&mut self, key: &[u8], value: &[u8]) -> bool {
         let _ = (key, value);
+        false
     }
 
-    /// Remove `key` from the ordered index.
-    fn index_del(&mut self, key: &[u8]) {
+    /// Remove `key` from the ordered index. Returns whether the write was
+    /// persisted (see [`index_set`](Self::index_set)).
+    fn index_del(&mut self, key: &[u8]) -> bool {
         let _ = key;
+        false
     }
 
     /// Remove every index key beginning with `prefix` (used to clear one
-    /// collection's index before a rebuild).
-    fn index_del_prefix(&mut self, prefix: &[u8]) {
+    /// collection's index before a rebuild). Returns whether the write was
+    /// persisted (see [`index_set`](Self::index_set)).
+    fn index_del_prefix(&mut self, prefix: &[u8]) -> bool {
         let _ = prefix;
+        false
     }
 
     /// Return `(key, value)` pairs in `[lo, hi)`, ascending by key, after
@@ -100,16 +107,19 @@ impl Storage for InMemoryStorage {
         self.inner.contains_key(key)
     }
 
-    fn index_set(&mut self, key: &[u8], value: &[u8]) {
+    fn index_set(&mut self, key: &[u8], value: &[u8]) -> bool {
         let _ = self.index.insert(key.to_vec(), value.to_vec());
+        true
     }
 
-    fn index_del(&mut self, key: &[u8]) {
+    fn index_del(&mut self, key: &[u8]) -> bool {
         let _ = self.index.remove(key);
+        true
     }
 
-    fn index_del_prefix(&mut self, prefix: &[u8]) {
+    fn index_del_prefix(&mut self, prefix: &[u8]) -> bool {
         self.index.retain(|k, _| !k.starts_with(prefix));
+        true
     }
 
     fn index_scan(

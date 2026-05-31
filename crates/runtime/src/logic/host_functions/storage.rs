@@ -456,40 +456,44 @@ impl VMHostFunctions<'_> {
     // are unhashed `collection ‖ order_key`, values are 32-byte entry ids.
     // `SortedMap` is the only caller, via the `MainStorage` adaptor.
 
-    /// Insert/overwrite `key -> value` in the ordered index. Returns `1`.
+    /// Insert/overwrite `key -> value` in the ordered index. Returns `1` if the
+    /// write was persisted, `0` otherwise (so the guest can skip stamping its
+    /// index-validity marker and rebuild instead).
     pub fn storage_index_set(&mut self, key_ptr: u64, value_ptr: u64) -> VMLogicResult<u32> {
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
         let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(value_ptr)? };
         let key = self.read_guest_memory_slice(&key)?.to_vec();
         let value = self.read_guest_memory_slice(&value)?.to_vec();
         trace!(target: "runtime::host::storage", op = "index_set", key_len = key.len(), "storage_index_set");
-        self.with_logic_mut(|logic| logic.storage.index_set(&key, &value));
-        Ok(1)
+        let ok = self.with_logic_mut(|logic| logic.storage.index_set(&key, &value));
+        Ok(ok.into())
     }
 
-    /// Remove `key` from the ordered index. Returns `1`.
+    /// Remove `key` from the ordered index. Returns `1` if persisted, else `0`.
     pub fn storage_index_remove(&mut self, key_ptr: u64) -> VMLogicResult<u32> {
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
         let key = self.read_guest_memory_slice(&key)?.to_vec();
         trace!(target: "runtime::host::storage", op = "index_del", key_len = key.len(), "storage_index_remove");
-        self.with_logic_mut(|logic| logic.storage.index_del(&key));
-        Ok(1)
+        let ok = self.with_logic_mut(|logic| logic.storage.index_del(&key));
+        Ok(ok.into())
     }
 
-    /// Remove every ordered-index key beginning with `prefix`. Returns `1`.
+    /// Remove every ordered-index key beginning with `prefix`. Returns `1` if
+    /// persisted, else `0`.
     pub fn storage_index_remove_prefix(&mut self, prefix_ptr: u64) -> VMLogicResult<u32> {
         let prefix = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(prefix_ptr)? };
         let prefix = self.read_guest_memory_slice(&prefix)?.to_vec();
         trace!(target: "runtime::host::storage", op = "index_del_prefix", prefix_len = prefix.len(), "storage_index_remove_prefix");
-        self.with_logic_mut(|logic| logic.storage.index_del_prefix(&prefix));
-        Ok(1)
+        let ok = self.with_logic_mut(|logic| logic.storage.index_del_prefix(&prefix));
+        Ok(ok.into())
     }
 
     /// Scan the ordered index over `[lo, hi)`, skipping `offset` and capped at
-    /// `limit` (`u64::MAX` = unbounded). Encodes the resulting `(key, value)`
-    /// pairs into `register_id` using a length-prefixed format the guest
-    /// decodes (`count:u32`, then per pair `klen:u32, k, vlen:u32, v`, all
-    /// little-endian). Returns `1`.
+    /// `limit`, which is `n + 1`-encoded with `0` = unbounded (a width-agnostic
+    /// sentinel — `usize::MAX` differs between the wasm32 guest and this host).
+    /// Encodes the resulting `(key, value)` pairs into `register_id` using a
+    /// length-prefixed format the guest decodes (`count:u32`, then per pair
+    /// `klen:u32, k, vlen:u32, v`, all little-endian). Returns `1`.
     pub fn storage_index_scan(
         &mut self,
         lo_ptr: u64,
@@ -503,7 +507,8 @@ impl VMHostFunctions<'_> {
         let lo = self.read_guest_memory_slice(&lo)?.to_vec();
         let hi = self.read_guest_memory_slice(&hi)?.to_vec();
 
-        let limit = (limit != u64::MAX).then_some(limit as usize);
+        // `n + 1`-encoded: 0 = unbounded, else `limit - 1`.
+        let limit = (limit != 0).then(|| (limit - 1) as usize);
         let pairs = self
             .borrow_logic()
             .storage
