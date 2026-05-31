@@ -216,9 +216,48 @@ impl<const ALLOW_DECREMENT: bool> Counter<ALLOW_DECREMENT, MainStorage> {
     }
 }
 
+/// Re-key the counter's internal map(s) relative to its storage parent so two
+/// nodes that independently first-create the same nested counter derive the
+/// same internal-map id and their per-executor slots converge. See
+/// [`super::rekey`].
+impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> super::rekey::RekeyTarget
+    for Counter<ALLOW_DECREMENT, S>
+{
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        // The internal slot maps are plain `UnorderedMap`s of executor-id ->
+        // count, and MUST be tagged as such — not with the counter's own
+        // `GCounter`/`PnCounter` type. Each per-executor slot has a single
+        // writer (its executor), so the slots converge by ordinary structural
+        // sync. Tagging a slot map itself as a counter routes it through
+        // `merge_by_crdt_type` -> `merge_pn_counter`, which deserializes the
+        // single-map blob as a whole `Counter`, trips the missing-negative-map
+        // upgrade fallback, and mints a stray random ROOT child on every merge
+        // — leaving the receiver with orphan entities the writer never had and
+        // diverging the root hash.
+        let map_crdt_type = CrdtType::unordered_map(
+            std::any::type_name::<String>(),
+            std::any::type_name::<u64>(),
+        );
+        self.positive.reassign_deterministic_id_under(
+            parent_id,
+            "__counter_positive",
+            map_crdt_type.clone(),
+        );
+        // GCounter's negative map is detached and never persisted — skip it.
+        if ALLOW_DECREMENT {
+            self.negative.reassign_deterministic_id_under(
+                parent_id,
+                "__counter_negative",
+                map_crdt_type,
+            );
+        }
+    }
+}
+
 impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S> {
     /// Creates a new counter (internal) - must use same visibility as UnorderedMap
     pub(super) fn new_internal() -> Self {
+        super::rekey::register_rekey::<Self>();
         Self {
             positive: UnorderedMap::new_internal(),
             // GCounter (ALLOW_DECREMENT = false): negative map is never used,
@@ -238,24 +277,25 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
         parent_id: Option<crate::address::Id>,
         field_name: &str,
     ) -> Self {
+        // Register the re-key thunk here too (not only in `new_internal`), so a
+        // counter first constructed via the deterministic-id path still teaches
+        // the registry about its type — keeps registration independent of which
+        // constructor an app happens to hit first.
+        super::rekey::register_rekey::<Self>();
         // For Counter, we need to create deterministic IDs for both positive and negative maps
         // Use a reserved internal prefix to prevent collisions with user-created collections.
         // The prefix "__counter_internal_" is reserved for Counter's internal maps and ensures
         // that a Counter with field name "X" won't collide with a user-created collection
         // named "X_positive" or "X_negative".
         //
-        // The positive map gets the appropriate CrdtType for this counter.
-        // The negative map is internal and doesn't need special CRDT type.
-        let crdt_type = if ALLOW_DECREMENT {
-            CrdtType::PnCounter
-        } else {
-            CrdtType::GCounter
-        };
+        // Both internal maps are tagged as plain `UnorderedMap`s (the default in
+        // `new_with_field_name_internal`), NOT with the counter's own
+        // GCounter/PnCounter type — see `rekey_relative_to` for why tagging a slot
+        // map as a counter mints orphan ROOT children during merge.
         Self {
-            positive: UnorderedMap::new_with_field_name_and_crdt_type(
+            positive: UnorderedMap::new_with_field_name_internal(
                 parent_id,
                 &format!("__counter_internal_{field_name}_positive"),
-                crdt_type,
             ),
             // GCounter: negative map is never used, so use detached
             // PNCounter: negative map is used, so register it properly
@@ -282,16 +322,12 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
     /// # Arguments
     /// * `field_name` - The name of the struct field containing this counter
     pub fn reassign_deterministic_id(&mut self, field_name: &str) {
-        // Positive map: always needs deterministic ID and entry migration
+        // Positive map: always needs deterministic ID and entry migration.
+        // `reassign_deterministic_id` tags it with the natural `UnorderedMap`
+        // CRDT type, which is what we want — the slot map must NOT carry the
+        // counter's own GCounter/PnCounter type (see `rekey_relative_to`).
         self.positive
             .reassign_deterministic_id(&format!("__counter_internal_{field_name}_positive"));
-        // Update CRDT type after reassignment
-        let crdt_type = if ALLOW_DECREMENT {
-            CrdtType::PnCounter
-        } else {
-            CrdtType::GCounter
-        };
-        self.positive.set_collection_crdt_type(crdt_type);
 
         // Negative map: only for PNCounter (ALLOW_DECREMENT = true)
         // GCounter's negative map is detached and never used, so skip it

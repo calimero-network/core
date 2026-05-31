@@ -39,6 +39,24 @@ pub struct Vector<V, S: StorageAdaptor = MainStorage> {
     inner: Collection<V, S>,
 }
 
+/// Re-key the vector's inner collection (and its index-keyed children) relative
+/// to its storage parent so a vector stored as a collection value converges.
+/// See [`super::rekey`].
+impl<V, S> super::rekey::RekeyTarget for Vector<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + 'static,
+    S: StorageAdaptor,
+{
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        self.inner
+            .reassign_deterministic_id_with_indexed_children_under(
+                Some(parent_id),
+                "__vector",
+                CrdtType::vector(std::any::type_name::<V>()),
+            );
+    }
+}
+
 impl<V, S> Vector<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
@@ -132,7 +150,13 @@ where
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn push(&mut self, value: V) -> Result<(), StoreError> {
+    pub fn push(&mut self, value: V) -> Result<(), StoreError>
+    where
+        V: 'static,
+    {
+        // Register this vector type's nested-id re-key thunk so a vector stored
+        // as a collection value is re-keyed when the outer collection is stored.
+        super::rekey::register_rekey::<Self>();
         let _ignored = self.inner.insert(None, value)?;
 
         Ok(())
@@ -212,12 +236,24 @@ where
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned. Returns an error if the index would cause arithmetic overflow.
     ///
-    pub fn update(&mut self, index: usize, value: V) -> Result<Option<V>, StoreError> {
+    pub fn update(&mut self, index: usize, mut value: V) -> Result<Option<V>, StoreError>
+    where
+        V: 'static,
+    {
         validate_index_bounds(index)?;
 
         let Some(id) = self.inner.nth(index)? else {
             return Ok(None);
         };
+
+        // Re-key nested collections in the replacement value relative to the
+        // existing element id (which is shared across nodes). Two nodes that
+        // concurrently `update` the same positional element with a freshly-built
+        // nested CRDT would otherwise mint divergent random internal ids. `push`
+        // needs no such re-key: it mints a fresh RANDOM element id that rides
+        // along in the sync delta (single-writer append, never independently
+        // re-created), so the value's nested ids are shipped, not re-derived.
+        super::rekey::rekey_nested_value(&mut value, id);
 
         let Some(mut entry) = self.inner.get_mut(id)? else {
             return Ok(None);

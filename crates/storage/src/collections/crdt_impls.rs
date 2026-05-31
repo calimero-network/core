@@ -245,8 +245,8 @@ where
 
 impl<K, V, S> Mergeable for UnorderedMap<K, V, S>
 where
-    K: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
-    V: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable,
+    K: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq + 'static,
+    V: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable + 'static,
     S: StorageAdaptor,
 {
     /// Merge two maps entry-by-entry
@@ -309,7 +309,7 @@ where
 
 impl<T, S> Mergeable for UnorderedSet<T, S>
 where
-    T: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
+    T: borsh::BorshSerialize + borsh::BorshDeserialize + AsRef<[u8]> + Clone + PartialEq + 'static,
     S: StorageAdaptor,
 {
     /// Merge two sets using union (add-wins) semantics
@@ -370,7 +370,7 @@ where
 
 impl<T, S> Mergeable for Vector<T, S>
 where
-    T: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable,
+    T: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable + 'static,
     S: StorageAdaptor,
 {
     /// Merge two vectors using element-wise strategy

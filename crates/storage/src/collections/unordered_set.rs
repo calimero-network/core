@@ -19,6 +19,33 @@ pub struct UnorderedSet<V, S: StorageAdaptor = MainStorage> {
     inner: Collection<V, S>,
 }
 
+/// Re-key the set's inner collection (and its content-addressed members)
+/// relative to its storage parent, so independently-created sets converge.
+/// See [`super::rekey`].
+impl<V, S> super::rekey::RekeyTarget for UnorderedSet<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
+    S: StorageAdaptor,
+{
+    #[expect(clippy::expect_used, reason = "fatal error if re-key migration fails")]
+    fn rekey_relative_to(&mut self, parent_id: crate::address::Id) {
+        let new_id = super::compute_collection_id(Some(parent_id), "__set");
+        if self.inner.id() == new_id {
+            return; // already deterministic — idempotent
+        }
+        let elements: Vec<V> = self.iter().expect("read set elements for re-key").collect();
+        self.inner.clear().expect("clear set for re-key");
+        self.inner.reassign_deterministic_id_under(
+            Some(parent_id),
+            "__set",
+            CrdtType::unordered_set(std::any::type_name::<V>()),
+        );
+        for v in elements {
+            let _ = self.insert(v).expect("re-insert set element during re-key");
+        }
+    }
+}
+
 impl<V, S> UnorderedSet<V, S>
 where
     V: BorshSerialize + BorshDeserialize,
@@ -96,7 +123,7 @@ where
     #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
     pub fn reassign_deterministic_id(&mut self, field_name: &str)
     where
-        V: AsRef<[u8]> + PartialEq,
+        V: AsRef<[u8]> + PartialEq + 'static,
     {
         use super::compute_collection_id;
 
@@ -140,8 +167,12 @@ where
     ///
     pub fn insert(&mut self, value: V) -> Result<bool, StoreError>
     where
-        V: AsRef<[u8]> + PartialEq,
+        V: AsRef<[u8]> + PartialEq + 'static,
     {
+        // Register this set type's nested-id re-key thunk so that when the set
+        // is itself stored as a map/set/vector value, `insert`'s re-key path
+        // can find it (see `super::rekey`).
+        super::rekey::register_rekey::<Self>();
         let id = compute_id(self.inner.id(), value.as_ref());
 
         if self.inner.get_mut(id)?.is_some() {

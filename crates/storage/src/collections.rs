@@ -28,6 +28,7 @@ pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageStrategy
 pub mod composite_key;
 mod crdt_impls;
 mod decompose_impls;
+pub(crate) mod rekey;
 pub use composite_key::CompositeKey;
 pub mod nested;
 pub use nested::{get_nested, insert_nested, insert_nested_decomposable, NestedConfig};
@@ -269,7 +270,27 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         field_name: &str,
         crdt_type: CrdtType,
     ) {
-        let new_id = compute_collection_id(None, field_name);
+        self.reassign_deterministic_id_under(None, field_name, crdt_type);
+    }
+
+    /// Like [`reassign_deterministic_id_with_crdt_type`], but derives the new
+    /// id relative to `parent_id` via `compute_collection_id(Some(parent), ..)`.
+    ///
+    /// Used when a collection is nested inside another entity (e.g. a `Counter`
+    /// stored as a map value): the nested collection's id must be a function of
+    /// the *parent entity's deterministic id* so every node mints the same id
+    /// and the children converge. With `parent_id == None` this is exactly the
+    /// top-level (ROOT-relative) reassignment.
+    ///
+    /// [`reassign_deterministic_id_with_crdt_type`]: Self::reassign_deterministic_id_with_crdt_type
+    #[expect(clippy::expect_used, reason = "fatal error if cleanup fails")]
+    pub(crate) fn reassign_deterministic_id_under(
+        &mut self,
+        parent_id: Option<Id>,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) {
+        let new_id = compute_collection_id(parent_id, field_name);
         let old_id = self.storage.id();
 
         // If already has the correct ID, nothing to do
@@ -277,12 +298,31 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             return;
         }
 
+        let old_metadata = self.storage.metadata.clone();
+
         // Clean up old storage entry and index
         let _ignored = S::storage_remove(Key::Entry(old_id));
         let _ignored = S::storage_remove(Key::Index(old_id));
 
         // Remove old child reference from ROOT (without creating tombstone)
         let _ = <Index<S>>::remove_child_reference_only(*ROOT_ID, old_id);
+
+        // Broadcast a tombstone for the old id when re-keying a NESTED collection
+        // (`parent_id.is_some()`). Such a collection was created on-demand with a
+        // random id (`Collection::new(None)`) and its `Add` was already pushed to
+        // the delta; without a matching `DeleteRef` a receiver applies that `Add`
+        // but never the local `storage_remove` above, so it keeps the old-id
+        // entity as an orphan and its parent's `full_hash` diverges from the
+        // writer's (the scaffolding-e2e PN-counter "Wait for sync" timeout).
+        // Top-level init re-keys (`parent_id == None`) run before the state is
+        // broadcast, so the old id was never shipped — no tombstone needed there.
+        if parent_id.is_some() && S::participates_in_sync() {
+            crate::delta::push_action(crate::action::Action::DeleteRef {
+                id: old_id,
+                deleted_at: crate::env::time_now(),
+                metadata: old_metadata,
+            });
+        }
 
         // Update in-memory ID, field name, and CRDT type
         self.storage.reassign_id_and_field_name(new_id, field_name);
@@ -318,6 +358,22 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         field_name: &str,
         crdt_type: CrdtType,
     ) {
+        self.reassign_deterministic_id_with_indexed_children_under(None, field_name, crdt_type);
+    }
+
+    /// Parent-relative variant of
+    /// [`reassign_deterministic_id_with_indexed_children`] for a vector nested
+    /// inside another entity (re-keys the collection id and its index-derived
+    /// children relative to `parent_id`).
+    ///
+    /// [`reassign_deterministic_id_with_indexed_children`]: Self::reassign_deterministic_id_with_indexed_children
+    #[expect(clippy::expect_used, reason = "fatal error if migration fails")]
+    pub(crate) fn reassign_deterministic_id_with_indexed_children_under(
+        &mut self,
+        parent_id: Option<Id>,
+        field_name: &str,
+        crdt_type: CrdtType,
+    ) {
         // Snapshot (value, storage_type) for every child in append order
         // before mutating anything. `storage_type` carries the
         // `AuthoredVector` per-entry owner stamp, which must survive the
@@ -345,7 +401,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // didn't snapshot, and an empty vector stays empty. The clear path
         // only runs when we hold a non-empty snapshot to restore from.
         if snapshot.is_empty() {
-            self.reassign_deterministic_id_with_crdt_type(field_name, crdt_type);
+            self.reassign_deterministic_id_under(parent_id, field_name, crdt_type);
             return;
         }
 
@@ -353,7 +409,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         // deterministic id, then re-insert each child under
         // `compute_id(parent, index)`.
         self.clear().expect("clear for reindex");
-        self.reassign_deterministic_id_with_crdt_type(field_name, crdt_type);
+        self.reassign_deterministic_id_under(parent_id, field_name, crdt_type);
 
         let parent = self.id();
         for (index, (item, storage_type)) in snapshot.into_iter().enumerate() {
@@ -520,6 +576,13 @@ where
     T: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
+    /// The storage id of this entry. Used by the map's occupied-entry replace
+    /// path to re-key nested collections in a replacement value relative to the
+    /// (stable) entry id.
+    fn id(&self) -> Id {
+        self.entry.id()
+    }
+
     fn remove(mut self) -> StoreResult<T> {
         let old = self
             .collection

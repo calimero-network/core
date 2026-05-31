@@ -80,7 +80,8 @@ where
     /// have stable IDs across nodes.
     pub fn reassign_deterministic_id(&mut self, field_name: &str)
     where
-        K: AsRef<[u8]> + PartialEq,
+        K: AsRef<[u8]> + PartialEq + 'static,
+        V: 'static,
     {
         use super::compute_collection_id;
         let new_id = compute_collection_id(None, field_name);
@@ -115,7 +116,11 @@ where
     /// # Errors
     /// Returns `ActionNotAllowed` if `k` already exists, or any underlying
     /// storage error.
-    pub fn insert(&mut self, k: K, v: V) -> Result<(), StoreError> {
+    pub fn insert(&mut self, k: K, v: V) -> Result<(), StoreError>
+    where
+        K: 'static,
+        V: 'static,
+    {
         if self.inner.contains(&k)? {
             return Err(StoreError::StorageError(StorageError::ActionNotAllowed(
                 "AuthoredMap::insert: key already exists".to_owned(),

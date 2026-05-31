@@ -14,8 +14,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 impl<K, V, S> Decomposable for UnorderedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
-    V: BorshSerialize + BorshDeserialize + Clone,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + Clone + 'static,
     S: StorageAdaptor,
 {
     type Key = CompositeKey;
@@ -75,7 +75,7 @@ where
 
 impl<T, S> Decomposable for Vector<T, S>
 where
-    T: BorshSerialize + BorshDeserialize + Clone,
+    T: BorshSerialize + BorshDeserialize + Clone + 'static,
     S: StorageAdaptor,
 {
     type Key = CompositeKey;

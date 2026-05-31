@@ -72,8 +72,8 @@ pub fn insert_nested<K, V, S>(
     value: V,
 ) -> Result<bool, StoreError>
 where
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
-    V: BorshSerialize + BorshDeserialize,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + 'static,
     S: StorageAdaptor,
 {
     // For Phase 2.1, we use standard insert for all types
@@ -94,8 +94,13 @@ pub fn insert_nested_decomposable<K, V, S>(
     value: V,
 ) -> Result<bool, StoreError>
 where
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
-    V: BorshSerialize + BorshDeserialize + Clone + CrdtMeta + Decomposable<Key = CompositeKey>,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq + 'static,
+    V: BorshSerialize
+        + BorshDeserialize
+        + Clone
+        + CrdtMeta
+        + Decomposable<Key = CompositeKey>
+        + 'static,
     S: StorageAdaptor,
 {
     // Check if V can contain CRDTs
@@ -169,7 +174,7 @@ where
 /// Returns error if storage operations fail or reconstruction fails.
 pub fn get_nested<K, V, S>(map: &UnorderedMap<K, V, S>, key: &K) -> Result<Option<V>, StoreError>
 where
-    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Clone + PartialEq + 'static,
     V: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
