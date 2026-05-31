@@ -1,23 +1,22 @@
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::PublicKey;
 use calimero_storage::collections::{FrozenStorage, LwwRegister};
 
 const SCHEMA_VERSION_V1: &str = "1.0.0";
 
-/// v1 state: a content-addressed `FrozenStorage` of immutable documents plus a
-/// plain `LwwRegister` title. The migrate scenario carries the `FrozenStorage`
-/// through to v2 unchanged — the cross-node assertion is that every stored
-/// document is still retrievable under its original content hash after the
-/// migration, on every node (the key IS the SHA-256 of the value, so identical
-/// content always round-trips to the identical hash).
+/// v1 state: a content-addressed `FrozenStorage` of immutable documents, a plain
+/// `LwwRegister` title, and `last_hash` — the raw 32-byte content hash of the
+/// most-recently frozen document (empty = none). The hash is kept as raw bytes
+/// (not a string) so it never needs an encode/decode codec, and is fetched back
+/// via `get_last_doc()` so no hash has to round-trip through a workflow variable.
 #[app::state]
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioFrozenStorageV1 {
     documents: FrozenStorage<String>,
     title: LwwRegister<String>,
+    last_hash: LwwRegister<Vec<u8>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -27,19 +26,10 @@ pub struct SchemaInfo {
     pub title: String,
 }
 
-/// `FrozenStorage::insert` returns the content hash as a raw `[u8; 32]`. We
-/// surface it to workflows as a string by wrapping it in a `PublicKey` (a thin
-/// `[u8; 32]` newtype re-exported by the SDK) purely for its base58
-/// `Display`/`FromStr` round-trip — it is used here only as a bytes<->string
-/// codec, not as an identity.
-fn hash_to_string(hash: [u8; 32]) -> String {
-    PublicKey::from(hash).to_string()
-}
-
-/// Parses a base58 hash string back into the raw `[u8; 32]` key. Returns `None`
-/// if the string is not a valid encoded hash.
-fn string_to_hash(hash_str: &str) -> Option<[u8; 32]> {
-    hash_str.parse::<PublicKey>().ok().map(|pk| *pk.as_ref())
+/// Convert the stored hash bytes back to the `[u8; 32]` content-hash key, or
+/// `None` if no document has been frozen yet (or the stored length is wrong).
+fn stored_hash(bytes: &[u8]) -> Option<[u8; 32]> {
+    <[u8; 32]>::try_from(bytes).ok()
 }
 
 #[app::logic]
@@ -49,6 +39,7 @@ impl ScenarioFrozenStorageV1 {
         ScenarioFrozenStorageV1 {
             documents: FrozenStorage::new_with_field_name("documents"),
             title: LwwRegister::new("untitled".to_owned()),
+            last_hash: LwwRegister::new(Vec::new()),
         }
     }
 
@@ -57,26 +48,19 @@ impl ScenarioFrozenStorageV1 {
         Ok(())
     }
 
-    /// Freeze a document and return its content hash as a base58 string.
-    pub fn freeze_doc(&mut self, value: String) -> app::Result<String> {
+    /// Freeze a document; records its content hash internally (raw bytes).
+    pub fn freeze_doc(&mut self, value: String) -> app::Result<()> {
         let hash = self.documents.insert(value)?;
-        Ok(hash_to_string(hash))
+        self.last_hash.set(hash.to_vec());
+        Ok(())
     }
 
-    /// Retrieve a frozen document by its content-hash string. A malformed hash
-    /// string yields `Ok(None)` rather than an error.
-    pub fn get_doc(&self, hash_str: String) -> app::Result<Option<String>> {
-        match string_to_hash(&hash_str) {
+    /// Fetch the most-recently frozen document by its stored content hash. No
+    /// hash needs to be passed in (or captured by a workflow) — the app holds it.
+    pub fn get_last_doc(&self) -> app::Result<Option<String>> {
+        match stored_hash(self.last_hash.get()) {
             Some(hash) => Ok(self.documents.get(&hash)?),
             None => Ok(None),
-        }
-    }
-
-    /// Whether a document with the given content-hash string exists.
-    pub fn has_doc(&self, hash_str: String) -> app::Result<bool> {
-        match string_to_hash(&hash_str) {
-            Some(hash) => Ok(self.documents.contains(&hash)?),
-            None => Ok(false),
         }
     }
 

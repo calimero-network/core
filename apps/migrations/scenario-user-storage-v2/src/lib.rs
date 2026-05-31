@@ -115,7 +115,7 @@ impl ScenarioUserStorageV2 {
         Ok(SchemaInfo {
             schema_version: SCHEMA_VERSION_V2.to_owned(),
             title: self.title.get().clone(),
-            note_count: self.notes.entries()?.count() as u64,
+            note_count: self.note_count()?,
             migration_note: self.migration_note.get().clone(),
         })
     }

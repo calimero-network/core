@@ -1,17 +1,19 @@
-name: 17 — Scenario "frozen-storage" (v1 → v2 carry-through, 2-node)
+name: 17 — Scenario "frozen-storage" (v1 → v2, content-rewrite during migrate, 2-node)
 description: >
   2-node per-context migration for a `FrozenStorage`-typed field — a
-  content-addressed immutable store keyed by the SHA256 of the value. v1
-  holds `documents: FrozenStorage<String>`; node 1 freezes a document and
-  captures its content hash. v2 carries the store THROUGH the migrate and
-  adds a `migration_note` register.
+  content-addressed immutable store keyed by the SHA256 of the value. v1 freezes
+  a document and records its hash internally (`get_last_doc` fetches it back, so
+  no raw hash crosses a workflow variable). v2 carries the store THROUGH the
+  migrate AND performs a real content-rewrite: it freezes a NEW document derived
+  from the carried title.
 
-  Discriminating assertion: after BOTH nodes self-migrate, fetching the
-  document by the SAME content hash returns the original bytes on EACH node
-  — proving the content-addressed entry (and its hash) round-trips through
-  migrate and stays convergent cross-node. The hash is a pure function of
-  the bytes, so a divergent migrate would change it and the fetch would
-  miss.
+  Two discriminating assertions:
+  1. Carry-through — `get_last_doc` returns the original payload on BOTH nodes
+     after migration (the v1 content-addressed entry round-trips).
+  2. Build-during-migrate — `get_migration_doc` returns the derived content on
+     BOTH nodes. The derived content is a pure function of carried state, so
+     every node freezes it under an identical hash; the new entry converges with
+     no identity stamp even though migrate emits no sync delta.
 
   Per-context upgrade on the subgroup (cascade=false).
 
@@ -106,7 +108,7 @@ steps:
     node: app-migration-frozen-2
     context_id: "{{ctx_id}}"
 
-  # Phase 4: node 1 freezes a document, capturing its content hash.
+  # Phase 4: node 1 freezes a document (hash recorded internally).
   - name: Node 1 sets title
     type: call
     node: app-migration-frozen-1
@@ -115,15 +117,13 @@ steps:
     args:
       title: "frozen-doc"
 
-  - name: Node 1 freezes a document (captures content hash)
+  - name: Node 1 freezes a document
     type: call
     node: app-migration-frozen-1
     context_id: "{{ctx_id}}"
     method: freeze_doc
     args:
       value: "the-frozen-payload"
-    outputs:
-      doc_hash: output
 
   - name: Wait for v1 state to sync to node 2
     type: wait_for_sync
@@ -134,13 +134,11 @@ steps:
     timeout: 90
     trigger_sync: true
 
-  - name: Node 2 can fetch the frozen doc by hash (pre-migrate sanity)
+  - name: Node 2 can fetch the frozen doc (pre-migrate sanity)
     type: call
     node: app-migration-frozen-2
     context_id: "{{ctx_id}}"
-    method: get_doc
-    args:
-      hash_str: "{{doc_hash}}"
+    method: get_last_doc
     outputs:
       doc_pre_node2: result
 
@@ -232,76 +230,46 @@ steps:
     statements:
       - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0", "title": "frozen-doc", "migration_note": "migrated-v1-to-v2"}})'
 
-  # Discriminating assertion: same content hash still resolves the bytes on
-  # BOTH nodes after they independently self-migrated.
-  - name: Fetch frozen doc by hash on node 1 (post-migrate)
+  # Discriminating assertion #1: the v1 content-addressed entry survived migrate
+  # (carried) and resolves on BOTH nodes.
+  - name: Fetch carried v1 doc on node 1 (post-migrate)
     type: call
     node: app-migration-frozen-1
     context_id: "{{ctx_id}}"
-    method: get_doc
-    args:
-      hash_str: "{{doc_hash}}"
+    method: get_last_doc
     outputs:
       doc_post_node1: result
 
-  - name: Fetch frozen doc by hash on node 2 (post-migrate)
+  - name: Fetch carried v1 doc on node 2 (post-migrate)
     type: call
     node: app-migration-frozen-2
     context_id: "{{ctx_id}}"
-    method: get_doc
-    args:
-      hash_str: "{{doc_hash}}"
+    method: get_last_doc
     outputs:
       doc_post_node2: result
 
-  - name: Assert content-addressed entry survived migrate on BOTH nodes
+  - name: Assert v1 content-addressed entry survived migrate on BOTH nodes
     type: json_assert
     statements:
       - 'json_equal({{doc_post_node1}}, {"output": "the-frozen-payload"})'
       - 'json_equal({{doc_post_node2}}, {"output": "the-frozen-payload"})'
 
   # Discriminating assertion #2: a NEW document was frozen DURING migrate
-  # (derived from the carried title). Because FrozenStorage is content-addressed,
-  # both nodes derive the same content and land the same hash — build-during-
-  # migrate converges with no identity stamp.
-  - name: Read migrate-frozen doc hash on node 1
+  # (derived from the carried title). Content-addressed → both nodes land the
+  # same hash → build-during-migrate converges with no identity stamp.
+  - name: Fetch the migrate-built doc on node 1
     type: call
     node: app-migration-frozen-1
     context_id: "{{ctx_id}}"
-    method: migration_doc_hash
-    outputs:
-      mig_hash_node1: result
-
-  - name: Read migrate-frozen doc hash on node 2
-    type: call
-    node: app-migration-frozen-2
-    context_id: "{{ctx_id}}"
-    method: migration_doc_hash
-    outputs:
-      mig_hash_node2: result
-
-  - name: Assert the migrate-built content hash is identical across nodes
-    type: json_assert
-    statements:
-      - 'json_equal({{mig_hash_node1}}, {{mig_hash_node2}})'
-
-  - name: Fetch the migrate-built doc by its hash on node 1
-    type: call
-    node: app-migration-frozen-1
-    context_id: "{{ctx_id}}"
-    method: get_doc
-    args:
-      hash_str: "{{mig_hash_node1}}"
+    method: get_migration_doc
     outputs:
       mig_doc_node1: result
 
-  - name: Fetch the migrate-built doc by its hash on node 2
+  - name: Fetch the migrate-built doc on node 2
     type: call
     node: app-migration-frozen-2
     context_id: "{{ctx_id}}"
-    method: get_doc
-    args:
-      hash_str: "{{mig_hash_node2}}"
+    method: get_migration_doc
     outputs:
       mig_doc_node2: result
 

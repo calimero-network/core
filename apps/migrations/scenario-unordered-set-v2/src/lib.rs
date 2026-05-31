@@ -62,18 +62,23 @@ pub fn migrate_v1_to_v2() -> ScenarioUnorderedSetV2 {
         to_version: SCHEMA_VERSION_V2,
     });
 
-    // Build a fresh set from the v1 tags, upper-casing each. Sorting the source
-    // tags first makes the build order canonical regardless of the v1 set's
-    // iteration order (set element ids are content-derived, so order does not
-    // affect the result — sorting is belt-and-braces for determinism).
-    let mut old_tags: Vec<String> = old_state
-        .tags
+    // Transform the set IN PLACE: carry the v1 set, then clear it and re-insert
+    // every tag upper-cased. Carrying (not constructing a fresh set with the
+    // same field name) matters — a `new_with_field_name("tags")` would alias the
+    // same deterministic storage id as the v1 set, so its old entries would
+    // survive and the upper-cased inserts would just ADD to them (doubling the
+    // count). Clearing the carried set removes the originals first. Sorting the
+    // source tags makes the rebuild order canonical (set ids are content-derived
+    // so order does not affect the result — belt-and-braces for determinism).
+    let mut tags = old_state.tags;
+    let mut old_tags: Vec<String> = tags
         .iter()
         .unwrap_or_else(|e| panic!("Migration failed: V1 tags iteration error {:?}", e))
         .collect();
     old_tags.sort();
 
-    let mut tags: UnorderedSet<String> = UnorderedSet::new_with_field_name("tags");
+    tags.clear()
+        .unwrap_or_else(|e| panic!("Migration failed: V2 tags clear error {:?}", e));
     for tag in old_tags {
         tags.insert(tag.to_uppercase())
             .unwrap_or_else(|e| panic!("Migration failed: V2 tag insert error {:?}", e));
