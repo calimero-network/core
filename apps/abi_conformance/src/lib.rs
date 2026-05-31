@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
-use calimero_storage::collections::{LwwRegister, UnorderedMap, Vector};
+use calimero_storage::collections::{LwwRegister, SortedMap, UnorderedMap, Vector};
 use thiserror::Error;
 
 // Test multi-file ABI generation
