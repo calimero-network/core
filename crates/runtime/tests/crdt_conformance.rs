@@ -636,6 +636,32 @@ fn sorted_map_range_through_real_wasm() {
     );
 }
 
+/// A receiving node applies SortedMap entries via the generic sync path
+/// (host-side, which does NOT touch the ordered index), so its index is stale.
+/// The next `sorted_range` query must notice the `full_hash` marker mismatch,
+/// rebuild the index from the synced entries, and return correct key-ordered
+/// results — the self-heal-after-sync path, proven through real WASM.
+#[test]
+fn sorted_map_rebuilds_index_after_sync() {
+    let mut c = Cluster::new(2);
+
+    // Node 0 writes (out of order) and broadcasts each delta; node 1 applies
+    // them via `__calimero_sync_next` (entries land host-side, index untouched).
+    for (k, v) in [("m", "M"), ("a", "A"), ("z", "Z"), ("f", "F")] {
+        let artifact = c.call(0, "sorted_set", json!({ "key": k, "value": v }));
+        c.apply(1, &artifact);
+    }
+
+    // Node 1's ordered read must rebuild its stale index, then serve the window.
+    let range = c.query(1, "sorted_range", json!({ "start": "a", "end": "z" }));
+    let range = range.get("output").cloned().unwrap_or(range);
+    assert_eq!(
+        range,
+        json!({ "a": "A", "f": "F", "m": "M" }),
+        "node 1 rebuilds its index after sync and serves the range"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Single-writer sync coverage. These exercise the basic "one node edits, peers
 // apply the delta" path for the counter / set structures whose *concurrent*
