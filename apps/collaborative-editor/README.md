@@ -47,7 +47,7 @@ Initialize a new collaborative document with a default title "Untitled Document"
 
 ### Text Operations
 
-#### `insert_text(position: usize, text: String) -> Result<(), String>`
+#### `insert_text(position: usize, text: String) -> app::Result<()>`
 Insert text at a specific position.
 
 **Parameters:**
@@ -62,7 +62,7 @@ Insert text at a specific position.
 }
 ```
 
-#### `delete_text(start: usize, end: usize) -> Result<(), String>`
+#### `delete_text(start: usize, end: usize) -> app::Result<()>`
 Delete text in a range.
 
 **Parameters:**
@@ -77,7 +77,7 @@ Delete text in a range.
 }
 ```
 
-#### `replace_text(start: usize, end: usize, text: String) -> Result<(), String>`
+#### `replace_text(start: usize, end: usize, text: String) -> app::Result<()>`
 Replace a range of text with new text (atomic operation).
 
 **Parameters:**
@@ -94,7 +94,7 @@ Replace a range of text with new text (atomic operation).
 }
 ```
 
-#### `append_text(text: String) -> Result<(), String>`
+#### `append_text(text: String) -> app::Result<()>`
 Append text to the end of the document.
 
 **Parameters:**
@@ -107,14 +107,14 @@ Append text to the end of the document.
 }
 ```
 
-#### `clear() -> Result<(), String>`
+#### `clear() -> app::Result<()>`
 Clear the entire document.
 
 ---
 
 ### Query Methods
 
-#### `get_text() -> Result<String, String>`
+#### `get_text() -> app::Result<String>`
 Get the current document text.
 
 **Returns:** The complete document as a string
@@ -126,7 +126,7 @@ Get the current document text.
 }
 ```
 
-#### `get_length() -> Result<usize, String>`
+#### `get_length() -> app::Result<usize>`
 Get the length of the document in characters.
 
 **Returns:** Number of characters
@@ -138,7 +138,7 @@ Get the length of the document in characters.
 }
 ```
 
-#### `is_empty() -> Result<bool, String>`
+#### `is_empty() -> app::Result<bool>`
 Check if the document is empty.
 
 **Returns:** True if empty, false otherwise
@@ -154,7 +154,7 @@ Check if the document is empty.
 
 ### Title Management
 
-#### `set_title(new_title: String) -> Result<(), String>`
+#### `set_title(new_title: String) -> app::Result<()>`
 Set the document title.
 
 **Parameters:**
@@ -183,7 +183,7 @@ Get the current document title.
 
 ### Statistics
 
-#### `get_stats() -> Result<String, String>`
+#### `get_stats() -> app::Result<String>`
 Get document statistics including title, length, total edits, and owner.
 
 **Returns:** Formatted statistics string
