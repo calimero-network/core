@@ -124,7 +124,10 @@ where
     /// Returns `InvalidData` if `index` is out of bounds, `ActionNotAllowed`
     /// if the current executor is not the stored owner, `NotFound` if the
     /// underlying entry disappears mid-call, or any underlying storage error.
-    pub fn update(&mut self, index: usize, value: V) -> Result<(), StoreError> {
+    pub fn update(&mut self, index: usize, value: V) -> Result<(), StoreError>
+    where
+        V: 'static,
+    {
         let (entry_id, stored_owner) = self.require_owner(index)?;
 
         if !super::authored_common::executor_matches_owner(&stored_owner) {
@@ -149,7 +152,7 @@ where
     /// Same as [`update`](Self::update).
     pub fn tombstone(&mut self, index: usize) -> Result<(), StoreError>
     where
-        V: Default,
+        V: Default + 'static,
     {
         self.update(index, V::default())
     }

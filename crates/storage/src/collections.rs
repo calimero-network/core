@@ -576,6 +576,13 @@ where
     T: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
+    /// The storage id of this entry. Used by the map's occupied-entry replace
+    /// path to re-key nested collections in a replacement value relative to the
+    /// (stable) entry id.
+    fn id(&self) -> Id {
+        self.entry.id()
+    }
+
     fn remove(mut self) -> StoreResult<T> {
         let old = self
             .collection

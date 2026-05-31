@@ -609,14 +609,20 @@ where
 impl<K, V, S> Extend<(K, V)> for UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
-    V: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize + 'static,
     S: StorageAdaptor,
 {
     fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
         let parent = self.inner.id();
 
-        let iter = iter.into_iter().map(|(k, v)| {
+        let iter = iter.into_iter().map(|(k, mut v)| {
             let id = compute_id(parent, k.as_ref());
+
+            // Re-key nested collections in the value relative to its entry id,
+            // matching `insert`/`VacantEntry::insert`. Without this, a nested CRDT
+            // bulk-inserted via `extend`/`collect` keeps a random internal id and
+            // two nodes that independently build the same entry never converge.
+            super::rekey::rekey_nested_value(&mut v, id);
 
             (Some(id), (k, v))
         });
@@ -628,7 +634,7 @@ where
 impl<K, V, S> FromIterator<(K, V)> for UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
-    V: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize + 'static,
     S: StorageAdaptor,
 {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
@@ -788,7 +794,16 @@ where
     }
 
     /// Replaces the value in the entry and returns the old value.
-    pub fn insert(&mut self, value: V) -> V {
+    pub fn insert(&mut self, mut value: V) -> V
+    where
+        V: 'static,
+    {
+        // Re-key nested collections in the replacement value relative to this
+        // entry's (stable, deterministic) id — same reason as `VacantEntry::insert`.
+        // Replacing an occupied entry with a freshly-built nested CRDT would
+        // otherwise leave it carrying a random internal id that diverges across
+        // nodes.
+        super::rekey::rekey_nested_value(&mut value, self.entry_mut.id());
         mem::replace(&mut self.entry_mut.1, value)
     }
 
