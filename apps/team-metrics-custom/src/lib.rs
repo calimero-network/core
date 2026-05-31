@@ -131,23 +131,26 @@ impl TeamMetricsApp {
     }
 
     pub fn get_wins(&self, team_id: String) -> app::Result<u64> {
-        self.teams
-            .get(&team_id)?
-            .map(|s| s.wins.value().unwrap_or(0))
-            .ok_or_else(|| app::err!("Team not found"))
+        let Some(stats) = self.teams.get(&team_id)? else {
+            app::bail!("Team not found");
+        };
+
+        Ok(stats.wins.value()?)
     }
 
     pub fn get_losses(&self, team_id: String) -> app::Result<u64> {
-        self.teams
-            .get(&team_id)?
-            .map(|s| s.losses.value().unwrap_or(0))
-            .ok_or_else(|| app::err!("Team not found"))
+        let Some(stats) = self.teams.get(&team_id)? else {
+            app::bail!("Team not found");
+        };
+
+        Ok(stats.losses.value()?)
     }
 
     pub fn get_draws(&self, team_id: String) -> app::Result<u64> {
-        self.teams
-            .get(&team_id)?
-            .map(|s| s.draws.value().unwrap_or(0))
-            .ok_or_else(|| app::err!("Team not found"))
+        let Some(stats) = self.teams.get(&team_id)? else {
+            app::bail!("Team not found");
+        };
+
+        Ok(stats.draws.value()?)
     }
 }

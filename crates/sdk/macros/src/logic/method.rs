@@ -241,6 +241,13 @@ impl ToTokens for PublicLogicMethod<'_> {
 /// is written with a single type argument, so it never matches the two-argument
 /// `Result<Ok, Err>` shape this looks for. Custom error types
 /// (`Result<T, MyError>`) are likewise untouched.
+///
+/// This is a purely syntactic check, so it cannot see through type aliases: a
+/// `type MyResult<T> = Result<T, String>` used as `-> MyResult<T>` is not
+/// flagged. The error type is matched only against the standard-library
+/// `String` spellings (`String`, `std::string::String`, `alloc::string::String`)
+/// so an unrelated user type whose last path segment happens to be `String`
+/// is not falsely flagged.
 fn string_error_result_span(ty: &Type) -> Option<Span> {
     let Type::Path(type_path) = ty else {
         return None;
@@ -267,12 +274,40 @@ fn string_error_result_span(ty: &Type) -> Option<Span> {
         return None;
     }
 
-    let Type::Path(err_path) = err else {
-        return None;
+    is_std_string(err).then(|| err.span())
+}
+
+/// Whether `ty` is the standard-library `String`, written either bare or with a
+/// `std`/`alloc` qualifier. A leading `::` is allowed; any other prefix (e.g.
+/// `my_crate::String`) is rejected to avoid false positives.
+fn is_std_string(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
     };
 
-    let err_segment = err_path.path.segments.last()?;
-    (err_segment.ident == "String" && err_segment.arguments.is_empty()).then(|| err.span())
+    if type_path.qself.is_some() {
+        return false;
+    }
+
+    let segments = &type_path.path.segments;
+
+    // The `String` segment itself must carry no generic arguments.
+    if !segments
+        .last()
+        .is_some_and(|segment| segment.arguments.is_empty())
+    {
+        return false;
+    }
+
+    match segments.len() {
+        1 => segments[0].ident == "String",
+        3 => {
+            (segments[0].ident == "std" || segments[0].ident == "alloc")
+                && segments[1].ident == "string"
+                && segments[2].ident == "String"
+        }
+        _ => false,
+    }
 }
 
 pub struct LogicMethodImplInput<'a, 'b> {
@@ -429,6 +464,9 @@ mod tests {
         assert!(flags(parse_quote! { Result<Vec<FileRecord>, String> }));
         assert!(flags(parse_quote! { core::result::Result<(), String> }));
         assert!(flags(parse_quote! { std::result::Result<bool, String> }));
+        // Qualified standard-library `String` spellings.
+        assert!(flags(parse_quote! { Result<(), std::string::String> }));
+        assert!(flags(parse_quote! { Result<(), alloc::string::String> }));
     }
 
     #[test]
@@ -440,6 +478,11 @@ mod tests {
         assert!(!flags(parse_quote! { Result<u64, MyError> }));
         assert!(!flags(parse_quote! { Result<u64, std::io::Error> }));
         assert!(!flags(parse_quote! { Result<u64, app::Error> }));
+        // A user type whose last segment is `String` must not be flagged.
+        assert!(!flags(parse_quote! { Result<u64, my_crate::String> }));
+        assert!(!flags(
+            parse_quote! { Result<u64, widgets::string::String> }
+        ));
     }
 
     #[test]

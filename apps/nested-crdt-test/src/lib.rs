@@ -93,10 +93,11 @@ impl NestedCrdtTest {
     }
 
     pub fn get_counter(&self, key: String) -> app::Result<u64> {
-        self.counters
-            .get(&key)?
-            .map(|c| c.value().unwrap_or(0))
-            .ok_or_else(|| app::err!("Counter not found"))
+        let Some(counter) = self.counters.get(&key)? else {
+            app::bail!("Counter not found");
+        };
+
+        Ok(counter.value()?)
     }
 
     // ===== LwwRegister Operations =====
@@ -197,10 +198,11 @@ impl NestedCrdtTest {
     }
 
     pub fn has_tag(&self, key: String, tag: String) -> app::Result<bool> {
-        self.tags
-            .get(&key)?
-            .map(|set| set.contains(&tag).unwrap_or(false))
-            .ok_or_else(|| app::err!("Key not found"))
+        let Some(set) = self.tags.get(&key)? else {
+            app::bail!("Key not found");
+        };
+
+        Ok(set.contains(&tag)?)
     }
 
     pub fn get_tag_count(&self, key: String) -> app::Result<u64> {

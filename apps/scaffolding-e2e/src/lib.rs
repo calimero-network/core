@@ -339,6 +339,9 @@ fn encode_identity(identity: &[u8; 32]) -> String {
 
 fn encode_blob_id_base58(blob_id_bytes: &[u8; BLOB_ID_SIZE]) -> String {
     let mut buf = [0u8; BASE58_ENCODED_MAX_SIZE];
+    // Both unwraps are infallible for this input: a 32-byte value base58-encodes
+    // to at most 44 chars (== BASE58_ENCODED_MAX_SIZE), so `onto` never overflows
+    // the buffer, and the base58 alphabet is ASCII, so the bytes are always UTF-8.
     let len = bs58::encode(blob_id_bytes).onto(&mut buf[..]).unwrap();
     std::str::from_utf8(&buf[..len]).unwrap().to_owned()
 }
@@ -825,10 +828,11 @@ impl E2eKvStore {
     }
 
     pub fn get_g_counter(&self, key: String) -> app::Result<u64> {
-        self.crdt_counters
-            .get(&key)?
-            .map(|c| c.value().unwrap_or(0))
-            .ok_or_else(|| app::err!("GCounter not found"))
+        let Some(counter) = self.crdt_counters.get(&key)? else {
+            app::bail!("GCounter not found");
+        };
+
+        Ok(counter.value()?)
     }
 
     // --- PN-COUNTER (supports increment AND decrement) ---
@@ -874,10 +878,11 @@ impl E2eKvStore {
     }
 
     pub fn get_pn_counter(&self, key: String) -> app::Result<i64> {
-        self.crdt_pn_counters
-            .get(&key)?
-            .map(|c| c.value().unwrap_or(0))
-            .ok_or_else(|| app::err!("PNCounter not found"))
+        let Some(counter) = self.crdt_pn_counters.get(&key)? else {
+            app::bail!("PNCounter not found");
+        };
+
+        Ok(counter.value()?)
     }
 
     // Legacy alias for backward compatibility
@@ -983,10 +988,11 @@ impl E2eKvStore {
     }
 
     pub fn has_tag(&self, key: String, tag: String) -> app::Result<bool> {
-        self.crdt_tags
-            .get(&key)?
-            .map(|set| set.contains(&tag).unwrap_or(false))
-            .ok_or_else(|| app::err!("Key not found"))
+        let Some(set) = self.crdt_tags.get(&key)? else {
+            app::bail!("Key not found");
+        };
+
+        Ok(set.contains(&tag)?)
     }
 
     pub fn get_tag_count(&self, key: String) -> app::Result<u64> {
