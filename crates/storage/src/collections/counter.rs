@@ -277,6 +277,11 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
         parent_id: Option<crate::address::Id>,
         field_name: &str,
     ) -> Self {
+        // Register the re-key thunk here too (not only in `new_internal`), so a
+        // counter first constructed via the deterministic-id path still teaches
+        // the registry about its type — keeps registration independent of which
+        // constructor an app happens to hit first.
+        super::rekey::register_rekey::<Self>();
         // For Counter, we need to create deterministic IDs for both positive and negative maps
         // Use a reserved internal prefix to prevent collisions with user-created collections.
         // The prefix "__counter_internal_" is reserved for Counter's internal maps and ensures
