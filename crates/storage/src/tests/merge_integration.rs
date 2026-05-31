@@ -2523,28 +2523,25 @@ fn test_nested_set_first_touch_concurrent_converges() {
     );
 }
 
-/// OPEN REGRESSION (currently failing — hence `#[ignore]`). Reproduces the
-/// scaffolding-e2e "Wait for sync after node-1 PN-Counter operations" timeout.
+/// Regression for the scaffolding-e2e "Wait for sync after node-1 PN-Counter
+/// operations" timeout.
 ///
 /// A PN-counter (`Counter<true>`, with a negative map G-counter lacks) nested in
 /// a map; single-writer (node-1 increments thrice + decrements once); a receiver
-/// then applies node-1's delta. The VALUE converges (2) but the writer and
-/// receiver root hashes DIVERGE: the receiver ends with extra orphan entities.
+/// then applies node-1's delta. Both the VALUE (2) and the root hash must
+/// converge between writer and receiver.
 ///
-/// ROOT CAUSE: the nested-id re-key (`reassign_deterministic_id_under`) removes
-/// the old random-id collection/slot entities from the WRITER's storage via raw
-/// `storage_remove`, but the broadcast delta still carries their `Add` actions
-/// (recorded when they were first created) WITHOUT a matching `DeleteRef`. A
-/// receiver applies the orphan `Add`s but never removes them, so it keeps
-/// entities the writer dropped → divergent `full_hash`. This asymmetric
-/// (native-create → broadcast) path is what real nodes use; the symmetric
-/// first-touch tests (every node imports the same deltas) don't expose it.
-///
-/// FIX DIRECTION: the re-key must emit `DeleteRef`s for every churned old-id
-/// entity (so receivers drop them), or assign deterministic ids at creation so
-/// no random-id entity is ever persisted/broadcast. Remove `#[ignore]` once the
-/// re-key is delta-consistent.
-#[ignore = "OPEN: re-key ships orphan Add actions without DeleteRef -> writer/receiver root divergence"]
+/// ROOT CAUSE (fixed): the counter's internal positive/negative slot maps were
+/// tagged with the counter's own `PnCounter` CRDT type. On the receiver, applying
+/// a slot-map entity routed it through `merge_by_crdt_type` -> `merge_pn_counter`,
+/// which deserialized the single ~32-byte map blob as a whole `Counter<true>`,
+/// hit the missing-negative-map upgrade fallback (`UnorderedMap::new_internal`),
+/// and minted a stray random ROOT child on every merge. The receiver thus ended
+/// with orphan entities the writer never had → divergent root hash. (G-counter
+/// dodged this only because its deserialize fallback uses `new_detached`, which
+/// doesn't persist a ROOT child.) The fix tags the slot maps as plain
+/// `UnorderedMap`s — they converge by ordinary structural sync since each
+/// per-executor slot has a single writer.
 #[test]
 #[serial]
 fn test_nested_pncounter_single_writer_converges() {
@@ -2653,5 +2650,156 @@ fn test_nested_pncounter_single_writer_converges() {
         "PN-counter single-writer root must converge (writer vs receiver): n1={} n2={}",
         hex::encode(n1_root),
         hex::encode(n2_root),
+    );
+}
+
+/// Two writers concurrently mutate the same nested PN-counter (node-A: +2 -1,
+/// node-B: +1), then each applies the other's delta. Both the signed VALUE (=2)
+/// and the root hash must converge regardless of apply order.
+///
+/// This is the concurrent companion to
+/// [`test_nested_pncounter_single_writer_converges`]: it guards the same
+/// slot-map-tagging fix under genuine multi-writer interleaving, where each node
+/// owns a distinct executor slot in both the positive and negative maps. Before
+/// the fix the receiver minted orphan ROOT children when merging the
+/// `PnCounter`-tagged slot maps, diverging the root hash.
+#[test]
+#[serial]
+fn test_nested_pncounter_concurrent_writers_converge() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::MainStorage;
+
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct PnDoc {
+        counters: UnorderedMap<String, Counter<true>>,
+    }
+    impl Mergeable for PnDoc {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.counters.merge(&other.counters)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), data, Metadata::default()).unwrap();
+        commit_causal_delta(&root_hash())
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<PnDoc, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh = |exec: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<PnDoc>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(exec);
+    };
+
+    // Genesis: base with the "bal" PN-counter created once (shared ids), value 0.
+    fresh([9; 32]);
+    let mut g = Root::<PnDoc, S>::new(|| PnDoc {
+        counters: UnorderedMap::new_with_field_name("counters"),
+    });
+    g.counters
+        .insert("bal".to_string(), Counter::<true>::new())
+        .unwrap();
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base = capture(g_data);
+    let base_hash = root_hash();
+
+    // node-A: +2 then -1 under "bal" (executor 1) -> contributes +1.
+    fresh([1; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_a = {
+        let mut doc = Root::<PnDoc, S>::fetch().unwrap();
+        let mut ctr = doc
+            .counters
+            .get(&"bal".to_string())
+            .unwrap()
+            .unwrap_or_else(Counter::<true>::new);
+        ctr.increment().unwrap();
+        ctr.increment().unwrap();
+        ctr.decrement().unwrap();
+        doc.counters.insert("bal".to_string(), ctr).unwrap();
+        let data = borsh::to_vec(&*doc).unwrap();
+        drop(doc);
+        capture(data)
+    };
+
+    // node-B: +1 under "bal" (executor 2) -> contributes +1.
+    fresh([2; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_b = {
+        let mut doc = Root::<PnDoc, S>::fetch().unwrap();
+        let mut ctr = doc
+            .counters
+            .get(&"bal".to_string())
+            .unwrap()
+            .unwrap_or_else(Counter::<true>::new);
+        ctr.increment().unwrap();
+        doc.counters.insert("bal".to_string(), ctr).unwrap();
+        let data = borsh::to_vec(&*doc).unwrap();
+        drop(doc);
+        capture(data)
+    };
+
+    let value_of = || -> i64 {
+        Root::<PnDoc, S>::fetch()
+            .unwrap()
+            .counters
+            .get(&"bal".to_string())
+            .unwrap()
+            .map(|c| c.value().unwrap())
+            .unwrap_or(0)
+    };
+    let materialize = |exec: [u8; 32], first: &[Action], second: &[Action]| -> (i64, [u8; 32]) {
+        fresh(exec);
+        import(base.clone());
+        reset_delta_context();
+        set_current_heads(vec![base_hash]);
+        import(first.to_vec());
+        reset_delta_context();
+        set_current_heads(vec![root_hash()]);
+        import(second.to_vec());
+        (value_of(), root_hash())
+    };
+
+    let (a_val, a_root) = materialize([1; 32], &delta_a, &delta_b);
+    let (b_val, b_root) = materialize([2; 32], &delta_b, &delta_a);
+
+    assert_eq!(
+        a_val, 2,
+        "node A: PN-counter must be (2-1)+1=2 across both writers (got {a_val})"
+    );
+    assert_eq!(
+        b_val, 2,
+        "node B: PN-counter must be (2-1)+1=2 across both writers (got {b_val})"
+    );
+    assert_eq!(
+        a_root,
+        b_root,
+        "concurrent PN-counter root must converge regardless of apply order: A={} B={}",
+        hex::encode(a_root),
+        hex::encode(b_root),
     );
 }
