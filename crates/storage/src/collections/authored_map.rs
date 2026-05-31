@@ -496,4 +496,40 @@ mod tests {
         assert!(pairs.contains(&("b".to_owned(), 2)));
         assert!(pairs.contains(&("c".to_owned(), 3)));
     }
+
+    /// `AuthoredMap` is now matched by the `#[app::state]` macro's
+    /// `is_collection_type`, so `__assign_deterministic_ids()` calls
+    /// `reassign_deterministic_id` on it. This must NOT strip owner stamps or
+    /// drop entries: the inner map is built with a deterministic id, so its
+    /// `reassign` is an idempotent no-op (no clear+reinsert) and only the outer
+    /// wrapper id is canonicalised. This guards the macro change as non-breaking
+    /// for existing maps carried through a migration.
+    #[test]
+    #[serial]
+    fn reassign_deterministic_id_preserves_entries_and_owners() {
+        env::reset_for_testing();
+
+        let mut map = Root::new(|| AuthoredMap::<String, u64>::new_with_field_name("entries"));
+        env::set_executor_id(ALICE);
+        map.insert("apple".to_owned(), 1).expect("alice insert");
+        env::set_executor_id(BOB);
+        map.insert("banana".to_owned(), 2).expect("bob insert");
+
+        // Simulate the macro-driven id canonicalisation.
+        map.reassign_deterministic_id("entries");
+
+        // Values survive.
+        assert_eq!(map.get(&"apple".to_owned()).unwrap(), Some(1));
+        assert_eq!(map.get(&"banana".to_owned()).unwrap(), Some(2));
+        assert_eq!(map.len().unwrap(), 2);
+        // Owner stamps survive (not re-stamped to the calling executor).
+        assert_eq!(map.owner_of(&"apple".to_owned()).unwrap(), Some(pk(ALICE)));
+        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(pk(BOB)));
+
+        // Idempotent: a second reassign is a no-op and still preserves everything.
+        map.reassign_deterministic_id("entries");
+        assert_eq!(map.owner_of(&"apple".to_owned()).unwrap(), Some(pk(ALICE)));
+        assert_eq!(map.owner_of(&"banana".to_owned()).unwrap(), Some(pk(BOB)));
+        assert_eq!(map.len().unwrap(), 2);
+    }
 }

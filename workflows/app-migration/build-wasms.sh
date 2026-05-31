@@ -35,6 +35,18 @@ SUITES=(
     "apps/migrations/scenario-field-remove-archive-v2"
     "apps/migrations/scenario-invariant-reshuffle-v1"
     "apps/migrations/scenario-invariant-reshuffle-v2"
+    "apps/migrations/scenario-authored-map-v1"
+    "apps/migrations/scenario-authored-map-v2"
+    "apps/migrations/scenario-user-storage-v1"
+    "apps/migrations/scenario-user-storage-v2"
+    "apps/migrations/scenario-frozen-storage-v1"
+    "apps/migrations/scenario-frozen-storage-v2"
+    "apps/migrations/scenario-shared-storage-v1"
+    "apps/migrations/scenario-shared-storage-v2"
+    "apps/migrations/scenario-authored-vector-v1"
+    "apps/migrations/scenario-authored-vector-v2"
+    "apps/migrations/scenario-unordered-set-v1"
+    "apps/migrations/scenario-unordered-set-v2"
 )
 
 for suite in "${SUITES[@]}"; do
