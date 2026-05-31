@@ -298,12 +298,31 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
             return;
         }
 
+        let old_metadata = self.storage.metadata.clone();
+
         // Clean up old storage entry and index
         let _ignored = S::storage_remove(Key::Entry(old_id));
         let _ignored = S::storage_remove(Key::Index(old_id));
 
         // Remove old child reference from ROOT (without creating tombstone)
         let _ = <Index<S>>::remove_child_reference_only(*ROOT_ID, old_id);
+
+        // Broadcast a tombstone for the old id when re-keying a NESTED collection
+        // (`parent_id.is_some()`). Such a collection was created on-demand with a
+        // random id (`Collection::new(None)`) and its `Add` was already pushed to
+        // the delta; without a matching `DeleteRef` a receiver applies that `Add`
+        // but never the local `storage_remove` above, so it keeps the old-id
+        // entity as an orphan and its parent's `full_hash` diverges from the
+        // writer's (the scaffolding-e2e PN-counter "Wait for sync" timeout).
+        // Top-level init re-keys (`parent_id == None`) run before the state is
+        // broadcast, so the old id was never shipped — no tombstone needed there.
+        if parent_id.is_some() && S::participates_in_sync() {
+            crate::delta::push_action(crate::action::Action::DeleteRef {
+                id: old_id,
+                deleted_at: crate::env::time_now(),
+                metadata: old_metadata,
+            });
+        }
 
         // Update in-memory ID, field name, and CRDT type
         self.storage.reassign_id_and_field_name(new_id, field_name);
