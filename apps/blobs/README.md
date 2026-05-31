@@ -15,10 +15,11 @@ This application demonstrates how to use the Calimero blob storage API to build 
 
 ### Blob IDs
 
-Blobs are identified by 32-byte IDs. For safe transmission and storage:
+Blobs are identified by 32-byte IDs, modelled by the SDK's `BlobId` newtype
+(`calimero_sdk::BlobId`):
 
-- **Internal**: `[u8; 32]` - Raw bytes for storage and network operations
-- **External**: `String` - Base58-encoded for JSON serialization and API responses
+- **In Rust**: `BlobId` - a 32-byte ID with `Display`/`FromStr` and serde/borsh impls
+- **Over the wire**: a Base58 string - `BlobId` (de)serializes to/from base58 in JSON
 
 ### Blob Announcement
 
@@ -44,7 +45,7 @@ Stores metadata about each uploaded file:
 pub struct FileRecord {
     pub id: String,              // Unique file ID (e.g., "file_0")
     pub name: String,            // Human-readable name
-    pub blob_id: [u8; 32],       // Binary blob ID
+    pub blob_id: BlobId,         // Blob ID (base58 string in JSON via the SDK newtype)
     pub size: u64,               // File size in bytes
     pub mime_type: String,       // Content type
     pub uploaded_by: String,     // Uploader's ID
@@ -71,7 +72,7 @@ pub struct FileShareState {
 ```rust
 upload_file(
     name: String,
-    blob_id_str: String,  // Base58-encoded blob ID
+    blob_id: BlobId,  // Blob ID (base58 string over the wire)
     size: u64,
     mime_type: String
 ) -> Result<String, String>
@@ -79,11 +80,10 @@ upload_file(
 
 **Process:**
 
-1. Parse blob ID from base58
-2. Generate unique file ID
-3. **Announce blob to network** (key blob API usage)
-4. Store file metadata
-5. Emit event
+1. Generate unique file ID
+2. **Announce blob to network** (key blob API usage)
+3. Store file metadata
+4. Emit event
 
 **Example:**
 
@@ -123,7 +123,7 @@ Retrieves a single file's metadata by ID.
 ### Get Blob ID
 
 ```rust
-get_blob_id_b58(file_id: String) -> Result<String, String>
+get_blob_id_b58(file_id: String) -> Result<BlobId, String>
 ```
 
 Returns the base58-encoded blob ID for a file (useful for downloading).
@@ -171,12 +171,11 @@ These events can be subscribed to by clients for real-time updates.
 The key blob API integration happens in `upload_file`:
 
 ```rust
-// 1. Parse the blob ID from client-provided base58 string
-let blob_id = parse_blob_id_base58(&blob_id_str)?;
+// 1. `blob_id: BlobId` is already parsed from its base58 string by the SDK.
 
 // 2. Announce to network - THIS IS THE CORE BLOB API USAGE
 let current_context = env::context_id();
-if env::blob_announce_to_context(&blob_id, &current_context) {
+if env::blob_announce_to_context(blob_id.as_ref(), &current_context) {
     app::log!("✓ Successfully announced blob to network");
 } else {
     app::log!("⚠ Warning: Failed to announce blob");
@@ -185,24 +184,28 @@ if env::blob_announce_to_context(&blob_id, &current_context) {
 
 // 3. Store metadata for later retrieval
 let file_record = FileRecord {
-    blob_id,  // Store raw bytes
+    blob_id,  // Store the BlobId
     // ... other fields
 };
 ```
 
-## Helper Functions
+## Blob ID Encoding
 
-### Base58 Encoding/Decoding
+Base58 ↔ bytes conversion is owned by the SDK's `BlobId` newtype
+(`calimero_sdk::BlobId`), so this app no longer hand-rolls encode/decode
+helpers:
 
 ```rust
-// Encode blob ID to string
-fn encode_blob_id_base58(blob_id_bytes: &[u8; 32]) -> String
+use calimero_sdk::BlobId;
 
-// Decode string to blob ID
-fn parse_blob_id_base58(blob_id_str: &str) -> Result<[u8; 32], String>
+// Base58 string -> BlobId (FromStr)
+let blob_id: BlobId = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty".parse()?;
 
-// Custom serializer for JSON
-fn serialize_blob_id_bytes<S>(blob_id_bytes: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
+// BlobId -> base58 string (Display)
+let encoded = blob_id.to_string();
+
+// BlobId -> &[u8; 32] (for env/blob host functions)
+let bytes: &[u8; 32] = blob_id.as_ref();
 ```
 
 ## Complete End-to-End Workflow
