@@ -158,6 +158,13 @@ impl Cluster {
     /// matching a real deployment where the context creator and the writers are
     /// distinct, and avoids HLC/executor-seeded artifacts in node 0.
     fn new(n: usize) -> Self {
+        // Node executors are `[1; 32]..=[n; 32]` (leader is `[0xEE; 32]`), so a
+        // single byte must encode `n` distinct ids. Tests use tiny clusters;
+        // assert rather than silently wrap on the `i as u8 + 1` cast.
+        assert!(
+            (1..=255).contains(&n),
+            "Cluster::new supports 1..=255 nodes (one-byte executor ids), got {n}"
+        );
         let (_, module) = engine_module();
         let mut leader = Node {
             store: InMemoryStorage::default(),
@@ -199,6 +206,11 @@ impl Cluster {
     }
 
     /// Query a read-only method on `node` and return its JSON value.
+    ///
+    /// A non-JSON / empty return yields `Value::Null`; callers compare the
+    /// result against an expected JSON value, so a deserialize miss surfaces as
+    /// a clear assertion mismatch (Null vs expected) rather than being silently
+    /// swallowed — adequate for a test helper.
     fn query(&mut self, node: usize, method: &str, params: Value) -> Value {
         let m = self.module;
         let outcome =
@@ -247,8 +259,13 @@ fn apply_delta(module: &Module, node: &mut Node, artifact: &[u8]) -> eyre::Resul
 
 /// Drive a round of CONCURRENT writes (one `(origin, method, params)` each),
 /// then make every node apply every *other* node's delta in a fixed global
-/// order. Returns each node's final root hash. Every node ends having observed
-/// the identical set of deltas, so a correct CRDT must converge them all.
+/// order. Returns each node's root hash after its LAST applied delta.
+///
+/// Each node ends having observed the identical SET of deltas (its own native
+/// write + every other origin's delta), so a correct CRDT converges them to one
+/// root regardless of which foreign delta each node happened to apply last —
+/// that's exactly what `assert_converged` then checks. The per-node "last apply"
+/// root is therefore the converged root, not order-sensitive, for a correct CRDT.
 fn round(cluster: &mut Cluster, writes: &[(usize, &str, Value)]) -> Vec<[u8; 32]> {
     let deltas: Vec<(usize, Vec<u8>)> = writes
         .iter()
