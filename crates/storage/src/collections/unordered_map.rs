@@ -735,7 +735,10 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn or_insert(self, default: V) -> Result<ValueMut<'a, K, V, S>, StoreError> {
+    pub fn or_insert(self, default: V) -> Result<ValueMut<'a, K, V, S>, StoreError>
+    where
+        V: 'static,
+    {
         match self {
             Entry::Occupied(entry) => Ok(ValueMut {
                 entry_mut: entry.entry_mut,
@@ -754,6 +757,7 @@ where
     pub fn or_insert_with<F>(self, f: F) -> Result<ValueMut<'a, K, V, S>, StoreError>
     where
         F: FnOnce() -> V,
+        V: 'static,
     {
         match self {
             Entry::Occupied(entry) => Ok(ValueMut {
@@ -812,8 +816,19 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn insert(self, value: V) -> Result<ValueMut<'a, K, V, S>, StoreError> {
+    pub fn insert(self, mut value: V) -> Result<ValueMut<'a, K, V, S>, StoreError>
+    where
+        V: 'static,
+    {
         let id = compute_id(self.map.inner.id(), self.key.as_ref());
+
+        // Re-key any nested collections in `value` deterministically relative to
+        // this entry's (deterministic) id — exactly as `insert_with_storage_type`
+        // does. Without this, a nested CRDT stored via the Entry API
+        // (`entry(k).or_insert(Counter::new())`) keeps the random internal id it
+        // was minted with, so two nodes that independently first-create it never
+        // converge. See `super::rekey`.
+        super::rekey::rekey_nested_value(&mut value, id);
 
         // Insert the new (key, value) pair
         drop(self.map.inner.insert(Some(id), (self.key, value))?);

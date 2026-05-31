@@ -2391,6 +2391,138 @@ fn test_nested_counter_first_touch_concurrent_converges() {
     );
 }
 
+/// Same first-touch nested-counter convergence, but the value is introduced via
+/// the **Entry API** (`map.entry(k).or_insert_with(Counter::new)`) instead of
+/// `get(...).unwrap_or_else(..)` + `insert`. `VacantEntry::insert` is a distinct
+/// store path that previously bypassed `rekey_nested_value`, so a nested CRDT
+/// added this way kept its random internal id and never converged. Guards that
+/// the Entry path now re-keys identically to `insert`.
+#[test]
+#[serial]
+fn test_nested_counter_first_touch_via_entry_api_converges() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::MainStorage;
+
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct NestedCounters {
+        counters: UnorderedMap<String, Counter>,
+    }
+    impl Mergeable for NestedCounters {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.counters.merge(&other.counters)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), data, Metadata::default()).unwrap();
+        commit_causal_delta(&root_hash())
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<NestedCounters, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh = |exec: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<NestedCounters>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(exec);
+    };
+    let incr_create_via_entry = || {
+        let mut doc = Root::<NestedCounters, S>::fetch().unwrap();
+        // First touch through the Entry API: vacant -> create a fresh Counter.
+        {
+            let mut guard = doc
+                .counters
+                .entry("k".to_string())
+                .unwrap()
+                .or_insert_with(Counter::new)
+                .unwrap();
+            guard.increment().unwrap();
+        }
+        let data = borsh::to_vec(&*doc).unwrap();
+        drop(doc);
+        capture(data)
+    };
+
+    // Genesis: EMPTY map (no "k"); only the map container is shared.
+    fresh([9; 32]);
+    let g = Root::<NestedCounters, S>::new(|| NestedCounters {
+        counters: UnorderedMap::new_with_field_name("counters"),
+    });
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base = capture(g_data);
+    let base_hash = root_hash();
+
+    fresh([1; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_a = incr_create_via_entry();
+
+    fresh([2; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_b = incr_create_via_entry();
+
+    let value_of = || -> u64 {
+        Root::<NestedCounters, S>::fetch()
+            .unwrap()
+            .counters
+            .get(&"k".to_string())
+            .unwrap()
+            .map(|c| c.value().unwrap())
+            .unwrap_or(0)
+    };
+    let materialize = |exec: [u8; 32], first: &[Action], second: &[Action]| -> (u64, [u8; 32]) {
+        fresh(exec);
+        import(base.clone());
+        reset_delta_context();
+        set_current_heads(vec![base_hash]);
+        import(first.to_vec());
+        reset_delta_context();
+        set_current_heads(vec![root_hash()]);
+        import(second.to_vec());
+        (value_of(), root_hash())
+    };
+
+    let (a_val, a_root) = materialize([1; 32], &delta_a, &delta_b);
+    let (b_val, b_root) = materialize([2; 32], &delta_b, &delta_a);
+
+    assert_eq!(
+        a_val, 2,
+        "node A: Entry-API-created 'k' counters must merge to 2 (got {a_val})"
+    );
+    assert_eq!(
+        b_val, 2,
+        "node B: Entry-API-created 'k' counters must merge to 2 (got {b_val})"
+    );
+    assert_eq!(
+        a_root,
+        b_root,
+        "Entry-API first-touch nested-counter root must converge regardless of apply order: A={} B={}",
+        hex::encode(a_root),
+        hex::encode(b_root),
+    );
+}
+
 /// Same first-touch scenario for an `UnorderedMap<String, UnorderedSet<String>>`
 /// (the scaffolding `crdt_tags`/`add_tag` shape): two nodes independently
 /// first-create the set under key "k", each adding a DIFFERENT tag, then
