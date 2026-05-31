@@ -63,7 +63,7 @@ impl TeamMetricsApp {
         stats.wins.increment()?;
         let total = stats.wins.value()?;
 
-        drop(self.teams.insert(team_id.clone(), stats)?);
+        self.teams.insert(team_id.clone(), stats)?;
 
         app::emit!(MetricsEvent::WinRecorded { team_id, total });
 
@@ -80,7 +80,7 @@ impl TeamMetricsApp {
         stats.losses.increment()?;
         let total = stats.losses.value()?;
 
-        drop(self.teams.insert(team_id.clone(), stats)?);
+        self.teams.insert(team_id.clone(), stats)?;
 
         app::emit!(MetricsEvent::LossRecorded { team_id, total });
 
@@ -97,7 +97,7 @@ impl TeamMetricsApp {
         stats.draws.increment()?;
         let total = stats.draws.value()?;
 
-        drop(self.teams.insert(team_id.clone(), stats)?);
+        self.teams.insert(team_id.clone(), stats)?;
 
         app::emit!(MetricsEvent::DrawRecorded { team_id, total });
 
