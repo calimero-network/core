@@ -458,3 +458,160 @@ fn rga_satisfies_crdt_laws() {
         eq,
     );
 }
+
+// `SortedMap` stores and merges exactly like `UnorderedMap` (same inner
+// collection, add-wins keys, recursive value merge); only its *iteration* is
+// key-ordered. These tests pin that the merge laws hold through the
+// `SortedMap` surface, and — separately — that the ordering invariant survives
+// a merge regardless of merge direction.
+#[test]
+fn sorted_map_with_lww_register_satisfies_crdt_laws() {
+    use calimero_storage::collections::{LwwRegister, SortedMap};
+    use calimero_storage::logical_clock::HybridTimestamp;
+    use calimero_storage::store::MainStorage;
+
+    // Disjoint keys per replica: add-wins union, deterministic per builder.
+    // Pin the register's HLC/node so repeat builder calls are byte-identical
+    // (the `assert_mergeable_laws` determinism contract).
+    fn fresh(key: &str, node: [u8; 32]) -> SortedMap<String, LwwRegister<String>, MainStorage> {
+        let mut m = SortedMap::new();
+        m.insert(
+            key.to_owned(),
+            LwwRegister::new_with_metadata(key.to_uppercase(), HybridTimestamp::zero(), node),
+        )
+        .unwrap();
+        m
+    }
+
+    let eq = |a: &SortedMap<String, LwwRegister<String>, MainStorage>,
+              b: &SortedMap<String, LwwRegister<String>, MainStorage>| {
+        // `entries()` is already key-sorted, so a direct positional compare is
+        // a sufficient equality check.
+        let a_entries: Vec<(String, String)> = a
+            .entries()
+            .unwrap()
+            .map(|(k, v)| (k, v.get().clone()))
+            .collect();
+        let b_entries: Vec<(String, String)> = b
+            .entries()
+            .unwrap()
+            .map(|(k, v)| (k, v.get().clone()))
+            .collect();
+        a_entries == b_entries
+    };
+
+    assert_mergeable_laws(
+        || fresh("alice", [11; 32]),
+        || fresh("bob", [22; 32]),
+        || fresh("carol", [33; 32]),
+        eq,
+    );
+}
+
+// Shared-key + per-replica executor conflict — proves `SortedMap` inherits
+// `UnorderedMap`'s recursive merge into a nested `Counter` on the same key.
+#[test]
+fn sorted_map_with_counter_shared_key_conflict() {
+    use calimero_storage::collections::{Counter, SortedMap};
+    use calimero_storage::env;
+    use calimero_storage::store::MainStorage;
+
+    let make = |executor: [u8; 32],
+                private_key: &'static str,
+                shared_count: usize,
+                private_count: usize| {
+        move || {
+            env::with_executor_id(executor, || {
+                let mut m = SortedMap::new();
+
+                let mut shared = Counter::<false, MainStorage>::new();
+                for _ in 0..shared_count {
+                    shared.increment().unwrap();
+                }
+                m.insert("shared".to_owned(), shared).unwrap();
+
+                let mut private = Counter::<false, MainStorage>::new();
+                for _ in 0..private_count {
+                    private.increment().unwrap();
+                }
+                m.insert(private_key.to_owned(), private).unwrap();
+                m
+            })
+        }
+    };
+
+    let eq = |a: &SortedMap<String, Counter, MainStorage>,
+              b: &SortedMap<String, Counter, MainStorage>| {
+        let a_entries: Vec<(String, u64)> = a
+            .entries()
+            .unwrap()
+            .map(|(k, v)| (k, v.value().unwrap()))
+            .collect();
+        let b_entries: Vec<(String, u64)> = b
+            .entries()
+            .unwrap()
+            .map(|(k, v)| (k, v.value().unwrap()))
+            .collect();
+        a_entries == b_entries
+    };
+
+    assert_mergeable_laws(
+        make([11; 32], "alice", 2, 1),
+        make([22; 32], "bob", 3, 1),
+        make([33; 32], "carol", 5, 1),
+        eq,
+    );
+}
+
+// Convergence is necessary but not sufficient for a *sorted* map: the merged
+// state must also iterate in key order, in both merge directions. Insert keys
+// out of order on each replica, merge, and assert the result is sorted and
+// direction-independent.
+#[test]
+fn sorted_map_iteration_is_sorted_after_merge() {
+    use calimero_storage::collections::{LwwRegister, SortedMap};
+    use calimero_storage::logical_clock::HybridTimestamp;
+    use calimero_storage::store::MainStorage;
+
+    fn replica(
+        keys: &[&str],
+        node: [u8; 32],
+    ) -> SortedMap<String, LwwRegister<String>, MainStorage> {
+        let mut m = SortedMap::new();
+        for k in keys {
+            m.insert(
+                (*k).to_owned(),
+                LwwRegister::new_with_metadata((*k).to_owned(), HybridTimestamp::zero(), node),
+            )
+            .unwrap();
+        }
+        m
+    }
+
+    let keys_of = |m: &SortedMap<String, LwwRegister<String>, MainStorage>| -> Vec<String> {
+        m.keys().unwrap().collect()
+    };
+
+    // Deliberately scrambled insertion order, partially overlapping key sets.
+    let mut ab = replica(&["m", "a", "z"], [1; 32]);
+    let b = replica(&["b", "a", "q"], [2; 32]);
+    ab.merge(&b).unwrap();
+
+    let mut ba = replica(&["b", "a", "q"], [2; 32]);
+    let a = replica(&["m", "a", "z"], [1; 32]);
+    ba.merge(&a).unwrap();
+
+    let expected = vec![
+        "a".to_owned(),
+        "b".to_owned(),
+        "m".to_owned(),
+        "q".to_owned(),
+        "z".to_owned(),
+    ];
+    assert_eq!(keys_of(&ab), expected, "merge(a, b) must be sorted");
+    assert_eq!(
+        keys_of(&ba),
+        expected,
+        "merge(b, a) must be sorted and identical to merge(a, b)"
+    );
+}

@@ -201,9 +201,9 @@ fn normalize_generic_type(
             Ok(TypeRef::list(item_type))
         }
         // Collection types - normalize to semantic ABI types
-        "BTreeMap" | "HashMap" | "UnorderedMap" | "IndexMap" | "AuthoredMap" => {
+        "BTreeMap" | "HashMap" | "UnorderedMap" | "SortedMap" | "IndexMap" | "AuthoredMap" => {
             // All map types -> map<K, V> (normalize to semantic type)
-            // UnorderedMap and AuthoredMap preserve CRDT type metadata
+            // UnorderedMap, SortedMap and AuthoredMap preserve CRDT type metadata
             if args.args.len() != 2 {
                 return Err(NormalizeError::TypePathError(format!(
                     "invalid {ident_str} type - expected 2 type arguments"
@@ -229,9 +229,10 @@ fn normalize_generic_type(
             let _key_type = normalize_type(key_ty, wasm32, resolver)?;
             let value_type = normalize_type(value_ty, wasm32, resolver)?;
 
-            // Preserve CRDT type for UnorderedMap / AuthoredMap
+            // Preserve CRDT type for UnorderedMap / SortedMap / AuthoredMap
             let crdt_type = match ident_str.as_str() {
                 "UnorderedMap" => Some(CrdtCollectionType::UnorderedMap),
+                "SortedMap" => Some(CrdtCollectionType::SortedMap),
                 "AuthoredMap" => Some(CrdtCollectionType::AuthoredMap),
                 _ => None,
             };

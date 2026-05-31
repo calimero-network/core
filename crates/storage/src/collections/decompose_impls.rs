@@ -4,7 +4,7 @@
 
 use super::composite_key::CompositeKey;
 use super::crdt_meta::{Decomposable, DecomposeError};
-use super::{UnorderedMap, Vector};
+use super::{SortedMap, UnorderedMap, Vector};
 use crate::store::StorageAdaptor;
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -51,6 +51,59 @@ where
 
         for (composite_key, value) in entries {
             // Deserialize the key from composite key bytes
+            let key = borsh::from_slice::<K>(composite_key.as_bytes()).map_err(|e| {
+                DecomposeError::StorageError(format!("Failed to deserialize key: {:?}", e))
+            })?;
+
+            drop(
+                map.insert(key, value).map_err(|e| {
+                    DecomposeError::StorageError(format!("Failed to insert: {:?}", e))
+                })?,
+            );
+        }
+
+        Ok(map)
+    }
+}
+
+// ============================================================================
+// SortedMap - Decompose into entries (sorted by key)
+// ============================================================================
+
+impl<K, V, S> Decomposable for SortedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Ord + Clone + PartialEq,
+    V: BorshSerialize + BorshDeserialize + Clone,
+    S: StorageAdaptor,
+{
+    type Key = CompositeKey;
+    type Value = V;
+
+    fn decompose(&self) -> Result<Vec<(Self::Key, Self::Value)>, DecomposeError> {
+        // `entries()` already yields ascending key order, so decomposition is
+        // deterministic without an extra sort.
+        let entries = self
+            .entries()
+            .map_err(|e| DecomposeError::StorageError(format!("Failed to get entries: {:?}", e)))?;
+
+        let result = entries
+            .into_iter()
+            .map(|(k, v)| {
+                let key_bytes = borsh::to_vec(&k).map_err(|e| {
+                    DecomposeError::StorageError(format!("Failed to serialize key: {:?}", e))
+                })?;
+
+                Ok((CompositeKey::from(key_bytes), v))
+            })
+            .collect::<Result<Vec<_>, DecomposeError>>()?;
+
+        Ok(result)
+    }
+
+    fn recompose(entries: Vec<(Self::Key, Self::Value)>) -> Result<Self, DecomposeError> {
+        let mut map = SortedMap::new_internal();
+
+        for (composite_key, value) in entries {
             let key = borsh::from_slice::<K>(composite_key.as_bytes()).map_err(|e| {
                 DecomposeError::StorageError(format!("Failed to deserialize key: {:?}", e))
             })?;

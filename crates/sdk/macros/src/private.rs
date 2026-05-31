@@ -50,8 +50,12 @@ use sha2::{Digest, Sha256};
 /// are also covered. Doesn't catch type aliases or `use as` renames —
 /// users doing those need to either write the explicit `PrivateStorage`
 /// parameter themselves or unwind the alias.
-const TREE_BACKED_TYPES: &[(&str, usize)] =
-    &[("UnorderedMap", 2), ("UnorderedSet", 1), ("Vector", 1)];
+const TREE_BACKED_TYPES: &[(&str, usize)] = &[
+    ("UnorderedMap", 2),
+    ("SortedMap", 2),
+    ("UnorderedSet", 1),
+    ("Vector", 1),
+];
 
 /// Recursively walk `ty` and inject `PrivateStorage` on every
 /// tree-backed collection encountered — including ones nested inside

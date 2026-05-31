@@ -360,6 +360,10 @@ pub fn merge_by_crdt_type(
 
         // Collections - with type info we can merge them
         CrdtType::UnorderedMap { .. } => merge_unordered_map(existing, incoming),
+        // SortedMap stores and merges exactly like UnorderedMap (entries sync
+        // separately; ordering is a read-time concern derived from `K: Ord`), so
+        // the container merge is the same add-wins structural pass.
+        CrdtType::SortedMap { .. } => merge_unordered_map(existing, incoming),
         CrdtType::UnorderedSet { .. } => merge_unordered_set(existing, incoming),
         CrdtType::Vector { .. } => merge_vector(existing, incoming),
 
@@ -393,7 +397,7 @@ pub fn merge_by_crdt_type(
 /// - `GCounter`, `PnCounter` - max per executor
 /// - `Rga` - interleave by timestamp
 /// - `LwwRegister` - LWW using metadata timestamps  
-/// - `UnorderedMap`, `UnorderedSet`, `Vector` - structural merge
+/// - `UnorderedMap`, `SortedMap`, `UnorderedSet`, `Vector` - structural merge
 /// - `UserStorage` - LWW per user
 /// - `FrozenStorage` - first-write-wins
 ///

@@ -187,6 +187,9 @@ pub enum CrdtCollectionType {
     Vector,
     /// UnorderedMap: Map with element IDs and CRDT metadata
     UnorderedMap,
+    /// SortedMap: Map iterated in ascending key order (range/prefix queries);
+    /// same add-wins merge as `UnorderedMap`
+    SortedMap,
     /// AuthoredMap: Map with per-entry author identity (insert is open;
     /// update/remove gated by stored owner == executor)
     AuthoredMap,

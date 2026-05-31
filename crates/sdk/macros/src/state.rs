@@ -554,6 +554,10 @@ fn generate_assign_deterministic_ids_impl(
     // Helper function to check if a type is a collection that needs ID assignment
     fn is_collection_type(type_str: &str) -> bool {
         type_str.contains("UnorderedMap")
+            // `SortedMap` is NOT a substring of any other entry, so it must be
+            // listed explicitly — otherwise a top-level `SortedMap` state field
+            // keeps its `Id::random()` and diverges across nodes (CIP I9).
+            || type_str.contains("SortedMap")
             || type_str.contains("Vector")
             || type_str.contains("UnorderedSet")
             || type_str.contains("Counter")

@@ -15,6 +15,8 @@ pub mod counter;
 pub use counter::{Counter, GCounter, PNCounter};
 pub mod unordered_map;
 pub use unordered_map::UnorderedMap;
+pub mod sorted_map;
+pub use sorted_map::SortedMap;
 pub mod unordered_set;
 pub use unordered_set::UnorderedSet;
 pub mod vector;
