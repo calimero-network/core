@@ -78,62 +78,45 @@ impl NestedCrdtTest {
 
     // ===== Counter Operations =====
 
-    pub fn increment_counter(&mut self, key: String) -> Result<u64, String> {
-        let mut counter = self
-            .counters
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(|| Counter::new());
+    pub fn increment_counter(&mut self, key: String) -> app::Result<u64> {
+        let mut counter = self.counters.get(&key)?.unwrap_or_else(|| Counter::new());
 
-        counter
-            .increment()
-            .map_err(|e| format!("Increment failed: {:?}", e))?;
+        counter.increment()?;
 
-        let value = counter
-            .value()
-            .map_err(|e| format!("Value failed: {:?}", e))?;
+        let value = counter.value()?;
 
-        drop(
-            self.counters
-                .insert(key.clone(), counter)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        drop(self.counters.insert(key.clone(), counter)?);
 
         app::emit!(TestEvent::CounterIncremented { key, value });
 
         Ok(value)
     }
 
-    pub fn get_counter(&self, key: String) -> Result<u64, String> {
-        self.counters
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|c| c.value().unwrap_or(0))
-            .ok_or_else(|| "Counter not found".to_owned())
+    pub fn get_counter(&self, key: String) -> app::Result<u64> {
+        let Some(counter) = self.counters.get(&key)? else {
+            app::bail!("Counter not found");
+        };
+
+        Ok(counter.value()?)
     }
 
     // ===== LwwRegister Operations =====
 
-    pub fn set_register(&mut self, key: String, value: String) -> Result<(), String> {
+    pub fn set_register(&mut self, key: String, value: String) -> app::Result<()> {
         let register = LwwRegister::new(value.clone());
 
-        drop(
-            self.registers
-                .insert(key.clone(), register)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        drop(self.registers.insert(key.clone(), register)?);
 
         app::emit!(TestEvent::RegisterSet { key, value });
 
         Ok(())
     }
 
-    pub fn get_register(&self, key: String) -> Result<String, String> {
+    pub fn get_register(&self, key: String) -> app::Result<String> {
         self.registers
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
+            .get(&key)?
             .map(|r| r.get().clone())
-            .ok_or_else(|| "Register not found".to_owned())
+            .ok_or_else(|| app::err!("Register not found"))
     }
 
     // ===== Nested Map Operations =====
@@ -143,24 +126,15 @@ impl NestedCrdtTest {
         outer_key: String,
         inner_key: String,
         value: String,
-    ) -> Result<(), String> {
+    ) -> app::Result<()> {
         let mut inner_map = self
             .metadata
-            .get(&outer_key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
+            .get(&outer_key)?
             .unwrap_or_else(|| UnorderedMap::new());
 
-        drop(
-            inner_map
-                .insert(inner_key.clone(), value.clone().into())
-                .map_err(|e| format!("Inner insert failed: {:?}", e))?,
-        );
+        drop(inner_map.insert(inner_key.clone(), value.clone().into())?);
 
-        drop(
-            self.metadata
-                .insert(outer_key.clone(), inner_map)
-                .map_err(|e| format!("Outer insert failed: {:?}", e))?,
-        );
+        drop(self.metadata.insert(outer_key.clone(), inner_map)?);
 
         app::emit!(TestEvent::MetadataSet {
             outer_key,
@@ -171,96 +145,72 @@ impl NestedCrdtTest {
         Ok(())
     }
 
-    pub fn get_metadata(&self, outer_key: String, inner_key: String) -> Result<String, String> {
+    pub fn get_metadata(&self, outer_key: String, inner_key: String) -> app::Result<String> {
         self.metadata
-            .get(&outer_key)
-            .map_err(|e| format!("Outer get failed: {:?}", e))?
-            .ok_or_else(|| "Outer key not found".to_owned())?
-            .get(&inner_key)
-            .map_err(|e| format!("Inner get failed: {:?}", e))?
-            .ok_or_else(|| "Inner key not found".to_owned())
+            .get(&outer_key)?
+            .ok_or_else(|| app::err!("Outer key not found"))?
+            .get(&inner_key)?
+            .ok_or_else(|| app::err!("Inner key not found"))
             .map(|v| v.get().clone())
     }
 
     // ===== Vector Operations =====
 
-    pub fn push_metric(&mut self, value: u64) -> Result<usize, String> {
+    pub fn push_metric(&mut self, value: u64) -> app::Result<usize> {
         let mut counter = Counter::new();
         for _ in 0..value {
-            counter
-                .increment()
-                .map_err(|e| format!("Increment failed: {:?}", e))?;
+            counter.increment()?;
         }
 
-        self.metrics
-            .push(counter)
-            .map_err(|e| format!("Push failed: {:?}", e))?;
+        self.metrics.push(counter)?;
 
-        let len = self
-            .metrics
-            .len()
-            .map_err(|e| format!("Len failed: {:?}", e))?;
+        let len = self.metrics.len()?;
 
         app::emit!(TestEvent::MetricPushed { value });
 
         Ok(len)
     }
 
-    pub fn get_metric(&self, index: usize) -> Result<u64, String> {
+    pub fn get_metric(&self, index: usize) -> app::Result<u64> {
         self.metrics
-            .get(index)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .ok_or_else(|| "Index out of bounds".to_owned())?
+            .get(index)?
+            .ok_or_else(|| app::err!("Index out of bounds"))?
             .value()
-            .map_err(|e| format!("Value failed: {:?}", e))
+            .map_err(Into::into)
     }
 
-    pub fn metrics_len(&self) -> Result<usize, String> {
-        self.metrics
-            .len()
-            .map_err(|e| format!("Len failed: {:?}", e))
+    pub fn metrics_len(&self) -> app::Result<usize> {
+        self.metrics.len().map_err(Into::into)
     }
 
     // ===== Set Operations =====
 
-    pub fn add_tag(&mut self, key: String, tag: String) -> Result<(), String> {
-        let mut set = self
-            .tags
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(|| UnorderedSet::new());
+    pub fn add_tag(&mut self, key: String, tag: String) -> app::Result<()> {
+        let mut set = self.tags.get(&key)?.unwrap_or_else(|| UnorderedSet::new());
 
-        let _ = set
-            .insert(tag.clone())
-            .map_err(|e| format!("Insert failed: {:?}", e))?;
+        let _ = set.insert(tag.clone())?;
 
-        drop(
-            self.tags
-                .insert(key.clone(), set)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        drop(self.tags.insert(key.clone(), set)?);
 
         app::emit!(TestEvent::TagAdded { key, tag });
 
         Ok(())
     }
 
-    pub fn has_tag(&self, key: String, tag: String) -> Result<bool, String> {
-        self.tags
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|set| set.contains(&tag).unwrap_or(false))
-            .ok_or_else(|| "Key not found".to_owned())
+    pub fn has_tag(&self, key: String, tag: String) -> app::Result<bool> {
+        let Some(set) = self.tags.get(&key)? else {
+            app::bail!("Key not found");
+        };
+
+        Ok(set.contains(&tag)?)
     }
 
-    pub fn get_tag_count(&self, key: String) -> Result<u64, String> {
+    pub fn get_tag_count(&self, key: String) -> app::Result<u64> {
         let count = self
             .tags
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .ok_or_else(|| "Key not found".to_owned())?
-            .iter()
-            .map_err(|e| format!("Iter failed: {:?}", e))?
+            .get(&key)?
+            .ok_or_else(|| app::err!("Key not found"))?
+            .iter()?
             .count();
 
         Ok(count as u64)

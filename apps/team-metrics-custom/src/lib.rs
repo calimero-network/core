@@ -79,120 +79,78 @@ impl TeamMetricsApp {
         }
     }
 
-    pub fn record_win(&mut self, team_id: String) -> Result<u64, String> {
-        let mut stats = self
-            .teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(|| TeamStats {
-                wins: Counter::new(),
-                losses: Counter::new(),
-                draws: Counter::new(),
-            });
+    pub fn record_win(&mut self, team_id: String) -> app::Result<u64> {
+        let mut stats = self.teams.get(&team_id)?.unwrap_or_else(|| TeamStats {
+            wins: Counter::new(),
+            losses: Counter::new(),
+            draws: Counter::new(),
+        });
 
-        stats
-            .wins
-            .increment()
-            .map_err(|e| format!("Increment failed: {:?}", e))?;
-        let total = stats
-            .wins
-            .value()
-            .map_err(|e| format!("Value failed: {:?}", e))?;
+        stats.wins.increment()?;
+        let total = stats.wins.value()?;
 
-        drop(
-            self.teams
-                .insert(team_id.clone(), stats)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        drop(self.teams.insert(team_id.clone(), stats)?);
 
         app::emit!(MetricsEvent::WinRecorded { team_id, total });
 
         Ok(total)
     }
 
-    pub fn record_loss(&mut self, team_id: String) -> Result<u64, String> {
-        let mut stats = self
-            .teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(|| TeamStats {
-                wins: Counter::new(),
-                losses: Counter::new(),
-                draws: Counter::new(),
-            });
+    pub fn record_loss(&mut self, team_id: String) -> app::Result<u64> {
+        let mut stats = self.teams.get(&team_id)?.unwrap_or_else(|| TeamStats {
+            wins: Counter::new(),
+            losses: Counter::new(),
+            draws: Counter::new(),
+        });
 
-        stats
-            .losses
-            .increment()
-            .map_err(|e| format!("Increment failed: {:?}", e))?;
-        let total = stats
-            .losses
-            .value()
-            .map_err(|e| format!("Value failed: {:?}", e))?;
+        stats.losses.increment()?;
+        let total = stats.losses.value()?;
 
-        drop(
-            self.teams
-                .insert(team_id.clone(), stats)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        drop(self.teams.insert(team_id.clone(), stats)?);
 
         app::emit!(MetricsEvent::LossRecorded { team_id, total });
 
         Ok(total)
     }
 
-    pub fn record_draw(&mut self, team_id: String) -> Result<u64, String> {
-        let mut stats = self
-            .teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(|| TeamStats {
-                wins: Counter::new(),
-                losses: Counter::new(),
-                draws: Counter::new(),
-            });
+    pub fn record_draw(&mut self, team_id: String) -> app::Result<u64> {
+        let mut stats = self.teams.get(&team_id)?.unwrap_or_else(|| TeamStats {
+            wins: Counter::new(),
+            losses: Counter::new(),
+            draws: Counter::new(),
+        });
 
-        stats
-            .draws
-            .increment()
-            .map_err(|e| format!("Increment failed: {:?}", e))?;
-        let total = stats
-            .draws
-            .value()
-            .map_err(|e| format!("Value failed: {:?}", e))?;
+        stats.draws.increment()?;
+        let total = stats.draws.value()?;
 
-        drop(
-            self.teams
-                .insert(team_id.clone(), stats)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        drop(self.teams.insert(team_id.clone(), stats)?);
 
         app::emit!(MetricsEvent::DrawRecorded { team_id, total });
 
         Ok(total)
     }
 
-    pub fn get_wins(&self, team_id: String) -> Result<u64, String> {
-        self.teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|s| s.wins.value().unwrap_or(0))
-            .ok_or_else(|| "Team not found".to_owned())
+    pub fn get_wins(&self, team_id: String) -> app::Result<u64> {
+        let Some(stats) = self.teams.get(&team_id)? else {
+            app::bail!("Team not found");
+        };
+
+        Ok(stats.wins.value()?)
     }
 
-    pub fn get_losses(&self, team_id: String) -> Result<u64, String> {
-        self.teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|s| s.losses.value().unwrap_or(0))
-            .ok_or_else(|| "Team not found".to_owned())
+    pub fn get_losses(&self, team_id: String) -> app::Result<u64> {
+        let Some(stats) = self.teams.get(&team_id)? else {
+            app::bail!("Team not found");
+        };
+
+        Ok(stats.losses.value()?)
     }
 
-    pub fn get_draws(&self, team_id: String) -> Result<u64, String> {
-        self.teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|s| s.draws.value().unwrap_or(0))
-            .ok_or_else(|| "Team not found".to_owned())
+    pub fn get_draws(&self, team_id: String) -> app::Result<u64> {
+        let Some(stats) = self.teams.get(&team_id)? else {
+            app::bail!("Team not found");
+        };
+
+        Ok(stats.draws.value()?)
     }
 }

@@ -149,26 +149,21 @@ impl FileShareState {
     ///
     /// # Returns
     /// * `Ok(String)` - The generated file ID (e.g., "file_0", "file_1")
-    /// * `Err(String)` - Error message if storage operation fails
+    /// * `Err(app::Error)` - Error if storage operation fails
     pub fn upload_file(
         &mut self,
         name: String,
         blob_id: BlobId,
         size: u64,
         mime_type: String,
-    ) -> Result<String, String> {
+    ) -> app::Result<String> {
         // Counter is a monotonic CRDT — it converges across replicas (taking
         // the per-source max on merge). Using its current value as the file ID
         // means concurrent uploads on different nodes can still pick the same
         // ID; that limitation existed with the previous bare `u64` too.
-        let next_id = self
-            .file_counter
-            .value()
-            .map_err(|e| format!("Failed to read file counter: {e:?}"))?;
+        let next_id = self.file_counter.value()?;
         let file_id = format!("file_{next_id}");
-        self.file_counter
-            .increment()
-            .map_err(|e| format!("Failed to increment file counter: {e:?}"))?;
+        self.file_counter.increment()?;
 
         let uploader = PublicKey::from(env::executor_id()).to_string();
         let timestamp = env::time_now();
@@ -194,9 +189,7 @@ impl FileShareState {
         };
 
         // Store the file record
-        self.files
-            .insert(file_id.clone(), file_record)
-            .map_err(|e| format!("Failed to store file record: {e:?}"))?;
+        self.files.insert(file_id.clone(), file_record)?;
 
         // Emit event
         app::emit!(FileShareEvent::FileUploaded {
@@ -222,22 +215,19 @@ impl FileShareState {
     ///
     /// # Returns
     /// * `Ok(())` - File metadata successfully deleted
-    /// * `Err(String)` - Error message if file not found or deletion fails
-    pub fn delete_file(&mut self, file_id: String) -> Result<(), String> {
+    /// * `Err(app::Error)` - Error if file not found or deletion fails
+    pub fn delete_file(&mut self, file_id: String) -> app::Result<()> {
         // Retrieve the file before deleting to get its name for the event
         let file_record = self
             .files
-            .get(&file_id)
-            .map_err(|e| format!("Failed to access file: {e:?}"))?
-            .ok_or_else(|| format!("File not found: {file_id}"))?;
+            .get(&file_id)?
+            .ok_or_else(|| app::err!("File not found: {file_id}"))?;
 
         let file_name = file_record.name.clone();
 
         // Remove the file metadata from storage
         // NOTE: The underlying blob is not deleted from blob storage
-        self.files
-            .remove(&file_id)
-            .map_err(|e| format!("Failed to delete file: {e:?}"))?;
+        self.files.remove(&file_id)?;
 
         // Emit event
         app::emit!(FileShareEvent::FileDeleted {
@@ -254,14 +244,12 @@ impl FileShareState {
     ///
     /// # Returns
     /// * `Ok(Vec<FileRecord>)` - Vector of all file records with complete metadata (not just names)
-    /// * `Err(String)` - Error message if storage operation fails (rarely occurs)
-    pub fn list_files(&self) -> Result<Vec<FileRecord>, String> {
+    /// * `Err(app::Error)` - Error if storage operation fails (rarely occurs)
+    pub fn list_files(&self) -> app::Result<Vec<FileRecord>> {
         let mut files = Vec::new();
 
-        if let Ok(entries) = self.files.entries() {
-            for (_, file_record) in entries {
-                files.push(file_record.clone());
-            }
+        for (_, file_record) in self.files.entries()? {
+            files.push(file_record.clone());
         }
 
         app::log!("Listed {} files", files.len());
@@ -276,13 +264,13 @@ impl FileShareState {
     ///
     /// # Returns
     /// * `Ok(FileRecord)` - Complete file record with all metadata
-    /// * `Err(String)` - Error message if file not found or retrieval fails
-    pub fn get_file(&self, file_id: String) -> Result<FileRecord, String> {
-        match self.files.get(&file_id) {
-            Ok(Some(file_record)) => Ok(file_record.clone()),
-            Ok(None) => Err(format!("File not found: {file_id}")),
-            Err(e) => Err(format!("Failed to retrieve file: {e:?}")),
-        }
+    /// * `Err(app::Error)` - Error if file not found or retrieval fails
+    pub fn get_file(&self, file_id: String) -> app::Result<FileRecord> {
+        let Some(file_record) = self.files.get(&file_id)? else {
+            app::bail!("File not found: {file_id}");
+        };
+
+        Ok(file_record.clone())
     }
 
     /// Get blob ID for download (base58-encoded)
@@ -296,8 +284,8 @@ impl FileShareState {
     /// # Returns
     /// * `Ok(BlobId)` - The blob ID (base58 string over the wire, e.g.
     ///   "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty")
-    /// * `Err(String)` - Error message if file not found
-    pub fn get_blob_id_b58(&self, file_id: String) -> Result<BlobId, String> {
+    /// * `Err(app::Error)` - Error if file not found
+    pub fn get_blob_id_b58(&self, file_id: String) -> app::Result<BlobId> {
         let file_record = self.get_file(file_id)?;
         Ok(file_record.blob_id)
     }
@@ -309,16 +297,14 @@ impl FileShareState {
     ///
     /// # Returns
     /// * `Ok(Vec<FileRecord>)` - Vector of matching file records (not just names), may be empty if no matches
-    /// * `Err(String)` - Error message if storage operation fails (rarely occurs)
-    pub fn search_files(&self, query: String) -> Result<Vec<FileRecord>, String> {
+    /// * `Err(app::Error)` - Error if storage operation fails (rarely occurs)
+    pub fn search_files(&self, query: String) -> app::Result<Vec<FileRecord>> {
         let mut results = Vec::new();
         let query_lower = query.to_lowercase();
 
-        if let Ok(entries) = self.files.entries() {
-            for (_, file_record) in entries {
-                if file_record.name.to_lowercase().contains(&query_lower) {
-                    results.push(file_record.clone());
-                }
+        for (_, file_record) in self.files.entries()? {
+            if file_record.name.to_lowercase().contains(&query_lower) {
+                results.push(file_record.clone());
             }
         }
 
@@ -334,14 +320,12 @@ impl FileShareState {
     ///
     /// # Returns
     /// * `Ok(u64)` - Total size of all files in bytes (sum of file sizes)
-    /// * `Err(String)` - Error message if storage operation fails (rarely occurs)
-    pub fn get_total_files_size(&self) -> Result<u64, String> {
+    /// * `Err(app::Error)` - Error if storage operation fails (rarely occurs)
+    pub fn get_total_files_size(&self) -> app::Result<u64> {
         let mut total_size = 0u64;
 
-        if let Ok(entries) = self.files.entries() {
-            for (_, file_record) in entries {
-                total_size += file_record.size;
-            }
+        for (_, file_record) in self.files.entries()? {
+            total_size += file_record.size;
         }
 
         Ok(total_size)
@@ -351,7 +335,7 @@ impl FileShareState {
     ///
     /// # Returns
     /// * `Ok(String)` - Formatted statistics including file count, total file size (not contract storage), and owner
-    /// * `Err(String)` - Error message if storage operations fail
+    /// * `Err(app::Error)` - Error if storage operations fail
     ///
     /// # Example Output
     /// ```text
@@ -363,11 +347,8 @@ impl FileShareState {
     ///
     /// Note: "Total storage" refers to the sum of all file sizes, not the actual
     /// contract storage usage (which would include metadata overhead).
-    pub fn get_stats(&self) -> Result<String, String> {
-        let file_count = self
-            .files
-            .len()
-            .map_err(|e| format!("Failed to get file count: {e:?}"))?;
+    pub fn get_stats(&self) -> app::Result<String> {
+        let file_count = self.files.len()?;
 
         let total_size = self.get_total_files_size()?;
 
