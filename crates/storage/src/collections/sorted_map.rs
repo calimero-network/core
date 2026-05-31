@@ -24,7 +24,7 @@
 
 use core::borrow::Borrow;
 use core::fmt;
-use core::ops::{Deref, DerefMut, RangeBounds};
+use core::ops::{Bound, Deref, DerefMut, RangeBounds};
 use std::mem;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -36,7 +36,8 @@ use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::error::StorageError;
-use crate::store::MainStorage;
+use crate::index::Index;
+use crate::store::{Key, MainStorage};
 use std::collections::BTreeMap;
 
 /// A map collection that keeps its entries ordered by key, enabling range and
@@ -48,6 +49,16 @@ use std::collections::BTreeMap;
 pub struct SortedMap<K, V, S: StorageAdaptor = MainStorage> {
     #[borsh(bound(serialize = "", deserialize = ""))]
     inner: Collection<(K, V), S>,
+}
+
+/// Convert a `RangeBounds` endpoint into the byte-bound the ordered index
+/// speaks, using `K`'s order-preserving `AsRef<[u8]>` form.
+fn bound_bytes<K: AsRef<[u8]>>(bound: Bound<&K>) -> Bound<Vec<u8>> {
+    match bound {
+        Bound::Included(k) => Bound::Included(k.as_ref().to_vec()),
+        Bound::Excluded(k) => Bound::Excluded(k.as_ref().to_vec()),
+        Bound::Unbounded => Bound::Unbounded,
+    }
 }
 
 /// Re-key a nested sorted map (one stored as another collection's value)
@@ -280,12 +291,28 @@ where
         if let Some(mut entry) = self.inner.get_mut(id)? {
             let (_, v) = &mut *entry;
 
+            // A value-only update doesn't change the key set, so the ordered
+            // index entry stays correct; we deliberately don't stamp the marker
+            // here (the post-write `full_hash` isn't available until the guard
+            // drops), so the next ordered read rebuilds once. Rare path.
             return Ok(Some(mem::replace(v, value)));
         }
+
+        // Capture the order key before `key` is moved, so we can warm the index
+        // for this new key after the write (only when the adaptor backs it).
+        let order_key = S::index_supported().then(|| key.as_ref().to_vec());
+        let collection = self.inner.id();
 
         let _ignored = self
             .inner
             .insert_with_storage_type(Some(id), (key, value), storage_type)?;
+
+        if let Some(order_key) = order_key {
+            // Done after the inner write so the collection's `full_hash` already
+            // reflects this insert when we stamp the validity marker.
+            S::index_put(collection, &order_key, id);
+            self.stamp_index_marker();
+        }
 
         Ok(None)
     }
@@ -412,7 +439,17 @@ where
             return Ok(None);
         };
 
-        entry.remove().map(|(_, v)| Some(v))
+        let removed = entry.remove().map(|(_, v)| v)?;
+
+        // Keep the ordered index in step with the removal (no-op when the
+        // adaptor doesn't back it). `entry.remove()` has already recomputed the
+        // collection's `full_hash`, so the stamped marker stays valid.
+        if S::index_supported() {
+            S::index_remove(self.inner.id(), key.as_ref());
+            self.stamp_index_marker();
+        }
+
+        Ok(Some(removed))
     }
 
     /// Clear the map, removing all entries.
@@ -423,7 +460,76 @@ where
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     pub fn clear(&mut self) -> Result<(), StoreError> {
-        self.inner.clear()
+        self.inner.clear()?;
+
+        if S::index_supported() {
+            S::index_clear(self.inner.id());
+            self.stamp_index_marker();
+        }
+
+        Ok(())
+    }
+
+    /// The collection's current `full_hash` (the validity signal for the
+    /// ordered index). `[0; 32]` if the collection has no index entry yet.
+    fn current_full_hash(&self) -> [u8; 32] {
+        Index::<S>::get_hashes_for(self.inner.id())
+            .ok()
+            .flatten()
+            .map(|(full, _own)| full)
+            .unwrap_or([0u8; 32])
+    }
+
+    /// Stamp the index validity marker with the collection's current
+    /// `full_hash`, claiming "the ordered index is consistent as of this hash".
+    fn stamp_index_marker(&self) {
+        let _ = S::storage_write(
+            Key::SortedIndexMeta(self.inner.id()),
+            &self.current_full_hash(),
+        );
+    }
+
+    /// `true` if the stamped marker equals the collection's current `full_hash`
+    /// — i.e. nothing has changed the entry set since the index was last built.
+    fn index_marker_current(&self) -> bool {
+        S::storage_read(Key::SortedIndexMeta(self.inner.id())).as_deref()
+            == Some(&self.current_full_hash()[..])
+    }
+
+    /// Rebuild the ordered index for this collection from the authoritative
+    /// entry set (one `O(n)` scan), then stamp the validity marker. Used when a
+    /// remote sync (or an untracked local edit) left the index stale.
+    fn rebuild_index(&self) -> Result<(), StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        let collection = self.inner.id();
+        S::index_clear(collection);
+        for (k, _v) in self.iter_unordered()? {
+            S::index_put(collection, k.as_ref(), compute_id(collection, k.as_ref()));
+        }
+        self.stamp_index_marker();
+        Ok(())
+    }
+
+    /// Ensure the ordered index is usable for this read.
+    ///
+    /// Returns `true` when the adaptor backs the index (rebuilding first if the
+    /// marker is stale), `false` when it doesn't — in which case the caller
+    /// falls back to the in-memory sort. This is the single seam that makes the
+    /// on-disk path transparent: a no-op adaptor (e.g. `PrivateStorage`, or
+    /// `MainStorage` before the host ABI lands) simply takes the fallback.
+    fn ensure_index(&self) -> Result<bool, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        if !S::index_supported() {
+            return Ok(false);
+        }
+        if !self.index_marker_current() {
+            self.rebuild_index()?;
+        }
+        Ok(true)
     }
 
     /// Iterate entries in storage (hash) order — *not* key order.
@@ -516,9 +622,24 @@ where
     pub fn range<R>(&self, range: R) -> Result<impl Iterator<Item = (K, V)>, StoreError>
     where
         R: RangeBounds<K>,
+        K: AsRef<[u8]>,
     {
-        // Filter to the range *before* sorting so the sort cost scales with the
-        // number of matches `m`, not the whole map `n`: O(n) scan + O(m log m).
+        if self.ensure_index()? {
+            // Index-backed: RocksDB seeks to `start` and walks to `end` —
+            // O(log n + k), only the matching values are loaded.
+            let collection = self.inner.id();
+            let hits = S::index_range(
+                collection,
+                bound_bytes(range.start_bound()),
+                bound_bytes(range.end_bound()),
+                0,
+                None,
+            );
+            return Ok(self.resolve_hits(hits)?.into_iter());
+        }
+
+        // In-memory fallback (adaptor doesn't back the index): filter before
+        // sorting so cost scales with matches `m`: O(n) scan + O(m log m).
         let mut pairs: Vec<(K, V)> = self
             .iter_unordered()?
             .filter(|(k, _)| range.contains(k))
@@ -542,7 +663,13 @@ where
     where
         K: AsRef<[u8]>,
     {
-        // Filter by prefix before sorting: O(n) scan + O(m log m) on matches.
+        if self.ensure_index()? {
+            // Index-backed prefix seek — O(log n + k).
+            let hits = S::index_prefix(self.inner.id(), prefix, 0, None);
+            return Ok(self.resolve_hits(hits)?.into_iter());
+        }
+
+        // In-memory fallback: filter by prefix before sorting.
         let prefix = prefix.to_vec();
         let mut pairs: Vec<(K, V)> = self
             .iter_unordered()?
@@ -560,13 +687,43 @@ where
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn page(&self, offset: usize, limit: usize) -> Result<Vec<(K, V)>, StoreError> {
+    pub fn page(&self, offset: usize, limit: usize) -> Result<Vec<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        if self.ensure_index()? {
+            // Index-backed: skip `offset` index entries and load only `limit`
+            // values — O(limit), no full materialisation.
+            let hits = S::index_range(
+                self.inner.id(),
+                Bound::Unbounded,
+                Bound::Unbounded,
+                offset,
+                Some(limit),
+            );
+            return self.resolve_hits(hits);
+        }
+
+        // In-memory fallback.
         Ok(self
             .sorted_pairs()?
             .into_iter()
             .skip(offset)
             .take(limit)
             .collect())
+    }
+
+    /// Load the `(K, V)` values for index hits, in the index's (ascending key)
+    /// order. A hit whose entry has since vanished is skipped (defensive; an
+    /// up-to-date index shouldn't contain stale ids).
+    fn resolve_hits(&self, hits: Vec<(Vec<u8>, Id)>) -> Result<Vec<(K, V)>, StoreError> {
+        let mut out = Vec::with_capacity(hits.len());
+        for (_order_key, id) in hits {
+            if let Some(kv) = self.inner.get(id)? {
+                out.push(kv);
+            }
+        }
+        Ok(out)
     }
 
     /// The entry with the smallest key, if any.
@@ -954,14 +1111,23 @@ where
     where
         V: 'static,
     {
-        let id = compute_id(self.map.inner.id(), self.key.as_ref());
+        let collection = self.map.inner.id();
+        let id = compute_id(collection, self.key.as_ref());
 
         // Re-key any nested collections in `value` deterministically relative to
         // this entry's (deterministic) id — exactly as `insert_with_storage_type`
         // does, so a nested CRDT stored via the Entry API converges across nodes.
         super::rekey::rekey_nested_value(&mut value, id);
 
+        // Capture the order key before `self.key` is moved, to warm the index.
+        let order_key = S::index_supported().then(|| self.key.as_ref().to_vec());
+
         drop(self.map.inner.insert(Some(id), (self.key, value))?);
+
+        if let Some(order_key) = order_key {
+            S::index_put(collection, &order_key, id);
+            self.map.stamp_index_marker();
+        }
 
         let entry_mut = self
             .map
@@ -1234,5 +1400,101 @@ mod tests {
             Entry::Vacant(_) => panic!("expected occupied"),
         };
         assert_eq!(value, "v");
+    }
+
+    // === Index-backed path (adaptor with `index_supported() == true`) ===
+    //
+    // The tests above run over `MainStorage`, whose index is a no-op until the
+    // host ABI lands, so they exercise the in-memory fallback. These run over
+    // `MockedStorage`, which DOES back the ordered index — so a correct result
+    // here proves the on-disk query path (insert warms the index; range/prefix/
+    // page read from it) end to end.
+    use crate::entities::Data;
+    use crate::store::{Key, MockedStorage, StorageAdaptor};
+
+    type Indexed = MockedStorage<951>;
+
+    #[test]
+    fn index_backed_queries_match_expected_order() {
+        crate::env::reset_for_testing();
+        assert!(Indexed::index_supported());
+
+        let mut map: SortedMap<String, String, Indexed> = SortedMap::new();
+        for k in ["delta", "alpha", "charlie", "bravo", "echo"] {
+            map.insert(k.to_owned(), k.to_uppercase()).unwrap();
+        }
+
+        // range — served from the index (RocksDB-style seek over the mock).
+        let r: Vec<String> = map
+            .range("alpha".to_owned().."delta".to_owned())
+            .unwrap()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(r, vec!["alpha", "bravo", "charlie"]);
+
+        // page — index skip+take, only the page's values resolved.
+        let page = map.page(1, 2).unwrap();
+        assert_eq!(
+            page.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+            vec!["bravo", "charlie"]
+        );
+
+        // values resolve correctly through the index path.
+        assert_eq!(
+            map.range("bravo".to_owned()..="bravo".to_owned())
+                .unwrap()
+                .next()
+                .unwrap(),
+            ("bravo".to_owned(), "BRAVO".to_owned())
+        );
+    }
+
+    #[test]
+    fn index_backed_prefix_scan() {
+        crate::env::reset_for_testing();
+        let mut map: SortedMap<String, u32, Indexed> = SortedMap::new();
+        for (i, k) in ["user:alice", "post:1", "user:bob", "post:2", "user:carol"]
+            .into_iter()
+            .enumerate()
+        {
+            map.insert(k.to_owned(), i as u32).unwrap();
+        }
+
+        let users: Vec<String> = map.prefix(b"user:").unwrap().map(|(k, _)| k).collect();
+        assert_eq!(users, vec!["user:alice", "user:bob", "user:carol"]);
+    }
+
+    #[test]
+    fn read_rebuilds_stale_index_then_serves_from_it() {
+        crate::env::reset_for_testing();
+        let mut map: SortedMap<String, String, Indexed> = SortedMap::new();
+        for k in ["a", "b", "c", "d"] {
+            map.insert(k.to_owned(), k.to_owned()).unwrap();
+        }
+
+        let collection = <SortedMap<String, String, Indexed> as Data>::id(&map);
+
+        // Simulate a node whose entries exist but whose ordered index is stale —
+        // e.g. right after a remote sync applied entries host-side without going
+        // through `SortedMap::insert`: wipe the index and stamp a bogus marker.
+        Indexed::index_clear(collection);
+        let _ = Indexed::storage_write(Key::SortedIndexMeta(collection), &[0u8; 32]);
+
+        // The next ordered read must notice the marker mismatch, rebuild the
+        // index from the authoritative entries, and return correct results.
+        let keys: Vec<String> = map
+            .range("a".to_owned()..="d".to_owned())
+            .unwrap()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(keys, vec!["a", "b", "c", "d"]);
+
+        // A second read should now hit the warm index (marker matches) and still
+        // be correct.
+        let page = map.page(0, 2).unwrap();
+        assert_eq!(
+            page.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
     }
 }

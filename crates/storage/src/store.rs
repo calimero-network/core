@@ -28,6 +28,16 @@ pub enum Key {
     /// for actions that pre-date the current writer set. Tag `3` to keep the
     /// existing `Index`/`Entry`/`SyncState` byte layout stable.
     RotationLog(Id),
+
+    /// Validity marker for a `SortedMap`'s ordered secondary index (core#2559).
+    ///
+    /// Stores the collection's `full_hash` at the moment its `Column::SortedIndex`
+    /// entries were last (re)built. An ordered read compares this to the
+    /// collection's current `full_hash`: equal ⇒ the index is current and can be
+    /// queried directly; different (a local write or a remote sync changed the
+    /// entry set) ⇒ rebuild the index once, then serve. Node-local, not synced.
+    /// Tag `4` keeps the existing byte layout stable.
+    SortedIndexMeta(Id),
 }
 
 impl Key {
@@ -50,6 +60,10 @@ impl Key {
             }
             Self::RotationLog(id) => {
                 bytes[0] = 3;
+                bytes[1..33].copy_from_slice(id.as_bytes());
+            }
+            Self::SortedIndexMeta(id) => {
+                bytes[0] = 4;
                 bytes[1..33].copy_from_slice(id.as_bytes());
             }
         }
@@ -135,6 +149,12 @@ pub trait StorageAdaptor: 'static {
     /// Remove `collection ‖ order_key` from the ordered index. No-op if absent.
     fn index_remove(collection: Id, order_key: &[u8]) {
         let _ = (collection, order_key);
+    }
+
+    /// Drop every index entry for `collection`. Used when rebuilding the index
+    /// from scratch (e.g. after a remote sync changed the entry set).
+    fn index_clear(collection: Id) {
+        let _ = collection;
     }
 
     /// Return `(order_key, entry_id)` pairs for `collection` whose order key
@@ -430,6 +450,14 @@ pub mod mocked {
                 let _ = index
                     .borrow_mut()
                     .remove(&(SCOPE, collection, order_key.to_vec()));
+            });
+        }
+
+        fn index_clear(collection: Id) {
+            INDEX.with(|index| {
+                index
+                    .borrow_mut()
+                    .retain(|(scope, coll, _), _| !(*scope == SCOPE && *coll == collection));
             });
         }
 
