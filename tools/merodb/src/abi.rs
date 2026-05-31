@@ -177,6 +177,18 @@ pub fn infer_schema_from_database(
                                         inner_type: None,
                                     }
                                 }
+                                CrdtType::SortedMap { .. } => {
+                                    // Same shape as UnorderedMap; the marker records that
+                                    // iteration is key-ordered.
+                                    TypeRef::Collection {
+                                        collection: CollectionType::Map {
+                                            key: Box::new(TypeRef::string()),
+                                            value: Box::new(TypeRef::string()),
+                                        },
+                                        crdt_type: Some(CrdtCollectionType::SortedMap),
+                                        inner_type: None,
+                                    }
+                                }
                                 CrdtType::UnorderedSet { .. } => TypeRef::Collection {
                                     collection: CollectionType::List {
                                         items: Box::new(TypeRef::string()),
