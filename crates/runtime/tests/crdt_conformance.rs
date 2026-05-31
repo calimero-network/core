@@ -50,6 +50,35 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Newest modification time across the app's build inputs: every `*.rs` under
+/// `src/` (recursively), plus `Cargo.toml` and `build.sh`. Returns `None` if
+/// nothing could be stat'd (forces a rebuild).
+fn newest_mtime(app_dir: &std::path::Path) -> Option<std::time::SystemTime> {
+    fn visit(dir: &std::path::Path, newest: &mut Option<std::time::SystemTime>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, newest);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
+                    *newest = Some(newest.map_or(m, |cur| cur.max(m)));
+                }
+            }
+        }
+    }
+    let mut newest = None;
+    visit(&app_dir.join("src"), &mut newest);
+    for f in ["Cargo.toml", "build.sh"] {
+        if let Ok(m) = std::fs::metadata(app_dir.join(f)).and_then(|m| m.modified()) {
+            newest = Some(newest.map_or(m, |cur| cur.max(m)));
+        }
+    }
+    newest
+}
+
 fn scaffolding_wasm() -> &'static [u8] {
     static WASM: OnceLock<Vec<u8>> = OnceLock::new();
     WASM.get_or_init(|| {
@@ -57,28 +86,45 @@ fn scaffolding_wasm() -> &'static [u8] {
         let app_dir = root.join("apps/scaffolding-e2e");
         let wasm_path = app_dir.join("res/scaffolding_e2e.wasm");
 
-        // (Re)build if the wasm is missing or older than the app source.
-        let needs_build = match (
-            std::fs::metadata(&wasm_path).and_then(|m| m.modified()),
-            std::fs::metadata(app_dir.join("src/lib.rs")).and_then(|m| m.modified()),
-        ) {
-            (Ok(w), Ok(s)) => w < s,
+        // (Re)build if the wasm is missing or older than ANY source input
+        // (every `*.rs` under `src/`, plus `Cargo.toml` and `build.sh`) — not
+        // just `src/lib.rs`, so an edit to a sibling module or the manifest
+        // doesn't leave a stale binary in use.
+        let wasm_mtime = std::fs::metadata(&wasm_path)
+            .and_then(|m| m.modified())
+            .ok();
+        let newest_src = newest_mtime(&app_dir);
+        let needs_build = match (wasm_mtime, newest_src) {
+            (Some(w), Some(s)) => w < s,
             _ => true,
         };
         if needs_build {
-            let status = Command::new("bash")
+            // Build via the app's own `build.sh` (handles the wasm32 target +
+            // wasm-opt + copy to res/). The path is the compile-time-constant
+            // `CARGO_MANIFEST_DIR`, not attacker-controlled. Capture output so a
+            // build failure surfaces the actual compiler error, not just a
+            // generic assert.
+            let output = Command::new("bash")
                 .arg(app_dir.join("build.sh"))
-                .status()
-                .expect("failed to spawn build.sh — is bash available?");
+                .output()
+                .expect("failed to spawn build.sh — is bash on PATH?");
             assert!(
-                status.success(),
-                "building scaffolding-e2e wasm failed; run apps/scaffolding-e2e/build.sh manually"
+                output.status.success(),
+                "building scaffolding-e2e wasm failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
             );
         }
         std::fs::read(&wasm_path).expect("scaffolding_e2e.wasm not found after build")
     })
 }
 
+// Compiled once and shared across tests. Safe to run concurrently: `Module` is
+// `Arc`-backed (its doc-comment notes cloning shares the compiled artifact), and
+// every `Module::run` creates its OWN `wasmer::Store` and operates only on the
+// caller-supplied `&mut Storage` — there is no shared mutable VM state. These
+// tests also keep all storage local to each `Node` (no global/thread-local
+// store), so the default parallel `cargo test` execution is race-free.
 fn engine_module() -> &'static (Engine, Module) {
     static EM: OnceLock<(Engine, Module)> = OnceLock::new();
     EM.get_or_init(|| {
@@ -103,13 +149,19 @@ struct Cluster {
 }
 
 impl Cluster {
-    /// Build an `n`-node cluster: node 0 runs `init`, the rest receive a
-    /// byte-exact snapshot (clone) of node 0's post-init storage.
+    /// Build an `n`-node cluster: a dedicated leader runs `init`, then every
+    /// node receives a byte-exact snapshot (clone) of that post-init storage.
+    ///
+    /// The leader uses a DISTINCT executor id (`[0xEE; 32]`) so it does not
+    /// alias any cluster node; nodes get `[1; 32]`, `[2; 32]`, … This keeps the
+    /// init writes attributable to a separate identity from node 0's writes,
+    /// matching a real deployment where the context creator and the writers are
+    /// distinct, and avoids HLC/executor-seeded artifacts in node 0.
     fn new(n: usize) -> Self {
         let (_, module) = engine_module();
         let mut leader = Node {
             store: InMemoryStorage::default(),
-            executor: [1u8; 32],
+            executor: [0xEEu8; 32],
         };
         run(module, &mut leader, "init", json!({})).expect("init");
 
@@ -216,10 +268,24 @@ fn round(cluster: &mut Cluster, writes: &[(usize, &str, Value)]) -> Vec<[u8; 32]
             roots[node] = Some(h);
         }
     }
-    // A node that originated the only write applied nothing; in that case its
-    // root equals the originating call's — but for our tests every node either
-    // applies at least one foreign delta or we compare via a trailing op.
-    roots.into_iter().map(|r| r.unwrap_or([0u8; 32])).collect()
+    // Every node must have applied at least one foreign delta, otherwise its
+    // root stays `None` and we'd silently compare a placeholder zero hash
+    // against real hashes (masking a divergence). Enforce that invariant rather
+    // than defaulting to `[0; 32]`: callers must give each node ≥1 foreign delta
+    // (true for every concurrent round here — N writers, each node applies the
+    // other N-1).
+    roots
+        .into_iter()
+        .enumerate()
+        .map(|(node, r)| {
+            r.unwrap_or_else(|| {
+                panic!(
+                    "round(): node {node} applied no foreign delta — cannot determine its root; \
+                     a concurrent round must give every node at least one other node's delta"
+                )
+            })
+        })
+        .collect()
 }
 
 /// Single-writer sync: node 0 performs the write, every other node applies its
@@ -448,8 +514,10 @@ fn rga_delete_after_appends_converges() {
     c.apply(2, &b);
     c.apply(1, &cc);
 
-    // node 0 deletes "Hello", broadcasts.
-    let d = c.call(0, "rga_delete_text", json!({"start": 0, "end": 5}));
+    // node 0 (the writer) deletes "Hello", broadcasts. Capture the WRITER's
+    // own post-delete root hash (the WASM-computed one) via `call_full` — this
+    // is the whole point of the scenario: the writer must not be the outlier.
+    let (r0, d) = c.call_full(0, "rga_delete_text", json!({"start": 0, "end": 5}));
     let r1 = {
         let m = c.module;
         apply_delta(m, &mut c.nodes[1], &d).unwrap()
@@ -458,15 +526,14 @@ fn rga_delete_after_appends_converges() {
         let m = c.module;
         apply_delta(m, &mut c.nodes[2], &d).unwrap()
     };
-    // node 0's root after delete == receivers' roots.
-    let r0 = {
-        let m = c.module;
-        // re-applying the same delta is rejected/no-op; instead read node 0's
-        // root by replaying the delete's own outcome — captured below.
-        let _ = m;
-        r1 // compared transitively: assert r1==r2 and texts match
-    };
-    let _ = r0;
+    // Writer (node 0) and both receivers must converge on the same root.
+    assert_eq!(
+        r0,
+        r1,
+        "rga delete: writer (node 0) diverged from receiver node 1: {} vs {}",
+        hx(&r0),
+        hx(&r1)
+    );
     assert_eq!(
         r1,
         r2,
