@@ -479,7 +479,8 @@ pub use mocked::MockedStorage;
 /// from their own tests — see `calimero_node::sync::*_tests`.
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub mod mocked {
-    use core::cell::RefCell;
+    use core::cell::{Cell, RefCell};
+    use core::ops::Bound;
     use std::collections::BTreeMap;
 
     use super::{IterableStorage, Key, StorageAdaptor};
@@ -488,34 +489,61 @@ pub mod mocked {
     /// The scope of the storage system, which allows for multiple storage
     /// systems to be used in parallel.
     type Scope = usize;
+    /// Composite key of the mock's ordered index: `(scope, collection, order_key)`.
+    type IndexKey = (Scope, Id, Vec<u8>);
 
     thread_local! {
         pub(crate) static STORAGE: RefCell<BTreeMap<(Scope, Key), Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
         /// Ordered secondary index for the mock: `(scope, collection, order_key) -> entry_id`.
         /// `BTreeMap` iterates in key order, so within a `(scope, collection)`
-        /// the entries come back sorted by `order_key` — mirroring the RocksDB
-        /// `Column::SortedIndex` behaviour the real adaptor will provide.
-        static INDEX: RefCell<BTreeMap<(Scope, Id, Vec<u8>), Id>> = const { RefCell::new(BTreeMap::new()) };
+        /// the entries come back sorted by `order_key` — faithfully modelling the
+        /// RocksDB `Column::SortedIndex` the real adaptor uses, including its
+        /// seek-based (sub-linear) range/prefix/last behaviour.
+        static INDEX: RefCell<BTreeMap<IndexKey, Id>> = const { RefCell::new(BTreeMap::new()) };
+        /// Counts index entries *examined* by the most recent ordered query.
+        /// Lets tests prove range/page/last touch `O(window)` items, not `O(n)`.
+        static INDEX_ITEMS: Cell<usize> = const { Cell::new(0) };
     }
 
-    /// `true` if `key` satisfies the `[start, end)` bounds.
-    fn within(
-        key: &[u8],
-        start: &core::ops::Bound<Vec<u8>>,
-        end: &core::ops::Bound<Vec<u8>>,
-    ) -> bool {
-        use core::ops::Bound::{Excluded, Included, Unbounded};
-        let lo = match start {
-            Included(s) => key >= s.as_slice(),
-            Excluded(s) => key > s.as_slice(),
-            Unbounded => true,
-        };
-        let hi = match end {
-            Included(e) => key <= e.as_slice(),
-            Excluded(e) => key < e.as_slice(),
-            Unbounded => true,
-        };
-        lo && hi
+    /// Reset the "items examined" counter (call before an instrumented query).
+    pub fn reset_index_items() {
+        INDEX_ITEMS.with(|c| c.set(0));
+    }
+
+    /// How many index entries the last ordered query examined.
+    #[must_use]
+    pub fn index_items_examined() -> usize {
+        INDEX_ITEMS.with(Cell::get)
+    }
+
+    fn bump_examined() {
+        INDEX_ITEMS.with(|c| c.set(c.get() + 1));
+    }
+
+    /// `true` if `key` is below the end bound `[.., end)`.
+    fn within_end(key: &[u8], end: &Bound<Vec<u8>>) -> bool {
+        match end {
+            Bound::Included(e) => key <= e.as_slice(),
+            Bound::Excluded(e) => key < e.as_slice(),
+            Bound::Unbounded => true,
+        }
+    }
+
+    /// The exclusive `BTreeMap` upper bound just past every key of `collection`
+    /// (the next collection id), so a `.range(..)` can be a true seek that ends
+    /// at the collection boundary. `Unbounded` if `collection` is all-`0xFF`.
+    fn collection_upper(scope: Scope, collection: Id) -> Bound<IndexKey> {
+        let mut bytes = collection.as_bytes().to_vec();
+        for i in (0..bytes.len()).rev() {
+            if bytes[i] == 0xFF {
+                bytes[i] = 0;
+            } else {
+                bytes[i] += 1;
+                let arr: [u8; 32] = bytes.try_into().expect("32-byte id");
+                return Bound::Excluded((scope, Id::new(arr), Vec::new()));
+            }
+        }
+        Bound::Unbounded
     }
 
     /// In-memory mocked storage backend, scoped by a const generic so
@@ -589,25 +617,36 @@ pub mod mocked {
 
         fn index_range(
             collection: Id,
-            start: core::ops::Bound<Vec<u8>>,
-            end: core::ops::Bound<Vec<u8>>,
+            start: Bound<Vec<u8>>,
+            end: Bound<Vec<u8>>,
             offset: usize,
             limit: Option<usize>,
         ) -> Vec<(Vec<u8>, Id)> {
+            // Seek to the start bound (a `BTreeMap::range` is a logarithmic
+            // descent), then walk forward, stopping at the collection boundary
+            // or the end bound — `take_while` over a lazy range only touches
+            // O(seek + items walked), and `skip(offset).take(limit)` bounds that
+            // to O(offset + limit). NOT a full scan.
+            let lo: Bound<IndexKey> = match start {
+                Bound::Included(s) => Bound::Included((SCOPE, collection, s)),
+                Bound::Excluded(s) => Bound::Excluded((SCOPE, collection, s)),
+                Bound::Unbounded => Bound::Included((SCOPE, collection, Vec::new())),
+            };
             INDEX.with(|index| {
-                // BTreeMap iterates in ascending key order, so filtering the
-                // `(SCOPE, collection)` slice already yields order-key order.
-                let matched: Vec<(Vec<u8>, Id)> = index
-                    .borrow()
-                    .iter()
-                    .filter(|((scope, coll, _), _)| *scope == SCOPE && *coll == collection)
-                    .filter(|((_, _, key), _)| within(key, &start, &end))
-                    .map(|((_, _, key), entry)| (key.clone(), *entry))
-                    .collect();
-                let ordered = matched.into_iter().skip(offset);
+                let index = index.borrow();
+                let walked = index
+                    .range((lo, Bound::Unbounded))
+                    .take_while(|((scope, coll, key), _)| {
+                        *scope == SCOPE && *coll == collection && within_end(key, &end)
+                    })
+                    .map(|((_, _, key), entry)| {
+                        bump_examined();
+                        (key.clone(), *entry)
+                    })
+                    .skip(offset);
                 match limit {
-                    Some(n) => ordered.take(n).collect(),
-                    None => ordered.collect(),
+                    Some(n) => walked.take(n).collect(),
+                    None => walked.collect(),
                 }
             })
         }
@@ -618,32 +657,40 @@ pub mod mocked {
             offset: usize,
             limit: Option<usize>,
         ) -> Vec<(Vec<u8>, Id)> {
+            let lo: Bound<IndexKey> = Bound::Included((SCOPE, collection, prefix.to_vec()));
             INDEX.with(|index| {
-                let matched: Vec<(Vec<u8>, Id)> = index
-                    .borrow()
-                    .iter()
-                    .filter(|((scope, coll, _), _)| *scope == SCOPE && *coll == collection)
-                    .filter(|((_, _, key), _)| key.starts_with(prefix))
-                    .map(|((_, _, key), entry)| (key.clone(), *entry))
-                    .collect();
-                let ordered = matched.into_iter().skip(offset);
+                let index = index.borrow();
+                let walked = index
+                    .range((lo, Bound::Unbounded))
+                    .take_while(|((scope, coll, key), _)| {
+                        *scope == SCOPE && *coll == collection && key.starts_with(prefix)
+                    })
+                    .map(|((_, _, key), entry)| {
+                        bump_examined();
+                        (key.clone(), *entry)
+                    })
+                    .skip(offset);
                 match limit {
-                    Some(n) => ordered.take(n).collect(),
-                    None => ordered.collect(),
+                    Some(n) => walked.take(n).collect(),
+                    None => walked.collect(),
                 }
             })
         }
 
         fn index_last(collection: Id) -> Option<(Vec<u8>, Id)> {
+            let lo: Bound<IndexKey> = Bound::Included((SCOPE, collection, Vec::new()));
+            let hi = collection_upper(SCOPE, collection);
             INDEX.with(|index| {
-                // BTreeMap iterates ascending; the last entry for this
-                // (scope, collection) is the largest order key.
+                // `BTreeMap::range` is double-ended, so `next_back()` is a
+                // reverse seek to the largest key — O(log n), one item examined.
                 index
                     .borrow()
-                    .iter()
-                    .filter(|((scope, coll, _), _)| *scope == SCOPE && *coll == collection)
+                    .range((lo, hi))
                     .next_back()
-                    .map(|((_, _, key), entry)| (key.clone(), *entry))
+                    .map(|((_, _, key), entry)| {
+                        bump_examined();
+                        (key.clone(), *entry)
+                    })
             })
         }
     }
@@ -891,6 +938,67 @@ mod index_tests {
                 None
             )),
             vec![b"y".to_vec()]
+        );
+    }
+
+    // Empirical proof of the documented Big-O: build a large collection and
+    // assert (via the mock's "items examined" counter, which faithfully models
+    // the RocksDB seek) that bounded reads touch O(window) index entries, not
+    // O(n). A full scan, by contrast, touches all n — the control.
+    #[test]
+    #[serial_test::serial]
+    fn ordered_reads_are_sublinear() {
+        use super::mocked;
+
+        let c = coll(42);
+        let n = 500usize;
+        for i in 0..n {
+            S::index_put(c, format!("k{i:04}").as_bytes(), entry(0));
+        }
+
+        // last → a single reverse-seek item.
+        mocked::reset_index_items();
+        assert!(S::index_last(c).is_some());
+        assert_eq!(
+            mocked::index_items_examined(),
+            1,
+            "last must examine 1 item, not n"
+        );
+
+        // page(0, 10) → 10 items.
+        mocked::reset_index_items();
+        let page = S::index_range(c, Bound::Unbounded, Bound::Unbounded, 0, Some(10));
+        assert_eq!(page.len(), 10);
+        assert_eq!(
+            mocked::index_items_examined(),
+            10,
+            "page(0,10) must examine 10 items, not n"
+        );
+
+        // range [k0100, k0105) → 5 items (a tight window).
+        mocked::reset_index_items();
+        let window = S::index_range(
+            c,
+            Bound::Included(b"k0100".to_vec()),
+            Bound::Excluded(b"k0105".to_vec()),
+            0,
+            None,
+        );
+        assert_eq!(window.len(), 5);
+        assert_eq!(
+            mocked::index_items_examined(),
+            5,
+            "range window must examine only the matches, not n"
+        );
+
+        // Control: a full scan examines all n — confirming the counter is real.
+        mocked::reset_index_items();
+        let all = S::index_range(c, Bound::Unbounded, Bound::Unbounded, 0, None);
+        assert_eq!(all.len(), n);
+        assert_eq!(
+            mocked::index_items_examined(),
+            n,
+            "full scan examines all n (the counter isn't trivially small)"
         );
     }
 }
