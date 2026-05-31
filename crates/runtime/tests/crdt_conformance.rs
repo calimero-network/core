@@ -586,6 +586,57 @@ fn frozen_storage_converges() {
 }
 
 // ---------------------------------------------------------------------------
+// SortedMap ordered-index path, end to end through real WASM (core#2559).
+//
+// Unlike the storage crate's unit tests (which drive the adaptor natively or via
+// a mock), this runs the compiled app through `Module::run`, so the ordered
+// reads travel the FULL host-function chain: app WASM → `MainStorage` →
+// `storage_index_set` / `storage_index_scan` host imports → the runtime's
+// `InMemoryStorage` ordered index. A correct, key-ordered result here proves the
+// Stage C host ABI works in a real WASM execution, not just in unit tests.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sorted_map_range_through_real_wasm() {
+    let mut c = Cluster::new(1);
+
+    // Insert deliberately out of order — each `sorted_set` maintains the index
+    // host-side via `storage_index_set`.
+    for (k, v) in [
+        ("delta", "D"),
+        ("alpha", "A"),
+        ("charlie", "C"),
+        ("bravo", "B"),
+        ("echo", "E"),
+    ] {
+        let _artifact = c.call(0, "sorted_set", json!({ "key": k, "value": v }));
+    }
+
+    // `sorted_range` reads back through `storage_index_scan` (the index-backed
+    // path). The result must be the key-ordered window [bravo, echo).
+    let range = c.query(
+        0,
+        "sorted_range",
+        json!({ "start": "bravo", "end": "echo" }),
+    );
+    let range = range.get("output").cloned().unwrap_or(range);
+    assert_eq!(
+        range,
+        json!({ "bravo": "B", "charlie": "C", "delta": "D" }),
+        "sorted_range [bravo, echo) via the host ordered index"
+    );
+
+    // Full key listing comes back ascending too.
+    let keys = c.query(0, "sorted_keys", json!({}));
+    let keys = keys.get("output").cloned().unwrap_or(keys);
+    assert_eq!(
+        keys,
+        json!(["alpha", "bravo", "charlie", "delta", "echo"]),
+        "sorted_keys ascending"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Single-writer sync coverage. These exercise the basic "one node edits, peers
 // apply the delta" path for the counter / set structures whose *concurrent*
 // same-entity tests are ignored above — so every data structure has at least
