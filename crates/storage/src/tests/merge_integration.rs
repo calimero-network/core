@@ -2522,3 +2522,136 @@ fn test_nested_set_first_touch_concurrent_converges() {
         hex::encode(b_root),
     );
 }
+
+/// OPEN REGRESSION (currently failing — hence `#[ignore]`). Reproduces the
+/// scaffolding-e2e "Wait for sync after node-1 PN-Counter operations" timeout.
+///
+/// A PN-counter (`Counter<true>`, with a negative map G-counter lacks) nested in
+/// a map; single-writer (node-1 increments thrice + decrements once); a receiver
+/// then applies node-1's delta. The VALUE converges (2) but the writer and
+/// receiver root hashes DIVERGE: the receiver ends with extra orphan entities.
+///
+/// ROOT CAUSE: the nested-id re-key (`reassign_deterministic_id_under`) removes
+/// the old random-id collection/slot entities from the WRITER's storage via raw
+/// `storage_remove`, but the broadcast delta still carries their `Add` actions
+/// (recorded when they were first created) WITHOUT a matching `DeleteRef`. A
+/// receiver applies the orphan `Add`s but never removes them, so it keeps
+/// entities the writer dropped → divergent `full_hash`. This asymmetric
+/// (native-create → broadcast) path is what real nodes use; the symmetric
+/// first-touch tests (every node imports the same deltas) don't expose it.
+///
+/// FIX DIRECTION: the re-key must emit `DeleteRef`s for every churned old-id
+/// entity (so receivers drop them), or assign deterministic ids at creation so
+/// no random-id entity is ever persisted/broadcast. Remove `#[ignore]` once the
+/// re-key is delta-consistent.
+#[ignore = "OPEN: re-key ships orphan Add actions without DeleteRef -> writer/receiver root divergence"]
+#[test]
+#[serial]
+fn test_nested_pncounter_single_writer_converges() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::MainStorage;
+
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct PnDoc {
+        counters: UnorderedMap<String, Counter<true>>,
+    }
+    impl Mergeable for PnDoc {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.counters.merge(&other.counters)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), data, Metadata::default()).unwrap();
+        commit_causal_delta(&root_hash())
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<PnDoc, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh = |exec: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<PnDoc>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(exec);
+    };
+
+    // Genesis: empty map base.
+    fresh([9; 32]);
+    let g = Root::<PnDoc, S>::new(|| PnDoc {
+        counters: UnorderedMap::new_with_field_name("counters"),
+    });
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base = capture(g_data);
+    let base_hash = root_hash();
+
+    // node-1 (writer): create "bal" PN-counter, increment x3, decrement x1.
+    fresh([1; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let mut doc = Root::<PnDoc, S>::fetch().unwrap();
+    let mut ctr = doc
+        .counters
+        .get(&"bal".to_string())
+        .unwrap()
+        .unwrap_or_else(Counter::<true>::new);
+    ctr.increment().unwrap();
+    ctr.increment().unwrap();
+    ctr.increment().unwrap();
+    ctr.decrement().unwrap();
+    doc.counters.insert("bal".to_string(), ctr).unwrap();
+    let n1_data = borsh::to_vec(&*doc).unwrap();
+    drop(doc);
+    let delta = capture(n1_data);
+    let n1_root = root_hash();
+    let n1_val = Root::<PnDoc, S>::fetch()
+        .unwrap()
+        .counters
+        .get(&"bal".to_string())
+        .unwrap()
+        .map(|c| c.value().unwrap())
+        .unwrap_or(0);
+
+    // node-2 (receiver): import base, apply node-1's delta.
+    fresh([2; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    import(delta);
+    let n2_root = root_hash();
+    let n2_val = Root::<PnDoc, S>::fetch()
+        .unwrap()
+        .counters
+        .get(&"bal".to_string())
+        .unwrap()
+        .map(|c| c.value().unwrap())
+        .unwrap_or(0);
+
+    assert_eq!(n1_val, 2, "writer PN value should be 3-1=2 (got {n1_val})");
+    assert_eq!(n2_val, 2, "receiver PN value should be 2 (got {n2_val})");
+    assert_eq!(
+        n1_root,
+        n2_root,
+        "PN-counter single-writer root must converge (writer vs receiver): n1={} n2={}",
+        hex::encode(n1_root),
+        hex::encode(n2_root),
+    );
+}
