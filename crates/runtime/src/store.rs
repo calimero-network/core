@@ -55,6 +55,13 @@ pub trait Storage: Reflect {
         let _ = (lo, hi, offset, limit);
         Vec::new()
     }
+
+    /// The largest `(key, value)` in `[lo, hi)` — a reverse seek for
+    /// `SortedMap::last` (`O(log n)` instead of a forward walk to the end).
+    fn index_last(&self, lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+        let _ = (lo, hi);
+        None
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -121,6 +128,13 @@ impl Storage for InMemoryStorage {
             Some(n) => ordered.take(n).collect(),
             None => ordered.collect(),
         }
+    }
+
+    fn index_last(&self, lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+        self.index
+            .range(lo.to_vec()..hi.to_vec())
+            .next_back()
+            .map(|(k, v)| (k.clone(), v.clone()))
     }
 }
 

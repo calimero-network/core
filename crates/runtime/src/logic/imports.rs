@@ -63,6 +63,7 @@ impl VMLogic<'_> {
                 limit: u64,
                 register_id: u64,
             ) -> u32;
+            fn storage_index_last(lo_ptr: u64, hi_ptr: u64, register_id: u64) -> u32;
 
             // Private storage functions (node-local, NOT synchronized)
             fn private_storage_read(key_ptr: u64, register_id: u64) -> u32;

@@ -74,6 +74,33 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
         self.iter(col)
     }
 
+    /// The largest `(key, value)` in `col` over `[lo, hi)` — i.e. a reverse
+    /// seek to the last key in the range. Used for `SortedMap::last` (an
+    /// `O(log n)` "max key" lookup instead of a forward walk to the end).
+    ///
+    /// The default does a forward `O(n)` scan keeping the last in-range entry,
+    /// so backends without reverse iteration still work; RocksDB overrides this
+    /// with `seek_for_prev` for a true `O(log n)` seek.
+    fn last_in_range(
+        &self,
+        col: Column,
+        lo: Slice<'_>,
+        hi: Slice<'_>,
+    ) -> EyreResult<Option<(Vec<u8>, Vec<u8>)>> {
+        let mut iter = self.iter(col)?;
+        let mut last: Option<(Vec<u8>, Vec<u8>)> = None;
+        let mut pos = iter.seek(lo)?.map(|k| k.as_ref().to_vec());
+        while let Some(key) = pos {
+            if key.as_slice() >= hi.as_ref() {
+                break;
+            }
+            let value = iter.read()?.as_ref().to_vec();
+            last = Some((key, value));
+            pos = iter.next()?.map(|k| k.as_ref().to_vec());
+        }
+        Ok(last)
+    }
+
     /// Best-effort estimate of on-disk bytes stored in `col` for keys in
     /// `[start, end)`. Used by usage-reporting endpoints to measure
     /// per-group / per-context storage cheaply (RocksDB returns a real

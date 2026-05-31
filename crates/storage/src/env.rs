@@ -216,6 +216,13 @@ pub fn storage_index_scan(
     imp::storage_index_scan(lo, hi, offset, limit)
 }
 
+/// The largest `(key, value)` in the ordered index over `[lo, hi)` (reverse
+/// seek; backs `SortedMap::last`).
+#[must_use]
+pub fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    imp::storage_index_last(lo, hi)
+}
+
 /// Reads data from node-local (private) persistent storage.
 ///
 /// Private storage is **NOT synchronised across nodes** — entries
@@ -459,6 +466,10 @@ mod calimero_vm {
         env::storage_index_scan(lo, hi, offset, limit)
     }
 
+    pub(super) fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+        env::storage_index_last(lo, hi)
+    }
+
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
         env::random_bytes(buf)
@@ -639,6 +650,16 @@ mod mocked {
                 Some(n) => ordered.take(n).collect(),
                 None => ordered.collect(),
             }
+        })
+    }
+
+    pub(super) fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+        INDEX.with(|index| {
+            index
+                .borrow()
+                .range(lo.to_vec()..hi.to_vec())
+                .next_back()
+                .map(|(k, v)| (k.clone(), v.clone()))
         })
     }
 

@@ -521,6 +521,40 @@ impl VMHostFunctions<'_> {
         self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, encoded))?;
         Ok(1)
     }
+
+    /// Reverse seek: encode the single largest `(key, value)` in `[lo, hi)` into
+    /// `register_id` (same wire format as `storage_index_scan`, count 0 or 1).
+    /// Backs `SortedMap::last` as an `O(log n)` lookup. Returns `1`.
+    pub fn storage_index_last(
+        &mut self,
+        lo_ptr: u64,
+        hi_ptr: u64,
+        register_id: u64,
+    ) -> VMLogicResult<u32> {
+        let lo = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(lo_ptr)? };
+        let hi = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(hi_ptr)? };
+        let lo = self.read_guest_memory_slice(&lo)?.to_vec();
+        let hi = self.read_guest_memory_slice(&hi)?.to_vec();
+
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> = self
+            .borrow_logic()
+            .storage
+            .index_last(&lo, &hi)
+            .into_iter()
+            .collect();
+
+        trace!(
+            target: "runtime::host::storage",
+            op = "index_last",
+            found = !pairs.is_empty(),
+            register_id,
+            "storage_index_last"
+        );
+
+        let encoded = encode_index_pairs(&pairs);
+        self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, encoded))?;
+        Ok(1)
+    }
 }
 
 /// Encode ordered-index scan results into the length-prefixed wire format the

@@ -181,6 +181,37 @@ impl Database<'_> for RocksDB {
         Ok(Iter::new(DBIterator { ready: true, iter }))
     }
 
+    fn last_in_range(
+        &self,
+        col: Column,
+        lo: Slice<'_>,
+        hi: Slice<'_>,
+    ) -> EyreResult<Option<(Vec<u8>, Vec<u8>)>> {
+        let cf_handle = self.try_cf_handle(col)?;
+        let mut iter = self.db.raw_iterator_cf(cf_handle);
+
+        // `seek_for_prev(hi)` lands on the largest key <= hi; `hi` is the
+        // exclusive upper bound, so step back past any key == hi to reach the
+        // largest key strictly < hi. One seek + a step or two — O(log n).
+        iter.seek_for_prev(hi.as_ref());
+        while iter.valid() {
+            // Copy the key out before any mutation drops the borrow.
+            let Some(key) = iter.key().map(<[u8]>::to_vec) else {
+                break;
+            };
+            if key.as_slice() >= hi.as_ref() {
+                iter.prev();
+                continue;
+            }
+            if key.as_slice() < lo.as_ref() {
+                return Ok(None);
+            }
+            let value = iter.value().map(<[u8]>::to_vec).unwrap_or_default();
+            return Ok(Some((key, value)));
+        }
+        Ok(None)
+    }
+
     fn approximate_size(&self, col: Column, start: Slice<'_>, end: Slice<'_>) -> EyreResult<u64> {
         let cf_handle = self.try_cf_handle(col)?;
         // `get_approximate_sizes_cf` samples SST metadata — no scan,

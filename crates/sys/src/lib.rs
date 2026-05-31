@@ -41,6 +41,7 @@ wasm_imports! {
             limit: PtrSizedInt,
             register_id: RegisterId
         ) -> Bool;
+        fn storage_index_last(lo: Ref<Buffer<'_>>, hi: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         // --
         // Private storage functions (node-local, NOT synchronized)
         fn private_storage_read(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;

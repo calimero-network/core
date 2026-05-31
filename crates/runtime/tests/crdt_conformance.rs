@@ -634,6 +634,11 @@ fn sorted_map_range_through_real_wasm() {
         json!(["alpha", "bravo", "charlie", "delta", "echo"]),
         "sorted_keys ascending"
     );
+
+    // `last` is the reverse-seek path (`storage_index_last` host import).
+    let last = c.query(0, "sorted_last_key", json!({}));
+    let last = last.get("output").cloned().unwrap_or(last);
+    assert_eq!(last, json!("echo"), "sorted_last_key via reverse seek");
 }
 
 /// A receiving node applies SortedMap entries via the generic sync path

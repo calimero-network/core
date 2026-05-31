@@ -105,4 +105,15 @@ impl Store {
         }
         Ok(out)
     }
+
+    /// The largest `(key, value)` in `col` over `[lo, hi)` (a reverse seek —
+    /// `O(log n)` on RocksDB). Used for `SortedMap::last`.
+    pub fn raw_last(
+        &self,
+        col: Column,
+        lo: &[u8],
+        hi: &[u8],
+    ) -> EyreResult<Option<(Vec<u8>, Vec<u8>)>> {
+        self.db.last_in_range(col, Slice::from(lo), Slice::from(hi))
+    }
 }

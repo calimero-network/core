@@ -22,10 +22,9 @@
 //!
 //! - [`range`](SortedMap::range) / [`prefix`](SortedMap::prefix) — `O(log n + k)`
 //!   (native seek; only the `k` matching values are loaded).
-//! - [`page`](SortedMap::page) — `O(limit)`.
-//! - [`first`](SortedMap::first) — `O(log n)` (seek to smallest);
-//!   [`last`](SortedMap::last) — forward-skip (loads only the last value; a
-//!   reverse seek is a future optimisation).
+//! - [`page`](SortedMap::page) — `O(offset + limit)`.
+//! - [`first`](SortedMap::first) / [`last`](SortedMap::last) — `O(log n)`
+//!   (forward / reverse seek to the smallest / largest key).
 //! - [`entries`](SortedMap::entries) / [`keys`](SortedMap::keys) /
 //!   [`values`](SortedMap::values) — `O(n)` (they return everything).
 //!
@@ -800,10 +799,9 @@ where
 
     /// The entry with the largest key, if any.
     ///
-    /// Index-backed via a forward skip to the last entry (only that one value is
-    /// loaded); falls back to a single `O(n)` max-pass otherwise. (A reverse
-    /// seek would make this `O(log n)` — a future optimisation; the forward skip
-    /// still avoids loading every value.)
+    /// Index-backed: a reverse seek to the last key, `O(log n)` (only that one
+    /// value is loaded). Falls back to a single `O(n)` max-pass when the adaptor
+    /// doesn't back the index.
     ///
     /// # Errors
     ///
@@ -814,18 +812,10 @@ where
         K: AsRef<[u8]>,
     {
         if self.ensure_index()? {
-            let n = self.inner.len()?;
-            let Some(offset) = n.checked_sub(1) else {
-                return Ok(None);
+            return match S::index_last(self.inner.id()) {
+                Some((_order_key, id)) => self.inner.get(id),
+                None => Ok(None),
             };
-            let hits = S::index_range(
-                self.inner.id(),
-                Bound::Unbounded,
-                Bound::Unbounded,
-                offset,
-                Some(1),
-            );
-            return Ok(self.resolve_hits(hits)?.into_iter().next());
         }
         Ok(self.iter_unordered()?.max_by(|(a, _), (b, _)| a.cmp(b)))
     }

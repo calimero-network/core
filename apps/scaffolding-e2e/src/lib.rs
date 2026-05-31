@@ -528,6 +528,11 @@ impl E2eKvStore {
             .collect())
     }
 
+    /// The largest key (reverse-seek `last`, index-backed).
+    pub fn sorted_last_key(&self) -> app::Result<Option<String>> {
+        Ok(self.sorted_items.last()?.map(|(k, _)| k))
+    }
+
     pub fn len(&self) -> app::Result<usize> {
         app::log!("Getting the number of entries");
         Ok(self.kv_items.len()?)

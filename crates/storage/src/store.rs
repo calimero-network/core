@@ -182,6 +182,13 @@ pub trait StorageAdaptor: 'static {
         let _ = (collection, prefix, offset, limit);
         Vec::new()
     }
+
+    /// Return the `(order_key, entry_id)` with the largest order key in
+    /// `collection` — a reverse seek for `SortedMap::last` (`O(log n)`).
+    fn index_last(collection: Id) -> Option<(Vec<u8>, Id)> {
+        let _ = collection;
+        None
+    }
 }
 
 /// Storage iteration support for GC and snapshots.
@@ -308,6 +315,16 @@ impl StorageAdaptor for MainStorage {
             coll,
             crate::env::storage_index_scan(&lo, &hi, offset, limit),
         )
+    }
+
+    fn index_last(collection: Id) -> Option<(Vec<u8>, Id)> {
+        let prefix = collection.as_bytes();
+        let lo = prefix.to_vec();
+        let hi = prefix_upper_bound(prefix);
+        let (composite, entry_bytes) = crate::env::storage_index_last(&lo, &hi)?;
+        let order_key = composite.strip_prefix(prefix)?.to_vec();
+        let id: [u8; 32] = entry_bytes.as_slice().try_into().ok()?;
+        Some((order_key, Id::new(id)))
     }
 }
 
@@ -614,6 +631,19 @@ pub mod mocked {
                     Some(n) => ordered.take(n).collect(),
                     None => ordered.collect(),
                 }
+            })
+        }
+
+        fn index_last(collection: Id) -> Option<(Vec<u8>, Id)> {
+            INDEX.with(|index| {
+                // BTreeMap iterates ascending; the last entry for this
+                // (scope, collection) is the largest order key.
+                index
+                    .borrow()
+                    .iter()
+                    .filter(|((scope, coll, _), _)| *scope == SCOPE && *coll == collection)
+                    .next_back()
+                    .map(|((_, _, key), entry)| (key.clone(), *entry))
             })
         }
     }

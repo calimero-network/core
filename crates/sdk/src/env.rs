@@ -548,6 +548,27 @@ pub fn storage_index_scan(
     decode_index_pairs(&buf)
 }
 
+/// The largest `(key, value)` in the ordered index over `[lo, hi)` — a reverse
+/// seek backing `SortedMap::last`.
+#[inline]
+pub fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let found: bool = unsafe {
+        sys::storage_index_last(
+            Ref::new(&Buffer::from(lo)),
+            Ref::new(&Buffer::from(hi)),
+            DATA_REGISTER,
+        )
+        .try_into()
+    }
+    .unwrap_or_else(expected_boolean);
+
+    if !found {
+        return None;
+    }
+    let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+    decode_index_pairs(&buf).into_iter().next()
+}
+
 /// Decode the length-prefixed scan reply produced by the host's
 /// `encode_index_pairs`. Malformed/truncated input yields what was parsed so
 /// far (the host controls this buffer, so it's well-formed in practice).

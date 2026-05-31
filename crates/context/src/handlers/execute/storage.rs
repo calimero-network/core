@@ -234,6 +234,17 @@ impl Storage for ContextStorage {
             None => stripped.collect(),
         }
     }
+
+    fn index_last(&self, lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+        let full_lo = self.index_key(lo);
+        let full_hi = self.index_key(hi);
+        let (k, v) = self
+            .borrow_index_store()
+            .raw_last(Column::SortedIndex, &full_lo, &full_hi)
+            .ok()??;
+        // Strip the 32-byte context prefix.
+        Some((k.get(32..)?.to_vec(), v))
+    }
 }
 
 // Same safety reasoning as ContextStorage
