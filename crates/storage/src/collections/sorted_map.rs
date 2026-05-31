@@ -14,33 +14,42 @@
 //! secondary index keyed by `collection ‖ order_key` (unhashed, so the backend's
 //! byte order is the logical key order) in a dedicated storage column.
 //!
-//! ## Performance
+//! # Complexity (on a node, with the index-backing `MainStorage`)
 //!
-//! With an index-backing adaptor (`MainStorage` on a node), the index is
-//! maintained incrementally on `insert`/`remove`/`clear` and validated by a
-//! `full_hash` marker:
+//! | Operation | Cost |
+//! |---|---|
+//! | [`range`](SortedMap::range) / [`prefix`](SortedMap::prefix) | `O(log n + k)` (seek; only the `k` matches' values load) |
+//! | [`page`](SortedMap::page)`(offset, limit)` | `O(offset + limit)` |
+//! | [`first`](SortedMap::first) / [`last`](SortedMap::last) | `O(log n)` (forward / reverse seek) |
+//! | [`get`](SortedMap::get) / [`insert`](SortedMap::insert) / [`remove`](SortedMap::remove) | `O(1)` point op **+ an index write + a marker read/write** |
+//! | [`entries`](SortedMap::entries) / [`keys`](SortedMap::keys) / [`values`](SortedMap::values) | `O(n)` (they return everything) |
+//! | post-sync rebuild (first ordered read after a sync) | `O(n)` reads, `O(changed)` writes |
 //!
-//! - [`range`](SortedMap::range) / [`prefix`](SortedMap::prefix) — `O(log n + k)`
-//!   (native seek; only the `k` matching values are loaded).
-//! - [`page`](SortedMap::page) — `O(offset + limit)`.
-//! - [`first`](SortedMap::first) / [`last`](SortedMap::last) — `O(log n)`
-//!   (forward / reverse seek to the smallest / largest key).
-//! - [`entries`](SortedMap::entries) / [`keys`](SortedMap::keys) /
-//!   [`values`](SortedMap::values) — `O(n)` (they return everything).
+//! The index is maintained incrementally on `insert`/`remove`/`clear` and
+//! validated by a `full_hash` marker, so a read right after a *local* write is
+//! still a seek. Only a **remote sync** (which mutates entries host-side without
+//! going through `insert`) leaves the index stale; the next ordered read notices
+//! the marker mismatch and rebuilds once, then resumes seeking.
 //!
-//! Local writes keep the index warm, so a read right after a write is still a
-//! seek. Only a **remote sync** (which mutates entries host-side without going
-//! through `insert`) leaves the index stale; the next ordered read notices the
-//! marker mismatch and rebuilds once (`O(n)`), then resumes seeking.
+//! # When to use `SortedMap` vs [`UnorderedMap`](super::UnorderedMap)
 //!
-//! ## CRDT-safety and the fallback
+//! **Default to [`UnorderedMap`](super::UnorderedMap)** — it has no per-write
+//! index overhead and no extra disk. Use `SortedMap` *only* when you genuinely
+//! need key order: range/prefix queries, pagination, sorted iteration, or
+//! min/max. The fast ordered reads above are paid for on every write (the extra
+//! index + marker writes), in extra storage per key, and by the post-sync
+//! rebuild — wasted if you only ever point-access the map. `SortedMap` is the
+//! `BTreeMap` to `UnorderedMap`'s `HashMap`.
+//!
+//! # CRDT-safety and the fallback
 //!
 //! The index is *not* synced — it is a derived materialised view of the
 //! authoritative (synced) entry set, so there is no extra merge path: order is a
 //! pure function of `K: Ord`, and each node rebuilds its own index from the
 //! entries it has. Adaptors that don't back an ordered keyspace (e.g.
 //! `PrivateStorage`) transparently fall back to an **in-memory sort** of the
-//! entries on each ordered read — correct, just `O(n log n)` instead of a seek.
+//! entries on each ordered read — correct, just `O(n log n)` instead of a seek
+//! (so under private storage `SortedMap` has no speed advantage).
 
 use core::borrow::Borrow;
 use core::fmt;
