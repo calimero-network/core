@@ -351,11 +351,11 @@ fn index_key(collection: Id, order_key: &[u8]) -> Vec<u8> {
 /// a longer all-`0xFF` key, which still bounds the scan.
 fn prefix_upper_bound(prefix: &[u8]) -> Vec<u8> {
     let mut end = prefix.to_vec();
-    while let Some(&last) = end.last() {
-        if last == 0xFF {
+    while let Some(last) = end.last_mut() {
+        if *last == 0xFF {
             let _ = end.pop();
         } else {
-            *end.last_mut().expect("non-empty") += 1;
+            *last += 1;
             return end;
         }
     }
@@ -548,7 +548,12 @@ pub mod mocked {
                 bytes[i] = 0;
             } else {
                 bytes[i] += 1;
-                let arr: [u8; 32] = bytes.try_into().expect("32-byte id");
+                // `bytes` started as a 32-byte id and is only mutated in place,
+                // so the length is invariably 32; fall back to `Unbounded` rather
+                // than panic if that ever fails to hold.
+                let Ok(arr) = <[u8; 32]>::try_from(bytes) else {
+                    return Bound::Unbounded;
+                };
                 return Bound::Excluded((scope, Id::new(arr), Vec::new()));
             }
         }
