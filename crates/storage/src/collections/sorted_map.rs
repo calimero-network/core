@@ -8,19 +8,40 @@
 //! layout. Nothing extra is synced.
 //!
 //! What it adds is an **ordered view**. Because entry ids are
-//! `SHA256(parent ‖ key)`, entity-id order ≠ key order, and the underlying
-//! store cannot seek by key (see core#2559). `SortedMap` therefore materialises
-//! the key order *in memory* on each ordered read: it reads the entries once and
-//! sorts them by `K: Ord`. The order is a pure function of the key set, so every
-//! replica derives the same order with **zero extra merge logic** — that is what
-//! makes the ordering CRDT-safe.
+//! `SHA256(parent ‖ key)`, entity-id order ≠ key order, and the entity store
+//! cannot seek by key (see core#2559). `SortedMap` solves this with a
+//! **node-local, derived, non-synced ordered index** — a database-style
+//! secondary index keyed by `collection ‖ order_key` (unhashed, so the backend's
+//! byte order is the logical key order) in a dedicated storage column.
 //!
-//! This deliberately does not pretend to do sub-linear disk seeks (impossible
-//! while keys are hashed). Its value is ergonomic: it encapsulates and amortises
-//! the `keys.sort()` dance apps used to write by hand, and exposes
-//! [`range`](SortedMap::range), [`prefix`](SortedMap::prefix),
-//! [`page`](SortedMap::page) and sorted [`entries`](SortedMap::entries) /
-//! [`keys`](SortedMap::keys) / [`values`](SortedMap::values) directly.
+//! ## Performance
+//!
+//! With an index-backing adaptor (`MainStorage` on a node), the index is
+//! maintained incrementally on `insert`/`remove`/`clear` and validated by a
+//! `full_hash` marker:
+//!
+//! - [`range`](SortedMap::range) / [`prefix`](SortedMap::prefix) — `O(log n + k)`
+//!   (native seek; only the `k` matching values are loaded).
+//! - [`page`](SortedMap::page) — `O(limit)`.
+//! - [`first`](SortedMap::first) — `O(log n)` (seek to smallest);
+//!   [`last`](SortedMap::last) — forward-skip (loads only the last value; a
+//!   reverse seek is a future optimisation).
+//! - [`entries`](SortedMap::entries) / [`keys`](SortedMap::keys) /
+//!   [`values`](SortedMap::values) — `O(n)` (they return everything).
+//!
+//! Local writes keep the index warm, so a read right after a write is still a
+//! seek. Only a **remote sync** (which mutates entries host-side without going
+//! through `insert`) leaves the index stale; the next ordered read notices the
+//! marker mismatch and rebuilds once (`O(n)`), then resumes seeking.
+//!
+//! ## CRDT-safety and the fallback
+//!
+//! The index is *not* synced — it is a derived materialised view of the
+//! authoritative (synced) entry set, so there is no extra merge path: order is a
+//! pure function of `K: Ord`, and each node rebuilds its own index from the
+//! entries it has. Adaptors that don't back an ordered keyspace (e.g.
+//! `PrivateStorage`) transparently fall back to an **in-memory sort** of the
+//! entries on each ordered read — correct, just `O(n log n)` instead of a seek.
 
 use core::borrow::Borrow;
 use core::fmt;
@@ -728,25 +749,59 @@ where
 
     /// The entry with the smallest key, if any.
     ///
-    /// A single O(n) min-pass — it does **not** sort the whole map.
+    /// Index-backed: a seek to the first key, `O(log n)`. Falls back to a single
+    /// `O(n)` min-pass when the adaptor doesn't back the index.
     ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn first(&self) -> Result<Option<(K, V)>, StoreError> {
+    pub fn first(&self) -> Result<Option<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        if self.ensure_index()? {
+            let hits = S::index_range(
+                self.inner.id(),
+                Bound::Unbounded,
+                Bound::Unbounded,
+                0,
+                Some(1),
+            );
+            return Ok(self.resolve_hits(hits)?.into_iter().next());
+        }
         Ok(self.iter_unordered()?.min_by(|(a, _), (b, _)| a.cmp(b)))
     }
 
     /// The entry with the largest key, if any.
     ///
-    /// A single O(n) max-pass — it does **not** sort the whole map.
+    /// Index-backed via a forward skip to the last entry (only that one value is
+    /// loaded); falls back to a single `O(n)` max-pass otherwise. (A reverse
+    /// seek would make this `O(log n)` — a future optimisation; the forward skip
+    /// still avoids loading every value.)
     ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
-    pub fn last(&self) -> Result<Option<(K, V)>, StoreError> {
+    pub fn last(&self) -> Result<Option<(K, V)>, StoreError>
+    where
+        K: AsRef<[u8]>,
+    {
+        if self.ensure_index()? {
+            let n = self.inner.len()?;
+            let Some(offset) = n.checked_sub(1) else {
+                return Ok(None);
+            };
+            let hits = S::index_range(
+                self.inner.id(),
+                Bound::Unbounded,
+                Bound::Unbounded,
+                offset,
+                Some(1),
+            );
+            return Ok(self.resolve_hits(hits)?.into_iter().next());
+        }
         Ok(self.iter_unordered()?.max_by(|(a, _), (b, _)| a.cmp(b)))
     }
 }

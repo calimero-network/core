@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`SortedMap<K, V>` collection** — a key-ordered map for range queries, prefix scans, and pagination ([#2559])
+  - `range(a..b)`, `prefix("user:")`, `page(offset, limit)`, ascending `entries`/`keys`/`values`, and `first`/`last`
+  - Backed by a node-local, non-synced ordered secondary index (RocksDB `SortedIndex` column): `range`/`prefix` are `O(log n + k)` seeks and `page` is `O(limit)`. Adaptors without an ordered keyspace (e.g. `PrivateStorage`) transparently fall back to an in-memory sort
+  - Same add-wins CRDT merge as `UnorderedMap` — the index is a derived view of the synced entry set, not synced itself, so it adds no merge path and self-heals after a sync via a `full_hash` validity marker
+  - New `apps/sorted-kv-store` example; `SortedMap` ABI marker added to the conformance apps
+
 ## [0.10.1-rc.10] - 2026-03-30
 
 ### Added
