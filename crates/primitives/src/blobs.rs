@@ -89,3 +89,44 @@ pub struct BlobMetadata {
     pub hash: [u8; 32],
     pub mime_type: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_blob_id_roundtrip() {
+        let blob_id = BlobId::from([1; DIGEST_SIZE]);
+        let encoded = blob_id.to_string();
+        // Same base58 vector as the other 32-byte Hash newtypes for `[1; 32]`.
+        let expected = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi";
+        assert_eq!(encoded, expected);
+        assert_eq!(BlobId::from_str(&encoded).unwrap(), blob_id);
+    }
+
+    #[test]
+    fn test_blob_id_digest_matches_source_bytes() {
+        let bytes = [7; DIGEST_SIZE];
+        let blob_id = BlobId::from(bytes);
+        assert_eq!(blob_id.digest(), &bytes);
+        assert_eq!(blob_id.as_ref(), &bytes);
+    }
+
+    #[test]
+    fn test_blob_id_invalid_base58() {
+        let result = BlobId::from_str("Invalid!");
+        assert!(matches!(
+            result,
+            Err(InvalidBlobId(HashError::DecodeError(_)))
+        ));
+    }
+
+    #[test]
+    fn test_blob_id_json_is_base58_string() {
+        let blob_id = BlobId::from([1; DIGEST_SIZE]);
+        let json = serde_json::to_string(&blob_id).unwrap();
+        assert_eq!(json, "\"4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi\"");
+        let parsed: BlobId = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, blob_id);
+    }
+}

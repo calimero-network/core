@@ -23,6 +23,8 @@ pub mod private_storage;
 mod returns;
 pub mod state;
 pub mod types;
+pub use calimero_primitives::blobs::BlobId;
+pub use calimero_primitives::context::ContextId;
 pub use calimero_primitives::identity::PublicKey;
 pub use state::read_raw;
 

@@ -1,7 +1,7 @@
 #![allow(clippy::len_without_is_empty)]
 
-use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::{app, ContextId};
 use calimero_storage::collections::Counter;
 
 #[app::state(emits = Event)]
@@ -15,10 +15,10 @@ pub struct XCallExample {
 #[app::event]
 pub enum Event {
     PingSent {
-        to_context: [u8; 32],
+        to_context: ContextId,
     },
     PongReceived {
-        from_context: [u8; 32],
+        from_context: ContextId,
         counter: u64,
     },
 }
@@ -43,20 +43,13 @@ impl XCallExample {
     ///   "target_context": "AmxF5dVaqTTAWNbv4uDJhxdoQTEY1wfv6Ld8Gjbu6Zdk"
     /// }
     /// ```
-    pub fn ping(&mut self, target_context: String) -> app::Result<()> {
-        // Decode the base58 context ID to bytes
-        let target_context_bytes: [u8; 32] = bs58::decode(&target_context)
-            .into_vec()
-            .map_err(|e| {
-                calimero_sdk::types::Error::msg(format!("Failed to decode context ID: {e}"))
-            })?
-            .try_into()
-            .map_err(|_| calimero_sdk::types::Error::msg("Context ID must be exactly 32 bytes"))?;
-
-        let current_context = calimero_sdk::env::context_id();
+    pub fn ping(&mut self, target_context: ContextId) -> app::Result<()> {
+        // `target_context` arrives as a base58 string and is parsed into a
+        // `ContextId` by the SDK — no hand-rolled bs58 decoding needed.
+        let current_context = ContextId::from(calimero_sdk::env::context_id());
 
         app::log!(
-            "Sending ping from context {:?} to context {}",
+            "Sending ping from context {} to context {}",
             current_context,
             target_context
         );
@@ -65,7 +58,7 @@ impl XCallExample {
         #[derive(calimero_sdk::serde::Serialize)]
         #[serde(crate = "calimero_sdk::serde")]
         struct PongParams {
-            from_context: [u8; 32],
+            from_context: ContextId,
         }
 
         let params = calimero_sdk::serde_json::to_vec(&PongParams {
@@ -73,11 +66,11 @@ impl XCallExample {
         })?;
 
         // Make the cross-context call to the pong method
-        calimero_sdk::env::xcall(&target_context_bytes, "pong", &params);
+        calimero_sdk::env::xcall(target_context.as_ref(), "pong", &params);
 
         // Emit an event to notify that a ping was sent
         app::emit!(Event::PingSent {
-            to_context: target_context_bytes,
+            to_context: target_context,
         });
 
         app::log!("Ping sent successfully");
@@ -91,12 +84,12 @@ impl XCallExample {
     /// It increments the counter when a pong is received.
     ///
     /// # Arguments
-    /// * `from_context` - The 32-byte ID of the context sending the pong
-    pub fn pong(&mut self, from_context: [u8; 32]) -> app::Result<()> {
-        let current_context = calimero_sdk::env::context_id();
+    /// * `from_context` - The ID of the context sending the pong (base58 string over the wire)
+    pub fn pong(&mut self, from_context: ContextId) -> app::Result<()> {
+        let current_context = ContextId::from(calimero_sdk::env::context_id());
 
         app::log!(
-            "Context {:?} received pong from {:?}",
+            "Context {} received pong from {}",
             current_context,
             from_context
         );

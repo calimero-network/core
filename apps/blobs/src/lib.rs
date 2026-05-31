@@ -8,63 +8,16 @@
 
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::{app, env};
+use calimero_sdk::{app, env, BlobId, PublicKey};
 use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap};
 
 // === CONSTANTS ===
-
-/// Size of blob ID in bytes (32 bytes = 256 bits)
-const BLOB_ID_SIZE: usize = 32;
-
-/// Maximum size of base58-encoded blob ID string
-/// Base58 encoding of 32 bytes requires max 44 characters
-const BASE58_ENCODED_MAX_SIZE: usize = 44;
 
 /// Bytes per kilobyte
 const BYTES_PER_KB: f64 = 1024.0;
 
 /// Bytes per megabyte
 const BYTES_PER_MB: f64 = BYTES_PER_KB * 1024.0;
-
-// === BLOB ID ENCODING HELPERS ===
-
-/// Convert blob ID bytes to base58 string
-fn encode_blob_id_base58(blob_id_bytes: &[u8; BLOB_ID_SIZE]) -> String {
-    let mut buf = [0u8; BASE58_ENCODED_MAX_SIZE];
-    let len = bs58::encode(blob_id_bytes).onto(&mut buf[..]).unwrap();
-    std::str::from_utf8(&buf[..len]).unwrap().to_owned()
-}
-
-/// Parse base58 string to blob ID bytes
-fn parse_blob_id_base58(blob_id_str: &str) -> Result<[u8; BLOB_ID_SIZE], String> {
-    match bs58::decode(blob_id_str).into_vec() {
-        Ok(bytes) => {
-            if bytes.len() != BLOB_ID_SIZE {
-                return Err(format!(
-                    "Invalid blob ID length: expected {} bytes, got {}",
-                    BLOB_ID_SIZE,
-                    bytes.len()
-                ));
-            }
-            let mut blob_id = [0u8; BLOB_ID_SIZE];
-            blob_id.copy_from_slice(&bytes);
-            Ok(blob_id)
-        }
-        Err(e) => Err(format!("Failed to decode blob ID '{blob_id_str}': {e}")),
-    }
-}
-
-/// Serialize blob ID as base58 string for JSON responses
-fn serialize_blob_id_bytes<S>(
-    blob_id_bytes: &[u8; BLOB_ID_SIZE],
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: calimero_sdk::serde::Serializer,
-{
-    let safe_string = encode_blob_id_base58(blob_id_bytes);
-    serializer.serialize_str(&safe_string)
-}
 
 // === DATA STRUCTURES ===
 
@@ -79,11 +32,10 @@ pub struct FileRecord {
     /// Human-readable file name (e.g., "document.pdf", "image.png")
     pub name: String,
 
-    /// Blob ID as 32-byte array
-    /// Serialized as base58 string in JSON (e.g., "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty")
-    /// Note: Must use literal `32` instead of `BLOB_ID_SIZE` const for ABI generator compatibility
-    #[serde(serialize_with = "serialize_blob_id_bytes")]
-    pub blob_id: [u8; 32],
+    /// Blob ID. Serializes to/from a base58 string in JSON (e.g.
+    /// "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty") via the SDK's
+    /// `BlobId` newtype, so no per-app encoding helper is needed.
+    pub blob_id: BlobId,
 
     /// File size in bytes
     pub size: u64,
@@ -170,8 +122,9 @@ impl FileShareState {
     /// Initialize a new file sharing context
     #[app::init]
     pub fn init() -> FileShareState {
-        let owner_id = env::executor_id();
-        let owner = encode_blob_id_base58(&owner_id);
+        // `executor_id()` is the caller's public key, so render it with the
+        // SDK's `PublicKey` newtype rather than the (now-removed) blob helper.
+        let owner = PublicKey::from(env::executor_id()).to_string();
 
         app::log!("Initializing file sharing app for owner: {}", owner);
 
@@ -190,22 +143,20 @@ impl FileShareState {
     ///
     /// # Arguments
     /// * `name` - Human-readable file name
-    /// * `blob_id_str` - Base58-encoded blob ID (obtained from blob client)
+    /// * `blob_id` - Blob ID (base58 string over the wire; obtained from the blob client)
     /// * `size` - File size in bytes
     /// * `mime_type` - MIME type (e.g., "application/pdf", "image/png")
     ///
     /// # Returns
     /// * `Ok(String)` - The generated file ID (e.g., "file_0", "file_1")
-    /// * `Err(String)` - Error message if blob ID is invalid or storage operation fails
+    /// * `Err(String)` - Error message if storage operation fails
     pub fn upload_file(
         &mut self,
         name: String,
-        blob_id_str: String,
+        blob_id: BlobId,
         size: u64,
         mime_type: String,
     ) -> Result<String, String> {
-        let blob_id = parse_blob_id_base58(&blob_id_str)?;
-
         // Counter is a monotonic CRDT — it converges across replicas (taking
         // the per-source max on merge). Using its current value as the file ID
         // means concurrent uploads on different nodes can still pick the same
@@ -219,17 +170,16 @@ impl FileShareState {
             .increment()
             .map_err(|e| format!("Failed to increment file counter: {e:?}"))?;
 
-        let uploader_id = env::executor_id();
-        let uploader = encode_blob_id_base58(&uploader_id);
+        let uploader = PublicKey::from(env::executor_id()).to_string();
         let timestamp = env::time_now();
 
         // BLOB API: Announce blob to network for peer discovery
         // This makes the blob discoverable by other nodes in this context
         let current_context = env::context_id();
-        if env::blob_announce_to_context(&blob_id, &current_context) {
-            app::log!("Announced blob {} to network", blob_id_str);
+        if env::blob_announce_to_context(blob_id.as_ref(), &current_context) {
+            app::log!("Announced blob {} to network", blob_id);
         } else {
-            app::log!("Warning: Failed to announce blob {}", blob_id_str);
+            app::log!("Warning: Failed to announce blob {}", blob_id);
         }
 
         // Create the file record
@@ -344,11 +294,12 @@ impl FileShareState {
     /// * `file_id` - The ID of the file (e.g., "file_0")
     ///
     /// # Returns
-    /// * `Ok(String)` - Base58-encoded blob ID (e.g., "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty")
+    /// * `Ok(BlobId)` - The blob ID (base58 string over the wire, e.g.
+    ///   "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty")
     /// * `Err(String)` - Error message if file not found
-    pub fn get_blob_id_b58(&self, file_id: String) -> Result<String, String> {
+    pub fn get_blob_id_b58(&self, file_id: String) -> Result<BlobId, String> {
         let file_record = self.get_file(file_id)?;
-        Ok(encode_blob_id_base58(&file_record.blob_id))
+        Ok(file_record.blob_id)
     }
 
     /// Search files by name (case-insensitive substring match)

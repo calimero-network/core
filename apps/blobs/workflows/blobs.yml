@@ -46,7 +46,7 @@ steps:
     method: upload_file
     args:
       name: screenshot.png
-      blob_id_str: "{{png_blob_id}}"
+      blob_id: "{{png_blob_id}}"
       size: "{{png_blob_size}}"
       mime_type: image/png
     outputs:
@@ -73,7 +73,7 @@ steps:
     method: upload_file
     args:
       name: readme.txt
-      blob_id_str: "{{txt_blob_id}}"
+      blob_id: "{{txt_blob_id}}"
       size: "{{txt_blob_size}}"
       mime_type: text/plain
     outputs:

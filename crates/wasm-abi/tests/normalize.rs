@@ -469,3 +469,42 @@ fn test_authored_collections_preserve_crdt_type() {
         other => panic!("expected Collection variant, got {other:?}"),
     }
 }
+
+#[test]
+fn test_sdk_identity_newtypes_normalize_to_fixed_bytes() {
+    // `BlobId` / `ContextId` / `ApplicationId` are SDK identity newtypes from
+    // `calimero_primitives`, exposed to apps via `calimero_sdk`. They are
+    // defined outside the app's own source, so `MockResolver` (which knows no
+    // local types) returns `None` for them — they only normalize because
+    // `normalize_scalar_type` has an explicit arm. This locks in that they
+    // render as a fixed 32-byte value, matching the long-standing `PublicKey`
+    // behaviour, so apps can take them directly as method params/returns.
+    let resolver = MockResolver::new();
+    let expected = TypeRef::bytes_with_size(32, None);
+
+    assert_eq!(
+        normalize_type(&parse_type("PublicKey"), true, &resolver).unwrap(),
+        expected
+    );
+    assert_eq!(
+        normalize_type(&parse_type("BlobId"), true, &resolver).unwrap(),
+        expected
+    );
+    assert_eq!(
+        normalize_type(&parse_type("ContextId"), true, &resolver).unwrap(),
+        expected
+    );
+    assert_eq!(
+        normalize_type(&parse_type("ApplicationId"), true, &resolver).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn test_unregistered_external_type_still_errors() {
+    // Guards against the identity arm being widened into a catch-all: a
+    // genuinely unknown, unregistered type must still fail to normalize.
+    let resolver = MockResolver::new();
+    let result = normalize_type(&parse_type("TotallyUnknownExternalType"), true, &resolver);
+    assert!(matches!(result, Err(NormalizeError::TypePathError(_))));
+}

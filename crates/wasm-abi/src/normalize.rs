@@ -506,6 +506,12 @@ fn normalize_scalar_type(
             // PublicKey is [u8; 32], so it's bytes with a fixed size
             Ok(TypeRef::bytes_with_size(32, None))
         }
+        // SDK identity newtypes (`calimero_primitives`). Each wraps a 32-byte
+        // Hash and is exposed to apps via `calimero_sdk::{BlobId, ContextId,
+        // ApplicationId}`. They live outside the app's own source, so the
+        // `resolve_local` fallback below can't see them — describe them here
+        // with the same fixed-size-bytes shape as `PublicKey`.
+        "BlobId" | "ContextId" | "ApplicationId" => Ok(TypeRef::bytes_with_size(32, None)),
         // Storage CRDT wrappers – treat as opaque blobs until ABI definitions exist.
         "Counter" => Ok(TypeRef::Collection {
             collection: CollectionType::Record {
