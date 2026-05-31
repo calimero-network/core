@@ -73,14 +73,20 @@ impl Store {
         self.db.delete(col, Slice::from(key))
     }
 
-    /// Collect `(key, value)` pairs in `col` over `[lo, hi)`, ascending by key
-    /// (the backend's native order). One forward seek + walk.
+    /// Collect up to `max` `(key, value)` pairs in `col` over `[lo, hi)`,
+    /// ascending by key (the backend's native order). One forward seek + walk,
+    /// stopping after `max` items (`None` = unbounded) so a bounded query
+    /// (`page`/`range` with a limit) walks `O(max)` rather than the whole range.
     pub fn raw_scan(
         &self,
         col: Column,
         lo: &[u8],
         hi: &[u8],
+        max: Option<usize>,
     ) -> EyreResult<Vec<(Vec<u8>, Vec<u8>)>> {
+        if max == Some(0) {
+            return Ok(Vec::new());
+        }
         let mut iter = self.db.iter(col)?;
         let mut out = Vec::new();
         // Copy the key bytes out of each borrow before reading the value /
@@ -92,6 +98,9 @@ impl Store {
             }
             let value = iter.read()?.as_ref().to_vec();
             out.push((key, value));
+            if max.is_some_and(|m| out.len() >= m) {
+                break;
+            }
             pos = iter.next()?.map(|k| k.as_ref().to_vec());
         }
         Ok(out)

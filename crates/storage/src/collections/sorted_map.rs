@@ -59,7 +59,7 @@ use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::error::StorageError;
 use crate::index::Index;
 use crate::store::{Key, MainStorage};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A map collection that keeps its entries ordered by key, enabling range and
 /// prefix queries plus pagination.
@@ -517,18 +517,43 @@ where
             == Some(&self.current_full_hash()[..])
     }
 
-    /// Rebuild the ordered index for this collection from the authoritative
-    /// entry set (one `O(n)` scan), then stamp the validity marker. Used when a
-    /// remote sync (or an untracked local edit) left the index stale.
+    /// Reconcile the ordered index with the authoritative entry set, then stamp
+    /// the validity marker. Used when a remote sync (or an untracked local edit)
+    /// left the index stale.
+    ///
+    /// Rather than clear-and-rebuild, this diffs the desired key set (from the
+    /// entries) against the current index and writes only the difference — so a
+    /// sync that touched a few keys in a large map costs `O(changed)` index
+    /// writes, not `O(n)`. (Reading the entries to learn their keys is still
+    /// `O(n)`: keys are co-stored with values under hashed ids, so there's no
+    /// cheaper way to discover them — the irreducible floor from core#2559.)
     fn rebuild_index(&self) -> Result<(), StoreError>
     where
         K: AsRef<[u8]>,
     {
         let collection = self.inner.id();
-        S::index_clear(collection);
-        for (k, _v) in self.iter_unordered()? {
-            S::index_put(collection, k.as_ref(), compute_id(collection, k.as_ref()));
+
+        // Desired keys = the authoritative entry set (the O(n) read floor).
+        let desired: BTreeSet<Vec<u8>> = self
+            .iter_unordered()?
+            .map(|(k, _v)| k.as_ref().to_vec())
+            .collect();
+
+        // Current index keys.
+        let existing: BTreeSet<Vec<u8>> =
+            S::index_range(collection, Bound::Unbounded, Bound::Unbounded, 0, None)
+                .into_iter()
+                .map(|(order_key, _id)| order_key)
+                .collect();
+
+        // Drop stale keys, add missing ones — only the diff is written.
+        for order_key in existing.difference(&desired) {
+            S::index_remove(collection, order_key);
         }
+        for order_key in desired.difference(&existing) {
+            S::index_put(collection, order_key, compute_id(collection, order_key));
+        }
+
         self.stamp_index_marker();
         Ok(())
     }

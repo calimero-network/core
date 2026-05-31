@@ -200,7 +200,8 @@ impl Storage for ContextStorage {
         let lo = self.index_key(prefix);
         let hi = prefix_upper_bound(&lo);
         let store = self.borrow_index_store();
-        if let Ok(pairs) = store.raw_scan(Column::SortedIndex, &lo, &hi) {
+        // Unbounded: we need every key under the prefix to delete it.
+        if let Ok(pairs) = store.raw_scan(Column::SortedIndex, &lo, &hi, None) {
             for (k, _) in pairs {
                 let _ = store.raw_delete(Column::SortedIndex, &k);
             }
@@ -216,9 +217,12 @@ impl Storage for ContextStorage {
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
         let full_lo = self.index_key(lo);
         let full_hi = self.index_key(hi);
+        // Stop the seek after `offset + limit` items so a bounded read walks
+        // O(offset + limit), not the whole range.
+        let max = limit.map(|n| offset.saturating_add(n));
         let pairs = self
             .borrow_index_store()
-            .raw_scan(Column::SortedIndex, &full_lo, &full_hi)
+            .raw_scan(Column::SortedIndex, &full_lo, &full_hi, max)
             .unwrap_or_default();
         // Strip the 32-byte context prefix to hand back the adaptor-level key.
         let stripped = pairs
