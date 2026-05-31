@@ -362,3 +362,55 @@ impl FileShareState {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    // Base58 of 32 zero bytes — a valid blob id for metadata-only tests.
+    // An arbitrary blob id for metadata-only tests (no bytes needed).
+    fn blob_id() -> BlobId {
+        BlobId::from([7u8; 32])
+    }
+
+    #[test]
+    fn upload_list_and_delete() {
+        let mut app = TestHost::new(FileShareState::init);
+
+        let file_id = app
+            .call(|s| s.upload_file("notes.txt".into(), blob_id(), 12, "text/plain".into()))
+            .unwrap();
+
+        assert_eq!(app.view(|s| s.list_files()).unwrap().len(), 1);
+        assert_eq!(app.view(|s| s.get_total_files_size()).unwrap(), 12);
+        assert_eq!(
+            app.view(|s| s.get_blob_id_b58(file_id.clone())).unwrap(),
+            blob_id()
+        );
+
+        app.call(|s| s.delete_file(file_id.clone())).unwrap();
+        assert_eq!(app.view(|s| s.list_files()).unwrap().len(), 0);
+        assert_eq!(app.view(|s| s.get_total_files_size()).unwrap(), 0);
+    }
+
+    #[test]
+    fn search_matches_by_name() {
+        let mut app = TestHost::new(FileShareState::init);
+
+        app.call(|s| s.upload_file("report.pdf".into(), blob_id(), 5, "application/pdf".into()))
+            .unwrap();
+        app.call(|s| s.upload_file("photo.png".into(), blob_id(), 7, "image/png".into()))
+            .unwrap();
+
+        assert_eq!(
+            app.view(|s| s.search_files("report".into())).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            app.view(|s| s.search_files("nope".into())).unwrap().len(),
+            0
+        );
+    }
+}

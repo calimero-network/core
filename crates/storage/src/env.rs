@@ -328,6 +328,18 @@ pub fn reset_for_testing() {
     imp::reset_for_testing();
 }
 
+/// Resets all native (mocked) host state: in-memory storage, root hash,
+/// HLC, and executor identity.
+///
+/// This is the public entry point used by the in-process test harness
+/// (`calimero_sdk::testing::TestHost`) to isolate state between harness
+/// instances created on the same thread. Native-only: the WASM host owns
+/// real storage and there is nothing to reset there.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn reset_environment() {
+    mocked::reset_environment();
+}
+
 /// Set executor ID. `pub(crate)` because the only sanctioned way to mutate
 /// executor identity from outside the crate is the scoped [`with_executor_id`]
 /// guard below — that guard guarantees restoration on panic, whereas a raw
@@ -821,8 +833,7 @@ mod mocked {
     ///
     /// Clears the thread-local ROOT_HASH, HLC, and STORAGE, allowing multiple tests
     /// to run in sequence without contaminating each other.
-    #[cfg(test)]
-    pub(super) fn reset_for_testing() {
+    pub(super) fn reset_environment() {
         ROOT_HASH.with(|rh| {
             *rh.borrow_mut() = None;
         });
@@ -837,5 +848,11 @@ mod mocked {
         });
         // Clear the native ordered-index mock too.
         INDEX.with(|index| index.borrow_mut().clear());
+    }
+
+    /// Resets the environment state for testing (legacy `#[cfg(test)]` alias).
+    #[cfg(test)]
+    pub(super) fn reset_for_testing() {
+        reset_environment();
     }
 }

@@ -135,3 +135,47 @@ impl KvStoreInit {
         self.items.clear().map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    /// Number of entries `#[app::init]` seeds into the store.
+    const SEEDED: usize = 3;
+
+    #[test]
+    fn init_seeds_default_items() {
+        let app = TestHost::new(KvStoreInit::init);
+
+        assert_eq!(app.view(|s| s.len()).unwrap(), SEEDED);
+        assert_eq!(
+            app.view(|s| s.get("welcome")).unwrap(),
+            Some("Welcome to KvStoreInit!".to_owned())
+        );
+        // The init body logs through `app::log!`, captured by the harness.
+        assert!(app.logs().iter().any(|line| line.contains("Initializing")));
+    }
+
+    #[test]
+    fn set_get_remove_on_top_of_seed() {
+        let mut app = TestHost::new(KvStoreInit::init);
+
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), Some("v".to_owned()));
+        assert_eq!(app.view(|s| s.len()).unwrap(), SEEDED + 1);
+
+        assert_eq!(app.call(|s| s.remove("k")).unwrap(), Some("v".to_owned()));
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), None);
+        assert_eq!(app.view(|s| s.len()).unwrap(), SEEDED);
+    }
+
+    #[test]
+    fn clear_removes_everything() {
+        let mut app = TestHost::new(KvStoreInit::init);
+
+        app.call(|s| s.clear()).unwrap();
+        assert_eq!(app.view(|s| s.len()).unwrap(), 0);
+    }
+}

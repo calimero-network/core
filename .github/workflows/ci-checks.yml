@@ -10,6 +10,7 @@ on:
       - "crates/**"
       - "apps/**"
       - "e2e-tests/**"
+      - "apps/**"
 
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

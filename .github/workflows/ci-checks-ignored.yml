@@ -10,6 +10,7 @@ on:
       - "crates/**"
       - "apps/**"
       - "e2e-tests/**"
+      - "apps/**"
 
 jobs:
   rust:

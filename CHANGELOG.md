@@ -10,6 +10,7 @@
   - Same add-wins CRDT merge as `UnorderedMap` — the index is a derived view of the synced entry set, not synced itself, so it adds no merge path and self-heals after a sync via a `full_hash` validity marker
   - New `apps/sorted-kv-store` example; `SortedMap` ABI marker added to the conformance apps
 - **`SortedSet<T>` collection** — the `BTreeSet` to `UnorderedSet`'s `HashSet`: an ordered set with `range`/`prefix`/`page`/`first`/`last`, same add-wins union merge and the same on-disk ordered index as `SortedMap` ([#2559])
+- **In-process unit-test harness (`calimero_sdk::testing::TestHost`)** - Exercise app logic as ordinary Rust under `cargo test` — no WASM build, no node, no merobox. `TestHost::new(MyApp::init)` runs methods via `call`/`view` against an in-memory mock host that records `app::emit!` events and `app::log!` lines and serves a configurable executor identity (`call_as` for multi-author CRDT tests). The `#[app::state]` macro generates the storage bridge; apps opt in with `calimero-storage`'s `testing` feature as a dev-dependency. All core example apps now ship `#[cfg(test)]` tests using it ([#2551])
 
 ## [0.10.1-rc.10] - 2026-03-30
 

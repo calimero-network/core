@@ -263,3 +263,45 @@ impl NestedCrdtTest {
         Ok(count as u64)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn counter_increment_and_view() {
+        let mut app = TestHost::new(NestedCrdtTest::init);
+
+        assert_eq!(app.call(|s| s.increment_counter("a".into())).unwrap(), 1);
+        assert_eq!(app.call(|s| s.increment_counter("a".into())).unwrap(), 2);
+
+        assert_eq!(app.view(|s| s.get_counter("a".into())).unwrap(), 2);
+    }
+
+    #[test]
+    fn emits_event_on_increment() {
+        let mut app = TestHost::new(NestedCrdtTest::init);
+
+        app.call(|s| s.increment_counter("x".into())).unwrap();
+
+        let events = app.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "CounterIncremented");
+    }
+
+    #[test]
+    fn counter_sums_across_authors() {
+        let mut app = TestHost::new(NestedCrdtTest::init);
+
+        // The G-counter tracks a per-author tally; distinct executors each
+        // contribute, and `value()` sums them.
+        app.call_as([1; 32], |s| s.increment_counter("a".into()))
+            .unwrap();
+        app.call_as([2; 32], |s| s.increment_counter("a".into()))
+            .unwrap();
+
+        assert_eq!(app.view(|s| s.get_counter("a".into())).unwrap(), 2);
+    }
+}

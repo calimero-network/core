@@ -49,6 +49,13 @@ pub mod registry;
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResult};
 
+// Always-native wrapper for the in-process test harness. Unlike
+// `register_crdt_merge` it isn't gated behind the `testing` feature, so an
+// app's macro-generated `TestState` bridge compiles under `cargo test`
+// regardless of whether that app enabled the feature.
+#[cfg(not(target_arch = "wasm32"))]
+pub use registry::register_crdt_merge_for_test;
+
 #[cfg(any(test, feature = "testing"))]
 pub use registry::clear_merge_registry;
 
