@@ -106,6 +106,62 @@ pub trait StorageAdaptor: 'static {
     fn participates_in_sync() -> bool {
         true
     }
+
+    // === Ordered secondary index (SortedMap, core#2559) ===
+    //
+    // A node-local, derived, NON-synced index keyed by
+    // `collection_id ‖ order_key` (unhashed, so the backend's byte order is
+    // the logical key order). It lets `SortedMap` answer range/prefix/page
+    // queries in `O(log n + k)` instead of scanning + sorting every entry.
+    //
+    // Adaptors that can't provide an ordered keyspace leave these at their
+    // defaults: `index_supported()` stays `false` and `SortedMap` transparently
+    // falls back to its in-memory sort. So this is purely additive — no
+    // existing adaptor behaviour changes.
+
+    /// Whether this adaptor backs the ordered secondary index. When `false`
+    /// (the default), `SortedMap` ignores the index methods and sorts in
+    /// memory. `MainStorage` (RocksDB) and the test mocks override to `true`.
+    fn index_supported() -> bool {
+        false
+    }
+
+    /// Insert/update `collection ‖ order_key -> entry` in the ordered index.
+    /// Idempotent by `(collection, order_key)`.
+    fn index_put(collection: Id, order_key: &[u8], entry: Id) {
+        let _ = (collection, order_key, entry);
+    }
+
+    /// Remove `collection ‖ order_key` from the ordered index. No-op if absent.
+    fn index_remove(collection: Id, order_key: &[u8]) {
+        let _ = (collection, order_key);
+    }
+
+    /// Return `(order_key, entry_id)` pairs for `collection` whose order key
+    /// falls within `[start, end)` (per the `Bound`s), ascending, after
+    /// skipping `offset` and capped at `limit` (`None` = unbounded).
+    fn index_range(
+        collection: Id,
+        start: core::ops::Bound<Vec<u8>>,
+        end: core::ops::Bound<Vec<u8>>,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Vec<(Vec<u8>, Id)> {
+        let _ = (collection, start, end, offset, limit);
+        Vec::new()
+    }
+
+    /// Return `(order_key, entry_id)` pairs for `collection` whose order key
+    /// starts with `prefix`, ascending, after `offset`, capped at `limit`.
+    fn index_prefix(
+        collection: Id,
+        prefix: &[u8],
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Vec<(Vec<u8>, Id)> {
+        let _ = (collection, prefix, offset, limit);
+        Vec::new()
+    }
 }
 
 /// Storage iteration support for GC and snapshots.
@@ -281,6 +337,7 @@ pub mod mocked {
     use std::collections::BTreeMap;
 
     use super::{IterableStorage, Key, StorageAdaptor};
+    use crate::address::Id;
 
     /// The scope of the storage system, which allows for multiple storage
     /// systems to be used in parallel.
@@ -288,6 +345,31 @@ pub mod mocked {
 
     thread_local! {
         pub(crate) static STORAGE: RefCell<BTreeMap<(Scope, Key), Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
+        /// Ordered secondary index for the mock: `(scope, collection, order_key) -> entry_id`.
+        /// `BTreeMap` iterates in key order, so within a `(scope, collection)`
+        /// the entries come back sorted by `order_key` — mirroring the RocksDB
+        /// `Column::SortedIndex` behaviour the real adaptor will provide.
+        static INDEX: RefCell<BTreeMap<(Scope, Id, Vec<u8>), Id>> = const { RefCell::new(BTreeMap::new()) };
+    }
+
+    /// `true` if `key` satisfies the `[start, end)` bounds.
+    fn within(
+        key: &[u8],
+        start: &core::ops::Bound<Vec<u8>>,
+        end: &core::ops::Bound<Vec<u8>>,
+    ) -> bool {
+        use core::ops::Bound::{Excluded, Included, Unbounded};
+        let lo = match start {
+            Included(s) => key >= s.as_slice(),
+            Excluded(s) => key > s.as_slice(),
+            Unbounded => true,
+        };
+        let hi = match end {
+            Included(e) => key <= e.as_slice(),
+            Excluded(e) => key < e.as_slice(),
+            Unbounded => true,
+        };
+        lo && hi
     }
 
     /// In-memory mocked storage backend, scoped by a const generic so
@@ -330,6 +412,73 @@ pub mod mocked {
                     .is_some()
             })
         }
+
+        fn index_supported() -> bool {
+            true
+        }
+
+        fn index_put(collection: Id, order_key: &[u8], entry: Id) {
+            INDEX.with(|index| {
+                let _ = index
+                    .borrow_mut()
+                    .insert((SCOPE, collection, order_key.to_vec()), entry);
+            });
+        }
+
+        fn index_remove(collection: Id, order_key: &[u8]) {
+            INDEX.with(|index| {
+                let _ = index
+                    .borrow_mut()
+                    .remove(&(SCOPE, collection, order_key.to_vec()));
+            });
+        }
+
+        fn index_range(
+            collection: Id,
+            start: core::ops::Bound<Vec<u8>>,
+            end: core::ops::Bound<Vec<u8>>,
+            offset: usize,
+            limit: Option<usize>,
+        ) -> Vec<(Vec<u8>, Id)> {
+            INDEX.with(|index| {
+                // BTreeMap iterates in ascending key order, so filtering the
+                // `(SCOPE, collection)` slice already yields order-key order.
+                let matched: Vec<(Vec<u8>, Id)> = index
+                    .borrow()
+                    .iter()
+                    .filter(|((scope, coll, _), _)| *scope == SCOPE && *coll == collection)
+                    .filter(|((_, _, key), _)| within(key, &start, &end))
+                    .map(|((_, _, key), entry)| (key.clone(), *entry))
+                    .collect();
+                let ordered = matched.into_iter().skip(offset);
+                match limit {
+                    Some(n) => ordered.take(n).collect(),
+                    None => ordered.collect(),
+                }
+            })
+        }
+
+        fn index_prefix(
+            collection: Id,
+            prefix: &[u8],
+            offset: usize,
+            limit: Option<usize>,
+        ) -> Vec<(Vec<u8>, Id)> {
+            INDEX.with(|index| {
+                let matched: Vec<(Vec<u8>, Id)> = index
+                    .borrow()
+                    .iter()
+                    .filter(|((scope, coll, _), _)| *scope == SCOPE && *coll == collection)
+                    .filter(|((_, _, key), _)| key.starts_with(prefix))
+                    .map(|((_, _, key), entry)| (key.clone(), *entry))
+                    .collect();
+                let ordered = matched.into_iter().skip(offset);
+                match limit {
+                    Some(n) => ordered.take(n).collect(),
+                    None => ordered.collect(),
+                }
+            })
+        }
     }
 
     // MockedStorage supports iteration for testing
@@ -344,5 +493,189 @@ pub mod mocked {
                     .collect()
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use core::ops::Bound;
+
+    use super::mocked::MockedStorage;
+    use super::StorageAdaptor;
+    use crate::address::Id;
+
+    // Dedicated mock scope for these tests (within calimero-storage's 0..1_000
+    // band). Each test uses a distinct collection id so the shared thread-local
+    // index never bleeds across tests.
+    type S = MockedStorage<950>;
+
+    fn coll(tag: u8) -> Id {
+        Id::new([tag; 32])
+    }
+
+    fn entry(tag: u8) -> Id {
+        Id::new([0x80 | tag; 32])
+    }
+
+    fn keys(pairs: Vec<(Vec<u8>, Id)>) -> Vec<Vec<u8>> {
+        pairs.into_iter().map(|(k, _)| k).collect()
+    }
+
+    #[test]
+    fn adaptors_advertise_index_support() {
+        // The mock backs the ordered index; the default-trait adaptor does not
+        // (so a SortedMap over it transparently falls back to its in-memory
+        // sort). `MainStorage` gets a real backend in a later stage.
+        assert!(S::index_supported());
+        assert!(!DefaultIndexAdaptor::index_supported());
+    }
+
+    // A bare adaptor that takes every `StorageAdaptor` default — used to pin
+    // that `index_supported()` defaults to `false`.
+    struct DefaultIndexAdaptor;
+    impl StorageAdaptor for DefaultIndexAdaptor {
+        fn storage_read(_: super::Key) -> Option<Vec<u8>> {
+            None
+        }
+        fn storage_remove(_: super::Key) -> bool {
+            false
+        }
+        fn storage_write(_: super::Key, _: &[u8]) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn put_then_range_returns_sorted_pairs() {
+        let c = coll(1);
+        // Insert out of order.
+        S::index_put(c, b"delta", entry(4));
+        S::index_put(c, b"alpha", entry(1));
+        S::index_put(c, b"charlie", entry(3));
+        S::index_put(c, b"bravo", entry(2));
+
+        let all = S::index_range(c, Bound::Unbounded, Bound::Unbounded, 0, None);
+        assert_eq!(
+            keys(all),
+            vec![
+                b"alpha".to_vec(),
+                b"bravo".to_vec(),
+                b"charlie".to_vec(),
+                b"delta".to_vec()
+            ]
+        );
+    }
+
+    #[test]
+    fn range_respects_bounds() {
+        let c = coll(2);
+        for k in ["a", "b", "c", "d", "e"] {
+            S::index_put(c, k.as_bytes(), entry(0));
+        }
+
+        // [b, e)
+        let half_open = S::index_range(
+            c,
+            Bound::Included(b"b".to_vec()),
+            Bound::Excluded(b"e".to_vec()),
+            0,
+            None,
+        );
+        assert_eq!(
+            keys(half_open),
+            vec![b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
+        );
+
+        // (b, e]
+        let excl_incl = S::index_range(
+            c,
+            Bound::Excluded(b"b".to_vec()),
+            Bound::Included(b"e".to_vec()),
+            0,
+            None,
+        );
+        assert_eq!(
+            keys(excl_incl),
+            vec![b"c".to_vec(), b"d".to_vec(), b"e".to_vec()]
+        );
+    }
+
+    #[test]
+    fn range_offset_and_limit_paginate() {
+        let c = coll(3);
+        for i in 0..10u8 {
+            S::index_put(c, format!("k{i:02}").as_bytes(), entry(i));
+        }
+
+        let page = S::index_range(c, Bound::Unbounded, Bound::Unbounded, 3, Some(3));
+        assert_eq!(
+            keys(page),
+            vec![b"k03".to_vec(), b"k04".to_vec(), b"k05".to_vec()]
+        );
+    }
+
+    #[test]
+    fn prefix_scan_matches_only_prefix() {
+        let c = coll(4);
+        for k in ["user:alice", "user:bob", "post:1", "user:carol", "post:2"] {
+            S::index_put(c, k.as_bytes(), entry(0));
+        }
+
+        let users = S::index_prefix(c, b"user:", 0, None);
+        assert_eq!(
+            keys(users),
+            vec![
+                b"user:alice".to_vec(),
+                b"user:bob".to_vec(),
+                b"user:carol".to_vec()
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_drops_from_index_and_resolves_entry_ids() {
+        let c = coll(5);
+        S::index_put(c, b"k1", entry(1));
+        S::index_put(c, b"k2", entry(2));
+
+        // entry ids resolve correctly
+        let pairs = S::index_range(c, Bound::Unbounded, Bound::Unbounded, 0, None);
+        assert_eq!(
+            pairs,
+            vec![(b"k1".to_vec(), entry(1)), (b"k2".to_vec(), entry(2))]
+        );
+
+        S::index_remove(c, b"k1");
+        let after = S::index_range(c, Bound::Unbounded, Bound::Unbounded, 0, None);
+        assert_eq!(keys(after), vec![b"k2".to_vec()]);
+    }
+
+    #[test]
+    fn index_is_isolated_per_collection() {
+        let a = coll(6);
+        let b = coll(7);
+        S::index_put(a, b"x", entry(1));
+        S::index_put(b, b"y", entry(2));
+
+        assert_eq!(
+            keys(S::index_range(
+                a,
+                Bound::Unbounded,
+                Bound::Unbounded,
+                0,
+                None
+            )),
+            vec![b"x".to_vec()]
+        );
+        assert_eq!(
+            keys(S::index_range(
+                b,
+                Bound::Unbounded,
+                Bound::Unbounded,
+                0,
+                None
+            )),
+            vec![b"y".to_vec()]
+        );
     }
 }

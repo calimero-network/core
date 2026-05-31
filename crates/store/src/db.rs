@@ -32,6 +32,13 @@ pub enum Column {
     /// tombstone — sync-and-auto-follow stop on the node where the user
     /// opted out, while peers see no change.
     ContextLocal,
+    /// Node-local secondary index for `SortedMap` collections. NOT
+    /// synchronized across nodes — it is a derived materialised view of the
+    /// synced entity set, maintained locally as entries are written/applied.
+    /// Keys are `collection_id(32) ‖ order_key_bytes` (unhashed, so RocksDB's
+    /// byte order = key order), values are the entry's 32-byte id. Enables
+    /// `O(log n + k)` range/prefix/pagination over `SortedMap` (core#2559).
+    SortedIndex,
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {
