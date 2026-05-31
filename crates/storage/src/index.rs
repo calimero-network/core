@@ -355,20 +355,34 @@ impl<S: StorageAdaptor> Index<S> {
         // Dedup by ID, not by `ChildInfo`'s `(created_at, id)` Ord. A child can
         // be re-added with a CHANGED `created_at` (e.g. CRDT merge re-materialises
         // an entity that two nodes first-created at different HLC times). The
-        // `(created_at, id)`-ordered `binary_search` below would then miss the
-        // existing same-id entry and `insert` a SECOND ChildInfo for the same id.
+        // `(created_at, id)`-ordered `binary_search` would then miss the existing
+        // same-id entry and `insert` a SECOND ChildInfo for the same id.
         // `calculate_full_hash_for_children` hashes every child's `merkle_hash`
         // (sorted by id), so a duplicate entry hashes that child twice → the
         // parent's `full_hash` (and the root) diverges depending on the order the
         // creating deltas were applied — the "same DAG, different root hash"
-        // family. Removing any existing same-id entry first guarantees at most
-        // one ChildInfo per id. For a healthy single-entry list this is identical
-        // to the old replace (so the hash is unchanged for converged data); it
-        // only eliminates the duplicate.
-        children_vec.retain(|c| c.id() != new_entry.id());
+        // family. We must keep at most one ChildInfo per id.
+        //
+        // The common case — re-adding an unchanged child — hits the `Ok` branch
+        // and replaces in place in O(log K) with no scan, preserving the
+        // invariant inductively (there is never a pre-existing same-id
+        // duplicate). Only the rare `created_at`-changed miss pays an O(K) scan to
+        // evict the stale same-id entry before inserting. (The `insert`/`remove`
+        // shifts are already O(K), so this adds no asymptotic cost over the
+        // pre-dedup code.)
         match children_vec.binary_search(&new_entry) {
             Ok(pos) => children_vec[pos] = new_entry,
-            Err(pos) => children_vec.insert(pos, new_entry),
+            Err(pos) => {
+                if let Some(stale) = children_vec.iter().position(|c| c.id() == new_entry.id()) {
+                    let _ = children_vec.remove(stale);
+                    match children_vec.binary_search(&new_entry) {
+                        Ok(p) => children_vec[p] = new_entry,
+                        Err(p) => children_vec.insert(p, new_entry),
+                    }
+                } else {
+                    children_vec.insert(pos, new_entry);
+                }
+            }
         }
 
         parent_index.full_hash =

@@ -86,6 +86,12 @@ pub(crate) fn register_rekey<T: RekeyTarget + 'static>() {
 /// to `parent_id`. No-op for value types that never registered (leaves, plain
 /// data structs). Idempotent.
 pub(crate) fn rekey_nested_value<V: 'static>(value: &mut V, parent_id: Id) {
+    // Copy the fn pointer out and DROP the read guard before invoking the thunk.
+    // This is load-bearing, not incidental: a thunk re-enters the registry — a
+    // map/set/vector re-key re-inserts its entries, and `insert` calls
+    // `register_rekey`, which takes the WRITE lock. Holding the read guard across
+    // the call would deadlock the std `RwLock` on that same-thread upgrade. The
+    // statement ends at the `;`, so `thunk` is owned and lock-free below.
     let thunk = REGISTRY
         .read()
         .unwrap_or_else(|e| e.into_inner())
