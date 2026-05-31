@@ -54,6 +54,7 @@ const TREE_BACKED_TYPES: &[(&str, usize)] = &[
     ("UnorderedMap", 2),
     ("SortedMap", 2),
     ("UnorderedSet", 1),
+    ("SortedSet", 1),
     ("Vector", 1),
 ];
 

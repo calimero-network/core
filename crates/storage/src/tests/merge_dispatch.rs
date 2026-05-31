@@ -209,6 +209,10 @@ fn test_is_builtin_crdt_classification() {
         "UnorderedSet is builtin"
     );
     assert!(
+        is_builtin_crdt(&CrdtType::sorted_set("String")),
+        "SortedSet is builtin"
+    );
+    assert!(
         is_builtin_crdt(&CrdtType::vector("u64")),
         "Vector is builtin"
     );
@@ -292,6 +296,11 @@ fn test_collections_return_incoming() {
 
     // UnorderedSet - returns incoming for structured storage
     let result = merge_by_crdt_type(&CrdtType::unordered_set("String"), &existing, &incoming);
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), incoming);
+
+    // SortedSet - same structured-storage dispatch as UnorderedSet
+    let result = merge_by_crdt_type(&CrdtType::sorted_set("String"), &existing, &incoming);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), incoming);
 

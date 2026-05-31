@@ -195,6 +195,9 @@ pub enum CrdtCollectionType {
     AuthoredMap,
     /// UnorderedSet: Set with CRDT metadata
     UnorderedSet,
+    /// SortedSet: Set iterated in ascending element order (range/prefix queries);
+    /// same add-wins union merge as `UnorderedSet`
+    SortedSet,
     /// ReplicatedGrowableArray: String with character-level CRDT
     ReplicatedGrowableArray,
     /// AuthoredVector: List with per-element author identity

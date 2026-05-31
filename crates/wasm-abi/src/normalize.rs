@@ -299,6 +299,7 @@ fn normalize_generic_type(
         | "Vector"
         | "AuthoredVector"
         | "UnorderedSet"
+        | "SortedSet"
         | "FrozenValue" => {
             // These CRDT wrappers unwrap to their inner type for ABI purposes
             // but we preserve the CRDT type so deserializers know the format
@@ -386,6 +387,17 @@ fn normalize_generic_type(
                         },
                         crdt_type: Some(CrdtCollectionType::UnorderedSet),
                         inner_type: None, // Inner type is in List.items
+                    })
+                }
+                "SortedSet" => {
+                    // SortedSet<T> -> List<T> (ascending); same shape as
+                    // UnorderedSet, marker records that iteration is ordered.
+                    Ok(TypeRef::Collection {
+                        collection: CollectionType::List {
+                            items: Box::new(inner_type),
+                        },
+                        crdt_type: Some(CrdtCollectionType::SortedSet),
+                        inner_type: None,
                     })
                 }
                 "FrozenValue" => {

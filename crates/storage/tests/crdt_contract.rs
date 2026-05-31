@@ -615,3 +615,63 @@ fn sorted_map_iteration_is_sorted_after_merge() {
         "merge(b, a) must be sorted and identical to merge(a, b)"
     );
 }
+
+// `SortedSet` — same add-wins union as `UnorderedSet`, but iterated in element
+// order. Pin the merge laws through its surface, and that the merged set is
+// sorted regardless of merge direction.
+#[test]
+fn sorted_set_satisfies_crdt_laws() {
+    use calimero_storage::collections::SortedSet;
+    use calimero_storage::store::MainStorage;
+
+    fn fresh(items: &[&str]) -> SortedSet<String, MainStorage> {
+        let mut s = SortedSet::new();
+        for item in items {
+            let _ = s.insert((*item).to_owned()).unwrap();
+        }
+        s
+    }
+
+    // `iter()` is already ascending, so a direct positional compare suffices.
+    let eq = |a: &SortedSet<String, MainStorage>, b: &SortedSet<String, MainStorage>| {
+        let a_items: Vec<_> = a.iter().unwrap().collect();
+        let b_items: Vec<_> = b.iter().unwrap().collect();
+        a_items == b_items
+    };
+
+    assert_mergeable_laws(
+        || fresh(&["alice", "bob"]),
+        || fresh(&["bob", "carol"]),
+        || fresh(&["dave"]),
+        eq,
+    );
+}
+
+#[test]
+fn sorted_set_iteration_is_sorted_after_merge() {
+    use calimero_storage::collections::SortedSet;
+    use calimero_storage::store::MainStorage;
+
+    fn replica(items: &[&str]) -> SortedSet<String, MainStorage> {
+        let mut s = SortedSet::new();
+        for v in items {
+            let _ = s.insert((*v).to_owned()).unwrap();
+        }
+        s
+    }
+
+    let mut ab = replica(&["m", "a", "z"]);
+    ab.merge(&replica(&["b", "a", "q"])).unwrap();
+    let mut ba = replica(&["b", "a", "q"]);
+    ba.merge(&replica(&["m", "a", "z"])).unwrap();
+
+    let expected = vec![
+        "a".to_owned(),
+        "b".to_owned(),
+        "m".to_owned(),
+        "q".to_owned(),
+        "z".to_owned(),
+    ];
+    assert_eq!(ab.iter().unwrap().collect::<Vec<_>>(), expected);
+    assert_eq!(ba.iter().unwrap().collect::<Vec<_>>(), expected);
+}

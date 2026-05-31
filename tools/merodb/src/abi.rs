@@ -196,6 +196,13 @@ pub fn infer_schema_from_database(
                                     crdt_type: Some(CrdtCollectionType::UnorderedSet),
                                     inner_type: None,
                                 },
+                                CrdtType::SortedSet { .. } => TypeRef::Collection {
+                                    collection: CollectionType::List {
+                                        items: Box::new(TypeRef::string()),
+                                    },
+                                    crdt_type: Some(CrdtCollectionType::SortedSet),
+                                    inner_type: None,
+                                },
                                 CrdtType::Vector { .. } => TypeRef::Collection {
                                     collection: CollectionType::List {
                                         items: Box::new(TypeRef::string()),

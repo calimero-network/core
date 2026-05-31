@@ -102,6 +102,17 @@ pub enum CrdtType {
         element_type: String,
     },
 
+    /// Sorted Set.
+    ///
+    /// Same add-wins union merge as [`UnorderedSet`](Self::UnorderedSet), but
+    /// iterated in ascending element order to support range and prefix queries.
+    /// Ordering is derived from `T: Ord` — no extra state is synced.
+    /// Merge: Union of all elements from both sets.
+    SortedSet {
+        /// Element type name
+        element_type: String,
+    },
+
     /// Vector (ordered collection).
     ///
     /// Ordered list with append operations.
@@ -187,6 +198,14 @@ impl CrdtType {
         }
     }
 
+    /// Create a SortedSet with a known element type.
+    #[must_use]
+    pub fn sorted_set(element_type: impl Into<String>) -> Self {
+        Self::SortedSet {
+            element_type: element_type.into(),
+        }
+    }
+
     /// Create a Vector with a known element type.
     #[must_use]
     pub fn vector(element_type: impl Into<String>) -> Self {
@@ -204,7 +223,7 @@ impl CrdtType {
     /// Returns `true` if this is a set type.
     #[must_use]
     pub const fn is_set(&self) -> bool {
-        matches!(self, Self::UnorderedSet { .. })
+        matches!(self, Self::UnorderedSet { .. } | Self::SortedSet { .. })
     }
 
     /// Returns `true` if this is a collection type (map, set, vector, or array).
@@ -215,6 +234,7 @@ impl CrdtType {
             Self::UnorderedMap { .. }
                 | Self::SortedMap { .. }
                 | Self::UnorderedSet { .. }
+                | Self::SortedSet { .. }
                 | Self::Vector { .. }
                 | Self::Rga
         )
@@ -267,6 +287,7 @@ mod tests {
     #[test]
     fn test_is_set() {
         assert!(CrdtType::unordered_set("String").is_set());
+        assert!(CrdtType::sorted_set("String").is_set());
         assert!(!CrdtType::unordered_map("String", "u64").is_set());
         assert!(!CrdtType::sorted_map("String", "u64").is_set());
         assert!(!CrdtType::vector("u64").is_set());
@@ -277,6 +298,7 @@ mod tests {
         assert!(CrdtType::unordered_map("String", "u64").is_collection());
         assert!(CrdtType::sorted_map("String", "u64").is_collection());
         assert!(CrdtType::unordered_set("String").is_collection());
+        assert!(CrdtType::sorted_set("String").is_collection());
         assert!(CrdtType::vector("u64").is_collection());
         assert!(CrdtType::Rga.is_collection());
         assert!(!CrdtType::lww_register("u64").is_collection());
@@ -326,6 +348,7 @@ mod tests {
             CrdtType::unordered_map("String", "u64"),
             CrdtType::sorted_map("String", "u64"),
             CrdtType::unordered_set("String"),
+            CrdtType::sorted_set("String"),
             CrdtType::vector("u64"),
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
@@ -352,6 +375,7 @@ mod tests {
             CrdtType::unordered_map("String", "u64"),
             CrdtType::sorted_map("String", "u64"),
             CrdtType::unordered_set("String"),
+            CrdtType::sorted_set("String"),
             CrdtType::vector("u64"),
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,

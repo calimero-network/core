@@ -560,6 +560,9 @@ fn generate_assign_deterministic_ids_impl(
             || type_str.contains("SortedMap")
             || type_str.contains("Vector")
             || type_str.contains("UnorderedSet")
+            // `SortedSet` is NOT a substring of any other entry (same reason as
+            // `SortedMap`): list it explicitly or its id stays random and diverges.
+            || type_str.contains("SortedSet")
             || type_str.contains("Counter")
             || type_str.contains("ReplicatedGrowableArray")
             || type_str.contains("UserStorage")

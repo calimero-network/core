@@ -4,7 +4,7 @@ use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_storage::collections::{
-    Counter, LwwRegister, SortedMap, UnorderedMap, UnorderedSet, Vector,
+    Counter, LwwRegister, SortedMap, SortedSet, UnorderedMap, UnorderedSet, Vector,
 };
 
 // Test types for state schema conformance
@@ -94,7 +94,8 @@ pub struct StateSchemaConformance {
     list_of_maps: Vector<UnorderedMap<String, LwwRegister<u32>>>, // list<map<string, u32>>
 
     // Sets
-    string_set: UnorderedSet<String>, // set<string>
+    string_set: UnorderedSet<String>,     // set<string>
+    sorted_string_set: SortedSet<String>, // sorted set<string> (range/prefix)
 
     // Counters
     visit_counter: Counter, // counter
@@ -134,6 +135,7 @@ impl StateSchemaConformance {
             map_of_lists: UnorderedMap::new_with_field_name("map_of_lists"),
             list_of_maps: Vector::new_with_field_name("list_of_maps"),
             string_set: UnorderedSet::new_with_field_name("string_set"),
+            sorted_string_set: SortedSet::new_with_field_name("sorted_string_set"),
             visit_counter: Counter::new_with_field_name("visit_counter"),
             profile_map: UnorderedMap::new_with_field_name("profile_map"),
             status: LwwRegister::new(Status::Inactive),

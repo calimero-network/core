@@ -19,6 +19,8 @@ pub mod sorted_map;
 pub use sorted_map::SortedMap;
 pub mod unordered_set;
 pub use unordered_set::UnorderedSet;
+pub mod sorted_set;
+pub use sorted_set::SortedSet;
 pub mod vector;
 pub use vector::Vector;
 pub mod rga;

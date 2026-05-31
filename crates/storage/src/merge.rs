@@ -365,6 +365,9 @@ pub fn merge_by_crdt_type(
         // the container merge is the same add-wins structural pass.
         CrdtType::SortedMap { .. } => merge_unordered_map(existing, incoming),
         CrdtType::UnorderedSet { .. } => merge_unordered_set(existing, incoming),
+        // SortedSet stores/merges exactly like UnorderedSet (union; ordering is a
+        // read-time concern derived from `T: Ord`).
+        CrdtType::SortedSet { .. } => merge_unordered_set(existing, incoming),
         CrdtType::Vector { .. } => merge_vector(existing, incoming),
 
         // UserStorage - LWW per user (same as LwwRegister)
@@ -397,7 +400,7 @@ pub fn merge_by_crdt_type(
 /// - `GCounter`, `PnCounter` - max per executor
 /// - `Rga` - interleave by timestamp
 /// - `LwwRegister` - LWW using metadata timestamps  
-/// - `UnorderedMap`, `SortedMap`, `UnorderedSet`, `Vector` - structural merge
+/// - `UnorderedMap`, `SortedMap`, `UnorderedSet`, `SortedSet`, `Vector` - structural merge
 /// - `UserStorage` - LWW per user
 /// - `FrozenStorage` - first-write-wins
 ///
