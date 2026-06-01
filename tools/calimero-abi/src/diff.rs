@@ -56,17 +56,13 @@ pub struct Finding {
     pub detail: String,
 }
 
-/// Map a state-root's top-level fields by name.
-fn state_root_fields(manifest: &Manifest) -> BTreeMap<&str, &TypeRef> {
-    let mut out = BTreeMap::new();
-    if let Some(root) = &manifest.state_root {
-        if let Some(TypeDef::Record { fields }) = manifest.types.get(root) {
-            for field in fields {
-                let _ = out.insert(field.name.as_str(), &field.type_);
-            }
-        }
-    }
-    out
+/// Index record fields by name. Pure — operates on already-validated fields from
+/// [`root_record_fields`], so there is no silent "missing root → zero fields" path.
+fn fields_by_name(fields: &[Field]) -> BTreeMap<&str, &TypeRef> {
+    fields
+        .iter()
+        .map(|field| (field.name.as_str(), &field.type_))
+        .collect()
 }
 
 /// Follow `$ref` → `Alias` chains to the effective type. An identity-gated CRDT
@@ -137,13 +133,16 @@ fn expand_refs(
     use serde_json::Value;
     match value {
         Value::Object(map) => {
-            if map.len() == 1 {
-                if let Some(Value::String(name)) = map.get("$ref") {
-                    if seen.iter().any(|n| n == name) {
-                        return Ok(serde_json::json!({ "$ref": name, "$cycle": true }));
-                    }
+            // Detect a `$ref` by key presence, NOT `len() == 1`: if a future schema
+            // ever carried extra keys alongside `$ref`, a `len() == 1` guard would
+            // skip expansion and compare two refs literally, hiding a target change.
+            if let Some(Value::String(name)) = map.get("$ref") {
+                let name = name.clone();
+                let resolved = if seen.contains(&name) {
+                    serde_json::json!({ "$ref": name, "$cycle": true })
+                } else {
                     seen.push(name.clone());
-                    let expanded = match manifest.types.get(name) {
+                    let r = match manifest.types.get(&name) {
                         Some(def) => {
                             let def_value = serde_json::to_value(def).map_err(|e| {
                                 eyre::eyre!("failed to serialize type '{name}' for diff: {e}")
@@ -153,8 +152,21 @@ fn expand_refs(
                         None => serde_json::json!({ "$ref": name, "$missing": true }),
                     };
                     let _ = seen.pop();
-                    return Ok(expanded);
+                    r
+                };
+                // Pure `{ "$ref": .. }` → just the resolved target. With extra keys
+                // (not expected today), keep both so no difference is silently dropped.
+                if map.len() == 1 {
+                    return Ok(resolved);
                 }
+                let mut out = serde_json::Map::with_capacity(map.len());
+                let _ = out.insert("$resolved".to_owned(), resolved);
+                for (k, v) in map {
+                    if k != "$ref" {
+                        let _ = out.insert(k, expand_refs(v, manifest, seen)?);
+                    }
+                }
+                return Ok(Value::Object(out));
             }
             let mut out = serde_json::Map::with_capacity(map.len());
             for (k, v) in map {
@@ -191,12 +203,12 @@ fn root_record_fields<'a>(manifest: &'a Manifest, which: &str) -> eyre::Result<&
 /// Diff `current` (the new build) against `baseline` (the previous version),
 /// returning one [`Finding`] per changed top-level state field.
 ///
-/// Private + reachable only through [`diff_checked`], which validates the state
-/// roots first. Keeping it private avoids the footgun of diffing a manifest whose
-/// `state_root` silently resolves to zero fields (which would mask downgrades).
-fn diff_state_schemas(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec<Finding>> {
-    let cur = state_root_fields(current);
-    let base = state_root_fields(baseline);
+/// Fail-closed by construction: the field maps are built from [`root_record_fields`],
+/// which errors on a missing / non-record `state_root`. There is no silent
+/// "zero fields" path, so the guarantee does not depend on call-site discipline.
+pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec<Finding>> {
+    let cur = fields_by_name(root_record_fields(current, "current")?);
+    let base = fields_by_name(root_record_fields(baseline, "baseline")?);
     let mut findings = Vec::new();
 
     // Removed or changed fields (walk the baseline).
@@ -256,15 +268,6 @@ fn diff_state_schemas(current: &Manifest, baseline: &Manifest) -> eyre::Result<V
     }
 
     Ok(findings)
-}
-
-/// Validate both manifests have a resolvable state-root record, then diff.
-/// Fail-closed: a missing/broken root errors out (non-zero) rather than silently
-/// producing no findings.
-pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec<Finding>> {
-    let _ = root_record_fields(current, "current")?;
-    let _ = root_record_fields(baseline, "baseline")?;
-    diff_state_schemas(current, baseline)
 }
 
 fn load_manifest(path: &Path) -> eyre::Result<Manifest> {
