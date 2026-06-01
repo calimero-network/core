@@ -676,6 +676,78 @@ mod tests {
         );
     }
 
+    /// **BUG REPRODUCTION (clear / HashComparison split-brain)**: a deletion
+    /// does not propagate through HashComparison, so a peer that still holds a
+    /// cleared entry never converges to the deletion.
+    ///
+    /// HashComparison reconciles entity trees by add-wins union and carries no
+    /// tombstones — `DeleteRef` rides the delta stream only, and `TreeNode` has
+    /// no tombstone field. When `alice` clears an entry that `bob` still holds,
+    /// the bidirectional reconcile can only re-offer the live entry (alice's
+    /// tombstone high-water `updated_at` correctly rejects the re-add, so alice
+    /// is NOT resurrected) but it has no channel to tell `bob` the entry was
+    /// deleted. So `bob` keeps it forever and the Merkle roots never converge —
+    /// the intermittent scaffolding-e2e clear split-brain
+    /// (`root_hash_verified=false`, looping local-vs-remote entity-count
+    /// mismatch).
+    ///
+    /// Regression guard: HashComparison now propagates tombstones via
+    /// `EntityDeletePush`, so the cleared node pushes an authenticated
+    /// `DeleteRef` to the peer (delete-wins) and both converge to deleted.
+    #[tokio::test]
+    async fn test_hashcomparison_propagates_clear_tombstone() {
+        use crate::sync_sim::actions::StorageOp;
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        // Both hold the same single entry → identical state.
+        let entry = EntityId::from_u64(1);
+        alice.insert_entity_with_metadata(entry, b"v1".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(entry, b"v1".to_vec(), EntityMetadata::default());
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "nodes must start converged"
+        );
+        assert_eq!(alice.entity_count(), 1);
+        assert_eq!(bob.entity_count(), 1);
+
+        // Alice clears the entry — a real DeleteRef tombstone.
+        alice.apply_storage_op(StorageOp::Remove { id: entry });
+        assert_eq!(alice.entity_count(), 0, "alice cleared its entry");
+        assert_eq!(bob.entity_count(), 1, "bob has not seen the deletion yet");
+        assert_ne!(alice.root_hash(), bob.root_hash());
+
+        // Reconcile via the REAL HashComparison protocol, both directions.
+        execute_hash_comparison_sync(&mut alice, &bob)
+            .await
+            .expect("a->b sync ok");
+        execute_hash_comparison_sync(&mut bob, &alice)
+            .await
+            .expect("b->a sync ok");
+
+        // The deletion must converge: bob must drop its copy and the Merkle
+        // roots must match. Today HC has no tombstone channel, so bob keeps the
+        // entry and the roots stay divergent — the clear split-brain.
+        assert_eq!(
+            bob.entity_count(),
+            0,
+            "bob still holds the cleared entry: HashComparison did not propagate the tombstone"
+        );
+        assert_eq!(
+            alice.entity_count(),
+            0,
+            "alice's cleared entry must stay deleted (no resurrection)"
+        );
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "Merkle roots diverge: the deletion never converged (clear split-brain)"
+        );
+    }
+
     /// **BUG REPRODUCTION**: Both nodes have unique data, initiator has MORE.
     ///
     /// Alice has 1 shared + 10 unique, Bob has 1 shared + 3 unique.
