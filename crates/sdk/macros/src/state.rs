@@ -48,14 +48,22 @@ impl ToTokens for StateImpl<'_> {
         // Generate Mergeable implementation
         let merge_impl = generate_mergeable_impl(ident, generics, orig);
 
+        // Re-key registration for nested CRDT-value types (#2577): so a custom
+        // struct stored as a collection value has its nested collections given
+        // deterministic ids and converges instead of being LWW'd as a blob.
+        // The method holds the registrations; the wasm load hook, the native
+        // test bridge, and `register_crdt_merge_for_test` all call it.
+        let rekey_register_method = generate_rekey_register_method(ident, generics, orig);
+        let rekey_call = quote! { <#ident #ty_generics>::__calimero_register_rekey(); };
+
         // Generate registration hook
-        let registration_hook = generate_registration_hook(ident, &ty_generics);
+        let registration_hook = generate_registration_hook(ident, &ty_generics, &rekey_call);
 
         // Generate deterministic ID assignment method
         let assign_ids_impl = generate_assign_deterministic_ids_impl(ident, generics, orig);
 
         // Generate the in-process test-harness bridge (native-only)
-        let test_state_impl = generate_test_state_impl(ident, generics, orig);
+        let test_state_impl = generate_test_state_impl(ident, generics, orig, &rekey_call);
 
         quote! {
             // State is always persisted via borsh (init save, root-state merge,
@@ -82,6 +90,9 @@ impl ToTokens for StateImpl<'_> {
 
             // Auto-generated registration hook
             #registration_hook
+
+            // Auto-generated nested-value re-key registration (#2577)
+            #rekey_register_method
 
             // Auto-generated deterministic ID assignment
             #assign_ids_impl
@@ -520,7 +531,11 @@ fn generate_mergeable_impl(
 ///    typed merge itself (separate address space), so it hands the
 ///    bytes to this export, which deserializes as `T`, runs
 ///    `Mergeable::merge`, returns serialized bytes.
-fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>) -> TokenStream {
+fn generate_registration_hook(
+    ident: &Ident,
+    ty_generics: &syn::TypeGenerics<'_>,
+    rekey_call: &TokenStream,
+) -> TokenStream {
     quote! {
         // ============================================================================
         // AUTO-GENERATED WASM Export — WASM-Internal Registration Hook
@@ -536,6 +551,9 @@ fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>
         #[no_mangle]
         pub extern "C" fn __calimero_register_merge() {
             ::calimero_storage::register_crdt_merge::<#ident #ty_generics>();
+            // Register nested CRDT-value-type re-key thunks (#2577) so struct
+            // values converge instead of being last-writer-wins'd as a blob.
+            #rekey_call
         }
 
         // ============================================================================
@@ -629,10 +647,102 @@ fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>
 /// Only emitted for struct states. Enum states have no
 /// `__assign_deterministic_ids` method (no fields), and a CRDT root is always a
 /// struct in practice, so an enum-root app simply has no `TestHost` bridge.
+/// Generate `__calimero_register_rekey()` — registers a re-key thunk for every
+/// type that appears in a state field, so a custom struct stored as a collection
+/// VALUE gets its nested collections deterministically re-keyed (and thus
+/// converges) instead of being last-writer-wins'd as an opaque blob (#2577).
+///
+/// We register EVERY type token found in each field (the collection itself, its
+/// key/value types, and so on). `register_rekey_if_supported!` autoref-dispatches
+/// to a real registration only for `RekeyTarget` types and is a safe no-op for
+/// leaves (`String`, `u64`, `LwwRegister<_>`, …), so over-collecting (including
+/// key types) is harmless.
+///
+/// SCOPE — one level of custom-struct nesting. This registers the value types of
+/// the ROOT state's collection fields. Built-in collections self-register in
+/// their constructors, so any depth of *built-in* nesting works. But a custom
+/// struct reachable only through ANOTHER custom struct's collection (state →
+/// `Map<_, Outer>` → `Map<_, Inner>`, where both are app structs) is not
+/// registered here, so `Inner` would still be LWW'd. Deep custom nesting is the
+/// follow-up; today's apps don't hit it.
+fn generate_rekey_register_method(
+    ident: &Ident,
+    generics: &Generics,
+    orig: &StructOrEnumItem,
+) -> TokenStream {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let fields = match orig {
+        StructOrEnumItem::Struct(s) => &s.fields,
+        StructOrEnumItem::Enum(_) => return quote! {},
+    };
+
+    let mut types: Vec<Type> = Vec::new();
+    for field in fields.iter() {
+        collect_type_paths(&field.ty, &mut types);
+    }
+
+    // Dedup by token string (syntactic, not semantic): the same value type can
+    // appear in several fields (e.g. two `UnorderedMap<String, TeamStats>`), so
+    // collapse identically-written types to one registration call. Types written
+    // differently but equal (`TeamStats` vs `crate::TeamStats`) still emit two
+    // calls — harmless: they share a `TypeId`, and `register_rekey_pub` is
+    // idempotent (`or_insert`), so the registry holds one entry either way.
+    let mut seen = std::collections::HashSet::new();
+    let calls = types
+        .iter()
+        .filter(|ty| seen.insert(ty.to_token_stream().to_string()))
+        .map(|ty| {
+            quote! { ::calimero_storage::register_rekey_if_supported!(#ty); }
+        });
+
+    quote! {
+        impl #impl_generics #ident #ty_generics #where_clause {
+            /// Registers nested CRDT-value re-key thunks. Called at WASM module
+            /// load and by the native test bridge; idempotent. Not for direct use.
+            #[doc(hidden)]
+            pub fn __calimero_register_rekey() {
+                #(#calls)*
+            }
+        }
+    }
+}
+
+/// Recursively collect every `Type::Path` node reachable from `ty` (the type
+/// itself plus its generic arguments, tuple/reference/array elements), so the
+/// registration above can offer each to `register_rekey_if_supported!`.
+fn collect_type_paths(ty: &Type, out: &mut Vec<Type>) {
+    match ty {
+        Type::Path(tp) => {
+            out.push(ty.clone());
+            if let Some(seg) = tp.path.segments.last() {
+                if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                    for arg in &args.args {
+                        if let syn::GenericArgument::Type(inner) = arg {
+                            collect_type_paths(inner, out);
+                        }
+                    }
+                }
+            }
+        }
+        Type::Reference(r) => collect_type_paths(&r.elem, out),
+        Type::Paren(p) => collect_type_paths(&p.elem, out),
+        Type::Group(g) => collect_type_paths(&g.elem, out),
+        Type::Array(a) => collect_type_paths(&a.elem, out),
+        Type::Tuple(t) => {
+            for elem in &t.elems {
+                collect_type_paths(elem, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn generate_test_state_impl(
     ident: &Ident,
     generics: &Generics,
     orig: &StructOrEnumItem,
+    rekey_call: &TokenStream,
 ) -> TokenStream {
     if matches!(orig, StructOrEnumItem::Enum(_)) {
         return quote! {};
@@ -655,6 +765,8 @@ fn generate_test_state_impl(
                 // unless the `testing` feature is enabled), so this bridge
                 // compiles even for example apps without `TestHost` tests.
                 ::calimero_storage::register_crdt_merge_for_test::<#ident #ty_generics>();
+                // Register nested CRDT-value-type re-key thunks (#2577).
+                #rekey_call
 
                 let root = ::calimero_storage::collections::Root::new(|| {
                     let mut state = build();

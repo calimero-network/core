@@ -51,6 +51,32 @@ impl Mergeable for TeamStats {
     }
 }
 
+/// Deterministic re-keying for a HAND-WRITTEN CRDT-value struct (#2577).
+///
+/// `#[derive(Mergeable)]` generates this for you. When you implement `Mergeable`
+/// by hand (as above), you MUST also implement `RekeyTarget`, or this struct —
+/// stored as an `UnorderedMap` value — is last-writer-wins'd as an opaque blob
+/// and its counters silently lose concurrent increments. Re-key each nested
+/// collection field under a field-namespaced child of the entry id so every
+/// replica derives identical ids and the counters converge as child entities.
+impl calimero_storage::collections::rekey::RekeyTarget for TeamStats {
+    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
+        use calimero_storage::collections::rekey::field_child_id;
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.wins,
+            field_child_id(parent_id, "wins")
+        );
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.losses,
+            field_child_id(parent_id, "losses")
+        );
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.draws,
+            field_child_id(parent_id, "draws")
+        );
+    }
+}
+
 /// Application state
 #[app::state(emits = MetricsEvent)]
 pub struct TeamMetricsApp {

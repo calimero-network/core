@@ -7,7 +7,9 @@ repository.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+# `rlib` (alongside the wasm `cdylib`) lets the convergence integration test in
+# `tests/` import the app type; harmless for the wasm build.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 calimero-sdk.workspace = true
