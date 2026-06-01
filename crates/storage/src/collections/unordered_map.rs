@@ -818,6 +818,27 @@ where
             Entry::Vacant(entry) => entry.insert(f()),
         }
     }
+
+    /// Ensures a value is in the entry by inserting `V::default()` if empty,
+    /// and returns a mutable `ValueMut` guard to the value.
+    ///
+    /// This is the blessed path for in-place mutation of nested CRDT values:
+    /// the returned guard re-persists the value to storage when it is dropped,
+    /// so there is no manual get → modify → re-insert dance. It also composes
+    /// for nested collections — `map.entry(k)?.or_default()?` yields a guard
+    /// whose nested CRDTs are deterministically re-keyed under this entry's id,
+    /// so independently first-created values converge across nodes.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    pub fn or_default(self) -> Result<ValueMut<'a, K, V, S>, StoreError>
+    where
+        V: Default + 'static,
+    {
+        self.or_insert_with(V::default)
+    }
 }
 
 impl<K, V, S> OccupiedEntry<'_, K, V, S>
@@ -1214,6 +1235,40 @@ mod tests {
         assert_eq!(called, false); // Verify closure was not executed
         assert_eq!(map.len().unwrap(), 1);
         assert_eq!(map.get("key1").unwrap().as_deref(), Some("value1"));
+    }
+
+    #[test]
+    fn test_unordered_map_entry_or_default() {
+        let mut map = Root::new(|| UnorderedMap::<String, u64, MainStorage>::new());
+
+        // Vacant: `or_default()` inserts `u64::default()` (0) and the write-back
+        // guard persists the mutation made through it on drop.
+        {
+            let mut guard = map
+                .entry("key1".to_owned())
+                .expect("entry failed")
+                .or_default()
+                .expect("or_default failed");
+            assert_eq!(*guard, 0);
+            *guard += 5;
+        } // Guard is dropped -> value re-persisted
+
+        assert_eq!(map.get("key1").unwrap(), Some(5));
+        assert_eq!(map.len().unwrap(), 1);
+
+        // Occupied: `or_default()` yields the existing value, not a fresh default.
+        {
+            let mut guard = map
+                .entry("key1".to_owned())
+                .expect("entry failed")
+                .or_default()
+                .expect("or_default failed");
+            assert_eq!(*guard, 5);
+            *guard += 1;
+        } // Guard is dropped -> value re-persisted
+
+        assert_eq!(map.get("key1").unwrap(), Some(6));
+        assert_eq!(map.len().unwrap(), 1);
     }
 
     #[test]
