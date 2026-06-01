@@ -146,6 +146,19 @@ where
     /// Only collections (which implement [`Data`]) get this; a scalar value is
     /// edited via the whole-value replace path instead.
     ///
+    /// # Rotation semantics (current)
+    /// Each entry is stamped with the writer set current at the time it is
+    /// written, carried inline on that entry. So after `rotate_writers`, new
+    /// entries are guarded by the new set, but entries written before the
+    /// rotation keep their own stamp and remain verifiable against the old set —
+    /// rotation is forward-only, it does not retroactively revoke write access to
+    /// existing entries. Making every entry re-resolve the writer set from the
+    /// wrapper's rotation log at the op's causal cut (so a rotation revokes the
+    /// whole subtree) needs the DAG-causal rotation machinery; doing it by
+    /// re-stamping entries eagerly diverges the root hash across peers (see the
+    /// note on `rotate_writers`). Until then, treat a guarded collection's writer
+    /// set as effectively fixed for already-written entries.
+    ///
     /// # Errors
     /// Currently infallible; the `Result` is preserved for forward compatibility.
     pub fn get_mut(&mut self) -> Result<&mut T, StoreError> {
