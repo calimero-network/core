@@ -318,11 +318,17 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
         }
 
         // `#[app::state]` injects the borsh derives + `#[borsh(crate = ...)]`
-        // itself. A leftover manual `BorshSerialize`/`BorshDeserialize` derive or
-        // `#[borsh(...)]` attribute would otherwise collide with the injected one
-        // and surface as a cryptic "conflicting implementations of trait
-        // `BorshSerialize`" error pointing at generated code. Catch it here and
-        // point straight at the attribute to delete.
+        // itself. A leftover manual `BorshSerialize`/`BorshDeserialize` derive, or
+        // a `#[borsh(crate = ...)]` redirect, would otherwise collide with the
+        // injected one and surface as a cryptic "conflicting implementations of
+        // trait `BorshSerialize`" error pointing at generated code. Catch those
+        // here and point straight at the attribute to delete.
+        //
+        // Only the `crate` key collides — other container-level borsh keys
+        // (`#[borsh(init = ...)]` on a struct, `#[borsh(use_discriminant = ...)]`
+        // on an enum) are legitimate and the macro does not supply them, so they
+        // must pass through. Flagging every `#[borsh(...)]` would make those
+        // attributes impossible to use on a state type.
         let attrs = match input.item {
             StructOrEnumItem::Struct(item) => &item.attrs,
             StructOrEnumItem::Enum(item) => &item.attrs,
@@ -330,12 +336,29 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
 
         for attr in attrs {
             if attr.path().is_ident("borsh") {
-                errors.subsume(SynError::new_spanned(
-                    attr,
-                    "remove this `#[borsh(...)]`: `#[app::state]` now injects the borsh crate attribute",
-                ));
+                let mut sets_crate = false;
+                if let Err(err) = attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("crate") {
+                        sets_crate = true;
+                    }
+                    // Consume `= <value>` so iteration reaches every key rather
+                    // than stopping at the first `key = value` pair.
+                    if meta.input.peek(Token![=]) {
+                        let _: TokenStream = meta.value()?.parse()?;
+                    }
+                    Ok(())
+                }) {
+                    errors.subsume(err);
+                }
+
+                if sets_crate {
+                    errors.subsume(SynError::new_spanned(
+                        attr,
+                        "remove `crate = ...` from this `#[borsh(...)]`: `#[app::state]` injects the borsh crate redirect itself",
+                    ));
+                }
             } else if attr.path().is_ident("derive") {
-                let _ = attr.parse_nested_meta(|meta| {
+                if let Err(err) = attr.parse_nested_meta(|meta| {
                     if meta.path.segments.last().is_some_and(|seg| {
                         matches!(
                             seg.ident.to_string().as_str(),
@@ -348,7 +371,9 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
                         ));
                     }
                     Ok(())
-                });
+                }) {
+                    errors.subsume(err);
+                }
             }
         }
 
@@ -746,5 +771,74 @@ mod tests {
                 "expected merge call referencing `{index}` in:\n{rendered}",
             );
         }
+    }
+
+    /// Run the `#[app::state]` input validation (which includes the
+    /// borsh-attribute guard) over `item`, returning whether it was accepted.
+    fn state_accepts(item: StructOrEnumItem) -> bool {
+        let args = StateArgs { emits: None };
+        let accepted = match StateImpl::try_from(StateImplInput {
+            item: &item,
+            args: &args,
+        }) {
+            Ok(_) => true,
+            Err(errors) => {
+                // The error accumulator panics on drop if left non-empty, so
+                // drain it (this is what the real macro entry point does on the
+                // error path) before reporting rejection.
+                let _ = errors.to_compile_error();
+                false
+            }
+        };
+        accepted
+    }
+
+    #[test]
+    fn borsh_guard_rejects_crate_redirect_only() {
+        // `try_from` reads the reserved-ident table, a thread-local the proc-macro
+        // entry point initializes; do the same for this unit test's thread.
+        crate::reserved::init();
+
+        // The macro injects the borsh derives + `#[borsh(crate = ...)]`, so a
+        // leftover manual derive or `crate` redirect must be rejected (otherwise
+        // it surfaces later as a cryptic "conflicting implementations" error).
+        assert!(
+            !state_accepts(StructOrEnumItem::Struct(parse_quote! {
+                #[borsh(crate = "calimero_sdk::borsh")]
+                pub struct S {}
+            })),
+            "`#[borsh(crate = ...)]` must be rejected — the macro injects it",
+        );
+        assert!(
+            !state_accepts(StructOrEnumItem::Struct(parse_quote! {
+                #[derive(BorshSerialize, BorshDeserialize)]
+                pub struct S {}
+            })),
+            "a manual borsh derive must be rejected — the macro injects it",
+        );
+
+        // But the macro supplies ONLY `crate`. Other legitimate container-level
+        // borsh keys it never sets must pass through, or they become impossible
+        // to use on a state type: `init` on a struct, `use_discriminant` on an
+        // enum (required by borsh for enums with explicit discriminants).
+        assert!(
+            state_accepts(StructOrEnumItem::Struct(parse_quote! {
+                #[borsh(init = "post_load")]
+                pub struct S {}
+            })),
+            "`#[borsh(init = ...)]` is legitimate and must pass through",
+        );
+        assert!(
+            state_accepts(StructOrEnumItem::Enum(parse_quote! {
+                #[borsh(use_discriminant = true)]
+                pub enum E { A = 1, B = 2 }
+            })),
+            "`#[borsh(use_discriminant = ...)]` is legitimate and must pass through",
+        );
+
+        // And the common case — no item-level borsh attribute — is accepted.
+        assert!(state_accepts(StructOrEnumItem::Struct(parse_quote! {
+            pub struct S {}
+        })));
     }
 }
