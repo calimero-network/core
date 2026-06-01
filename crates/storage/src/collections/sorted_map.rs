@@ -303,7 +303,12 @@ where
         K: AsRef<[u8]> + PartialEq + 'static,
         V: 'static,
     {
-        self.insert_with_storage_type(key, value, StorageType::Public, None)
+        // Entries inherit this collection's own storage domain (Public for an
+        // ordinary map; `Shared{writers}` when the collection is guarded), so the
+        // whole subtree is guarded at merge rather than only the wrapper. Mirrors
+        // `UnorderedMap::insert`.
+        let inherited = self.inner.element().metadata.storage_type.clone();
+        self.insert_with_storage_type(key, value, inherited, None)
     }
 
     /// Insert a key-value pair with the specified `StorageType` and optional
