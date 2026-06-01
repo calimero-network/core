@@ -202,6 +202,52 @@ pub enum CrdtCollectionType {
     ReplicatedGrowableArray,
     /// AuthoredVector: List with per-element author identity
     AuthoredVector,
+    /// SharedStorage: single-slot value guarded by a writer-set ACL (writers +
+    /// per-write nonce in metadata). Identity-gated like the `Authored*` types.
+    SharedStorage,
+}
+
+/// Identity-derivation category of a CRDT collection.
+///
+/// The authoritative classifier for the migration-safety rail (the core upgrade
+/// gate and `calimero abi diff`). It captures how a `#[app::migrate]` that
+/// rebuilds the collection behaves cross-node, and whether changing a field's
+/// type silently strips provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionCategory {
+    /// Key/index/content-addressed (`LwwRegister`, `Vector`, `UnorderedMap`,
+    /// `UnorderedSet`). A migrate may rebuild them freely; they carry no
+    /// per-entry provenance.
+    Convergent,
+    /// Per-executor / per-position (`Counter`, `ReplicatedGrowableArray`).
+    /// Converges only if the migrate body replays it deterministically.
+    Replayable,
+    /// Ownership / writer-set derived from `env::executor_id()` (`AuthoredMap`,
+    /// `AuthoredVector`, `SharedStorage`). A naive rebuild diverges, and a
+    /// downgrade to a non-identity-gated type silently strips authorship / ACL.
+    IdentityGated,
+}
+
+/// Classify a CRDT collection type by how its identity is derived.
+///
+/// This is the single source of truth for the migration-safety rail. The match is
+/// intentionally exhaustive (no wildcard): adding a [`CrdtCollectionType`] variant
+/// without categorising it here is a compile error, so the taxonomy cannot
+/// silently drift.
+pub fn collection_category(ty: &CrdtCollectionType) -> CollectionCategory {
+    use CollectionCategory::{Convergent, IdentityGated, Replayable};
+    match ty {
+        CrdtCollectionType::LwwRegister
+        | CrdtCollectionType::Vector
+        | CrdtCollectionType::UnorderedMap
+        | CrdtCollectionType::UnorderedSet
+        | CrdtCollectionType::SortedMap
+        | CrdtCollectionType::SortedSet => Convergent,
+        CrdtCollectionType::Counter | CrdtCollectionType::ReplicatedGrowableArray => Replayable,
+        CrdtCollectionType::AuthoredMap
+        | CrdtCollectionType::AuthoredVector
+        | CrdtCollectionType::SharedStorage => IdentityGated,
+    }
 }
 
 /// Collection types
@@ -549,6 +595,35 @@ impl TypeRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collection_category_classifies_every_crdt_type() {
+        use CollectionCategory::{Convergent, IdentityGated, Replayable};
+        use CrdtCollectionType::{
+            AuthoredMap, AuthoredVector, Counter, LwwRegister, ReplicatedGrowableArray,
+            SharedStorage, SortedMap, SortedSet, UnorderedMap, UnorderedSet, Vector,
+        };
+
+        // Convergent: key/index/content-addressed — a migrate that rebuilds them
+        // converges cross-node, and they carry no per-entry provenance to strip.
+        assert_eq!(collection_category(&LwwRegister), Convergent);
+        assert_eq!(collection_category(&Vector), Convergent);
+        assert_eq!(collection_category(&UnorderedMap), Convergent);
+        assert_eq!(collection_category(&UnorderedSet), Convergent);
+        assert_eq!(collection_category(&SortedMap), Convergent);
+        assert_eq!(collection_category(&SortedSet), Convergent);
+
+        // Replayable: per-executor / per-position state that converges only if the
+        // migrate body replays it deterministically (increment_for / insert_at_ts).
+        assert_eq!(collection_category(&Counter), Replayable);
+        assert_eq!(collection_category(&ReplicatedGrowableArray), Replayable);
+
+        // Identity-gated: ownership/writer-set is derived from env::executor_id(),
+        // so a naive rebuild diverges and a downgrade silently strips provenance.
+        assert_eq!(collection_category(&AuthoredMap), IdentityGated);
+        assert_eq!(collection_category(&AuthoredVector), IdentityGated);
+        assert_eq!(collection_category(&SharedStorage), IdentityGated);
+    }
 
     #[test]
     fn test_manifest_serialization() {
