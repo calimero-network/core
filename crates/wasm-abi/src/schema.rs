@@ -240,7 +240,9 @@ pub fn collection_category(ty: &CrdtCollectionType) -> CollectionCategory {
         CrdtCollectionType::LwwRegister
         | CrdtCollectionType::Vector
         | CrdtCollectionType::UnorderedMap
-        | CrdtCollectionType::UnorderedSet => Convergent,
+        | CrdtCollectionType::UnorderedSet
+        | CrdtCollectionType::SortedMap
+        | CrdtCollectionType::SortedSet => Convergent,
         CrdtCollectionType::Counter | CrdtCollectionType::ReplicatedGrowableArray => Replayable,
         CrdtCollectionType::AuthoredMap
         | CrdtCollectionType::AuthoredVector
@@ -599,7 +601,7 @@ mod tests {
         use CollectionCategory::{Convergent, IdentityGated, Replayable};
         use CrdtCollectionType::{
             AuthoredMap, AuthoredVector, Counter, LwwRegister, ReplicatedGrowableArray,
-            SharedStorage, UnorderedMap, UnorderedSet, Vector,
+            SharedStorage, SortedMap, SortedSet, UnorderedMap, UnorderedSet, Vector,
         };
 
         // Convergent: key/index/content-addressed — a migrate that rebuilds them
@@ -608,6 +610,8 @@ mod tests {
         assert_eq!(collection_category(&Vector), Convergent);
         assert_eq!(collection_category(&UnorderedMap), Convergent);
         assert_eq!(collection_category(&UnorderedSet), Convergent);
+        assert_eq!(collection_category(&SortedMap), Convergent);
+        assert_eq!(collection_category(&SortedSet), Convergent);
 
         // Replayable: per-executor / per-position state that converges only if the
         // migrate body replays it deterministically (increment_for / insert_at_ts).
