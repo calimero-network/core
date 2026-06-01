@@ -444,6 +444,16 @@ fn concurrent_merge_splits_value_from_own_hash() {
 
     const ROUNDS: u16 = 40;
     const PER_THREAD: u16 = 60;
+    // `round`/`i` are stamped into the per-write payload as a single `u8`
+    // below; keep the counts inside one byte so two distinct rounds/iters can
+    // never collide on the same payload pattern. The loops are exclusive, so
+    // the largest stamped value is `count - 1`; `<= 256` (not `< 256`) is the
+    // correct bound — at `count == 256` the max index is 255, which still fits
+    // a `u8`. This byte budget guards ONLY payload uniqueness for the
+    // value-winner assertion; it has no bearing on the HLC-ordering guarantee
+    // below, which holds for any `PER_THREAD`.
+    const _: () = assert!(ROUNDS <= 256, "round as u8 would truncate");
+    const _: () = assert!(PER_THREAD <= 256, "i as u8 would truncate");
 
     for round in 0..ROUNDS {
         reset_shared_store();
@@ -453,7 +463,13 @@ fn concurrent_merge_splits_value_from_own_hash() {
 
         // Each writer churns a distinct, monotonically-newer value so every
         // Update is accepted (incoming-newer) and actually writes — maximising
-        // the interleave between the value write and the own_hash update.
+        // the interleave between the value write and the own_hash update. The
+        // two threads use interleaved-but-disjoint HLC ranges (execute = even,
+        // sync = odd) so writes are *strictly* newer rather than equal-HLC: the
+        // merge takes the `incoming_timestamp > existing` branch (the one the
+        // bug targets), not the equal-HLC content-hash tiebreak. The global
+        // maximum HLC is therefore `t_sync`'s last write, so the converged
+        // value is deterministic — asserted after the loop joins.
         let t_execute = std::thread::spawn(move || {
             for i in 0..PER_THREAD {
                 let ts = 100 + i as u64 * 2;
@@ -462,7 +478,7 @@ fn concurrent_merge_splits_value_from_own_hash() {
         });
         let t_sync = std::thread::spawn(move || {
             for i in 0..PER_THREAD {
-                let ts = 100 + i as u64 * 2;
+                let ts = 101 + i as u64 * 2;
                 update_lww_leaf(leaf, vec![0xBB, round as u8, i as u8], ts);
             }
         });
@@ -484,6 +500,23 @@ fn concurrent_merge_splits_value_from_own_hash() {
              contribution to the collection full_hash",
             hex::encode(stored_hash),
             hex::encode(own_hash),
+        );
+
+        // The converged value must be the global LWW winner, not merely
+        // self-consistent: `t_sync`'s highest HLC (101 + 2*(PER_THREAD-1))
+        // strictly exceeds every `t_execute` write (100 + 2*(PER_THREAD-1)).
+        // `lww_pick` resolves by HLC magnitude, not arrival order — a lower-ts
+        // write loses whether it arrives as `incoming` or sits as `existing` —
+        // so the leaf settles on that single highest-ts payload no matter how
+        // the two threads interleave. This is a second, independent invariant
+        // from the hash check above: it catches a "hash is self-consistent but
+        // the bytes are a stale writer's" regression the hash check can't see.
+        let expected = vec![0xBB, round as u8, (PER_THREAD - 1) as u8];
+        assert_eq!(
+            stored, expected,
+            "core#2571 (round {round}): converged on the wrong writer's value — \
+             expected the global LWW winner (t_sync's last write) but stored {:?}",
+            stored,
         );
     }
 }
