@@ -14,8 +14,6 @@ pub enum Status {
 }
 
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioNewEnumVariantV1 {
     items: UnorderedMap<String, LwwRegister<String>>,
     status: LwwRegister<Status>,

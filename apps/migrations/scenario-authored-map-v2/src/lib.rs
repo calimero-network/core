@@ -1,5 +1,5 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::state::read_raw;
 use calimero_storage::collections::{AuthoredMap, LwwRegister};
@@ -14,8 +14,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// node under LazyOnAccess), diverging the owners. Carrying the collection
 /// preserves the v1 owner stamps byte-for-byte, so every node converges.
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioAuthoredMapV2 {
     entries: AuthoredMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,

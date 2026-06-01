@@ -57,8 +57,7 @@ pub enum Event {
 
 // State
 #[app::state(emits = Event)]
-#[derive(Debug, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug, PartialEq, PartialOrd)]
 pub struct AbiState {
     counters: BTreeMap<String, u32>,
     users: Vec<UserId32>,

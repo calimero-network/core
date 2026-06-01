@@ -1,5 +1,4 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 
@@ -9,8 +8,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 // same types, same order. v2 differs only in the body of `sum_all_values`,
 // where the off-by-one bug has been fixed. No `#[app::migrate]` is needed.
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioPureBugfixV2 {
     items: UnorderedMap<String, LwwRegister<u64>>,
     last_sum: LwwRegister<u64>,

@@ -55,6 +55,19 @@ impl ToTokens for StateImpl<'_> {
         let assign_ids_impl = generate_assign_deterministic_ids_impl(ident, generics, orig);
 
         quote! {
+            // State is always persisted via borsh (init save, root-state merge,
+            // `merge_root_state_typed::<T>`), so the macro injects the derives and
+            // the crate redirect itself — authors no longer hand-write
+            // `#[derive(BorshSerialize, BorshDeserialize)]` + `#[borsh(crate = ...)]`
+            // on every state type. The full-path derive only selects the proc-macro;
+            // the generated code still resolves the borsh runtime through `::borsh`
+            // by default, so the `crate` attribute redirecting it to the SDK re-export
+            // is load-bearing.
+            #[derive(
+                ::calimero_sdk::borsh::BorshSerialize,
+                ::calimero_sdk::borsh::BorshDeserialize,
+            )]
+            #[borsh(crate = "::calimero_sdk::borsh")]
             #orig
 
             impl #impl_generics ::calimero_sdk::state::AppState for #ident #ty_generics #where_clause {
@@ -301,6 +314,41 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
                     }
                 }
                 GenericParam::Const(_) => {}
+            }
+        }
+
+        // `#[app::state]` injects the borsh derives + `#[borsh(crate = ...)]`
+        // itself. A leftover manual `BorshSerialize`/`BorshDeserialize` derive or
+        // `#[borsh(...)]` attribute would otherwise collide with the injected one
+        // and surface as a cryptic "conflicting implementations of trait
+        // `BorshSerialize`" error pointing at generated code. Catch it here and
+        // point straight at the attribute to delete.
+        let attrs = match input.item {
+            StructOrEnumItem::Struct(item) => &item.attrs,
+            StructOrEnumItem::Enum(item) => &item.attrs,
+        };
+
+        for attr in attrs {
+            if attr.path().is_ident("borsh") {
+                errors.subsume(SynError::new_spanned(
+                    attr,
+                    "remove this `#[borsh(...)]`: `#[app::state]` now injects the borsh crate attribute",
+                ));
+            } else if attr.path().is_ident("derive") {
+                let _ = attr.parse_nested_meta(|meta| {
+                    if meta.path.segments.last().is_some_and(|seg| {
+                        matches!(
+                            seg.ident.to_string().as_str(),
+                            "BorshSerialize" | "BorshDeserialize"
+                        )
+                    }) {
+                        errors.subsume(SynError::new_spanned(
+                            &meta.path,
+                            "remove this derive: `#[app::state]` now injects `BorshSerialize` and `BorshDeserialize`",
+                        ));
+                    }
+                    Ok(())
+                });
             }
         }
 

@@ -13,14 +13,11 @@
 )]
 
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::{
     Counter, LwwRegister, SortedMap, UnorderedMap, UnorderedSet, Vector,
 };
 
 #[app::state(emits = TestEvent)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct NestedCrdtTest {
     /// Map of counters - concurrent increments should sum
     pub counters: UnorderedMap<String, Counter>,
@@ -44,8 +41,6 @@ pub struct NestedCrdtTest {
 }
 
 #[app::event]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub enum TestEvent {
     CounterIncremented {
         key: String,

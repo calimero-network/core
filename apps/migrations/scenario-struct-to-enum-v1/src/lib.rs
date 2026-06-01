@@ -19,8 +19,6 @@ pub struct Status {
 }
 
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioStructToEnumV1 {
     name: LwwRegister<String>,
     status: LwwRegister<Status>,

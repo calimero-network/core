@@ -102,8 +102,6 @@ impl Default for PrivateSecrets {
 // MAIN STATE
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct E2eKvStore {
     // --- KV Storage ---
     /// Public replicated KV map
@@ -902,7 +900,7 @@ impl E2eKvStore {
 
         let value = counter.value()?;
 
-        drop(self.crdt_counters.insert(key.clone(), counter)?);
+        self.crdt_counters.insert(key.clone(), counter)?;
 
         app::emit!(Event::GCounterIncremented { key, value });
         Ok(value)
@@ -928,7 +926,7 @@ impl E2eKvStore {
 
         let value = counter.value()?;
 
-        drop(self.crdt_pn_counters.insert(key.clone(), counter)?);
+        self.crdt_pn_counters.insert(key.clone(), counter)?;
 
         app::emit!(Event::PnCounterChanged {
             key,
@@ -948,7 +946,7 @@ impl E2eKvStore {
 
         let value = counter.value()?;
 
-        drop(self.crdt_pn_counters.insert(key.clone(), counter)?);
+        self.crdt_pn_counters.insert(key.clone(), counter)?;
 
         app::emit!(Event::PnCounterChanged {
             key,
@@ -980,7 +978,7 @@ impl E2eKvStore {
     pub fn set_register(&mut self, key: String, value: String) -> app::Result<()> {
         let register = LwwRegister::new(value.clone());
 
-        drop(self.crdt_registers.insert(key.clone(), register)?);
+        self.crdt_registers.insert(key.clone(), register)?;
 
         app::emit!(Event::RegisterSet { key, value });
         Ok(())
@@ -1006,9 +1004,9 @@ impl E2eKvStore {
             .get(&outer_key)?
             .unwrap_or_else(UnorderedMap::new);
 
-        drop(inner_map.insert(inner_key.clone(), value.clone().into())?);
+        inner_map.insert(inner_key.clone(), value.clone().into())?;
 
-        drop(self.crdt_metadata.insert(outer_key.clone(), inner_map)?);
+        self.crdt_metadata.insert(outer_key.clone(), inner_map)?;
 
         app::emit!(Event::MetadataSet {
             outer_key,
@@ -1060,9 +1058,9 @@ impl E2eKvStore {
     pub fn add_tag(&mut self, key: String, tag: String) -> app::Result<()> {
         let mut set = self.crdt_tags.get(&key)?.unwrap_or_else(UnorderedSet::new);
 
-        let _ = set.insert(tag.clone())?;
+        set.insert(tag.clone())?;
 
-        drop(self.crdt_tags.insert(key.clone(), set)?);
+        self.crdt_tags.insert(key.clone(), set)?;
 
         app::emit!(Event::TagAdded { key, tag });
         Ok(())

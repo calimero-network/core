@@ -9,12 +9,9 @@
 //! `HashSet`.
 
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::SortedSet;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct SortedSetStore {
     items: SortedSet<String>,
 }
