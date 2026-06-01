@@ -1289,6 +1289,29 @@ mod tests {
     }
 
     #[test]
+    fn test_new_plus_reassign_matches_new_with_field_name() {
+        // Safety lock for dropping `new_with_field_name("x")` in favour of plain
+        // `::new()`: the conversion is only sound because the `#[app::state]`
+        // post-init pass calls `reassign_deterministic_id("x")`, which MUST derive
+        // the identical deterministic id `new_with_field_name("x")` produces. If
+        // these two id derivations ever drift apart, every app that switched to
+        // `::new()` would silently mint a different id on creation and split-brain
+        // across nodes (CIP I9) with no compile error — so pin them equal here.
+        crate::env::reset_for_testing();
+
+        let explicit: UnorderedMap<String, String> = UnorderedMap::new_with_field_name("items");
+
+        let mut via_pass: UnorderedMap<String, String> = UnorderedMap::new();
+        via_pass.reassign_deterministic_id("items");
+
+        assert_eq!(
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&explicit),
+            <UnorderedMap<String, String> as crate::entities::Data>::id(&via_pass),
+            "new() + post-init reassign must produce the same id as new_with_field_name",
+        );
+    }
+
+    #[test]
     fn test_reassign_deterministic_id_preserves_entries() {
         crate::env::reset_for_testing();
 

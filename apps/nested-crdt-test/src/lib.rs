@@ -73,13 +73,19 @@ impl NestedCrdtTest {
     /// Initialize with empty state
     #[app::init]
     pub fn init() -> NestedCrdtTest {
+        // Plain `::new()` is sufficient: `#[app::state]` runs
+        // `__assign_deterministic_ids()` after `init()` returns, which calls
+        // `reassign_deterministic_id("<field>")` on every top-level collection
+        // using the real struct field name. That derives the identical
+        // deterministic id `new_with_field_name("<field>")` would have produced,
+        // without repeating each field name as a typo-prone string literal.
         NestedCrdtTest {
-            counters: UnorderedMap::new_with_field_name("counters"),
-            registers: UnorderedMap::new_with_field_name("registers"),
-            metadata: UnorderedMap::new_with_field_name("metadata"),
-            metrics: Vector::new_with_field_name("metrics"),
-            tags: UnorderedMap::new_with_field_name("tags"),
-            sorted_scores: SortedMap::new_with_field_name("sorted_scores"),
+            counters: UnorderedMap::new(),
+            registers: UnorderedMap::new(),
+            metadata: UnorderedMap::new(),
+            metrics: Vector::new(),
+            tags: UnorderedMap::new(),
+            sorted_scores: SortedMap::new(),
         }
     }
 
