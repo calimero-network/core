@@ -471,6 +471,39 @@ fn test_authored_collections_preserve_crdt_type() {
 }
 
 #[test]
+fn test_shared_storage_preserves_crdt_type() {
+    use calimero_wasm_abi::schema::{CollectionType, CrdtCollectionType};
+
+    let resolver = MockResolver::new();
+
+    // `SharedStorage<String>` is a single-slot wrapper: one value `T` guarded by a
+    // writer set that lives in storage metadata. It must surface as a Collection
+    // carrying `crdt_type = SharedStorage` plus the inner type — mirroring the
+    // LwwRegister single-value shape — so a schema diff can SEE a
+    // `SharedStorage -> UnorderedMap` identity downgrade. Previously it unwrapped to
+    // bare `T`, making the writer-ACL invisible to the schema.
+    let normalized = normalize_type(&parse_type("SharedStorage<String>"), true, &resolver).unwrap();
+    match normalized {
+        TypeRef::Collection {
+            collection,
+            crdt_type,
+            inner_type,
+        } => {
+            assert_eq!(crdt_type, Some(CrdtCollectionType::SharedStorage));
+            assert!(
+                matches!(collection, CollectionType::Record { .. }),
+                "SharedStorage must surface as a single-slot Record collection"
+            );
+            assert!(
+                inner_type.is_some(),
+                "SharedStorage must preserve its inner value type"
+            );
+        }
+        other => panic!("expected Collection variant, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_sdk_identity_newtypes_normalize_to_fixed_bytes() {
     // `BlobId` / `ContextId` / `ApplicationId` are SDK identity newtypes from
     // `calimero_primitives`, exposed to apps via `calimero_sdk`. They are
