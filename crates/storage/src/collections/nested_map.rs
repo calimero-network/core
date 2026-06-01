@@ -35,7 +35,7 @@
 //! # Ok::<(), calimero_storage::collections::error::StoreError>(())
 //! ```
 
-use super::{StoreError, UnorderedMap};
+use super::{StoreError, UnorderedMap, ValueRef};
 use crate::store::StorageAdaptor;
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -103,6 +103,7 @@ where
         // Get or create the inner map
         let mut inner_map = self
             .get(&outer_key)?
+            .map(ValueRef::into_inner)
             .unwrap_or_else(UnorderedMap::new_internal);
 
         // Insert into inner map
@@ -116,14 +117,14 @@ where
 
     fn get_nested(&self, outer_key: &K1, inner_key: &K2) -> Result<Option<V>, StoreError> {
         if let Some(inner_map) = self.get(outer_key)? {
-            inner_map.get(inner_key)
+            Ok(inner_map.get(inner_key)?.map(ValueRef::into_inner))
         } else {
             Ok(None)
         }
     }
 
     fn remove_nested(&mut self, outer_key: &K1, inner_key: &K2) -> Result<Option<V>, StoreError> {
-        let Some(mut inner_map) = self.get(outer_key)? else {
+        let Some(mut inner_map) = self.get(outer_key)?.map(ValueRef::into_inner) else {
             return Ok(None);
         };
 

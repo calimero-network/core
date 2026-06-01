@@ -80,7 +80,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
-use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor};
+use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor, ValueRef};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
@@ -405,19 +405,24 @@ where
 
     /// Get the value for a key in the map.
     ///
+    /// Returns a read-only [`ValueRef`] guard (an owned copy that derefs to
+    /// `&V`). To *mutate* the stored value use [`get_mut`](Self::get_mut) or
+    /// [`entry`](Self::entry)`().or_default()`; to take an owned mutable copy on
+    /// purpose call [`ValueRef::into_inner`].
+    ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system, or a child
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
-    pub fn get<Q>(&self, key: &Q) -> Result<Option<V>, StoreError>
+    pub fn get<Q>(&self, key: &Q) -> Result<Option<ValueRef<V>>, StoreError>
     where
         K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
         let id = compute_id(self.inner.id(), key.as_ref());
 
-        Ok(self.inner.get(id)?.map(|(_, v)| v))
+        Ok(self.inner.get(id)?.map(|(_, v)| ValueRef::new(v)))
     }
 
     /// Returns a mutable `ValueMut` guard for the value at `key`.
@@ -1303,7 +1308,10 @@ mod tests {
             .is_none());
 
         assert_eq!(
-            map.get("key").expect("get failed").as_deref(),
+            map.get("key")
+                .expect("get failed")
+                .as_deref()
+                .map(String::as_str),
             Some("value")
         );
 
@@ -1450,7 +1458,10 @@ mod tests {
             assert_eq!(*guard, "value1");
             *guard = "updated".to_owned();
         }
-        assert_eq!(map.get("key1").unwrap().as_deref(), Some("updated"));
+        assert_eq!(
+            map.get("key1").unwrap().as_deref().map(String::as_str),
+            Some("updated")
+        );
 
         // or_insert on occupied keeps the existing value.
         let guard = map
@@ -1486,7 +1497,7 @@ mod tests {
             *guard += 1;
         }
 
-        assert_eq!(map.get("b").unwrap(), Some(6));
+        assert_eq!(map.get("b").unwrap().as_deref().copied(), Some(6));
         assert_eq!(map.len().unwrap(), 1);
 
         // Ordering is preserved when `or_default()` creates new keys.

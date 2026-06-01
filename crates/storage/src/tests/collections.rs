@@ -78,11 +78,17 @@ fn test_unordered_map_basic_operations() {
         .is_none());
 
     assert_eq!(
-        map.get("key").expect("get failed").as_deref(),
+        map.get("key")
+            .expect("get failed")
+            .as_deref()
+            .map(String::as_str),
         Some("value")
     );
     assert_ne!(
-        map.get("key").expect("get failed").as_deref(),
+        map.get("key")
+            .expect("get failed")
+            .as_deref()
+            .map(String::as_str),
         Some("value2")
     );
 
@@ -98,11 +104,17 @@ fn test_unordered_map_basic_operations() {
         .is_none());
 
     assert_eq!(
-        map.get("key").expect("get failed").as_deref(),
+        map.get("key")
+            .expect("get failed")
+            .as_deref()
+            .map(String::as_str),
         Some("value2")
     );
     assert_eq!(
-        map.get("key2").expect("get failed").as_deref(),
+        map.get("key2")
+            .expect("get failed")
+            .as_deref()
+            .map(String::as_str),
         Some("value")
     );
 
@@ -131,11 +143,17 @@ fn test_unordered_map_insert_and_get() {
         .is_none());
 
     assert_eq!(
-        map.get("key1").expect("get failed").as_deref(),
+        map.get("key1")
+            .expect("get failed")
+            .as_deref()
+            .map(String::as_str),
         Some("value1")
     );
     assert_eq!(
-        map.get("key2").expect("get failed").as_deref(),
+        map.get("key2")
+            .expect("get failed")
+            .as_deref()
+            .map(String::as_str),
         Some("value2")
     );
 }
@@ -154,7 +172,10 @@ fn test_unordered_map_update_value() {
         .is_none());
 
     assert_eq!(
-        map.get("key").expect("get failed").as_deref(),
+        map.get("key")
+            .expect("get failed")
+            .as_deref()
+            .map(String::as_str),
         Some("new_value")
     );
 }
@@ -280,7 +301,7 @@ fn test_vector_get() {
 
     let value = "test_data".to_string();
     let _ = vector.push(value.clone()).unwrap();
-    let retrieved_value = vector.get(0).unwrap();
+    let retrieved_value = vector.get(0).unwrap().map(|v| v.into_inner());
     assert_eq!(retrieved_value, Some(value));
 }
 
@@ -292,7 +313,7 @@ fn test_vector_update() {
     let value2 = "test_data2".to_string();
     let _ = vector.push(value1.clone()).unwrap();
     let old = vector.update(0, value2.clone()).unwrap();
-    let retrieved_value = vector.get(0).unwrap();
+    let retrieved_value = vector.get(0).unwrap().map(|v| v.into_inner());
     assert_eq!(retrieved_value, Some(value2));
     assert_eq!(old, Some(value1));
 }

@@ -36,7 +36,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
-use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor};
+use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor, ValueRef};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
@@ -395,20 +395,26 @@ where
 
     /// Get the value for a key in the map.
     ///
+    /// Returns a read-only [`ValueRef`] guard (an owned, deserialized copy that
+    /// derefs to `&V`). Reads work transparently through it; to *mutate* the
+    /// stored value use [`get_mut`](Self::get_mut) or
+    /// [`entry`](Self::entry)`().or_default()`, and to take an owned mutable copy
+    /// on purpose call [`ValueRef::into_inner`].
+    ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system, or a child
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn get<Q>(&self, key: &Q) -> Result<Option<V>, StoreError>
+    pub fn get<Q>(&self, key: &Q) -> Result<Option<ValueRef<V>>, StoreError>
     where
         K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
         let id = compute_id(self.inner.id(), key.as_ref());
 
-        Ok(self.inner.get(id)?.map(|(_, v)| v))
+        Ok(self.inner.get(id)?.map(|(_, v)| ValueRef::new(v)))
     }
 
     /// Returns a mutable reference to the value corresponding to the key.
@@ -944,11 +950,17 @@ mod tests {
             .is_none());
 
         assert_eq!(
-            map.get("key").expect("get failed").as_deref(),
+            map.get("key")
+                .expect("get failed")
+                .as_deref()
+                .map(String::as_str),
             Some("value")
         );
         assert_ne!(
-            map.get("key").expect("get failed").as_deref(),
+            map.get("key")
+                .expect("get failed")
+                .as_deref()
+                .map(String::as_str),
             Some("value2")
         );
 
@@ -964,11 +976,17 @@ mod tests {
             .is_none());
 
         assert_eq!(
-            map.get("key").expect("get failed").as_deref(),
+            map.get("key")
+                .expect("get failed")
+                .as_deref()
+                .map(String::as_str),
             Some("value2")
         );
         assert_eq!(
-            map.get("key2").expect("get failed").as_deref(),
+            map.get("key2")
+                .expect("get failed")
+                .as_deref()
+                .map(String::as_str),
             Some("value")
         );
 
@@ -997,11 +1015,17 @@ mod tests {
             .is_none());
 
         assert_eq!(
-            map.get("key1").expect("get failed").as_deref(),
+            map.get("key1")
+                .expect("get failed")
+                .as_deref()
+                .map(String::as_str),
             Some("value1")
         );
         assert_eq!(
-            map.get("key2").expect("get failed").as_deref(),
+            map.get("key2")
+                .expect("get failed")
+                .as_deref()
+                .map(String::as_str),
             Some("value2")
         );
     }
@@ -1020,7 +1044,10 @@ mod tests {
             .is_none());
 
         assert_eq!(
-            map.get("key").expect("get failed").as_deref(),
+            map.get("key")
+                .expect("get failed")
+                .as_deref()
+                .map(String::as_str),
             Some("new_value")
         );
     }
@@ -1148,7 +1175,10 @@ mod tests {
 
         // Verify the change was persisted
         assert_eq!(
-            map.get("key1").expect("get failed").as_deref(),
+            map.get("key1")
+                .expect("get failed")
+                .as_deref()
+                .map(String::as_str),
             Some("new_value")
         );
 
@@ -1175,7 +1205,10 @@ mod tests {
         } // Guard is dropped, "new_value1" is committed
 
         assert_eq!(map.len().unwrap(), 1);
-        assert_eq!(map.get("key1").unwrap().as_deref(), Some("new_value1"));
+        assert_eq!(
+            map.get("key1").unwrap().as_deref().map(String::as_str),
+            Some("new_value1")
+        );
 
         // Test `or_insert_with()`
         {
@@ -1189,7 +1222,10 @@ mod tests {
         } // Guard is dropped
 
         assert_eq!(map.len().unwrap(), 2);
-        assert_eq!(map.get("key2").unwrap().as_deref(), Some("value2"));
+        assert_eq!(
+            map.get("key2").unwrap().as_deref().map(String::as_str),
+            Some("value2")
+        );
     }
 
     #[test]
@@ -1214,7 +1250,10 @@ mod tests {
 
         // Make sure the value hasn't changed
         assert_eq!(map.len().unwrap(), 1);
-        assert_eq!(map.get("key1").unwrap().as_deref(), Some("value1"));
+        assert_eq!(
+            map.get("key1").unwrap().as_deref().map(String::as_str),
+            Some("value1")
+        );
 
         // Test `or_insert_with()` on an occupied entry
         let mut called = false;
@@ -1234,7 +1273,10 @@ mod tests {
 
         assert_eq!(called, false); // Verify closure was not executed
         assert_eq!(map.len().unwrap(), 1);
-        assert_eq!(map.get("key1").unwrap().as_deref(), Some("value1"));
+        assert_eq!(
+            map.get("key1").unwrap().as_deref().map(String::as_str),
+            Some("value1")
+        );
     }
 
     #[test]
@@ -1253,7 +1295,7 @@ mod tests {
             *guard += 5;
         } // Guard is dropped -> value re-persisted
 
-        assert_eq!(map.get("key1").unwrap(), Some(5));
+        assert_eq!(map.get("key1").unwrap().as_deref().copied(), Some(5));
         assert_eq!(map.len().unwrap(), 1);
 
         // Occupied: `or_default()` yields the existing value, not a fresh default.
@@ -1267,7 +1309,7 @@ mod tests {
             *guard += 1;
         } // Guard is dropped -> value re-persisted
 
-        assert_eq!(map.get("key1").unwrap(), Some(6));
+        assert_eq!(map.get("key1").unwrap().as_deref().copied(), Some(6));
         assert_eq!(map.len().unwrap(), 1);
     }
 
@@ -1284,7 +1326,10 @@ mod tests {
         } else {
             panic!("Entry should be occupied");
         }
-        assert_eq!(map.get("key1").unwrap().as_deref(), Some("updated_value1"));
+        assert_eq!(
+            map.get("key1").unwrap().as_deref().map(String::as_str),
+            Some("updated_value1")
+        );
 
         // Test `OccupiedEntry::insert()`
         let old_val = if let Ok(Entry::Occupied(mut entry)) = map.entry("key2".to_owned()) {
@@ -1293,7 +1338,10 @@ mod tests {
             panic!("Entry should be occupied");
         };
         assert_eq!(old_val, "value2");
-        assert_eq!(map.get("key2").unwrap().as_deref(), Some("updated_value2"));
+        assert_eq!(
+            map.get("key2").unwrap().as_deref().map(String::as_str),
+            Some("updated_value2")
+        );
         assert_eq!(map.len().unwrap(), 3); // Length should be unchanged
 
         // Test `OccupiedEntry::remove()`
@@ -1396,12 +1444,18 @@ mod tests {
             "Map ID should change after deterministic reassignment"
         );
         assert_eq!(
-            map.get("alpha").expect("get alpha failed").as_deref(),
+            map.get("alpha")
+                .expect("get alpha failed")
+                .as_deref()
+                .map(String::as_str),
             Some("one"),
             "alpha entry should survive reassignment"
         );
         assert_eq!(
-            map.get("beta").expect("get beta failed").as_deref(),
+            map.get("beta")
+                .expect("get beta failed")
+                .as_deref()
+                .map(String::as_str),
             Some("two"),
             "beta entry should survive reassignment"
         );

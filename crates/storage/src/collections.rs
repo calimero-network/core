@@ -58,6 +58,67 @@ pub use frozen::FrozenStorage;
 pub mod frozen_value;
 pub use frozen_value::FrozenValue;
 
+/// An owned, **read-only** view of a value returned by a collection's `get`.
+///
+/// Storage values are not resident in memory the way a `HashMap`'s are — every
+/// `get` deserializes a fresh copy from the backing store — so this cannot be a
+/// borrow like `HashMap::get`'s `&V`. Instead it owns the deserialized value and
+/// exposes it *immutably only* (`Deref`, deliberately no `DerefMut`).
+///
+/// That turns the most common storage footgun into a compile error: mutating a
+/// `get` result and forgetting to write it back used to silently discard the
+/// change (the value was a throwaway copy). Now the mutation does not compile —
+/// the borrow checker steers you to the right tool:
+///
+/// - to **mutate and persist**, use [`get_mut`] or [`entry`]`().or_default()`;
+/// - to **take an owned, mutable copy on purpose** (e.g. mutate locally and
+///   `insert` it back deliberately), call [`into_inner`](ValueRef::into_inner).
+///
+/// [`get_mut`]: UnorderedMap::get_mut
+/// [`entry`]: UnorderedMap::entry
+pub struct ValueRef<V> {
+    value: V,
+}
+
+impl<V> ValueRef<V> {
+    /// Wrap an owned value just read from storage. Internal: only collection
+    /// `get` methods mint these.
+    pub(crate) const fn new(value: V) -> Self {
+        Self { value }
+    }
+
+    /// Consume the guard and take ownership of the value.
+    ///
+    /// Use this for the deliberate read-modify-write-back pattern (mutate a copy,
+    /// then `insert` it). Prefer `get_mut`/`entry().or_default()` when you can —
+    /// they persist automatically without the manual re-insert.
+    pub fn into_inner(self) -> V {
+        self.value
+    }
+}
+
+impl<V> Deref for ValueRef<V> {
+    type Target = V;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<V: fmt::Debug> fmt::Debug for ValueRef<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.value.fmt(f)
+    }
+}
+
+impl<V: PartialEq> PartialEq for ValueRef<V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl<V: Eq> Eq for ValueRef<V> {}
+
 // fixme! macro expects `calimero_storage` to be in deps
 use crate as calimero_storage;
 use crate::address::Id;

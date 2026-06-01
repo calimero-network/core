@@ -6,7 +6,7 @@
 
 use crate::collections::{
     Counter, LwwRegister, Mergeable, ReplicatedGrowableArray, Root, UnorderedMap, UnorderedSet,
-    Vector,
+    ValueRef, Vector,
 };
 use crate::env;
 use crate::merge::{clear_merge_registry, merge_root_state, register_crdt_merge};
@@ -222,7 +222,12 @@ fn test_merge_with_nested_map() {
 
     // Simulate node 2 - add title field
     let mut state2: AppWithNestedMap = borsh::from_slice(&bytes1).unwrap();
-    let mut doc = state2.documents.get(&"doc-1".to_string()).unwrap().unwrap();
+    let mut doc = state2
+        .documents
+        .get(&"doc-1".to_string())
+        .unwrap()
+        .unwrap()
+        .into_inner();
     doc.insert(
         "title".to_string(),
         LwwRegister::new("My Title".to_string()),
@@ -238,7 +243,8 @@ fn test_merge_with_nested_map() {
         .documents
         .get(&"doc-1".to_string())
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .into_inner();
     doc.insert("owner".to_string(), LwwRegister::new("Alice".to_string()))
         .unwrap();
     state1_modified
@@ -662,7 +668,12 @@ fn test_merge_map_of_counters() {
 
     // Node 2: Increment the same counter (from same base)
     let mut state2: AppWithCounters = borsh::from_slice(&bytes1).unwrap();
-    let mut counter2 = state2.scores.get(&"player1".to_string()).unwrap().unwrap();
+    let mut counter2 = state2
+        .scores
+        .get(&"player1".to_string())
+        .unwrap()
+        .unwrap()
+        .into_inner();
     counter2.increment().unwrap(); // value = 3
     state2
         .scores
@@ -808,11 +819,11 @@ fn test_merge_vector_of_counters() {
     let mut state2: AppWithVectorCounters = borsh::from_slice(&bytes1).unwrap();
 
     // Increment both counters on node 2
-    let mut c = state2.metrics.get(0).unwrap().unwrap();
+    let mut c = state2.metrics.get(0).unwrap().unwrap().into_inner();
     c.increment().unwrap(); // was 2, now 3
     state2.metrics.update(0, c).unwrap();
 
-    let mut c = state2.metrics.get(1).unwrap().unwrap();
+    let mut c = state2.metrics.get(1).unwrap().unwrap().into_inner();
     c.increment().unwrap();
     c.increment().unwrap(); // was 1, now 3
     state2.metrics.update(1, c).unwrap();
@@ -885,7 +896,12 @@ fn test_merge_map_of_sets() {
     // Node 2: Add more tags to Alice (concurrent)
     let mut state2: AppWithSetTags = borsh::from_slice(&bytes1).unwrap();
 
-    let mut alice_tags2 = state2.user_tags.get(&"alice".to_string()).unwrap().unwrap();
+    let mut alice_tags2 = state2
+        .user_tags
+        .get(&"alice".to_string())
+        .unwrap()
+        .unwrap()
+        .into_inner();
     alice_tags2.insert("crdt".to_string()).unwrap();
     alice_tags2.insert("distributed".to_string()).unwrap();
     state2
@@ -2165,6 +2181,7 @@ fn test_nested_counter_in_map_concurrent_increments_converge() {
             .counters
             .get(&"k".to_string())
             .unwrap()
+            .map(ValueRef::into_inner)
             .unwrap_or_else(Counter::new);
         ctr.increment().unwrap();
         doc.counters.insert("k".to_string(), ctr).unwrap();
@@ -2310,6 +2327,7 @@ fn test_nested_counter_first_touch_concurrent_converges() {
             .counters
             .get(&"k".to_string())
             .unwrap()
+            .map(ValueRef::into_inner)
             .unwrap_or_else(Counter::new);
         ctr.increment().unwrap();
         doc.counters.insert("k".to_string(), ctr).unwrap();
@@ -2839,6 +2857,7 @@ fn test_nested_set_first_touch_concurrent_converges() {
             .tags
             .get(&"k".to_string())
             .unwrap()
+            .map(ValueRef::into_inner)
             .unwrap_or_else(UnorderedSet::new);
         let _ = set.insert(tag.to_string()).unwrap();
         doc.tags.insert("k".to_string(), set).unwrap();
@@ -2998,6 +3017,7 @@ fn test_nested_pncounter_single_writer_converges() {
         .counters
         .get(&"bal".to_string())
         .unwrap()
+        .map(ValueRef::into_inner)
         .unwrap_or_else(Counter::<true>::new);
     ctr.increment().unwrap();
     ctr.increment().unwrap();
@@ -3123,6 +3143,7 @@ fn test_nested_pncounter_concurrent_writers_converge() {
             .counters
             .get(&"bal".to_string())
             .unwrap()
+            .map(ValueRef::into_inner)
             .unwrap_or_else(Counter::<true>::new);
         ctr.increment().unwrap();
         ctr.increment().unwrap();
@@ -3144,6 +3165,7 @@ fn test_nested_pncounter_concurrent_writers_converge() {
             .counters
             .get(&"bal".to_string())
             .unwrap()
+            .map(ValueRef::into_inner)
             .unwrap_or_else(Counter::<true>::new);
         ctr.increment().unwrap();
         doc.counters.insert("bal".to_string(), ctr).unwrap();
