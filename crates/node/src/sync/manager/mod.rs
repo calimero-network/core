@@ -3138,6 +3138,12 @@ impl SyncManager {
                 // HashComparison session. Log and ignore.
                 warn!("Received EntityPush outside of HashComparison session, ignoring");
             }
+            InitPayload::EntityDeletePush { .. } => {
+                // Like EntityPush, tombstone propagation only occurs inside an
+                // established HashComparison session (handled by the responder
+                // loop), never as a top-level stream init.
+                warn!("Received EntityDeletePush outside of HashComparison session, ignoring");
+            }
             InitPayload::NamespaceBackfillRequest { .. } => {
                 unreachable!("handled by early return above")
             }

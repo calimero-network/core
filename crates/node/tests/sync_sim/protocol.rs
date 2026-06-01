@@ -691,10 +691,10 @@ mod tests {
     /// (`root_hash_verified=false`, looping local-vs-remote entity-count
     /// mismatch).
     ///
-    /// FAILS today; turns green once HashComparison propagates tombstones.
-    /// Acceptance criterion for the fix: remove `#[ignore]` and this passes.
+    /// Regression guard: HashComparison now propagates tombstones via
+    /// `EntityDeletePush`, so the cleared node pushes an authenticated
+    /// `DeleteRef` to the peer (delete-wins) and both converge to deleted.
     #[tokio::test]
-    #[ignore = "repro: HashComparison does not propagate clear tombstones (clear split-brain); unignore when fixed"]
     async fn test_hashcomparison_propagates_clear_tombstone() {
         use crate::sync_sim::actions::StorageOp;
 
