@@ -198,6 +198,11 @@ pub struct ContextConfigParams {
 /// former `Coordinated` variant (borsh tag `2`) was removed — it did nothing
 /// `Automatic` didn't and its `deadline` was never enforced. Tag `2` is now
 /// rejected on deserialize (see the borsh impl below).
+///
+/// `#[non_exhaustive]` is retained deliberately even though only two variants
+/// remain: future policies (e.g. an eager migrating `Automatic`) can be added
+/// without it being a breaking change for downstream matchers. Any new variant
+/// MUST also be assigned a borsh tag in the manual impl below.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum UpgradePolicy {
@@ -213,6 +218,9 @@ const _: () = {
     use borsh::{BorshDeserialize, BorshSerialize};
     use std::io::{Read, Write};
 
+    // Tags are stable wire/storage identifiers: 0 = Automatic, 1 = LazyOnAccess,
+    // 2 = removed `Coordinated` (now rejected). A new variant must claim the
+    // next free tag here AND add its arm to the deserializer below.
     impl BorshSerialize for UpgradePolicy {
         fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
             match self {

@@ -2297,10 +2297,10 @@ mod tests {
         // GroupMetaValue carrying that tag must now fail to decode (loud
         // failure) rather than being silently reinterpreted as another policy.
         fn group_meta_value_with_legacy_coordinated_tag_is_rejected() {
-            let value = GroupMetaValue {
+            let make = |policy| GroupMetaValue {
                 app_key: [0x11; 32],
                 target_application_id: ApplicationId::from([0x22; 32]),
-                upgrade_policy: UpgradePolicy::Automatic,
+                upgrade_policy: policy,
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0x33; 32]),
                 owner_identity: PrimitivePublicKey::from([0x33; 32]),
@@ -2308,15 +2308,30 @@ mod tests {
                 auto_join: true,
             };
 
-            // Field order is app_key[32], target_application_id[32], then the
-            // upgrade-policy tag, so the policy tag lives at byte offset 64.
-            let mut bytes = to_vec(&value).expect("serialize");
+            // Locate the upgrade-policy tag byte without hardcoding an offset:
+            // serialize two values that differ ONLY in `upgrade_policy`
+            // (Automatic = tag 0, LazyOnAccess = tag 1) and find the single
+            // differing byte. This stays correct even if fields before
+            // `upgrade_policy` change size or order.
+            let automatic = to_vec(&make(UpgradePolicy::Automatic)).expect("serialize");
+            let lazy = to_vec(&make(UpgradePolicy::LazyOnAccess)).expect("serialize");
+            let diffs: Vec<usize> = automatic
+                .iter()
+                .zip(&lazy)
+                .enumerate()
+                .filter_map(|(i, (a, b))| (a != b).then_some(i))
+                .collect();
             assert_eq!(
-                bytes[64], 0,
-                "expected the Automatic policy tag (0) at offset 64"
+                diffs.len(),
+                1,
+                "the two values must differ in exactly the policy tag byte"
             );
-            bytes[64] = 2; // legacy Coordinated tag
+            let tag_offset = diffs[0];
 
+            // Patch that byte to the removed Coordinated tag (2) and assert the
+            // whole value now fails to decode.
+            let mut bytes = automatic;
+            bytes[tag_offset] = 2;
             let decoded = from_slice::<GroupMetaValue>(&bytes);
             assert!(
                 decoded.is_err(),
