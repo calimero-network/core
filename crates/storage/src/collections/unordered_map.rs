@@ -78,11 +78,22 @@ where
 {
     /// Create a new map collection with a random ID.
     ///
-    /// Use this for nested collections stored as values in other maps.
-    /// Merge happens by the parent map's key, so the nested collection's ID
-    /// doesn't affect sync semantics.
+    /// This is the right constructor in both common cases:
     ///
-    /// For top-level state fields, use `new_with_field_name` instead.
+    /// - **Top-level `#[app::state]` fields.** `new()` is sufficient — the macro
+    ///   runs `__assign_deterministic_ids()` after `init()`/`migrate()` returns,
+    ///   which calls `reassign_deterministic_id("<field>")` using the struct field
+    ///   name. That derives the same deterministic ID `new_with_field_name("<field>")`
+    ///   would, so the random ID minted here is replaced before any sync. Prefer
+    ///   `new()` over `new_with_field_name` for these fields: the latter repeats the
+    ///   field name as a string literal that must match exactly, and a typo silently
+    ///   assigns the wrong ID (the entity then diverges across nodes with no error).
+    /// - **Nested collections** stored as values in other maps. Merge happens by the
+    ///   parent map's key, so the nested collection's random ID is fine as-is.
+    ///
+    /// `new_with_field_name` is only needed to assign a deterministic ID outside the
+    /// macro pass (e.g. a collection constructed and used entirely within one call,
+    /// before the post-init pass can reach it).
     ///
     /// The storage adaptor `S` is inferred from the binding context.
     /// Default-generic remains `MainStorage`, so existing call sites
