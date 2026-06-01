@@ -434,9 +434,13 @@ fn normalize_generic_type(
                 inner_type: None,
             })
         }
-        // SharedStorage<T> is a single-slot wrapper: the writer set lives in
-        // metadata and is not part of the user-facing data shape, so it
-        // normalizes to its inner T.
+        // SharedStorage<T> is a single-slot value guarded by a writer-set ACL
+        // (writers + per-write nonce in metadata). The user-facing data shape is
+        // the inner T, but we surface it as a Collection carrying
+        // `crdt_type = SharedStorage` + the inner type (mirroring the LwwRegister
+        // single-value shape) so the writer-ACL is visible to the schema and the
+        // migration identity-downgrade diff. Previously this unwrapped to bare T,
+        // making a `SharedStorage -> UnorderedMap` downgrade invisible.
         "SharedStorage" => {
             if args.args.is_empty() {
                 return Err(NormalizeError::TypePathError(
@@ -449,7 +453,12 @@ fn normalize_generic_type(
                     "invalid storage argument".to_owned(),
                 ));
             };
-            normalize_type(ty, wasm32, resolver)
+            let inner_type = normalize_type(ty, wasm32, resolver)?;
+            Ok(TypeRef::Collection {
+                collection: CollectionType::Record { fields: vec![] },
+                crdt_type: Some(CrdtCollectionType::SharedStorage),
+                inner_type: Some(Box::new(inner_type)),
+            })
         }
         _ => Err(NormalizeError::TypePathError(format!(
             "unknown generic type: {ident}"

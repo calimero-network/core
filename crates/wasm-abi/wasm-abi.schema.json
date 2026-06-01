@@ -97,7 +97,8 @@
         "unordered_set",
         "sorted_set",
         "replicated_growable_array",
-        "authored_vector"
+        "authored_vector",
+        "shared_storage"
       ]
     },
     "CollectionType": {
