@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd "$(dirname $0)"
+cd "$(dirname "$0")"
 
 TARGET="${CARGO_TARGET_DIR:-../../../target}"
 

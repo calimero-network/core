@@ -18,6 +18,11 @@ struct ScenarioIdentityDowngradeV1 {
     wiki: AuthoredMap<String, LwwRegister<String>>,
 }
 
+// SAFETY: `#[app::migrate]` returns the new state by value (not a `Result`), so a
+// panic is the macro's canonical — and only — way to abort an impossible migration
+// (no prior state / undeserialisable V1 bytes). This deliberately mirrors every other
+// scenario fixture (e.g. scenario-authored-map-v2); it is a test fixture, not production
+// logic, and is never run by merobox (a downgrade migration is intentionally unsafe).
 #[app::migrate]
 pub fn migrate_v1_to_v2() -> ScenarioIdentityDowngradeV2 {
     let old_bytes = read_raw().unwrap_or_else(|| {

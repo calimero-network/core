@@ -624,4 +624,28 @@ mod tests {
             "an unrecognised crdt_type must be rejected at manifest load (fail-closed)"
         );
     }
+
+    #[test]
+    fn ref_with_extra_sibling_keys_preserves_both() {
+        // A typed `TypeRef::Ref` serializes to exactly `{"$ref": name}`, so the current
+        // schema never emits a `$ref` with sibling keys — but if a future format did,
+        // `expand_refs` must keep BOTH the resolved target (under `$resolved`) and the
+        // siblings, never silently dropping a difference. Exercises the `len() > 1`
+        // branch directly (unreachable from a parsed manifest today, fail-closed by design).
+        let m = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Inner":{"kind":"record","fields":[{"name":"a","type":{"kind":"u64"}}]},
+                "Root":{"kind":"record","fields":[{"name":"x","type":{"kind":"u64"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let value = serde_json::json!({"$ref": "Inner", "extra": "keep-me"});
+        let out = expand_refs(value, &m, &mut HashSet::new()).unwrap();
+        let obj = out.as_object().expect("object out");
+        assert!(obj.contains_key("$resolved"), "resolved target kept: {out}");
+        assert_eq!(obj.get("extra").unwrap(), "keep-me", "sibling kept: {out}");
+        assert!(
+            !obj.contains_key("$ref"),
+            "$ref replaced by $resolved: {out}"
+        );
+    }
 }
