@@ -33,6 +33,7 @@
 
 use calimero_node::sync::{
     HashComparisonConfig, HashComparisonFirstRequest, HashComparisonProtocol, HashComparisonStats,
+    LevelWiseConfig, LevelWiseFirstRequest, LevelWiseProtocol,
 };
 use calimero_node_primitives::sync::{
     InitPayload, StreamMessage, SyncProtocolExecutor, SyncTransport,
@@ -179,6 +180,73 @@ pub async fn execute_hash_comparison_sync(
     let stats = init_result.wrap_err("initiator failed")?;
 
     Ok(stats.into())
+}
+
+/// Drive a real `LevelWiseProtocol` session between two sim nodes over an
+/// in-memory `SimStream`, mirroring `execute_hash_comparison_sync`. The
+/// responder extracts the first `LevelWiseRequest` exactly as the manager does.
+pub async fn execute_level_wise_sync(initiator: &mut SimNode, responder: &SimNode) -> Result<()> {
+    let (mut init_stream, mut resp_stream) = SimStream::pair();
+
+    let init_root = initiator.root_hash();
+    let resp_root = responder.root_hash();
+    if init_root == resp_root {
+        return Ok(());
+    }
+
+    let initiator_store = initiator.storage().store();
+    let responder_store = responder.storage().store();
+    let initiator_context = initiator.context_id();
+    let responder_context = responder.context_id();
+    let identity = PublicKey::from([0u8; 32]);
+
+    let config = LevelWiseConfig {
+        remote_root_hash: resp_root,
+        max_depth: 8,
+    };
+
+    let initiator_fut = async {
+        LevelWiseProtocol::run_initiator(
+            &mut init_stream,
+            initiator_store,
+            initiator_context,
+            identity,
+            config,
+        )
+        .await
+    };
+
+    let responder_fut = async {
+        let first_msg = resp_stream
+            .recv()
+            .await?
+            .ok_or_else(|| eyre::eyre!("Stream closed before first message"))?;
+
+        let first_request = match first_msg {
+            StreamMessage::Init {
+                payload:
+                    InitPayload::LevelWiseRequest {
+                        level, parent_ids, ..
+                    },
+                ..
+            } => LevelWiseFirstRequest { level, parent_ids },
+            _ => bail!("Expected LevelWiseRequest Init message"),
+        };
+
+        LevelWiseProtocol::run_responder(
+            &mut resp_stream,
+            responder_store,
+            responder_context,
+            identity,
+            first_request,
+        )
+        .await
+    };
+
+    let (init_result, resp_result) = tokio::join!(initiator_fut, responder_fut);
+    resp_result.wrap_err("responder failed")?;
+    let _ = init_result.wrap_err("initiator failed")?;
+    Ok(())
 }
 
 // =============================================================================
@@ -745,6 +813,44 @@ mod tests {
             alice.root_hash(),
             bob.root_hash(),
             "Merkle roots diverge: the deletion never converged (clear split-brain)"
+        );
+    }
+
+    /// LevelWise (the wide/shallow-tree protocol) must also propagate clears.
+    /// It's pull-only, so the cleared node propagates the deletion via
+    /// `EntityDeletePush` when it initiates. Without it, a clear reconciled via
+    /// LevelWise would split-brain exactly like HashComparison did.
+    #[tokio::test]
+    async fn test_levelwise_propagates_clear_tombstone() {
+        use crate::sync_sim::actions::StorageOp;
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        let entry = EntityId::from_u64(1);
+        alice.insert_entity_with_metadata(entry, b"v1".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(entry, b"v1".to_vec(), EntityMetadata::default());
+        assert_eq!(alice.root_hash(), bob.root_hash());
+
+        alice.apply_storage_op(StorageOp::Remove { id: entry });
+        assert_eq!(alice.entity_count(), 0);
+        assert_eq!(bob.entity_count(), 1);
+
+        // Cleared node (alice) initiates LevelWise → propagates the deletion.
+        execute_level_wise_sync(&mut alice, &bob)
+            .await
+            .expect("alice->bob levelwise ok");
+
+        assert_eq!(
+            bob.entity_count(),
+            0,
+            "bob still holds the cleared entry: LevelWise did not propagate the tombstone"
+        );
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "roots must converge after LevelWise clear propagation"
         );
     }
 
