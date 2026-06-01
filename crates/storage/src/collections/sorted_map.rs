@@ -1612,4 +1612,58 @@ mod tests {
             vec!["a", "b"]
         );
     }
+
+    // The node-level "same DAG heads, different root hash" split-brain manifests
+    // when two replicas of the SAME collection hold identical entries yet compute
+    // different entity hashes. The CRDT-law tests in tests/crdt_contract.rs
+    // compare *logical* content (`entries()`); this pins the stronger property
+    // the synced merkle root depends on — a SortedMap's `full_hash` is a pure
+    // function of its (deterministically-keyed) entries, not of the order they
+    // were inserted. (The on-disk ordered index is node-local and never enters
+    // this hash; only the entity tree does, exactly as for `UnorderedMap`.)
+    #[test]
+    fn entity_hash_is_insertion_order_independent() {
+        use crate::collections::LwwRegister;
+        use crate::entities::Data;
+        use crate::index::Index;
+        use crate::logical_clock::HybridTimestamp;
+
+        type Map = SortedMap<String, LwwRegister<String>, MainStorage>;
+
+        // Pin the register's timestamp + node so the value's content hash is
+        // fixed; the only thing varying across builds is the insertion order.
+        fn reg(v: &str) -> LwwRegister<String> {
+            LwwRegister::new_with_metadata(v.to_owned(), HybridTimestamp::zero(), [7; 32])
+        }
+
+        // Build the SAME logical map under the SAME deterministic id ("scores")
+        // in a caller-chosen order and return its `full_hash`. Resetting first
+        // makes each build an independent replica of the same collection.
+        fn hash_for(order: &[&str]) -> [u8; 32] {
+            crate::env::reset_for_testing();
+            let mut m: Map = SortedMap::new_with_field_name("scores");
+            for k in order {
+                drop(m.insert((*k).to_owned(), reg(k)).unwrap());
+            }
+            let id = <Map as Data>::id(&m);
+            Index::<MainStorage>::get_hashes_for(id)
+                .expect("hash lookup must not error")
+                .expect("a populated collection has index hashes")
+                .0
+        }
+
+        let forward = hash_for(&["alpha", "bravo", "charlie", "delta"]);
+        let reverse = hash_for(&["delta", "charlie", "bravo", "alpha"]);
+        let shuffled = hash_for(&["charlie", "alpha", "delta", "bravo"]);
+
+        assert_eq!(
+            forward, reverse,
+            "SortedMap entity hash diverged on reversed insertion order — the \
+             signature of a 'same DAG heads, different root hash' split-brain"
+        );
+        assert_eq!(
+            forward, shuffled,
+            "SortedMap entity hash diverged on shuffled insertion order"
+        );
+    }
 }
