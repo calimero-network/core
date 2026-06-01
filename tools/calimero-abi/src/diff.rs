@@ -56,13 +56,21 @@ pub struct Finding {
     pub detail: String,
 }
 
-/// Index record fields by name. Pure — operates on already-validated fields from
-/// [`root_record_fields`], so there is no silent "missing root → zero fields" path.
-fn fields_by_name(fields: &[Field]) -> BTreeMap<&str, &TypeRef> {
-    fields
-        .iter()
-        .map(|field| (field.name.as_str(), &field.type_))
-        .collect()
+/// Index record fields by name. Operates on already-validated fields from
+/// [`root_record_fields`] (no silent "missing root → zero fields" path), and
+/// errors on a duplicate field name rather than silently letting one shadow the
+/// other — a duplicate in a record is a malformed schema and could hide a change.
+fn fields_by_name<'a>(
+    fields: &'a [Field],
+    which: &str,
+) -> eyre::Result<BTreeMap<&'a str, &'a TypeRef>> {
+    let mut out = BTreeMap::new();
+    for field in fields {
+        if out.insert(field.name.as_str(), &field.type_).is_some() {
+            eyre::bail!("{which} state root has a duplicate field '{}'", field.name);
+        }
+    }
+    Ok(out)
 }
 
 /// Follow `$ref` → `Alias` chains to the effective type. An identity-gated CRDT
@@ -127,13 +135,13 @@ fn crdt_label(ty: &TypeRef, manifest: &Manifest) -> String {
 fn canonical(ty: &TypeRef, manifest: &Manifest) -> eyre::Result<serde_json::Value> {
     let value = serde_json::to_value(ty)
         .map_err(|e| eyre::eyre!("failed to serialize field type for diff: {e}"))?;
-    expand_refs(value, manifest, &mut Vec::new())
+    expand_refs(value, manifest, &mut HashSet::new())
 }
 
 fn expand_refs(
     value: serde_json::Value,
     manifest: &Manifest,
-    seen: &mut Vec<String>,
+    seen: &mut HashSet<String>,
 ) -> eyre::Result<serde_json::Value> {
     use serde_json::Value;
     match value {
@@ -143,29 +151,30 @@ fn expand_refs(
             // skip expansion and compare two refs literally, hiding a target change.
             if let Some(Value::String(name)) = map.get("$ref") {
                 let name = name.clone();
-                let resolved = if seen.contains(&name) {
-                    serde_json::json!({ "$ref": name, "$cycle": true })
-                } else {
-                    seen.push(name.clone());
-                    let Some(def) = manifest.types.get(&name) else {
-                        // Fail-closed: a `$ref` to a type absent from `types` is a
-                        // corrupt/truncated schema. A sentinel here would compare
-                        // equal on both sides and silently suppress the field's diff.
-                        eyre::bail!("$ref '{name}' is not defined in `types`");
-                    };
-                    // For an alias, expand its *target* (not the `{kind:alias, target}`
-                    // wrapper), so an aliased type canonicalizes identically to the same
-                    // type written inline — otherwise inline-vs-alias falsely diff as
-                    // BREAKING. Structural defs (record/variant/bytes) expand as-is.
-                    let def_value = match def {
-                        TypeDef::Alias { target } => serde_json::to_value(target),
-                        other => serde_json::to_value(other),
-                    }
-                    .map_err(|e| eyre::eyre!("failed to serialize type '{name}' for diff: {e}"))?;
-                    let r = expand_refs(def_value, manifest, seen)?;
-                    let _ = seen.pop();
-                    r
+                // Fail-closed on a reference cycle: a cyclic type cannot be fully
+                // canonicalized, and a truncation sentinel could compare equal across
+                // two distinct cyclic schemas and mask a change. `seen` is a HashSet
+                // for O(1) cycle detection.
+                if !seen.insert(name.clone()) {
+                    eyre::bail!("$ref '{name}' is part of a reference cycle — cannot canonicalize");
+                }
+                let Some(def) = manifest.types.get(&name) else {
+                    // Fail-closed: a `$ref` to a type absent from `types` is a
+                    // corrupt/truncated schema. A sentinel here would compare equal
+                    // on both sides and silently suppress the field's diff.
+                    eyre::bail!("$ref '{name}' is not defined in `types`");
                 };
+                // For an alias, expand its *target* (not the `{kind:alias, target}`
+                // wrapper), so an aliased type canonicalizes identically to the same
+                // type written inline — otherwise inline-vs-alias falsely diff as
+                // BREAKING. Structural defs (record/variant/bytes) expand as-is.
+                let def_value = match def {
+                    TypeDef::Alias { target } => serde_json::to_value(target),
+                    other => serde_json::to_value(other),
+                }
+                .map_err(|e| eyre::eyre!("failed to serialize type '{name}' for diff: {e}"))?;
+                let resolved = expand_refs(def_value, manifest, seen)?;
+                let _ = seen.remove(&name);
                 // Pure `{ "$ref": .. }` → just the resolved target. With extra keys
                 // (not expected today), keep both so no difference is silently dropped.
                 if map.len() == 1 {
@@ -219,8 +228,20 @@ fn root_record_fields<'a>(manifest: &'a Manifest, which: &str) -> eyre::Result<&
 /// which errors on a missing / non-record `state_root`. There is no silent
 /// "zero fields" path, so the guarantee does not depend on call-site discipline.
 pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec<Finding>> {
-    let cur = fields_by_name(root_record_fields(current, "current")?);
-    let base = fields_by_name(root_record_fields(baseline, "baseline")?);
+    let cur = fields_by_name(root_record_fields(current, "current")?, "current")?;
+    let base = fields_by_name(root_record_fields(baseline, "baseline")?, "baseline")?;
+
+    // Canonicalize every field up front so a dangling/cyclic `$ref` fails closed on
+    // ALL paths (added/removed fields are never compared, so this is the only place
+    // their refs get validated). `is_identity_gated` below can then never silently
+    // see an unresolvable ref.
+    for ty in base.values() {
+        let _ = canonical(ty, baseline)?;
+    }
+    for ty in cur.values() {
+        let _ = canonical(ty, current)?;
+    }
+
     let mut findings = Vec::new();
 
     // Removed or changed fields (walk the baseline).
@@ -505,6 +526,56 @@ mod tests {
             diff_checked(&current, &baseline).unwrap().is_empty(),
             "inline vs alias-of-same-type must not be flagged as changed"
         );
+    }
+
+    #[test]
+    fn multi_hop_alias_chain_downgrade_is_unsafe() {
+        // wiki: $ref A → alias B → alias (authored_map), downgraded to unordered_map.
+        // resolve_aliases must follow every hop to see the identity-gated type.
+        let baseline = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "A":{"kind":"alias","target":{"$ref":"B"}},
+                "B":{"kind":"alias","target":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}},
+                "Root":{"kind":"record","fields":[{"name":"wiki","type":{"$ref":"A"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let current = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "A":{"kind":"alias","target":{"$ref":"B"}},
+                "B":{"kind":"alias","target":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"unordered_map"}},
+                "Root":{"kind":"record","fields":[{"name":"wiki","type":{"$ref":"A"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let findings = diff_checked(&current, &baseline).unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].class, FindingClass::UnsafeIdentityDowngrade);
+    }
+
+    #[test]
+    fn cyclic_ref_is_error() {
+        // A self-referential alias cannot be canonicalized; fail closed.
+        let baseline = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Node":{"kind":"alias","target":{"$ref":"Node"}},
+                "Root":{"kind":"record","fields":[{"name":"n","type":{"$ref":"Node"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let current = manifest(&format!("[{COUNTER_U64}]"));
+        assert!(diff_checked(&current, &baseline).is_err());
+    }
+
+    #[test]
+    fn duplicate_field_name_is_error() {
+        let dup = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Root":{"kind":"record","fields":[
+                    {"name":"x","type":{"kind":"u64"}},
+                    {"name":"x","type":{"kind":"string"}}
+                ]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let ok = manifest(&format!("[{COUNTER_U64}]"));
+        assert!(diff_checked(&ok, &dup).is_err());
     }
 
     #[test]
