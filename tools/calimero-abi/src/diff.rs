@@ -73,54 +73,30 @@ fn fields_by_name<'a>(
     Ok(out)
 }
 
-/// Follow `$ref` → `Alias` chains to the effective type. An identity-gated CRDT
-/// can hide behind a newtype alias (`field: $ref Wiki`, `Wiki = alias → AuthoredMap`),
-/// so the identity check must resolve before inspecting the `crdt_type`. Stops at
-/// the first non-alias type (collection / scalar / record-ref / missing). Cycle
-/// detection is exact via the visited set — a self/mutually-referential alias
-/// chain stops at the repeat instead of looping (no arbitrary depth bound).
+/// The `CrdtCollectionType` of a *canonical* (fully `$ref`/alias-expanded) field
+/// value, if its top-level type is a CRDT collection.
 ///
-/// This covers every way an identity-gated type can appear: a `crdt_type` only
-/// lives on a `TypeRef::Collection` (never on a `TypeDef`), so an identity-gated
-/// field is either an inline `Collection` or an `Alias` whose target is one —
-/// both terminate here at the `Collection`. A `$ref` to a `Record`/`Variant`
-/// resolves to a structural type that is, by construction, not identity-gated.
-fn resolve_aliases<'a>(ty: &'a TypeRef, manifest: &'a Manifest) -> &'a TypeRef {
-    let mut cur = ty;
-    let mut seen: HashSet<&str> = HashSet::new();
-    loop {
-        let TypeRef::Reference { ref_ } = cur else {
-            return cur;
-        };
-        if !seen.insert(ref_.as_str()) {
-            return cur;
-        }
-        match manifest.types.get(ref_) {
-            Some(TypeDef::Alias { target }) => cur = target,
-            _ => return cur,
-        }
-    }
+/// Identity classification reads from the same validated canonical value used for
+/// the equality comparison — there is no second alias-resolution path that could
+/// disagree with it or silently fall through on a cycle (a cyclic/dangling ref
+/// fails closed during canonicalization, before this is ever called).
+///
+/// Scope: this inspects only the *top-level* type of a state field. A `crdt_type`
+/// lives on a `Collection`, so an inline or aliased identity-gated CRDT is caught;
+/// an identity-gated CRDT nested *inside* a `Record`/`Variant` field is NOT (the
+/// rail guards top-level state fields — nested provenance would need a recursive
+/// walk, out of scope here).
+fn canonical_crdt(value: &serde_json::Value) -> Option<CrdtCollectionType> {
+    serde_json::from_value::<CrdtCollectionType>(value.get("crdt_type")?.clone()).ok()
 }
 
-/// The CRDT tag of a field's top-level type, if it is a CRDT collection.
-fn field_crdt(ty: &TypeRef) -> Option<&CrdtCollectionType> {
-    match ty {
-        TypeRef::Collection {
-            crdt_type: Some(ct),
-            ..
-        } => Some(ct),
-        _ => None,
-    }
+fn is_identity_gated(value: &serde_json::Value) -> bool {
+    canonical_crdt(value)
+        .is_some_and(|ct| collection_category(&ct) == CollectionCategory::IdentityGated)
 }
 
-fn is_identity_gated(ty: &TypeRef, manifest: &Manifest) -> bool {
-    field_crdt(resolve_aliases(ty, manifest))
-        .is_some_and(|ct| collection_category(ct) == CollectionCategory::IdentityGated)
-}
-
-fn crdt_label(ty: &TypeRef, manifest: &Manifest) -> String {
-    field_crdt(resolve_aliases(ty, manifest))
-        .map_or_else(|| "plain".to_owned(), |ct| format!("{ct:?}"))
+fn crdt_label(value: &serde_json::Value) -> String {
+    canonical_crdt(value).map_or_else(|| "plain".to_owned(), |ct| format!("{ct:?}"))
 }
 
 /// Canonical form of a field type with all `$ref`s expanded inline, so two fields
@@ -138,10 +114,15 @@ fn canonical(ty: &TypeRef, manifest: &Manifest) -> eyre::Result<serde_json::Valu
     expand_refs(value, manifest, &mut HashSet::new())
 }
 
+/// `path` is the set of `$ref` names on the *current* DFS expansion path (a stack,
+/// not a global visited set): a name is added before recursing into its definition
+/// and removed after. So a type reachable via several distinct paths (a DAG) is
+/// expanded once per path — correct — while a true cycle (a name reappearing on its
+/// own path) is detected and fails closed.
 fn expand_refs(
     value: serde_json::Value,
     manifest: &Manifest,
-    seen: &mut HashSet<String>,
+    path: &mut HashSet<String>,
 ) -> eyre::Result<serde_json::Value> {
     use serde_json::Value;
     match value {
@@ -153,9 +134,9 @@ fn expand_refs(
                 let name = name.clone();
                 // Fail-closed on a reference cycle: a cyclic type cannot be fully
                 // canonicalized, and a truncation sentinel could compare equal across
-                // two distinct cyclic schemas and mask a change. `seen` is a HashSet
-                // for O(1) cycle detection.
-                if !seen.insert(name.clone()) {
+                // two distinct cyclic schemas and mask a change. O(1) check against
+                // the current DFS path.
+                if !path.insert(name.clone()) {
                     eyre::bail!("$ref '{name}' is part of a reference cycle — cannot canonicalize");
                 }
                 let Some(def) = manifest.types.get(&name) else {
@@ -173,8 +154,8 @@ fn expand_refs(
                     other => serde_json::to_value(other),
                 }
                 .map_err(|e| eyre::eyre!("failed to serialize type '{name}' for diff: {e}"))?;
-                let resolved = expand_refs(def_value, manifest, seen)?;
-                let _ = seen.remove(&name);
+                let resolved = expand_refs(def_value, manifest, path)?;
+                let _ = path.remove(&name);
                 // Pure `{ "$ref": .. }` → just the resolved target. With extra keys
                 // (not expected today), keep both so no difference is silently dropped.
                 if map.len() == 1 {
@@ -184,21 +165,21 @@ fn expand_refs(
                 let _ = out.insert("$resolved".to_owned(), resolved);
                 for (k, v) in map {
                     if k != "$ref" {
-                        let _ = out.insert(k, expand_refs(v, manifest, seen)?);
+                        let _ = out.insert(k, expand_refs(v, manifest, path)?);
                     }
                 }
                 return Ok(Value::Object(out));
             }
             let mut out = serde_json::Map::with_capacity(map.len());
             for (k, v) in map {
-                let _ = out.insert(k, expand_refs(v, manifest, seen)?);
+                let _ = out.insert(k, expand_refs(v, manifest, path)?);
             }
             Ok(Value::Object(out))
         }
         Value::Array(arr) => {
             let mut out = Vec::with_capacity(arr.len());
             for v in arr {
-                out.push(expand_refs(v, manifest, seen)?);
+                out.push(expand_refs(v, manifest, path)?);
             }
             Ok(Value::Array(out))
         }
@@ -228,33 +209,31 @@ fn root_record_fields<'a>(manifest: &'a Manifest, which: &str) -> eyre::Result<&
 /// which errors on a missing / non-record `state_root`. There is no silent
 /// "zero fields" path, so the guarantee does not depend on call-site discipline.
 pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec<Finding>> {
-    let cur = fields_by_name(root_record_fields(current, "current")?, "current")?;
-    let base = fields_by_name(root_record_fields(baseline, "baseline")?, "baseline")?;
+    let cur_fields = fields_by_name(root_record_fields(current, "current")?, "current")?;
+    let base_fields = fields_by_name(root_record_fields(baseline, "baseline")?, "baseline")?;
 
-    // Canonicalize every field up front so a dangling/cyclic `$ref` fails closed on
-    // ALL paths (added/removed fields are never compared, so this is the only place
-    // their refs get validated). `is_identity_gated` below can then never silently
-    // see an unresolvable ref.
-    for ty in base.values() {
-        let _ = canonical(ty, baseline)?;
-    }
-    for ty in cur.values() {
-        let _ = canonical(ty, current)?;
-    }
+    // Canonicalize every field exactly once (expands `$ref`/alias, fails closed on a
+    // dangling/cyclic ref). These cached values are the single validated
+    // representation per field: they drive BOTH the equality comparison and the
+    // identity-gated classification, so there is no second resolution path that
+    // could disagree, and a corrupt ref in ANY field (added / removed / changed)
+    // fails closed here before any classification runs.
+    let cur = canonicalize_fields(&cur_fields, current)?;
+    let base = canonicalize_fields(&base_fields, baseline)?;
 
     let mut findings = Vec::new();
 
     // Removed or changed fields (walk the baseline).
-    for (name, base_ty) in &base {
+    for (name, base_c) in &base {
         match cur.get(name) {
             None => {
-                if is_identity_gated(base_ty, baseline) {
+                if is_identity_gated(base_c) {
                     findings.push(Finding {
                         field: (*name).to_owned(),
                         class: FindingClass::UnsafeIdentityDowngrade,
                         detail: format!(
                             "identity-gated field '{name}' ({}) removed — strips authorship / writer-ACL network-wide",
-                            crdt_label(base_ty, baseline)
+                            crdt_label(base_c)
                         ),
                     });
                 } else {
@@ -265,16 +244,16 @@ pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec
                     });
                 }
             }
-            Some(cur_ty) => {
-                if canonical(cur_ty, current)? != canonical(base_ty, baseline)? {
-                    if is_identity_gated(base_ty, baseline) && !is_identity_gated(cur_ty, current) {
+            Some(cur_c) => {
+                if cur_c != base_c {
+                    if is_identity_gated(base_c) && !is_identity_gated(cur_c) {
                         findings.push(Finding {
                             field: (*name).to_owned(),
                             class: FindingClass::UnsafeIdentityDowngrade,
                             detail: format!(
                                 "field '{name}' {} → {} — strips authorship / writer-ACL network-wide",
-                                crdt_label(base_ty, baseline),
-                                crdt_label(cur_ty, current)
+                                crdt_label(base_c),
+                                crdt_label(cur_c)
                             ),
                         });
                     } else {
@@ -301,6 +280,17 @@ pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec
     }
 
     Ok(findings)
+}
+
+/// Canonicalize each field's type once, keyed by field name.
+fn canonicalize_fields<'a>(
+    fields: &BTreeMap<&'a str, &TypeRef>,
+    manifest: &Manifest,
+) -> eyre::Result<BTreeMap<&'a str, serde_json::Value>> {
+    fields
+        .iter()
+        .map(|(name, ty)| Ok((*name, canonical(ty, manifest)?)))
+        .collect()
 }
 
 fn load_manifest(path: &Path) -> eyre::Result<Manifest> {
@@ -488,6 +478,18 @@ mod tests {
         let current = manifest(&format!("[{COUNTER_U64},{SHARED_STORAGE}]"));
         let findings = diff_checked(&current, &baseline).expect("valid roots");
         assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].class, FindingClass::Additive);
+    }
+
+    #[test]
+    fn adding_an_identity_gated_field_is_additive() {
+        // A NEW identity-gated field (absent in baseline) is additive — no existing
+        // provenance is stripped, so it must not be a false UnsafeIdentityDowngrade.
+        let baseline = manifest(&format!("[{COUNTER_U64}]"));
+        let current = manifest(&format!("[{COUNTER_U64},{AUTHORED_MAP}]"));
+        let findings = diff_checked(&current, &baseline).unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].field, "wiki");
         assert_eq!(findings[0].class, FindingClass::Additive);
     }
 
