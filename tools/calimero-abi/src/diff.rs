@@ -9,7 +9,7 @@
 //! consumes the authoritative `collection_category` classifier from
 //! `calimero-wasm-abi`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use calimero_wasm_abi::schema::{
@@ -71,17 +71,22 @@ fn fields_by_name(fields: &[Field]) -> BTreeMap<&str, &TypeRef> {
 /// the first non-alias type (collection / scalar / record-ref / missing). Cycle
 /// detection is exact via the visited set — a self/mutually-referential alias
 /// chain stops at the repeat instead of looping (no arbitrary depth bound).
+///
+/// This covers every way an identity-gated type can appear: a `crdt_type` only
+/// lives on a `TypeRef::Collection` (never on a `TypeDef`), so an identity-gated
+/// field is either an inline `Collection` or an `Alias` whose target is one —
+/// both terminate here at the `Collection`. A `$ref` to a `Record`/`Variant`
+/// resolves to a structural type that is, by construction, not identity-gated.
 fn resolve_aliases<'a>(ty: &'a TypeRef, manifest: &'a Manifest) -> &'a TypeRef {
     let mut cur = ty;
-    let mut seen: Vec<&str> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     loop {
         let TypeRef::Reference { ref_ } = cur else {
             return cur;
         };
-        if seen.contains(&ref_.as_str()) {
+        if !seen.insert(ref_.as_str()) {
             return cur;
         }
-        seen.push(ref_.as_str());
         match manifest.types.get(ref_) {
             Some(TypeDef::Alias { target }) => cur = target,
             _ => return cur,
@@ -142,15 +147,16 @@ fn expand_refs(
                     serde_json::json!({ "$ref": name, "$cycle": true })
                 } else {
                     seen.push(name.clone());
-                    let r = match manifest.types.get(&name) {
-                        Some(def) => {
-                            let def_value = serde_json::to_value(def).map_err(|e| {
-                                eyre::eyre!("failed to serialize type '{name}' for diff: {e}")
-                            })?;
-                            expand_refs(def_value, manifest, seen)?
-                        }
-                        None => serde_json::json!({ "$ref": name, "$missing": true }),
+                    let Some(def) = manifest.types.get(&name) else {
+                        // Fail-closed: a `$ref` to a type absent from `types` is a
+                        // corrupt/truncated schema. A sentinel here would compare
+                        // equal on both sides and silently suppress the field's diff.
+                        eyre::bail!("$ref '{name}' is not defined in `types`");
                     };
+                    let def_value = serde_json::to_value(def).map_err(|e| {
+                        eyre::eyre!("failed to serialize type '{name}' for diff: {e}")
+                    })?;
+                    let r = expand_refs(def_value, manifest, seen)?;
                     let _ = seen.pop();
                     r
                 };
@@ -456,5 +462,40 @@ mod tests {
         let findings = diff_checked(&current, &baseline).expect("valid roots");
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].class, FindingClass::Additive);
+    }
+
+    #[test]
+    fn authored_map_to_authored_vector_is_breaking_not_downgrade() {
+        // Both sides stay identity-gated (AuthoredMap → AuthoredVector), so this is a
+        // normal breaking change — NOT an unsafe identity downgrade (no provenance lost).
+        let base = r#"{"name":"x","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}"#;
+        let cur = r#"{"name":"x","type":{"kind":"list","items":{"kind":"string"},"crdt_type":"authored_vector"}}"#;
+        let findings = diff_checked(
+            &manifest(&format!("[{cur}]")),
+            &manifest(&format!("[{base}]")),
+        )
+        .unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].class, FindingClass::Breaking);
+    }
+
+    #[test]
+    fn dangling_ref_is_error_not_silent_skip() {
+        // A `$ref` to a type absent from `types` is a corrupt schema. On the
+        // comparison path it must error (fail-closed), never resolve to a sentinel
+        // that compares equal on both sides and silently suppresses the diff. The
+        // field is present in both so the canonical comparison (which expands refs)
+        // actually runs.
+        let baseline = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Root":{"kind":"record","fields":[{"name":"x","type":{"$ref":"Gone"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let current = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Root":{"kind":"record","fields":[{"name":"x","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        assert!(diff_checked(&current, &baseline).is_err());
     }
 }
