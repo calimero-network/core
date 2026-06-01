@@ -86,6 +86,13 @@ fn fields_by_name<'a>(
 /// an identity-gated CRDT nested *inside* a `Record`/`Variant` field is NOT (the
 /// rail guards top-level state fields — nested provenance would need a recursive
 /// walk, out of scope here).
+///
+/// The `.ok()` cannot fail open on an *unknown* CRDT type: `value` is a re-serialized
+/// `TypeRef` whose `crdt_type` is a strongly-typed `Option<CrdtCollectionType>`, so an
+/// unrecognised type was already rejected at manifest load (untagged `TypeRef` matches
+/// no variant → parse error → fail-closed before any diff runs; see
+/// `unknown_crdt_type_fails_closed_at_manifest_load`). Here `None` therefore means only
+/// "no `crdt_type` key" — a genuinely plain (non-CRDT) field.
 fn canonical_crdt(value: &serde_json::Value) -> Option<CrdtCollectionType> {
     serde_json::from_value::<CrdtCollectionType>(value.get("crdt_type")?.clone()).ok()
 }
@@ -598,5 +605,23 @@ mod tests {
             },"methods":[],"events":[],"state_root":"Root"}"#,
         );
         assert!(diff_checked(&current, &baseline).is_err());
+    }
+
+    #[test]
+    fn unknown_crdt_type_fails_closed_at_manifest_load() {
+        // A `crdt_type` this binary's `CrdtCollectionType` enum does not know (e.g. a
+        // schema emitted by a newer toolchain) must fail CLOSED. The boundary is the
+        // manifest *parse*, not classification: `crdt_type` is a strongly-typed
+        // `Option<CrdtCollectionType>` on an untagged `TypeRef`, so an unrecognised
+        // value matches no variant and the whole manifest is rejected. An unknown
+        // type therefore never reaches `canonical_crdt`/`is_identity_gated` to be
+        // silently mis-graded as plain — it errors out before any diff runs.
+        let raw = r#"{"schema_version":"wasm-abi/1","types":{
+            "Root":{"kind":"record","fields":[{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_set_v2_future"}}]}
+        },"methods":[],"events":[],"state_root":"Root"}"#;
+        assert!(
+            serde_json::from_str::<Manifest>(raw).is_err(),
+            "an unrecognised crdt_type must be rejected at manifest load (fail-closed)"
+        );
     }
 }
