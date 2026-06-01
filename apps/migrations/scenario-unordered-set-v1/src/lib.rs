@@ -30,7 +30,7 @@ impl ScenarioUnorderedSetV1 {
     #[app::init]
     pub fn init() -> ScenarioUnorderedSetV1 {
         ScenarioUnorderedSetV1 {
-            tags: UnorderedSet::new_with_field_name("tags"),
+            tags: UnorderedSet::new(),
             title: LwwRegister::new("untitled".to_owned()),
         }
     }

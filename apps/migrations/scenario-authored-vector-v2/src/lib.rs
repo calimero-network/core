@@ -81,7 +81,7 @@ impl ScenarioAuthoredVectorV2 {
     #[app::init]
     pub fn init() -> ScenarioAuthoredVectorV2 {
         ScenarioAuthoredVectorV2 {
-            entries: AuthoredVector::new_with_field_name("entries"),
+            entries: AuthoredVector::new(),
             title: LwwRegister::new("untitled".to_owned()),
             migration_note: LwwRegister::new(String::new()),
         }

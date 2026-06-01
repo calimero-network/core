@@ -127,9 +127,9 @@ impl AbiState {
     #[must_use]
     pub fn init() -> Self {
         Self {
-            counters: UnorderedMap::new_with_field_name("counters"),
-            sorted_counters: SortedMap::new_with_field_name("sorted_counters"),
-            users: Vector::new_with_field_name("users"),
+            counters: UnorderedMap::new(),
+            sorted_counters: SortedMap::new(),
+            users: Vector::new(),
         }
     }
 

@@ -36,7 +36,7 @@ impl ScenarioNewEnumVariantV2 {
     #[app::init]
     pub fn init() -> ScenarioNewEnumVariantV2 {
         ScenarioNewEnumVariantV2 {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             status: LwwRegister::new(Status::Active),
         }
     }

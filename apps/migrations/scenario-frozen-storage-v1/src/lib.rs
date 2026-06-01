@@ -34,7 +34,7 @@ impl ScenarioFrozenStorageV1 {
     #[app::init]
     pub fn init() -> ScenarioFrozenStorageV1 {
         ScenarioFrozenStorageV1 {
-            documents: FrozenStorage::new_with_field_name("documents"),
+            documents: FrozenStorage::new(),
             title: LwwRegister::new("untitled".to_owned()),
             last_hash: LwwRegister::new(Vec::new()),
         }

@@ -29,7 +29,7 @@ impl ScenarioUserStorageV1 {
     #[app::init]
     pub fn init() -> ScenarioUserStorageV1 {
         ScenarioUserStorageV1 {
-            notes: UserStorage::new_with_field_name("notes"),
+            notes: UserStorage::new(),
             title: LwwRegister::new("untitled".to_owned()),
         }
     }

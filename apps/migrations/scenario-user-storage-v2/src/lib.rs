@@ -78,7 +78,7 @@ impl ScenarioUserStorageV2 {
     #[app::init]
     pub fn init() -> ScenarioUserStorageV2 {
         ScenarioUserStorageV2 {
-            notes: UserStorage::new_with_field_name("notes"),
+            notes: UserStorage::new(),
             title: LwwRegister::new("untitled".to_owned()),
             migration_note: LwwRegister::new(String::new()),
         }
