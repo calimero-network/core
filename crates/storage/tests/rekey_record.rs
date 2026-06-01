@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::address::Id;
 use calimero_storage::collections::crdt_meta::MergeError;
@@ -66,8 +67,8 @@ impl Mergeable for UnfixedStats {
 
 /// Root app generic over the value type, so one driver exercises both.
 trait TeamApp: BorshSerialize + BorshDeserialize + Default + Mergeable + 'static {
-    fn record_win(&mut self, team: &str);
-    fn wins(&self, team: &str) -> u64;
+    fn record_win(&mut self, team: &str) -> app::Result<()>;
+    fn wins(&self, team: &str) -> app::Result<u64>;
 }
 
 macro_rules! team_app {
@@ -83,17 +84,20 @@ macro_rules! team_app {
             }
         }
         impl TeamApp for $app {
-            fn record_win(&mut self, team: &str) {
-                let mut s = self.teams.get(team).unwrap().unwrap_or_default();
-                s.wins.increment().unwrap();
-                self.teams.insert(team.to_owned(), s).unwrap();
+            fn record_win(&mut self, team: &str) -> app::Result<()> {
+                // `app::Result` + `?`, exactly as real apps write methods (see
+                // apps/team-metrics-custom). The `entry().or_default()` handle is
+                // write-back-guarded (core#2576): the increment persists when the
+                // guard drops — no explicit re-insert.
+                let mut stats = self.teams.entry(team.to_owned())?.or_default()?;
+                stats.wins.increment()?;
+                Ok(())
             }
-            fn wins(&self, team: &str) -> u64 {
-                self.teams
-                    .get(team)
-                    .unwrap()
-                    .map(|s| s.wins.value().unwrap())
-                    .unwrap_or(0)
+            fn wins(&self, team: &str) -> app::Result<u64> {
+                match self.teams.get(team)? {
+                    Some(s) => Ok(s.wins.value()?),
+                    None => Ok(0),
+                }
             }
         }
     };
@@ -128,13 +132,13 @@ fn drive<T: TeamApp>() -> (u64, u64, bool) {
 
     let da = env::with_runtime_env(env_for(&a, [1; 32]), || {
         let mut app = Root::<T>::fetch().unwrap();
-        app.record_win("liverpool");
+        app.record_win("liverpool").unwrap();
         app.commit();
         env::take_last_artifact().unwrap()
     });
     let db = env::with_runtime_env(env_for(&b, [2; 32]), || {
         let mut app = Root::<T>::fetch().unwrap();
-        app.record_win("liverpool");
+        app.record_win("liverpool").unwrap();
         app.commit();
         env::take_last_artifact().unwrap()
     });
@@ -143,14 +147,14 @@ fn drive<T: TeamApp>() -> (u64, u64, bool) {
         Root::<T>::sync(&db, &ApplyContext::empty()).unwrap();
         (
             env::root_hash(),
-            Root::<T>::fetch().unwrap().wins("liverpool"),
+            Root::<T>::fetch().unwrap().wins("liverpool").unwrap(),
         )
     });
     let (hb, wb) = env::with_runtime_env(env_for(&b, [2; 32]), || {
         Root::<T>::sync(&da, &ApplyContext::empty()).unwrap();
         (
             env::root_hash(),
-            Root::<T>::fetch().unwrap().wins("liverpool"),
+            Root::<T>::fetch().unwrap().wins("liverpool").unwrap(),
         )
     });
     (wa, wb, ha == hb)
