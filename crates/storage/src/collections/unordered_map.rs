@@ -622,11 +622,18 @@ where
 
 impl<K, V, S> Default for UnorderedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize,
-    V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + 'static,
+    S: StorageAdaptor + 'static,
 {
     fn default() -> Self {
+        // Register this map type's nested-id re-key thunk at construction, so a
+        // map first created via `default()` — e.g. `entry(k).or_default()` on a
+        // `Map<_, Map<..>>` — is known to the re-key registry BEFORE its parent's
+        // `VacantEntry::insert` re-keys it. Without this the freshly-defaulted
+        // inner collection keeps a random id and the two nodes that first-touch
+        // it never converge. Mirrors `Counter::new_internal`'s registration.
+        super::rekey::register_rekey::<Self>();
         Self::new_internal()
     }
 }

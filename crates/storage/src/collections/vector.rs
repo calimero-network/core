@@ -469,10 +469,15 @@ where
 
 impl<V, S> Default for Vector<V, S>
 where
-    V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    V: BorshSerialize + BorshDeserialize + 'static,
+    S: StorageAdaptor + 'static,
 {
     fn default() -> Self {
+        // Register the nested-id re-key thunk at construction so a vector first
+        // created via `default()` (e.g. `entry(k).or_default()` on a
+        // `Map<_, Vector<..>>`) is re-keyed deterministically by its parent
+        // rather than keeping a per-node random id. See `UnorderedMap`'s `Default`.
+        super::rekey::register_rekey::<Self>();
         Self::new_internal()
     }
 }

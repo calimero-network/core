@@ -972,11 +972,16 @@ where
 
 impl<K, V, S> Default for SortedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize,
-    V: BorshSerialize + BorshDeserialize,
-    S: StorageAdaptor,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + 'static,
+    S: StorageAdaptor + 'static,
 {
     fn default() -> Self {
+        // Register the nested-id re-key thunk at construction so a map first
+        // created via `default()` (e.g. `entry(k).or_default()` on a nested
+        // `Map<_, SortedMap<..>>`) is re-keyed deterministically by its parent
+        // rather than keeping a per-node random id. See `UnorderedMap`'s `Default`.
+        super::rekey::register_rekey::<Self>();
         Self::new_internal()
     }
 }

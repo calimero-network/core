@@ -18,8 +18,10 @@
 //! ```rust,no_run
 //! # use calimero_storage::collections::{UnorderedMap, Root};
 //! # let mut outer_map = Root::new(|| UnorderedMap::<String, UnorderedMap<String, String>>::new());
-//! // ❌ BROKEN: Get-modify-put creates blobs
-//! let mut inner_map = outer_map.get(&"doc-1".to_owned())?.unwrap();  // Gets deserialized COPY
+//! // ❌ BROKEN: Get-modify-put creates blobs. `get` now returns a read-only
+//! //    `ValueRef`, so taking an owned copy to mutate is an explicit
+//! //    `into_inner()` — the copy this anti-pattern hinges on.
+//! let mut inner_map = outer_map.get(&"doc-1".to_owned())?.unwrap().into_inner(); // deserialized COPY
 //! inner_map.insert("title".to_owned(), "New".to_owned())?;              // Modifies copy
 //! outer_map.insert("doc-1".to_owned(), inner_map)?;          // Re-serializes as blob
 //! # Ok::<(), calimero_storage::collections::error::StoreError>(())
