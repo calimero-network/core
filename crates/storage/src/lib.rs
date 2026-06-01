@@ -74,6 +74,16 @@ pub mod rotation_log;
 pub mod snapshot;
 pub mod store;
 
+/// CRDT convergence property-test harness (issue #2552).
+///
+/// Native (`cargo test`) harness that drives N in-memory replicas of a
+/// `Mergeable` app-state type through randomly-interleaved operations and
+/// asserts they converge to the same Merkle root. Gated on the `testing`
+/// feature so the CRDT merge registry is compiled in (real registration is a
+/// no-op otherwise).
+#[cfg(all(not(target_arch = "wasm32"), feature = "testing"))]
+pub mod testing;
+
 // Re-export for convenience
 // `register_crdt_merge` is WASM-only in production. Re-exposed under
 // `cfg(test)` for the storage crate's own unit tests and under the

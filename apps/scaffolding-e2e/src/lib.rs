@@ -26,8 +26,8 @@ use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, PublicKey};
 use calimero_storage::collections::{
     AuthoredMap, AuthoredVector, Counter, FrozenStorage, GCounter, LwwRegister, Mergeable,
-    PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap,
-    UnorderedSet, UserStorage, Vector,
+    ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap, UnorderedSet,
+    UserStorage, Vector,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -894,13 +894,11 @@ impl E2eKvStore {
     // --- G-COUNTER (grow-only) ---
 
     pub fn increment_g_counter(&mut self, key: String) -> app::Result<u64> {
-        let mut counter = self.crdt_counters.get(&key)?.unwrap_or_else(GCounter::new);
+        let mut counter = self.crdt_counters.entry(key.clone())?.or_default()?;
 
         counter.increment()?;
 
         let value = counter.value()?;
-
-        self.crdt_counters.insert(key.clone(), counter)?;
 
         app::emit!(Event::GCounterIncremented { key, value });
         Ok(value)
@@ -917,16 +915,11 @@ impl E2eKvStore {
     // --- PN-COUNTER (supports increment AND decrement) ---
 
     pub fn increment_pn_counter(&mut self, key: String) -> app::Result<i64> {
-        let mut counter = self
-            .crdt_pn_counters
-            .get(&key)?
-            .unwrap_or_else(PNCounter::new);
+        let mut counter = self.crdt_pn_counters.entry(key.clone())?.or_default()?;
 
         counter.increment()?;
 
         let value = counter.value()?;
-
-        self.crdt_pn_counters.insert(key.clone(), counter)?;
 
         app::emit!(Event::PnCounterChanged {
             key,
@@ -937,16 +930,11 @@ impl E2eKvStore {
     }
 
     pub fn decrement_pn_counter(&mut self, key: String) -> app::Result<i64> {
-        let mut counter = self
-            .crdt_pn_counters
-            .get(&key)?
-            .unwrap_or_else(PNCounter::new);
+        let mut counter = self.crdt_pn_counters.entry(key.clone())?.or_default()?;
 
         counter.decrement()?;
 
         let value = counter.value()?;
-
-        self.crdt_pn_counters.insert(key.clone(), counter)?;
 
         app::emit!(Event::PnCounterChanged {
             key,
@@ -999,14 +987,9 @@ impl E2eKvStore {
         inner_key: String,
         value: String,
     ) -> app::Result<()> {
-        let mut inner_map = self
-            .crdt_metadata
-            .get(&outer_key)?
-            .unwrap_or_else(UnorderedMap::new);
+        let mut inner_map = self.crdt_metadata.entry(outer_key.clone())?.or_default()?;
 
         inner_map.insert(inner_key.clone(), value.clone().into())?;
-
-        self.crdt_metadata.insert(outer_key.clone(), inner_map)?;
 
         app::emit!(Event::MetadataSet {
             outer_key,
@@ -1056,11 +1039,9 @@ impl E2eKvStore {
     // NESTED CRDT - TAGS SET
 
     pub fn add_tag(&mut self, key: String, tag: String) -> app::Result<()> {
-        let mut set = self.crdt_tags.get(&key)?.unwrap_or_else(UnorderedSet::new);
+        let mut set = self.crdt_tags.entry(key.clone())?.or_default()?;
 
         set.insert(tag.clone())?;
-
-        self.crdt_tags.insert(key.clone(), set)?;
 
         app::emit!(Event::TagAdded { key, tag });
         Ok(())

@@ -3434,6 +3434,14 @@ impl SyncManager {
             self.node_client.notify_namespace_op_applied(namespace_id);
         }
 
+        // Parity with the gossip apply path: a governance op we just learned
+        // may unblock a state delta buffered as `Unknown`. Run whenever this
+        // catch-up returned ops, not only on a fresh apply — see
+        // `drain_governance_pending_after_sync`.
+        if ops_count > 0 {
+            self.drain_governance_pending_after_sync().await;
+        }
+
         debug!(
             %context_id,
             %their_identity,
@@ -3442,6 +3450,37 @@ impl SyncManager {
             ops_applied = applied,
             "governance catch-up complete"
         );
+    }
+
+    /// Release any state deltas parked in the governance-pending buffer after
+    /// a governance-sync path applied (or re-confirmed) ops.
+    ///
+    /// The gossip apply path (`network_event/namespace.rs`) already drains the
+    /// governance-pending buffer when a namespace op applies, but the
+    /// **sync/backfill** apply paths here did not — a parity gap. A late
+    /// joiner's first post-join state delta is buffered as
+    /// `MembershipStatus::Unknown` until the local node learns the joiner's
+    /// membership op; when that op arrives via sync (beacon-triggered
+    /// governance sync or catch-up backfill) rather than gossip, nothing
+    /// re-evaluated the buffer, so the delta sat there forever and the two
+    /// nodes' context root hashes never reconverged.
+    ///
+    /// Deliberately *not* gated on a fresh `Applied` outcome: the awaited op
+    /// may already be present locally (e.g. deduplicated on read, #2327) yet
+    /// no drain has ever fired for it. Re-evaluating membership is the correct
+    /// trigger, and the call is cheap — `drain_all_governance_pending` returns
+    /// immediately when no context holds buffered deltas.
+    async fn drain_governance_pending_after_sync(&self) {
+        let drain_input = crate::handlers::state_delta::StateDeltaContext {
+            node_clients: crate::state::NodeClients {
+                context: self.context_client.clone(),
+                node: self.node_client.clone(),
+            },
+            node_state: self.node_state.clone(),
+            network_client: self.network_client.clone(),
+            sync_timeout: self.sync_config.timeout,
+        };
+        crate::handlers::state_delta::drain_all_governance_pending(&drain_input).await;
     }
 
     /// Handle a namespace backfill request: look up full `SignedNamespaceOp`
@@ -4227,9 +4266,10 @@ impl SyncManager {
                 payload: MessagePayload::NamespaceBackfillResponse { deltas },
                 ..
             })) => {
+                let ops_received = deltas.len();
                 info!(
                     namespace_id = %hex::encode(namespace_id),
-                    ops = deltas.len(),
+                    ops = ops_received,
                     "received namespace governance ops from peer"
                 );
                 use calimero_context_client::messages::NamespaceApplyOutcome;
@@ -4339,6 +4379,16 @@ impl SyncManager {
                 // tick which has no such constraint).
                 for report in pending_divergences {
                     self.reconcile_after_divergence(report).await;
+                }
+
+                // Parity with the gossip apply path: releasing buffered
+                // state deltas waiting on a membership op we just backfilled.
+                // This is the path the late-joiner reverse-sync hit — the
+                // joiner's first post-join write was buffered as `Unknown`
+                // and the membership op that unblocks it arrived here, via
+                // backfill, never via gossip, so nothing drained the buffer.
+                if ops_received > 0 {
+                    self.drain_governance_pending_after_sync().await;
                 }
             }
             _ => {

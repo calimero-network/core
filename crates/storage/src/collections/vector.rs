@@ -8,7 +8,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeSeq;
 use serde::Serialize;
 
-use super::{Collection, CrdtType};
+use super::{Collection, CrdtType, ValueRef};
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -217,15 +217,25 @@ where
 
     /// Get the value at a specific index in the vector.
     ///
+    /// Returns a read-only [`ValueRef`] guard (an owned copy that derefs to
+    /// `&V`). To *mutate* the stored value use [`update`](Self::update) or
+    /// [`get_mut`](Self::get_mut), or `.clone()` the guard for an owned copy when
+    /// `V: Clone`.
+    ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system, or a child
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned. Returns an error if the index would cause arithmetic overflow.
     ///
-    pub fn get(&self, index: usize) -> Result<Option<V>, StoreError> {
+    pub fn get(&self, index: usize) -> Result<Option<ValueRef<V>>, StoreError> {
         validate_index_bounds(index)?;
-        self.inner.entries()?.nth(index).transpose()
+        Ok(self
+            .inner
+            .entries()?
+            .nth(index)
+            .transpose()?
+            .map(ValueRef::new))
     }
 
     /// Update the value at a specific index in the vector.
@@ -459,10 +469,15 @@ where
 
 impl<V, S> Default for Vector<V, S>
 where
-    V: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize + 'static,
     S: StorageAdaptor,
 {
     fn default() -> Self {
+        // Register the nested-id re-key thunk at construction so a vector first
+        // created via `default()` (e.g. `entry(k).or_default()` on a
+        // `Map<_, Vector<..>>`) is re-keyed deterministically by its parent
+        // rather than keeping a per-node random id. See `UnorderedMap`'s `Default`.
+        super::rekey::register_rekey::<Self>();
         Self::new_internal()
     }
 }
@@ -535,7 +550,7 @@ mod tests {
 
         let value = "test_data".to_owned();
         let _ = vector.push(value.clone()).unwrap();
-        let retrieved_value = vector.get(0).unwrap();
+        let retrieved_value = vector.get(0).unwrap().map(|v| v.into_inner());
         assert_eq!(retrieved_value, Some(value));
     }
 
@@ -547,7 +562,7 @@ mod tests {
         let value2 = "test_data2".to_owned();
         let _ = vector.push(value1.clone()).unwrap();
         let old = vector.update(0, value2.clone()).unwrap();
-        let retrieved_value = vector.get(0).unwrap();
+        let retrieved_value = vector.get(0).unwrap().map(|v| v.into_inner());
         assert_eq!(retrieved_value, Some(value2));
         assert_eq!(old, Some(value1));
     }

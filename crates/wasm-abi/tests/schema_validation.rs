@@ -36,6 +36,47 @@ fn test_schema_validation_basic() {
 }
 
 #[test]
+fn test_schema_validation_shared_storage_crdt_type() {
+    use calimero_wasm_abi::schema::{
+        CollectionType, CrdtCollectionType, Manifest, Method, TypeRef,
+    };
+
+    // Load the crate's own JSON Schema.
+    let schema_json = include_str!("../wasm-abi.schema.json");
+    let schema_value: Value = serde_json::from_str(schema_json).unwrap();
+    let schema = JSONSchema::compile(&schema_value).unwrap();
+
+    // A `SharedStorage<String>` field normalizes to a single-slot Record
+    // collection carrying `crdt_type: shared_storage`. The published JSON Schema
+    // must accept that string, or every manifest with a SharedStorage field fails
+    // validation against the crate's own schema.
+    let shared = TypeRef::Collection {
+        collection: CollectionType::Record { fields: vec![] },
+        crdt_type: Some(CrdtCollectionType::SharedStorage),
+        inner_type: Some(Box::new(TypeRef::string())),
+    };
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+    manifest.methods.push(Method {
+        name: "shared".to_string(),
+        params: vec![],
+        returns: Some(shared),
+        returns_nullable: None,
+        errors: vec![],
+    });
+
+    let manifest_json = serde_json::to_value(&manifest).unwrap();
+    let validation_result = schema.validate(&manifest_json);
+    assert!(
+        validation_result.is_ok(),
+        "SharedStorage crdt_type must validate against wasm-abi.schema.json: {:?}",
+        validation_result.err().map(|e| e.collect::<Vec<_>>())
+    );
+}
+
+#[test]
 fn test_schema_validation_conformance() {
     // Load the schema
     let schema_json = include_str!("../wasm-abi.schema.json");

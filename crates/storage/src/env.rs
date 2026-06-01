@@ -141,6 +141,21 @@ pub fn with_runtime_env<R>(env: RuntimeEnv, f: impl FnOnce() -> R) -> R {
     mocked::with_runtime_env(env, f)
 }
 
+/// Returns the root hash recorded by the most recent native `commit` (test use).
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn root_hash() -> Option<[u8; 32]> {
+    mocked::root_hash()
+}
+
+/// Returns (and clears) the `StorageDelta` artifact from the most recent native
+/// `commit` (test use).
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn take_last_artifact() -> Option<Vec<u8>> {
+    mocked::take_last_artifact()
+}
+
 /// Commits the root hash to the runtime.
 ///
 #[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
@@ -576,6 +591,7 @@ mod mocked {
         static ROOT_HASH: RefCell<Option<[u8; 32]>> = const { RefCell::new(None) };
         static NATIVE_HLC: RefCell<LogicalClock> = RefCell::new(LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf)));
         static RUNTIME_ENV: RefCell<Option<RuntimeEnv>> = const { RefCell::new(None) };
+        static LAST_ARTIFACT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
     }
 
     /// The default storage system.
@@ -588,10 +604,23 @@ mod mocked {
     type DefaultPrivateStore = MockedStorage<{ usize::MAX - 1 }>;
 
     /// Commits the root hash to the runtime.
-    pub(super) fn commit(root_hash: &[u8; 32], _artifact: &[u8]) {
+    pub(super) fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
         ROOT_HASH.with(|rh| {
             let _ = rh.borrow_mut().replace(*root_hash);
         });
+        LAST_ARTIFACT.with(|a| {
+            *a.borrow_mut() = Some(artifact.to_vec());
+        });
+    }
+
+    /// Returns the root hash recorded by the most recent [`commit`].
+    pub(super) fn root_hash() -> Option<[u8; 32]> {
+        ROOT_HASH.with(|rh| *rh.borrow())
+    }
+
+    /// Returns (and clears) the artifact recorded by the most recent [`commit`].
+    pub(super) fn take_last_artifact() -> Option<Vec<u8>> {
+        LAST_ARTIFACT.with(|a| a.borrow_mut().take())
     }
 
     /// Reads data from persistent storage.
@@ -848,6 +877,9 @@ mod mocked {
         });
         // Clear the native ordered-index mock too.
         INDEX.with(|index| index.borrow_mut().clear());
+        LAST_ARTIFACT.with(|a| {
+            *a.borrow_mut() = None;
+        });
     }
 
     /// Resets the environment state for testing (legacy `#[cfg(test)]` alias).

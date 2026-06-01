@@ -80,7 +80,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeMap;
 use serde::Serialize;
 
-use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor};
+use super::{compute_id, Collection, CrdtType, EntryMut, StorageAdaptor, ValueRef};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::{ChildInfo, Data, Element, StorageType};
@@ -405,19 +405,24 @@ where
 
     /// Get the value for a key in the map.
     ///
+    /// Returns a read-only [`ValueRef`] guard (an owned copy that derefs to
+    /// `&V`). To *mutate* the stored value use [`get_mut`](Self::get_mut) or
+    /// [`entry`](Self::entry)`().or_default()` (both write back automatically),
+    /// or `.clone()` the guard for an owned copy when `V: Clone`.
+    ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system, or a child
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
-    pub fn get<Q>(&self, key: &Q) -> Result<Option<V>, StoreError>
+    pub fn get<Q>(&self, key: &Q) -> Result<Option<ValueRef<V>>, StoreError>
     where
         K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
         let id = compute_id(self.inner.id(), key.as_ref());
 
-        Ok(self.inner.get(id)?.map(|(_, v)| v))
+        Ok(self.inner.get(id)?.map(|(_, v)| ValueRef::new(v)))
     }
 
     /// Returns a mutable `ValueMut` guard for the value at `key`.
@@ -967,11 +972,16 @@ where
 
 impl<K, V, S> Default for SortedMap<K, V, S>
 where
-    K: BorshSerialize + BorshDeserialize,
-    V: BorshSerialize + BorshDeserialize,
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + 'static,
     S: StorageAdaptor,
 {
     fn default() -> Self {
+        // Register the nested-id re-key thunk at construction so a map first
+        // created via `default()` (e.g. `entry(k).or_default()` on a nested
+        // `Map<_, SortedMap<..>>`) is re-keyed deterministically by its parent
+        // rather than keeping a per-node random id. See `UnorderedMap`'s `Default`.
+        super::rekey::register_rekey::<Self>();
         Self::new_internal()
     }
 }
@@ -1178,6 +1188,27 @@ where
             Entry::Vacant(entry) => entry.insert(f()),
         }
     }
+
+    /// Ensures a value is in the entry by inserting `V::default()` if empty,
+    /// and returns a mutable `ValueMut` guard to the value.
+    ///
+    /// This is the blessed path for in-place mutation of nested CRDT values:
+    /// the returned guard re-persists the value to storage when it is dropped,
+    /// so there is no manual get → modify → re-insert dance. It also composes
+    /// for nested collections — `map.entry(k)?.or_default()?` yields a guard
+    /// whose nested CRDTs are deterministically re-keyed under this entry's id,
+    /// so independently first-created values converge across nodes.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    pub fn or_default(self) -> Result<ValueMut<'a, K, V, S>, StoreError>
+    where
+        V: Default + 'static,
+    {
+        self.or_insert_with(V::default)
+    }
 }
 
 impl<K, V, S> OccupiedEntry<'_, K, V, S>
@@ -1282,7 +1313,10 @@ mod tests {
             .is_none());
 
         assert_eq!(
-            map.get("key").expect("get failed").as_deref(),
+            map.get("key")
+                .expect("get failed")
+                .as_deref()
+                .map(String::as_str),
             Some("value")
         );
 
@@ -1429,7 +1463,10 @@ mod tests {
             assert_eq!(*guard, "value1");
             *guard = "updated".to_owned();
         }
-        assert_eq!(map.get("key1").unwrap().as_deref(), Some("updated"));
+        assert_eq!(
+            map.get("key1").unwrap().as_deref().map(String::as_str),
+            Some("updated")
+        );
 
         // or_insert on occupied keeps the existing value.
         let guard = map
@@ -1438,6 +1475,45 @@ mod tests {
             .or_insert("ignored".to_owned())
             .expect("or_insert failed");
         assert_eq!(*guard, "updated");
+    }
+
+    #[test]
+    fn test_sorted_map_entry_or_default() {
+        let mut map = Root::new(|| SortedMap::<String, u64, MainStorage>::new());
+
+        // Vacant: inserts `u64::default()` (0), guard write-back persists the bump.
+        {
+            let mut guard = map
+                .entry("b".to_owned())
+                .expect("entry failed")
+                .or_default()
+                .expect("or_default failed");
+            assert_eq!(*guard, 0);
+            *guard += 5;
+        }
+        // Occupied: yields the existing value, not a fresh default.
+        {
+            let mut guard = map
+                .entry("b".to_owned())
+                .expect("entry failed")
+                .or_default()
+                .expect("or_default failed");
+            assert_eq!(*guard, 5);
+            *guard += 1;
+        }
+
+        assert_eq!(map.get("b").unwrap().as_deref().copied(), Some(6));
+        assert_eq!(map.len().unwrap(), 1);
+
+        // Ordering is preserved when `or_default()` creates new keys.
+        drop(
+            map.entry("a".to_owned())
+                .expect("entry failed")
+                .or_default()
+                .expect("or_default failed"),
+        );
+        let keys: Vec<String> = map.keys().unwrap().collect();
+        assert_eq!(keys, vec!["a", "b"]);
     }
 
     #[test]

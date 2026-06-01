@@ -358,11 +358,38 @@ pub fn mergeable_derive(input: TokenStream) -> TokenStream {
         }
     });
 
+    // Per-field deterministic re-key (#2577). When this struct is stored as a
+    // collection VALUE under a deterministic entry id, each field's nested
+    // collection ids are re-keyed under a field-namespaced child of that id — so
+    // every replica derives identical ids and the nested CRDTs converge as child
+    // entities, instead of the whole struct blob being LWW'd (silent data loss).
+    // `rekey_field_if_supported!` autoref-dispatches to a real re-key for
+    // `RekeyTarget` fields (collections, nested CRDT structs) and a no-op for
+    // leaves (e.g. `LwwRegister`).
+    let rekey_calls = named_fields.iter().map(|field| {
+        let field_name = field.ident.as_ref().unwrap();
+        let field_name_str = field_name.to_string();
+        quote! {
+            ::calimero_storage::rekey_field_if_supported!(
+                &mut self.#field_name,
+                ::calimero_storage::collections::rekey::field_child_id(parent_id, #field_name_str)
+            );
+        }
+    });
+
     let expanded = quote! {
         impl #impl_generics calimero_storage::collections::Mergeable for #name #ty_generics #where_clause {
             fn merge(&mut self, other: &Self) -> Result<(), calimero_storage::collections::crdt_meta::MergeError> {
                 #(#merge_calls)*
                 Ok(())
+            }
+        }
+
+        impl #impl_generics ::calimero_storage::collections::rekey::RekeyTarget
+            for #name #ty_generics #where_clause
+        {
+            fn rekey_relative_to(&mut self, parent_id: ::calimero_storage::address::Id) {
+                #(#rekey_calls)*
             }
         }
     };

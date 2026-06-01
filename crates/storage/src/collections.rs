@@ -32,7 +32,7 @@ pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageStrategy
 pub mod composite_key;
 mod crdt_impls;
 mod decompose_impls;
-pub(crate) mod rekey;
+pub mod rekey;
 pub use composite_key::CompositeKey;
 pub mod nested;
 pub use nested::{get_nested, insert_nested, insert_nested_decomposable, NestedConfig};
@@ -57,6 +57,91 @@ pub mod frozen;
 pub use frozen::FrozenStorage;
 pub mod frozen_value;
 pub use frozen_value::FrozenValue;
+
+/// An owned, **read-only** view of a value returned by a collection's `get`.
+///
+/// Storage values are not resident in memory the way a `HashMap`'s are — every
+/// `get` deserializes a fresh copy from the backing store — so this cannot be a
+/// borrow like `HashMap::get`'s `&V`. Instead it owns the deserialized value and
+/// exposes it *immutably only* (`Deref`, deliberately no `DerefMut`).
+///
+/// That turns the most common storage footgun into a compile error: mutating a
+/// `get` result and forgetting to write it back used to silently discard the
+/// change (the value was a throwaway copy). Now the mutation does not compile —
+/// the borrow checker steers you to the right tool:
+///
+/// - to **mutate and persist**, use [`get_mut`] or [`entry`]`().or_default()`
+///   (both write back automatically — no manual re-insert);
+/// - to **take an owned copy on purpose**, `.clone()` it (when `V: Clone`).
+///
+/// There is intentionally no public `into_inner`/unwrap: handing back an owned,
+/// mutable value with no write-back is exactly the footgun this guard closes.
+///
+/// [`get_mut`]: UnorderedMap::get_mut
+/// [`entry`]: UnorderedMap::entry
+pub struct ValueRef<V> {
+    value: V,
+}
+
+impl<V> ValueRef<V> {
+    /// Wrap an owned value just read from storage. Internal: only collection
+    /// `get` methods mint these.
+    pub(crate) const fn new(value: V) -> Self {
+        Self { value }
+    }
+
+    /// Consume the guard and take ownership of the value.
+    ///
+    /// Deliberately **crate-internal**: exposing it publicly would re-open the
+    /// footgun this guard exists to close — `map.get(k)?.into_inner()` yields an
+    /// owned, mutable copy whose changes are silently dropped unless manually
+    /// re-`insert`ed. Public callers should instead mutate-and-persist via
+    /// [`get_mut`](UnorderedMap::get_mut) / [`entry`](UnorderedMap::entry)`().or_default()`,
+    /// or take an explicit owned copy with `.clone()` when `V: Clone`. The
+    /// storage crate itself uses this for the few deliberate read-modify-write
+    /// paths (e.g. CRDT merge) where a held mutable guard would conflict.
+    pub(crate) fn into_inner(self) -> V {
+        self.value
+    }
+}
+
+impl<V> Deref for ValueRef<V> {
+    type Target = V;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<V: fmt::Debug> fmt::Debug for ValueRef<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.value.fmt(f)
+    }
+}
+
+impl<V: PartialEq> PartialEq for ValueRef<V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl<V: Eq> Eq for ValueRef<V> {}
+
+// Intentionally NO `Clone`/`AsRef`/`Hash`/`Borrow` impls: `ValueRef` is a
+// `Deref` guard, so `guard.clone()`, `guard.as_ref()`, `guard.hash(..)` already
+// resolve to `V`'s own methods through the deref. Adding inherent trait impls
+// here would *shadow* those — e.g. `file_record.clone()` would yield a
+// `ValueRef<FileRecord>` instead of a `FileRecord`, silently changing callers.
+// To take the value out explicitly, use [`ValueRef::into_inner`].
+
+/// Compare a guard directly against a bare `V`, so `map.get(k)?.unwrap() == v`
+/// works without unwrapping the guard first. (Operator-based, so it does not
+/// shadow any `Deref` method.)
+impl<V: PartialEq> PartialEq<V> for ValueRef<V> {
+    fn eq(&self, other: &V) -> bool {
+        &self.value == other
+    }
+}
 
 // fixme! macro expects `calimero_storage` to be in deps
 use crate as calimero_storage;
