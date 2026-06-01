@@ -139,6 +139,14 @@ pub(crate) fn rekey_nested_value<V: 'static>(value: &mut V, parent_id: Id) {
 /// stored CRDT type (`Counter`, `UnorderedMap`, generated record structs — all
 /// owned), but a future `RekeyTarget` impl with borrowed data must be `'static`
 /// to be re-keyed here.
+///
+/// **Each expansion MUST stay in its own block.** The autoref machinery defines
+/// local helper traits/structs; the surrounding `{{ … }}` scopes them per
+/// invocation, so repeated calls in one `rekey_relative_to` body don't collide.
+/// If a refactor ever flattened these into a shared scope, the duplicate names
+/// would shadow and could make the no-op arm win silently — which would stop
+/// re-keying and regress to the #2577 data loss with NO compile error. Keep the
+/// block.
 #[macro_export]
 macro_rules! rekey_field_if_supported {
     ($value:expr, $parent:expr) => {{

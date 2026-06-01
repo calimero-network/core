@@ -655,7 +655,16 @@ fn generate_registration_hook(
 /// We register EVERY type token found in each field (the collection itself, its
 /// key/value types, and so on). `register_rekey_if_supported!` autoref-dispatches
 /// to a real registration only for `RekeyTarget` types and is a safe no-op for
-/// leaves (`String`, `u64`, `LwwRegister<_>`, …), so over-collecting is harmless.
+/// leaves (`String`, `u64`, `LwwRegister<_>`, …), so over-collecting (including
+/// key types) is harmless.
+///
+/// SCOPE — one level of custom-struct nesting. This registers the value types of
+/// the ROOT state's collection fields. Built-in collections self-register in
+/// their constructors, so any depth of *built-in* nesting works. But a custom
+/// struct reachable only through ANOTHER custom struct's collection (state →
+/// `Map<_, Outer>` → `Map<_, Inner>`, where both are app structs) is not
+/// registered here, so `Inner` would still be LWW'd. Deep custom nesting is the
+/// follow-up; today's apps don't hit it.
 fn generate_rekey_register_method(
     ident: &Ident,
     generics: &Generics,

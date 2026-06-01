@@ -187,10 +187,22 @@ fn unregistered_value_loses_data_pre_fix() {
 
     let (wa, wb, converged) = drive::<UnfixedApp>();
     println!("UNFIXED wins a={wa} b={wb} converged={converged}");
+    // Tight assertions document the EXACT pre-fix failure mode — LWW, not total
+    // loss and not partial survival — so a different future regression (e.g.
+    // both replicas read 0, or one reads 2) trips this instead of passing
+    // silently:
+    //   - they still converge (deterministic HLC tiebreak), so both agree,
+    //   - to the WRONG value: exactly one replica's single increment survives
+    //     (1), the other's is dropped — the data loss #2577 fixes.
     assert!(
-        wa < 2 && wb < 2,
-        "without rekey the struct value is LWW'd — increments must be lost \
-         (got a={wa} b={wb}); if this fails, the deterministic-rekey fix may no \
-         longer be what makes #2577 converge"
+        converged,
+        "LWW replicas still converge — to the wrong value"
+    );
+    assert_eq!(wa, wb, "converged replicas must agree on the (wrong) value");
+    assert_eq!(
+        wa, 1,
+        "without rekey, LWW keeps exactly one replica's increment (not summed \
+         to 2, not lost to 0); if this changes, re-examine whether deterministic \
+         rekey is still what makes #2577 converge"
     );
 }

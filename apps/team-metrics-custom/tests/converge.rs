@@ -33,6 +33,11 @@ fn team_stats_converge_to_summed_value_custom() {
     env::reset_environment();
     register_crdt_merge_for_test::<TeamMetricsApp>();
     calimero_sdk::event::register::<TeamMetricsApp>();
+    // `#[app::state]`-generated: registers re-key thunks for the value types of
+    // the root's collection fields. `teams: UnorderedMap<String, TeamStats>` →
+    // `TeamStats` is registered (and its hand-written `RekeyTarget` impl used).
+    // This is the WASM-load / TestHost-bridge path; we call it directly here.
+    // (One level deep — see `generate_rekey_register_method` for the scope.)
     TeamMetricsApp::__calimero_register_rekey();
 
     let a: Store = Default::default();
