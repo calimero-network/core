@@ -85,7 +85,7 @@ impl NestedCrdtTest {
 
         let value = counter.value()?;
 
-        drop(self.counters.insert(key.clone(), counter)?);
+        self.counters.insert(key.clone(), counter)?;
 
         app::emit!(TestEvent::CounterIncremented { key, value });
 
@@ -105,7 +105,7 @@ impl NestedCrdtTest {
     pub fn set_register(&mut self, key: String, value: String) -> app::Result<()> {
         let register = LwwRegister::new(value.clone());
 
-        drop(self.registers.insert(key.clone(), register)?);
+        self.registers.insert(key.clone(), register)?;
 
         app::emit!(TestEvent::RegisterSet { key, value });
 
@@ -132,9 +132,9 @@ impl NestedCrdtTest {
             .get(&outer_key)?
             .unwrap_or_else(|| UnorderedMap::new());
 
-        drop(inner_map.insert(inner_key.clone(), value.clone().into())?);
+        inner_map.insert(inner_key.clone(), value.clone().into())?;
 
-        drop(self.metadata.insert(outer_key.clone(), inner_map)?);
+        self.metadata.insert(outer_key.clone(), inner_map)?;
 
         app::emit!(TestEvent::MetadataSet {
             outer_key,
@@ -188,9 +188,9 @@ impl NestedCrdtTest {
     pub fn add_tag(&mut self, key: String, tag: String) -> app::Result<()> {
         let mut set = self.tags.get(&key)?.unwrap_or_else(|| UnorderedSet::new());
 
-        let _ = set.insert(tag.clone())?;
+        set.insert(tag.clone())?;
 
-        drop(self.tags.insert(key.clone(), set)?);
+        self.tags.insert(key.clone(), set)?;
 
         app::emit!(TestEvent::TagAdded { key, tag });
 

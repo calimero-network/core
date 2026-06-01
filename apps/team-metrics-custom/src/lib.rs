@@ -17,7 +17,7 @@ use calimero_storage::collections::{Counter, Mergeable, UnorderedMap};
 ///
 /// This struct demonstrates CUSTOM Mergeable implementation.
 /// You have full control and can add custom logic!
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Default, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct TeamStats {
     pub wins: Counter,
@@ -80,16 +80,12 @@ impl TeamMetricsApp {
     }
 
     pub fn record_win(&mut self, team_id: String) -> app::Result<u64> {
-        let mut stats = self.teams.get(&team_id)?.unwrap_or_else(|| TeamStats {
-            wins: Counter::new(),
-            losses: Counter::new(),
-            draws: Counter::new(),
-        });
+        let mut stats = self.teams.get(&team_id)?.unwrap_or_default();
 
         stats.wins.increment()?;
         let total = stats.wins.value()?;
 
-        drop(self.teams.insert(team_id.clone(), stats)?);
+        self.teams.insert(team_id.clone(), stats)?;
 
         app::emit!(MetricsEvent::WinRecorded { team_id, total });
 
@@ -97,16 +93,12 @@ impl TeamMetricsApp {
     }
 
     pub fn record_loss(&mut self, team_id: String) -> app::Result<u64> {
-        let mut stats = self.teams.get(&team_id)?.unwrap_or_else(|| TeamStats {
-            wins: Counter::new(),
-            losses: Counter::new(),
-            draws: Counter::new(),
-        });
+        let mut stats = self.teams.get(&team_id)?.unwrap_or_default();
 
         stats.losses.increment()?;
         let total = stats.losses.value()?;
 
-        drop(self.teams.insert(team_id.clone(), stats)?);
+        self.teams.insert(team_id.clone(), stats)?;
 
         app::emit!(MetricsEvent::LossRecorded { team_id, total });
 
@@ -114,16 +106,12 @@ impl TeamMetricsApp {
     }
 
     pub fn record_draw(&mut self, team_id: String) -> app::Result<u64> {
-        let mut stats = self.teams.get(&team_id)?.unwrap_or_else(|| TeamStats {
-            wins: Counter::new(),
-            losses: Counter::new(),
-            draws: Counter::new(),
-        });
+        let mut stats = self.teams.get(&team_id)?.unwrap_or_default();
 
         stats.draws.increment()?;
         let total = stats.draws.value()?;
 
-        drop(self.teams.insert(team_id.clone(), stats)?);
+        self.teams.insert(team_id.clone(), stats)?;
 
         app::emit!(MetricsEvent::DrawRecorded { team_id, total });
 
