@@ -43,6 +43,77 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
+// Cross-thread serialization for index read-modify-write (core#2571).
+//
+// The Merkle index mutators below (`add_child_to`, the hash recomputes, the
+// child-removal path) read an index entry, mutate it in memory, then write it
+// back. On the native node a local write (the execute path, under
+// `context.lock()`) and a sync apply (the dedicated `SyncSessionActor`, #2316)
+// run on DIFFERENT threads with no shared lock — so two concurrent
+// read-modify-writes on the same parent index entry lose one update. The lost
+// update drops a child from a collection's `children` list while that child's
+// `Key::Entry` still exists; the collection's `full_hash` then diverges from
+// every peer's and HashComparison can never reconcile it (the same-DAG-heads /
+// different-root split-brain that loops `wait_for_sync` to timeout).
+//
+// Serializing the read-modify-writes makes each one atomic: a caller always
+// reads the CURRENT list and appends its child, so no concurrent add is lost
+// regardless of interleave. The guard is reentrant — a single logical operation
+// nests these calls on one thread — and native-only: WASM app execution is
+// single-threaded, so there is no race and the guard compiles out to nothing.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod mutation_lock {
+    use std::cell::Cell;
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+    thread_local! {
+        static DEPTH: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// Held for the duration of an index read-modify-write. The global lock is
+    /// released only when the OUTERMOST guard on this thread drops, so nested
+    /// mutators (e.g. `add_child_to` → `recalculate_ancestor_hashes_for`) don't
+    /// self-deadlock.
+    #[must_use]
+    pub(crate) struct Guard(#[allow(dead_code)] Option<MutexGuard<'static, ()>>);
+
+    pub(crate) fn guard() -> Guard {
+        DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(current + 1);
+            if current == 0 {
+                // Recover from a poisoned lock: a panic mid-mutation never
+                // leaves a half-written index entry (each `save_index` is a
+                // single store write), so the protected data stays consistent
+                // and the lock is safe to keep using.
+                Guard(Some(
+                    LOCK.lock().unwrap_or_else(|poison| poison.into_inner()),
+                ))
+            } else {
+                Guard(None)
+            }
+        })
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+            // The held `MutexGuard` (outermost guard only) drops here.
+        }
+    }
+}
+
+/// Acquire the reentrant index-mutation guard. Native serializes concurrent
+/// read-modify-writes; WASM is single-threaded so this is a no-op.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn index_mutation_guard() -> mutation_lock::Guard {
+    mutation_lock::guard()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn index_mutation_guard() {}
+
 /// RAII scope that defers ancestor-hash recomputation for a specific
 /// `StorageAdaptor`.
 ///
@@ -308,6 +379,10 @@ pub struct Index<S: StorageAdaptor>(PhantomData<S>);
 impl<S: StorageAdaptor> Index<S> {
     /// Adds a child to a parent's collection.
     pub(crate) fn add_child_to(parent_id: Id, child: ChildInfo) -> Result<(), StorageError> {
+        // Serialize the read-modify-write so a concurrent local-write / sync
+        // apply on the same parent can't lose a child (core#2571).
+        let _mutation_guard = index_mutation_guard();
+
         // Get or create parent index
         let mut parent_index = Self::get_index(parent_id)?.unwrap_or_else(|| EntityIndex {
             id: parent_id,
@@ -398,6 +473,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// # Errors
     /// Returns `StorageError` if index cannot be loaded or saved.
     pub fn add_root(root: ChildInfo) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
         let mut index = Self::get_index(root.id())?.unwrap_or_else(|| EntityIndex {
             id: root.id(),
             parent_id: None,
@@ -526,6 +602,7 @@ impl<S: StorageAdaptor> Index<S> {
 
     /// Marks an entity as deleted (sets tombstone).
     pub(crate) fn mark_deleted(id: Id, deleted_at: u64) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
         if let Some(mut index) = Self::get_index(id)? {
             index.deleted_at = Some(deleted_at);
 
@@ -648,6 +725,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// defer scope is active, and from `DeferredAncestorScope::drop`
     /// when flushing a deferred set.
     pub(crate) fn recalculate_ancestor_hashes_for_now(id: Id) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
         let mut current_id = id;
 
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
@@ -706,6 +784,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// Uses tombstone-based deletion. To move a child to a different parent,
     /// just add it to the new parent instead.
     pub(crate) fn remove_child_from(parent_id: Id, child_id: Id) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
         Self::delete_entity_and_create_tombstone(child_id)?;
         Self::update_parent_after_child_removal(parent_id, child_id)?;
         Self::recalculate_ancestor_hashes_for(parent_id)?;
@@ -745,6 +824,7 @@ impl<S: StorageAdaptor> Index<S> {
         parent_id: Id,
         child_id: Id,
     ) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
         let mut parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
 
@@ -788,6 +868,10 @@ impl<S: StorageAdaptor> Index<S> {
         merkle_hash: [u8; 32],
         updated_at: Option<UpdatedAt>,
     ) -> Result<[u8; 32], StorageError> {
+        // RMW on this entity's index entry — serialize against a concurrent
+        // `add_child_to` on the same entry so neither clobbers the other
+        // (core#2571).
+        let _mutation_guard = index_mutation_guard();
         let mut index = Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
         let old_own_hash = index.own_hash;
         let old_full_hash = index.full_hash;

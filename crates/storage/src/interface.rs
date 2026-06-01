@@ -423,6 +423,11 @@ impl<S: StorageAdaptor> Interface<S> {
             ));
         }
 
+        // RMW on this entity's index entry (read → patch storage_type → save).
+        // Serialize against a concurrent index mutation on the same entry so the
+        // signature patch and a concurrent `add_child_to` can't clobber each
+        // other (core#2571).
+        let _mutation_guard = crate::index::index_mutation_guard();
         let Some(mut index) = <Index<S>>::get_index(id)? else {
             return Ok(false);
         };
