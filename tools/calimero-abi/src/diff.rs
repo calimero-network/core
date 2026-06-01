@@ -153,9 +153,15 @@ fn expand_refs(
                         // equal on both sides and silently suppress the field's diff.
                         eyre::bail!("$ref '{name}' is not defined in `types`");
                     };
-                    let def_value = serde_json::to_value(def).map_err(|e| {
-                        eyre::eyre!("failed to serialize type '{name}' for diff: {e}")
-                    })?;
+                    // For an alias, expand its *target* (not the `{kind:alias, target}`
+                    // wrapper), so an aliased type canonicalizes identically to the same
+                    // type written inline — otherwise inline-vs-alias falsely diff as
+                    // BREAKING. Structural defs (record/variant/bytes) expand as-is.
+                    let def_value = match def {
+                        TypeDef::Alias { target } => serde_json::to_value(target),
+                        other => serde_json::to_value(other),
+                    }
+                    .map_err(|e| eyre::eyre!("failed to serialize type '{name}' for diff: {e}"))?;
                     let r = expand_refs(def_value, manifest, seen)?;
                     let _ = seen.pop();
                     r
@@ -477,6 +483,28 @@ mod tests {
         .unwrap();
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(findings[0].class, FindingClass::Breaking);
+    }
+
+    #[test]
+    fn inline_type_equals_alias_of_same_type_no_finding() {
+        // An inline AuthoredMap and a `$ref` to a newtype alias of the *same* map are
+        // semantically identical, so the diff must report no change — the alias
+        // wrapper must not leak into the canonical form.
+        let baseline = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Root":{"kind":"record","fields":[{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let current = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Wiki":{"kind":"alias","target":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}},
+                "Root":{"kind":"record","fields":[{"name":"wiki","type":{"$ref":"Wiki"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        assert!(
+            diff_checked(&current, &baseline).unwrap().is_empty(),
+            "inline vs alias-of-same-type must not be flagged as changed"
+        );
     }
 
     #[test]
