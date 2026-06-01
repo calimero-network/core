@@ -2034,10 +2034,18 @@ pub(crate) fn persist_signed_signatures(
     let result: eyre::Result<()> = with_runtime_env(env, || {
         for action in actions {
             let (id, storage_type) = match action {
-                Action::Add { id, metadata, .. } | Action::Update { id, metadata, .. } => {
-                    (*id, metadata.storage_type.clone())
-                }
-                Action::DeleteRef { .. } | Action::Compare { .. } => continue,
+                Action::Add { id, metadata, .. }
+                | Action::Update { id, metadata, .. }
+                // DeleteRef carries a real signature too (signed by
+                // `sign_authorized_actions`). Persist it onto the now-tombstoned
+                // index entry — `update_signature_in_place` RMWs the index, which
+                // survives the delete — so HashComparison can later ship a
+                // *verifiable* signed DeleteRef for the cleared entity (otherwise
+                // a User/Shared clear can't converge via HC, only via the delta
+                // stream). The tombstone's owner/writer set is unchanged by the
+                // delete, so the in-place patch's identity guard still matches.
+                | Action::DeleteRef { id, metadata, .. } => (*id, metadata.storage_type.clone()),
+                Action::Compare { .. } => continue,
             };
             // Only Shared/User with a REAL signature need the
             // re-persist. Public/Frozen don't carry signatures.
