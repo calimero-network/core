@@ -62,11 +62,21 @@ fn cli_identity_downgrade_exits_one() {
     let baseline = root(&format!("[{AUTHORED_MAP}]"));
     let current = root(&format!("[{UNORDERED_MAP}]"));
     let (code, stdout, _) = run_diff(&current, &baseline, &[]);
+    // Validate the exact documented output for this command, line by line.
     assert_eq!(code, 1, "identity downgrade must fail CI; stdout: {stdout}");
-    assert!(
-        stdout.contains("UNSAFE_IDENTITY_DOWNGRADE"),
-        "stdout: {stdout}"
-    );
+    for needle in [
+        "⛔",
+        "[UNSAFE_IDENTITY_DOWNGRADE]",
+        "field 'wiki'",
+        "AuthoredMap → UnorderedMap",
+        "strips authorship / writer-ACL network-wide",
+        "unsafe_strip_identity",
+    ] {
+        assert!(
+            stdout.contains(needle),
+            "missing {needle:?} in stdout: {stdout}"
+        );
+    }
 }
 
 #[test]
