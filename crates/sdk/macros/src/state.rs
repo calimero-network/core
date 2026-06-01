@@ -673,9 +673,16 @@ fn generate_rekey_register_method(
         collect_type_paths(&field.ty, &mut types);
     }
 
-    let calls = types.iter().map(|ty| {
-        quote! { ::calimero_storage::register_rekey_if_supported!(#ty); }
-    });
+    // Dedup by token string: the same value type can appear in several fields
+    // (e.g. two `UnorderedMap<String, TeamStats>`), and `register_rekey_pub` is
+    // already idempotent — so emit one registration call per distinct type.
+    let mut seen = std::collections::HashSet::new();
+    let calls = types
+        .iter()
+        .filter(|ty| seen.insert(ty.to_token_stream().to_string()))
+        .map(|ty| {
+            quote! { ::calimero_storage::register_rekey_if_supported!(#ty); }
+        });
 
     quote! {
         impl #impl_generics #ident #ty_generics #where_clause {

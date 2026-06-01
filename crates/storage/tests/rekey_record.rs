@@ -1,14 +1,13 @@
-//! De-risk probe for #2577: prove that giving a custom struct value's nested
-//! collections DETERMINISTIC ids (via a `RekeyTarget` impl + registration) makes
-//! concurrent same-key writes converge to the CORRECT value (counter sums),
-//! instead of last-writer-wins'ing the struct blob and losing data.
+//! #2577 storage-level probe: a custom struct stored as a collection VALUE
+//! converges to the CORRECT value (counters sum) IFF its nested collections get
+//! deterministic ids — via a `RekeyTarget` impl + registration. The positive
+//! test proves the fix; the negative test documents the pre-fix data loss (an
+//! unregistered value type is last-writer-wins'd as a blob).
 //!
-//! `TeamStats` here impls `RekeyTarget` BY HAND and is registered explicitly via
-//! the `register_rekey_if_supported!` / `rekey_field_if_supported!` autoref
-//! macros — exactly what `#[derive(Mergeable)]` + `#[app::state]` will generate.
-//!
-//! Own integration binary (not a `src/tests` module) so it runs isolated from
-//! the unit-test suite, which shares process-global state (the rekey registry).
+//! Own integration binary (gated `required-features = ["testing"]` in Cargo) so
+//! it runs isolated from the unit-test suite, which shares the process-global
+//! rekey registry. The two structs are DISTINCT types because that registry has
+//! no reset — registering one must not affect the other.
 
 #![cfg(feature = "testing")]
 #![allow(clippy::unwrap_used)]
@@ -28,57 +27,80 @@ use calimero_storage::store::Key;
 use calimero_storage::{
     register_crdt_merge_for_test, register_rekey_if_supported, rekey_field_if_supported,
 };
+use serial_test::serial;
 
+/// A struct that implements `RekeyTarget` (what the macro generates). When
+/// registered, its nested counters get deterministic ids and converge.
 #[derive(BorshSerialize, BorshDeserialize, Default)]
 #[borsh(crate = "calimero_sdk::borsh")]
-struct TeamStats {
+struct FixedStats {
     wins: Counter,
-    losses: Counter,
 }
 
-impl Mergeable for TeamStats {
+impl Mergeable for FixedStats {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        self.wins.merge(&other.wins)?;
-        self.losses.merge(&other.losses)
+        self.wins.merge(&other.wins)
     }
 }
 
-// What the macro will generate: re-key each collection field under a
-// field-namespaced child of the entry id, so every replica derives identical
-// ids and the nested counters converge as child entities.
-impl RekeyTarget for TeamStats {
+impl RekeyTarget for FixedStats {
     fn rekey_relative_to(&mut self, parent_id: Id) {
         rekey_field_if_supported!(&mut self.wins, field_child_id(parent_id, "wins"));
-        rekey_field_if_supported!(&mut self.losses, field_child_id(parent_id, "losses"));
     }
 }
 
+/// Same shape, but NOT a `RekeyTarget` and never registered — i.e. the pre-fix
+/// world. Its nested counter keeps a per-replica-random id, so the blob differs
+/// and concurrent writes are last-writer-wins'd (data loss).
 #[derive(BorshSerialize, BorshDeserialize, Default)]
 #[borsh(crate = "calimero_sdk::borsh")]
-struct App {
-    teams: UnorderedMap<String, TeamStats>,
+struct UnfixedStats {
+    wins: Counter,
 }
 
-impl Mergeable for App {
+impl Mergeable for UnfixedStats {
     fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
-        self.teams.merge(&other.teams)
+        self.wins.merge(&other.wins)
     }
 }
 
-impl App {
-    fn record_win(&mut self, team: &str) {
-        let mut s = self.teams.get(team).unwrap().unwrap_or_default();
-        s.wins.increment().unwrap();
-        self.teams.insert(team.to_owned(), s).unwrap();
-    }
-    fn wins(&self, team: &str) -> u64 {
-        self.teams
-            .get(team)
-            .unwrap()
-            .map(|s| s.wins.value().unwrap())
-            .unwrap_or(0)
-    }
+/// Root app generic over the value type, so one driver exercises both.
+trait TeamApp: BorshSerialize + BorshDeserialize + Default + Mergeable + 'static {
+    fn record_win(&mut self, team: &str);
+    fn wins(&self, team: &str) -> u64;
 }
+
+macro_rules! team_app {
+    ($app:ident, $val:ty) => {
+        #[derive(BorshSerialize, BorshDeserialize, Default)]
+        #[borsh(crate = "calimero_sdk::borsh")]
+        struct $app {
+            teams: UnorderedMap<String, $val>,
+        }
+        impl Mergeable for $app {
+            fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+                self.teams.merge(&other.teams)
+            }
+        }
+        impl TeamApp for $app {
+            fn record_win(&mut self, team: &str) {
+                let mut s = self.teams.get(team).unwrap().unwrap_or_default();
+                s.wins.increment().unwrap();
+                self.teams.insert(team.to_owned(), s).unwrap();
+            }
+            fn wins(&self, team: &str) -> u64 {
+                self.teams
+                    .get(team)
+                    .unwrap()
+                    .map(|s| s.wins.value().unwrap())
+                    .unwrap_or(0)
+            }
+        }
+    };
+}
+
+team_app!(FixedApp, FixedStats);
+team_app!(UnfixedApp, UnfixedStats);
 
 type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
 
@@ -93,52 +115,82 @@ fn env_for(s: &Store, ex: [u8; 32]) -> RuntimeEnv {
     RuntimeEnv::new(reader, writer, remover, [7u8; 32], ex)
 }
 
-#[test]
-fn deterministic_rekey_makes_struct_value_counters_converge() {
-    env::reset_environment();
-    register_crdt_merge_for_test::<App>();
-    // What the macro will emit for each collection-field value type. Autoref
-    // makes this a no-op for non-RekeyTarget value types (proven below).
-    register_rekey_if_supported!(TeamStats);
-    register_rekey_if_supported!(String); // leaf value type: must be a safe no-op
-
+/// Two replicas each record one win for the same team under their own executor
+/// id, exchange deltas, and we read back each replica's win count + root hash.
+/// Returns `(wins_a, wins_b, converged)`.
+fn drive<T: TeamApp>() -> (u64, u64, bool) {
     let a: Store = Default::default();
     let b: Store = Default::default();
     env::with_runtime_env(env_for(&a, [1; 32]), || {
-        Root::new(App::default).commit();
+        Root::new(T::default).commit();
     });
     *b.borrow_mut() = a.borrow().clone();
 
     let da = env::with_runtime_env(env_for(&a, [1; 32]), || {
-        let mut app = Root::<App>::fetch().unwrap();
+        let mut app = Root::<T>::fetch().unwrap();
         app.record_win("liverpool");
         app.commit();
         env::take_last_artifact().unwrap()
     });
     let db = env::with_runtime_env(env_for(&b, [2; 32]), || {
-        let mut app = Root::<App>::fetch().unwrap();
+        let mut app = Root::<T>::fetch().unwrap();
         app.record_win("liverpool");
         app.commit();
         env::take_last_artifact().unwrap()
     });
 
     let (ha, wa) = env::with_runtime_env(env_for(&a, [1; 32]), || {
-        Root::<App>::sync(&db, &ApplyContext::empty()).unwrap();
+        Root::<T>::sync(&db, &ApplyContext::empty()).unwrap();
         (
             env::root_hash(),
-            Root::<App>::fetch().unwrap().wins("liverpool"),
+            Root::<T>::fetch().unwrap().wins("liverpool"),
         )
     });
     let (hb, wb) = env::with_runtime_env(env_for(&b, [2; 32]), || {
-        Root::<App>::sync(&da, &ApplyContext::empty()).unwrap();
+        Root::<T>::sync(&da, &ApplyContext::empty()).unwrap();
         (
             env::root_hash(),
-            Root::<App>::fetch().unwrap().wins("liverpool"),
+            Root::<T>::fetch().unwrap().wins("liverpool"),
         )
     });
+    (wa, wb, ha == hb)
+}
 
-    println!("wins a={wa} b={wb}; converged={}", ha == hb);
+#[test]
+#[serial]
+fn registered_rekey_makes_struct_value_counters_converge() {
+    env::reset_environment();
+    register_crdt_merge_for_test::<FixedApp>();
+    // What the macro emits for each collection-field value type. Autoref makes
+    // it a no-op for leaf value types (proven by passing `String`).
+    register_rekey_if_supported!(FixedStats);
+    register_rekey_if_supported!(String);
+
+    let (wa, wb, converged) = drive::<FixedApp>();
+    println!("FIXED   wins a={wa} b={wb} converged={converged}");
     assert_eq!(wa, 2, "replica A: both increments must survive");
     assert_eq!(wb, 2, "replica B: both increments must survive");
-    assert_eq!(ha, hb, "replicas must converge to the same root hash");
+    assert!(converged, "replicas must converge to the same root hash");
+}
+
+#[test]
+#[serial]
+fn unregistered_value_loses_data_pre_fix() {
+    // Regression guard / documentation of the bug #2577 fixes: with no rekey
+    // registration (the pre-fix world), the struct value is LWW'd as a blob and
+    // concurrent increments are lost. If a future change makes the data survive
+    // WITHOUT rekey (e.g. a serialization change), this assertion fires so we
+    // re-examine whether the rekey machinery is still doing the work.
+    env::reset_environment();
+    register_crdt_merge_for_test::<UnfixedApp>();
+    // Deliberately NO `register_rekey_if_supported!(UnfixedStats)`.
+
+    let (wa, wb, converged) = drive::<UnfixedApp>();
+    println!("UNFIXED wins a={wa} b={wb} converged={converged}");
+    assert!(
+        wa < 2 && wb < 2,
+        "without rekey the struct value is LWW'd — increments must be lost \
+         (got a={wa} b={wb}); if this fails, the deterministic-rekey fix may no \
+         longer be what makes #2577 converge"
+    );
 }

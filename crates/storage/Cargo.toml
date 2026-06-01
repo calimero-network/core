@@ -57,3 +57,7 @@ required-features = ["testing"]
 [[test]]
 name = "merge_registry_integration"
 required-features = ["testing"]
+
+[[test]]
+name = "rekey_record"
+required-features = ["testing"]

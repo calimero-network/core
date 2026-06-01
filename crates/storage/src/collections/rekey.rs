@@ -132,6 +132,13 @@ pub(crate) fn rekey_nested_value<V: 'static>(value: &mut V, parent_id: Id) {
 /// `RekeyTarget` impls call it per field.
 ///
 /// `$value` must be a `&mut` place of the field; `$parent` an [`Id`].
+///
+/// **`'static` requirement.** The "real re-key" arm only fires for
+/// `$value: RekeyTarget + 'static`; a `RekeyTarget` type holding a non-`'static`
+/// borrow would silently take the no-op arm. This is not a concern for any
+/// stored CRDT type (`Counter`, `UnorderedMap`, generated record structs — all
+/// owned), but a future `RekeyTarget` impl with borrowed data must be `'static`
+/// to be re-keyed here.
 #[macro_export]
 macro_rules! rekey_field_if_supported {
     ($value:expr, $parent:expr) => {{
