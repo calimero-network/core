@@ -1,84 +1,48 @@
-//! #2577 end-to-end for the HAND-WRITTEN `Mergeable` + manual `RekeyTarget` app.
-//! Two replicas concurrently record wins for the same team; the counters must
-//! SUM (not be lost to LWW). Own integration binary for isolation.
+//! Convergence + correctness for the real `#[app::state]` app, driven through
+//! the convergence harness. The custom-`Mergeable` `TeamStats` (hand-written
+//! `RekeyTarget`, see `src/lib.rs`) is the #2577 headline case.
+//!
+//! `#[serial]`: `converge_app` clears and repopulates the process-global merge
+//! registry per run, so two of these must not run concurrently. Own integration
+//! binary so it's also isolated from the `TestHost` unit tests.
 
-#![allow(clippy::unwrap_used)]
-
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
-
-use calimero_storage::collections::Root;
-use calimero_storage::env::{self, RuntimeEnv};
-use calimero_storage::interface::ApplyContext;
-use calimero_storage::register_crdt_merge_for_test;
-use calimero_storage::store::Key;
+use calimero_storage::testing::converge_app;
+use serial_test::serial;
 use team_metrics_custom::TeamMetricsApp;
 
-type Store = Rc<RefCell<HashMap<[u8; 32], Vec<u8>>>>;
-
-fn env_for(s: &Store, ex: [u8; 32]) -> RuntimeEnv {
-    let r = s.clone();
-    let reader = Rc::new(move |k: &Key| r.borrow().get(&k.to_bytes()).cloned());
-    let w = s.clone();
-    let writer =
-        Rc::new(move |k: Key, v: &[u8]| w.borrow_mut().insert(k.to_bytes(), v.to_vec()).is_some());
-    let rm = s.clone();
-    let remover = Rc::new(move |k: &Key| rm.borrow_mut().remove(&k.to_bytes()).is_some());
-    RuntimeEnv::new(reader, writer, remover, [7u8; 32], ex)
+#[test]
+#[serial]
+fn team_stats_converge() {
+    // Convergence (equal root hash) holds regardless of the #2577 fix — even the
+    // pre-fix LWW path converges, just to a lossy value. The correctness of that
+    // value is asserted separately below.
+    converge_app(TeamMetricsApp::init)
+        .replicas(3)
+        .ops(|s| {
+            let _ = s.record_win("liverpool".into());
+        })
+        .ops(|s| {
+            let _ = s.record_win("arsenal".into());
+        })
+        .assert_all_replicas_equal();
 }
 
 #[test]
-fn team_stats_converge_to_summed_value_custom() {
-    env::reset_environment();
-    register_crdt_merge_for_test::<TeamMetricsApp>();
-    calimero_sdk::event::register::<TeamMetricsApp>();
-    // `#[app::state]`-generated: registers re-key thunks for the value types of
-    // the root's collection fields. `teams: UnorderedMap<String, TeamStats>` →
-    // `TeamStats` is registered (and its hand-written `RekeyTarget` impl used).
-    // This is the WASM-load / TestHost-bridge path; we call it directly here.
-    // (One level deep — see `generate_rekey_register_method` for the scope.)
+#[serial]
+fn team_stats_converge_to_correct_value() {
+    // Correctness: with #2577 merged, 3 replicas each recording one win must SUM
+    // to 3 (not collapse to 1 via blob LWW). Register the generated re-key
+    // thunks — the WASM-load / TestHost-bridge path — so the custom struct
+    // value's nested counters get deterministic ids and converge as entities.
     TeamMetricsApp::__calimero_register_rekey();
 
-    let a: Store = Default::default();
-    let b: Store = Default::default();
-    env::with_runtime_env(env_for(&a, [1; 32]), || {
-        Root::new(TeamMetricsApp::init).commit();
-    });
-    *b.borrow_mut() = a.borrow().clone();
-
-    let da = env::with_runtime_env(env_for(&a, [1; 32]), || {
-        let mut app = Root::<TeamMetricsApp>::fetch().unwrap();
-        let _ = app.record_win("liverpool".into());
-        app.commit();
-        env::take_last_artifact().unwrap()
-    });
-    let db = env::with_runtime_env(env_for(&b, [2; 32]), || {
-        let mut app = Root::<TeamMetricsApp>::fetch().unwrap();
-        let _ = app.record_win("liverpool".into());
-        app.commit();
-        env::take_last_artifact().unwrap()
-    });
-
-    let (ha, wa) = env::with_runtime_env(env_for(&a, [1; 32]), || {
-        Root::<TeamMetricsApp>::sync(&db, &ApplyContext::empty()).unwrap();
-        let app = Root::<TeamMetricsApp>::fetch().unwrap();
-        (env::root_hash(), app.get_wins("liverpool".into()).unwrap())
-    });
-    let (hb, wb) = env::with_runtime_env(env_for(&b, [2; 32]), || {
-        Root::<TeamMetricsApp>::sync(&da, &ApplyContext::empty()).unwrap();
-        let app = Root::<TeamMetricsApp>::fetch().unwrap();
-        (env::root_hash(), app.get_wins("liverpool".into()).unwrap())
-    });
-
-    println!("wins a={wa} b={wb}; converged={}", ha == hb);
-    assert_eq!(
-        wa, 2,
-        "replica A: both replicas' wins must survive (no LWW data loss)"
-    );
-    assert_eq!(
-        wb, 2,
-        "replica B: both replicas' wins must survive (no LWW data loss)"
-    );
-    assert_eq!(ha, hb, "replicas must converge to the same root hash");
+    converge_app(TeamMetricsApp::init)
+        .replicas(3)
+        .ops(|s| {
+            let _ = s.record_win("liverpool".into());
+        })
+        .invariant("liverpool wins == 3 (one per replica)", |s| {
+            s.get_wins("liverpool".into()).unwrap_or(0) == 3
+        })
+        .assert_all_replicas_equal();
 }

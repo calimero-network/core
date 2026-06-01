@@ -8,12 +8,16 @@ license.workspace = true
 publish = false
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 thiserror.workspace = true
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
+
+[dev-dependencies]
+# Enables the CRDT merge registry + native mock host for the convergence harness.
+calimero-storage = { workspace = true, features = ["testing"] }
 
 [build-dependencies]
 calimero-wasm-abi.workspace = true
