@@ -1,3 +1,30 @@
+I need to analyze whether the code changes require updates to the HTML documentation file.
+
+## Analysis
+
+The code diff shows:
+1. Addition of `SortedMap<K, V>` and `SortedSet<T>` collections to the CHANGELOG
+2. A new example app `sorted-kv-store` 
+3. Updates to conformance test files and ABI definitions
+4. No changes to core concepts, architecture, or the documented CRDT types
+
+## Checking the HTML file
+
+The HTML file `architecture/concepts.html` contains a section titled "CRDT state" that lists "Built-in types":
+- UnorderedMap
+- Vector
+- Counter
+- LwwRegister
+- ReplicatedGrowableArray (RGA)
+
+The code changes add two new collection types:
+- `SortedMap<K, V>` - a key-ordered map for range queries
+- `SortedSet<T>` - an ordered set
+
+These are substantial new features documented in the CHANGELOG under "Added" that should be reflected in the documentation. The "Built-in types" section explicitly states "Pick the structure that fits your app; the runtime handles merging." and lists the available types. The new `SortedMap` and `SortedSet` are now available types that users should know about.
+
+This means the HTML page **needs updating** to include these new CRDT types in the "Built-in types" section.
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -126,10 +153,12 @@
 <p>Pick the structure that fits your app; the runtime handles merging.</p>
 <div class="g2">
 <div class="cb"><h4>UnorderedMap</h4><p>Key-value map with last-write-wins per key.</p></div>
+<div class="cb"><h4>SortedMap</h4><p>Key-ordered map with range queries, prefix scans, and pagination. Supports <code>range(a..b)</code>, <code>prefix(...)</code>, <code>page(offset, limit)</code>, and efficient ordered iteration.</p></div>
 <div class="cb"><h4>Vector</h4><p>Ordered, append-only list of elements.</p></div>
 <div class="cb"><h4>Counter</h4><p>Distributed counter (G-Counter style, per-node slots).</p></div>
 <div class="cb"><h4>LwwRegister</h4><p>Single value with last-write-wins by timestamp.</p></div>
 <div class="cb"><h4>ReplicatedGrowableArray (RGA)</h4><p>Character-level text CRDT for collaborative editing.</p></div>
+<div class="cb"><h4>SortedSet</h4><p>Ordered set with range queries, prefix scans, and pagination. Add-wins union merge semantics.</p></div>
 </div>
 <details>
 <summary>What &ldquo;converge&rdquo; means for your app</summary>
