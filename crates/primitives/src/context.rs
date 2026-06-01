@@ -4,7 +4,6 @@
 use core::fmt::{self, Display};
 use core::ops::Deref;
 use core::str::FromStr;
-use core::time::Duration;
 use std::io;
 
 use serde::{Deserialize, Serialize};
@@ -193,6 +192,12 @@ pub struct ContextConfigParams {
 }
 
 /// Controls how application upgrades propagate across contexts in a group.
+///
+/// A migration-carrying upgrade is only valid under `LazyOnAccess` (receivers
+/// run the migrate on next access); `Automatic` is for code-only upgrades. The
+/// former `Coordinated` variant (borsh tag `2`) was removed — it did nothing
+/// `Automatic` didn't and its `deadline` was never enforced. Tag `2` is now
+/// rejected on deserialize (see the borsh impl below).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum UpgradePolicy {
@@ -201,8 +206,6 @@ pub enum UpgradePolicy {
     /// Upgrade each context transparently on its next execution.
     #[default]
     LazyOnAccess,
-    /// Upgrade all contexts with an optional deadline for completion.
-    Coordinated { deadline: Option<Duration> },
 }
 
 #[cfg(feature = "borsh")]
@@ -215,11 +218,6 @@ const _: () = {
             match self {
                 Self::Automatic => BorshSerialize::serialize(&0u8, writer),
                 Self::LazyOnAccess => BorshSerialize::serialize(&1u8, writer),
-                Self::Coordinated { deadline } => {
-                    BorshSerialize::serialize(&2u8, writer)?;
-                    let dur = deadline.map(|d| (d.as_secs(), d.subsec_nanos()));
-                    BorshSerialize::serialize(&dur, writer)
-                }
             }
         }
     }
@@ -230,22 +228,14 @@ const _: () = {
             match tag {
                 0 => Ok(Self::Automatic),
                 1 => Ok(Self::LazyOnAccess),
-                2 => {
-                    let dur: Option<(u64, u32)> = BorshDeserialize::deserialize_reader(reader)?;
-                    Ok(Self::Coordinated {
-                        deadline: dur
-                            .map(|(s, n)| -> io::Result<Duration> {
-                                if n >= 1_000_000_000 {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::InvalidData,
-                                        "nanoseconds field exceeds 999_999_999",
-                                    ));
-                                }
-                                Ok(Duration::new(s, n))
-                            })
-                            .transpose()?,
-                    })
-                }
+                // Tag 2 was the removed `Coordinated` policy. Reject it
+                // explicitly so a stored/in-flight value surfaces loudly
+                // instead of being silently reinterpreted.
+                2 => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "UpgradePolicy::Coordinated (tag 2) has been removed; \
+                     re-set the group's upgrade policy to Automatic or LazyOnAccess",
+                )),
                 _ => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "invalid UpgradePolicy tag",
@@ -490,5 +480,31 @@ mod tests {
     fn test_group_invitation_payload_invalid_base58() {
         let result = GroupInvitationPayload::from_str("This is not valid Base58!");
         assert!(result.is_err());
+    }
+
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn upgrade_policy_borsh_roundtrip() {
+        for policy in [UpgradePolicy::Automatic, UpgradePolicy::LazyOnAccess] {
+            let bytes = borsh::to_vec(&policy).expect("serialize");
+            let decoded: UpgradePolicy = borsh::from_slice(&bytes).expect("deserialize");
+            assert_eq!(decoded, policy);
+        }
+    }
+
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn legacy_coordinated_policy_tag_is_rejected() {
+        // Borsh encoding of the now-removed `Coordinated { deadline:
+        // Some(3600s) }` policy: tag `2`, then `Option::Some` (`1`), then the
+        // `(secs: u64, nanos: u32)` tuple little-endian (3600 = 0x0E10, 0).
+        // `Coordinated` has been removed, so this previously-valid value must
+        // now fail to decode rather than silently round-tripping.
+        let legacy_coordinated = [2u8, 1, 0x10, 0x0E, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let result = borsh::from_slice::<UpgradePolicy>(&legacy_coordinated);
+        assert!(
+            result.is_err(),
+            "legacy Coordinated (tag 2) must be rejected, got {result:?}"
+        );
     }
 }

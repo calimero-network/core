@@ -494,6 +494,12 @@ fn validate_upgrade(
     // 2. Requester must be admin
     MembershipRepository::new(datastore).require_admin(group_id, requester)?;
 
+    // 2a. A migration may only ride on a LazyOnAccess upgrade — receivers
+    //     only run the migrate under that policy (see
+    //     `ensure_migration_policy_supported`). Fail loudly here rather than
+    //     corrupting receiver state.
+    ensure_migration_policy_supported(&meta.upgrade_policy, has_migration)?;
+
     // 3. Verify node holds the key (skip if raw key was provided)
     if !has_raw_signing_key {
         SigningKeysRepository::new(datastore).require_key(group_id, requester)?;
@@ -859,6 +865,13 @@ fn dispatch_cascade(
 
     let has_migration = migration.is_some();
 
+    // A cascade carrying a migration is subject to the same policy
+    // constraint as the single-group path: only LazyOnAccess runs the
+    // migrate on receivers. Reject before emitting `CascadeUpgrade`.
+    if let Err(err) = ensure_migration_policy_supported(&meta.upgrade_policy, has_migration) {
+        return ActorResponse::reply(Err(err));
+    }
+
     if let Some(existing) = match UpgradesRepository::new(&actor.datastore).load(&group_id) {
         Ok(v) => v,
         Err(err) => return ActorResponse::reply(Err(err)),
@@ -1180,4 +1193,67 @@ fn spawn_propagator_for(
     ctx.spawn(propagator.into_actor(actor).map(move |_, act, _| {
         act.active_propagators.remove(&group_id);
     }));
+}
+
+/// Reject a migration-carrying upgrade under any policy other than
+/// [`UpgradePolicy::LazyOnAccess`].
+///
+/// Only `LazyOnAccess` triggers the receiver-side migrate: a receiver runs
+/// the migration via `maybe_lazy_upgrade`, which early-returns for any
+/// non-`LazyOnAccess` policy (`execute/mod.rs`). Under `Automatic` a receiver
+/// swaps its application pointer to the new bytecode but never runs the
+/// migrate, so v2 wasm reads v1 state bytes and panics with a silent borsh
+/// "Not all bytes read". Catch that combination loudly here, before any group
+/// op is emitted, rather than letting it corrupt state on every receiver.
+///
+/// Code-only upgrades (`has_migration == false`) stay allowed under every
+/// policy.
+fn ensure_migration_policy_supported(
+    policy: &UpgradePolicy,
+    has_migration: bool,
+) -> eyre::Result<()> {
+    if has_migration && !matches!(policy, UpgradePolicy::LazyOnAccess) {
+        bail!(
+            "migration-carrying upgrades are only supported under the LazyOnAccess \
+             upgrade policy; the group's policy {policy:?} swaps the application without \
+             running the migration on receivers, corrupting state (silent borsh failure). \
+             Set the group's upgrade policy to LazyOnAccess before migrating."
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_migration_policy_supported;
+    use calimero_primitives::context::UpgradePolicy;
+
+    #[test]
+    fn migration_under_automatic_is_rejected() {
+        let err = ensure_migration_policy_supported(&UpgradePolicy::Automatic, true)
+            .expect_err("migration under Automatic must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LazyOnAccess"),
+            "error should name the required policy, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn migration_under_lazy_on_access_is_allowed() {
+        ensure_migration_policy_supported(&UpgradePolicy::LazyOnAccess, true)
+            .expect("migration under LazyOnAccess must be allowed");
+    }
+
+    #[test]
+    fn code_only_upgrade_under_automatic_is_allowed() {
+        ensure_migration_policy_supported(&UpgradePolicy::Automatic, false)
+            .expect("code-only upgrade under Automatic must be allowed");
+    }
+
+    #[test]
+    fn code_only_upgrade_under_lazy_on_access_is_allowed() {
+        ensure_migration_policy_supported(&UpgradePolicy::LazyOnAccess, false)
+            .expect("code-only upgrade under LazyOnAccess must be allowed");
+    }
 }
