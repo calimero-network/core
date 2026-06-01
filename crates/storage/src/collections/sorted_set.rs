@@ -638,7 +638,38 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::{Root, SortedSet};
+    use crate::entities::Data;
     use crate::store::MainStorage;
+
+    #[test]
+    fn test_new_plus_reassign_matches_new_with_field_name() {
+        // CIP I9 safety lock for dropping `new_with_field_name("x")` in favour of
+        // plain `::new()`: the conversion is only sound because the `#[app::state]`
+        // post-init pass calls `reassign_deterministic_id("x")`, which MUST derive
+        // the identical id `new_with_field_name("x")` produces. If they ever drift,
+        // every converted app would mint a different id on creation and split-brain
+        // across nodes with no compile error — so pin them equal here.
+        crate::env::reset_for_testing();
+        let explicit: SortedSet<String> = SortedSet::new_with_field_name("items");
+        let mut via: SortedSet<String> = SortedSet::new();
+        via.reassign_deterministic_id("items");
+        assert_eq!(explicit.inner.id(), via.inner.id());
+    }
+
+    #[test]
+    fn test_reassign_preserves_entries() {
+        // Entries inserted before the post-init pass (e.g. seeded in `init`/`migrate`)
+        // must survive the id reassignment, not be orphaned under the old random id.
+        crate::env::reset_for_testing();
+        let mut set: SortedSet<String> = SortedSet::new();
+        set.insert("alpha".to_owned()).expect("insert alpha");
+        set.insert("beta".to_owned()).expect("insert beta");
+        let old_id = set.inner.id();
+        set.reassign_deterministic_id("items");
+        assert_ne!(old_id, set.inner.id());
+        assert!(set.contains("alpha").expect("contains alpha"));
+        assert!(set.contains("beta").expect("contains beta"));
+    }
 
     #[test]
     fn test_sorted_set_basic_and_order() {
