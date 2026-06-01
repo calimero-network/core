@@ -369,7 +369,6 @@ mod tests {
 
     use super::*;
 
-    // Base58 of 32 zero bytes — a valid blob id for metadata-only tests.
     // An arbitrary blob id for metadata-only tests (no bytes needed).
     fn blob_id() -> BlobId {
         BlobId::from([7u8; 32])

@@ -95,6 +95,12 @@ pub trait TestState: Sized {
 #[must_use = "a TestHost only does work when you call/view through it"]
 pub struct TestHost<S> {
     _state: PhantomData<S>,
+    // The harness is backed entirely by thread-locals initialized in `new`, so
+    // a `TestHost` is only valid on its creating thread. The raw-pointer marker
+    // makes it `!Send + !Sync`, turning "move it to another thread and `call`
+    // there" into a compile error instead of a silent read of a different
+    // thread's (default) mock host.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl<S> TestHost<S>
@@ -107,7 +113,10 @@ where
     ///
     /// `build` runs *after* the reset so any collections it allocates are
     /// created against a clean store — the same ordering the real
-    /// `#[app::init]` entrypoint guarantees.
+    /// `#[app::init]` entrypoint guarantees. If your `#[app::init]` body emits
+    /// events or logs, they're captured during construction and visible via
+    /// [`events`](TestHost::events) / [`logs`](TestHost::logs) before the first
+    /// `call` / `view` — this is intentional (it lets you assert on init).
     pub fn new(build: impl FnOnce() -> S) -> Self {
         host::reset();
         S::__test_reset();
@@ -118,6 +127,7 @@ where
 
         Self {
             _state: PhantomData,
+            _not_send: PhantomData,
         }
     }
 
