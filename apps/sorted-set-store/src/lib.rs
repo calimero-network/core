@@ -8,8 +8,6 @@
 //! loading all of it. Think of it as the `BTreeSet` to `UnorderedSet`'s
 //! `HashSet`.
 
-#![allow(clippy::len_without_is_empty)]
-
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::SortedSet;
@@ -72,13 +70,25 @@ impl SortedSetStore {
     pub fn clear(&mut self) -> app::Result<()> {
         app::log!("Clearing all elements");
 
-        app::emit!(Event::Cleared);
+        // Mirror `add`/`remove`: only emit when the set actually changed, and
+        // only after the clear succeeds.
+        let was_non_empty = !self.items.is_empty()?;
+        self.items.clear()?;
+        if was_non_empty {
+            app::emit!(Event::Cleared);
+        }
 
-        self.items.clear().map_err(Into::into)
+        Ok(())
     }
 
+    /// The number of elements in the set.
     pub fn len(&self) -> app::Result<usize> {
         Ok(self.items.len()?)
+    }
+
+    /// Whether the set has no elements.
+    pub fn is_empty(&self) -> app::Result<bool> {
+        Ok(self.items.is_empty()?)
     }
 
     /// All elements, **in ascending order** (the headline difference from an
@@ -105,7 +115,8 @@ impl SortedSetStore {
     }
 
     /// A page of `limit` elements starting at `offset`, ascending — paginate
-    /// without materialising the whole set.
+    /// without materialising the whole set. Returns an empty `Vec` once
+    /// `offset` reaches or passes the end of the set.
     pub fn page(&self, offset: usize, limit: usize) -> app::Result<Vec<String>> {
         app::log!("Page: offset={offset} limit={limit}");
 

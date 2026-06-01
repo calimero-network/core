@@ -7,8 +7,6 @@
 //! `range` / `prefix` / `page` / `first` / `last` methods let you read a slice
 //! of the keyspace without loading the whole map.
 
-#![allow(clippy::len_without_is_empty)]
-
 use std::collections::BTreeMap;
 
 use calimero_sdk::app;
@@ -108,8 +106,14 @@ impl SortedKvStore {
         self.items.clear().map_err(Into::into)
     }
 
+    /// The number of entries in the map.
     pub fn len(&self) -> app::Result<usize> {
         Ok(self.items.len()?)
+    }
+
+    /// Whether the map has no entries.
+    pub fn is_empty(&self) -> app::Result<bool> {
+        Ok(self.items.is_empty()?)
     }
 
     /// All entries, **in ascending key order** (the headline difference from

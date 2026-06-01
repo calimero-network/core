@@ -727,6 +727,16 @@ fn sorted_set_rebuilds_index_after_sync() {
         json!(["a", "f", "m"]),
         "node 1 rebuilds its set index after sync and serves the range"
     );
+
+    // `[a, z)` excludes `z`; assert the full set too so a bug that dropped the
+    // last synced element (the range's exclusive bound) would still be caught.
+    let all = c.query(1, "sorted_tags_all", json!({}));
+    let all = all.get("output").cloned().unwrap_or(all);
+    assert_eq!(
+        all,
+        json!(["a", "f", "m", "z"]),
+        "node 1 has the full synced set in element order, including the last element"
+    );
 }
 
 // ---------------------------------------------------------------------------
