@@ -50,9 +50,6 @@ impl TeamMetricsApp {
     }
 
     pub fn record_win(&mut self, team_id: String) -> app::Result<u64> {
-        // `or_default()` hands back a write-back guard over the (possibly newly
-        // created) `TeamStats`; mutating it through the guard re-persists the
-        // whole struct on drop, no manual re-insert.
         let mut stats = self.teams.entry(team_id.clone())?.or_default()?;
 
         stats.wins.increment()?;
