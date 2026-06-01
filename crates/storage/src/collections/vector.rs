@@ -470,7 +470,7 @@ where
 impl<V, S> Default for Vector<V, S>
 where
     V: BorshSerialize + BorshDeserialize + 'static,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn default() -> Self {
         // Register the nested-id re-key thunk at construction so a vector first

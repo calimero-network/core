@@ -624,7 +624,7 @@ impl<K, V, S> Default for UnorderedMap<K, V, S>
 where
     K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
     V: BorshSerialize + BorshDeserialize + 'static,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn default() -> Self {
         // Register this map type's nested-id re-key thunk at construction, so a

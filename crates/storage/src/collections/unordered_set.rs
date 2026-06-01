@@ -377,7 +377,7 @@ where
 impl<V, S> Default for UnorderedSet<V, S>
 where
     V: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
-    S: StorageAdaptor + 'static,
+    S: StorageAdaptor,
 {
     fn default() -> Self {
         // Register the nested-id re-key thunk at construction so a set first

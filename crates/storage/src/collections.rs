@@ -119,6 +119,22 @@ impl<V: PartialEq> PartialEq for ValueRef<V> {
 
 impl<V: Eq> Eq for ValueRef<V> {}
 
+// Intentionally NO `Clone`/`AsRef`/`Hash`/`Borrow` impls: `ValueRef` is a
+// `Deref` guard, so `guard.clone()`, `guard.as_ref()`, `guard.hash(..)` already
+// resolve to `V`'s own methods through the deref. Adding inherent trait impls
+// here would *shadow* those — e.g. `file_record.clone()` would yield a
+// `ValueRef<FileRecord>` instead of a `FileRecord`, silently changing callers.
+// To take the value out explicitly, use [`ValueRef::into_inner`].
+
+/// Compare a guard directly against a bare `V`, so `map.get(k)?.unwrap() == v`
+/// works without unwrapping the guard first. (Operator-based, so it does not
+/// shadow any `Deref` method.)
+impl<V: PartialEq> PartialEq<V> for ValueRef<V> {
+    fn eq(&self, other: &V) -> bool {
+        &self.value == other
+    }
+}
+
 // fixme! macro expects `calimero_storage` to be in deps
 use crate as calimero_storage;
 use crate::address::Id;
