@@ -32,7 +32,7 @@ pub use crdt_meta::{CrdtMeta, CrdtType, Decomposable, Mergeable, StorageStrategy
 pub mod composite_key;
 mod crdt_impls;
 mod decompose_impls;
-pub(crate) mod rekey;
+pub mod rekey;
 pub use composite_key::CompositeKey;
 pub mod nested;
 pub use nested::{get_nested, insert_nested, insert_nested_decomposable, NestedConfig};
