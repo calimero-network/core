@@ -1,3 +1,16 @@
+The code diff shows changes to Rust source files (Cargo.lock, Cargo.toml, and apps/scaffolding-e2e/src/lib.rs) that add a new `SortedSet` CRDT type and a new app called `sorted-set-store`. 
+
+Looking at the HTML file `architecture/concepts.html`, specifically the "CRDT state" section under "Built-in types", it currently lists:
+- UnorderedMap
+- Vector
+- Counter
+- LwwRegister
+- ReplicatedGrowableArray (RGA)
+
+However, the HTML also mentions `SortedMap` in the "Contexts" section example and in the capability bits section. The code diff shows that `SortedSet` is now being imported and used in the scaffolding-e2e app alongside `SortedMap`.
+
+The HTML documentation should be updated to include `SortedSet` in the "Built-in types" section of the "CRDT state" card, since this is a new built-in CRDT type that is now part of the public API (as evidenced by its inclusion in the calimero_storage collections and the new sorted-set-store app).
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -130,6 +143,8 @@
 <div class="cb"><h4>Counter</h4><p>Distributed counter (G-Counter style, per-node slots).</p></div>
 <div class="cb"><h4>LwwRegister</h4><p>Single value with last-write-wins by timestamp.</p></div>
 <div class="cb"><h4>ReplicatedGrowableArray (RGA)</h4><p>Character-level text CRDT for collaborative editing.</p></div>
+<div class="cb"><h4>SortedMap</h4><p>Key-ordered map with element-stable iteration and range queries.</p></div>
+<div class="cb"><h4>SortedSet</h4><p>Element-ordered set with membership tests, range queries, and min-max operations.</p></div>
 </div>
 <details>
 <summary>What &ldquo;converge&rdquo; means for your app</summary>
