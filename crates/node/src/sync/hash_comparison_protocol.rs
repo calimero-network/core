@@ -44,9 +44,9 @@ use crate::sync::helpers::{
 };
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
-    compare_tree_nodes, create_runtime_env, InitPayload, LeafMetadata, MessagePayload,
-    StreamMessage, SyncProtocolExecutor, SyncTransport, TreeCompareResult, TreeLeafData, TreeNode,
-    TreeNodeResponse, MAX_LEAF_VALUE_SIZE, MAX_NODES_PER_RESPONSE,
+    compare_tree_nodes, create_runtime_env, EntityDeletion, InitPayload, LeafMetadata,
+    MessagePayload, StreamMessage, SyncProtocolExecutor, SyncTransport, TreeCompareResult,
+    TreeLeafData, TreeNode, TreeNodeResponse, MAX_LEAF_VALUE_SIZE, MAX_NODES_PER_RESPONSE,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::crdt::CrdtType;
@@ -222,6 +222,13 @@ async fn run_initiator_impl<T: SyncTransport>(
     // than O(divergent_leaves), and to keep `stats.requests_sent` well
     // below `MAX_HASH_COMPARISON_REQUESTS` on heavily-diverged trees.
     let mut pending_local_leaf_pushes: Vec<TreeLeafData> = Vec::new();
+
+    // Deletions the initiator must propagate to the peer: children the peer
+    // still holds that we have locally tombstoned (cleared). HashComparison's
+    // child comparison is add-wins, so without this the peer's live copy would
+    // simply be re-pulled and the deletion would never converge (the clear
+    // split-brain). Collected during the DFS and flushed once after the walk.
+    let mut pending_deletions: Vec<EntityDeletion> = Vec::new();
 
     while let Some((node_id, is_root_request)) = to_compare.pop() {
         // DoS protection: limit stack size
@@ -450,9 +457,32 @@ async fn run_initiator_impl<T: SyncTransport>(
                         local_only_children,
                         common_children,
                     } => {
-                        // Recurse into remote-only and common children (pull)
+                        // Remote-only children: the peer has them, we don't.
+                        // Normally we recurse to pull them. But if we have a
+                        // local tombstone for one (we cleared it), add-wins
+                        // would wrongly resurrect it — instead propagate our
+                        // deletion so the peer converges. The tombstone's
+                        // `deleted_at`/`metadata` are carried so the peer
+                        // applies it through the authenticated DeleteRef path.
                         for child_id in remote_only_children {
-                            to_compare.push((child_id, false));
+                            let tombstone = with_runtime_env(runtime_env.clone(), || {
+                                let id = calimero_storage::address::Id::new(child_id);
+                                match Index::<MainStorage>::get_index(id) {
+                                    Ok(Some(idx)) => idx
+                                        .deleted_at
+                                        .map(|deleted_at| (deleted_at, idx.metadata.clone())),
+                                    _ => None,
+                                }
+                            });
+                            if let Some((deleted_at, metadata)) = tombstone {
+                                pending_deletions.push(EntityDeletion {
+                                    id: child_id,
+                                    deleted_at,
+                                    metadata,
+                                });
+                            } else {
+                                to_compare.push((child_id, false));
+                            }
                         }
                         for child_id in common_children {
                             to_compare.push((child_id, false));
@@ -518,6 +548,26 @@ async fn run_initiator_impl<T: SyncTransport>(
             divergent_leaves = pending_local_leaf_pushes.len(),
             entities_pushed = pushed,
             "Flushed bidirectional leaf reconciliation pushes"
+        );
+    }
+
+    // Flush deletion propagation (clear/tombstone convergence). Children we
+    // cleared but the peer still holds are pushed as authenticated tombstones
+    // so the peer applies delete-wins instead of us silently re-pulling them.
+    if !pending_deletions.is_empty() {
+        let applied = push_deletions(
+            transport,
+            context_id,
+            identity,
+            &pending_deletions,
+            &mut stats,
+        )
+        .await?;
+        debug!(
+            %context_id,
+            tombstones = pending_deletions.len(),
+            applied,
+            "Flushed clear/tombstone deletion propagation"
         );
     }
 
@@ -762,6 +812,55 @@ async fn run_responder_impl<T: SyncTransport>(
                     total = entity_count,
                     "Applied pushed entities via CRDT merge"
                 );
+            }
+
+            InitPayload::EntityDeletePush { deletions, .. } => {
+                let total = deletions.len();
+                trace!(%context_id, total, "Handling EntityDeletePush from initiator");
+
+                // Apply each tombstone through the authenticated DeleteRef path
+                // (delete-wins by HLC; signature/nonce verified for User/Shared
+                // exactly as on the delta stream). A deletion that loses the LWW
+                // race or fails authorization is a safe no-op — not counted.
+                let mut applied: u32 = 0;
+                for deletion in &deletions {
+                    let action = calimero_storage::action::Action::DeleteRef {
+                        id: calimero_storage::address::Id::new(deletion.id),
+                        deleted_at: deletion.deleted_at,
+                        metadata: deletion.metadata.clone(),
+                    };
+                    let result = with_runtime_env(runtime_env.clone(), || {
+                        Interface::<MainStorage>::apply_action(
+                            action,
+                            &calimero_storage::interface::ApplyContext::empty(),
+                        )
+                    });
+                    match result {
+                        Ok(_) => applied += 1,
+                        Err(e) => {
+                            debug!(
+                                %context_id,
+                                id = %hex::encode(deletion.id),
+                                error = %e,
+                                "EntityDeletePush: skipped a tombstone (lost LWW or unauthorized)"
+                            );
+                        }
+                    }
+                }
+
+                let msg = StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::EntityDeletePushAck {
+                        applied_count: applied,
+                    },
+                    next_nonce: generate_nonce(),
+                };
+
+                transport.send(&msg).await?;
+                sequence_id += 1;
+                requests_handled += 1;
+
+                info!(%context_id, applied, total, "Applied pushed tombstones (delete-wins)");
             }
 
             _ => {
@@ -1032,6 +1131,58 @@ async fn push_entities<T: SyncTransport>(
 
     stats.entities_pushed += total_pushed;
     Ok(total_pushed)
+}
+
+/// Push tombstones to the peer via `EntityDeletePush` messages (batched).
+///
+/// Propagates deletions for entities the local node cleared but the peer still
+/// holds. The peer applies each through the authenticated `Action::DeleteRef`
+/// path (delete-wins by HLC), so a deletion converges instead of being
+/// resurrected by HashComparison's add-wins child comparison.
+async fn push_deletions<T: SyncTransport>(
+    transport: &mut T,
+    context_id: ContextId,
+    identity: PublicKey,
+    deletions: &[EntityDeletion],
+    stats: &mut HashComparisonStats,
+) -> Result<u64> {
+    let mut total_applied = 0u64;
+
+    for chunk in deletions.chunks(MAX_ENTITIES_PER_PUSH) {
+        let push_msg = StreamMessage::Init {
+            context_id,
+            party_id: identity,
+            payload: InitPayload::EntityDeletePush {
+                context_id,
+                deletions: chunk.to_vec(),
+            },
+            next_nonce: generate_nonce(),
+        };
+
+        transport.send(&push_msg).await?;
+        stats.requests_sent += 1;
+
+        let ack = transport
+            .recv()
+            .await?
+            .ok_or_else(|| eyre::eyre!("stream closed while waiting for EntityDeletePushAck"))?;
+
+        match ack {
+            StreamMessage::Message {
+                payload: MessagePayload::EntityDeletePushAck { applied_count },
+                ..
+            } => {
+                total_applied += u64::from(applied_count);
+            }
+            _ => {
+                bail!(
+                    "Unexpected response to EntityDeletePush (peer may not support tombstone propagation)"
+                );
+            }
+        }
+    }
+
+    Ok(total_applied)
 }
 
 // =============================================================================
@@ -1326,6 +1477,141 @@ mod tests {
                     .unwrap()
                     .is_some(),
                 "frozen entry must remain present after the skipped re-apply"
+            );
+        });
+    }
+
+    /// Characterization guard that isolates the `clear()` HashComparison
+    /// split-brain to delete *propagation*, NOT resurrection.
+    ///
+    /// When a node has cleared an entry but a peer still holds it, HC fetches
+    /// the peer's live copy and re-applies it through `apply_leaf_with_crdt_merge`
+    /// (the same entrypoint the bidirectional reconcile uses for a child the
+    /// peer has and we don't). This pins that the cleared node correctly
+    /// REFUSES to resurrect it: the tombstone's high-water `updated_at` (stamped
+    /// by `remove_child_from` at the clear) is strictly newer than the peer's
+    /// value (`updated_at = 100`), so delete-wins keeps it deleted.
+    ///
+    /// So the apply side is safe — the clear split-brain is solely that the
+    /// deletion never *reaches* the peer that kept the entry (HC carries no
+    /// tombstone). That non-convergence is reproduced end-to-end against the
+    /// real protocol by the sim test
+    /// `sync_sim::protocol::tests::test_hashcomparison_propagates_clear_tombstone`.
+    #[test]
+    fn hashcomparison_pull_does_not_resurrect_cleared_entry() {
+        use std::sync::Arc;
+
+        use calimero_node_primitives::sync::hash_comparison::{LeafMetadata, TreeLeafData};
+        use calimero_primitives::crdt::CrdtType;
+        use calimero_storage::action::Action;
+        use calimero_storage::entities::{ChildInfo, Metadata};
+        use calimero_storage::interface::ApplyContext;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+
+        use crate::sync::helpers::apply_leaf_with_crdt_merge;
+
+        let context_id = ContextId::from([0xCB; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(&store, context_id, identity);
+
+        let root_id = Id::new(*context_id.as_ref());
+        let entry_id = Id::new([0x77u8; 32]);
+
+        let child_ids = |parent: Id| -> Vec<Id> {
+            Index::<MainStorage>::get_children_of(parent)
+                .unwrap_or_default()
+                .iter()
+                .map(ChildInfo::id)
+                .collect()
+        };
+
+        with_runtime_env(runtime_env.clone(), || {
+            // Context root.
+            Interface::<MainStorage>::apply_action(
+                Action::Update {
+                    id: root_id,
+                    data: vec![],
+                    ancestors: vec![],
+                    metadata: Metadata::default(),
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("create root");
+
+            let root_hash = Index::<MainStorage>::get_hashes_for(root_id)
+                .ok()
+                .flatten()
+                .map(|(full, _)| full)
+                .unwrap_or([0; 32]);
+            let root_meta = Index::<MainStorage>::get_index(root_id)
+                .ok()
+                .flatten()
+                .map(|idx| idx.metadata.clone())
+                .unwrap_or_default();
+
+            // Seed an LWW entry under root, written at hlc 100.
+            let mut md = Metadata::new(100, 100);
+            md.crdt_type = Some(CrdtType::LwwRegister {
+                inner_type: "String".to_owned(),
+            });
+            Interface::<MainStorage>::apply_action(
+                Action::Add {
+                    id: entry_id,
+                    data: b"peer-value".to_vec(),
+                    ancestors: vec![ChildInfo::new(root_id, root_hash, root_meta)],
+                    metadata: md,
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("seed entry");
+            assert!(
+                child_ids(root_id).contains(&entry_id),
+                "entry should be seeded under root"
+            );
+
+            // CLEAR: delete the entry locally. `remove_child_from` stamps a
+            // tombstone (deleted_at = time_now(), >> 100), drops it from root's
+            // children, and would broadcast a DeleteRef on the delta path.
+            Interface::<MainStorage>::remove_child_from(root_id, entry_id).expect("clear entry");
+            assert!(
+                Index::<MainStorage>::is_deleted(entry_id).unwrap(),
+                "entry must be tombstoned after clear"
+            );
+            assert!(
+                !child_ids(root_id).contains(&entry_id),
+                "cleared entry must leave root's children"
+            );
+
+            // HASHCOMPARISON PULL: a peer that never saw the delete still holds
+            // the entry. HC fetches it as a leaf and re-applies it with the
+            // peer's (older) hlc=100 — the real HC apply entrypoint.
+            let leaf = TreeLeafData::new(
+                *entry_id.as_bytes(),
+                b"peer-value".to_vec(),
+                LeafMetadata::new(
+                    CrdtType::LwwRegister {
+                        inner_type: "String".to_owned(),
+                    },
+                    100,
+                    *root_id.as_bytes(),
+                ),
+            );
+            apply_leaf_with_crdt_merge(context_id, &leaf).expect("apply pulled leaf");
+
+            // DELETE-WINS: our deletion is newer than the pulled value, so the
+            // cleared entry MUST stay deleted. Today HC has no tombstone
+            // awareness, so it is resurrected and these assertions fail.
+            assert!(
+                Index::<MainStorage>::is_deleted(entry_id).unwrap(),
+                "HashComparison pull resurrected a cleared entry (tombstone lost) — \
+                 delete-wins violated, so the deletion can never converge"
+            );
+            assert!(
+                !child_ids(root_id).contains(&entry_id),
+                "HashComparison pull re-added the cleared entry to root's children — \
+                 root hash diverges from a peer that applied the delete"
             );
         });
     }

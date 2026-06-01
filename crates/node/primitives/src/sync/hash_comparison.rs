@@ -580,6 +580,27 @@ impl TreeCompareResult {
 /// * `remote` - Remote tree node, or None if not present on remote
 ///
 /// # Precondition
+/// A tombstone propagated during HashComparison bidirectional sync.
+///
+/// HashComparison reconciles entity trees by add-wins union: a child present on
+/// one side but missing on the other is otherwise re-added to the side that
+/// lacks it. A node that deleted (cleared) a child must therefore propagate the
+/// deletion explicitly, or a peer that still holds it never converges (the
+/// clear split-brain). Each deletion carries the tombstone `metadata` so the
+/// receiver applies it through the same authenticated `Action::DeleteRef` path
+/// as the delta stream — signature/nonce verified for `User`/`Shared` entities,
+/// and delete-wins by HLC (`deleted_at` vs the local entity's `updated_at`).
+#[derive(Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct EntityDeletion {
+    /// Id of the deleted entity.
+    pub id: [u8; 32],
+    /// HLC timestamp at which the deletion occurred (the tombstone nonce).
+    pub deleted_at: u64,
+    /// Tombstone metadata, carrying the storage type + signature needed to
+    /// authenticate the deletion on the receiver.
+    pub metadata: calimero_storage::entities::Metadata,
+}
+
 /// When both nodes are present, they must represent the same tree position
 /// (i.e., have matching IDs). Comparing nodes at different positions is a
 /// caller bug and will trigger a debug assertion.

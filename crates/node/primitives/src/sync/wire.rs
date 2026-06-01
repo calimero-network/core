@@ -211,6 +211,19 @@ pub enum InitPayload {
         entities: Vec<super::hash_comparison::TreeLeafData>,
     },
 
+    /// Push entity *deletions* (tombstones) to the peer during HashComparison.
+    ///
+    /// The tree comparison is add-wins, so a deletion has to be propagated
+    /// explicitly or a peer that still holds the entry never converges (the
+    /// clear split-brain). The responder applies each via the authenticated
+    /// `Action::DeleteRef` path (delete-wins by HLC).
+    EntityDeletePush {
+        /// Context being synchronized.
+        context_id: ContextId,
+        /// Tombstones to apply on the peer.
+        deletions: Vec<super::hash_comparison::EntityDeletion>,
+    },
+
     /// Request encrypted payloads for namespace governance skeletons.
     /// Used during lazy backfill when a member joins a new group and
     /// needs to decrypt previously-stored opaque skeletons.
@@ -382,6 +395,14 @@ pub enum MessagePayload<'a> {
     /// Sent by the responder after applying CRDT merge for pushed entities.
     EntityPushAck {
         /// Number of entities successfully applied via CRDT merge.
+        applied_count: u32,
+    },
+
+    /// Acknowledgment of a received `EntityDeletePush`.
+    ///
+    /// Sent by the responder after applying delete-wins for pushed tombstones.
+    EntityDeletePushAck {
+        /// Number of deletions successfully applied (delete-wins) by the responder.
         applied_count: u32,
     },
 
