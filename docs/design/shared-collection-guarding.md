@@ -30,11 +30,14 @@ This doc describes the **full target design, including rotation**. What is actua
   shipped guarantee. Anchor inheritance is required only for **retroactive
   rotation revocation**, tracked in **#2590** (rotation is forward-only until then;
   see the `get_mut` rotation note).
-- **Phases:** §7 P1's "child entry is `Shared`" test is present; the **adversarial
-  non-writer-delta-rejected-at-merge** test is an e2e/node-layer test (enforcement
-  is the existing, e2e-verified `Shared` apply path that these entries now flow
-  through) and lands with the per-entity-verification work (#2230) — it is not a
-  storage unit test.
+- **Phases:** §7 P1's "child entry is `Shared`" test is present, **and** the
+  adversarial proof — a 2-node e2e in `kv-store-with-shared-storage` where the
+  writer's guarded-map entry converges but a non-writer's entry is rejected at
+  merge (the writer node never sees it). Enforcement is live on the delta apply
+  path: `delta_store` resolves `effective_writers` for every `Shared` entity and
+  `apply_action` validates the signature, so a guarded collection's child entries
+  (which sync as their own entities, unlike the root-state-borsh wrapper) are
+  verified against the writer set.
 
 ## 1. Goal
 
