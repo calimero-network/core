@@ -301,6 +301,23 @@ mod tests {
     const ALICE: [u8; 32] = [0x11; 32];
     const BOB: [u8; 32] = [0x22; 32];
 
+    #[test]
+    fn test_new_plus_reassign_is_convergent() {
+        // Wrapper type: `new_with_field_name` leaves the wrapper id random and
+        // only the inner vector deterministic; `reassign` canonicalises the
+        // wrapper too. Pin convergence — two independent `new() + reassign("f")`
+        // mint the same id (stronger than matching `new_with_field_name`).
+        crate::env::reset_for_testing();
+        let mut a: AuthoredVector<u32> = AuthoredVector::new();
+        a.reassign_deterministic_id("items");
+        let mut b: AuthoredVector<u32> = AuthoredVector::new();
+        b.reassign_deterministic_id("items");
+        assert_eq!(
+            <AuthoredVector<u32> as crate::entities::Data>::id(&a),
+            <AuthoredVector<u32> as crate::entities::Data>::id(&b),
+        );
+    }
+
     fn pk(bytes: [u8; 32]) -> PublicKey {
         bytes.into()
     }

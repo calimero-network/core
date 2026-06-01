@@ -126,8 +126,8 @@ impl FileShareState {
 
         FileShareState {
             owner: LwwRegister::new(owner),
-            files: UnorderedMap::new_with_field_name("files"),
-            file_counter: Counter::new_with_field_name("file_counter"),
+            files: UnorderedMap::new(),
+            file_counter: Counter::new(),
         }
     }
 

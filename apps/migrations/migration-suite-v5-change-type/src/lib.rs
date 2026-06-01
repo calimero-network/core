@@ -66,7 +66,7 @@ impl MigrationSuiteV5ChangeType {
     #[app::init]
     pub fn init() -> MigrationSuiteV5ChangeType {
         MigrationSuiteV5ChangeType {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             details: LwwRegister::new("initial".to_owned()),
             counter: LwwRegister::new("0".to_owned()),
         }

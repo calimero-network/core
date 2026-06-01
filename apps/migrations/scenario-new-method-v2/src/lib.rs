@@ -22,7 +22,7 @@ impl ScenarioNewMethodV2 {
     #[app::init]
     pub fn init() -> ScenarioNewMethodV2 {
         ScenarioNewMethodV2 {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             counter: LwwRegister::new(0),
         }
     }

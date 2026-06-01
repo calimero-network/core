@@ -73,7 +73,7 @@ pub fn migrate_v1_to_v2() -> ScenarioCrdtNativeV2 {
         .collect();
     keys.sort();
 
-    let mut tags: Vector<LwwRegister<String>> = Vector::new_with_field_name("tags");
+    let mut tags: Vector<LwwRegister<String>> = Vector::new();
     for k in keys {
         tags.push(k.into())
             .unwrap_or_else(|e| panic!("Migration failed: V2 tags seed error {:?}", e));
@@ -91,9 +91,9 @@ impl ScenarioCrdtNativeV2 {
     #[app::init]
     pub fn init() -> ScenarioCrdtNativeV2 {
         ScenarioCrdtNativeV2 {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             title: LwwRegister::new("untitled".to_owned()),
-            tags: Vector::new_with_field_name("tags"),
+            tags: Vector::new(),
         }
     }
 

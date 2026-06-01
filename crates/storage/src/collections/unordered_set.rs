@@ -440,7 +440,35 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::{Root, UnorderedSet};
+    use crate::entities::Data;
     use crate::store::MainStorage;
+
+    #[test]
+    fn test_new_plus_reassign_matches_new_with_field_name() {
+        // CIP I9 safety lock for dropping `new_with_field_name("x")` in favour of
+        // plain `::new()`: `reassign_deterministic_id("x")` (run by the
+        // `#[app::state]` post-init pass) MUST derive the same id
+        // `new_with_field_name("x")` produces, or converted apps split-brain.
+        crate::env::reset_for_testing();
+        let explicit: UnorderedSet<String> = UnorderedSet::new_with_field_name("items");
+        let mut via: UnorderedSet<String> = UnorderedSet::new();
+        via.reassign_deterministic_id("items");
+        assert_eq!(explicit.inner.id(), via.inner.id());
+    }
+
+    #[test]
+    fn test_reassign_preserves_entries() {
+        // Entries seeded before the post-init pass must survive the reassignment.
+        crate::env::reset_for_testing();
+        let mut set: UnorderedSet<String> = UnorderedSet::new();
+        set.insert("alpha".to_owned()).expect("insert alpha");
+        set.insert("beta".to_owned()).expect("insert beta");
+        let old_id = set.inner.id();
+        set.reassign_deterministic_id("items");
+        assert_ne!(old_id, set.inner.id());
+        assert!(set.contains("alpha").expect("contains alpha"));
+        assert!(set.contains("beta").expect("contains beta"));
+    }
 
     #[test]
     fn test_unordered_set_operations() {

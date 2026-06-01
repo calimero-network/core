@@ -235,3 +235,30 @@ where
         true // The inner map can contain CRDTs
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::UserStorage;
+
+    #[test]
+    fn test_new_plus_reassign_is_convergent() {
+        // `UserStorage` is a two-part type: a wrapper `Element` plus an inner
+        // `UnorderedMap` holding the data. `new_with_field_name` leaves the
+        // WRAPPER id random (only the inner map is deterministic); the post-init
+        // `reassign_deterministic_id` canonicalises BOTH. So the property that
+        // actually guarantees CIP I9 here is convergence — two independent
+        // `new() + reassign("f")` must mint the same id — which is strictly
+        // stronger than matching `new_with_field_name` (whose wrapper id is
+        // per-node random). The inner map's own id determinism is pinned by the
+        // `UnorderedMap` tests.
+        crate::env::reset_for_testing();
+        let mut a: UserStorage<String> = UserStorage::new();
+        a.reassign_deterministic_id("items");
+        let mut b: UserStorage<String> = UserStorage::new();
+        b.reassign_deterministic_id("items");
+        assert_eq!(
+            <UserStorage<String> as crate::entities::Data>::id(&a),
+            <UserStorage<String> as crate::entities::Data>::id(&b),
+        );
+    }
+}

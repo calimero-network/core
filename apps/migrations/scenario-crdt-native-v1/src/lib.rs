@@ -23,7 +23,7 @@ impl ScenarioCrdtNativeV1 {
     #[app::init]
     pub fn init() -> ScenarioCrdtNativeV1 {
         ScenarioCrdtNativeV1 {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             title: LwwRegister::new("untitled".to_owned()),
         }
     }

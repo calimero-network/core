@@ -35,7 +35,7 @@ impl KvStoreInit {
         app::log!("Initializing KvStoreInit with default items");
 
         let mut store = KvStoreInit {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
         };
 
         // Add some initial data during initialization

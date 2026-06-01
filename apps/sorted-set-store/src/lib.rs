@@ -28,7 +28,7 @@ impl SortedSetStore {
     #[app::init]
     pub fn init() -> SortedSetStore {
         SortedSetStore {
-            items: SortedSet::new_with_field_name("items"),
+            items: SortedSet::new(),
         }
     }
 

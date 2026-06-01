@@ -104,7 +104,7 @@ impl ScenarioFrozenStorageV2 {
     #[app::init]
     pub fn init() -> ScenarioFrozenStorageV2 {
         ScenarioFrozenStorageV2 {
-            documents: FrozenStorage::new_with_field_name("documents"),
+            documents: FrozenStorage::new(),
             title: LwwRegister::new("untitled".to_owned()),
             last_hash: LwwRegister::new(Vec::new()),
             migration_note: LwwRegister::new(String::new()),

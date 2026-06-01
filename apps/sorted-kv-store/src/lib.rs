@@ -49,7 +49,7 @@ impl SortedKvStore {
     #[app::init]
     pub fn init() -> SortedKvStore {
         SortedKvStore {
-            items: SortedMap::new_with_field_name("items"),
+            items: SortedMap::new(),
         }
     }
 
