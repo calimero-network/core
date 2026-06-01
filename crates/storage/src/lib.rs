@@ -104,6 +104,8 @@ pub mod tests {
     pub mod collections;
     /// Common test utilities and data structures.
     pub mod common;
+    /// Concurrency race reproduction (core#2571).
+    pub mod concurrency;
     /// Comprehensive CRDT behavior tests.
     pub mod crdt;
     /// Delta creation and commit tests.
