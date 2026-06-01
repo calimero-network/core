@@ -329,3 +329,41 @@ impl EditorState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn insert_append_and_read() {
+        let mut app = TestHost::new(EditorState::init);
+
+        app.call(|s| s.insert_text(0, "Hello".into())).unwrap();
+        app.call(|s| s.append_text(" World".into())).unwrap();
+
+        assert_eq!(app.view(|s| s.get_text()).unwrap(), "Hello World");
+        assert_eq!(app.view(|s| s.get_length()).unwrap(), 11);
+        assert!(!app.view(|s| s.is_empty()).unwrap());
+    }
+
+    #[test]
+    fn clear_empties_document() {
+        let mut app = TestHost::new(EditorState::init);
+
+        app.call(|s| s.append_text("content".into())).unwrap();
+        app.call(|s| s.clear()).unwrap();
+
+        assert!(app.view(|s| s.is_empty()).unwrap());
+        assert_eq!(app.view(|s| s.get_length()).unwrap(), 0);
+    }
+
+    #[test]
+    fn title_set_and_get() {
+        let mut app = TestHost::new(EditorState::init);
+
+        app.call(|s| s.set_title("My Doc".into())).unwrap();
+        assert_eq!(app.view(|s| s.get_title()), "My Doc");
+    }
+}

@@ -212,3 +212,51 @@ impl KvStore {
         Ok(false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn set_get_remove() {
+        let mut app = TestHost::new(KvStore::init);
+
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), Some("v".to_owned()));
+
+        assert_eq!(app.call(|s| s.remove("k")).unwrap(), Some("v".to_owned()));
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), None);
+    }
+
+    #[test]
+    fn set_emits_event_with_handler() {
+        let mut app = TestHost::new(KvStore::init);
+
+        // First write to a fresh key emits an "Inserted" event routed to
+        // the `insert_handler` callback.
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+
+        let events = app.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].handler.as_deref(), Some("insert_handler"));
+    }
+
+    #[test]
+    fn handler_records_invocation() {
+        let mut app = TestHost::new(KvStore::init);
+
+        // The harness captures events but does not auto-dispatch their
+        // handlers, so we invoke the handler method directly to exercise
+        // its bookkeeping in isolation.
+        app.call(|s| s.insert_handler("k", "v")).unwrap();
+
+        // The handler bumps a CRDT counter and logs its name.
+        assert_eq!(app.view(|s| s.get_handler_execution_count()).unwrap(), 1);
+        assert!(app
+            .logs()
+            .iter()
+            .any(|line| line.contains("insert_handler")));
+    }
+}

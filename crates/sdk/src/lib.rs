@@ -22,6 +22,9 @@ mod macros;
 pub mod private_storage;
 mod returns;
 pub mod state;
+/// In-process unit-test harness for app logic. Native-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod testing;
 pub mod types;
 pub use calimero_primitives::blobs::BlobId;
 pub use calimero_primitives::context::ContextId;

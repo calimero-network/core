@@ -44,8 +44,10 @@
 //! env::emit(&my_event);
 //! ```
 
+#[cfg(target_arch = "wasm32")]
 use std::panic::set_hook;
 
+#[cfg(target_arch = "wasm32")]
 use calimero_sys::{
     self as sys, Buffer, BufferMut, Event, Location, PtrSizedInt, Ref, RegisterId, ValueReturn,
     XCall,
@@ -53,11 +55,34 @@ use calimero_sys::{
 
 use crate::event::AppEvent;
 
+/// HTTP `fetch` host wrapper — WASM-only (no in-process mock equivalent).
+#[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
 pub mod ext;
 
+/// Native mock host backing the in-process test harness. Off-`wasm32` the
+/// `calimero_sys` imports don't exist, so [`crate::env`] routes here instead.
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub mod host;
+
 /// Register ID used for data operations in the WASM runtime.
+#[cfg(target_arch = "wasm32")]
 const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 1);
+
+/// Reports that a host function has no native mock equivalent.
+///
+/// A handful of host functions (cross-context calls, networked blobs, HTTP
+/// fetch, signature verification) have no meaningful in-process behaviour. They
+/// stay callable so app code compiles for tests, but invoking one under
+/// [`crate::testing::TestHost`] panics with a clear message rather than the
+/// opaque "only available when compiled for wasm32" `calimero_sys` stub.
+#[cfg(not(target_arch = "wasm32"))]
+#[track_caller]
+#[cold]
+fn unsupported_native(name: &str) -> ! {
+    panic!("`env::{name}` is not supported by the in-process test harness (TestHost)");
+}
 
 /// Panics the application with caller location information.
 ///
@@ -66,7 +91,12 @@ const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 
 #[track_caller]
 #[inline]
 pub fn panic() -> ! {
-    unsafe { sys::panic(Ref::new(&Location::caller())) }
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        sys::panic(Ref::new(&Location::caller()))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    panic!("application panicked");
 }
 
 /// Panics the application with a custom message and caller location.
@@ -80,20 +110,25 @@ pub fn panic() -> ! {
 #[track_caller]
 #[inline]
 pub fn panic_str(message: &str) -> ! {
+    #[cfg(target_arch = "wasm32")]
     unsafe {
         sys::panic_utf8(
             Ref::new(&Buffer::from(message)),
             Ref::new(&Location::caller()),
         )
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    panic!("{message}");
 }
 
+#[cfg(target_arch = "wasm32")]
 #[track_caller]
 #[inline]
 fn expected_register<T>() -> T {
     panic_str("Expected a register to be set, but it was not.");
 }
 
+#[cfg(target_arch = "wasm32")]
 #[track_caller]
 #[inline]
 fn expected_boolean<T>(e: u32) -> T {
@@ -104,7 +139,11 @@ fn expected_boolean<T>(e: u32) -> T {
 ///
 /// This function configures a panic hook that provides detailed error information
 /// including the panic message and location, making debugging easier in the WASM environment.
+///
+/// Off-`wasm32` (under the test harness) this is a no-op: Rust's default panic
+/// behaviour already surfaces the message and location to the test runner.
 pub fn setup_panic_hook() {
+    #[cfg(target_arch = "wasm32")]
     set_hook(Box::new(|info| {
         #[expect(clippy::option_if_let_else, reason = "Clearer this way")]
         let message = match info.payload().downcast_ref::<&'static str>() {
@@ -137,6 +176,7 @@ pub fn unreachable() -> ! {
     unreachable!()
 }
 
+#[cfg(target_arch = "wasm32")]
 #[inline]
 #[must_use]
 pub fn register_len(register_id: RegisterId) -> Option<usize> {
@@ -149,6 +189,7 @@ pub fn register_len(register_id: RegisterId) -> Option<usize> {
     Some(len.as_usize())
 }
 
+#[cfg(target_arch = "wasm32")]
 #[inline]
 pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
     let len = register_len(register_id)?;
@@ -170,6 +211,7 @@ pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
     Some(buffer)
 }
 
+#[cfg(target_arch = "wasm32")]
 #[inline]
 fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N]> {
     let len = register_len(register_id)?;
@@ -197,21 +239,36 @@ fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N
 
 #[must_use]
 pub fn context_id() -> [u8; 32] {
-    unsafe { sys::context_id(DATA_REGISTER) }
-    read_register_sized(DATA_REGISTER).expect("Must have context identity.")
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::context_id(DATA_REGISTER) }
+        read_register_sized(DATA_REGISTER).expect("Must have context identity.")
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::context_id()
 }
 
 #[must_use]
 pub fn executor_id() -> [u8; 32] {
-    unsafe { sys::executor_id(DATA_REGISTER) }
-    read_register_sized(DATA_REGISTER).expect("Must have executor identity.")
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::executor_id(DATA_REGISTER) }
+        read_register_sized(DATA_REGISTER).expect("Must have executor identity.")
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::executor_id()
 }
 
 #[inline]
 #[must_use]
 pub fn input() -> Option<Vec<u8>> {
-    unsafe { sys::input(DATA_REGISTER) }
-    read_register(DATA_REGISTER)
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::input(DATA_REGISTER) }
+        read_register(DATA_REGISTER)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::input()
 }
 
 #[inline]
@@ -220,7 +277,18 @@ where
     T: AsRef<[u8]>,
     E: AsRef<[u8]>,
 {
-    unsafe { sys::value_return(Ref::new(&ValueReturn::from(result.as_ref()))) }
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        sys::value_return(Ref::new(&ValueReturn::from(result.as_ref())))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let bytes: &[u8] = match result {
+            Ok(value) => value.as_ref(),
+            Err(error) => error.as_ref(),
+        };
+        host::value_return(bytes);
+    }
 }
 
 /// Logs a message to the runtime's logging system.
@@ -244,7 +312,12 @@ where
 /// ```
 #[inline]
 pub fn log(message: &str) {
-    unsafe { sys::log_utf8(Ref::new(&Buffer::from(message))) }
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        sys::log_utf8(Ref::new(&Buffer::from(message)))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::log(message);
 }
 
 /// Emits an event through the runtime without any callback handler.
@@ -285,7 +358,12 @@ pub fn emit<T: AppEvent>(event: &T) {
     let kind = event.kind();
     let data = event.data();
 
-    unsafe { sys::emit(Ref::new(&Event::new(&kind, &data))) }
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        sys::emit(Ref::new(&Event::new(&kind, &data)))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::emit(&kind, &data);
 }
 
 /// Emits an event through the runtime with a callback handler.
@@ -328,12 +406,15 @@ pub fn emit_with_handler<T: AppEvent>(event: &T, handler: &str) {
     let kind = event.kind();
     let data = event.data();
 
+    #[cfg(target_arch = "wasm32")]
     unsafe {
         sys::emit_with_handler(
             Ref::new(&Event::new(&kind, &data)),
             Ref::new(&Buffer::from(handler.as_bytes())),
         );
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::emit_with_handler(&kind, &data, handler);
 }
 
 /// Makes a cross-context call to be executed after the current execution completes.
@@ -359,7 +440,15 @@ pub fn emit_with_handler<T: AppEvent>(event: &T, handler: &str) {
 /// ```
 #[inline]
 pub fn xcall(context_id: &[u8; 32], function: &str, params: &[u8]) {
-    unsafe { sys::xcall(Ref::new(&XCall::new(context_id, function, params))) }
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        sys::xcall(Ref::new(&XCall::new(context_id, function, params)))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (context_id, function, params);
+        unsupported_native("xcall");
+    }
 }
 
 /// Commits state changes to the runtime.
@@ -372,12 +461,15 @@ pub fn xcall(context_id: &[u8; 32], function: &str, params: &[u8]) {
 /// * `root_hash` - The root hash of the state tree
 /// * `artifact` - The artifact data to commit
 pub fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
+    #[cfg(target_arch = "wasm32")]
     unsafe {
         sys::commit(
             Ref::new(&Buffer::from(&root_hash[..])),
             Ref::new(&Buffer::from(artifact)),
         );
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::commit(root_hash, artifact);
 }
 
 /// Reads a value from persistent storage.
@@ -405,10 +497,15 @@ pub fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
 /// ```
 #[inline]
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    unsafe { sys::storage_read(Ref::new(&Buffer::from(key)), DATA_REGISTER) }
-        .try_into()
-        .unwrap_or_else(expected_boolean::<bool>)
-        .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::storage_read(Ref::new(&Buffer::from(key)), DATA_REGISTER) }
+            .try_into()
+            .unwrap_or_else(expected_boolean::<bool>)
+            .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::storage_read(key)
 }
 
 /// Removes a value from persistent storage.
@@ -437,8 +534,13 @@ pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
 /// ```
 #[inline]
 pub fn storage_remove(key: &[u8]) -> bool {
-    unsafe { sys::storage_remove(Ref::new(&Buffer::from(key)), DATA_REGISTER).try_into() }
-        .unwrap_or_else(expected_boolean)
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::storage_remove(Ref::new(&Buffer::from(key)), DATA_REGISTER).try_into() }
+            .unwrap_or_else(expected_boolean)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::storage_remove(key)
 }
 
 /// Writes a value to persistent storage.
@@ -480,15 +582,20 @@ pub fn storage_remove(key: &[u8]) -> bool {
 /// ```
 #[inline]
 pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
-    unsafe {
-        sys::storage_write(
-            Ref::new(&Buffer::from(key)),
-            Ref::new(&Buffer::from(value)),
-            DATA_REGISTER,
-        )
-        .try_into()
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sys::storage_write(
+                Ref::new(&Buffer::from(key)),
+                Ref::new(&Buffer::from(value)),
+                DATA_REGISTER,
+            )
+            .try_into()
+        }
+        .unwrap_or_else(expected_boolean)
     }
-    .unwrap_or_else(expected_boolean)
+    #[cfg(not(target_arch = "wasm32"))]
+    host::storage_write(key, value)
 }
 
 // ==================== Ordered Secondary Index (SortedMap) ====================
@@ -502,27 +609,56 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
 /// index-validity marker on failure).
 #[inline]
 pub fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
-    unsafe { sys::storage_index_set(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value))) }
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sys::storage_index_set(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value)))
+        }
         .try_into()
         .unwrap_or_else(expected_boolean)
+    }
+    // `SortedMap`'s ordered index is served by `calimero_storage`'s own native
+    // mock (a process-local `BTreeMap`) under the test harness, so this SDK-level
+    // host hook is never reached off-wasm.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (key, value);
+        unsupported_native("storage_index_set")
+    }
 }
 
 /// Remove `key` from the ordered index. Returns whether the host persisted the
 /// write (see [`storage_index_set`]).
 #[inline]
 pub fn storage_index_remove(key: &[u8]) -> bool {
-    unsafe { sys::storage_index_remove(Ref::new(&Buffer::from(key))) }
-        .try_into()
-        .unwrap_or_else(expected_boolean)
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::storage_index_remove(Ref::new(&Buffer::from(key))) }
+            .try_into()
+            .unwrap_or_else(expected_boolean)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = key;
+        unsupported_native("storage_index_remove")
+    }
 }
 
 /// Remove every ordered-index key beginning with `prefix`. Returns whether the
 /// host persisted the write (see [`storage_index_set`]).
 #[inline]
 pub fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
-    unsafe { sys::storage_index_remove_prefix(Ref::new(&Buffer::from(prefix))) }
-        .try_into()
-        .unwrap_or_else(expected_boolean)
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::storage_index_remove_prefix(Ref::new(&Buffer::from(prefix))) }
+            .try_into()
+            .unwrap_or_else(expected_boolean)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = prefix;
+        unsupported_native("storage_index_remove_prefix")
+    }
 }
 
 /// Scan the ordered index over `[lo, hi)`, ascending, after `offset` and
@@ -535,53 +671,74 @@ pub fn storage_index_scan(
     offset: usize,
     limit: Option<usize>,
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
-    // Encode the limit as `n + 1`, with `0` = unbounded. A `MAX` sentinel would
-    // be ambiguous: `usize` is 32-bit on wasm32, so `usize::MAX` (`u32::MAX`)
-    // would not equal the host's `u64::MAX`. `0` is unambiguous on any width.
-    let limit_raw = limit.map_or(0, |n| n.saturating_add(1));
-    let found: bool = unsafe {
-        sys::storage_index_scan(
-            Ref::new(&Buffer::from(lo)),
-            Ref::new(&Buffer::from(hi)),
-            PtrSizedInt::new(offset),
-            PtrSizedInt::new(limit_raw),
-            DATA_REGISTER,
-        )
-        .try_into()
-    }
-    .unwrap_or_else(expected_boolean);
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Encode the limit as `n + 1`, with `0` = unbounded. A `MAX` sentinel
+        // would be ambiguous: `usize` is 32-bit on wasm32, so `usize::MAX`
+        // (`u32::MAX`) would not equal the host's `u64::MAX`. `0` is unambiguous
+        // on any width.
+        let limit_raw = limit.map_or(0, |n| n.saturating_add(1));
+        let found: bool = unsafe {
+            sys::storage_index_scan(
+                Ref::new(&Buffer::from(lo)),
+                Ref::new(&Buffer::from(hi)),
+                PtrSizedInt::new(offset),
+                PtrSizedInt::new(limit_raw),
+                DATA_REGISTER,
+            )
+            .try_into()
+        }
+        .unwrap_or_else(expected_boolean);
 
-    if !found {
-        return Vec::new();
+        if !found {
+            return Vec::new();
+        }
+        let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+        decode_index_pairs(&buf)
     }
-    let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-    decode_index_pairs(&buf)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (lo, hi, offset, limit);
+        unsupported_native("storage_index_scan")
+    }
 }
 
 /// The largest `(key, value)` in the ordered index over `[lo, hi)` — a reverse
 /// seek backing `SortedMap::last`.
 #[inline]
 pub fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    let found: bool = unsafe {
-        sys::storage_index_last(
-            Ref::new(&Buffer::from(lo)),
-            Ref::new(&Buffer::from(hi)),
-            DATA_REGISTER,
-        )
-        .try_into()
-    }
-    .unwrap_or_else(expected_boolean);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let found: bool = unsafe {
+            sys::storage_index_last(
+                Ref::new(&Buffer::from(lo)),
+                Ref::new(&Buffer::from(hi)),
+                DATA_REGISTER,
+            )
+            .try_into()
+        }
+        .unwrap_or_else(expected_boolean);
 
-    if !found {
-        return None;
+        if !found {
+            return None;
+        }
+        let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+        decode_index_pairs(&buf).into_iter().next()
     }
-    let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-    decode_index_pairs(&buf).into_iter().next()
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (lo, hi);
+        unsupported_native("storage_index_last")
+    }
 }
 
 /// Decode the length-prefixed scan reply produced by the host's
 /// `encode_index_pairs`. Malformed/truncated input yields what was parsed so
 /// far (the host controls this buffer, so it's well-formed in practice).
+///
+/// WASM-only: the ordered-index host hooks are unreachable off-wasm (see
+/// `storage_index_set`), so the decoder has no native caller.
+#[cfg(target_arch = "wasm32")]
 fn decode_index_pairs(buf: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out = Vec::new();
     let mut pos = 0usize;
@@ -643,10 +800,15 @@ fn decode_index_pairs(buf: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
 /// ```
 #[inline]
 pub fn private_storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    unsafe { sys::private_storage_read(Ref::new(&Buffer::from(key)), DATA_REGISTER) }
-        .try_into()
-        .unwrap_or_else(expected_boolean::<bool>)
-        .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::private_storage_read(Ref::new(&Buffer::from(key)), DATA_REGISTER) }
+            .try_into()
+            .unwrap_or_else(expected_boolean::<bool>)
+            .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::private_storage_read(key)
 }
 
 /// Removes a value from private (node-local) storage.
@@ -673,8 +835,15 @@ pub fn private_storage_read(key: &[u8]) -> Option<Vec<u8>> {
 /// ```
 #[inline]
 pub fn private_storage_remove(key: &[u8]) -> bool {
-    unsafe { sys::private_storage_remove(Ref::new(&Buffer::from(key)), DATA_REGISTER).try_into() }
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sys::private_storage_remove(Ref::new(&Buffer::from(key)), DATA_REGISTER).try_into()
+        }
         .unwrap_or_else(expected_boolean)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::private_storage_remove(key)
 }
 
 /// Writes a value to private (node-local) storage.
@@ -718,34 +887,53 @@ pub fn private_storage_remove(key: &[u8]) -> bool {
 /// ```
 #[inline]
 pub fn private_storage_write(key: &[u8], value: &[u8]) -> bool {
-    unsafe {
-        sys::private_storage_write(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value)))
-            .try_into()
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sys::private_storage_write(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value)))
+                .try_into()
+        }
+        .unwrap_or_else(expected_boolean)
     }
-    .unwrap_or_else(expected_boolean)
+    #[cfg(not(target_arch = "wasm32"))]
+    host::private_storage_write(key, value)
 }
 
 /// Fill the buffer with random bytes.
+///
+/// Under the in-process test harness (off-`wasm32`) this is backed by a
+/// deterministic, **non-cryptographic** PRNG so test runs are reproducible — do
+/// not rely on it for security properties in tests.
 #[inline]
 pub fn random_bytes(buf: &mut [u8]) {
-    unsafe { sys::random_bytes(Ref::new(&BufferMut::new(buf))) }
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        sys::random_bytes(Ref::new(&BufferMut::new(buf)))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::random_bytes(buf);
 }
 
 /// Gets the current time.
 #[inline]
 #[must_use]
 pub fn time_now() -> u64 {
-    let mut bytes = [0; 8];
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut bytes = [0; 8];
 
-    #[expect(
-        clippy::needless_borrows_for_generic_args,
-        reason = "we don't want to copy the buffer, but write to the same one that's returned"
-    )]
-    unsafe {
-        sys::time_now(Ref::new(&BufferMut::new(&mut bytes)));
+        #[expect(
+            clippy::needless_borrows_for_generic_args,
+            reason = "we don't want to copy the buffer, but write to the same one that's returned"
+        )]
+        unsafe {
+            sys::time_now(Ref::new(&BufferMut::new(&mut bytes)));
+        }
+
+        u64::from_le_bytes(bytes)
     }
-
-    u64::from_le_bytes(bytes)
+    #[cfg(not(target_arch = "wasm32"))]
+    host::time_now()
 }
 
 /// Verifies an Ed25519 signature.
@@ -769,22 +957,32 @@ pub fn time_now() -> u64 {
 /// Panics if the host returns a value other than `0` or `1`.
 #[inline]
 pub fn ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8]) -> bool {
-    // Create buffer descriptors for the host
-    let signature_buf = Buffer::from(&signature[..]);
-    let public_key_buf = Buffer::from(&public_key[..]);
-    let message_buf = Buffer::from(message);
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Create buffer descriptors for the host
+        let signature_buf = Buffer::from(&signature[..]);
+        let public_key_buf = Buffer::from(&public_key[..]);
+        let message_buf = Buffer::from(message);
 
-    // Call the host function via FFI
-    let result = unsafe {
-        sys::ed25519_verify(
-            Ref::new(&signature_buf),
-            Ref::new(&public_key_buf),
-            Ref::new(&message_buf),
-        )
-    };
+        // Call the host function via FFI
+        let result = unsafe {
+            sys::ed25519_verify(
+                Ref::new(&signature_buf),
+                Ref::new(&public_key_buf),
+                Ref::new(&message_buf),
+            )
+        };
 
-    // Convert the sys::Bool (repr(C) u32) to a bool, panicking if it's not 0 or 1.
-    result.try_into().unwrap_or_else(expected_boolean)
+        // Convert the sys::Bool (repr(C) u32) to a bool, panicking if it's not 0 or 1.
+        result.try_into().unwrap_or_else(expected_boolean)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (signature, public_key, message);
+        // Pulling a crypto backend into the SDK just for the test mock isn't
+        // worth it; tests that need real verification can call the runtime.
+        unsupported_native("ed25519_verify");
+    }
 }
 
 // ========================================
@@ -794,34 +992,54 @@ pub fn ed25519_verify(signature: &[u8; 64], public_key: &[u8; 32], message: &[u8
 /// Create a new blob write handle for streaming data.
 /// Returns a file descriptor that can be used with blob_write() and blob_close().
 pub fn blob_create() -> u64 {
-    unsafe { sys::blob_create() }.as_usize() as u64
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::blob_create() }.as_usize() as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::blob_create()
 }
 
 /// Open a blob for reading by its 32-byte ID.
 /// Returns a file descriptor that can be used with blob_read() and blob_close().
 /// Returns 0 if the blob is not found.
 pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
-    unsafe { sys::blob_open(Ref::new(&Buffer::from(&blob_id[..]))) }.as_usize() as u64
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::blob_open(Ref::new(&Buffer::from(&blob_id[..]))) }.as_usize() as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::blob_open(blob_id)
 }
 
 /// Read data from a blob handle opened with blob_open().
 /// Reads into the provided buffer and returns the number of bytes read.
 /// Returns 0 when end of blob is reached.
 pub fn blob_read(fd: u64, buffer: &mut [u8]) -> u64 {
-    unsafe {
-        sys::blob_read(
-            PtrSizedInt::new(fd as usize),
-            Ref::new(&BufferMut::new(buffer)),
-        )
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sys::blob_read(
+                PtrSizedInt::new(fd as usize),
+                Ref::new(&BufferMut::new(buffer)),
+            )
+        }
+        .as_usize() as u64
     }
-    .as_usize() as u64
+    #[cfg(not(target_arch = "wasm32"))]
+    host::blob_read(fd, buffer)
 }
 
 /// Write data to a blob handle created with blob_create().
 /// Returns the number of bytes written.
 pub fn blob_write(fd: u64, data: &[u8]) -> u64 {
-    unsafe { sys::blob_write(PtrSizedInt::new(fd as usize), Ref::new(&Buffer::from(data))) }
-        .as_usize() as u64
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::blob_write(PtrSizedInt::new(fd as usize), Ref::new(&Buffer::from(data))) }
+            .as_usize() as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::blob_write(fd, data)
 }
 
 /// Close a blob handle and finalize the blob.
@@ -830,21 +1048,26 @@ pub fn blob_write(fd: u64, data: &[u8]) -> u64 {
 /// For read handles: Returns the original blob's ID and cleans up the handle.
 /// Panics if the operation fails (e.g. blob finalization fails for write handles).
 pub fn blob_close(fd: u64) -> [u8; 32] {
-    let mut blob_id_buf = [0_u8; 32];
-    let success: bool = unsafe {
-        sys::blob_close(
-            PtrSizedInt::new(fd as usize),
-            Ref::new(&BufferMut::new(&mut blob_id_buf)),
-        )
-        .try_into()
-    }
-    .unwrap_or_else(expected_boolean);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut blob_id_buf = [0_u8; 32];
+        let success: bool = unsafe {
+            sys::blob_close(
+                PtrSizedInt::new(fd as usize),
+                Ref::new(&BufferMut::new(&mut blob_id_buf)),
+            )
+            .try_into()
+        }
+        .unwrap_or_else(expected_boolean);
 
-    if success {
-        blob_id_buf
-    } else {
-        panic_str("Blob operation failed")
+        if success {
+            blob_id_buf
+        } else {
+            panic_str("Blob operation failed")
+        }
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    host::blob_close(fd).unwrap_or_else(|| panic_str("Blob operation failed"))
 }
 
 // ========================================
@@ -884,12 +1107,22 @@ pub fn blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]
         return false;
     }
 
-    unsafe {
-        sys::blob_announce_to_context(
-            Ref::new(&Buffer::from(&blob_id[..])),
-            Ref::new(&Buffer::from(&target_context_id[..])),
-        )
-        .try_into()
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sys::blob_announce_to_context(
+                Ref::new(&Buffer::from(&blob_id[..])),
+                Ref::new(&Buffer::from(&target_context_id[..])),
+            )
+            .try_into()
+        }
+        .unwrap_or_else(expected_boolean)
     }
-    .unwrap_or_else(expected_boolean)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // The in-process host has no network; the announce is a no-op that
+        // succeeds once the (already-checked) context match holds.
+        let _ = blob_id;
+        true
+    }
 }
