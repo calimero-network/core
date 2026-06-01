@@ -133,6 +133,31 @@ where
 
 impl<T, S> SharedStorage<T, S>
 where
+    T: BorshSerialize + BorshDeserialize + Mergeable + Data,
+    S: StorageAdaptor,
+{
+    /// Mutable access to a collection value (`UnorderedMap`, `UnorderedSet`, …)
+    /// for in-place editing.
+    ///
+    /// Re-establishes the writer domain on the collection's element before
+    /// handing out the reference, so every entry inserted through it inherits
+    /// `Shared{writers}` and is guarded at merge — including after a reload,
+    /// where the collection element's own domain may not have been persisted.
+    /// Only collections (which implement [`Data`]) get this; a scalar value is
+    /// edited via the whole-value replace path instead.
+    ///
+    /// # Errors
+    /// Currently infallible; the `Result` is preserved for forward compatibility.
+    pub fn get_mut(&mut self) -> Result<&mut T, StoreError> {
+        self.value
+            .element_mut()
+            .set_shared_domain(self.writers.clone());
+        Ok(&mut self.value)
+    }
+}
+
+impl<T, S> SharedStorage<T, S>
+where
     T: BorshSerialize + BorshDeserialize + Mergeable,
     S: StorageAdaptor,
 {
@@ -365,6 +390,44 @@ mod tests {
 
     fn writers(keys: &[[u8; 32]]) -> BTreeSet<PublicKey> {
         keys.iter().copied().map(pk).collect()
+    }
+
+    #[test]
+    #[serial]
+    fn shared_collection_entries_inherit_writer_domain() {
+        use crate::collections::{compute_id, LwwRegister, UnorderedMap};
+        use crate::entities::{Data, StorageType};
+        use crate::interface::Interface;
+        use crate::store::MainStorage;
+
+        env::reset_for_testing();
+
+        type Map = UnorderedMap<String, LwwRegister<String>>;
+
+        let ws = writers(&[[7u8; 32]]);
+        let mut guarded: SharedStorage<Map> = SharedStorage::new(ws.clone(), false);
+
+        // Edit the inner map in place through the guarded `get_mut`, which
+        // re-establishes the writer domain on the map element first.
+        let _old = guarded
+            .get_mut()
+            .expect("get_mut")
+            .insert("k".to_owned(), LwwRegister::new("v".to_owned()))
+            .expect("insert");
+
+        // The entry must carry the Shared writer domain — the whole subtree is
+        // guarded at merge, not just the SharedStorage wrapper entity.
+        let map_id = <Map as Data>::id(guarded.get().expect("get"));
+        let child = compute_id(map_id, "k".as_bytes());
+        let entry = <Interface<MainStorage>>::find_by_id::<
+            crate::collections::Entry<(String, LwwRegister<String>)>,
+        >(child)
+        .expect("load child")
+        .expect("child exists");
+        match entry.storage.metadata.storage_type {
+            StorageType::Shared { writers: w, .. } => assert_eq!(w, ws),
+            other => panic!("SharedStorage<Map> entry must inherit Shared, got {other:?}"),
+        }
     }
 
     #[test]
