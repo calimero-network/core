@@ -55,6 +55,19 @@ impl ToTokens for StateImpl<'_> {
         let assign_ids_impl = generate_assign_deterministic_ids_impl(ident, generics, orig);
 
         quote! {
+            // State is always persisted via borsh (init save, root-state merge,
+            // `merge_root_state_typed::<T>`), so the macro injects the derives and
+            // the crate redirect itself — authors no longer hand-write
+            // `#[derive(BorshSerialize, BorshDeserialize)]` + `#[borsh(crate = ...)]`
+            // on every state type. The full-path derive only selects the proc-macro;
+            // the generated code still resolves the borsh runtime through `::borsh`
+            // by default, so the `crate` attribute redirecting it to the SDK re-export
+            // is load-bearing.
+            #[derive(
+                ::calimero_sdk::borsh::BorshSerialize,
+                ::calimero_sdk::borsh::BorshDeserialize,
+            )]
+            #[borsh(crate = "::calimero_sdk::borsh")]
             #orig
 
             impl #impl_generics ::calimero_sdk::state::AppState for #ident #ty_generics #where_clause {
