@@ -2087,6 +2087,30 @@ impl<S: StorageAdaptor> Interface<S> {
         data: &[u8],
         metadata: Metadata,
     ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
+        // Serialize the WHOLE read-merge-write-rehash sequence, not just the
+        // index update. The entry-value write (`storage_write(Key::Entry(id))`)
+        // and the `own_hash` update (`Index::update_hash_for`) are two separate
+        // store writes; `own_hash = Sha256(final_data)` is computed from THIS
+        // call's merged bytes. Without a guard spanning both, a concurrent
+        // writer for the same id (the execute path vs. the dedicated sync
+        // apply, which run on different threads sharing one store) can land its
+        // value write and its own_hash update in opposite orders, leaving the
+        // stored bytes and the recorded `own_hash` from DIFFERENT writers. A
+        // peer recomputing the leaf hash from the bytes then never matches this
+        // node's advertised `own_hash`, so the parent collection's `full_hash`
+        // can't converge and HashComparison re-merges it forever (the
+        // stable-but-different root-hash split-brain). The guard is reentrant,
+        // so the nested `update_hash_for` / `add_child_to` re-acquire it on this
+        // thread without deadlock; on wasm it compiles out (single-threaded).
+        //
+        // TODO(perf): this widens the global mutation guard to span the CRDT
+        // merge (not just the microsecond index update it was scoped to), so all
+        // entity writes now serialize through one process-global lock for the
+        // duration of a merge. Revisit whether this regresses write throughput
+        // on hot collections; if so, move to a per-entity (id-keyed) lock so
+        // independent entities can merge in parallel.
+        let _mutation_guard = crate::index::index_mutation_guard();
+
         let incoming_updated_at = metadata.updated_at();
 
         // Compute incoming data hash for tracing
@@ -2305,6 +2329,19 @@ impl<S: StorageAdaptor> Interface<S> {
         // merges for `Root<T>` entries would fail with `IndexNotFound`
         // and the deferred WASM merge would be dropped, leaving the
         // receiver's root entity permanently divergent.
+        //
+        // Hold the reentrant mutation guard across the whole LWW-check →
+        // entry-write → own_hash-update sequence for the same reason as
+        // `save_internal`: the value write and the `own_hash` update are
+        // separate store writes, and a concurrent writer for this id must not
+        // interleave between them or the stored bytes and recorded `own_hash`
+        // diverge.
+        //
+        // TODO(perf): see the matching note in `save_internal` — this holds the
+        // process-global guard across the merge; revisit for a per-entity lock
+        // if it regresses write throughput.
+        let _mutation_guard = crate::index::index_mutation_guard();
+
         let last_metadata = <Index<S>>::get_metadata(id)?;
 
         // LWW guard — same shape as `save_internal`'s LWW-by-HLC
