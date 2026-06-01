@@ -1423,6 +1423,67 @@ mod tests {
         }
     }
 
+    // Pending: documents a known gap. The inherit-on-insert mechanic propagates
+    // the writer domain to entries (which persist their own stamp), but the
+    // COLLECTION element's `Shared` domain is not round-tripped on reload — it
+    // comes back `Public`, so inserts made after a reload would not inherit the
+    // domain. The end-to-end `SharedStorage<Collection>` slice must re-establish
+    // the collection's domain on load (or anchor children to the wrapper). Un-ignore
+    // when that lands.
+    #[ignore = "collection-element writer domain does not persist across reload yet"]
+    #[test]
+    fn shared_domain_on_collection_element_persists_across_reload() {
+        use std::collections::BTreeSet;
+
+        use calimero_primitives::identity::PublicKey;
+
+        use crate::collections::compute_id;
+        use crate::entities::{Data, StorageType};
+        use crate::interface::Interface;
+        use crate::store::MainStorage;
+
+        crate::env::reset_for_testing();
+
+        let writers: BTreeSet<PublicKey> = std::iter::once(PublicKey::from([7u8; 32])).collect();
+
+        // Build a guarded map, persist its element.
+        let mut map = UnorderedMap::<String, String>::new_with_field_name("guarded");
+        map.element_mut().set_shared_domain(writers.clone());
+        let _ignored = map.insert("k".to_owned(), "v".to_owned()).expect("insert");
+        let map_id = <UnorderedMap<String, String> as Data>::id(&map);
+        let _saved = <Interface<MainStorage>>::save(&mut map).expect("save map element");
+
+        // Reload it from storage — does the Shared domain survive?
+        let mut reloaded =
+            <Interface<MainStorage>>::find_by_id::<UnorderedMap<String, String>>(map_id)
+                .expect("load map")
+                .expect("map persisted");
+
+        // (a) the reloaded collection element retains the writer domain.
+        match reloaded.element().metadata.storage_type.clone() {
+            StorageType::Shared { writers: w, .. } => assert_eq!(w, writers, "domain changed"),
+            other => panic!("collection element domain lost on reload: {other:?}"),
+        }
+
+        // (b) a NEW insert after reload still inherits Shared (not Public).
+        let _ignored = reloaded
+            .insert("k2".to_owned(), "v2".to_owned())
+            .expect("insert after reload");
+        let child2 = compute_id(map_id, "k2".as_bytes());
+        let entry = <Interface<MainStorage>>::find_by_id::<
+            crate::collections::Entry<(String, String)>,
+        >(child2)
+        .expect("load child2")
+        .expect("child2 exists");
+        assert!(
+            matches!(
+                entry.storage.metadata.storage_type,
+                StorageType::Shared { .. }
+            ),
+            "new entry after reload must inherit the Shared domain",
+        );
+    }
+
     #[test]
     fn test_deterministic_map_ids() {
         crate::env::reset_for_testing();
