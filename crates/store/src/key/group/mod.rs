@@ -2293,15 +2293,14 @@ mod tests {
         }
 
         #[test]
-        fn group_meta_value_coordinated_policy_roundtrip() {
-            use core::time::Duration;
-
-            let value = GroupMetaValue {
+        // The removed `Coordinated` policy used borsh tag 2. A persisted
+        // GroupMetaValue carrying that tag must now fail to decode (loud
+        // failure) rather than being silently reinterpreted as another policy.
+        fn group_meta_value_with_legacy_coordinated_tag_is_rejected() {
+            let make = |policy| GroupMetaValue {
                 app_key: [0x11; 32],
                 target_application_id: ApplicationId::from([0x22; 32]),
-                upgrade_policy: UpgradePolicy::Coordinated {
-                    deadline: Some(Duration::from_secs(3600)),
-                },
+                upgrade_policy: policy,
                 created_at: 1_700_000_000,
                 admin_identity: PrimitivePublicKey::from([0x33; 32]),
                 owner_identity: PrimitivePublicKey::from([0x33; 32]),
@@ -2309,15 +2308,35 @@ mod tests {
                 auto_join: true,
             };
 
-            let bytes = to_vec(&value).expect("serialize");
-            let decoded: GroupMetaValue = from_slice(&bytes).expect("deserialize");
+            // Locate the upgrade-policy tag byte without hardcoding an offset:
+            // serialize two values that differ ONLY in `upgrade_policy`
+            // (Automatic = tag 0, LazyOnAccess = tag 1) and find the single
+            // differing byte. This stays correct even if fields before
+            // `upgrade_policy` change size or order.
+            let automatic = to_vec(&make(UpgradePolicy::Automatic)).expect("serialize");
+            let lazy = to_vec(&make(UpgradePolicy::LazyOnAccess)).expect("serialize");
+            let diffs: Vec<usize> = automatic
+                .iter()
+                .zip(&lazy)
+                .enumerate()
+                .filter_map(|(i, (a, b))| (a != b).then_some(i))
+                .collect();
+            assert_eq!(
+                diffs.len(),
+                1,
+                "the two values must differ in exactly the policy tag byte"
+            );
+            let tag_offset = diffs[0];
 
-            match decoded.upgrade_policy {
-                UpgradePolicy::Coordinated { deadline } => {
-                    assert_eq!(deadline, Some(Duration::from_secs(3600)));
-                }
-                other => panic!("expected Coordinated, got {other:?}"),
-            }
+            // Patch that byte to the removed Coordinated tag (2) and assert the
+            // whole value now fails to decode.
+            let mut bytes = automatic;
+            bytes[tag_offset] = 2;
+            let decoded = from_slice::<GroupMetaValue>(&bytes);
+            assert!(
+                decoded.is_err(),
+                "a stored GroupMetaValue with the removed Coordinated tag must be rejected"
+            );
         }
 
         #[test]

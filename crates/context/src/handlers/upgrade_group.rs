@@ -494,6 +494,12 @@ fn validate_upgrade(
     // 2. Requester must be admin
     MembershipRepository::new(datastore).require_admin(group_id, requester)?;
 
+    // 2a. A migration may only ride on a LazyOnAccess upgrade — receivers
+    //     only run the migrate under that policy (see
+    //     `ensure_migration_policy_supported`). Fail loudly here rather than
+    //     corrupting receiver state.
+    ensure_migration_policy_supported(&meta.upgrade_policy, has_migration)?;
+
     // 3. Verify node holds the key (skip if raw key was provided)
     if !has_raw_signing_key {
         SigningKeysRepository::new(datastore).require_key(group_id, requester)?;
@@ -966,6 +972,32 @@ fn dispatch_cascade(
         )));
     }
 
+    // Migration-policy gate for cascade. Each matched descendant runs the
+    // migrate under its OWN policy on receivers (`maybe_lazy_upgrade` reads the
+    // descendant's group meta, not the signed root's), so the gate is
+    // per-descendant — not the signed group's policy. Reject here, before
+    // emitting `CascadeUpgrade`, if any matched descendant is not LazyOnAccess.
+    //
+    // Gated on `has_migration` so a code-only cascade skips loading every
+    // descendant's meta (the check is meaningless without a migration).
+    if has_migration {
+        let mut descendant_policies = Vec::with_capacity(matched_descendants.len());
+        for gid in &matched_descendants {
+            match MetaRepository::new(&actor.datastore).load(gid) {
+                Ok(Some(m)) => descendant_policies.push((*gid, m.upgrade_policy)),
+                Ok(None) => {
+                    return ActorResponse::reply(Err(eyre::eyre!(
+                        "matched cascade descendant {gid:?} has no group meta"
+                    )))
+                }
+                Err(err) => return ActorResponse::reply(Err(err)),
+            }
+        }
+        if let Err(err) = ensure_cascade_migration_policies_supported(&descendant_policies) {
+            return ActorResponse::reply(Err(err));
+        }
+    }
+
     info!(
         ?group_id,
         %target_application_id,
@@ -1180,4 +1212,136 @@ fn spawn_propagator_for(
     ctx.spawn(propagator.into_actor(actor).map(move |_, act, _| {
         act.active_propagators.remove(&group_id);
     }));
+}
+
+/// Reject a migration-carrying upgrade under any policy other than
+/// [`UpgradePolicy::LazyOnAccess`].
+///
+/// Only `LazyOnAccess` triggers the receiver-side migrate: a receiver runs
+/// the migration via `maybe_lazy_upgrade`, which early-returns for any
+/// non-`LazyOnAccess` policy (`execute/mod.rs`). Under `Automatic` a receiver
+/// swaps its application pointer to the new bytecode but never runs the
+/// migrate, so v2 wasm reads v1 state bytes and panics with a silent borsh
+/// "Not all bytes read". Catch that combination loudly here, before any group
+/// op is emitted, rather than letting it corrupt state on every receiver.
+///
+/// Code-only upgrades (`has_migration == false`) stay allowed under every
+/// policy.
+fn ensure_migration_policy_supported(
+    policy: &UpgradePolicy,
+    has_migration: bool,
+) -> eyre::Result<()> {
+    if has_migration && !matches!(policy, UpgradePolicy::LazyOnAccess) {
+        bail!(
+            "migration-carrying upgrades are only supported under the LazyOnAccess \
+             upgrade policy; the group's policy {policy:?} swaps the application without \
+             running the migration on receivers, corrupting state (silent borsh failure). \
+             Set the group's upgrade policy to LazyOnAccess before migrating."
+        );
+    }
+    Ok(())
+}
+
+/// Cascade variant of [`ensure_migration_policy_supported`].
+///
+/// Call this only when the cascade carries a migration — the caller gates on
+/// that before loading each descendant's meta, so no work is done for code-only
+/// cascades (hence, unlike the single-group variant, this takes no
+/// `has_migration` flag and assumes a migration is present).
+///
+/// A cascade fans out to every matched descendant, and on receivers each
+/// descendant runs the migrate under its OWN policy — `maybe_lazy_upgrade` reads
+/// the *descendant's* group meta, not the signed root's. So the gate is
+/// per-descendant: reject if any matched descendant is not `LazyOnAccess`. The
+/// signed (root) group's own policy is irrelevant here (it is often a
+/// context-less namespace root carrying the default `Automatic`, which would
+/// otherwise both false-reject all-Lazy cascades and false-pass a non-Lazy
+/// descendant straight into silent corruption).
+fn ensure_cascade_migration_policies_supported(
+    descendants: &[(ContextGroupId, UpgradePolicy)],
+) -> eyre::Result<()> {
+    for (group_id, policy) in descendants {
+        if !matches!(policy, UpgradePolicy::LazyOnAccess) {
+            bail!(
+                "cascade migration is only supported when every matched descendant uses the \
+                 LazyOnAccess upgrade policy; descendant group {group_id:?} uses {policy:?}, \
+                 which would swap the application without running the migration on its receivers \
+                 (silent state corruption). Set that subgroup's upgrade policy to LazyOnAccess \
+                 before migrating."
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ensure_cascade_migration_policies_supported, ensure_migration_policy_supported};
+    use calimero_context_config::types::ContextGroupId;
+    use calimero_primitives::context::UpgradePolicy;
+
+    fn gid(b: u8) -> ContextGroupId {
+        ContextGroupId::from([b; 32])
+    }
+
+    #[test]
+    fn migration_under_automatic_is_rejected() {
+        let err = ensure_migration_policy_supported(&UpgradePolicy::Automatic, true)
+            .expect_err("migration under Automatic must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LazyOnAccess"),
+            "error should name the required policy, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn migration_under_lazy_on_access_is_allowed() {
+        ensure_migration_policy_supported(&UpgradePolicy::LazyOnAccess, true)
+            .expect("migration under LazyOnAccess must be allowed");
+    }
+
+    #[test]
+    fn code_only_upgrade_under_automatic_is_allowed() {
+        ensure_migration_policy_supported(&UpgradePolicy::Automatic, false)
+            .expect("code-only upgrade under Automatic must be allowed");
+    }
+
+    #[test]
+    fn code_only_upgrade_under_lazy_on_access_is_allowed() {
+        ensure_migration_policy_supported(&UpgradePolicy::LazyOnAccess, false)
+            .expect("code-only upgrade under LazyOnAccess must be allowed");
+    }
+
+    #[test]
+    fn cascade_migration_all_lazy_descendants_is_allowed() {
+        let descendants = [
+            (gid(1), UpgradePolicy::LazyOnAccess),
+            (gid(2), UpgradePolicy::LazyOnAccess),
+        ];
+        ensure_cascade_migration_policies_supported(&descendants)
+            .expect("cascade migration with all-LazyOnAccess descendants must be allowed");
+    }
+
+    #[test]
+    fn cascade_migration_rejected_when_any_descendant_not_lazy() {
+        // A single non-Lazy descendant (root policy is irrelevant) must reject.
+        let descendants = [
+            (gid(1), UpgradePolicy::LazyOnAccess),
+            (gid(2), UpgradePolicy::Automatic),
+        ];
+        let err = ensure_cascade_migration_policies_supported(&descendants)
+            .expect_err("a non-LazyOnAccess matched descendant must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LazyOnAccess"),
+            "error should name the required policy, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn cascade_migration_empty_descendants_is_allowed() {
+        ensure_cascade_migration_policies_supported(&[])
+            .expect("an empty descendant set is vacuously allowed");
+    }
 }

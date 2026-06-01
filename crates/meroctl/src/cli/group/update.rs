@@ -25,14 +25,11 @@ pub struct UpdateCommand {
         help = "New upgrade policy"
     )]
     pub upgrade_policy: UpgradePolicyArg,
-
-    #[clap(long, help = "Deadline in seconds for coordinated upgrade policy")]
-    pub deadline_secs: Option<u64>,
 }
 
 impl UpdateCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let upgrade_policy = to_upgrade_policy(self.upgrade_policy, self.deadline_secs);
+        let upgrade_policy = to_upgrade_policy(self.upgrade_policy);
 
         let request = UpdateGroupSettingsApiRequest {
             requester: self.requester,

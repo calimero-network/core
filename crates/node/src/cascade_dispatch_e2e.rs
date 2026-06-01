@@ -65,11 +65,16 @@ fn app_id_other() -> ApplicationId {
 /// and `admin` as both owner and admin identity (so cascade's
 /// per-descendant `can_manage_application` pre-scan passes for every
 /// matched group).
-fn meta_for(admin: PublicKey, app_key: [u8; 32], target: ApplicationId) -> GroupMetaValue {
+fn meta_for(
+    admin: PublicKey,
+    app_key: [u8; 32],
+    target: ApplicationId,
+    upgrade_policy: UpgradePolicy,
+) -> GroupMetaValue {
     GroupMetaValue {
         app_key,
         target_application_id: target,
-        upgrade_policy: UpgradePolicy::Automatic,
+        upgrade_policy,
         created_at: 1_700_000_000,
         admin_identity: admin,
         owner_identity: admin,
@@ -88,9 +93,10 @@ fn provision_group(
     admin: PublicKey,
     app_key: [u8; 32],
     target: ApplicationId,
+    policy: UpgradePolicy,
 ) {
     MetaRepository::new(store)
-        .save(gid, &meta_for(admin, app_key, target))
+        .save(gid, &meta_for(admin, app_key, target, policy))
         .expect("save_group_meta");
     MembershipRepository::new(store)
         .add_member(gid, &admin, GroupMemberRole::Admin)
@@ -175,21 +181,36 @@ fn provision_namespace(
     store: &Store,
     admin_sk: &PrivateKey,
     g2_app_key: [u8; 32],
+    policy: UpgradePolicy,
 ) -> CascadeFixture {
     let admin_pk = admin_sk.public_key();
     let ns = ContextGroupId::from([0x70; 32]);
     let g1 = ContextGroupId::from([0xA1; 32]);
     let g2 = ContextGroupId::from([0xA2; 32]);
 
-    provision_group(store, &ns, admin_pk, APP_KEY_V1, app_id_v1());
-    provision_group(store, &g1, admin_pk, APP_KEY_V1, app_id_v1());
+    provision_group(
+        store,
+        &ns,
+        admin_pk,
+        APP_KEY_V1,
+        app_id_v1(),
+        policy.clone(),
+    );
+    provision_group(
+        store,
+        &g1,
+        admin_pk,
+        APP_KEY_V1,
+        app_id_v1(),
+        policy.clone(),
+    );
     // G2 may be on a different app_key for the heterogeneous test.
     let g2_target = if g2_app_key == APP_KEY_V1 {
         app_id_v1()
     } else {
         app_id_other()
     };
-    provision_group(store, &g2, admin_pk, g2_app_key, g2_target);
+    provision_group(store, &g2, admin_pk, g2_app_key, g2_target, policy);
 
     NamespaceRepository::new(store)
         .nest(&ns, &g1)
@@ -276,7 +297,14 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
-    let fx = provision_namespace(&node.store, &admin_sk, APP_KEY_V1);
+    // Migrating cascade: descendants must be LazyOnAccess (the only policy
+    // under which receivers run the migrate — see `dispatch_cascade`'s gate).
+    let fx = provision_namespace(
+        &node.store,
+        &admin_sk,
+        APP_KEY_V1,
+        UpgradePolicy::LazyOnAccess,
+    );
 
     let response = node
         .context_client
@@ -398,7 +426,9 @@ async fn cascade_dispatch_e2e_write_gate_blocks_user_calls() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
-    let fx = provision_namespace(&node.store, &admin_sk, APP_KEY_V1);
+    // Code-only path (no migration), so descendant policy is irrelevant to
+    // the gate; keep Automatic.
+    let fx = provision_namespace(&node.store, &admin_sk, APP_KEY_V1, UpgradePolicy::Automatic);
 
     // Directly pin G1's status to InProgress — no cascade dispatch,
     // no propagator involvement. The gate reads this row at
@@ -466,7 +496,14 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
-    let fx = provision_namespace(&node.store, &admin_sk, APP_KEY_OTHER);
+    // Migrating cascade: matched descendants must be LazyOnAccess. (G2 is on a
+    // different app_key and is skipped by the predicate regardless.)
+    let fx = provision_namespace(
+        &node.store,
+        &admin_sk,
+        APP_KEY_OTHER,
+        UpgradePolicy::LazyOnAccess,
+    );
 
     node.context_client
         .upgrade_group(UpgradeGroupRequest {
@@ -536,4 +573,62 @@ async fn cascade_dispatch_e2e_predicate_skip_on_heterogeneous() {
     // iteration land before `TestNode` drops the arbiter underneath
     // it — keeps the test's tail-end logs benign.
     sleep(Duration::from_millis(25)).await;
+}
+
+/// Test 4 — migrating cascade is rejected when a matched descendant is not
+/// `LazyOnAccess`, validating the per-descendant policy gate through the real
+/// `dispatch_cascade` path (the unit tests cover the pure helper).
+///
+/// Descendants are provisioned `Automatic`; a `cascade: true, migration:
+/// Some(..)` request must fail with the policy error BEFORE any op is emitted —
+/// so no descendant's `app_key` rotates and no `GroupUpgradeValue` row is
+/// written.
+#[tokio::test]
+async fn cascade_dispatch_e2e_migration_under_automatic_descendant_rejected() {
+    let node = boot_test_node().await;
+    let mut rng = OsRng;
+    let admin_sk = PrivateKey::random(&mut rng);
+    let fx = provision_namespace(&node.store, &admin_sk, APP_KEY_V1, UpgradePolicy::Automatic);
+
+    let result = node
+        .context_client
+        .upgrade_group(UpgradeGroupRequest {
+            group_id: fx.ns,
+            target_application_id: app_id_v2(),
+            requester: Some(fx.admin_pk),
+            migration: Some(MigrationParams {
+                method: "migrate_v1_to_v2".to_owned(),
+            }),
+            cascade: true,
+        })
+        .await;
+
+    let err = result.expect_err("migrating cascade under Automatic descendants must be rejected");
+    assert!(
+        err.to_string().contains("LazyOnAccess"),
+        "error should name the required policy, got: {err}"
+    );
+
+    // No op emitted: every group keeps its original app_key and target, and no
+    // GroupUpgradeValue row exists.
+    for gid in [&fx.ns, &fx.g1, &fx.g2] {
+        let meta = MetaRepository::new(&node.store)
+            .load(gid)
+            .expect("load_group_meta")
+            .expect("meta exists");
+        assert_eq!(
+            meta.app_key,
+            APP_KEY_V1,
+            "group {} must NOT rotate app_key on a rejected cascade",
+            hex::encode(gid.to_bytes())
+        );
+        assert!(
+            UpgradesRepository::new(&node.store)
+                .load(gid)
+                .expect("load_group_upgrade")
+                .is_none(),
+            "group {} must have no GroupUpgradeValue row on a rejected cascade",
+            hex::encode(gid.to_bytes())
+        );
+    }
 }
