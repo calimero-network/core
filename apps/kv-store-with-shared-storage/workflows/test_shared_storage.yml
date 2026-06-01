@@ -83,6 +83,80 @@ steps:
       - 'json_equal({{node2_read}}, {"output": "initial-from-node1"})'
 
   # ============================================
+  # Guarded collection: a whole map guarded by the writer set.
+  # Every entry is stamped Shared{writers}, so a writer's entry converges and a
+  # non-writer's entry is rejected at merge.
+  # ============================================
+
+  - name: Node 1 (writer) sets a map entry
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: map_set
+    args:
+      key: "greeting"
+      value: "hello"
+
+  - name: Wait for map entry to sync to node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads the writer's map entry
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: map_get
+    args:
+      key: "greeting"
+    outputs:
+      node2_map_read: result
+
+  - name: Assert the writer's guarded map entry converged to node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_map_read}}, {"output": "hello"})'
+
+  # Adversarial: node 2 is still a non-writer here. Its write to a guarded map
+  # entry must be rejected at merge — node 1 must never see it.
+  - name: Node 2 (non-writer) attempts a map write
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: map_set
+    args:
+      key: "evil"
+      value: "forged"
+
+  - name: Give the non-writer's delta a chance to (fail to) propagate
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 1 reads the entry the non-writer tried to set
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: map_get
+    args:
+      key: "evil"
+    outputs:
+      node1_evil_read: result
+
+  - name: Assert the non-writer's write did NOT reach node 1 (rejected at merge)
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_evil_read}}, {"output": null})'
+
+  # ============================================
   # Rotation: node 1 hands the writer set to node 2
   # ============================================
 
