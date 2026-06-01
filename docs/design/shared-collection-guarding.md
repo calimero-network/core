@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Partially implemented (static writers) — see *Current implementation status* below |
 | **Date** | 2026-06-01 |
 | **Owner** | Storage / Node sync |
 | **Problem** | `SharedStorage<Collection>` compiles but only gates its own wrapper entity; the collection's child entries default to `StorageType::Public` and are world-writable. A wrapped collection looks protected and isn't. |
@@ -10,6 +10,31 @@
 | **Reuses** | per-entity rotation log + `writers_at` causal resolution (ADR 0001 / #2266/#2267), `effective_writers` apply hook (`interface.rs`). |
 
 > Illustrative code; not final signatures.
+
+## Current implementation status
+
+This doc describes the **full target design, including rotation**. What is actually
+**shipped today** (PR #2588) is the **static-writer** subset:
+
+- **Implemented:** propagation by *inline writer-set copy* — every child entry
+  inherits the collection's own element domain on insert (`Collection::insert` +
+  the per-map inserts), and `SharedStorage::get_mut` re-establishes that domain
+  before in-place mutation (re-derived from the persisted `writers` on every call,
+  so it survives reload). A guarded collection's entries are stamped
+  `Shared{writers}` and verified at merge.
+- **NOT implemented (target design, not in this PR):** the `domain_anchor` field
+  on `StorageType::Shared` (§3), the per-child anchor registry (§4), and
+  node-layer anchor resolution (§5) — i.e. **anchor inheritance**. The shipped
+  code uses the inline copy this doc labels "rejected" for the *rotation* case;
+  inline copy is correct and sufficient for **static** writers, which is the
+  shipped guarantee. Anchor inheritance is required only for **retroactive
+  rotation revocation**, tracked in **#2590** (rotation is forward-only until then;
+  see the `get_mut` rotation note).
+- **Phases:** §7 P1's "child entry is `Shared`" test is present; the **adversarial
+  non-writer-delta-rejected-at-merge** test is an e2e/node-layer test (enforcement
+  is the existing, e2e-verified `Shared` apply path that these entries now flow
+  through) and lands with the per-entity-verification work (#2230) — it is not a
+  storage unit test.
 
 ## 1. Goal
 
