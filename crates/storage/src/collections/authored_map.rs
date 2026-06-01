@@ -24,7 +24,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::PublicKey;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
-use super::{compute_id, StoreError, UnorderedMap};
+use super::{compute_id, StoreError, UnorderedMap, ValueRef};
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::index::Index;
 use crate::interface::StorageError;
@@ -192,7 +192,7 @@ where
     /// # Errors
     /// Returns any underlying storage error.
     pub fn get(&self, k: &K) -> Result<Option<V>, StoreError> {
-        self.inner.get(k)
+        Ok(self.inner.get(k)?.map(ValueRef::into_inner))
     }
 
     /// Returns whether `k` is present.

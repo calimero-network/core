@@ -15,15 +15,20 @@
 //!
 //! # The Problem
 //!
-//! ```rust,no_run
-//! # use calimero_storage::collections::{UnorderedMap, Root};
-//! # let mut outer_map = Root::new(|| UnorderedMap::<String, UnorderedMap<String, String>>::new());
-//! // ❌ BROKEN: Get-modify-put creates blobs
-//! let mut inner_map = outer_map.get(&"doc-1".to_owned())?.unwrap();  // Gets deserialized COPY
-//! inner_map.insert("title".to_owned(), "New".to_owned())?;              // Modifies copy
-//! outer_map.insert("doc-1".to_owned(), inner_map)?;          // Re-serializes as blob
-//! # Ok::<(), calimero_storage::collections::error::StoreError>(())
+//! The old get-modify-put anti-pattern read the inner map into an owned **copy**,
+//! mutated the copy, and wrote it back as a fresh blob:
+//!
+//! ```text
+//! let mut inner = outer_map.get(&"doc-1")?.unwrap();  // deserialized COPY
+//! inner.insert("title", "New")?;                       // mutates the copy
+//! outer_map.insert("doc-1", inner)?;                   // re-serializes as a blob
 //! ```
+//!
+//! This is no longer expressible: `get` returns a read-only [`ValueRef`] guard
+//! that exposes the value only via `Deref` (no way to mutate it or move it out),
+//! so the "copy" step doesn't compile. Use the helpers below instead.
+//!
+//! [`ValueRef`]: super::ValueRef
 //!
 //! # The Solution
 //!
@@ -35,7 +40,7 @@
 //! # Ok::<(), calimero_storage::collections::error::StoreError>(())
 //! ```
 
-use super::{StoreError, UnorderedMap};
+use super::{StoreError, UnorderedMap, ValueRef};
 use crate::store::StorageAdaptor;
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -103,6 +108,7 @@ where
         // Get or create the inner map
         let mut inner_map = self
             .get(&outer_key)?
+            .map(ValueRef::into_inner)
             .unwrap_or_else(UnorderedMap::new_internal);
 
         // Insert into inner map
@@ -116,14 +122,14 @@ where
 
     fn get_nested(&self, outer_key: &K1, inner_key: &K2) -> Result<Option<V>, StoreError> {
         if let Some(inner_map) = self.get(outer_key)? {
-            inner_map.get(inner_key)
+            Ok(inner_map.get(inner_key)?.map(ValueRef::into_inner))
         } else {
             Ok(None)
         }
     }
 
     fn remove_nested(&mut self, outer_key: &K1, inner_key: &K2) -> Result<Option<V>, StoreError> {
-        let Some(mut inner_map) = self.get(outer_key)? else {
+        let Some(mut inner_map) = self.get(outer_key)?.map(ValueRef::into_inner) else {
             return Ok(None);
         };
 

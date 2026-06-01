@@ -4,7 +4,7 @@
 //! only `insert` into their own key-slot (`env::executor_id()`).
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
-use super::{StoreError, UnorderedMap};
+use super::{StoreError, UnorderedMap, ValueRef};
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::env;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -147,7 +147,10 @@ where
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get(&self) -> Result<Option<T>, StoreError> {
         let executor_public_key: PublicKey = env::executor_id().into();
-        self.inner.get(&executor_public_key)
+        Ok(self
+            .inner
+            .get(&executor_public_key)?
+            .map(ValueRef::into_inner))
     }
 
     /// Gets the data for a *specific* user's PublicKey.
@@ -155,7 +158,7 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get_for_user(&self, user_key: &PublicKey) -> Result<Option<T>, StoreError> {
-        self.inner.get(user_key)
+        Ok(self.inner.get(user_key)?.map(ValueRef::into_inner))
     }
 
     /// Checks if data exists for the current executor.

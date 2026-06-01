@@ -352,7 +352,7 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
     /// Returns error if storage operation fails or if increment would overflow u64::MAX
     pub fn increment_for(&mut self, executor_id: &[u8; 32]) -> Result<(), StoreError> {
         let key = hex::encode(executor_id);
-        let current = self.positive.get(&key)?.unwrap_or(0);
+        let current = self.positive.get(&key)?.as_deref().copied().unwrap_or(0);
         let new_value = current.checked_add(1).ok_or_else(|| {
             StorageError::InvalidData(
                 "Counter increment overflow: value already at u64::MAX".to_owned(),
@@ -368,7 +368,7 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Counter<ALLOW_DECREMENT, S>
     /// Returns error if storage operation fails
     pub fn get_positive_count(&self, executor_id: &[u8; 32]) -> Result<u64, StoreError> {
         let key = hex::encode(executor_id);
-        Ok(self.positive.get(&key)?.unwrap_or(0))
+        Ok(self.positive.get(&key)?.as_deref().copied().unwrap_or(0))
     }
 }
 
@@ -417,7 +417,7 @@ impl<S: StorageAdaptor> Counter<true, S> {
     /// Returns error if storage operation fails or if decrement would overflow u64::MAX
     pub fn decrement_for(&mut self, executor_id: &[u8; 32]) -> Result<(), StoreError> {
         let key = hex::encode(executor_id);
-        let current = self.negative.get(&key)?.unwrap_or(0);
+        let current = self.negative.get(&key)?.as_deref().copied().unwrap_or(0);
         let new_value = current.checked_add(1).ok_or_else(|| {
             StorageError::InvalidData(
                 "Counter decrement overflow: value already at u64::MAX".to_owned(),
@@ -433,7 +433,7 @@ impl<S: StorageAdaptor> Counter<true, S> {
     /// Returns error if storage operation fails
     pub fn get_negative_count(&self, executor_id: &[u8; 32]) -> Result<u64, StoreError> {
         let key = hex::encode(executor_id);
-        Ok(self.negative.get(&key)?.unwrap_or(0))
+        Ok(self.negative.get(&key)?.as_deref().copied().unwrap_or(0))
     }
 
     /// Get the total count across all executors (PN-Counter only)

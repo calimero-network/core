@@ -28,7 +28,7 @@
 
 use super::composite_key::CompositeKey;
 use super::crdt_meta::{CrdtMeta, Decomposable};
-use super::{StoreError, UnorderedMap};
+use super::{StoreError, UnorderedMap, ValueRef};
 use crate::store::StorageAdaptor;
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -180,7 +180,7 @@ where
 {
     // For Phase 2.1, use standard get for all types
     // Phase 2.2 will add reconstruction logic
-    map.get(key)
+    Ok(map.get(key)?.map(ValueRef::into_inner))
 }
 
 #[cfg(test)]

@@ -151,7 +151,7 @@ where
                     DecomposeError::StorageError(format!("Failed to serialize index: {:?}", e))
                 })?;
 
-                result.push((CompositeKey::from(index_bytes), value));
+                result.push((CompositeKey::from(index_bytes), value.into_inner()));
             }
         }
 
@@ -232,9 +232,30 @@ mod tests {
         let reconstructed = UnorderedMap::<String, u64>::recompose(entries).unwrap();
 
         // Verify
-        assert_eq!(reconstructed.get(&"a".to_owned()).unwrap(), Some(1u64));
-        assert_eq!(reconstructed.get(&"b".to_owned()).unwrap(), Some(2u64));
-        assert_eq!(reconstructed.get(&"c".to_owned()).unwrap(), Some(3u64));
+        assert_eq!(
+            reconstructed
+                .get(&"a".to_owned())
+                .unwrap()
+                .as_deref()
+                .copied(),
+            Some(1u64)
+        );
+        assert_eq!(
+            reconstructed
+                .get(&"b".to_owned())
+                .unwrap()
+                .as_deref()
+                .copied(),
+            Some(2u64)
+        );
+        assert_eq!(
+            reconstructed
+                .get(&"c".to_owned())
+                .unwrap()
+                .as_deref()
+                .copied(),
+            Some(3u64)
+        );
     }
 
     #[test]
@@ -266,9 +287,27 @@ mod tests {
         let reconstructed = Vector::<String>::recompose(entries).unwrap();
 
         // Verify all values are present in correct order
-        assert_eq!(reconstructed.get(0).unwrap(), Some("first".to_owned()));
-        assert_eq!(reconstructed.get(1).unwrap(), Some("second".to_owned()));
-        assert_eq!(reconstructed.get(2).unwrap(), Some("third".to_owned()));
+        assert_eq!(
+            reconstructed
+                .get(0)
+                .unwrap()
+                .map(crate::collections::ValueRef::into_inner),
+            Some("first".to_owned())
+        );
+        assert_eq!(
+            reconstructed
+                .get(1)
+                .unwrap()
+                .map(crate::collections::ValueRef::into_inner),
+            Some("second".to_owned())
+        );
+        assert_eq!(
+            reconstructed
+                .get(2)
+                .unwrap()
+                .map(crate::collections::ValueRef::into_inner),
+            Some("third".to_owned())
+        );
         assert_eq!(reconstructed.len().unwrap(), 3);
     }
 }

@@ -23,7 +23,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::PublicKey;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
-use super::{StoreError, Vector};
+use super::{StoreError, ValueRef, Vector};
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::index::Index;
 use crate::interface::StorageError;
@@ -162,7 +162,7 @@ where
     /// # Errors
     /// Returns any underlying storage error.
     pub fn get(&self, index: usize) -> Result<Option<V>, StoreError> {
-        self.inner.get(index)
+        Ok(self.inner.get(index)?.map(ValueRef::into_inner))
     }
 
     /// Returns the public key of the owner at `index`, if the slot exists.

@@ -6,7 +6,7 @@
 
 use crate::collections::{
     Counter, LwwRegister, Mergeable, ReplicatedGrowableArray, Root, UnorderedMap, UnorderedSet,
-    Vector,
+    ValueRef, Vector,
 };
 use crate::env;
 use crate::merge::{clear_merge_registry, merge_root_state, register_crdt_merge};
@@ -222,7 +222,12 @@ fn test_merge_with_nested_map() {
 
     // Simulate node 2 - add title field
     let mut state2: AppWithNestedMap = borsh::from_slice(&bytes1).unwrap();
-    let mut doc = state2.documents.get(&"doc-1".to_string()).unwrap().unwrap();
+    let mut doc = state2
+        .documents
+        .get(&"doc-1".to_string())
+        .unwrap()
+        .unwrap()
+        .into_inner();
     doc.insert(
         "title".to_string(),
         LwwRegister::new("My Title".to_string()),
@@ -238,7 +243,8 @@ fn test_merge_with_nested_map() {
         .documents
         .get(&"doc-1".to_string())
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .into_inner();
     doc.insert("owner".to_string(), LwwRegister::new("Alice".to_string()))
         .unwrap();
     state1_modified
@@ -662,7 +668,12 @@ fn test_merge_map_of_counters() {
 
     // Node 2: Increment the same counter (from same base)
     let mut state2: AppWithCounters = borsh::from_slice(&bytes1).unwrap();
-    let mut counter2 = state2.scores.get(&"player1".to_string()).unwrap().unwrap();
+    let mut counter2 = state2
+        .scores
+        .get(&"player1".to_string())
+        .unwrap()
+        .unwrap()
+        .into_inner();
     counter2.increment().unwrap(); // value = 3
     state2
         .scores
@@ -808,11 +819,11 @@ fn test_merge_vector_of_counters() {
     let mut state2: AppWithVectorCounters = borsh::from_slice(&bytes1).unwrap();
 
     // Increment both counters on node 2
-    let mut c = state2.metrics.get(0).unwrap().unwrap();
+    let mut c = state2.metrics.get(0).unwrap().unwrap().into_inner();
     c.increment().unwrap(); // was 2, now 3
     state2.metrics.update(0, c).unwrap();
 
-    let mut c = state2.metrics.get(1).unwrap().unwrap();
+    let mut c = state2.metrics.get(1).unwrap().unwrap().into_inner();
     c.increment().unwrap();
     c.increment().unwrap(); // was 1, now 3
     state2.metrics.update(1, c).unwrap();
@@ -885,7 +896,12 @@ fn test_merge_map_of_sets() {
     // Node 2: Add more tags to Alice (concurrent)
     let mut state2: AppWithSetTags = borsh::from_slice(&bytes1).unwrap();
 
-    let mut alice_tags2 = state2.user_tags.get(&"alice".to_string()).unwrap().unwrap();
+    let mut alice_tags2 = state2
+        .user_tags
+        .get(&"alice".to_string())
+        .unwrap()
+        .unwrap()
+        .into_inner();
     alice_tags2.insert("crdt".to_string()).unwrap();
     alice_tags2.insert("distributed".to_string()).unwrap();
     state2
@@ -2165,6 +2181,7 @@ fn test_nested_counter_in_map_concurrent_increments_converge() {
             .counters
             .get(&"k".to_string())
             .unwrap()
+            .map(ValueRef::into_inner)
             .unwrap_or_else(Counter::new);
         ctr.increment().unwrap();
         doc.counters.insert("k".to_string(), ctr).unwrap();
@@ -2310,6 +2327,7 @@ fn test_nested_counter_first_touch_concurrent_converges() {
             .counters
             .get(&"k".to_string())
             .unwrap()
+            .map(ValueRef::into_inner)
             .unwrap_or_else(Counter::new);
         ctr.increment().unwrap();
         doc.counters.insert("k".to_string(), ctr).unwrap();
@@ -2523,6 +2541,279 @@ fn test_nested_counter_first_touch_via_entry_api_converges() {
     );
 }
 
+/// First-touch convergence when the `or_default()` value is itself a *nested
+/// collection* (`Map<String, Map<String, Counter>>`), created on two nodes
+/// independently. This is the case the app `set_metadata`/`add_tag` handlers
+/// exercise. It guards against the re-key-registration ordering hazard: the
+/// inner map's re-key thunk is registered by its own `insert`/`extend`, so a
+/// freshly `or_default()`-minted inner collection must still end up with a
+/// deterministic id (else the two nodes' inner maps are distinct entities and
+/// their counters never sum).
+#[test]
+#[serial]
+fn test_nested_map_first_touch_via_or_default_converges() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::MainStorage;
+
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct NestedMaps {
+        outer: UnorderedMap<String, UnorderedMap<String, Counter>>,
+    }
+    impl Mergeable for NestedMaps {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.outer.merge(&other.outer)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), data, Metadata::default()).unwrap();
+        commit_causal_delta(&root_hash())
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<NestedMaps, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh = |exec: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<NestedMaps>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(exec);
+    };
+    // First touch through `or_default()` at BOTH levels: vacant outer -> default
+    // inner map; vacant inner -> default Counter; then increment.
+    let touch_via_or_default = || {
+        let mut doc = Root::<NestedMaps, S>::fetch().unwrap();
+        {
+            let mut inner = doc
+                .outer
+                .entry("k".to_string())
+                .unwrap()
+                .or_default()
+                .unwrap();
+            let mut ctr = inner.entry("c".to_string()).unwrap().or_default().unwrap();
+            ctr.increment().unwrap();
+        }
+        let data = borsh::to_vec(&*doc).unwrap();
+        drop(doc);
+        capture(data)
+    };
+
+    // Genesis: EMPTY outer map; only the container is shared.
+    fresh([9; 32]);
+    let g = Root::<NestedMaps, S>::new(|| NestedMaps {
+        outer: UnorderedMap::new_with_field_name("outer"),
+    });
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base = capture(g_data);
+    let base_hash = root_hash();
+
+    fresh([1; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_a = touch_via_or_default();
+
+    fresh([2; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_b = touch_via_or_default();
+
+    let value_of = || -> u64 {
+        Root::<NestedMaps, S>::fetch()
+            .unwrap()
+            .outer
+            .get(&"k".to_string())
+            .unwrap()
+            .and_then(|inner| {
+                inner
+                    .get(&"c".to_string())
+                    .unwrap()
+                    .map(|c| c.value().unwrap())
+            })
+            .unwrap_or(0)
+    };
+    let materialize = |exec: [u8; 32], first: &[Action], second: &[Action]| -> (u64, [u8; 32]) {
+        fresh(exec);
+        import(base.clone());
+        reset_delta_context();
+        set_current_heads(vec![base_hash]);
+        import(first.to_vec());
+        reset_delta_context();
+        set_current_heads(vec![root_hash()]);
+        import(second.to_vec());
+        (value_of(), root_hash())
+    };
+
+    let (a_val, a_root) = materialize([1; 32], &delta_a, &delta_b);
+    let (b_val, b_root) = materialize([2; 32], &delta_b, &delta_a);
+
+    assert_eq!(
+        a_val, 2,
+        "node A: or_default()-created nested-map counter must merge to 2 (got {a_val})"
+    );
+    assert_eq!(
+        b_val, 2,
+        "node B: or_default()-created nested-map counter must merge to 2 (got {b_val})"
+    );
+    assert_eq!(
+        a_root,
+        b_root,
+        "or_default() first-touch nested-MAP root must converge regardless of apply order: A={} B={}",
+        hex::encode(a_root),
+        hex::encode(b_root),
+    );
+}
+
+/// Same first-touch nested-counter convergence as the `or_insert_with` test
+/// above, but the value is created via `map.entry(k).or_default()`. `or_default`
+/// delegates to `or_insert_with(V::default)` and so funnels through the same
+/// `VacantEntry::insert` re-keying path — this guards that the convenience
+/// wrapper does not regress the nested-CRDT re-keying that makes independently
+/// first-created values converge across nodes.
+#[test]
+#[serial]
+fn test_nested_counter_first_touch_via_or_default_converges() {
+    use crate::action::Action;
+    use crate::address::Id;
+    use crate::delta::{commit_causal_delta, reset_delta_context, set_current_heads, StorageDelta};
+    use crate::entities::Metadata;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, Interface};
+    use crate::store::MainStorage;
+
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct NestedCounters {
+        counters: UnorderedMap<String, Counter>,
+    }
+    impl Mergeable for NestedCounters {
+        fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+            self.counters.merge(&other.counters)
+        }
+    }
+
+    type S = MainStorage;
+    let root_hash = || {
+        Index::<S>::get_hashes_for(Id::root())
+            .unwrap()
+            .map(|(full, _)| full)
+            .unwrap_or([0; 32])
+    };
+    let capture = |data: Vec<u8>| -> Vec<Action> {
+        Interface::<S>::save_raw(Id::root(), data, Metadata::default()).unwrap();
+        commit_causal_delta(&root_hash())
+            .unwrap()
+            .expect("op must produce a delta")
+            .actions
+    };
+    let import = |actions: Vec<Action>| {
+        let payload = borsh::to_vec(&StorageDelta::Actions(actions)).unwrap();
+        Root::<NestedCounters, S>::sync(&payload, &ApplyContext::empty()).unwrap();
+    };
+    let fresh = |exec: [u8; 32]| {
+        env::reset_for_testing();
+        reset_delta_context();
+        register_crdt_merge::<NestedCounters>();
+        set_current_heads(vec![[0; 32]]);
+        env::set_executor_id(exec);
+    };
+    let incr_create_via_or_default = || {
+        let mut doc = Root::<NestedCounters, S>::fetch().unwrap();
+        // First touch through `or_default()`: vacant -> insert Counter::default().
+        {
+            let mut guard = doc
+                .counters
+                .entry("k".to_string())
+                .unwrap()
+                .or_default()
+                .unwrap();
+            guard.increment().unwrap();
+        }
+        let data = borsh::to_vec(&*doc).unwrap();
+        drop(doc);
+        capture(data)
+    };
+
+    // Genesis: EMPTY map (no "k"); only the map container is shared.
+    fresh([9; 32]);
+    let g = Root::<NestedCounters, S>::new(|| NestedCounters {
+        counters: UnorderedMap::new_with_field_name("counters"),
+    });
+    let g_data = borsh::to_vec(&*g).unwrap();
+    drop(g);
+    let base = capture(g_data);
+    let base_hash = root_hash();
+
+    fresh([1; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_a = incr_create_via_or_default();
+
+    fresh([2; 32]);
+    import(base.clone());
+    reset_delta_context();
+    set_current_heads(vec![base_hash]);
+    let delta_b = incr_create_via_or_default();
+
+    let value_of = || -> u64 {
+        Root::<NestedCounters, S>::fetch()
+            .unwrap()
+            .counters
+            .get(&"k".to_string())
+            .unwrap()
+            .map(|c| c.value().unwrap())
+            .unwrap_or(0)
+    };
+    let materialize = |exec: [u8; 32], first: &[Action], second: &[Action]| -> (u64, [u8; 32]) {
+        fresh(exec);
+        import(base.clone());
+        reset_delta_context();
+        set_current_heads(vec![base_hash]);
+        import(first.to_vec());
+        reset_delta_context();
+        set_current_heads(vec![root_hash()]);
+        import(second.to_vec());
+        (value_of(), root_hash())
+    };
+
+    let (a_val, a_root) = materialize([1; 32], &delta_a, &delta_b);
+    let (b_val, b_root) = materialize([2; 32], &delta_b, &delta_a);
+
+    assert_eq!(
+        a_val, 2,
+        "node A: or_default()-created 'k' counters must merge to 2 (got {a_val})"
+    );
+    assert_eq!(
+        b_val, 2,
+        "node B: or_default()-created 'k' counters must merge to 2 (got {b_val})"
+    );
+    assert_eq!(
+        a_root,
+        b_root,
+        "or_default() first-touch nested-counter root must converge regardless of apply order: A={} B={}",
+        hex::encode(a_root),
+        hex::encode(b_root),
+    );
+}
+
 /// Same first-touch nested-counter convergence, but the value is bulk-inserted
 /// via `Extend` (`map.extend([(k, counter)])`) — the path `collect()` /
 /// `FromIterator` also funnels through. `Extend::extend` was a third store path
@@ -2707,6 +2998,7 @@ fn test_nested_set_first_touch_concurrent_converges() {
             .tags
             .get(&"k".to_string())
             .unwrap()
+            .map(ValueRef::into_inner)
             .unwrap_or_else(UnorderedSet::new);
         let _ = set.insert(tag.to_string()).unwrap();
         doc.tags.insert("k".to_string(), set).unwrap();
@@ -2866,6 +3158,7 @@ fn test_nested_pncounter_single_writer_converges() {
         .counters
         .get(&"bal".to_string())
         .unwrap()
+        .map(ValueRef::into_inner)
         .unwrap_or_else(Counter::<true>::new);
     ctr.increment().unwrap();
     ctr.increment().unwrap();
@@ -2991,6 +3284,7 @@ fn test_nested_pncounter_concurrent_writers_converge() {
             .counters
             .get(&"bal".to_string())
             .unwrap()
+            .map(ValueRef::into_inner)
             .unwrap_or_else(Counter::<true>::new);
         ctr.increment().unwrap();
         ctr.increment().unwrap();
@@ -3012,6 +3306,7 @@ fn test_nested_pncounter_concurrent_writers_converge() {
             .counters
             .get(&"bal".to_string())
             .unwrap()
+            .map(ValueRef::into_inner)
             .unwrap_or_else(Counter::<true>::new);
         ctr.increment().unwrap();
         doc.counters.insert("bal".to_string(), ctr).unwrap();

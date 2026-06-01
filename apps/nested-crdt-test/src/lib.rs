@@ -89,13 +89,14 @@ impl NestedCrdtTest {
     // ===== Counter Operations =====
 
     pub fn increment_counter(&mut self, key: String) -> app::Result<u64> {
-        let mut counter = self.counters.get(&key)?.unwrap_or_else(|| Counter::new());
+        // `or_default()` returns a write-back guard: the counter is re-persisted
+        // when `counter` drops at the end of this method, so there is no manual
+        // get → modify → re-insert dance.
+        let mut counter = self.counters.entry(key.clone())?.or_default()?;
 
         counter.increment()?;
 
         let value = counter.value()?;
-
-        self.counters.insert(key.clone(), counter)?;
 
         app::emit!(TestEvent::CounterIncremented { key, value });
 
@@ -177,14 +178,12 @@ impl NestedCrdtTest {
         inner_key: String,
         value: String,
     ) -> app::Result<()> {
-        let mut inner_map = self
-            .metadata
-            .get(&outer_key)?
-            .unwrap_or_else(|| UnorderedMap::new());
+        // Two levels deep: the guard yields the inner map in place and writes the
+        // whole nested CRDT back when it drops — `or_default()` composes for
+        // `Map<String, Map<String, _>>` without re-inserting either level.
+        let mut inner_map = self.metadata.entry(outer_key.clone())?.or_default()?;
 
         inner_map.insert(inner_key.clone(), value.clone().into())?;
-
-        self.metadata.insert(outer_key.clone(), inner_map)?;
 
         app::emit!(TestEvent::MetadataSet {
             outer_key,
@@ -236,11 +235,9 @@ impl NestedCrdtTest {
     // ===== Set Operations =====
 
     pub fn add_tag(&mut self, key: String, tag: String) -> app::Result<()> {
-        let mut set = self.tags.get(&key)?.unwrap_or_else(|| UnorderedSet::new());
+        let mut set = self.tags.entry(key.clone())?.or_default()?;
 
         set.insert(tag.clone())?;
-
-        self.tags.insert(key.clone(), set)?;
 
         app::emit!(TestEvent::TagAdded { key, tag });
 

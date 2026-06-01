@@ -12,7 +12,7 @@
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
 use super::{
     Counter, LwwRegister, ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap,
-    UnorderedSet, Vector,
+    UnorderedSet, ValueRef, Vector,
 };
 #[cfg(test)]
 use super::{GCounter, PNCounter};
@@ -156,7 +156,12 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW
         // Merge positive counts (both G-Counter and PN-Counter)
         // For each executor in other, take the max of their counts
         for (executor_id, other_count) in other.positive.entries()? {
-            let self_count = self.positive.get(&executor_id)?.unwrap_or(0);
+            let self_count = self
+                .positive
+                .get(&executor_id)?
+                .as_deref()
+                .copied()
+                .unwrap_or(0);
 
             // Take max for this executor (monotonic property)
             let new_count = self_count.max(other_count);
@@ -168,7 +173,12 @@ impl<const ALLOW_DECREMENT: bool, S: StorageAdaptor> Mergeable for Counter<ALLOW
         // If PN-Counter mode, also merge negative counts
         if ALLOW_DECREMENT {
             for (executor_id, other_count) in other.negative.entries()? {
-                let self_count = self.negative.get(&executor_id)?.unwrap_or(0);
+                let self_count = self
+                    .negative
+                    .get(&executor_id)?
+                    .as_deref()
+                    .copied()
+                    .unwrap_or(0);
 
                 // Take max for this executor (monotonic property)
                 let new_count = self_count.max(other_count);
@@ -275,7 +285,7 @@ where
         let other_entries = other.entries()?;
 
         for (key, other_value) in other_entries {
-            if let Some(mut our_value) = self.get(&key)? {
+            if let Some(mut our_value) = self.get(&key)?.map(ValueRef::into_inner) {
                 // Key exists in both - recursively merge values
                 // This is where nested CRDT merging happens!
                 our_value.merge(&other_value)?;
@@ -333,7 +343,7 @@ where
         let other_entries = other.entries()?;
 
         for (key, other_value) in other_entries {
-            if let Some(mut our_value) = self.get(&key)? {
+            if let Some(mut our_value) = self.get(&key)?.map(ValueRef::into_inner) {
                 our_value.merge(&other_value)?;
                 drop(self.insert(key, our_value)?);
             } else {
@@ -501,8 +511,8 @@ where
         // Merge elements at same indices
         let min_len = our_len.min(their_len);
         for i in 0..min_len {
-            if let Some(mut our_value) = self.get(i)? {
-                if let Some(their_value) = other.get(i)? {
+            if let Some(mut our_value) = self.get(i)?.map(ValueRef::into_inner) {
+                if let Some(their_value) = other.get(i)?.map(ValueRef::into_inner) {
                     // Recursively merge values at same index
                     our_value.merge(&their_value)?;
                     drop(self.update(i, our_value)?);
@@ -513,7 +523,7 @@ where
         // If other is longer, append remaining elements (LWW: take their additions)
         if their_len > our_len {
             for i in our_len..their_len {
-                if let Some(value) = other.get(i)? {
+                if let Some(value) = other.get(i)?.map(ValueRef::into_inner) {
                     self.push(value)?;
                 }
             }
