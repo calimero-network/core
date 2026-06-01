@@ -191,9 +191,17 @@ fn unregistered_value_loses_data_pre_fix() {
     // loss and not partial survival — so a different future regression (e.g.
     // both replicas read 0, or one reads 2) trips this instead of passing
     // silently:
-    //   - they still converge (deterministic HLC tiebreak), so both agree,
+    //   - they still converge, so both agree;
     //   - to the WRONG value: exactly one replica's single increment survives
     //     (1), the other's is dropped — the data loss #2577 fixes.
+    //
+    // Why `== 1` is deterministic (not flaky): each replica increments under a
+    // DISTINCT executor id ([1;32] vs [2;32]). Root-blob LWW breaks ties by
+    // executor id, so exactly one whole `UnfixedStats` blob wins on both sides —
+    // never a tie that drops both (→0) or keeps both (→2). The increment value
+    // is always 1 (each replica did exactly one). If this ever reads 0 or 2,
+    // that's a real change in the tiebreak/serialization worth investigating,
+    // which is exactly what this guard is for.
     assert!(
         converged,
         "LWW replicas still converge — to the wrong value"

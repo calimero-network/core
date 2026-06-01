@@ -54,6 +54,12 @@ use crate::address::Id;
 /// derives identical nested ids and the children converge as entities instead of
 /// the whole struct blob being last-writer-wins'd. `pub` so generated impls can
 /// live in application crates.
+///
+/// The `Any` supertrait requires `'static` (you cannot impl `Any` — and thus
+/// `RekeyTarget` — for a type holding a non-`'static` borrow; that's a compile
+/// error at the impl site, E0478). So every `RekeyTarget` type satisfies the
+/// `+ 'static` bound the dispatch macros below want — there is no way to write a
+/// non-`'static` impl that would silently take the no-op arm.
 pub trait RekeyTarget: Any {
     /// Re-key this value's nested collection ids relative to `parent_id` (the
     /// deterministic entity id under which this value is stored). Idempotent.
@@ -77,6 +83,12 @@ pub fn register_rekey_pub<T: RekeyTarget + 'static>() {
 
 type RekeyThunk = fn(&mut dyn Any, Id);
 
+// Process-global and append-only: there is deliberately NO reset path. A thunk
+// is a pure function of its type, so re-registration is idempotent and stale
+// entries are impossible — clearing would only add a footgun. Consequence for
+// tests: once a type is registered it stays registered for the whole binary, so
+// a test that needs the "unregistered" path must use a DISTINCT type (see
+// `tests/rekey_record.rs`'s `FixedStats` vs `UnfixedStats`).
 static REGISTRY: LazyLock<RwLock<HashMap<TypeId, RekeyThunk>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
@@ -133,12 +145,11 @@ pub(crate) fn rekey_nested_value<V: 'static>(value: &mut V, parent_id: Id) {
 ///
 /// `$value` must be a `&mut` place of the field; `$parent` an [`Id`].
 ///
-/// **`'static` requirement.** The "real re-key" arm only fires for
-/// `$value: RekeyTarget + 'static`; a `RekeyTarget` type holding a non-`'static`
-/// borrow would silently take the no-op arm. This is not a concern for any
-/// stored CRDT type (`Counter`, `UnorderedMap`, generated record structs — all
-/// owned), but a future `RekeyTarget` impl with borrowed data must be `'static`
-/// to be re-keyed here.
+/// The "real re-key" arm fires for `$value: RekeyTarget + 'static`. That bound
+/// is always satisfied by any `RekeyTarget` type: the trait's `Any` supertrait
+/// *requires* `'static`, so a non-`'static` `RekeyTarget` impl can't even be
+/// written (compile error at the impl site). There is therefore no
+/// "non-`'static` type silently takes the no-op arm" hazard here.
 ///
 /// **Each expansion MUST stay in its own block.** The autoref machinery defines
 /// local helper traits/structs; the surrounding `{{ … }}` scopes them per

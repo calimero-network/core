@@ -682,9 +682,12 @@ fn generate_rekey_register_method(
         collect_type_paths(&field.ty, &mut types);
     }
 
-    // Dedup by token string: the same value type can appear in several fields
-    // (e.g. two `UnorderedMap<String, TeamStats>`), and `register_rekey_pub` is
-    // already idempotent — so emit one registration call per distinct type.
+    // Dedup by token string (syntactic, not semantic): the same value type can
+    // appear in several fields (e.g. two `UnorderedMap<String, TeamStats>`), so
+    // collapse identically-written types to one registration call. Types written
+    // differently but equal (`TeamStats` vs `crate::TeamStats`) still emit two
+    // calls — harmless: they share a `TypeId`, and `register_rekey_pub` is
+    // idempotent (`or_insert`), so the registry holds one entry either way.
     let mut seen = std::collections::HashSet::new();
     let calls = types
         .iter()
