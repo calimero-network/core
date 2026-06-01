@@ -58,6 +58,8 @@ struct MockHost {
     private_storage: BTreeMap<Vec<u8>, Vec<u8>>,
     /// Seed for the deterministic-enough PRNG backing `random_bytes`.
     rng_state: u64,
+    /// Last value handed out by `time_now`, to keep timestamps strictly increasing.
+    last_time: u64,
     /// Finalized blobs, keyed by their content hash.
     blobs: BTreeMap<[u8; 32], Vec<u8>>,
     /// Open write handles: file descriptor -> accumulated bytes.
@@ -78,6 +80,7 @@ impl Default for MockHost {
             storage: BTreeMap::new(),
             private_storage: BTreeMap::new(),
             rng_state: 0x9E37_79B9_7F4A_7C15,
+            last_time: 0,
             blobs: BTreeMap::new(),
             blob_write_handles: BTreeMap::new(),
             blob_read_handles: BTreeMap::new(),
@@ -288,11 +291,21 @@ pub(crate) fn blob_close(fd: u64) -> Option<[u8; 32]> {
     })
 }
 
+/// Returns a strictly-increasing nanosecond timestamp.
+///
+/// Seeded from the wall clock but bumped to at least `last + 1` so two reads in
+/// the same nanosecond never collide — otherwise time-ordered logic (e.g. two
+/// `LwwRegister` writes) could tie on a fast machine and silently keep the wrong
+/// side.
 pub(crate) fn time_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
+    with(|h| {
+        let wall = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        h.last_time = h.last_time.max(wall).saturating_add(1);
+        h.last_time
+    })
 }
 
 /// Fills `buf` with pseudo-random bytes from a thread-local splitmix64 PRNG.

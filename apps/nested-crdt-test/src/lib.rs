@@ -310,6 +310,10 @@ mod tests {
         let mut app = TestHost::new(NestedCrdtTest::init);
         let before = app.executor_id();
 
+        // `AssertUnwindSafe` is sound here: after the unwind we only read
+        // `executor_id()` (a thread-local), and the whole point of the assert
+        // below is that `call_as`'s RAII guards already restored it — so there
+        // is no torn state to observe.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.call_as([42; 32], |_s| -> u64 { panic!("intentional test panic") });
         }));
@@ -317,5 +321,23 @@ mod tests {
 
         // The impersonated identity must not leak past the panic.
         assert_eq!(app.executor_id(), before);
+    }
+
+    #[test]
+    fn two_live_hosts_on_one_thread_panics() {
+        let _app = TestHost::new(NestedCrdtTest::init);
+
+        // A second harness while the first is still alive would share (and
+        // clobber) this thread's mock state — `new` must reject it.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _second = TestHost::new(NestedCrdtTest::init);
+        }));
+        assert!(
+            result.is_err(),
+            "constructing a second live TestHost must panic"
+        );
+
+        // The first harness is still usable afterward (no counter "none" yet).
+        assert!(_app.view(|s| s.get_counter("none".into())).is_err());
     }
 }

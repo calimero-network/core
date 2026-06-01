@@ -33,7 +33,20 @@
 //! the SDK, not the other way around). The [`#[app::state]`](crate::app::state)
 //! macro closes the loop by generating a [`TestState`] impl that drives `Root`
 //! for load / mutate / commit. You never implement [`TestState`] by hand.
+//!
+//! # Limitations
+//!
+//! The harness covers normal `call`/`view`/event/log/identity flows. It does
+//! **not** model:
+//! - **Cross-context calls** (`env::xcall`), **networked blob announce/fetch**,
+//!   and **`env::ed25519_verify`** — these panic if invoked (no in-process
+//!   equivalent); test them with merobox workflows.
+//! - **`#[app::migrate]` / [`read_raw`](crate::read_raw)** — committed state
+//!   lives in `calimero_storage`'s mock store, while `read_raw` reads the
+//!   SDK-level host map, so it won't observe the live root. Migration paths are
+//!   out of scope here.
 
+use core::cell::Cell;
 use core::marker::PhantomData;
 
 use crate::env::host;
@@ -68,6 +81,12 @@ pub trait TestState: Sized {
     fn __test_with_executor(id: [u8; 32], f: &mut dyn FnMut());
 }
 
+thread_local! {
+    /// `true` while a `TestHost` is alive on this thread. Guards against two
+    /// live harnesses sharing (and clobbering) the same thread-local mock state.
+    static HARNESS_LIVE: Cell<bool> = const { Cell::new(false) };
+}
+
 /// An in-process test host wrapping a single application state instance.
 ///
 /// Construct one with [`TestHost::new`], drive mutations with
@@ -82,8 +101,9 @@ pub trait TestState: Sized {
 /// sequentially on each thread (one test finishes before that thread starts the
 /// next), so the reset-on-construction is what keeps tests independent, not a
 /// thread-per-test guarantee. Construct a fresh `TestHost` at the top of each
-/// `#[test]`; don't keep two live at once on one thread (the second `new`
-/// resets the first's store out from under it).
+/// `#[test]`. Only one may be live per thread at a time — since they share that
+/// thread's mock state, [`new`](TestHost::new) **panics** if another is still
+/// alive rather than silently resetting it out from under you.
 ///
 /// # Default identity
 ///
@@ -103,6 +123,12 @@ pub struct TestHost<S> {
     _not_send: PhantomData<*const ()>,
 }
 
+impl<S> Drop for TestHost<S> {
+    fn drop(&mut self) {
+        HARNESS_LIVE.with(|live| live.set(false));
+    }
+}
+
 impl<S> TestHost<S>
 where
     S: TestState + AppState,
@@ -118,6 +144,16 @@ where
     /// [`events`](TestHost::events) / [`logs`](TestHost::logs) before the first
     /// `call` / `view` — this is intentional (it lets you assert on init).
     pub fn new(build: impl FnOnce() -> S) -> Self {
+        HARNESS_LIVE.with(|live| {
+            assert!(
+                !live.get(),
+                "another TestHost is still alive on this thread — only one may be \
+                 live at a time (they share this thread's mock state). Drop the \
+                 first (let it go out of scope) before constructing the next."
+            );
+            live.set(true);
+        });
+
         host::reset();
         S::__test_reset();
         event::register::<S>();
