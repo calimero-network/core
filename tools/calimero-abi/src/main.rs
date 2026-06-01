@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+mod diff;
 mod extract;
 mod inspect;
 
@@ -55,6 +56,22 @@ enum Commands {
         #[arg(value_name = "WASM_FILE")]
         wasm_file: PathBuf,
     },
+    /// Diff two state-schema.json versions; flags breaking + unsafe identity
+    /// downgrades (an AuthoredMap/AuthoredVector/SharedStorage field replaced by
+    /// a plain type, which silently strips authorship / writer-ACL).
+    Diff {
+        /// The new (current build) state-schema.json
+        #[arg(value_name = "CURRENT")]
+        current: PathBuf,
+
+        /// The previous (baseline) state-schema.json to compare against
+        #[arg(value_name = "BASELINE")]
+        baseline: PathBuf,
+
+        /// Report findings but always exit 0 (don't fail CI)
+        #[arg(long)]
+        exit_zero: bool,
+    },
 }
 
 fn main() -> eyre::Result<()> {
@@ -76,6 +93,13 @@ fn main() -> eyre::Result<()> {
         }
         Commands::Inspect { wasm_file } => {
             inspect::inspect_wasm(&wasm_file)?;
+        }
+        Commands::Diff {
+            current,
+            baseline,
+            exit_zero,
+        } => {
+            diff::run_diff(&current, &baseline, exit_zero)?;
         }
     }
 
