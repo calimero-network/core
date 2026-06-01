@@ -396,6 +396,10 @@ pub enum MessagePayload<'a> {
     EntityPushAck {
         /// Number of entities successfully applied via CRDT merge.
         applied_count: u32,
+        /// Tombstones the responder holds for entities the initiator just
+        /// pushed (the push lost delete-wins). The initiator applies these so
+        /// a deletion converges regardless of which side initiated the sync.
+        deletions: Vec<super::hash_comparison::EntityDeletion>,
     },
 
     /// Acknowledgment of a received `EntityDeletePush`.
@@ -742,14 +746,21 @@ mod tests {
 
     #[test]
     fn test_message_payload_entity_push_ack_roundtrip() {
-        let response = MessagePayload::EntityPushAck { applied_count: 42 };
+        let response = MessagePayload::EntityPushAck {
+            applied_count: 42,
+            deletions: vec![],
+        };
 
         let encoded = borsh::to_vec(&response).expect("serialize");
         let decoded: MessagePayload = borsh::from_slice(&encoded).expect("deserialize");
 
         match decoded {
-            MessagePayload::EntityPushAck { applied_count } => {
+            MessagePayload::EntityPushAck {
+                applied_count,
+                deletions,
+            } => {
                 assert_eq!(applied_count, 42);
+                assert!(deletions.is_empty());
             }
             _ => panic!("wrong variant"),
         }
