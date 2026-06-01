@@ -1,5 +1,5 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::state::read_raw;
 use calimero_storage::collections::{LwwRegister, UnorderedMap, Vector};
@@ -8,8 +8,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 const SCHEMA_VERSION_V2: &str = "2.0.0";
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioCrdtNativeV2 {
     items: UnorderedMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,
@@ -75,7 +73,7 @@ pub fn migrate_v1_to_v2() -> ScenarioCrdtNativeV2 {
         .collect();
     keys.sort();
 
-    let mut tags: Vector<LwwRegister<String>> = Vector::new_with_field_name("tags");
+    let mut tags: Vector<LwwRegister<String>> = Vector::new();
     for k in keys {
         tags.push(k.into())
             .unwrap_or_else(|e| panic!("Migration failed: V2 tags seed error {:?}", e));
@@ -93,9 +91,9 @@ impl ScenarioCrdtNativeV2 {
     #[app::init]
     pub fn init() -> ScenarioCrdtNativeV2 {
         ScenarioCrdtNativeV2 {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             title: LwwRegister::new("untitled".to_owned()),
-            tags: Vector::new_with_field_name("tags"),
+            tags: Vector::new(),
         }
     }
 

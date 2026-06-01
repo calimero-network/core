@@ -1,7 +1,11 @@
 use calimero_sdk::app;
 
+// State is now required to be borsh-(de)serializable (the macro injects the
+// derives), so a bare `&'a ()` field — which can't deserialize — is replaced
+// with `PhantomData<&'a ()>` to keep the lifetime around for the receiver tests
+// below without violating the borsh contract.
 #[app::state]
-struct MyType<'a>(&'a ());
+struct MyType<'a>(::core::marker::PhantomData<&'a ()>);
 
 #[app::logic]
 impl<'a> MyType<'a> {

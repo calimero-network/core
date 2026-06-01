@@ -254,6 +254,35 @@ where
     });
 }
 
+/// Registers a CRDT merge function for the in-process test harness.
+///
+/// This is the entry point the `#[app::state]`-generated
+/// `calimero_sdk::testing::TestState` bridge calls. Unlike
+/// [`register_crdt_merge`], it is available in *all* native builds, so an app's
+/// `#[cfg(test)]` bridge compiles whether or not the app opted into the
+/// `testing` feature — that keeps `cargo test` working for example apps that
+/// have no `TestHost` tests of their own.
+///
+/// It only performs real registration when the registry is actually compiled in
+/// (`test` or the `testing` feature). Without that, it is a no-op: an app that
+/// genuinely drives `TestHost` but forgot to enable
+/// `calimero-storage`'s `testing` feature will see a clear
+/// `NoMergeFunctionRegistered` error at runtime, pointing at the missing
+/// dev-dependency, rather than a confusing compile error in macro-generated
+/// code.
+///
+/// Host-binary safety is unchanged: the gated [`register_crdt_merge`] symbol
+/// stays absent from production host builds, and this wrapper does nothing there
+/// either.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_crdt_merge_for_test<T>()
+where
+    T: borsh::BorshSerialize + borsh::BorshDeserialize + crate::collections::Mergeable + 'static,
+{
+    #[cfg(any(test, feature = "testing"))]
+    register_crdt_merge::<T>();
+}
+
 /// Clear the merge registry (for testing only)
 #[cfg(any(test, feature = "testing"))]
 pub fn clear_merge_registry() {

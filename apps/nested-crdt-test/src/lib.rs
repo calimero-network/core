@@ -13,12 +13,11 @@
 )]
 
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap, UnorderedSet, Vector};
+use calimero_storage::collections::{
+    Counter, LwwRegister, SortedMap, UnorderedMap, UnorderedSet, Vector,
+};
 
 #[app::state(emits = TestEvent)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct NestedCrdtTest {
     /// Map of counters - concurrent increments should sum
     pub counters: UnorderedMap<String, Counter>,
@@ -34,11 +33,14 @@ pub struct NestedCrdtTest {
 
     /// Map of sets - union merge
     pub tags: UnorderedMap<String, UnorderedSet<String>>,
+
+    /// Sorted map of registers - same add-wins/LWW merge as `registers`, but
+    /// iterated in ascending key order (exercises SortedMap range queries and
+    /// a CRDT value nested inside a SortedMap).
+    pub sorted_scores: SortedMap<String, LwwRegister<u64>>,
 }
 
 #[app::event]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub enum TestEvent {
     CounterIncremented {
         key: String,
@@ -60,6 +62,10 @@ pub enum TestEvent {
         key: String,
         tag: String,
     },
+    SortedScoreSet {
+        key: String,
+        value: u64,
+    },
 }
 
 #[app::logic]
@@ -67,73 +73,101 @@ impl NestedCrdtTest {
     /// Initialize with empty state
     #[app::init]
     pub fn init() -> NestedCrdtTest {
+        // Plain `::new()` for top-level fields — see `UnorderedMap::new()` docs
+        // for why the post-init pass makes this deterministic (and preferred over
+        // `new_with_field_name`).
         NestedCrdtTest {
-            counters: UnorderedMap::new_with_field_name("counters"),
-            registers: UnorderedMap::new_with_field_name("registers"),
-            metadata: UnorderedMap::new_with_field_name("metadata"),
-            metrics: Vector::new_with_field_name("metrics"),
-            tags: UnorderedMap::new_with_field_name("tags"),
+            counters: UnorderedMap::new(),
+            registers: UnorderedMap::new(),
+            metadata: UnorderedMap::new(),
+            metrics: Vector::new(),
+            tags: UnorderedMap::new(),
+            sorted_scores: SortedMap::new(),
         }
     }
 
     // ===== Counter Operations =====
 
-    pub fn increment_counter(&mut self, key: String) -> Result<u64, String> {
-        let mut counter = self
-            .counters
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(|| Counter::new());
+    pub fn increment_counter(&mut self, key: String) -> app::Result<u64> {
+        // `or_default()` returns a write-back guard: the counter is re-persisted
+        // when `counter` drops at the end of this method, so there is no manual
+        // get → modify → re-insert dance.
+        let mut counter = self.counters.entry(key.clone())?.or_default()?;
 
-        counter
-            .increment()
-            .map_err(|e| format!("Increment failed: {:?}", e))?;
+        counter.increment()?;
 
-        let value = counter
-            .value()
-            .map_err(|e| format!("Value failed: {:?}", e))?;
-
-        drop(
-            self.counters
-                .insert(key.clone(), counter)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        let value = counter.value()?;
 
         app::emit!(TestEvent::CounterIncremented { key, value });
 
         Ok(value)
     }
 
-    pub fn get_counter(&self, key: String) -> Result<u64, String> {
-        self.counters
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|c| c.value().unwrap_or(0))
-            .ok_or_else(|| "Counter not found".to_owned())
+    pub fn get_counter(&self, key: String) -> app::Result<u64> {
+        let Some(counter) = self.counters.get(&key)? else {
+            app::bail!("Counter not found");
+        };
+
+        Ok(counter.value()?)
     }
 
     // ===== LwwRegister Operations =====
 
-    pub fn set_register(&mut self, key: String, value: String) -> Result<(), String> {
+    pub fn set_register(&mut self, key: String, value: String) -> app::Result<()> {
         let register = LwwRegister::new(value.clone());
 
-        drop(
-            self.registers
-                .insert(key.clone(), register)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        self.registers.insert(key.clone(), register)?;
 
         app::emit!(TestEvent::RegisterSet { key, value });
 
         Ok(())
     }
 
-    pub fn get_register(&self, key: String) -> Result<String, String> {
+    pub fn get_register(&self, key: String) -> app::Result<String> {
         self.registers
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
+            .get(&key)?
             .map(|r| r.get().clone())
-            .ok_or_else(|| "Register not found".to_owned())
+            .ok_or_else(|| app::err!("Register not found"))
+    }
+
+    // ===== SortedMap Operations =====
+
+    pub fn set_sorted_score(&mut self, key: String, value: u64) -> app::Result<()> {
+        drop(
+            self.sorted_scores
+                .insert(key.clone(), LwwRegister::new(value))?,
+        );
+
+        app::emit!(TestEvent::SortedScoreSet { key, value });
+
+        Ok(())
+    }
+
+    pub fn get_sorted_score(&self, key: String) -> app::Result<u64> {
+        let Some(register) = self.sorted_scores.get(&key)? else {
+            app::bail!("Score not found");
+        };
+
+        Ok(*register.get())
+    }
+
+    /// Keys in ascending order — the property that distinguishes SortedMap from
+    /// the unordered `registers` field.
+    pub fn sorted_score_keys(&self) -> app::Result<Vec<String>> {
+        Ok(self.sorted_scores.keys()?.collect())
+    }
+
+    /// Scores whose keys fall within `[start, end)`, in ascending order.
+    pub fn sorted_scores_range(
+        &self,
+        start: String,
+        end: String,
+    ) -> app::Result<Vec<(String, u64)>> {
+        Ok(self
+            .sorted_scores
+            .range(start..end)?
+            .map(|(k, v)| (k, *v.get()))
+            .collect())
     }
 
     // ===== Nested Map Operations =====
@@ -143,24 +177,13 @@ impl NestedCrdtTest {
         outer_key: String,
         inner_key: String,
         value: String,
-    ) -> Result<(), String> {
-        let mut inner_map = self
-            .metadata
-            .get(&outer_key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(|| UnorderedMap::new());
+    ) -> app::Result<()> {
+        // Two levels deep: the guard yields the inner map in place and writes the
+        // whole nested CRDT back when it drops — `or_default()` composes for
+        // `Map<String, Map<String, _>>` without re-inserting either level.
+        let mut inner_map = self.metadata.entry(outer_key.clone())?.or_default()?;
 
-        drop(
-            inner_map
-                .insert(inner_key.clone(), value.clone().into())
-                .map_err(|e| format!("Inner insert failed: {:?}", e))?,
-        );
-
-        drop(
-            self.metadata
-                .insert(outer_key.clone(), inner_map)
-                .map_err(|e| format!("Outer insert failed: {:?}", e))?,
-        );
+        inner_map.insert(inner_key.clone(), value.clone().into())?;
 
         app::emit!(TestEvent::MetadataSet {
             outer_key,
@@ -171,98 +194,150 @@ impl NestedCrdtTest {
         Ok(())
     }
 
-    pub fn get_metadata(&self, outer_key: String, inner_key: String) -> Result<String, String> {
+    pub fn get_metadata(&self, outer_key: String, inner_key: String) -> app::Result<String> {
         self.metadata
-            .get(&outer_key)
-            .map_err(|e| format!("Outer get failed: {:?}", e))?
-            .ok_or_else(|| "Outer key not found".to_owned())?
-            .get(&inner_key)
-            .map_err(|e| format!("Inner get failed: {:?}", e))?
-            .ok_or_else(|| "Inner key not found".to_owned())
+            .get(&outer_key)?
+            .ok_or_else(|| app::err!("Outer key not found"))?
+            .get(&inner_key)?
+            .ok_or_else(|| app::err!("Inner key not found"))
             .map(|v| v.get().clone())
     }
 
     // ===== Vector Operations =====
 
-    pub fn push_metric(&mut self, value: u64) -> Result<usize, String> {
+    pub fn push_metric(&mut self, value: u64) -> app::Result<usize> {
         let mut counter = Counter::new();
         for _ in 0..value {
-            counter
-                .increment()
-                .map_err(|e| format!("Increment failed: {:?}", e))?;
+            counter.increment()?;
         }
 
-        self.metrics
-            .push(counter)
-            .map_err(|e| format!("Push failed: {:?}", e))?;
+        self.metrics.push(counter)?;
 
-        let len = self
-            .metrics
-            .len()
-            .map_err(|e| format!("Len failed: {:?}", e))?;
+        let len = self.metrics.len()?;
 
         app::emit!(TestEvent::MetricPushed { value });
 
         Ok(len)
     }
 
-    pub fn get_metric(&self, index: usize) -> Result<u64, String> {
+    pub fn get_metric(&self, index: usize) -> app::Result<u64> {
         self.metrics
-            .get(index)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .ok_or_else(|| "Index out of bounds".to_owned())?
+            .get(index)?
+            .ok_or_else(|| app::err!("Index out of bounds"))?
             .value()
-            .map_err(|e| format!("Value failed: {:?}", e))
+            .map_err(Into::into)
     }
 
-    pub fn metrics_len(&self) -> Result<usize, String> {
-        self.metrics
-            .len()
-            .map_err(|e| format!("Len failed: {:?}", e))
+    pub fn metrics_len(&self) -> app::Result<usize> {
+        self.metrics.len().map_err(Into::into)
     }
 
     // ===== Set Operations =====
 
-    pub fn add_tag(&mut self, key: String, tag: String) -> Result<(), String> {
-        let mut set = self
-            .tags
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(|| UnorderedSet::new());
+    pub fn add_tag(&mut self, key: String, tag: String) -> app::Result<()> {
+        let mut set = self.tags.entry(key.clone())?.or_default()?;
 
-        let _ = set
-            .insert(tag.clone())
-            .map_err(|e| format!("Insert failed: {:?}", e))?;
-
-        drop(
-            self.tags
-                .insert(key.clone(), set)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        set.insert(tag.clone())?;
 
         app::emit!(TestEvent::TagAdded { key, tag });
 
         Ok(())
     }
 
-    pub fn has_tag(&self, key: String, tag: String) -> Result<bool, String> {
-        self.tags
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|set| set.contains(&tag).unwrap_or(false))
-            .ok_or_else(|| "Key not found".to_owned())
+    pub fn has_tag(&self, key: String, tag: String) -> app::Result<bool> {
+        let Some(set) = self.tags.get(&key)? else {
+            app::bail!("Key not found");
+        };
+
+        Ok(set.contains(&tag)?)
     }
 
-    pub fn get_tag_count(&self, key: String) -> Result<u64, String> {
+    pub fn get_tag_count(&self, key: String) -> app::Result<u64> {
         let count = self
             .tags
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .ok_or_else(|| "Key not found".to_owned())?
-            .iter()
-            .map_err(|e| format!("Iter failed: {:?}", e))?
+            .get(&key)?
+            .ok_or_else(|| app::err!("Key not found"))?
+            .iter()?
             .count();
 
         Ok(count as u64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn counter_increment_and_view() {
+        let mut app = TestHost::new(NestedCrdtTest::init);
+
+        assert_eq!(app.call(|s| s.increment_counter("a".into())).unwrap(), 1);
+        assert_eq!(app.call(|s| s.increment_counter("a".into())).unwrap(), 2);
+
+        assert_eq!(app.view(|s| s.get_counter("a".into())).unwrap(), 2);
+    }
+
+    #[test]
+    fn emits_event_on_increment() {
+        let mut app = TestHost::new(NestedCrdtTest::init);
+
+        app.call(|s| s.increment_counter("x".into())).unwrap();
+
+        let events = app.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "CounterIncremented");
+    }
+
+    #[test]
+    fn counter_sums_across_authors() {
+        let mut app = TestHost::new(NestedCrdtTest::init);
+
+        // The G-counter tracks a per-author tally; distinct executors each
+        // contribute, and `value()` sums them.
+        app.call_as([1; 32], |s| s.increment_counter("a".into()))
+            .unwrap();
+        app.call_as([2; 32], |s| s.increment_counter("a".into()))
+            .unwrap();
+
+        assert_eq!(app.view(|s| s.get_counter("a".into())).unwrap(), 2);
+    }
+
+    #[test]
+    fn call_as_restores_executor_even_on_panic() {
+        let mut app = TestHost::new(NestedCrdtTest::init);
+        let before = app.executor_id();
+
+        // `AssertUnwindSafe` is sound here: after the unwind we only read
+        // `executor_id()` (a thread-local), and the whole point of the assert
+        // below is that `call_as`'s RAII guards already restored it — so there
+        // is no torn state to observe.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.call_as([42; 32], |_s| -> u64 { panic!("intentional test panic") });
+        }));
+        assert!(result.is_err());
+
+        // The impersonated identity must not leak past the panic.
+        assert_eq!(app.executor_id(), before);
+    }
+
+    #[test]
+    fn two_live_hosts_on_one_thread_panics() {
+        let _app = TestHost::new(NestedCrdtTest::init);
+
+        // A second harness while the first is still alive would share (and
+        // clobber) this thread's mock state — `new` must reject it.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _second = TestHost::new(NestedCrdtTest::init);
+        }));
+        assert!(
+            result.is_err(),
+            "constructing a second live TestHost must panic"
+        );
+
+        // The first harness is still usable afterward (no counter "none" yet).
+        assert!(_app.view(|s| s.get_counter("none".into())).is_err());
     }
 }

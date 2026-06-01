@@ -44,16 +44,51 @@ use std::sync::{LazyLock, RwLock};
 
 use crate::address::Id;
 
-/// Implemented by collection types that carry nested collection ids needing
-/// deterministic re-keying relative to their storage parent.
-pub(crate) trait RekeyTarget: Any {
+/// Implemented by types that carry nested collection ids needing deterministic
+/// re-keying relative to their storage parent.
+///
+/// Built-in collections implement this and self-register in their constructors.
+/// Application structs used as CRDT values (e.g. an `UnorderedMap` value that is
+/// a `#[derive(Mergeable)]` struct of counters) get a generated impl that
+/// re-keys each field under a field-namespaced child id, so every replica
+/// derives identical nested ids and the children converge as entities instead of
+/// the whole struct blob being last-writer-wins'd. `pub` so generated impls can
+/// live in application crates.
+///
+/// The `Any` supertrait requires `'static` (you cannot impl `Any` — and thus
+/// `RekeyTarget` — for a type holding a non-`'static` borrow; that's a compile
+/// error at the impl site, E0478). So every `RekeyTarget` type satisfies the
+/// `+ 'static` bound the dispatch macros below want — there is no way to write a
+/// non-`'static` impl that would silently take the no-op arm.
+pub trait RekeyTarget: Any {
     /// Re-key this value's nested collection ids relative to `parent_id` (the
     /// deterministic entity id under which this value is stored). Idempotent.
     fn rekey_relative_to(&mut self, parent_id: Id);
 }
 
+/// Derive a deterministic per-field child id from a parent entity id and a field
+/// name, so sibling fields (e.g. two counters) get distinct namespaces and never
+/// collide. Public for macro-generated `RekeyTarget` impls.
+#[must_use]
+pub fn field_child_id(parent_id: Id, field_name: &str) -> Id {
+    super::compute_collection_id(Some(parent_id), field_name)
+}
+
+/// Public re-export so the autoref macros (which expand in application crates)
+/// can name the registration entry point without exposing the registry itself.
+#[doc(hidden)]
+pub fn register_rekey_pub<T: RekeyTarget + 'static>() {
+    register_rekey::<T>();
+}
+
 type RekeyThunk = fn(&mut dyn Any, Id);
 
+// Process-global and append-only: there is deliberately NO reset path. A thunk
+// is a pure function of its type, so re-registration is idempotent and stale
+// entries are impossible — clearing would only add a footgun. Consequence for
+// tests: once a type is registered it stays registered for the whole binary, so
+// a test that needs the "unregistered" path must use a DISTINCT type (see
+// `tests/rekey_record.rs`'s `FixedStats` vs `UnfixedStats`).
 static REGISTRY: LazyLock<RwLock<HashMap<TypeId, RekeyThunk>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
@@ -100,4 +135,75 @@ pub(crate) fn rekey_nested_value<V: 'static>(value: &mut V, parent_id: Id) {
     if let Some(thunk) = thunk {
         thunk(value, parent_id);
     }
+}
+
+/// Re-key a struct field's value if its concrete type implements [`RekeyTarget`],
+/// else expand to a no-op — without a trait bound at the call site. Resolved via
+/// autoref specialization, which requires a CONCRETE type, so this is a macro
+/// (a generic fn would resolve the no-op branch once, for all types). Generated
+/// `RekeyTarget` impls call it per field.
+///
+/// `$value` must be a `&mut` place of the field; `$parent` an [`Id`].
+///
+/// The "real re-key" arm fires for `$value: RekeyTarget + 'static`. That bound
+/// is always satisfied by any `RekeyTarget` type: the trait's `Any` supertrait
+/// *requires* `'static`, so a non-`'static` `RekeyTarget` impl can't even be
+/// written (compile error at the impl site). There is therefore no
+/// "non-`'static` type silently takes the no-op arm" hazard here.
+///
+/// **Each expansion MUST stay in its own block.** The autoref machinery defines
+/// local helper traits/structs; the surrounding `{{ … }}` scopes them per
+/// invocation, so repeated calls in one `rekey_relative_to` body don't collide.
+/// If a refactor ever flattened these into a shared scope, the duplicate names
+/// would shadow and could make the no-op arm win silently — which would stop
+/// re-keying and regress to the #2577 data loss with NO compile error. Keep the
+/// block.
+#[macro_export]
+macro_rules! rekey_field_if_supported {
+    ($value:expr, $parent:expr) => {{
+        struct __RkProbe<'a, T: ?::core::marker::Sized>(&'a mut T);
+        trait __RkViaRekey {
+            fn __rk_go(self, p: $crate::address::Id);
+        }
+        impl<'a, T: $crate::collections::rekey::RekeyTarget + 'static> __RkViaRekey
+            for __RkProbe<'a, T>
+        {
+            fn __rk_go(self, p: $crate::address::Id) {
+                $crate::collections::rekey::RekeyTarget::rekey_relative_to(self.0, p);
+            }
+        }
+        trait __RkViaNoop {
+            fn __rk_go(self, p: $crate::address::Id);
+        }
+        impl<'a, T: ?::core::marker::Sized> __RkViaNoop for &__RkProbe<'a, T> {
+            fn __rk_go(self, _p: $crate::address::Id) {}
+        }
+        __RkProbe($value).__rk_go($parent)
+    }};
+}
+
+/// Register a value type's re-key thunk if it implements [`RekeyTarget`], else a
+/// no-op. Generated registration code calls this for each collection-field value
+/// type so app structs auto-register before any insert. Macro (not fn) for the
+/// same autoref-on-concrete-type reason as [`rekey_field_if_supported`].
+#[macro_export]
+macro_rules! register_rekey_if_supported {
+    ($t:ty) => {{
+        struct __RgProbe<T>(::core::marker::PhantomData<T>);
+        trait __RgViaReg {
+            fn __rg_go(self);
+        }
+        impl<T: $crate::collections::rekey::RekeyTarget + 'static> __RgViaReg for __RgProbe<T> {
+            fn __rg_go(self) {
+                $crate::collections::rekey::register_rekey_pub::<T>();
+            }
+        }
+        trait __RgViaNoop {
+            fn __rg_go(self);
+        }
+        impl<T> __RgViaNoop for &__RgProbe<T> {
+            fn __rg_go(self) {}
+        }
+        __RgProbe::<$t>(::core::marker::PhantomData).__rg_go()
+    }};
 }

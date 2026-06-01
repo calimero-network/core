@@ -1,13 +1,10 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 
 const SCHEMA_VERSION_V1: &str = "1.0.0";
 
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioPureBugfixV1 {
     items: UnorderedMap<String, LwwRegister<u64>>,
     last_sum: LwwRegister<u64>,
@@ -25,7 +22,7 @@ impl ScenarioPureBugfixV1 {
     #[app::init]
     pub fn init() -> ScenarioPureBugfixV1 {
         ScenarioPureBugfixV1 {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             last_sum: LwwRegister::new(0),
         }
     }

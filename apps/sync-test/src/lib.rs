@@ -8,12 +8,9 @@
 use std::collections::BTreeMap;
 
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct SyncTest {
     /// Key-value entries written by different nodes.
     entries: UnorderedMap<String, LwwRegister<String>>,
@@ -24,15 +21,14 @@ pub struct SyncTest {
     invitations: UnorderedMap<String, LwwRegister<String>>,
 }
 
-
 #[app::logic]
 impl SyncTest {
     #[app::init]
     pub fn init() -> SyncTest {
         SyncTest {
-            entries: UnorderedMap::new_with_field_name("entries"),
-            writers: UnorderedMap::new_with_field_name("writers"),
-            invitations: UnorderedMap::new_with_field_name("invitations"),
+            entries: UnorderedMap::new(),
+            writers: UnorderedMap::new(),
+            invitations: UnorderedMap::new(),
         }
     }
 
@@ -91,18 +87,19 @@ impl SyncTest {
         payload: String,
     ) -> app::Result<()> {
         let key = format!("{}:{}", inviter, invitee);
-        app::log!("[{}] creating invitation for {}: {}", inviter, invitee, payload);
+        app::log!(
+            "[{}] creating invitation for {}: {}",
+            inviter,
+            invitee,
+            payload
+        );
         self.invitations.insert(key, payload.into())?;
         Ok(())
     }
 
     /// Node B reads an invitation addressed to them.
     /// Returns None if the invitation hasn't synced yet.
-    pub fn read_invitation(
-        &self,
-        inviter: &str,
-        invitee: &str,
-    ) -> app::Result<Option<String>> {
+    pub fn read_invitation(&self, inviter: &str, invitee: &str) -> app::Result<Option<String>> {
         let key = format!("{}:{}", inviter, invitee);
         Ok(self.invitations.get(&key)?.map(|v| v.get().clone()))
     }

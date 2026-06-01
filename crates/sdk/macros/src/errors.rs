@@ -87,6 +87,13 @@ pub enum ParseError<'a> {
     #[error("method annotated with `#[app::init]` must be named `init`")]
     AppInitMethodNotNamedInit,
     #[error(
+        "app logic methods must return `app::Result<T>`, not `Result<T, String>` — the SDK's \
+         `From<StoreError> for app::Error` lets storage errors propagate through `?` directly.\n\n\
+         Change the return type to `app::Result<T>`, drop `.map_err(|e| format!(...))?` in favour \
+         of `?`, and use `app::bail!` / `app::err!` for custom error messages."
+    )]
+    StringErrorResult,
+    #[error(
         "`{type_name}` is not allowed here — std collections are not CRDTs and would silently \
          diverge across replicas. Use `{suggestion}` from `calimero_storage::collections` instead.\n\n\
          If you genuinely need a non-CRDT type, skip `#[app::state]` / `#[derive(Mergeable)]` \

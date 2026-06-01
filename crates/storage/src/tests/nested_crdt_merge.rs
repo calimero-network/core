@@ -30,14 +30,14 @@ fn test_nested_map_merge_different_inner_keys() {
     let mut map2 = map1; // Placeholder
 
     // Node 1: Update title field
-    let mut inner1 = map1.get(&"doc-1".to_string()).unwrap().unwrap();
+    let mut inner1 = map1.get(&"doc-1".to_string()).unwrap().unwrap().into_inner();
     inner1
         .insert("title".to_string(), "Updated Title".to_string())
         .unwrap();
     map1.insert("doc-1".to_string(), inner1).unwrap();
 
     // Node 2: Add owner field (concurrent modification)
-    let mut inner2 = map2.get(&"doc-1".to_string()).unwrap().unwrap();
+    let mut inner2 = map2.get(&"doc-1".to_string()).unwrap().unwrap().into_inner();
     inner2
         .insert("owner".to_string(), "Alice".to_string())
         .unwrap();
@@ -87,12 +87,12 @@ fn test_map_of_counters_merge() {
     let mut map2 = map1.clone();
 
     // Node 1: Increment counter1
-    let mut c = map1.get(&"counter1".to_string()).unwrap().unwrap();
+    let mut c = map1.get(&"counter1".to_string()).unwrap().unwrap().into_inner();
     c.increment().unwrap(); // value = 3
     map1.insert("counter1".to_string(), c).unwrap();
 
     // Node 2: Also increment counter1 (concurrent)
-    let mut c = map2.get(&"counter1".to_string()).unwrap().unwrap();
+    let mut c = map2.get(&"counter1".to_string()).unwrap().unwrap().into_inner();
     c.increment().unwrap(); // value = 3
     map2.insert("counter1".to_string(), c).unwrap();
 
@@ -122,14 +122,14 @@ fn test_map_of_lww_registers_merge() {
     std::thread::sleep(std::time::Duration::from_millis(1));
 
     // Node 1: Update title
-    let mut title1 = map1.get(&"title".to_string()).unwrap().unwrap();
+    let mut title1 = map1.get(&"title".to_string()).unwrap().unwrap().into_inner();
     title1.set("From Node 1".to_string());
     map1.insert("title".to_string(), title1).unwrap();
 
     std::thread::sleep(std::time::Duration::from_millis(1));
 
     // Node 2: Update title (concurrent, later timestamp)
-    let mut title2 = map2.get(&"title".to_string()).unwrap().unwrap();
+    let mut title2 = map2.get(&"title".to_string()).unwrap().unwrap().into_inner();
     title2.set("From Node 2".to_string());
     map2.insert("title".to_string(), title2).unwrap();
 
@@ -166,14 +166,14 @@ fn test_three_level_nesting_merge() {
     let mut map2 = map1.clone();
 
     // Node 1: Update title field
-    let mut inner1 = map1.get(&"doc-1".to_string()).unwrap().unwrap();
+    let mut inner1 = map1.get(&"doc-1".to_string()).unwrap().unwrap().into_inner();
     inner1
         .insert("title".to_string(), LwwRegister::new("Title 1".to_string()))
         .unwrap();
     map1.insert("doc-1".to_string(), inner1).unwrap();
 
     // Node 2: Add owner field (concurrent)
-    let mut inner2 = map2.get(&"doc-1".to_string()).unwrap().unwrap();
+    let mut inner2 = map2.get(&"doc-1".to_string()).unwrap().unwrap().into_inner();
     inner2
         .insert("owner".to_string(), LwwRegister::new("Alice".to_string()))
         .unwrap();

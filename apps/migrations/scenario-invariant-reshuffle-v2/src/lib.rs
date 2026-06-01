@@ -1,5 +1,5 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::state::read_raw;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
@@ -23,8 +23,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 // requires every top-level field to be `Mergeable`, which collection
 // types satisfy but a plain struct of collections does not.
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioInvariantReshuffleV2 {
     total: LwwRegister<u64>,
     per_item: UnorderedMap<String, LwwRegister<u64>>,
@@ -88,8 +86,7 @@ pub fn migrate_v1_to_v2() -> ScenarioInvariantReshuffleV2 {
     // instead of a random one. Both nodes therefore land on identical
     // v2 roots.
     let mut total: u64 = 0;
-    let mut per_item: UnorderedMap<String, LwwRegister<u64>> =
-        UnorderedMap::new_with_field_name("per_item");
+    let mut per_item: UnorderedMap<String, LwwRegister<u64>> = UnorderedMap::new();
     for (k, v) in old_state.per_item_counts.entries().unwrap_or_else(|e| {
         panic!(
             "Migration failed: V1 per_item_counts iteration error {:?}",
@@ -115,7 +112,7 @@ impl ScenarioInvariantReshuffleV2 {
     pub fn init() -> ScenarioInvariantReshuffleV2 {
         ScenarioInvariantReshuffleV2 {
             total: LwwRegister::new(0),
-            per_item: UnorderedMap::new_with_field_name("per_item"),
+            per_item: UnorderedMap::new(),
         }
     }
 

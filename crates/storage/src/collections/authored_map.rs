@@ -24,7 +24,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::PublicKey;
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
-use super::{compute_id, StoreError, UnorderedMap};
+use super::{compute_id, StoreError, UnorderedMap, ValueRef};
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::index::Index;
 use crate::interface::StorageError;
@@ -192,7 +192,7 @@ where
     /// # Errors
     /// Returns any underlying storage error.
     pub fn get(&self, k: &K) -> Result<Option<V>, StoreError> {
-        self.inner.get(k)
+        Ok(self.inner.get(k)?.map(ValueRef::into_inner))
     }
 
     /// Returns whether `k` is present.
@@ -308,6 +308,25 @@ mod tests {
 
     const ALICE: [u8; 32] = [0x11; 32];
     const BOB: [u8; 32] = [0x22; 32];
+
+    #[test]
+    fn test_new_plus_reassign_is_convergent() {
+        // Wrapper type: `new_with_field_name` leaves the wrapper id random and
+        // only the inner map deterministic; `reassign` canonicalises the wrapper
+        // too. The CIP-I9 property is convergence — two independent
+        // `new() + reassign("f")` mint the same id (stronger than matching
+        // `new_with_field_name`). Inner-map determinism is covered by the
+        // `UnorderedMap` tests.
+        crate::env::reset_for_testing();
+        let mut a: AuthoredMap<String, u32> = AuthoredMap::new();
+        a.reassign_deterministic_id("items");
+        let mut b: AuthoredMap<String, u32> = AuthoredMap::new();
+        b.reassign_deterministic_id("items");
+        assert_eq!(
+            <AuthoredMap<String, u32> as crate::entities::Data>::id(&a),
+            <AuthoredMap<String, u32> as crate::entities::Data>::id(&b),
+        );
+    }
 
     fn pk(bytes: [u8; 32]) -> PublicKey {
         bytes.into()

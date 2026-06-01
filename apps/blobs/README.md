@@ -75,7 +75,7 @@ upload_file(
     blob_id: BlobId,  // Blob ID (base58 string over the wire)
     size: u64,
     mime_type: String
-) -> Result<String, String>
+) -> app::Result<String>
 ```
 
 **Process:**
@@ -99,7 +99,7 @@ let file_id = state.upload_file(
 ### Delete a File
 
 ```rust
-delete_file(file_id: String) -> Result<(), String>
+delete_file(file_id: String) -> app::Result<()>
 ```
 
 Removes the file record from storage and emits a deletion event.
@@ -107,7 +107,7 @@ Removes the file record from storage and emits a deletion event.
 ### List All Files
 
 ```rust
-list_files() -> Result<Vec<FileRecord>, String>
+list_files() -> app::Result<Vec<FileRecord>>
 ```
 
 Returns all stored files with their metadata.
@@ -115,7 +115,7 @@ Returns all stored files with their metadata.
 ### Get Specific File
 
 ```rust
-get_file(file_id: String) -> Result<FileRecord, String>
+get_file(file_id: String) -> app::Result<FileRecord>
 ```
 
 Retrieves a single file's metadata by ID.
@@ -123,7 +123,7 @@ Retrieves a single file's metadata by ID.
 ### Get Blob ID
 
 ```rust
-get_blob_id_b58(file_id: String) -> Result<BlobId, String>
+get_blob_id_b58(file_id: String) -> app::Result<BlobId>
 ```
 
 Returns the base58-encoded blob ID for a file (useful for downloading).
@@ -131,7 +131,7 @@ Returns the base58-encoded blob ID for a file (useful for downloading).
 ### Search Files
 
 ```rust
-search_files(query: String) -> Result<Vec<FileRecord>, String>
+search_files(query: String) -> app::Result<Vec<FileRecord>>
 ```
 
 Case-insensitive search by filename.
@@ -139,8 +139,8 @@ Case-insensitive search by filename.
 ### Statistics
 
 ```rust
-get_stats() -> Result<String, String>
-get_total_files_size() -> Result<u64, String>
+get_stats() -> app::Result<String>
+get_total_files_size() -> app::Result<u64>
 ```
 
 Get usage statistics and total storage.

@@ -1,5 +1,5 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::state::read_raw;
 use calimero_storage::collections::{FrozenStorage, LwwRegister};
@@ -17,8 +17,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// `migration_hash` (raw bytes) and fetched back via `get_migration_doc()` — no
 /// hash crosses a workflow variable and no encode/decode codec is needed.
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioFrozenStorageV2 {
     documents: FrozenStorage<String>,
     title: LwwRegister<String>,
@@ -106,7 +104,7 @@ impl ScenarioFrozenStorageV2 {
     #[app::init]
     pub fn init() -> ScenarioFrozenStorageV2 {
         ScenarioFrozenStorageV2 {
-            documents: FrozenStorage::new_with_field_name("documents"),
+            documents: FrozenStorage::new(),
             title: LwwRegister::new("untitled".to_owned()),
             last_hash: LwwRegister::new(Vec::new()),
             migration_note: LwwRegister::new(String::new()),

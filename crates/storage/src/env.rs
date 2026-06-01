@@ -141,6 +141,21 @@ pub fn with_runtime_env<R>(env: RuntimeEnv, f: impl FnOnce() -> R) -> R {
     mocked::with_runtime_env(env, f)
 }
 
+/// Returns the root hash recorded by the most recent native `commit` (test use).
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn root_hash() -> Option<[u8; 32]> {
+    mocked::root_hash()
+}
+
+/// Returns (and clears) the `StorageDelta` artifact from the most recent native
+/// `commit` (test use).
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn take_last_artifact() -> Option<Vec<u8>> {
+    mocked::take_last_artifact()
+}
+
 /// Commits the root hash to the runtime.
 ///
 #[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
@@ -180,6 +195,54 @@ pub fn storage_remove(key: Key) -> bool {
 #[must_use]
 pub fn storage_write(key: Key, value: &[u8]) -> bool {
     imp::storage_write(key, value)
+}
+
+// === Ordered secondary index (SortedMap, core#2559) ===
+//
+// Raw-byte ordered keyspace (the backend keeps keys sorted, so a range scan is
+// a native seek). Keys are the unhashed `collection ‖ order_key`. Node-local,
+// NOT synced. Only the `MainStorage` adaptor routes here; `PrivateStorage` and
+// the test mocks have their own index handling.
+
+/// Insert/overwrite `key -> value` in the ordered index. Returns whether the
+/// backend persisted the write (so `SortedMap` can skip stamping a stale
+/// validity marker and rebuild on the next read instead).
+#[must_use]
+pub fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
+    imp::storage_index_set(key, value)
+}
+
+/// Remove `key` from the ordered index. Returns whether the write was
+/// persisted (see [`storage_index_set`]).
+#[must_use]
+pub fn storage_index_remove(key: &[u8]) -> bool {
+    imp::storage_index_remove(key)
+}
+
+/// Remove every ordered-index key beginning with `prefix`. Returns whether the
+/// write was persisted (see [`storage_index_set`]).
+#[must_use]
+pub fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
+    imp::storage_index_remove_prefix(prefix)
+}
+
+/// Scan the ordered index over `[lo, hi)`, ascending, after `offset`, capped at
+/// `limit` (`None` = unbounded). Returns `(key, value)` pairs.
+#[must_use]
+pub fn storage_index_scan(
+    lo: &[u8],
+    hi: &[u8],
+    offset: usize,
+    limit: Option<usize>,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    imp::storage_index_scan(lo, hi, offset, limit)
+}
+
+/// The largest `(key, value)` in the ordered index over `[lo, hi)` (reverse
+/// seek; backs `SortedMap::last`).
+#[must_use]
+pub fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    imp::storage_index_last(lo, hi)
 }
 
 /// Reads data from node-local (private) persistent storage.
@@ -278,6 +341,18 @@ pub fn update_hlc(remote_ts: &HybridTimestamp) -> Result<(), ()> {
 #[cfg(test)]
 pub fn reset_for_testing() {
     imp::reset_for_testing();
+}
+
+/// Resets all native (mocked) host state: in-memory storage, root hash,
+/// HLC, and executor identity.
+///
+/// This is the public entry point used by the in-process test harness
+/// (`calimero_sdk::testing::TestHost`) to isolate state between harness
+/// instances created on the same thread. Native-only: the WASM host owns
+/// real storage and there is nothing to reset there.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn reset_environment() {
+    mocked::reset_environment();
 }
 
 /// Set executor ID. `pub(crate)` because the only sanctioned way to mutate
@@ -403,6 +478,32 @@ mod calimero_vm {
         env::private_storage_write(&key.to_bytes(), value)
     }
 
+    /// Ordered-index ops (raw composite keys, no hashing — order must survive).
+    pub(super) fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
+        env::storage_index_set(key, value)
+    }
+
+    pub(super) fn storage_index_remove(key: &[u8]) -> bool {
+        env::storage_index_remove(key)
+    }
+
+    pub(super) fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
+        env::storage_index_remove_prefix(prefix)
+    }
+
+    pub(super) fn storage_index_scan(
+        lo: &[u8],
+        hi: &[u8],
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        env::storage_index_scan(lo, hi, offset, limit)
+    }
+
+    pub(super) fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+        env::storage_index_last(lo, hi)
+    }
+
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
         env::random_bytes(buf)
@@ -490,6 +591,7 @@ mod mocked {
         static ROOT_HASH: RefCell<Option<[u8; 32]>> = const { RefCell::new(None) };
         static NATIVE_HLC: RefCell<LogicalClock> = RefCell::new(LogicalClock::new(|buf| rand::thread_rng().fill_bytes(buf)));
         static RUNTIME_ENV: RefCell<Option<RuntimeEnv>> = const { RefCell::new(None) };
+        static LAST_ARTIFACT: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
     }
 
     /// The default storage system.
@@ -502,10 +604,23 @@ mod mocked {
     type DefaultPrivateStore = MockedStorage<{ usize::MAX - 1 }>;
 
     /// Commits the root hash to the runtime.
-    pub(super) fn commit(root_hash: &[u8; 32], _artifact: &[u8]) {
+    pub(super) fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
         ROOT_HASH.with(|rh| {
             let _ = rh.borrow_mut().replace(*root_hash);
         });
+        LAST_ARTIFACT.with(|a| {
+            *a.borrow_mut() = Some(artifact.to_vec());
+        });
+    }
+
+    /// Returns the root hash recorded by the most recent [`commit`].
+    pub(super) fn root_hash() -> Option<[u8; 32]> {
+        ROOT_HASH.with(|rh| *rh.borrow())
+    }
+
+    /// Returns (and clears) the artifact recorded by the most recent [`commit`].
+    pub(super) fn take_last_artifact() -> Option<Vec<u8>> {
+        LAST_ARTIFACT.with(|a| a.borrow_mut().take())
     }
 
     /// Reads data from persistent storage.
@@ -539,6 +654,64 @@ mod mocked {
         } else {
             DefaultStore::storage_write(key, value)
         }
+    }
+
+    // Native ordered-index backend. A process-local `BTreeMap` standing in for
+    // the node's RocksDB `SortedIndex` column — enough for native tests; the
+    // node provides the durable, cross-run backing once wired. Keys are the raw
+    // composite `collection ‖ order_key`, so `BTreeMap` order == key order.
+    thread_local! {
+        static INDEX: RefCell<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> =
+            const { RefCell::new(std::collections::BTreeMap::new()) };
+    }
+
+    pub(super) fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
+        INDEX.with(|index| {
+            let _ = index.borrow_mut().insert(key.to_vec(), value.to_vec());
+        });
+        true
+    }
+
+    pub(super) fn storage_index_remove(key: &[u8]) -> bool {
+        INDEX.with(|index| {
+            let _ = index.borrow_mut().remove(key);
+        });
+        true
+    }
+
+    pub(super) fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
+        INDEX.with(|index| index.borrow_mut().retain(|k, _| !k.starts_with(prefix)));
+        true
+    }
+
+    pub(super) fn storage_index_scan(
+        lo: &[u8],
+        hi: &[u8],
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        INDEX.with(|index| {
+            let matched: Vec<(Vec<u8>, Vec<u8>)> = index
+                .borrow()
+                .range(lo.to_vec()..hi.to_vec())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let ordered = matched.into_iter().skip(offset);
+            match limit {
+                Some(n) => ordered.take(n).collect(),
+                None => ordered.collect(),
+            }
+        })
+    }
+
+    pub(super) fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+        INDEX.with(|index| {
+            index
+                .borrow()
+                .range(lo.to_vec()..hi.to_vec())
+                .next_back()
+                .map(|(k, v)| (k.clone(), v.clone()))
+        })
     }
 
     // Why these don't consult `RUNTIME_ENV` like their main-storage
@@ -689,8 +862,7 @@ mod mocked {
     ///
     /// Clears the thread-local ROOT_HASH, HLC, and STORAGE, allowing multiple tests
     /// to run in sequence without contaminating each other.
-    #[cfg(test)]
-    pub(super) fn reset_for_testing() {
+    pub(super) fn reset_environment() {
         ROOT_HASH.with(|rh| {
             *rh.borrow_mut() = None;
         });
@@ -703,5 +875,16 @@ mod mocked {
         crate::store::mocked::STORAGE.with(|storage| {
             storage.borrow_mut().clear();
         });
+        // Clear the native ordered-index mock too.
+        INDEX.with(|index| index.borrow_mut().clear());
+        LAST_ARTIFACT.with(|a| {
+            *a.borrow_mut() = None;
+        });
+    }
+
+    /// Resets the environment state for testing (legacy `#[cfg(test)]` alias).
+    #[cfg(test)]
+    pub(super) fn reset_for_testing() {
+        reset_environment();
     }
 }

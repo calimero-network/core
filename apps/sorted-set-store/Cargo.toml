@@ -1,0 +1,27 @@
+[package]
+name = "sorted-set-store"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+thiserror.workspace = true
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+
+[dev-dependencies]
+# Enables the CRDT merge registry + native mock host for the convergence harness.
+calimero-storage = { workspace = true, features = ["testing"] }
+
+[build-dependencies]
+calimero-wasm-abi.workspace = true
+serde_json.workspace = true
+
+[package.metadata.workspaces]
+independent = true

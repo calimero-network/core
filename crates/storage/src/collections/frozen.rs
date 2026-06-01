@@ -154,7 +154,7 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get(&self, hash: &Hash) -> Result<Option<T>, StoreError> {
-        Ok(self.inner.get(hash)?.map(|frozen_value| frozen_value.0))
+        Ok(self.inner.get(hash)?.map(|fv| fv.into_inner().0))
         //// Get the Option<FrozenValue<Vec<u8>>>
         //if let Some(frozen_value_bytes) = self.inner.get(hash)? {
         //    // `frozen_value_bytes.0` is the Vec<u8>
@@ -224,5 +224,37 @@ where
     }
     fn can_contain_crdts() -> bool {
         true // The inner map can contain CRDTs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrozenStorage;
+
+    #[test]
+    fn test_new_plus_reassign_is_convergent() {
+        // Wrapper type like `UserStorage`: `new_with_field_name` leaves the
+        // wrapper id random, `reassign` canonicalises it. Pin the property that
+        // matters for CIP I9 — two independent `new() + reassign("f")` converge.
+        crate::env::reset_for_testing();
+        let mut a: FrozenStorage<String> = FrozenStorage::new();
+        a.reassign_deterministic_id("items");
+        let mut b: FrozenStorage<String> = FrozenStorage::new();
+        b.reassign_deterministic_id("items");
+        assert_eq!(
+            <FrozenStorage<String> as crate::entities::Data>::id(&a),
+            <FrozenStorage<String> as crate::entities::Data>::id(&b),
+        );
+    }
+
+    #[test]
+    fn test_reassign_preserves_frozen_value() {
+        // Content-addressed value seeded before the post-init pass must remain
+        // retrievable by its hash after the id is reassigned.
+        crate::env::reset_for_testing();
+        let mut frozen: FrozenStorage<String> = FrozenStorage::new();
+        let hash = frozen.insert("hello".to_owned()).expect("insert");
+        frozen.reassign_deterministic_id("items");
+        assert_eq!(frozen.get(&hash).expect("get"), Some("hello".to_owned()));
     }
 }

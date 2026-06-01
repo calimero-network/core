@@ -1,13 +1,10 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 
 const SCHEMA_VERSION_V1: &str = "1.0.0";
 
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioCrdtNativeV1 {
     items: UnorderedMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,
@@ -26,7 +23,7 @@ impl ScenarioCrdtNativeV1 {
     #[app::init]
     pub fn init() -> ScenarioCrdtNativeV1 {
         ScenarioCrdtNativeV1 {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             title: LwwRegister::new("untitled".to_owned()),
         }
     }

@@ -99,7 +99,7 @@ impl JsUnorderedMap {
     ///
     /// Propagates [`StoreError`] when the underlying map read fails.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        self.map.get(key)
+        Ok(self.map.get(key)?.map(|v| v.into_inner()))
     }
 
     /// Removes the value for `key`, returning the previous value if it existed.
@@ -234,7 +234,7 @@ impl JsVector {
     ///
     /// Returns [`StoreError`] when the underlying vector read fails.
     pub fn get(&self, index: usize) -> Result<Option<Vec<u8>>, StoreError> {
-        self.vector.get(index)
+        Ok(self.vector.get(index)?.map(|v| v.into_inner()))
     }
 
     /// Updates the value at `index`, returning the old value if it existed.

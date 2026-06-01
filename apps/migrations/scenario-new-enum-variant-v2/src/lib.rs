@@ -19,8 +19,6 @@ pub enum Status {
 }
 
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioNewEnumVariantV2 {
     items: UnorderedMap<String, LwwRegister<String>>,
     status: LwwRegister<Status>,
@@ -38,7 +36,7 @@ impl ScenarioNewEnumVariantV2 {
     #[app::init]
     pub fn init() -> ScenarioNewEnumVariantV2 {
         ScenarioNewEnumVariantV2 {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             status: LwwRegister::new(Status::Active),
         }
     }

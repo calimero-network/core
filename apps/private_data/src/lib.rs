@@ -65,8 +65,6 @@ use thiserror::Error;
 /// Only the hash of each secret lives here; the secret itself is
 /// node-local (see [`Secrets`]).
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct SecretGame {
     /// Mapping of game_id -> sha256(secret) hex. `LwwRegister` is a
     /// CRDT type — appropriate here because this is synced state
@@ -282,14 +280,14 @@ impl SecretGame {
     /// Attach a private note to a game (private state).
     pub fn set_note(&self, game_id: String, note: String) -> app::Result<()> {
         let mut secrets = Secrets::private_load_or_default()?;
-        let _ = secrets.as_mut().notes.insert(game_id, note);
+        secrets.as_mut().notes.insert(game_id, note);
         Ok(())
     }
 
     /// Add a private user-defined tag.
     pub fn add_tag(&self, tag: String) -> app::Result<()> {
         let mut secrets = Secrets::private_load_or_default()?;
-        let _ = secrets.as_mut().tags.insert(tag);
+        secrets.as_mut().tags.insert(tag);
         Ok(())
     }
 
@@ -347,5 +345,44 @@ impl SecretGame {
     /// populated when `remember_last_guess` was on at the time).
     pub fn last_guess(&self) -> app::Result<Option<String>> {
         Ok(Secrets::private_load_or_default()?.last_guess.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn add_secret_records_public_and_private_state() {
+        let mut app = TestHost::new(SecretGame::init);
+
+        app.call(|s| s.add_secret("g1".into(), "rosebud".into()))
+            .unwrap();
+
+        // Public, synced state: the game is registered.
+        assert!(app.view(|s| s.games()).unwrap().contains_key("g1"));
+
+        // Private, node-local state: the secret + counter.
+        assert_eq!(app.view(|s| s.secrets_added()).unwrap(), 1);
+        assert_eq!(
+            app.view(|s| s.my_secrets()).unwrap().get("g1"),
+            Some(&"rosebud".to_owned())
+        );
+    }
+
+    #[test]
+    fn guess_checks_against_stored_secret() {
+        let mut app = TestHost::new(SecretGame::init);
+
+        app.call(|s| s.add_secret("g1".into(), "answer".into()))
+            .unwrap();
+
+        assert!(app.call(|s| s.add_guess("g1", "answer".into())).unwrap());
+        assert!(!app.call(|s| s.add_guess("g1", "wrong".into())).unwrap());
+
+        // Guessing records the attempt in private state.
+        assert!(app.view(|s| s.attempted_games()).unwrap().contains("g1"));
     }
 }

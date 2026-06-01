@@ -3,14 +3,11 @@
 use std::collections::BTreeMap;
 
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStoreInit {
     items: UnorderedMap<String, LwwRegister<String>>,
 }
@@ -38,7 +35,7 @@ impl KvStoreInit {
         app::log!("Initializing KvStoreInit with default items");
 
         let mut store = KvStoreInit {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
         };
 
         // Add some initial data during initialization
@@ -136,5 +133,49 @@ impl KvStoreInit {
         app::emit!(Event::Cleared);
 
         self.items.clear().map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    /// Number of entries `#[app::init]` seeds into the store.
+    const SEEDED: usize = 3;
+
+    #[test]
+    fn init_seeds_default_items() {
+        let app = TestHost::new(KvStoreInit::init);
+
+        assert_eq!(app.view(|s| s.len()).unwrap(), SEEDED);
+        assert_eq!(
+            app.view(|s| s.get("welcome")).unwrap(),
+            Some("Welcome to KvStoreInit!".to_owned())
+        );
+        // The init body logs through `app::log!`, captured by the harness.
+        assert!(app.logs().iter().any(|line| line.contains("Initializing")));
+    }
+
+    #[test]
+    fn set_get_remove_on_top_of_seed() {
+        let mut app = TestHost::new(KvStoreInit::init);
+
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), Some("v".to_owned()));
+        assert_eq!(app.view(|s| s.len()).unwrap(), SEEDED + 1);
+
+        assert_eq!(app.call(|s| s.remove("k")).unwrap(), Some("v".to_owned()));
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), None);
+        assert_eq!(app.view(|s| s.len()).unwrap(), SEEDED);
+    }
+
+    #[test]
+    fn clear_removes_everything() {
+        let mut app = TestHost::new(KvStoreInit::init);
+
+        app.call(|s| s.clear()).unwrap();
+        assert_eq!(app.view(|s| s.len()).unwrap(), 0);
     }
 }

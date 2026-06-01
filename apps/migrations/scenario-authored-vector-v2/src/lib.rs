@@ -1,5 +1,5 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::state::read_raw;
 use calimero_storage::collections::{AuthoredVector, LwwRegister};
@@ -19,8 +19,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// element values while preserving authorship — needs a migration-context gate
 /// relaxation and is tracked in #2534.)
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioAuthoredVectorV2 {
     entries: AuthoredVector<LwwRegister<String>>,
     title: LwwRegister<String>,
@@ -83,7 +81,7 @@ impl ScenarioAuthoredVectorV2 {
     #[app::init]
     pub fn init() -> ScenarioAuthoredVectorV2 {
         ScenarioAuthoredVectorV2 {
-            entries: AuthoredVector::new_with_field_name("entries"),
+            entries: AuthoredVector::new(),
             title: LwwRegister::new("untitled".to_owned()),
             migration_note: LwwRegister::new(String::new()),
         }

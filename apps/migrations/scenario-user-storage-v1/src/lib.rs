@@ -1,5 +1,4 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{LwwRegister, UserStorage};
 
@@ -12,8 +11,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 /// the migration identically on every node (the per-user slot key is part of
 /// the stored map, so it must round-trip).
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioUserStorageV1 {
     notes: UserStorage<LwwRegister<String>>,
     title: LwwRegister<String>,
@@ -32,7 +29,7 @@ impl ScenarioUserStorageV1 {
     #[app::init]
     pub fn init() -> ScenarioUserStorageV1 {
         ScenarioUserStorageV1 {
-            notes: UserStorage::new_with_field_name("notes"),
+            notes: UserStorage::new(),
             title: LwwRegister::new("untitled".to_owned()),
         }
     }

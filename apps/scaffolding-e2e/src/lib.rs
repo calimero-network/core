@@ -26,8 +26,8 @@ use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, PublicKey};
 use calimero_storage::collections::{
     AuthoredMap, AuthoredVector, Counter, FrozenStorage, GCounter, LwwRegister, Mergeable,
-    PNCounter, ReplicatedGrowableArray, SharedStorage, UnorderedMap, UnorderedSet, UserStorage,
-    Vector,
+    ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap, UnorderedSet,
+    UserStorage, Vector,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -102,8 +102,6 @@ impl Default for PrivateSecrets {
 // MAIN STATE
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct E2eKvStore {
     // --- KV Storage ---
     /// Public replicated KV map
@@ -150,6 +148,15 @@ pub struct E2eKvStore {
     crdt_metrics: Vector<Counter>,
     /// Map of sets (union merge)
     crdt_tags: UnorderedMap<String, UnorderedSet<String>>,
+
+    // --- Sorted Map (key-ordered; range/prefix/pagination) ---
+    /// Key-ordered map exercised end-to-end through the WASM host index path.
+    sorted_items: SortedMap<String, LwwRegister<String>>,
+
+    // --- Sorted Set (element-ordered; range/membership/min-max) ---
+    /// Element-ordered set, exercised end-to-end through the same WASM host
+    /// ordered-index path as `sorted_items` (the `SortedSet` counterpart).
+    sorted_tags: SortedSet<String>,
 
     // --- RGA Document ---
     /// Collaborative text document
@@ -339,26 +346,29 @@ fn encode_identity(identity: &[u8; 32]) -> String {
 
 fn encode_blob_id_base58(blob_id_bytes: &[u8; BLOB_ID_SIZE]) -> String {
     let mut buf = [0u8; BASE58_ENCODED_MAX_SIZE];
+    // Both unwraps are infallible for this input: a 32-byte value base58-encodes
+    // to at most 44 chars (== BASE58_ENCODED_MAX_SIZE), so `onto` never overflows
+    // the buffer, and the base58 alphabet is ASCII, so the bytes are always UTF-8.
     let len = bs58::encode(blob_id_bytes).onto(&mut buf[..]).unwrap();
     std::str::from_utf8(&buf[..len]).unwrap().to_owned()
 }
 
-fn parse_blob_id_base58(blob_id_str: &str) -> Result<[u8; BLOB_ID_SIZE], String> {
-    match bs58::decode(blob_id_str).into_vec() {
-        Ok(bytes) => {
-            if bytes.len() != BLOB_ID_SIZE {
-                return Err(format!(
-                    "Invalid blob ID length: expected {} bytes, got {}",
-                    BLOB_ID_SIZE,
-                    bytes.len()
-                ));
-            }
-            let mut blob_id = [0u8; BLOB_ID_SIZE];
-            blob_id.copy_from_slice(&bytes);
-            Ok(blob_id)
-        }
-        Err(e) => Err(format!("Failed to decode blob ID '{blob_id_str}': {e}")),
+fn parse_blob_id_base58(blob_id_str: &str) -> app::Result<[u8; BLOB_ID_SIZE]> {
+    let bytes = bs58::decode(blob_id_str)
+        .into_vec()
+        .map_err(|e| app::err!("Failed to decode blob ID '{blob_id_str}': {e}"))?;
+
+    if bytes.len() != BLOB_ID_SIZE {
+        app::bail!(
+            "Invalid blob ID length: expected {} bytes, got {}",
+            BLOB_ID_SIZE,
+            bytes.len()
+        );
     }
+
+    let mut blob_id = [0u8; BLOB_ID_SIZE];
+    blob_id.copy_from_slice(&bytes);
+    Ok(blob_id)
 }
 
 fn serialize_blob_id_bytes<S>(
@@ -405,6 +415,8 @@ impl E2eKvStore {
             crdt_metadata: UnorderedMap::new(),
             crdt_metrics: Vector::new(),
             crdt_tags: UnorderedMap::new(),
+            sorted_items: SortedMap::new(),
+            sorted_tags: SortedSet::new(),
             // RGA
             rga_document: ReplicatedGrowableArray::new(),
             rga_edit_count: GCounter::new(),
@@ -489,6 +501,76 @@ impl E2eKvStore {
             .entries()?
             .map(|(k, v)| (k, v.get().clone()))
             .collect())
+    }
+
+    // --- SortedMap (key-ordered) operations ---
+    //
+    // These drive the WASM host ordered-index path end to end: `sorted_set`
+    // maintains the index via `storage_index_set`; `sorted_keys`/`sorted_range`
+    // read it back via `storage_index_scan`.
+
+    pub fn sorted_set(&mut self, key: String, value: String) -> app::Result<()> {
+        self.sorted_items.insert(key, value.into())?;
+        Ok(())
+    }
+
+    /// All keys in ascending order (index-backed).
+    pub fn sorted_keys(&self) -> app::Result<Vec<String>> {
+        Ok(self.sorted_items.keys()?.collect())
+    }
+
+    /// Entries whose keys fall within `[start, end)`, ascending (a range seek).
+    pub fn sorted_range(
+        &self,
+        start: String,
+        end: String,
+    ) -> app::Result<BTreeMap<String, String>> {
+        Ok(self
+            .sorted_items
+            .range(start..end)?
+            .map(|(k, v)| (k, v.get().clone()))
+            .collect())
+    }
+
+    /// The largest key (reverse-seek `last`, index-backed).
+    pub fn sorted_last_key(&self) -> app::Result<Option<String>> {
+        Ok(self.sorted_items.last()?.map(|(k, _)| k))
+    }
+
+    // --- SortedSet (element-ordered) operations ---
+    //
+    // The `SortedSet` counterpart of the methods above: `sorted_tag_add`
+    // maintains the ordered index, `sorted_tags_all`/`sorted_tags_range` read it
+    // back in element order, all through the same WASM host index path.
+
+    /// Insert `tag`; returns `true` if it was newly added.
+    pub fn sorted_tag_add(&mut self, tag: String) -> app::Result<bool> {
+        Ok(self.sorted_tags.insert(tag)?)
+    }
+
+    /// Remove `tag`; returns `true` if it was present.
+    pub fn sorted_tag_remove(&mut self, tag: String) -> app::Result<bool> {
+        Ok(self.sorted_tags.remove(&tag)?)
+    }
+
+    /// Whether `tag` is in the set.
+    pub fn sorted_tag_contains(&self, tag: String) -> app::Result<bool> {
+        Ok(self.sorted_tags.contains(&tag)?)
+    }
+
+    /// All elements in ascending order (index-backed).
+    pub fn sorted_tags_all(&self) -> app::Result<Vec<String>> {
+        Ok(self.sorted_tags.iter()?.collect())
+    }
+
+    /// Elements within `[start, end)`, ascending (a range seek).
+    pub fn sorted_tags_range(&self, start: String, end: String) -> app::Result<Vec<String>> {
+        Ok(self.sorted_tags.range(start..end)?.collect())
+    }
+
+    /// The largest element (reverse-seek `last`, index-backed).
+    pub fn sorted_tags_last(&self) -> app::Result<Option<String>> {
+        self.sorted_tags.last().map_err(Into::into)
     }
 
     pub fn len(&self) -> app::Result<usize> {
@@ -710,7 +792,7 @@ impl E2eKvStore {
         blob_id_str: String,
         size: u64,
         mime_type: String,
-    ) -> Result<String, String> {
+    ) -> app::Result<String> {
         let blob_id = parse_blob_id_base58(&blob_id_str)?;
 
         let current_counter = *self.file_counter.get();
@@ -739,9 +821,7 @@ impl E2eKvStore {
             uploaded_at: timestamp,
         };
 
-        self.files
-            .insert(file_id.clone(), file_record)
-            .map_err(|e| format!("Failed to store file record: {e:?}"))?;
+        self.files.insert(file_id.clone(), file_record)?;
 
         app::emit!(Event::FileUploaded {
             id: file_id.clone(),
@@ -754,18 +834,15 @@ impl E2eKvStore {
         Ok(file_id)
     }
 
-    pub fn delete_file(&mut self, file_id: String) -> Result<(), String> {
+    pub fn delete_file(&mut self, file_id: String) -> app::Result<()> {
         let file_record = self
             .files
-            .get(&file_id)
-            .map_err(|e| format!("Failed to access file: {e:?}"))?
-            .ok_or_else(|| format!("File not found: {file_id}"))?;
+            .get(&file_id)?
+            .ok_or_else(|| app::err!("File not found: {file_id}"))?;
 
         let file_name = file_record.name.clone();
 
-        self.files
-            .remove(&file_id)
-            .map_err(|e| format!("Failed to delete file: {e:?}"))?;
+        self.files.remove(&file_id)?;
 
         app::emit!(Event::FileDeleted {
             id: file_id.clone(),
@@ -776,39 +853,35 @@ impl E2eKvStore {
         Ok(())
     }
 
-    pub fn list_files(&self) -> Result<Vec<FileRecord>, String> {
+    pub fn list_files(&self) -> app::Result<Vec<FileRecord>> {
         let mut files = Vec::new();
-        if let Ok(entries) = self.files.entries() {
-            for (_, file_record) in entries {
-                files.push(file_record.clone());
-            }
+        for (_, file_record) in self.files.entries()? {
+            files.push(file_record.clone());
         }
         app::log!("Listed {} files", files.len());
         Ok(files)
     }
 
-    pub fn get_file(&self, file_id: String) -> Result<FileRecord, String> {
-        match self.files.get(&file_id) {
-            Ok(Some(file_record)) => Ok(file_record.clone()),
-            Ok(None) => Err(format!("File not found: {file_id}")),
-            Err(e) => Err(format!("Failed to retrieve file: {e:?}")),
-        }
+    pub fn get_file(&self, file_id: String) -> app::Result<FileRecord> {
+        let Some(file_record) = self.files.get(&file_id)? else {
+            app::bail!("File not found: {file_id}");
+        };
+
+        Ok(file_record.clone())
     }
 
-    pub fn get_blob_id_b58(&self, file_id: String) -> Result<String, String> {
+    pub fn get_blob_id_b58(&self, file_id: String) -> app::Result<String> {
         let file_record = self.get_file(file_id)?;
         Ok(encode_blob_id_base58(&file_record.blob_id))
     }
 
-    pub fn search_files(&self, query: String) -> Result<Vec<FileRecord>, String> {
+    pub fn search_files(&self, query: String) -> app::Result<Vec<FileRecord>> {
         let mut results = Vec::new();
         let query_lower = query.to_lowercase();
 
-        if let Ok(entries) = self.files.entries() {
-            for (_, file_record) in entries {
-                if file_record.name.to_lowercase().contains(&query_lower) {
-                    results.push(file_record.clone());
-                }
+        for (_, file_record) in self.files.entries()? {
+            if file_record.name.to_lowercase().contains(&query_lower) {
+                results.push(file_record.clone());
             }
         }
 
@@ -820,61 +893,33 @@ impl E2eKvStore {
 
     // --- G-COUNTER (grow-only) ---
 
-    pub fn increment_g_counter(&mut self, key: String) -> Result<u64, String> {
-        let mut counter = self
-            .crdt_counters
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(GCounter::new);
+    pub fn increment_g_counter(&mut self, key: String) -> app::Result<u64> {
+        let mut counter = self.crdt_counters.entry(key.clone())?.or_default()?;
 
-        counter
-            .increment()
-            .map_err(|e| format!("Increment failed: {:?}", e))?;
+        counter.increment()?;
 
-        let value = counter
-            .value()
-            .map_err(|e| format!("Value failed: {:?}", e))?;
-
-        drop(
-            self.crdt_counters
-                .insert(key.clone(), counter)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        let value = counter.value()?;
 
         app::emit!(Event::GCounterIncremented { key, value });
         Ok(value)
     }
 
-    pub fn get_g_counter(&self, key: String) -> Result<u64, String> {
-        self.crdt_counters
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|c| c.value().unwrap_or(0))
-            .ok_or_else(|| "GCounter not found".to_owned())
+    pub fn get_g_counter(&self, key: String) -> app::Result<u64> {
+        let Some(counter) = self.crdt_counters.get(&key)? else {
+            app::bail!("GCounter not found");
+        };
+
+        Ok(counter.value()?)
     }
 
     // --- PN-COUNTER (supports increment AND decrement) ---
 
-    pub fn increment_pn_counter(&mut self, key: String) -> Result<i64, String> {
-        let mut counter = self
-            .crdt_pn_counters
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(PNCounter::new);
+    pub fn increment_pn_counter(&mut self, key: String) -> app::Result<i64> {
+        let mut counter = self.crdt_pn_counters.entry(key.clone())?.or_default()?;
 
-        counter
-            .increment()
-            .map_err(|e| format!("Increment failed: {:?}", e))?;
+        counter.increment()?;
 
-        let value = counter
-            .value()
-            .map_err(|e| format!("Value failed: {:?}", e))?;
-
-        drop(
-            self.crdt_pn_counters
-                .insert(key.clone(), counter)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        let value = counter.value()?;
 
         app::emit!(Event::PnCounterChanged {
             key,
@@ -884,26 +929,12 @@ impl E2eKvStore {
         Ok(value)
     }
 
-    pub fn decrement_pn_counter(&mut self, key: String) -> Result<i64, String> {
-        let mut counter = self
-            .crdt_pn_counters
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(PNCounter::new);
+    pub fn decrement_pn_counter(&mut self, key: String) -> app::Result<i64> {
+        let mut counter = self.crdt_pn_counters.entry(key.clone())?.or_default()?;
 
-        counter
-            .decrement()
-            .map_err(|e| format!("Decrement failed: {:?}", e))?;
+        counter.decrement()?;
 
-        let value = counter
-            .value()
-            .map_err(|e| format!("Value failed: {:?}", e))?;
-
-        drop(
-            self.crdt_pn_counters
-                .insert(key.clone(), counter)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        let value = counter.value()?;
 
         app::emit!(Event::PnCounterChanged {
             key,
@@ -913,44 +944,39 @@ impl E2eKvStore {
         Ok(value)
     }
 
-    pub fn get_pn_counter(&self, key: String) -> Result<i64, String> {
-        self.crdt_pn_counters
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|c| c.value().unwrap_or(0))
-            .ok_or_else(|| "PNCounter not found".to_owned())
+    pub fn get_pn_counter(&self, key: String) -> app::Result<i64> {
+        let Some(counter) = self.crdt_pn_counters.get(&key)? else {
+            app::bail!("PNCounter not found");
+        };
+
+        Ok(counter.value()?)
     }
 
     // Legacy alias for backward compatibility
-    pub fn increment_counter(&mut self, key: String) -> Result<u64, String> {
+    pub fn increment_counter(&mut self, key: String) -> app::Result<u64> {
         self.increment_g_counter(key)
     }
 
-    pub fn get_counter(&self, key: String) -> Result<u64, String> {
+    pub fn get_counter(&self, key: String) -> app::Result<u64> {
         self.get_g_counter(key)
     }
 
     // NESTED CRDT - REGISTERS
 
-    pub fn set_register(&mut self, key: String, value: String) -> Result<(), String> {
+    pub fn set_register(&mut self, key: String, value: String) -> app::Result<()> {
         let register = LwwRegister::new(value.clone());
 
-        drop(
-            self.crdt_registers
-                .insert(key.clone(), register)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        self.crdt_registers.insert(key.clone(), register)?;
 
         app::emit!(Event::RegisterSet { key, value });
         Ok(())
     }
 
-    pub fn get_register(&self, key: String) -> Result<String, String> {
+    pub fn get_register(&self, key: String) -> app::Result<String> {
         self.crdt_registers
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
+            .get(&key)?
             .map(|r| r.get().clone())
-            .ok_or_else(|| "Register not found".to_owned())
+            .ok_or_else(|| app::err!("Register not found"))
     }
 
     // NESTED CRDT - METADATA
@@ -960,24 +986,10 @@ impl E2eKvStore {
         outer_key: String,
         inner_key: String,
         value: String,
-    ) -> Result<(), String> {
-        let mut inner_map = self
-            .crdt_metadata
-            .get(&outer_key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(UnorderedMap::new);
+    ) -> app::Result<()> {
+        let mut inner_map = self.crdt_metadata.entry(outer_key.clone())?.or_default()?;
 
-        drop(
-            inner_map
-                .insert(inner_key.clone(), value.clone().into())
-                .map_err(|e| format!("Inner insert failed: {:?}", e))?,
-        );
-
-        drop(
-            self.crdt_metadata
-                .insert(outer_key.clone(), inner_map)
-                .map_err(|e| format!("Outer insert failed: {:?}", e))?,
-        );
+        inner_map.insert(inner_key.clone(), value.clone().into())?;
 
         app::emit!(Event::MetadataSet {
             outer_key,
@@ -987,94 +999,68 @@ impl E2eKvStore {
         Ok(())
     }
 
-    pub fn get_metadata(&self, outer_key: String, inner_key: String) -> Result<String, String> {
+    pub fn get_metadata(&self, outer_key: String, inner_key: String) -> app::Result<String> {
         self.crdt_metadata
-            .get(&outer_key)
-            .map_err(|e| format!("Outer get failed: {:?}", e))?
-            .ok_or_else(|| "Outer key not found".to_owned())?
-            .get(&inner_key)
-            .map_err(|e| format!("Inner get failed: {:?}", e))?
-            .ok_or_else(|| "Inner key not found".to_owned())
+            .get(&outer_key)?
+            .ok_or_else(|| app::err!("Outer key not found"))?
+            .get(&inner_key)?
+            .ok_or_else(|| app::err!("Inner key not found"))
             .map(|v| v.get().clone())
     }
 
     // NESTED CRDT - METRICS VECTOR
 
-    pub fn push_metric(&mut self, value: u64) -> Result<usize, String> {
+    pub fn push_metric(&mut self, value: u64) -> app::Result<usize> {
         let mut counter = GCounter::new();
         for _ in 0..value {
-            counter
-                .increment()
-                .map_err(|e| format!("Increment failed: {:?}", e))?;
+            counter.increment()?;
         }
 
-        self.crdt_metrics
-            .push(counter)
-            .map_err(|e| format!("Push failed: {:?}", e))?;
+        self.crdt_metrics.push(counter)?;
 
-        let len = self
-            .crdt_metrics
-            .len()
-            .map_err(|e| format!("Len failed: {:?}", e))?;
+        let len = self.crdt_metrics.len()?;
 
         app::emit!(Event::MetricPushed { value });
         Ok(len)
     }
 
-    pub fn get_metric(&self, index: usize) -> Result<u64, String> {
+    pub fn get_metric(&self, index: usize) -> app::Result<u64> {
         self.crdt_metrics
-            .get(index)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .ok_or_else(|| "Index out of bounds".to_owned())?
+            .get(index)?
+            .ok_or_else(|| app::err!("Index out of bounds"))?
             .value()
-            .map_err(|e| format!("Value failed: {:?}", e))
+            .map_err(Into::into)
     }
 
-    pub fn metrics_len(&self) -> Result<usize, String> {
-        self.crdt_metrics
-            .len()
-            .map_err(|e| format!("Len failed: {:?}", e))
+    pub fn metrics_len(&self) -> app::Result<usize> {
+        self.crdt_metrics.len().map_err(Into::into)
     }
 
     // NESTED CRDT - TAGS SET
 
-    pub fn add_tag(&mut self, key: String, tag: String) -> Result<(), String> {
-        let mut set = self
-            .crdt_tags
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(UnorderedSet::new);
+    pub fn add_tag(&mut self, key: String, tag: String) -> app::Result<()> {
+        let mut set = self.crdt_tags.entry(key.clone())?.or_default()?;
 
-        let _ = set
-            .insert(tag.clone())
-            .map_err(|e| format!("Insert failed: {:?}", e))?;
-
-        drop(
-            self.crdt_tags
-                .insert(key.clone(), set)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        set.insert(tag.clone())?;
 
         app::emit!(Event::TagAdded { key, tag });
         Ok(())
     }
 
-    pub fn has_tag(&self, key: String, tag: String) -> Result<bool, String> {
-        self.crdt_tags
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|set| set.contains(&tag).unwrap_or(false))
-            .ok_or_else(|| "Key not found".to_owned())
+    pub fn has_tag(&self, key: String, tag: String) -> app::Result<bool> {
+        let Some(set) = self.crdt_tags.get(&key)? else {
+            app::bail!("Key not found");
+        };
+
+        Ok(set.contains(&tag)?)
     }
 
-    pub fn get_tag_count(&self, key: String) -> Result<u64, String> {
+    pub fn get_tag_count(&self, key: String) -> app::Result<u64> {
         let count = self
             .crdt_tags
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .ok_or_else(|| "Key not found".to_owned())?
-            .iter()
-            .map_err(|e| format!("Iter failed: {:?}", e))?
+            .get(&key)?
+            .ok_or_else(|| app::err!("Key not found"))?
+            .iter()?
             .count();
 
         Ok(count as u64)
@@ -1082,7 +1068,7 @@ impl E2eKvStore {
 
     // RGA DOCUMENT (from collaborative-editor)
 
-    pub fn rga_insert_text(&mut self, position: usize, text: String) -> Result<(), String> {
+    pub fn rga_insert_text(&mut self, position: usize, text: String) -> app::Result<()> {
         let editor_id = env::executor_id();
         let editor = encode_identity(&editor_id);
 
@@ -1093,13 +1079,9 @@ impl E2eKvStore {
             editor
         );
 
-        self.rga_document
-            .insert_str(position, &text)
-            .map_err(|e| format!("Failed to insert text: {:?}", e))?;
+        self.rga_document.insert_str(position, &text)?;
 
-        self.rga_edit_count
-            .increment()
-            .map_err(|e| format!("Failed to increment edit count: {:?}", e))?;
+        self.rga_edit_count.increment()?;
 
         app::emit!(Event::TextInserted {
             position,
@@ -1110,46 +1092,36 @@ impl E2eKvStore {
         Ok(())
     }
 
-    pub fn rga_delete_text(&mut self, start: usize, end: usize) -> Result<(), String> {
+    pub fn rga_delete_text(&mut self, start: usize, end: usize) -> app::Result<()> {
         let editor_id = env::executor_id();
         let editor = encode_identity(&editor_id);
 
         app::log!("Deleting text from {} to {} by {}", start, end, editor);
 
-        self.rga_document
-            .delete_range(start, end)
-            .map_err(|e| format!("Failed to delete text: {:?}", e))?;
+        self.rga_document.delete_range(start, end)?;
 
-        self.rga_edit_count
-            .increment()
-            .map_err(|e| format!("Failed to increment edit count: {:?}", e))?;
+        self.rga_edit_count.increment()?;
 
         app::emit!(Event::TextDeleted { start, end, editor });
 
         Ok(())
     }
 
-    pub fn rga_get_text(&self) -> Result<String, String> {
-        self.rga_document
-            .get_text()
-            .map_err(|e| format!("Failed to get text: {:?}", e))
+    pub fn rga_get_text(&self) -> app::Result<String> {
+        self.rga_document.get_text().map_err(Into::into)
     }
 
-    pub fn rga_get_length(&self) -> Result<usize, String> {
-        self.rga_document
-            .len()
-            .map_err(|e| format!("Failed to get length: {:?}", e))
+    pub fn rga_get_length(&self) -> app::Result<usize> {
+        self.rga_document.len().map_err(Into::into)
     }
 
-    pub fn rga_is_empty(&self) -> Result<bool, String> {
-        self.rga_document
-            .is_empty()
-            .map_err(|e| format!("Failed to check if empty: {:?}", e))
+    pub fn rga_is_empty(&self) -> app::Result<bool> {
+        self.rga_document.is_empty().map_err(Into::into)
     }
 
-    pub fn rga_set_title(&mut self, new_title: String) -> Result<(), String> {
+    pub fn rga_set_title(&mut self, new_title: String) -> app::Result<()> {
         if new_title.is_empty() {
-            return Err("Title cannot be empty".to_string());
+            app::bail!("Title cannot be empty");
         }
 
         let editor_id = env::executor_id();
@@ -1158,8 +1130,7 @@ impl E2eKvStore {
         let old_title = self.rga_get_title();
 
         self.rga_metadata
-            .insert("title".to_string(), new_title.clone().into())
-            .map_err(|e| format!("Failed to update title: {:?}", e))?;
+            .insert("title".to_string(), new_title.clone().into())?;
 
         app::log!(
             "Title changed from '{}' to '{}' by {}",
@@ -1186,12 +1157,12 @@ impl E2eKvStore {
             .unwrap_or_else(|| "Untitled Document".to_string())
     }
 
-    pub fn rga_append_text(&mut self, text: String) -> Result<(), String> {
+    pub fn rga_append_text(&mut self, text: String) -> app::Result<()> {
         let length = self.rga_get_length()?;
         self.rga_insert_text(length, text)
     }
 
-    pub fn rga_clear(&mut self) -> Result<(), String> {
+    pub fn rga_clear(&mut self) -> app::Result<()> {
         let length = self.rga_get_length()?;
         if length > 0 {
             self.rga_delete_text(0, length)?;
@@ -1201,11 +1172,10 @@ impl E2eKvStore {
 
     // AUTHORED MAP
 
-    pub fn authored_insert(&mut self, key: String, value: String) -> Result<(), String> {
+    pub fn authored_insert(&mut self, key: String, value: String) -> app::Result<()> {
         let owner = bs58::encode(env::executor_id()).into_string();
         self.authored_items
-            .insert(key.clone(), value.clone().into())
-            .map_err(|e| format!("authored_insert failed: {:?}", e))?;
+            .insert(key.clone(), value.clone().into())?;
         app::emit!(Event::AuthoredInserted {
             key: key.clone(),
             value: value.clone(),
@@ -1214,10 +1184,8 @@ impl E2eKvStore {
         Ok(())
     }
 
-    pub fn authored_update(&mut self, key: String, value: String) -> Result<(), String> {
-        self.authored_items
-            .update(&key, value.clone().into())
-            .map_err(|e| format!("authored_update failed: {:?}", e))?;
+    pub fn authored_update(&mut self, key: String, value: String) -> app::Result<()> {
+        self.authored_items.update(&key, value.clone().into())?;
         app::emit!(Event::AuthoredUpdated {
             key: key.clone(),
             value: value.clone(),
@@ -1225,56 +1193,39 @@ impl E2eKvStore {
         Ok(())
     }
 
-    pub fn authored_remove(&mut self, key: String) -> Result<Option<String>, String> {
-        let result = self
-            .authored_items
-            .remove(&key)
-            .map_err(|e| format!("authored_remove failed: {:?}", e))?
-            .map(|v| v.get().clone());
+    pub fn authored_remove(&mut self, key: String) -> app::Result<Option<String>> {
+        let result = self.authored_items.remove(&key)?.map(|v| v.get().clone());
         if result.is_some() {
             app::emit!(Event::AuthoredRemoved { key: key.clone() });
         }
         Ok(result)
     }
 
-    pub fn authored_get(&self, key: String) -> Result<Option<String>, String> {
-        Ok(self
-            .authored_items
-            .get(&key)
-            .map_err(|e| format!("authored_get failed: {:?}", e))?
-            .map(|v| v.get().clone()))
+    pub fn authored_get(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.authored_items.get(&key)?.map(|v| v.get().clone()))
     }
 
-    pub fn authored_entries(&self) -> Result<BTreeMap<String, String>, String> {
+    pub fn authored_entries(&self) -> app::Result<BTreeMap<String, String>> {
         Ok(self
             .authored_items
-            .entries()
-            .map_err(|e| format!("authored_entries failed: {:?}", e))?
+            .entries()?
             .map(|(k, v)| (k, v.get().clone()))
             .collect())
     }
 
-    pub fn authored_get_owner(&self, key: String) -> Result<Option<String>, String> {
-        Ok(self
-            .authored_items
-            .owner_of(&key)
-            .map_err(|e| format!("authored_get_owner failed: {:?}", e))?
-            .map(|pk| pk.to_string()))
+    pub fn authored_get_owner(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.authored_items.owner_of(&key)?.map(|pk| pk.to_string()))
     }
 
-    pub fn authored_len(&self) -> Result<usize, String> {
-        self.authored_items
-            .len()
-            .map_err(|e| format!("authored_len failed: {:?}", e))
+    pub fn authored_len(&self) -> app::Result<usize> {
+        self.authored_items.len().map_err(Into::into)
     }
 
     // SHARED STORAGE
 
-    pub fn shared_set(&mut self, value: String) -> Result<(), String> {
+    pub fn shared_set(&mut self, value: String) -> app::Result<()> {
         let by = bs58::encode(env::executor_id()).into_string();
-        self.shared_data
-            .insert(LwwRegister::new(value.clone()))
-            .map_err(|e| format!("shared_set failed: {:?}", e))?;
+        self.shared_data.insert(LwwRegister::new(value.clone()))?;
         app::emit!(Event::SharedSet {
             value: value.clone(),
             by: by.clone(),
@@ -1282,16 +1233,11 @@ impl E2eKvStore {
         Ok(())
     }
 
-    pub fn shared_get(&self) -> Result<String, String> {
-        Ok(self
-            .shared_data
-            .get()
-            .map_err(|e| format!("shared_get failed: {:?}", e))?
-            .get()
-            .clone())
+    pub fn shared_get(&self) -> app::Result<String> {
+        Ok(self.shared_data.get()?.get().clone())
     }
 
-    pub fn shared_get_writers(&self) -> Result<Vec<String>, String> {
+    pub fn shared_get_writers(&self) -> app::Result<Vec<String>> {
         Ok(self
             .shared_data
             .writers()
@@ -1300,39 +1246,30 @@ impl E2eKvStore {
             .collect())
     }
 
-    pub fn shared_add_writer(&mut self, writer_bs58: String) -> Result<(), String> {
-        let new_writer: PublicKey = writer_bs58
-            .parse()
-            .map_err(|e| format!("Invalid public key '{}': {:?}", writer_bs58, e))?;
+    pub fn shared_add_writer(&mut self, writer_bs58: String) -> app::Result<()> {
+        let new_writer: PublicKey = writer_bs58.parse()?;
         let mut new_writers = self.shared_data.writers().clone();
         new_writers.insert(new_writer);
-        self.shared_data
-            .rotate_writers(new_writers)
-            .map_err(|e| format!("shared_add_writer failed: {:?}", e))?;
+        self.shared_data.rotate_writers(new_writers)?;
         app::emit!(Event::SharedWriterAdded {
             writer: writer_bs58.clone(),
         });
         Ok(())
     }
 
-    pub fn shared_is_writer(&self, key_bs58: String) -> Result<bool, String> {
-        let pk: PublicKey = key_bs58
-            .parse()
-            .map_err(|e| format!("Invalid public key '{}': {:?}", key_bs58, e))?;
+    pub fn shared_is_writer(&self, key_bs58: String) -> app::Result<bool> {
+        let pk: PublicKey = key_bs58.parse()?;
         Ok(self.shared_data.writers().contains(&pk))
     }
 
-    pub fn shared_is_frozen(&self) -> Result<bool, String> {
+    pub fn shared_is_frozen(&self) -> app::Result<bool> {
         Ok(self.shared_data.is_frozen())
     }
 
     // AUTHORED VECTOR
 
-    pub fn authored_vec_push(&mut self, value: String) -> Result<usize, String> {
-        let index = self
-            .authored_vec
-            .push(LwwRegister::new(value.clone()))
-            .map_err(|e| format!("authored_vec_push failed: {:?}", e))?;
+    pub fn authored_vec_push(&mut self, value: String) -> app::Result<usize> {
+        let index = self.authored_vec.push(LwwRegister::new(value.clone()))?;
         let owner = bs58::encode(env::executor_id()).into_string();
         app::emit!(Event::AuthoredVecPushed {
             index,
@@ -1342,50 +1279,32 @@ impl E2eKvStore {
         Ok(index)
     }
 
-    pub fn authored_vec_get(&self, index: usize) -> Result<Option<String>, String> {
-        Ok(self
-            .authored_vec
-            .get(index)
-            .map_err(|e| format!("authored_vec_get failed: {:?}", e))?
-            .map(|r| r.get().clone()))
+    pub fn authored_vec_get(&self, index: usize) -> app::Result<Option<String>> {
+        Ok(self.authored_vec.get(index)?.map(|r| r.get().clone()))
     }
 
-    pub fn authored_vec_update(&mut self, index: usize, value: String) -> Result<(), String> {
+    pub fn authored_vec_update(&mut self, index: usize, value: String) -> app::Result<()> {
         self.authored_vec
-            .update(index, LwwRegister::new(value.clone()))
-            .map_err(|e| format!("authored_vec_update failed: {:?}", e))?;
+            .update(index, LwwRegister::new(value.clone()))?;
         app::emit!(Event::AuthoredVecUpdated { index, value });
         Ok(())
     }
 
-    pub fn authored_vec_remove(&mut self, index: usize) -> Result<(), String> {
-        self.authored_vec
-            .tombstone(index)
-            .map_err(|e| format!("authored_vec_remove failed: {:?}", e))?;
+    pub fn authored_vec_remove(&mut self, index: usize) -> app::Result<()> {
+        self.authored_vec.tombstone(index)?;
         app::emit!(Event::AuthoredVecRemoved { index });
         Ok(())
     }
 
-    pub fn authored_vec_get_owner(&self, index: usize) -> Result<Option<String>, String> {
-        Ok(self
-            .authored_vec
-            .owner_of(index)
-            .map_err(|e| format!("authored_vec_get_owner failed: {:?}", e))?
-            .map(|pk| pk.to_string()))
+    pub fn authored_vec_get_owner(&self, index: usize) -> app::Result<Option<String>> {
+        Ok(self.authored_vec.owner_of(index)?.map(|pk| pk.to_string()))
     }
 
-    pub fn authored_vec_entries(&self) -> Result<Vec<String>, String> {
-        Ok(self
-            .authored_vec
-            .iter()
-            .map_err(|e| format!("authored_vec_entries failed: {:?}", e))?
-            .map(|r| r.get().clone())
-            .collect())
+    pub fn authored_vec_entries(&self) -> app::Result<Vec<String>> {
+        Ok(self.authored_vec.iter()?.map(|r| r.get().clone()).collect())
     }
 
-    pub fn authored_vec_len(&self) -> Result<usize, String> {
-        self.authored_vec
-            .len()
-            .map_err(|e| format!("authored_vec_len failed: {:?}", e))
+    pub fn authored_vec_len(&self) -> app::Result<usize> {
+        self.authored_vec.len().map_err(Into::into)
     }
 }

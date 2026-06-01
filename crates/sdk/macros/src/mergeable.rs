@@ -52,6 +52,11 @@ pub fn derive(input: DeriveInput) -> TokenStream {
         return errs.to_compile_error();
     }
 
+    let rekey_body: TokenStream = match &input.data {
+        Data::Struct(s) => generate_struct_rekey(&s.fields),
+        _ => quote! {},
+    };
+
     quote! {
         impl #impl_generics ::calimero_storage::collections::Mergeable
             for #ident #ty_generics #where_clause
@@ -67,6 +72,58 @@ pub fn derive(input: DeriveInput) -> TokenStream {
                 ::core::result::Result::Ok(())
             }
         }
+
+        // Deterministic re-keying for use as a CRDT collection VALUE. When this
+        // struct is stored as a map/set/vector value under a deterministic entry
+        // id, each field's nested collection ids are re-keyed under a
+        // field-namespaced child of that id — so every replica derives identical
+        // ids and the nested CRDTs converge as child entities instead of the
+        // whole struct blob being last-writer-wins'd (the #2577 data loss).
+        // `rekey_field_if_supported!` autoref-dispatches: a real re-key for
+        // fields whose type implements `RekeyTarget` (collections, nested CRDT
+        // structs), a no-op for leaf fields (e.g. `LwwRegister`).
+        impl #impl_generics ::calimero_storage::collections::rekey::RekeyTarget
+            for #ident #ty_generics #where_clause
+        {
+            fn rekey_relative_to(
+                &mut self,
+                parent_id: ::calimero_storage::address::Id,
+            ) {
+                #rekey_body
+            }
+        }
+    }
+}
+
+fn generate_struct_rekey(fields: &Fields) -> TokenStream {
+    match fields {
+        Fields::Named(named) => {
+            let calls = named.named.iter().map(|f| {
+                let name = f.ident.as_ref().expect("named field has ident");
+                let name_str = name.to_string();
+                quote! {
+                    ::calimero_storage::rekey_field_if_supported!(
+                        &mut self.#name,
+                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
+                    );
+                }
+            });
+            quote! { #(#calls)* }
+        }
+        Fields::Unnamed(unnamed) => {
+            let calls = unnamed.unnamed.iter().enumerate().map(|(i, _)| {
+                let idx = syn::Index::from(i);
+                let name_str = i.to_string();
+                quote! {
+                    ::calimero_storage::rekey_field_if_supported!(
+                        &mut self.#idx,
+                        ::calimero_storage::collections::rekey::field_child_id(parent_id, #name_str)
+                    );
+                }
+            });
+            quote! { #(#calls)* }
+        }
+        Fields::Unit => quote! {},
     }
 }
 

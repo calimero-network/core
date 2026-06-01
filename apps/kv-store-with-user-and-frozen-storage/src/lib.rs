@@ -11,8 +11,6 @@ use calimero_storage::collections::{FrozenStorage, LwwRegister, UnorderedMap, Us
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStore {
     // Public items, viewable by all
     items: UnorderedMap<String, LwwRegister<String>>,
@@ -282,5 +280,46 @@ impl KvStore {
         app::emit!(Event::Cleared);
 
         self.items.clear().map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn regular_set_get() {
+        let mut app = TestHost::new(KvStore::init);
+
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), Some("v".to_owned()));
+    }
+
+    #[test]
+    fn user_storage_roundtrip() {
+        let mut app = TestHost::new(KvStore::init);
+
+        app.call(|s| s.set_user_simple("mine".into())).unwrap();
+        assert_eq!(
+            app.view(|s| s.get_user_simple()).unwrap(),
+            Some("mine".to_owned())
+        );
+    }
+
+    #[test]
+    fn frozen_storage_is_content_addressed() {
+        let mut app = TestHost::new(KvStore::init);
+
+        let hash = app.call(|s| s.add_frozen("immutable".into())).unwrap();
+        assert_eq!(
+            app.view(|s| s.get_frozen(hash.clone())).unwrap(),
+            "immutable"
+        );
+
+        // Same content hashes to the same key (deduplicated).
+        let hash2 = app.call(|s| s.add_frozen("immutable".into())).unwrap();
+        assert_eq!(hash, hash2);
     }
 }

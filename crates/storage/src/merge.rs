@@ -49,6 +49,13 @@ pub mod registry;
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub use registry::{register_crdt_merge, try_merge_registered, MergeRegistryResult};
 
+// Always-native wrapper for the in-process test harness. Unlike
+// `register_crdt_merge` it isn't gated behind the `testing` feature, so an
+// app's macro-generated `TestState` bridge compiles under `cargo test`
+// regardless of whether that app enabled the feature.
+#[cfg(not(target_arch = "wasm32"))]
+pub use registry::register_crdt_merge_for_test;
+
 #[cfg(any(test, feature = "testing"))]
 pub use registry::clear_merge_registry;
 
@@ -360,7 +367,14 @@ pub fn merge_by_crdt_type(
 
         // Collections - with type info we can merge them
         CrdtType::UnorderedMap { .. } => merge_unordered_map(existing, incoming),
+        // SortedMap stores and merges exactly like UnorderedMap (entries sync
+        // separately; ordering is a read-time concern derived from `K: Ord`), so
+        // the container merge is the same add-wins structural pass.
+        CrdtType::SortedMap { .. } => merge_unordered_map(existing, incoming),
         CrdtType::UnorderedSet { .. } => merge_unordered_set(existing, incoming),
+        // SortedSet stores/merges exactly like UnorderedSet (union; ordering is a
+        // read-time concern derived from `T: Ord`).
+        CrdtType::SortedSet { .. } => merge_unordered_set(existing, incoming),
         CrdtType::Vector { .. } => merge_vector(existing, incoming),
 
         // UserStorage - LWW per user (same as LwwRegister)
@@ -393,7 +407,7 @@ pub fn merge_by_crdt_type(
 /// - `GCounter`, `PnCounter` - max per executor
 /// - `Rga` - interleave by timestamp
 /// - `LwwRegister` - LWW using metadata timestamps  
-/// - `UnorderedMap`, `UnorderedSet`, `Vector` - structural merge
+/// - `UnorderedMap`, `SortedMap`, `UnorderedSet`, `SortedSet`, `Vector` - structural merge
 /// - `UserStorage` - LWW per user
 /// - `FrozenStorage` - first-write-wins
 ///

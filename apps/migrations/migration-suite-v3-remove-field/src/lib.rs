@@ -1,5 +1,5 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::state::read_raw;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
@@ -8,8 +8,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 const SCHEMA_VERSION_V3: &str = "3.0.0";
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct MigrationSuiteV3RemoveField {
     items: UnorderedMap<String, LwwRegister<String>>,
     description: LwwRegister<String>,
@@ -69,7 +67,7 @@ impl MigrationSuiteV3RemoveField {
     #[app::init]
     pub fn init() -> MigrationSuiteV3RemoveField {
         MigrationSuiteV3RemoveField {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             description: LwwRegister::new("initial".to_owned()),
             counter: LwwRegister::new(0),
         }

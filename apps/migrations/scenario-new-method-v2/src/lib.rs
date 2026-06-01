@@ -1,13 +1,10 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 
 const SCHEMA_VERSION_V2: &str = "2.0.0";
 
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioNewMethodV2 {
     items: UnorderedMap<String, LwwRegister<String>>,
     counter: LwwRegister<u64>,
@@ -25,7 +22,7 @@ impl ScenarioNewMethodV2 {
     #[app::init]
     pub fn init() -> ScenarioNewMethodV2 {
         ScenarioNewMethodV2 {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             counter: LwwRegister::new(0),
         }
     }

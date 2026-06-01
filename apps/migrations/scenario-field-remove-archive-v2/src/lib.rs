@@ -1,5 +1,5 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::state::read_raw;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
@@ -8,8 +8,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 const SCHEMA_VERSION_V2: &str = "2.0.0";
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioFieldRemoveArchiveV2 {
     name: LwwRegister<String>,
     counter: LwwRegister<u64>,
@@ -57,8 +55,7 @@ pub fn migrate_v1_to_v2() -> ScenarioFieldRemoveArchiveV2 {
         to_version: SCHEMA_VERSION_V2,
     });
 
-    let mut archived_legacy: UnorderedMap<String, LwwRegister<String>> =
-        UnorderedMap::new_with_field_name("archived_legacy");
+    let mut archived_legacy: UnorderedMap<String, LwwRegister<String>> = UnorderedMap::new();
     let legacy_value = old_state.legacy_note.get().clone();
     archived_legacy
         .insert("latest".to_owned(), LwwRegister::new(legacy_value))
@@ -80,7 +77,7 @@ impl ScenarioFieldRemoveArchiveV2 {
         ScenarioFieldRemoveArchiveV2 {
             name: LwwRegister::new("entity".to_owned()),
             counter: LwwRegister::new(0),
-            archived_legacy: UnorderedMap::new_with_field_name("archived_legacy"),
+            archived_legacy: UnorderedMap::new(),
         }
     }
 

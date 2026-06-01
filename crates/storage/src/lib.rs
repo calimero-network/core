@@ -74,6 +74,16 @@ pub mod rotation_log;
 pub mod snapshot;
 pub mod store;
 
+/// CRDT convergence property-test harness (issue #2552).
+///
+/// Native (`cargo test`) harness that drives N in-memory replicas of a
+/// `Mergeable` app-state type through randomly-interleaved operations and
+/// asserts they converge to the same Merkle root. Gated on the `testing`
+/// feature so the CRDT merge registry is compiled in (real registration is a
+/// no-op otherwise).
+#[cfg(all(not(target_arch = "wasm32"), feature = "testing"))]
+pub mod testing;
+
 // Re-export for convenience
 // `register_crdt_merge` is WASM-only in production. Re-exposed under
 // `cfg(test)` for the storage crate's own unit tests and under the
@@ -81,6 +91,10 @@ pub mod store;
 // `merge::registry` module docs for the rationale (core#2469).
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub use merge::register_crdt_merge;
+// Always-native wrapper used by the `TestHost` bridge; no-op unless the
+// `testing` feature (or `cfg(test)`) compiles the registry in.
+#[cfg(not(target_arch = "wasm32"))]
+pub use merge::register_crdt_merge_for_test;
 
 /// Re-exported types, mostly for use in macros (for convenience).
 pub mod exports {
@@ -104,6 +118,8 @@ pub mod tests {
     pub mod collections;
     /// Common test utilities and data structures.
     pub mod common;
+    /// Concurrency race reproduction (core#2571).
+    pub mod concurrency;
     /// Comprehensive CRDT behavior tests.
     pub mod crdt;
     /// Delta creation and commit tests.

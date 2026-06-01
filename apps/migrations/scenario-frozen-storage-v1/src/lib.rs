@@ -1,5 +1,4 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{FrozenStorage, LwwRegister};
 
@@ -11,8 +10,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 /// (not a string) so it never needs an encode/decode codec, and is fetched back
 /// via `get_last_doc()` so no hash has to round-trip through a workflow variable.
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioFrozenStorageV1 {
     documents: FrozenStorage<String>,
     title: LwwRegister<String>,
@@ -37,7 +34,7 @@ impl ScenarioFrozenStorageV1 {
     #[app::init]
     pub fn init() -> ScenarioFrozenStorageV1 {
         ScenarioFrozenStorageV1 {
-            documents: FrozenStorage::new_with_field_name("documents"),
+            documents: FrozenStorage::new(),
             title: LwwRegister::new("untitled".to_owned()),
             last_hash: LwwRegister::new(Vec::new()),
         }

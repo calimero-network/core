@@ -7,7 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 calimero-sdk.workspace = true
@@ -16,3 +16,8 @@ calimero-storage.workspace = true
 [build-dependencies]
 calimero-wasm-abi.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# Enables `register_crdt_merge` + the native mock host so `TestHost` can drive
+# CRDT state under `cargo test`.
+calimero-storage = { workspace = true, features = ["testing"] }

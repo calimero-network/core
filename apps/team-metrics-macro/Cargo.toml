@@ -7,9 +7,19 @@ repository.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+# `rlib` (alongside the wasm `cdylib`) lets the convergence integration test in
+# `tests/` import the app type; harmless for the wasm build.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
 calimero-storage-macros.workspace = true
+
+[dev-dependencies]
+# Enables `register_crdt_merge` + the native mock host so `TestHost` can drive
+# CRDT state under `cargo test`.
+calimero-storage = { workspace = true, features = ["testing"] }
+# Convergence tests are serial: `converge_app` clears/repopulates the
+# process-global merge registry per run.
+serial_test.workspace = true

@@ -1,5 +1,4 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{AuthoredMap, LwwRegister};
 
@@ -11,8 +10,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 /// each entry's recorded owner survives the migration identically on every
 /// node (authorship is part of the stored value, so it must round-trip).
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioAuthoredMapV1 {
     entries: AuthoredMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,
@@ -31,7 +28,7 @@ impl ScenarioAuthoredMapV1 {
     #[app::init]
     pub fn init() -> ScenarioAuthoredMapV1 {
         ScenarioAuthoredMapV1 {
-            entries: AuthoredMap::new_with_field_name("entries"),
+            entries: AuthoredMap::new(),
             title: LwwRegister::new("untitled".to_owned()),
         }
     }

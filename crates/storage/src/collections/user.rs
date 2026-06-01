@@ -4,7 +4,7 @@
 //! only `insert` into their own key-slot (`env::executor_id()`).
 
 use super::crdt_meta::{CrdtMeta, CrdtType, Mergeable, StorageStrategy};
-use super::{StoreError, UnorderedMap};
+use super::{StoreError, UnorderedMap, ValueRef};
 use crate::entities::{ChildInfo, Data, Element, StorageType};
 use crate::env;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -147,7 +147,10 @@ where
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get(&self) -> Result<Option<T>, StoreError> {
         let executor_public_key: PublicKey = env::executor_id().into();
-        self.inner.get(&executor_public_key)
+        Ok(self
+            .inner
+            .get(&executor_public_key)?
+            .map(ValueRef::into_inner))
     }
 
     /// Gets the data for a *specific* user's PublicKey.
@@ -155,7 +158,7 @@ where
     /// # Errors
     /// Returns a `StoreError` if the storage operation fails.
     pub fn get_for_user(&self, user_key: &PublicKey) -> Result<Option<T>, StoreError> {
-        self.inner.get(user_key)
+        Ok(self.inner.get(user_key)?.map(ValueRef::into_inner))
     }
 
     /// Checks if data exists for the current executor.
@@ -233,5 +236,32 @@ where
     }
     fn can_contain_crdts() -> bool {
         true // The inner map can contain CRDTs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UserStorage;
+
+    #[test]
+    fn test_new_plus_reassign_is_convergent() {
+        // `UserStorage` is a two-part type: a wrapper `Element` plus an inner
+        // `UnorderedMap` holding the data. `new_with_field_name` leaves the
+        // WRAPPER id random (only the inner map is deterministic); the post-init
+        // `reassign_deterministic_id` canonicalises BOTH. So the property that
+        // actually guarantees CIP I9 here is convergence — two independent
+        // `new() + reassign("f")` must mint the same id — which is strictly
+        // stronger than matching `new_with_field_name` (whose wrapper id is
+        // per-node random). The inner map's own id determinism is pinned by the
+        // `UnorderedMap` tests.
+        crate::env::reset_for_testing();
+        let mut a: UserStorage<String> = UserStorage::new();
+        a.reassign_deterministic_id("items");
+        let mut b: UserStorage<String> = UserStorage::new();
+        b.reassign_deterministic_id("items");
+        assert_eq!(
+            <UserStorage<String> as crate::entities::Data>::id(&a),
+            <UserStorage<String> as crate::entities::Data>::id(&b),
+        );
     }
 }

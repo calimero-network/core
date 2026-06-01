@@ -448,6 +448,160 @@ impl VMHostFunctions<'_> {
 
         Ok(0)
     }
+
+    // === Ordered secondary index host functions (SortedMap, core#2559) ===
+    //
+    // These target the backend's ordered index keyspace (the RocksDB
+    // `SortedIndex` column on a node, a `BTreeMap` for `InMemoryStorage`). Keys
+    // are unhashed `collection ‖ order_key`, values are 32-byte entry ids.
+    // `SortedMap` is the only caller, via the `MainStorage` adaptor.
+
+    /// Insert/overwrite `key -> value` in the ordered index. Returns `1` if the
+    /// write was persisted, `0` otherwise (so the guest can skip stamping its
+    /// index-validity marker and rebuild instead).
+    pub fn storage_index_set(&mut self, key_ptr: u64, value_ptr: u64) -> VMLogicResult<u32> {
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
+        let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(value_ptr)? };
+        // Bound guest-supplied sizes like `storage_write` does, so a buggy/hostile
+        // guest can't drive unbounded host allocation through the index path.
+        let logic = self.borrow_logic();
+        if key.len() > logic.limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+        if value.len() > logic.limits.max_storage_value_size.get() {
+            return Err(HostError::ValueLengthOverflow.into());
+        }
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
+        let value = self.read_guest_memory_slice(&value)?.to_vec();
+        trace!(target: "runtime::host::storage", op = "index_set", key_len = key.len(), "storage_index_set");
+        let ok = self.with_logic_mut(|logic| logic.storage.index_set(&key, &value));
+        Ok(ok.into())
+    }
+
+    /// Remove `key` from the ordered index. Returns `1` if persisted, else `0`.
+    pub fn storage_index_remove(&mut self, key_ptr: u64) -> VMLogicResult<u32> {
+        let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
+        if key.len() > self.borrow_logic().limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+        let key = self.read_guest_memory_slice(&key)?.to_vec();
+        trace!(target: "runtime::host::storage", op = "index_del", key_len = key.len(), "storage_index_remove");
+        let ok = self.with_logic_mut(|logic| logic.storage.index_del(&key));
+        Ok(ok.into())
+    }
+
+    /// Remove every ordered-index key beginning with `prefix`. Returns `1` if
+    /// persisted, else `0`.
+    pub fn storage_index_remove_prefix(&mut self, prefix_ptr: u64) -> VMLogicResult<u32> {
+        let prefix = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(prefix_ptr)? };
+        if prefix.len() > self.borrow_logic().limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+        let prefix = self.read_guest_memory_slice(&prefix)?.to_vec();
+        trace!(target: "runtime::host::storage", op = "index_del_prefix", prefix_len = prefix.len(), "storage_index_remove_prefix");
+        let ok = self.with_logic_mut(|logic| logic.storage.index_del_prefix(&prefix));
+        Ok(ok.into())
+    }
+
+    /// Scan the ordered index over `[lo, hi)`, skipping `offset` and capped at
+    /// `limit`, which is `n + 1`-encoded with `0` = unbounded (a width-agnostic
+    /// sentinel — `usize::MAX` differs between the wasm32 guest and this host).
+    /// Encodes the resulting `(key, value)` pairs into `register_id` using a
+    /// length-prefixed format the guest decodes (`count:u32`, then per pair
+    /// `klen:u32, k, vlen:u32, v`, all little-endian). Returns `1`.
+    pub fn storage_index_scan(
+        &mut self,
+        lo_ptr: u64,
+        hi_ptr: u64,
+        offset: u64,
+        limit: u64,
+        register_id: u64,
+    ) -> VMLogicResult<u32> {
+        let lo = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(lo_ptr)? };
+        let hi = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(hi_ptr)? };
+        // The bounds are index keys; cap them like any other storage key.
+        let max_key = self.borrow_logic().limits.max_storage_key_size.get();
+        if lo.len() > max_key || hi.len() > max_key {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+        let lo = self.read_guest_memory_slice(&lo)?.to_vec();
+        let hi = self.read_guest_memory_slice(&hi)?.to_vec();
+
+        // `n + 1`-encoded: 0 = unbounded, else `limit - 1`.
+        let limit = (limit != 0).then(|| (limit - 1) as usize);
+        // Saturate rather than silently truncate `u64 -> usize` (usize is 32-bit
+        // on a wasm32 host build); a clamp to usize::MAX just means "skip all".
+        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+        let pairs = self
+            .borrow_logic()
+            .storage
+            .index_scan(&lo, &hi, offset, limit);
+
+        trace!(
+            target: "runtime::host::storage",
+            op = "index_scan",
+            results = pairs.len(),
+            register_id,
+            "storage_index_scan"
+        );
+
+        let encoded = encode_index_pairs(&pairs);
+        self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, encoded))?;
+        Ok(1)
+    }
+
+    /// Reverse seek: encode the single largest `(key, value)` in `[lo, hi)` into
+    /// `register_id` (same wire format as `storage_index_scan`, count 0 or 1).
+    /// Backs `SortedMap::last` as an `O(log n)` lookup. Returns `1`.
+    pub fn storage_index_last(
+        &mut self,
+        lo_ptr: u64,
+        hi_ptr: u64,
+        register_id: u64,
+    ) -> VMLogicResult<u32> {
+        let lo = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(lo_ptr)? };
+        let hi = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(hi_ptr)? };
+        let max_key = self.borrow_logic().limits.max_storage_key_size.get();
+        if lo.len() > max_key || hi.len() > max_key {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+        let lo = self.read_guest_memory_slice(&lo)?.to_vec();
+        let hi = self.read_guest_memory_slice(&hi)?.to_vec();
+
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> = self
+            .borrow_logic()
+            .storage
+            .index_last(&lo, &hi)
+            .into_iter()
+            .collect();
+
+        trace!(
+            target: "runtime::host::storage",
+            op = "index_last",
+            found = !pairs.is_empty(),
+            register_id,
+            "storage_index_last"
+        );
+
+        let encoded = encode_index_pairs(&pairs);
+        self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, encoded))?;
+        Ok(1)
+    }
+}
+
+/// Encode ordered-index scan results into the length-prefixed wire format the
+/// guest (`calimero_sdk::env`) decodes: `count:u32`, then per pair
+/// `key_len:u32, key, value_len:u32, value` — all little-endian.
+fn encode_index_pairs(pairs: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(pairs.len() as u32).to_le_bytes());
+    for (key, value) in pairs {
+        out.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        out.extend_from_slice(key);
+        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        out.extend_from_slice(value);
+    }
+    out
 }
 
 #[cfg(test)]

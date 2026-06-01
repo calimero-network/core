@@ -4,7 +4,7 @@
 
 use super::composite_key::CompositeKey;
 use super::crdt_meta::{Decomposable, DecomposeError};
-use super::{UnorderedMap, Vector};
+use super::{SortedMap, UnorderedMap, Vector};
 use crate::store::StorageAdaptor;
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -67,6 +67,59 @@ where
 }
 
 // ============================================================================
+// SortedMap - Decompose into entries (sorted by key)
+// ============================================================================
+
+impl<K, V, S> Decomposable for SortedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + Ord + Clone + PartialEq + 'static,
+    V: BorshSerialize + BorshDeserialize + Clone + 'static,
+    S: StorageAdaptor,
+{
+    type Key = CompositeKey;
+    type Value = V;
+
+    fn decompose(&self) -> Result<Vec<(Self::Key, Self::Value)>, DecomposeError> {
+        // `entries()` already yields ascending key order, so decomposition is
+        // deterministic without an extra sort.
+        let entries = self
+            .entries()
+            .map_err(|e| DecomposeError::StorageError(format!("Failed to get entries: {:?}", e)))?;
+
+        let result = entries
+            .into_iter()
+            .map(|(k, v)| {
+                let key_bytes = borsh::to_vec(&k).map_err(|e| {
+                    DecomposeError::StorageError(format!("Failed to serialize key: {:?}", e))
+                })?;
+
+                Ok((CompositeKey::from(key_bytes), v))
+            })
+            .collect::<Result<Vec<_>, DecomposeError>>()?;
+
+        Ok(result)
+    }
+
+    fn recompose(entries: Vec<(Self::Key, Self::Value)>) -> Result<Self, DecomposeError> {
+        let mut map = SortedMap::new_internal();
+
+        for (composite_key, value) in entries {
+            let key = borsh::from_slice::<K>(composite_key.as_bytes()).map_err(|e| {
+                DecomposeError::StorageError(format!("Failed to deserialize key: {:?}", e))
+            })?;
+
+            drop(
+                map.insert(key, value).map_err(|e| {
+                    DecomposeError::StorageError(format!("Failed to insert: {:?}", e))
+                })?,
+            );
+        }
+
+        Ok(map)
+    }
+}
+
+// ============================================================================
 // Vector - Decompose into indexed entries
 // ============================================================================
 
@@ -98,7 +151,7 @@ where
                     DecomposeError::StorageError(format!("Failed to serialize index: {:?}", e))
                 })?;
 
-                result.push((CompositeKey::from(index_bytes), value));
+                result.push((CompositeKey::from(index_bytes), value.into_inner()));
             }
         }
 
@@ -179,9 +232,30 @@ mod tests {
         let reconstructed = UnorderedMap::<String, u64>::recompose(entries).unwrap();
 
         // Verify
-        assert_eq!(reconstructed.get(&"a".to_owned()).unwrap(), Some(1u64));
-        assert_eq!(reconstructed.get(&"b".to_owned()).unwrap(), Some(2u64));
-        assert_eq!(reconstructed.get(&"c".to_owned()).unwrap(), Some(3u64));
+        assert_eq!(
+            reconstructed
+                .get(&"a".to_owned())
+                .unwrap()
+                .as_deref()
+                .copied(),
+            Some(1u64)
+        );
+        assert_eq!(
+            reconstructed
+                .get(&"b".to_owned())
+                .unwrap()
+                .as_deref()
+                .copied(),
+            Some(2u64)
+        );
+        assert_eq!(
+            reconstructed
+                .get(&"c".to_owned())
+                .unwrap()
+                .as_deref()
+                .copied(),
+            Some(3u64)
+        );
     }
 
     #[test]
@@ -213,9 +287,27 @@ mod tests {
         let reconstructed = Vector::<String>::recompose(entries).unwrap();
 
         // Verify all values are present in correct order
-        assert_eq!(reconstructed.get(0).unwrap(), Some("first".to_owned()));
-        assert_eq!(reconstructed.get(1).unwrap(), Some("second".to_owned()));
-        assert_eq!(reconstructed.get(2).unwrap(), Some("third".to_owned()));
+        assert_eq!(
+            reconstructed
+                .get(0)
+                .unwrap()
+                .map(crate::collections::ValueRef::into_inner),
+            Some("first".to_owned())
+        );
+        assert_eq!(
+            reconstructed
+                .get(1)
+                .unwrap()
+                .map(crate::collections::ValueRef::into_inner),
+            Some("second".to_owned())
+        );
+        assert_eq!(
+            reconstructed
+                .get(2)
+                .unwrap()
+                .map(crate::collections::ValueRef::into_inner),
+            Some("third".to_owned())
+        );
         assert_eq!(reconstructed.len().unwrap(), 3);
     }
 }

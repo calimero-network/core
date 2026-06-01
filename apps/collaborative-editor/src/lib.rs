@@ -9,7 +9,6 @@
 
 #![allow(clippy::len_without_is_empty)]
 
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::{app, env};
 use calimero_storage::collections::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap};
 
@@ -20,8 +19,6 @@ use calimero_storage::collections::{Counter, LwwRegister, ReplicatedGrowableArra
 /// All fields must be CRDTs to avoid divergence during concurrent updates.
 /// Using LWW merge on root state with non-CRDT fields causes data loss.
 #[app::state(emits = EditorEvent)]
-#[derive(BorshDeserialize, BorshSerialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct EditorState {
     /// The collaborative text document using RGA CRDT
     pub document: ReplicatedGrowableArray,
@@ -36,8 +33,6 @@ pub struct EditorState {
 
 /// Events emitted by the collaborative editor
 #[app::event]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub enum EditorEvent {
     /// Emitted when the document is initialized
     DocumentCreated {
@@ -121,8 +116,8 @@ impl EditorState {
     ///
     /// # Returns
     /// * `Ok(())` - Text successfully inserted
-    /// * `Err(String)` - Error message if position is invalid or insertion fails
-    pub fn insert_text(&mut self, position: usize, text: String) -> Result<(), String> {
+    /// * `Err(app::Error)` - Error if position is invalid or insertion fails
+    pub fn insert_text(&mut self, position: usize, text: String) -> app::Result<()> {
         let editor_id = env::executor_id();
         let editor = encode_identity(&editor_id);
 
@@ -133,13 +128,9 @@ impl EditorState {
             editor
         );
 
-        self.document
-            .insert_str(position, &text)
-            .map_err(|e| format!("Failed to insert text: {:?}", e))?;
+        self.document.insert_str(position, &text)?;
 
-        self.edit_count
-            .increment()
-            .map_err(|e| format!("Failed to increment edit count: {:?}", e))?;
+        self.edit_count.increment()?;
 
         app::emit!(EditorEvent::TextInserted {
             position,
@@ -158,20 +149,16 @@ impl EditorState {
     ///
     /// # Returns
     /// * `Ok(())` - Text successfully deleted
-    /// * `Err(String)` - Error message if range is invalid or deletion fails
-    pub fn delete_text(&mut self, start: usize, end: usize) -> Result<(), String> {
+    /// * `Err(app::Error)` - Error if range is invalid or deletion fails
+    pub fn delete_text(&mut self, start: usize, end: usize) -> app::Result<()> {
         let editor_id = env::executor_id();
         let editor = encode_identity(&editor_id);
 
         app::log!("Deleting text from {} to {} by {}", start, end, editor);
 
-        self.document
-            .delete_range(start, end)
-            .map_err(|e| format!("Failed to delete text: {:?}", e))?;
+        self.document.delete_range(start, end)?;
 
-        self.edit_count
-            .increment()
-            .map_err(|e| format!("Failed to increment edit count: {:?}", e))?;
+        self.edit_count.increment()?;
 
         app::emit!(EditorEvent::TextDeleted { start, end, editor });
 
@@ -182,33 +169,27 @@ impl EditorState {
     ///
     /// # Returns
     /// * `Ok(String)` - The current document text
-    /// * `Err(String)` - Error message if retrieval fails
-    pub fn get_text(&self) -> Result<String, String> {
-        self.document
-            .get_text()
-            .map_err(|e| format!("Failed to get text: {:?}", e))
+    /// * `Err(app::Error)` - Error if retrieval fails
+    pub fn get_text(&self) -> app::Result<String> {
+        self.document.get_text().map_err(Into::into)
     }
 
     /// Get the length of the document
     ///
     /// # Returns
     /// * `Ok(usize)` - The number of characters in the document
-    /// * `Err(String)` - Error message if retrieval fails
-    pub fn get_length(&self) -> Result<usize, String> {
-        self.document
-            .len()
-            .map_err(|e| format!("Failed to get length: {:?}", e))
+    /// * `Err(app::Error)` - Error if retrieval fails
+    pub fn get_length(&self) -> app::Result<usize> {
+        self.document.len().map_err(Into::into)
     }
 
     /// Check if the document is empty
     ///
     /// # Returns
     /// * `Ok(bool)` - True if the document is empty
-    /// * `Err(String)` - Error message if check fails
-    pub fn is_empty(&self) -> Result<bool, String> {
-        self.document
-            .is_empty()
-            .map_err(|e| format!("Failed to check if empty: {:?}", e))
+    /// * `Err(app::Error)` - Error if check fails
+    pub fn is_empty(&self) -> app::Result<bool> {
+        self.document.is_empty().map_err(Into::into)
     }
 
     /// Set the document title
@@ -218,10 +199,10 @@ impl EditorState {
     ///
     /// # Returns
     /// * `Ok(())` - Title successfully changed
-    /// * `Err(String)` - Error message if title is empty
-    pub fn set_title(&mut self, new_title: String) -> Result<(), String> {
+    /// * `Err(app::Error)` - Error if title is empty
+    pub fn set_title(&mut self, new_title: String) -> app::Result<()> {
         if new_title.is_empty() {
-            return Err("Title cannot be empty".to_string());
+            app::bail!("Title cannot be empty");
         }
 
         let editor_id = env::executor_id();
@@ -230,8 +211,7 @@ impl EditorState {
         let old_title = self.get_title();
 
         self.metadata
-            .insert("title".to_string(), new_title.clone().into())
-            .map_err(|e| format!("Failed to update title: {:?}", e))?;
+            .insert("title".to_string(), new_title.clone().into())?;
 
         app::log!(
             "Title changed from '{}' to '{}' by {}",
@@ -266,7 +246,7 @@ impl EditorState {
     ///
     /// # Returns
     /// * `Ok(String)` - Formatted statistics
-    /// * `Err(String)` - Error message if stats retrieval fails
+    /// * `Err(app::Error)` - Error if stats retrieval fails
     ///
     /// # Example Output
     /// ```text
@@ -276,12 +256,9 @@ impl EditorState {
     /// - Total edits: 15
     /// - Owner: 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty
     /// ```
-    pub fn get_stats(&self) -> Result<String, String> {
+    pub fn get_stats(&self) -> app::Result<String> {
         let length = self.get_length()?;
-        let total_edits = self
-            .edit_count
-            .value()
-            .map_err(|e| format!("Failed to get edit count: {:?}", e))?;
+        let total_edits = self.edit_count.value()?;
 
         let title = self.get_title();
         let owner = self
@@ -311,8 +288,8 @@ impl EditorState {
     ///
     /// # Returns
     /// * `Ok(())` - Text successfully replaced
-    /// * `Err(String)` - Error message if operation fails
-    pub fn replace_text(&mut self, start: usize, end: usize, text: String) -> Result<(), String> {
+    /// * `Err(app::Error)` - Error if operation fails
+    pub fn replace_text(&mut self, start: usize, end: usize, text: String) -> app::Result<()> {
         // Delete the range first
         if start < end {
             self.delete_text(start, end)?;
@@ -333,8 +310,8 @@ impl EditorState {
     ///
     /// # Returns
     /// * `Ok(())` - Text successfully appended
-    /// * `Err(String)` - Error message if operation fails
-    pub fn append_text(&mut self, text: String) -> Result<(), String> {
+    /// * `Err(app::Error)` - Error if operation fails
+    pub fn append_text(&mut self, text: String) -> app::Result<()> {
         let length = self.get_length()?;
         self.insert_text(length, text)
     }
@@ -343,12 +320,50 @@ impl EditorState {
     ///
     /// # Returns
     /// * `Ok(())` - Document successfully cleared
-    /// * `Err(String)` - Error message if operation fails
-    pub fn clear(&mut self) -> Result<(), String> {
+    /// * `Err(app::Error)` - Error if operation fails
+    pub fn clear(&mut self) -> app::Result<()> {
         let length = self.get_length()?;
         if length > 0 {
             self.delete_text(0, length)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn insert_append_and_read() {
+        let mut app = TestHost::new(EditorState::init);
+
+        app.call(|s| s.insert_text(0, "Hello".into())).unwrap();
+        app.call(|s| s.append_text(" World".into())).unwrap();
+
+        assert_eq!(app.view(|s| s.get_text()).unwrap(), "Hello World");
+        assert_eq!(app.view(|s| s.get_length()).unwrap(), 11);
+        assert!(!app.view(|s| s.is_empty()).unwrap());
+    }
+
+    #[test]
+    fn clear_empties_document() {
+        let mut app = TestHost::new(EditorState::init);
+
+        app.call(|s| s.append_text("content".into())).unwrap();
+        app.call(|s| s.clear()).unwrap();
+
+        assert!(app.view(|s| s.is_empty()).unwrap());
+        assert_eq!(app.view(|s| s.get_length()).unwrap(), 0);
+    }
+
+    #[test]
+    fn title_set_and_get() {
+        let mut app = TestHost::new(EditorState::init);
+
+        app.call(|s| s.set_title("My Doc".into())).unwrap();
+        assert_eq!(app.view(|s| s.get_title()), "My Doc");
     }
 }

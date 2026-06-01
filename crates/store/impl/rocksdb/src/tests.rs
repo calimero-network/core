@@ -234,3 +234,52 @@ fn test_approximate_size_scopes_to_range() {
         "in-range ({in_range}) must not exceed full-range ({full_range})"
     );
 }
+
+#[test]
+fn test_delete_range_drops_only_in_range_keys() {
+    // The native range tombstone backing `SortedMap::clear`'s index drop must
+    // delete exactly `[lo, hi)` and leave neighbouring prefixes untouched.
+    let dir = TempDir::new("_calimero_store_delete_range").expect("tempdir");
+    let dir_path = dir.path().to_owned().try_into().expect("path conversion");
+    let config = StoreConfig::new(dir_path);
+    let db = RocksDB::open(&config).expect("db open");
+
+    // Three prefixes; we'll wipe only the middle one (0x20).
+    for p in [0x10_u8, 0x20, 0x30] {
+        for i in 0..8u8 {
+            let key = [p, i];
+            db.put(
+                Column::SortedIndex,
+                Slice::from(&key[..]),
+                Slice::from(&[i][..]),
+            )
+            .expect("put");
+        }
+    }
+
+    db.delete_range(
+        Column::SortedIndex,
+        Slice::from(&[0x20_u8][..]),
+        Slice::from(&[0x21_u8][..]),
+    )
+    .expect("delete_range");
+
+    // The 0x20 bucket is gone…
+    for i in 0..8u8 {
+        assert!(
+            !db.has(Column::SortedIndex, Slice::from(&[0x20_u8, i][..]))
+                .expect("has 0x20"),
+            "0x20 key {i} should have been deleted"
+        );
+    }
+    // …while the neighbours survive untouched.
+    for (p, label) in [(0x10_u8, "0x10"), (0x30, "0x30")] {
+        for i in 0..8u8 {
+            assert!(
+                db.has(Column::SortedIndex, Slice::from(&[p, i][..]))
+                    .expect("has neighbour"),
+                "{label} key {i} must survive a neighbouring range delete"
+            );
+        }
+    }
+}

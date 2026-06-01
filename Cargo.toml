@@ -15,6 +15,8 @@ exclude = [
     "./apps/blobs",
     "./apps/collaborative-editor",
     "./apps/kv-store",
+    "./apps/sorted-kv-store",
+    "./apps/sorted-set-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",
@@ -106,6 +108,8 @@ members = [
 
     "./apps/scaffolding-e2e",
     "./apps/kv-store",
+    "./apps/sorted-kv-store",
+    "./apps/sorted-set-store",
     "./apps/kv-store-init",
     "./apps/kv-store-with-handlers",
 	"./apps/kv-store-with-user-and-frozen-storage",

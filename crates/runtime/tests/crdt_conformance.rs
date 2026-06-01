@@ -368,16 +368,13 @@ fn kv_unordered_map_lww_converges() {
 }
 
 // The four tests below drive CONCURRENT writes to the SAME logical CRDT entity
-// (one counter / one set key). They currently do NOT converge through this
-// harness: the plain `StorageDelta::Actions` apply done by `__calimero_sync_next`
-// LWW-overwrites the CRDT container (apply_action only invokes CRDT merge on the
-// equal-`updated_at` branch — interface.rs ~707; concurrent writes have distinct
-// `updated_at`), so e.g. a GCounter reads 1 instead of 3. Whether this is a
-// product bug or a harness gap (the node ships `StorageDelta::CausalActions` and
-// also reconciles via HashComparison/merge_root_state, neither exercised here)
-// is the open classification question. Ignored so the suite stays green while
-// the distinction is resolved; run with `--ignored` to observe the divergence.
-#[ignore = "concurrent same-entity CRDT merge not exercised by plain Actions apply; see module note"]
+// (one counter / one set key) — the hardest convergence case. These were once
+// `#[ignore]`d because plain `StorageDelta::Actions` apply LWW-overwrote the
+// CRDT container instead of merging it (concurrent writes carry distinct
+// `updated_at`, so the merge only fired on the equal-timestamp branch). That
+// gap has since been closed — `apply_action` now routes concurrent same-entity
+// CRDT writes through the typed merge on the newer-timestamp branch too — so a
+// GCounter correctly sums to 3. Kept as live regression coverage.
 #[test]
 fn gcounter_converges() {
     let mut c = Cluster::new(3);
@@ -398,7 +395,6 @@ fn gcounter_converges() {
     assert_eq!(n, Some(3), "GCounter should sum concurrent increments");
 }
 
-#[ignore = "concurrent same-entity CRDT merge not exercised by plain Actions apply; see module note"]
 #[test]
 fn pncounter_converges() {
     let mut c = Cluster::new(3);
@@ -413,7 +409,6 @@ fn pncounter_converges() {
     assert_converged("pncounter", &roots);
 }
 
-#[ignore = "concurrent same-entity CRDT merge not exercised by plain Actions apply; see module note"]
 #[test]
 fn nested_counter_in_map_converges() {
     let mut c = Cluster::new(3);
@@ -457,7 +452,6 @@ fn vector_converges() {
     assert_converged("vector_push", &roots);
 }
 
-#[ignore = "concurrent same-entity CRDT merge not exercised by plain Actions apply; see module note"]
 #[test]
 fn unordered_set_in_map_converges() {
     // crdt_tags: UnorderedMap<String, UnorderedSet<String>> — concurrent tag
@@ -583,6 +577,160 @@ fn frozen_storage_converges() {
         ],
     );
     assert_converged("frozen", &roots);
+}
+
+// ---------------------------------------------------------------------------
+// SortedMap ordered-index path, end to end through real WASM (core#2559).
+//
+// Unlike the storage crate's unit tests (which drive the adaptor natively or via
+// a mock), this runs the compiled app through `Module::run`, so the ordered
+// reads travel the FULL host-function chain: app WASM → `MainStorage` →
+// `storage_index_set` / `storage_index_scan` host imports → the runtime's
+// `InMemoryStorage` ordered index. A correct, key-ordered result here proves the
+// Stage C host ABI works in a real WASM execution, not just in unit tests.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sorted_map_range_through_real_wasm() {
+    let mut c = Cluster::new(1);
+
+    // Insert deliberately out of order — each `sorted_set` maintains the index
+    // host-side via `storage_index_set`.
+    for (k, v) in [
+        ("delta", "D"),
+        ("alpha", "A"),
+        ("charlie", "C"),
+        ("bravo", "B"),
+        ("echo", "E"),
+    ] {
+        let _artifact = c.call(0, "sorted_set", json!({ "key": k, "value": v }));
+    }
+
+    // `sorted_range` reads back through `storage_index_scan` (the index-backed
+    // path). The result must be the key-ordered window [bravo, echo).
+    let range = c.query(
+        0,
+        "sorted_range",
+        json!({ "start": "bravo", "end": "echo" }),
+    );
+    let range = range.get("output").cloned().unwrap_or(range);
+    assert_eq!(
+        range,
+        json!({ "bravo": "B", "charlie": "C", "delta": "D" }),
+        "sorted_range [bravo, echo) via the host ordered index"
+    );
+
+    // Full key listing comes back ascending too.
+    let keys = c.query(0, "sorted_keys", json!({}));
+    let keys = keys.get("output").cloned().unwrap_or(keys);
+    assert_eq!(
+        keys,
+        json!(["alpha", "bravo", "charlie", "delta", "echo"]),
+        "sorted_keys ascending"
+    );
+
+    // `last` is the reverse-seek path (`storage_index_last` host import).
+    let last = c.query(0, "sorted_last_key", json!({}));
+    let last = last.get("output").cloned().unwrap_or(last);
+    assert_eq!(last, json!("echo"), "sorted_last_key via reverse seek");
+}
+
+/// A receiving node applies SortedMap entries via the generic sync path
+/// (host-side, which does NOT touch the ordered index), so its index is stale.
+/// The next `sorted_range` query must notice the `full_hash` marker mismatch,
+/// rebuild the index from the synced entries, and return correct key-ordered
+/// results — the self-heal-after-sync path, proven through real WASM.
+#[test]
+fn sorted_map_rebuilds_index_after_sync() {
+    let mut c = Cluster::new(2);
+
+    // Node 0 writes (out of order) and broadcasts each delta; node 1 applies
+    // them via `__calimero_sync_next` (entries land host-side, index untouched).
+    for (k, v) in [("m", "M"), ("a", "A"), ("z", "Z"), ("f", "F")] {
+        let artifact = c.call(0, "sorted_set", json!({ "key": k, "value": v }));
+        c.apply(1, &artifact);
+    }
+
+    // Node 1's ordered read must rebuild its stale index, then serve the window.
+    let range = c.query(1, "sorted_range", json!({ "start": "a", "end": "z" }));
+    let range = range.get("output").cloned().unwrap_or(range);
+    assert_eq!(
+        range,
+        json!({ "a": "A", "f": "F", "m": "M" }),
+        "node 1 rebuilds its index after sync and serves the range"
+    );
+}
+
+// SortedSet ordered-index path, end to end through real WASM — the `SortedSet`
+// counterpart of `sorted_map_range_through_real_wasm`. `sorted_tag_add`
+// maintains the index host-side; `sorted_tags_range`/`sorted_tags_all`/
+// `sorted_tags_last` read it back through the same host imports.
+#[test]
+fn sorted_set_range_through_real_wasm() {
+    let mut c = Cluster::new(1);
+
+    // Add deliberately out of order — the index is maintained host-side.
+    for tag in ["delta", "alpha", "charlie", "bravo", "echo"] {
+        let _artifact = c.call(0, "sorted_tag_add", json!({ "tag": tag }));
+    }
+
+    // Element-ordered window [bravo, echo) via `storage_index_scan`.
+    let range = c.query(
+        0,
+        "sorted_tags_range",
+        json!({ "start": "bravo", "end": "echo" }),
+    );
+    let range = range.get("output").cloned().unwrap_or(range);
+    assert_eq!(
+        range,
+        json!(["bravo", "charlie", "delta"]),
+        "sorted_tags_range [bravo, echo) via the host ordered index"
+    );
+
+    // Full listing ascending.
+    let all = c.query(0, "sorted_tags_all", json!({}));
+    let all = all.get("output").cloned().unwrap_or(all);
+    assert_eq!(
+        all,
+        json!(["alpha", "bravo", "charlie", "delta", "echo"]),
+        "sorted_tags_all ascending"
+    );
+
+    // Reverse-seek last (`storage_index_last`).
+    let last = c.query(0, "sorted_tags_last", json!({}));
+    let last = last.get("output").cloned().unwrap_or(last);
+    assert_eq!(last, json!("echo"), "sorted_tags_last via reverse seek");
+}
+
+/// `SortedSet` self-heal-after-sync, mirroring `sorted_map_rebuilds_index_after_sync`:
+/// a receiver applies elements via the generic sync path (index untouched), and
+/// its next ordered read must rebuild the stale index and serve correct results.
+#[test]
+fn sorted_set_rebuilds_index_after_sync() {
+    let mut c = Cluster::new(2);
+
+    for tag in ["m", "a", "z", "f"] {
+        let artifact = c.call(0, "sorted_tag_add", json!({ "tag": tag }));
+        c.apply(1, &artifact);
+    }
+
+    let range = c.query(1, "sorted_tags_range", json!({ "start": "a", "end": "z" }));
+    let range = range.get("output").cloned().unwrap_or(range);
+    assert_eq!(
+        range,
+        json!(["a", "f", "m"]),
+        "node 1 rebuilds its set index after sync and serves the range"
+    );
+
+    // `[a, z)` excludes `z`; assert the full set too so a bug that dropped the
+    // last synced element (the range's exclusive bound) would still be caught.
+    let all = c.query(1, "sorted_tags_all", json!({}));
+    let all = all.get("output").cloned().unwrap_or(all);
+    assert_eq!(
+        all,
+        json!(["a", "f", "m", "z"]),
+        "node 1 has the full synced set in element order, including the last element"
+    );
 }
 
 // ---------------------------------------------------------------------------

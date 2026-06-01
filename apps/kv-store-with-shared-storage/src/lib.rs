@@ -1,15 +1,12 @@
 use std::collections::BTreeSet;
 
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::PublicKey;
 use calimero_storage::collections::{LwwRegister, SharedStorage};
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStore {
     /// Group-writable register. Initial writer is whoever installed the app.
     /// Rotation lets the writer set evolve over the app's lifetime.
@@ -38,7 +35,7 @@ impl KvStore {
     pub fn init() -> KvStore {
         let initializer: PublicKey = calimero_sdk::env::executor_id().into();
         let mut writers = BTreeSet::new();
-        let _ = writers.insert(initializer);
+        writers.insert(initializer);
         KvStore {
             shared_value: SharedStorage::new(writers, false),
         }
@@ -47,7 +44,7 @@ impl KvStore {
     /// Set the shared value. Caller must be a current writer.
     pub fn set_shared(&mut self, value: String) -> app::Result<()> {
         app::log!("Setting shared value: {:?}", value);
-        let _ = self.shared_value.insert(LwwRegister::new(value.clone()))?;
+        self.shared_value.insert(LwwRegister::new(value.clone()))?;
         app::emit!(Event::SharedSet { value: &value });
         Ok(())
     }
@@ -66,5 +63,34 @@ impl KvStore {
         self.shared_value.rotate_writers(set)?;
         app::emit!(Event::WritersRotated { count });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn set_and_get_shared() {
+        // The default executor is registered as the sole writer in `init`.
+        let mut app = TestHost::new(KvStore::init);
+
+        app.call(|s| s.set_shared("hello".into())).unwrap();
+        assert_eq!(app.view(|s| s.get_shared()).unwrap(), "hello");
+
+        app.call(|s| s.set_shared("world".into())).unwrap();
+        assert_eq!(app.view(|s| s.get_shared()).unwrap(), "world");
+    }
+
+    #[test]
+    fn rotate_writers_emits_event() {
+        let mut app = TestHost::new(KvStore::init);
+
+        let me: PublicKey = app.executor_id().into();
+        app.call(|s| s.rotate_writers(vec![me])).unwrap();
+
+        assert!(app.events().iter().any(|e| e.kind == "WritersRotated"));
     }
 }

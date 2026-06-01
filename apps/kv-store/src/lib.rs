@@ -3,15 +3,12 @@
 use std::collections::BTreeMap;
 
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::unordered_map::Entry;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStore {
     items: UnorderedMap<String, LwwRegister<String>>,
 }
@@ -37,7 +34,7 @@ impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
         KvStore {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
         }
     }
 
@@ -160,5 +157,76 @@ impl KvStore {
         app::emit!(Event::Cleared);
 
         self.items.clear().map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn set_get_len_remove() {
+        let mut app = TestHost::new(KvStore::init);
+
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), Some("v".to_owned()));
+        assert_eq!(app.view(|s| s.len()).unwrap(), 1);
+
+        assert_eq!(app.call(|s| s.remove("k")).unwrap(), Some("v".to_owned()));
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), None);
+        assert_eq!(app.view(|s| s.len()).unwrap(), 0);
+    }
+
+    #[test]
+    fn entries_and_clear() {
+        let mut app = TestHost::new(KvStore::init);
+
+        app.call(|s| s.set("a".into(), "1".into())).unwrap();
+        app.call(|s| s.set("b".into(), "2".into())).unwrap();
+
+        let entries = app.view(|s| s.entries()).unwrap();
+        assert_eq!(entries.get("a"), Some(&"1".to_owned()));
+        assert_eq!(entries.get("b"), Some(&"2".to_owned()));
+
+        app.call(|s| s.clear()).unwrap();
+        assert_eq!(app.view(|s| s.len()).unwrap(), 0);
+    }
+
+    #[test]
+    fn update_if_exists_and_get_or_insert() {
+        let mut app = TestHost::new(KvStore::init);
+
+        // Nothing to update yet.
+        assert!(!app
+            .call(|s| s.update_if_exists("k".into(), "v".into()))
+            .unwrap());
+
+        // Inserts on first call, returns the existing value afterwards.
+        assert_eq!(
+            app.call(|s| s.get_or_insert("k".into(), "first".into()))
+                .unwrap(),
+            "first".to_owned()
+        );
+        assert_eq!(
+            app.call(|s| s.get_or_insert("k".into(), "second".into()))
+                .unwrap(),
+            "first".to_owned()
+        );
+
+        // Now the key exists, so the update lands.
+        assert!(app
+            .call(|s| s.update_if_exists("k".into(), "v".into()))
+            .unwrap());
+        assert_eq!(app.view(|s| s.get("k")).unwrap(), Some("v".to_owned()));
+    }
+
+    #[test]
+    fn set_emits_event() {
+        let mut app = TestHost::new(KvStore::init);
+
+        app.call(|s| s.set("k".into(), "v".into())).unwrap();
+        assert_eq!(app.events().len(), 1);
     }
 }

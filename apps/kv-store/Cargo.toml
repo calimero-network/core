@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 thiserror.workspace = true
@@ -21,3 +21,8 @@ serde_json.workspace = true
 
 [package.metadata.workspaces]
 independent = true
+
+[dev-dependencies]
+# Enables `register_crdt_merge` + the native mock host so `TestHost` can drive
+# CRDT state under `cargo test`.
+calimero-storage = { workspace = true, features = ["testing"] }

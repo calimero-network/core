@@ -1,7 +1,10 @@
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned, ToTokens};
 use syn::spanned::Spanned;
-use syn::{Error as SynError, GenericParam, Ident, ImplItemFn, Path, ReturnType, Visibility};
+use syn::{
+    Error as SynError, GenericArgument, GenericParam, Ident, ImplItemFn, Path, PathArguments,
+    ReturnType, Type, Visibility,
+};
 
 use crate::errors::{Errors, ParseError};
 use crate::logic::arg::{LogicArg, LogicArgInput, LogicArgTyped, SelfType};
@@ -230,6 +233,83 @@ impl ToTokens for PublicLogicMethod<'_> {
     }
 }
 
+/// Detects a bare `Result<T, String>` return type and returns the span of the
+/// `String` error type, so app logic methods can be steered towards
+/// `app::Result<T>` (which carries `app::Error`).
+///
+/// `app::Result<T>` is left alone: it desugars to `Result<T, app::Error>` but
+/// is written with a single type argument, so it never matches the two-argument
+/// `Result<Ok, Err>` shape this looks for. Custom error types
+/// (`Result<T, MyError>`) are likewise untouched.
+///
+/// This is a purely syntactic check, so it cannot see through type aliases: a
+/// `type MyResult<T> = Result<T, String>` used as `-> MyResult<T>` is not
+/// flagged. The error type is matched only against the standard-library
+/// `String` spellings (`String`, `std::string::String`, `alloc::string::String`)
+/// so an unrelated user type whose last path segment happens to be `String`
+/// is not falsely flagged.
+fn string_error_result_span(ty: &Type) -> Option<Span> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Result" {
+        return None;
+    }
+
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+
+    let mut type_args = args.args.iter().filter_map(|arg| match arg {
+        GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    });
+
+    let _ok = type_args.next()?;
+    let err = type_args.next()?;
+    if type_args.next().is_some() {
+        // More than two type arguments — not a plain `Result<Ok, Err>`.
+        return None;
+    }
+
+    is_std_string(err).then(|| err.span())
+}
+
+/// Whether `ty` is the standard-library `String`, written either bare or with a
+/// `std`/`alloc` qualifier. A leading `::` is allowed; any other prefix (e.g.
+/// `my_crate::String`) is rejected to avoid false positives.
+fn is_std_string(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+
+    if type_path.qself.is_some() {
+        return false;
+    }
+
+    let segments = &type_path.path.segments;
+
+    // The `String` segment itself must carry no generic arguments.
+    if !segments
+        .last()
+        .is_some_and(|segment| segment.arguments.is_empty())
+    {
+        return false;
+    }
+
+    match segments.len() {
+        1 => segments[0].ident == "String",
+        3 => {
+            (segments[0].ident == "std" || segments[0].ident == "alloc")
+                && segments[1].ident == "string"
+                && segments[2].ident == "String"
+        }
+        _ => false,
+    }
+}
+
 pub struct LogicMethodImplInput<'a, 'b> {
     pub item: &'a ImplItemFn,
 
@@ -340,6 +420,10 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
 
         let mut ret = None;
         if let ReturnType::Type(_, ret_type) = &input.item.sig.output {
+            if let Some(span) = string_error_result_span(ret_type) {
+                errors.subsume(SynError::new(span, ParseError::StringErrorResult));
+            }
+
             match LogicTy::try_from(LogicTyInput {
                 type_: input.type_,
                 ty: ret_type,
@@ -360,5 +444,53 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             has_refs,
             modifiers,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use syn::{parse_quote, Type};
+
+    use super::string_error_result_span;
+
+    fn flags(ty: Type) -> bool {
+        string_error_result_span(&ty).is_some()
+    }
+
+    #[test]
+    fn flags_bare_string_error_result() {
+        assert!(flags(parse_quote! { Result<(), String> }));
+        assert!(flags(parse_quote! { Result<u64, String> }));
+        assert!(flags(parse_quote! { Result<Vec<FileRecord>, String> }));
+        assert!(flags(parse_quote! { core::result::Result<(), String> }));
+        assert!(flags(parse_quote! { std::result::Result<bool, String> }));
+        // Qualified standard-library `String` spellings.
+        assert!(flags(parse_quote! { Result<(), std::string::String> }));
+        assert!(flags(parse_quote! { Result<(), alloc::string::String> }));
+    }
+
+    #[test]
+    fn ignores_app_result_and_custom_errors() {
+        // `app::Result<T>` carries a single type argument.
+        assert!(!flags(parse_quote! { app::Result<u64> }));
+        assert!(!flags(parse_quote! { Result<u64> }));
+        // Custom / non-`String` error types are fine.
+        assert!(!flags(parse_quote! { Result<u64, MyError> }));
+        assert!(!flags(parse_quote! { Result<u64, std::io::Error> }));
+        assert!(!flags(parse_quote! { Result<u64, app::Error> }));
+        // A user type whose last segment is `String` must not be flagged.
+        assert!(!flags(parse_quote! { Result<u64, my_crate::String> }));
+        assert!(!flags(
+            parse_quote! { Result<u64, widgets::string::String> }
+        ));
+    }
+
+    #[test]
+    fn ignores_non_result_types() {
+        assert!(!flags(parse_quote! { u64 }));
+        assert!(!flags(parse_quote! { Option<String> }));
+        assert!(!flags(parse_quote! { String }));
+        // More than two type arguments is not a plain `Result<Ok, Err>`.
+        assert!(!flags(parse_quote! { Result<u64, String, Extra> }));
     }
 }

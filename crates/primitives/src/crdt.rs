@@ -77,12 +77,38 @@ pub enum CrdtType {
         value_type: String,
     },
 
+    /// Sorted Map.
+    ///
+    /// Key-value store with the same add-wins merge semantics as
+    /// [`UnorderedMap`](Self::UnorderedMap), but iterated in ascending key
+    /// order to support range and prefix queries. The ordering is derived from
+    /// `K: Ord` and is therefore a pure function of the key set — no extra
+    /// state is synced and merge is byte-identical to `UnorderedMap`.
+    /// Merge: Union of keys, recursive merge of values.
+    SortedMap {
+        /// Key type name
+        key_type: String,
+        /// Value type name (may be a nested CRDT)
+        value_type: String,
+    },
+
     /// Unordered Set.
     ///
     /// Collection of unique values with add-wins semantics.
     /// Elements are never lost once added.
     /// Merge: Union of all elements from both sets.
     UnorderedSet {
+        /// Element type name
+        element_type: String,
+    },
+
+    /// Sorted Set.
+    ///
+    /// Same add-wins union merge as [`UnorderedSet`](Self::UnorderedSet), but
+    /// iterated in ascending element order to support range and prefix queries.
+    /// Ordering is derived from `T: Ord` — no extra state is synced.
+    /// Merge: Union of all elements from both sets.
+    SortedSet {
         /// Element type name
         element_type: String,
     },
@@ -155,10 +181,27 @@ impl CrdtType {
         }
     }
 
+    /// Create a SortedMap with known key and value types.
+    #[must_use]
+    pub fn sorted_map(key_type: impl Into<String>, value_type: impl Into<String>) -> Self {
+        Self::SortedMap {
+            key_type: key_type.into(),
+            value_type: value_type.into(),
+        }
+    }
+
     /// Create an UnorderedSet with a known element type.
     #[must_use]
     pub fn unordered_set(element_type: impl Into<String>) -> Self {
         Self::UnorderedSet {
+            element_type: element_type.into(),
+        }
+    }
+
+    /// Create a SortedSet with a known element type.
+    #[must_use]
+    pub fn sorted_set(element_type: impl Into<String>) -> Self {
+        Self::SortedSet {
             element_type: element_type.into(),
         }
     }
@@ -180,7 +223,7 @@ impl CrdtType {
     /// Returns `true` if this is a set type.
     #[must_use]
     pub const fn is_set(&self) -> bool {
-        matches!(self, Self::UnorderedSet { .. })
+        matches!(self, Self::UnorderedSet { .. } | Self::SortedSet { .. })
     }
 
     /// Returns `true` if this is a collection type (map, set, vector, or array).
@@ -188,7 +231,12 @@ impl CrdtType {
     pub const fn is_collection(&self) -> bool {
         matches!(
             self,
-            Self::UnorderedMap { .. } | Self::UnorderedSet { .. } | Self::Vector { .. } | Self::Rga
+            Self::UnorderedMap { .. }
+                | Self::SortedMap { .. }
+                | Self::UnorderedSet { .. }
+                | Self::SortedSet { .. }
+                | Self::Vector { .. }
+                | Self::Rga
         )
     }
 
@@ -239,19 +287,39 @@ mod tests {
     #[test]
     fn test_is_set() {
         assert!(CrdtType::unordered_set("String").is_set());
+        assert!(CrdtType::sorted_set("String").is_set());
         assert!(!CrdtType::unordered_map("String", "u64").is_set());
+        assert!(!CrdtType::sorted_map("String", "u64").is_set());
         assert!(!CrdtType::vector("u64").is_set());
     }
 
     #[test]
     fn test_is_collection() {
         assert!(CrdtType::unordered_map("String", "u64").is_collection());
+        assert!(CrdtType::sorted_map("String", "u64").is_collection());
         assert!(CrdtType::unordered_set("String").is_collection());
+        assert!(CrdtType::sorted_set("String").is_collection());
         assert!(CrdtType::vector("u64").is_collection());
         assert!(CrdtType::Rga.is_collection());
         assert!(!CrdtType::lww_register("u64").is_collection());
         assert!(!CrdtType::GCounter.is_collection());
         assert!(!CrdtType::PnCounter.is_collection());
+    }
+
+    #[test]
+    fn test_sorted_map_constructor() {
+        assert_eq!(
+            CrdtType::sorted_map("String", "u64"),
+            CrdtType::SortedMap {
+                key_type: "String".to_string(),
+                value_type: "u64".to_string(),
+            }
+        );
+        // SortedMap is distinct from UnorderedMap.
+        assert_ne!(
+            CrdtType::sorted_map("String", "u64"),
+            CrdtType::unordered_map("String", "u64")
+        );
     }
 
     #[test]
@@ -278,7 +346,9 @@ mod tests {
             CrdtType::PnCounter,
             CrdtType::Rga,
             CrdtType::unordered_map("String", "u64"),
+            CrdtType::sorted_map("String", "u64"),
             CrdtType::unordered_set("String"),
+            CrdtType::sorted_set("String"),
             CrdtType::vector("u64"),
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,
@@ -303,7 +373,9 @@ mod tests {
             CrdtType::PnCounter,
             CrdtType::Rga,
             CrdtType::unordered_map("String", "u64"),
+            CrdtType::sorted_map("String", "u64"),
             CrdtType::unordered_set("String"),
+            CrdtType::sorted_set("String"),
             CrdtType::vector("u64"),
             CrdtType::UserStorage,
             CrdtType::FrozenStorage,

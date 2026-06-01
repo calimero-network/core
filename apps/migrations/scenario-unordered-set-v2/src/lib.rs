@@ -1,5 +1,5 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::borsh::BorshDeserialize;
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::state::read_raw;
 use calimero_storage::collections::{LwwRegister, UnorderedSet};
@@ -14,8 +14,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// identity), so every node applying the SAME transform over the SAME old set
 /// produces a byte-identical set — even though migrate emits no sync delta.
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct ScenarioUnorderedSetV2 {
     tags: UnorderedSet<String>,
     title: LwwRegister<String>,
@@ -96,7 +94,7 @@ impl ScenarioUnorderedSetV2 {
     #[app::init]
     pub fn init() -> ScenarioUnorderedSetV2 {
         ScenarioUnorderedSetV2 {
-            tags: UnorderedSet::new_with_field_name("tags"),
+            tags: UnorderedSet::new(),
             title: LwwRegister::new("untitled".to_owned()),
             migration_note: LwwRegister::new(String::new()),
         }

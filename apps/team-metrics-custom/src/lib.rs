@@ -17,7 +17,7 @@ use calimero_storage::collections::{Counter, Mergeable, UnorderedMap};
 ///
 /// This struct demonstrates CUSTOM Mergeable implementation.
 /// You have full control and can add custom logic!
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Default, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct TeamStats {
     pub wins: Counter,
@@ -51,10 +51,34 @@ impl Mergeable for TeamStats {
     }
 }
 
+/// Deterministic re-keying for a HAND-WRITTEN CRDT-value struct (#2577).
+///
+/// `#[derive(Mergeable)]` generates this for you. When you implement `Mergeable`
+/// by hand (as above), you MUST also implement `RekeyTarget`, or this struct —
+/// stored as an `UnorderedMap` value — is last-writer-wins'd as an opaque blob
+/// and its counters silently lose concurrent increments. Re-key each nested
+/// collection field under a field-namespaced child of the entry id so every
+/// replica derives identical ids and the counters converge as child entities.
+impl calimero_storage::collections::rekey::RekeyTarget for TeamStats {
+    fn rekey_relative_to(&mut self, parent_id: calimero_storage::address::Id) {
+        use calimero_storage::collections::rekey::field_child_id;
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.wins,
+            field_child_id(parent_id, "wins")
+        );
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.losses,
+            field_child_id(parent_id, "losses")
+        );
+        calimero_storage::rekey_field_if_supported!(
+            &mut self.draws,
+            field_child_id(parent_id, "draws")
+        );
+    }
+}
+
 /// Application state
 #[app::state(emits = MetricsEvent)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct TeamMetricsApp {
     /// Maps team_id → team statistics
     /// TeamStats has a CUSTOM Mergeable impl with full control
@@ -62,8 +86,6 @@ pub struct TeamMetricsApp {
 }
 
 #[app::event]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub enum MetricsEvent {
     WinRecorded { team_id: String, total: u64 },
     LossRecorded { team_id: String, total: u64 },
@@ -79,120 +101,93 @@ impl TeamMetricsApp {
         }
     }
 
-    pub fn record_win(&mut self, team_id: String) -> Result<u64, String> {
-        let mut stats = self
-            .teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(|| TeamStats {
-                wins: Counter::new(),
-                losses: Counter::new(),
-                draws: Counter::new(),
-            });
+    pub fn record_win(&mut self, team_id: String) -> app::Result<u64> {
+        let mut stats = self.teams.entry(team_id.clone())?.or_default()?;
 
-        stats
-            .wins
-            .increment()
-            .map_err(|e| format!("Increment failed: {:?}", e))?;
-        let total = stats
-            .wins
-            .value()
-            .map_err(|e| format!("Value failed: {:?}", e))?;
-
-        drop(
-            self.teams
-                .insert(team_id.clone(), stats)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        stats.wins.increment()?;
+        let total = stats.wins.value()?;
 
         app::emit!(MetricsEvent::WinRecorded { team_id, total });
 
         Ok(total)
     }
 
-    pub fn record_loss(&mut self, team_id: String) -> Result<u64, String> {
-        let mut stats = self
-            .teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(|| TeamStats {
-                wins: Counter::new(),
-                losses: Counter::new(),
-                draws: Counter::new(),
-            });
+    pub fn record_loss(&mut self, team_id: String) -> app::Result<u64> {
+        let mut stats = self.teams.entry(team_id.clone())?.or_default()?;
 
-        stats
-            .losses
-            .increment()
-            .map_err(|e| format!("Increment failed: {:?}", e))?;
-        let total = stats
-            .losses
-            .value()
-            .map_err(|e| format!("Value failed: {:?}", e))?;
-
-        drop(
-            self.teams
-                .insert(team_id.clone(), stats)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        stats.losses.increment()?;
+        let total = stats.losses.value()?;
 
         app::emit!(MetricsEvent::LossRecorded { team_id, total });
 
         Ok(total)
     }
 
-    pub fn record_draw(&mut self, team_id: String) -> Result<u64, String> {
-        let mut stats = self
-            .teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .unwrap_or_else(|| TeamStats {
-                wins: Counter::new(),
-                losses: Counter::new(),
-                draws: Counter::new(),
-            });
+    pub fn record_draw(&mut self, team_id: String) -> app::Result<u64> {
+        let mut stats = self.teams.entry(team_id.clone())?.or_default()?;
 
-        stats
-            .draws
-            .increment()
-            .map_err(|e| format!("Increment failed: {:?}", e))?;
-        let total = stats
-            .draws
-            .value()
-            .map_err(|e| format!("Value failed: {:?}", e))?;
-
-        drop(
-            self.teams
-                .insert(team_id.clone(), stats)
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
-        );
+        stats.draws.increment()?;
+        let total = stats.draws.value()?;
 
         app::emit!(MetricsEvent::DrawRecorded { team_id, total });
 
         Ok(total)
     }
 
-    pub fn get_wins(&self, team_id: String) -> Result<u64, String> {
-        self.teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|s| s.wins.value().unwrap_or(0))
-            .ok_or_else(|| "Team not found".to_owned())
+    pub fn get_wins(&self, team_id: String) -> app::Result<u64> {
+        let Some(stats) = self.teams.get(&team_id)? else {
+            app::bail!("Team not found");
+        };
+
+        Ok(stats.wins.value()?)
     }
 
-    pub fn get_losses(&self, team_id: String) -> Result<u64, String> {
-        self.teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|s| s.losses.value().unwrap_or(0))
-            .ok_or_else(|| "Team not found".to_owned())
+    pub fn get_losses(&self, team_id: String) -> app::Result<u64> {
+        let Some(stats) = self.teams.get(&team_id)? else {
+            app::bail!("Team not found");
+        };
+
+        Ok(stats.losses.value()?)
     }
 
-    pub fn get_draws(&self, team_id: String) -> Result<u64, String> {
-        self.teams
-            .get(&team_id)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|s| s.draws.value().unwrap_or(0))
-            .ok_or_else(|| "Team not found".to_owned())
+    pub fn get_draws(&self, team_id: String) -> app::Result<u64> {
+        let Some(stats) = self.teams.get(&team_id)? else {
+            app::bail!("Team not found");
+        };
+
+        Ok(stats.draws.value()?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn records_accumulate_per_team() {
+        let mut app = TestHost::new(TeamMetricsApp::init);
+
+        assert_eq!(app.call(|s| s.record_win("red".into())).unwrap(), 1);
+        assert_eq!(app.call(|s| s.record_win("red".into())).unwrap(), 2);
+        app.call(|s| s.record_loss("red".into())).unwrap();
+        app.call(|s| s.record_draw("red".into())).unwrap();
+
+        assert_eq!(app.view(|s| s.get_wins("red".into())).unwrap(), 2);
+        assert_eq!(app.view(|s| s.get_losses("red".into())).unwrap(), 1);
+        assert_eq!(app.view(|s| s.get_draws("red".into())).unwrap(), 1);
+    }
+
+    #[test]
+    fn teams_are_independent() {
+        let mut app = TestHost::new(TeamMetricsApp::init);
+
+        app.call(|s| s.record_win("red".into())).unwrap();
+        app.call(|s| s.record_win("blue".into())).unwrap();
+        app.call(|s| s.record_win("blue".into())).unwrap();
+
+        assert_eq!(app.view(|s| s.get_wins("red".into())).unwrap(), 1);
+        assert_eq!(app.view(|s| s.get_wins("blue".into())).unwrap(), 2);
     }
 }

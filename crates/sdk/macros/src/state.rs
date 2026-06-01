@@ -48,13 +48,37 @@ impl ToTokens for StateImpl<'_> {
         // Generate Mergeable implementation
         let merge_impl = generate_mergeable_impl(ident, generics, orig);
 
+        // Re-key registration for nested CRDT-value types (#2577): so a custom
+        // struct stored as a collection value has its nested collections given
+        // deterministic ids and converges instead of being LWW'd as a blob.
+        // The method holds the registrations; the wasm load hook, the native
+        // test bridge, and `register_crdt_merge_for_test` all call it.
+        let rekey_register_method = generate_rekey_register_method(ident, generics, orig);
+        let rekey_call = quote! { <#ident #ty_generics>::__calimero_register_rekey(); };
+
         // Generate registration hook
-        let registration_hook = generate_registration_hook(ident, &ty_generics);
+        let registration_hook = generate_registration_hook(ident, &ty_generics, &rekey_call);
 
         // Generate deterministic ID assignment method
         let assign_ids_impl = generate_assign_deterministic_ids_impl(ident, generics, orig);
 
+        // Generate the in-process test-harness bridge (native-only)
+        let test_state_impl = generate_test_state_impl(ident, generics, orig, &rekey_call);
+
         quote! {
+            // State is always persisted via borsh (init save, root-state merge,
+            // `merge_root_state_typed::<T>`), so the macro injects the derives and
+            // the crate redirect itself — authors no longer hand-write
+            // `#[derive(BorshSerialize, BorshDeserialize)]` + `#[borsh(crate = ...)]`
+            // on every state type. The full-path derive only selects the proc-macro;
+            // the generated code still resolves the borsh runtime through `::borsh`
+            // by default, so the `crate` attribute redirecting it to the SDK re-export
+            // is load-bearing.
+            #[derive(
+                ::calimero_sdk::borsh::BorshSerialize,
+                ::calimero_sdk::borsh::BorshDeserialize,
+            )]
+            #[borsh(crate = "::calimero_sdk::borsh")]
             #orig
 
             impl #impl_generics ::calimero_sdk::state::AppState for #ident #ty_generics #where_clause {
@@ -67,8 +91,14 @@ impl ToTokens for StateImpl<'_> {
             // Auto-generated registration hook
             #registration_hook
 
+            // Auto-generated nested-value re-key registration (#2577)
+            #rekey_register_method
+
             // Auto-generated deterministic ID assignment
             #assign_ids_impl
+
+            // Auto-generated TestHost bridge
+            #test_state_impl
         }
         .to_tokens(tokens);
     }
@@ -304,6 +334,66 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
             }
         }
 
+        // `#[app::state]` injects the borsh derives + `#[borsh(crate = ...)]`
+        // itself. A leftover manual `BorshSerialize`/`BorshDeserialize` derive, or
+        // a `#[borsh(crate = ...)]` redirect, would otherwise collide with the
+        // injected one and surface as a cryptic "conflicting implementations of
+        // trait `BorshSerialize`" error pointing at generated code. Catch those
+        // here and point straight at the attribute to delete.
+        //
+        // Only the `crate` key collides — other container-level borsh keys
+        // (`#[borsh(init = ...)]` on a struct, `#[borsh(use_discriminant = ...)]`
+        // on an enum) are legitimate and the macro does not supply them, so they
+        // must pass through. Flagging every `#[borsh(...)]` would make those
+        // attributes impossible to use on a state type.
+        let attrs = match input.item {
+            StructOrEnumItem::Struct(item) => &item.attrs,
+            StructOrEnumItem::Enum(item) => &item.attrs,
+        };
+
+        for attr in attrs {
+            if attr.path().is_ident("borsh") {
+                let mut sets_crate = false;
+                if let Err(err) = attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("crate") {
+                        sets_crate = true;
+                    }
+                    // Consume `= <value>` so iteration reaches every key rather
+                    // than stopping at the first `key = value` pair.
+                    if meta.input.peek(Token![=]) {
+                        let _: TokenStream = meta.value()?.parse()?;
+                    }
+                    Ok(())
+                }) {
+                    errors.subsume(err);
+                }
+
+                if sets_crate {
+                    errors.subsume(SynError::new_spanned(
+                        attr,
+                        "remove `crate = ...` from this `#[borsh(...)]`: `#[app::state]` injects the borsh crate redirect itself",
+                    ));
+                }
+            } else if attr.path().is_ident("derive") {
+                if let Err(err) = attr.parse_nested_meta(|meta| {
+                    if meta.path.segments.last().is_some_and(|seg| {
+                        matches!(
+                            seg.ident.to_string().as_str(),
+                            "BorshSerialize" | "BorshDeserialize"
+                        )
+                    }) {
+                        errors.subsume(SynError::new_spanned(
+                            &meta.path,
+                            "remove this derive: `#[app::state]` now injects `BorshSerialize` and `BorshDeserialize`",
+                        ));
+                    }
+                    Ok(())
+                }) {
+                    errors.subsume(err);
+                }
+            }
+        }
+
         match input.item {
             StructOrEnumItem::Struct(item) => {
                 validate_fields(&item.fields, &errors);
@@ -441,7 +531,11 @@ fn generate_mergeable_impl(
 ///    typed merge itself (separate address space), so it hands the
 ///    bytes to this export, which deserializes as `T`, runs
 ///    `Mergeable::merge`, returns serialized bytes.
-fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>) -> TokenStream {
+fn generate_registration_hook(
+    ident: &Ident,
+    ty_generics: &syn::TypeGenerics<'_>,
+    rekey_call: &TokenStream,
+) -> TokenStream {
     quote! {
         // ============================================================================
         // AUTO-GENERATED WASM Export — WASM-Internal Registration Hook
@@ -457,6 +551,9 @@ fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>
         #[no_mangle]
         pub extern "C" fn __calimero_register_merge() {
             ::calimero_storage::register_crdt_merge::<#ident #ty_generics>();
+            // Register nested CRDT-value-type re-key thunks (#2577) so struct
+            // values converge instead of being last-writer-wins'd as a blob.
+            #rekey_call
         }
 
         // ============================================================================
@@ -530,6 +627,179 @@ fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>
     }
 }
 
+/// Generate the [`calimero_sdk::testing::TestState`] bridge for the state type.
+///
+/// `TestHost` lives in `calimero_sdk` but can't name
+/// `calimero_storage::collections::Root` (the storage crate depends on the SDK,
+/// not vice-versa). This generated impl — emitted into the app crate, which
+/// depends on both — closes that loop: it drives `Root` for install / load /
+/// mutate / commit against the native mock store so app methods run under a
+/// plain `cargo test`.
+///
+/// Gated on `#[cfg(test)]` so it's absent from normal / wasm builds. It reaches
+/// the CRDT merge registry via `register_crdt_merge_for_test` — an always-native
+/// wrapper that's a no-op unless `calimero-storage`'s `testing` feature compiles
+/// the registry in. That keeps `cargo test` compiling for every example app,
+/// even ones with no `TestHost` tests of their own; an app that actually drives
+/// `TestHost` enables the feature (as a dev-dependency) so real registration
+/// happens and `Root` writes don't hit `NoMergeFunctionRegistered`.
+///
+/// Only emitted for struct states. Enum states have no
+/// `__assign_deterministic_ids` method (no fields), and a CRDT root is always a
+/// struct in practice, so an enum-root app simply has no `TestHost` bridge.
+/// Generate `__calimero_register_rekey()` — registers a re-key thunk for every
+/// type that appears in a state field, so a custom struct stored as a collection
+/// VALUE gets its nested collections deterministically re-keyed (and thus
+/// converges) instead of being last-writer-wins'd as an opaque blob (#2577).
+///
+/// We register EVERY type token found in each field (the collection itself, its
+/// key/value types, and so on). `register_rekey_if_supported!` autoref-dispatches
+/// to a real registration only for `RekeyTarget` types and is a safe no-op for
+/// leaves (`String`, `u64`, `LwwRegister<_>`, …), so over-collecting (including
+/// key types) is harmless.
+///
+/// SCOPE — one level of custom-struct nesting. This registers the value types of
+/// the ROOT state's collection fields. Built-in collections self-register in
+/// their constructors, so any depth of *built-in* nesting works. But a custom
+/// struct reachable only through ANOTHER custom struct's collection (state →
+/// `Map<_, Outer>` → `Map<_, Inner>`, where both are app structs) is not
+/// registered here, so `Inner` would still be LWW'd. Deep custom nesting is the
+/// follow-up; today's apps don't hit it.
+fn generate_rekey_register_method(
+    ident: &Ident,
+    generics: &Generics,
+    orig: &StructOrEnumItem,
+) -> TokenStream {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let fields = match orig {
+        StructOrEnumItem::Struct(s) => &s.fields,
+        StructOrEnumItem::Enum(_) => return quote! {},
+    };
+
+    let mut types: Vec<Type> = Vec::new();
+    for field in fields.iter() {
+        collect_type_paths(&field.ty, &mut types);
+    }
+
+    // Dedup by token string (syntactic, not semantic): the same value type can
+    // appear in several fields (e.g. two `UnorderedMap<String, TeamStats>`), so
+    // collapse identically-written types to one registration call. Types written
+    // differently but equal (`TeamStats` vs `crate::TeamStats`) still emit two
+    // calls — harmless: they share a `TypeId`, and `register_rekey_pub` is
+    // idempotent (`or_insert`), so the registry holds one entry either way.
+    let mut seen = std::collections::HashSet::new();
+    let calls = types
+        .iter()
+        .filter(|ty| seen.insert(ty.to_token_stream().to_string()))
+        .map(|ty| {
+            quote! { ::calimero_storage::register_rekey_if_supported!(#ty); }
+        });
+
+    quote! {
+        impl #impl_generics #ident #ty_generics #where_clause {
+            /// Registers nested CRDT-value re-key thunks. Called at WASM module
+            /// load and by the native test bridge; idempotent. Not for direct use.
+            #[doc(hidden)]
+            pub fn __calimero_register_rekey() {
+                #(#calls)*
+            }
+        }
+    }
+}
+
+/// Recursively collect every `Type::Path` node reachable from `ty` (the type
+/// itself plus its generic arguments, tuple/reference/array elements), so the
+/// registration above can offer each to `register_rekey_if_supported!`.
+fn collect_type_paths(ty: &Type, out: &mut Vec<Type>) {
+    match ty {
+        Type::Path(tp) => {
+            out.push(ty.clone());
+            if let Some(seg) = tp.path.segments.last() {
+                if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                    for arg in &args.args {
+                        if let syn::GenericArgument::Type(inner) = arg {
+                            collect_type_paths(inner, out);
+                        }
+                    }
+                }
+            }
+        }
+        Type::Reference(r) => collect_type_paths(&r.elem, out),
+        Type::Paren(p) => collect_type_paths(&p.elem, out),
+        Type::Group(g) => collect_type_paths(&g.elem, out),
+        Type::Array(a) => collect_type_paths(&a.elem, out),
+        Type::Tuple(t) => {
+            for elem in &t.elems {
+                collect_type_paths(elem, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn generate_test_state_impl(
+    ident: &Ident,
+    generics: &Generics,
+    orig: &StructOrEnumItem,
+    rekey_call: &TokenStream,
+) -> TokenStream {
+    if matches!(orig, StructOrEnumItem::Enum(_)) {
+        return quote! {};
+    }
+
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    quote! {
+        #[cfg(test)]
+        impl #impl_generics ::calimero_sdk::testing::TestState for #ident #ty_generics #where_clause {
+            fn __test_reset() {
+                ::calimero_storage::env::reset_environment();
+            }
+
+            fn __test_install(build: &mut dyn ::core::ops::FnMut() -> Self) {
+                // Native equivalent of the WASM `__calimero_register_merge`
+                // export: populate the CRDT merge registry so root-entity
+                // writes can resolve their typed merge. Idempotent. The
+                // `_for_test` wrapper is always present off-wasm (a no-op
+                // unless the `testing` feature is enabled), so this bridge
+                // compiles even for example apps without `TestHost` tests.
+                ::calimero_storage::register_crdt_merge_for_test::<#ident #ty_generics>();
+                // Register nested CRDT-value-type re-key thunks (#2577).
+                #rekey_call
+
+                let root = ::calimero_storage::collections::Root::new(|| {
+                    let mut state = build();
+                    // Mirror the `#[app::init]` entrypoint: deterministic IDs
+                    // then a single commit of the freshly-built root.
+                    state.__assign_deterministic_ids();
+                    state
+                });
+                root.commit();
+            }
+
+            fn __test_with_mut(f: &mut dyn ::core::ops::FnMut(&mut Self)) {
+                let mut app = ::calimero_storage::collections::Root::<#ident #ty_generics>::fetch()
+                    .expect("TestHost: app state has not been initialized");
+                // Going through DerefMut marks the root dirty so `commit`
+                // persists the mutation.
+                f(&mut *app);
+                app.commit();
+            }
+
+            fn __test_with_ref(f: &mut dyn ::core::ops::FnMut(&Self)) {
+                let app = ::calimero_storage::collections::Root::<#ident #ty_generics>::fetch()
+                    .expect("TestHost: app state has not been initialized");
+                f(&*app);
+            }
+
+            fn __test_with_executor(id: [u8; 32], f: &mut dyn ::core::ops::FnMut()) {
+                ::calimero_storage::env::with_executor_id(id, || f());
+            }
+        }
+    }
+}
+
 /// Generate method to assign deterministic IDs to all collection fields.
 ///
 /// This method is called by the init wrapper to ensure all top-level collections
@@ -554,8 +824,15 @@ fn generate_assign_deterministic_ids_impl(
     // Helper function to check if a type is a collection that needs ID assignment
     fn is_collection_type(type_str: &str) -> bool {
         type_str.contains("UnorderedMap")
+            // `SortedMap` is NOT a substring of any other entry, so it must be
+            // listed explicitly — otherwise a top-level `SortedMap` state field
+            // keeps its `Id::random()` and diverges across nodes (CIP I9).
+            || type_str.contains("SortedMap")
             || type_str.contains("Vector")
             || type_str.contains("UnorderedSet")
+            // `SortedSet` is NOT a substring of any other entry (same reason as
+            // `SortedMap`): list it explicitly or its id stays random and diverges.
+            || type_str.contains("SortedSet")
             || type_str.contains("Counter")
             || type_str.contains("ReplicatedGrowableArray")
             || type_str.contains("UserStorage")
@@ -691,5 +968,74 @@ mod tests {
                 "expected merge call referencing `{index}` in:\n{rendered}",
             );
         }
+    }
+
+    /// Run the `#[app::state]` input validation (which includes the
+    /// borsh-attribute guard) over `item`, returning whether it was accepted.
+    fn state_accepts(item: StructOrEnumItem) -> bool {
+        let args = StateArgs { emits: None };
+        let accepted = match StateImpl::try_from(StateImplInput {
+            item: &item,
+            args: &args,
+        }) {
+            Ok(_) => true,
+            Err(errors) => {
+                // The error accumulator panics on drop if left non-empty, so
+                // drain it (this is what the real macro entry point does on the
+                // error path) before reporting rejection.
+                let _ = errors.to_compile_error();
+                false
+            }
+        };
+        accepted
+    }
+
+    #[test]
+    fn borsh_guard_rejects_crate_redirect_only() {
+        // `try_from` reads the reserved-ident table, a thread-local the proc-macro
+        // entry point initializes; do the same for this unit test's thread.
+        crate::reserved::init();
+
+        // The macro injects the borsh derives + `#[borsh(crate = ...)]`, so a
+        // leftover manual derive or `crate` redirect must be rejected (otherwise
+        // it surfaces later as a cryptic "conflicting implementations" error).
+        assert!(
+            !state_accepts(StructOrEnumItem::Struct(parse_quote! {
+                #[borsh(crate = "calimero_sdk::borsh")]
+                pub struct S {}
+            })),
+            "`#[borsh(crate = ...)]` must be rejected — the macro injects it",
+        );
+        assert!(
+            !state_accepts(StructOrEnumItem::Struct(parse_quote! {
+                #[derive(BorshSerialize, BorshDeserialize)]
+                pub struct S {}
+            })),
+            "a manual borsh derive must be rejected — the macro injects it",
+        );
+
+        // But the macro supplies ONLY `crate`. Other legitimate container-level
+        // borsh keys it never sets must pass through, or they become impossible
+        // to use on a state type: `init` on a struct, `use_discriminant` on an
+        // enum (required by borsh for enums with explicit discriminants).
+        assert!(
+            state_accepts(StructOrEnumItem::Struct(parse_quote! {
+                #[borsh(init = "post_load")]
+                pub struct S {}
+            })),
+            "`#[borsh(init = ...)]` is legitimate and must pass through",
+        );
+        assert!(
+            state_accepts(StructOrEnumItem::Enum(parse_quote! {
+                #[borsh(use_discriminant = true)]
+                pub enum E { A = 1, B = 2 }
+            })),
+            "`#[borsh(use_discriminant = ...)]` is legitimate and must pass through",
+        );
+
+        // And the common case — no item-level borsh attribute — is accepted.
+        assert!(state_accepts(StructOrEnumItem::Struct(parse_quote! {
+            pub struct S {}
+        })));
     }
 }

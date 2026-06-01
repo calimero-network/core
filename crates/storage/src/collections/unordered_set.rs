@@ -1,4 +1,31 @@
 //! This module provides functionality for the unordered set data structure.
+//!
+//! [`UnorderedSet`] is the **default** set collection: membership and full-scan
+//! only, with **no iteration-order guarantee** (elements come back in hashed
+//! entity-id order, not value order). Add-wins union CRDT — elements are never
+//! lost once added.
+//!
+//! # Complexity (on a node)
+//!
+//! | Operation | Cost |
+//! |---|---|
+//! | `insert` / `contains` / `remove` | `O(1)` point lookup |
+//! | `len` | `O(1)` |
+//! | `iter` | `O(n)`, **unordered** |
+//!
+//! There is no separate index to maintain, so writes are as cheap as the
+//! storage engine allows and no extra disk is used per element.
+//!
+//! # `UnorderedSet` vs [`SortedSet`](super::SortedSet)
+//!
+//! **Default to `UnorderedSet`.** Reach for [`SortedSet`](super::SortedSet)
+//! *only* when you need elements in order — `range(a..b)`, `prefix("user:")`,
+//! pagination, sorted iteration, or min/max. `SortedSet` answers those in
+//! `O(log n + k)` via a maintained on-disk index, but pays for it on every write
+//! (an extra index write + a validity-marker read/write), in extra disk per
+//! element, and with an `O(n)` index rebuild on the first ordered read after a
+//! sync. If you only ever test membership, that index is pure overhead — use
+//! `UnorderedSet`. It is the `HashSet` to `SortedSet`'s `BTreeSet`.
 
 use core::borrow::Borrow;
 use core::fmt;
@@ -349,10 +376,15 @@ where
 
 impl<V, S> Default for UnorderedSet<V, S>
 where
-    V: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq + 'static,
     S: StorageAdaptor,
 {
     fn default() -> Self {
+        // Register the nested-id re-key thunk at construction so a set first
+        // created via `default()` (e.g. `entry(k).or_default()` on a
+        // `Map<_, Set<..>>`) is re-keyed deterministically by its parent rather
+        // than keeping a per-node random id. See `UnorderedMap`'s `Default`.
+        super::rekey::register_rekey::<Self>();
         Self::new_internal()
     }
 }
@@ -413,7 +445,35 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::{Root, UnorderedSet};
+    use crate::entities::Data;
     use crate::store::MainStorage;
+
+    #[test]
+    fn test_new_plus_reassign_matches_new_with_field_name() {
+        // CIP I9 safety lock for dropping `new_with_field_name("x")` in favour of
+        // plain `::new()`: `reassign_deterministic_id("x")` (run by the
+        // `#[app::state]` post-init pass) MUST derive the same id
+        // `new_with_field_name("x")` produces, or converted apps split-brain.
+        crate::env::reset_for_testing();
+        let explicit: UnorderedSet<String> = UnorderedSet::new_with_field_name("items");
+        let mut via: UnorderedSet<String> = UnorderedSet::new();
+        via.reassign_deterministic_id("items");
+        assert_eq!(explicit.inner.id(), via.inner.id());
+    }
+
+    #[test]
+    fn test_reassign_preserves_entries() {
+        // Entries seeded before the post-init pass must survive the reassignment.
+        crate::env::reset_for_testing();
+        let mut set: UnorderedSet<String> = UnorderedSet::new();
+        set.insert("alpha".to_owned()).expect("insert alpha");
+        set.insert("beta".to_owned()).expect("insert beta");
+        let old_id = set.inner.id();
+        set.reassign_deterministic_id("items");
+        assert_ne!(old_id, set.inner.id());
+        assert!(set.contains("alpha").expect("contains alpha"));
+        assert!(set.contains("beta").expect("contains beta"));
+    }
 
     #[test]
     fn test_unordered_set_operations() {
