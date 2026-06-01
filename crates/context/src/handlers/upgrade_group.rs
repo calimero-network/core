@@ -977,6 +977,9 @@ fn dispatch_cascade(
     // descendant's group meta, not the signed root's), so the gate is
     // per-descendant — not the signed group's policy. Reject here, before
     // emitting `CascadeUpgrade`, if any matched descendant is not LazyOnAccess.
+    //
+    // Gated on `has_migration` so a code-only cascade skips loading every
+    // descendant's meta (the check is meaningless without a migration).
     if has_migration {
         let mut descendant_policies = Vec::with_capacity(matched_descendants.len());
         for gid in &matched_descendants {
@@ -990,9 +993,7 @@ fn dispatch_cascade(
                 Err(err) => return ActorResponse::reply(Err(err)),
             }
         }
-        if let Err(err) =
-            ensure_cascade_migration_policies_supported(&descendant_policies, has_migration)
-        {
+        if let Err(err) = ensure_cascade_migration_policies_supported(&descendant_policies) {
             return ActorResponse::reply(Err(err));
         }
     }
@@ -1243,21 +1244,22 @@ fn ensure_migration_policy_supported(
 
 /// Cascade variant of [`ensure_migration_policy_supported`].
 ///
-/// A cascade carrying a migration fans out to every matched descendant, and on
-/// receivers each descendant runs the migrate under its OWN policy —
-/// `maybe_lazy_upgrade` reads the *descendant's* group meta, not the signed
-/// root's. So the gate is per-descendant: reject if any matched descendant is
-/// not `LazyOnAccess`. The signed (root) group's own policy is irrelevant here
-/// (it is often a context-less namespace root carrying the default `Automatic`,
-/// which would otherwise both false-reject all-Lazy cascades and false-pass a
-/// non-Lazy descendant straight into silent corruption).
+/// Call this only when the cascade carries a migration — the caller gates on
+/// that before loading each descendant's meta, so no work is done for code-only
+/// cascades (hence, unlike the single-group variant, this takes no
+/// `has_migration` flag and assumes a migration is present).
+///
+/// A cascade fans out to every matched descendant, and on receivers each
+/// descendant runs the migrate under its OWN policy — `maybe_lazy_upgrade` reads
+/// the *descendant's* group meta, not the signed root's. So the gate is
+/// per-descendant: reject if any matched descendant is not `LazyOnAccess`. The
+/// signed (root) group's own policy is irrelevant here (it is often a
+/// context-less namespace root carrying the default `Automatic`, which would
+/// otherwise both false-reject all-Lazy cascades and false-pass a non-Lazy
+/// descendant straight into silent corruption).
 fn ensure_cascade_migration_policies_supported(
     descendants: &[(ContextGroupId, UpgradePolicy)],
-    has_migration: bool,
 ) -> eyre::Result<()> {
-    if !has_migration {
-        return Ok(());
-    }
     for (group_id, policy) in descendants {
         if !matches!(policy, UpgradePolicy::LazyOnAccess) {
             bail!(
@@ -1317,7 +1319,7 @@ mod tests {
             (gid(1), UpgradePolicy::LazyOnAccess),
             (gid(2), UpgradePolicy::LazyOnAccess),
         ];
-        ensure_cascade_migration_policies_supported(&descendants, true)
+        ensure_cascade_migration_policies_supported(&descendants)
             .expect("cascade migration with all-LazyOnAccess descendants must be allowed");
     }
 
@@ -1328,7 +1330,7 @@ mod tests {
             (gid(1), UpgradePolicy::LazyOnAccess),
             (gid(2), UpgradePolicy::Automatic),
         ];
-        let err = ensure_cascade_migration_policies_supported(&descendants, true)
+        let err = ensure_cascade_migration_policies_supported(&descendants)
             .expect_err("a non-LazyOnAccess matched descendant must be rejected");
         let msg = err.to_string();
         assert!(
@@ -1338,12 +1340,8 @@ mod tests {
     }
 
     #[test]
-    fn cascade_code_only_allowed_regardless_of_descendant_policy() {
-        let descendants = [
-            (gid(1), UpgradePolicy::Automatic),
-            (gid(2), UpgradePolicy::LazyOnAccess),
-        ];
-        ensure_cascade_migration_policies_supported(&descendants, false)
-            .expect("code-only cascade must be allowed under any descendant policy");
+    fn cascade_migration_empty_descendants_is_allowed() {
+        ensure_cascade_migration_policies_supported(&[])
+            .expect("an empty descendant set is vacuously allowed");
     }
 }
