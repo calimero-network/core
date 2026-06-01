@@ -59,9 +59,9 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use calimero_node_primitives::sync::{
-    compare_level_nodes, create_runtime_env, EntityDeletion, InitPayload, LevelNode,
-    MessagePayload, StreamMessage, SyncProtocolExecutor, SyncTransport, TreeLeafData,
-    MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL, MAX_PARENTS_PER_REQUEST, MAX_REQUESTS_PER_SESSION,
+    compare_level_nodes, create_runtime_env, InitPayload, LevelNode, MessagePayload, StreamMessage,
+    SyncProtocolExecutor, SyncTransport, TreeLeafData, MAX_LEVELWISE_DEPTH, MAX_NODES_PER_LEVEL,
+    MAX_PARENTS_PER_REQUEST, MAX_REQUESTS_PER_SESSION,
 };
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -76,7 +76,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::sync::helpers::{
     apply_leaf_with_crdt_merge, generate_nonce, get_local_root_hash_for_context,
-    is_leaf_currently_authorized, MAX_ENTITIES_PER_PUSH,
+    is_leaf_currently_authorized,
 };
 
 // =============================================================================
@@ -226,13 +226,6 @@ async fn run_initiator_impl<T: SyncTransport>(
     let mut current_parent_ids: Option<Vec<[u8; 32]>> = None;
     let clamped_max_depth = max_depth.min(MAX_LEVELWISE_DEPTH as u32);
 
-    // Deletions to propagate: entries the remote still holds that we have
-    // locally tombstoned (cleared). LevelWise is pull-only, so without this
-    // the deletion never reaches the peer and the clear can't converge via
-    // this protocol (same bug HashComparison had). Collected across levels and
-    // flushed once after the walk. Mirrors HashComparison's remote-only path.
-    let mut pending_deletions: Vec<EntityDeletion> = Vec::new();
-
     for level in 0..clamped_max_depth {
         // Build request for this level
         let request_msg = StreamMessage::Init {
@@ -369,30 +362,6 @@ async fn run_initiator_impl<T: SyncTransport>(
                 continue;
             };
 
-            // Tombstone propagation: if we hold a local tombstone for a node the
-            // remote still has (it surfaces here because it's absent from our
-            // live tree), propagate our deletion instead of pulling the remote's
-            // live copy. The peer applies it via the authenticated DeleteRef
-            // path. Mirrors HashComparison's remote-only handling.
-            let tombstone =
-                with_runtime_env(
-                    runtime_env.clone(),
-                    || match Index::<MainStorage>::get_index(calimero_storage::address::Id::new(
-                        node_id,
-                    )) {
-                        Ok(Some(idx)) => idx.deleted_at.map(|d| (d, idx.metadata.clone())),
-                        _ => None,
-                    },
-                );
-            if let Some((deleted_at, metadata)) = tombstone {
-                pending_deletions.push(EntityDeletion {
-                    id: node_id,
-                    deleted_at,
-                    metadata,
-                });
-                continue;
-            }
-
             if node.is_leaf() {
                 // Leaf: apply CRDT merge (Invariant I5)
                 if let Some(ref leaf_data) = node.leaf_data {
@@ -474,37 +443,6 @@ async fn run_initiator_impl<T: SyncTransport>(
         }
 
         current_parent_ids = Some(next_level_parents);
-    }
-
-    // Flush deletion propagation (clear convergence). Entries we cleared but the
-    // peer still holds are pushed as authenticated tombstones so the peer
-    // applies delete-wins, instead of us silently re-pulling them.
-    if !pending_deletions.is_empty() {
-        for chunk in pending_deletions.chunks(MAX_ENTITIES_PER_PUSH) {
-            let msg = StreamMessage::Init {
-                context_id,
-                party_id: identity,
-                payload: InitPayload::EntityDeletePush {
-                    context_id,
-                    deletions: chunk.to_vec(),
-                },
-                next_nonce: generate_nonce(),
-            };
-            transport.send(&msg).await?;
-
-            let ack = transport.recv().await?.ok_or_else(|| {
-                eyre::eyre!("stream closed while waiting for EntityDeletePushAck")
-            })?;
-            match ack {
-                StreamMessage::Message {
-                    payload: MessagePayload::EntityDeletePushAck { applied_count },
-                    ..
-                } => {
-                    debug!(%context_id, applied_count, "LevelWise: peer applied pushed tombstones");
-                }
-                _ => bail!("Unexpected response to EntityDeletePush"),
-            }
-        }
     }
 
     // Close the transport to signal completion
@@ -711,88 +649,39 @@ async fn run_responder_loop<T: SyncTransport>(
             break;
         };
 
-        match payload {
-            InitPayload::LevelWiseRequest {
-                level, parent_ids, ..
-            } => {
-                let (nodes, has_more_levels) =
-                    handle_levelwise_request(context_id, level, parent_ids, runtime_env)?;
+        let InitPayload::LevelWiseRequest {
+            level, parent_ids, ..
+        } = payload
+        else {
+            debug!(%context_id, "Received non-LevelWiseRequest, ending responder");
+            break;
+        };
 
-                debug!(
-                    %context_id,
-                    level,
-                    nodes_found = nodes.len(),
-                    has_more_levels,
-                    "Responding with level nodes"
-                );
+        let (nodes, has_more_levels) =
+            handle_levelwise_request(context_id, level, parent_ids, runtime_env)?;
 
-                let response = StreamMessage::Message {
-                    sequence_id,
-                    payload: MessagePayload::LevelWiseResponse {
-                        level,
-                        nodes,
-                        has_more_levels,
-                    },
-                    next_nonce: generate_nonce(),
-                };
+        debug!(
+            %context_id,
+            level,
+            nodes_found = nodes.len(),
+            has_more_levels,
+            "Responding with level nodes"
+        );
 
-                transport.send(&response).await?;
-                sequence_id += 1;
-                requests_handled += 1;
-            }
+        // Send response
+        let response = StreamMessage::Message {
+            sequence_id,
+            payload: MessagePayload::LevelWiseResponse {
+                level,
+                nodes,
+                has_more_levels,
+            },
+            next_nonce: generate_nonce(),
+        };
 
-            // Tombstone propagation (clear convergence) — same mechanism as
-            // HashComparison. The cleared initiator pushes authenticated
-            // deletions for entries this responder still holds; apply them via
-            // the DeleteRef path (delete-wins by HLC; sig/nonce verified for
-            // User/Shared, safe no-op on loss/auth-fail).
-            InitPayload::EntityDeletePush { deletions, .. } => {
-                let total = deletions.len();
-                trace!(%context_id, total, "Handling EntityDeletePush from initiator");
-
-                let mut applied: u32 = 0;
-                for deletion in &deletions {
-                    let action = calimero_storage::action::Action::DeleteRef {
-                        id: Id::new(deletion.id),
-                        deleted_at: deletion.deleted_at,
-                        metadata: deletion.metadata.clone(),
-                    };
-                    let result = with_runtime_env(runtime_env.clone(), || {
-                        Interface::<MainStorage>::apply_action(
-                            action,
-                            &calimero_storage::interface::ApplyContext::empty(),
-                        )
-                    });
-                    match result {
-                        Ok(_) => applied += 1,
-                        Err(e) => debug!(
-                            %context_id,
-                            id = %hex::encode(deletion.id),
-                            error = %e,
-                            "EntityDeletePush: skipped a tombstone (lost LWW or unauthorized)"
-                        ),
-                    }
-                }
-
-                let response = StreamMessage::Message {
-                    sequence_id,
-                    payload: MessagePayload::EntityDeletePushAck {
-                        applied_count: applied,
-                    },
-                    next_nonce: generate_nonce(),
-                };
-                transport.send(&response).await?;
-                sequence_id += 1;
-                requests_handled += 1;
-
-                info!(%context_id, applied, total, "Applied pushed tombstones (delete-wins)");
-            }
-
-            _ => {
-                debug!(%context_id, "Received non-LevelWiseRequest, ending responder");
-                break;
-            }
-        }
+        transport.send(&response).await?;
+        sequence_id += 1;
+        requests_handled += 1;
     }
 
     info!(%context_id, requests_handled, "LevelWise responder complete");
