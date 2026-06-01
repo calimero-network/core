@@ -67,7 +67,7 @@ impl MigrationSuiteV3RemoveField {
     #[app::init]
     pub fn init() -> MigrationSuiteV3RemoveField {
         MigrationSuiteV3RemoveField {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             description: LwwRegister::new("initial".to_owned()),
             counter: LwwRegister::new(0),
         }

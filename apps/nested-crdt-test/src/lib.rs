@@ -73,13 +73,16 @@ impl NestedCrdtTest {
     /// Initialize with empty state
     #[app::init]
     pub fn init() -> NestedCrdtTest {
+        // Plain `::new()` for top-level fields — see `UnorderedMap::new()` docs
+        // for why the post-init pass makes this deterministic (and preferred over
+        // `new_with_field_name`).
         NestedCrdtTest {
-            counters: UnorderedMap::new_with_field_name("counters"),
-            registers: UnorderedMap::new_with_field_name("registers"),
-            metadata: UnorderedMap::new_with_field_name("metadata"),
-            metrics: Vector::new_with_field_name("metrics"),
-            tags: UnorderedMap::new_with_field_name("tags"),
-            sorted_scores: SortedMap::new_with_field_name("sorted_scores"),
+            counters: UnorderedMap::new(),
+            registers: UnorderedMap::new(),
+            metadata: UnorderedMap::new(),
+            metrics: Vector::new(),
+            tags: UnorderedMap::new(),
+            sorted_scores: SortedMap::new(),
         }
     }
 

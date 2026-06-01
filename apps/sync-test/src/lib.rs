@@ -26,9 +26,9 @@ impl SyncTest {
     #[app::init]
     pub fn init() -> SyncTest {
         SyncTest {
-            entries: UnorderedMap::new_with_field_name("entries"),
-            writers: UnorderedMap::new_with_field_name("writers"),
-            invitations: UnorderedMap::new_with_field_name("invitations"),
+            entries: UnorderedMap::new(),
+            writers: UnorderedMap::new(),
+            invitations: UnorderedMap::new(),
         }
     }
 

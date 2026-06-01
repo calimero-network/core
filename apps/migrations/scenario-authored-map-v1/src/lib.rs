@@ -28,7 +28,7 @@ impl ScenarioAuthoredMapV1 {
     #[app::init]
     pub fn init() -> ScenarioAuthoredMapV1 {
         ScenarioAuthoredMapV1 {
-            entries: AuthoredMap::new_with_field_name("entries"),
+            entries: AuthoredMap::new(),
             title: LwwRegister::new("untitled".to_owned()),
         }
     }

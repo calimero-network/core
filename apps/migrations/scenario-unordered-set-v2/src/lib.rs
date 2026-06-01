@@ -94,7 +94,7 @@ impl ScenarioUnorderedSetV2 {
     #[app::init]
     pub fn init() -> ScenarioUnorderedSetV2 {
         ScenarioUnorderedSetV2 {
-            tags: UnorderedSet::new_with_field_name("tags"),
+            tags: UnorderedSet::new(),
             title: LwwRegister::new("untitled".to_owned()),
             migration_note: LwwRegister::new(String::new()),
         }

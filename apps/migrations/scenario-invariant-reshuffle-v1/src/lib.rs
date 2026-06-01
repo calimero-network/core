@@ -24,7 +24,7 @@ impl ScenarioInvariantReshuffleV1 {
     pub fn init() -> ScenarioInvariantReshuffleV1 {
         ScenarioInvariantReshuffleV1 {
             global_count: LwwRegister::new(0),
-            per_item_counts: UnorderedMap::new_with_field_name("per_item_counts"),
+            per_item_counts: UnorderedMap::new(),
         }
     }
 

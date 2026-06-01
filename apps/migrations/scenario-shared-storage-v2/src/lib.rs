@@ -84,7 +84,7 @@ impl ScenarioSharedStorageV2 {
         let executor: PublicKey = env::executor_id().into();
         writers.insert(executor);
         ScenarioSharedStorageV2 {
-            doc: SharedStorage::new_with_field_name("doc", writers, false),
+            doc: SharedStorage::new(writers, false),
             title: LwwRegister::new("untitled".to_owned()),
             migration_note: LwwRegister::new(String::new()),
         }

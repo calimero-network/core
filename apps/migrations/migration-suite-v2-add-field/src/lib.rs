@@ -69,7 +69,7 @@ impl MigrationSuiteV2AddField {
     #[app::init]
     pub fn init() -> MigrationSuiteV2AddField {
         MigrationSuiteV2AddField {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             description: LwwRegister::new("initial".to_owned()),
             counter: LwwRegister::new(0),
             notes: LwwRegister::new("added in v2".to_owned()),

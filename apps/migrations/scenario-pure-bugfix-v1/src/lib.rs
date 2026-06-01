@@ -22,7 +22,7 @@ impl ScenarioPureBugfixV1 {
     #[app::init]
     pub fn init() -> ScenarioPureBugfixV1 {
         ScenarioPureBugfixV1 {
-            items: UnorderedMap::new_with_field_name("items"),
+            items: UnorderedMap::new(),
             last_sum: LwwRegister::new(0),
         }
     }

@@ -76,7 +76,7 @@ impl ScenarioAuthoredMapV2 {
     #[app::init]
     pub fn init() -> ScenarioAuthoredMapV2 {
         ScenarioAuthoredMapV2 {
-            entries: AuthoredMap::new_with_field_name("entries"),
+            entries: AuthoredMap::new(),
             title: LwwRegister::new("untitled".to_owned()),
             migration_note: LwwRegister::new(String::new()),
         }

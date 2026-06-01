@@ -25,7 +25,7 @@ impl XCallExample {
     #[app::init]
     pub fn init() -> XCallExample {
         XCallExample {
-            counter: Counter::new_with_field_name("counter"),
+            counter: Counter::new(),
         }
     }
 

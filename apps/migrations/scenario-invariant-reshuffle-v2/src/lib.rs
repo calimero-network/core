@@ -86,8 +86,7 @@ pub fn migrate_v1_to_v2() -> ScenarioInvariantReshuffleV2 {
     // instead of a random one. Both nodes therefore land on identical
     // v2 roots.
     let mut total: u64 = 0;
-    let mut per_item: UnorderedMap<String, LwwRegister<u64>> =
-        UnorderedMap::new_with_field_name("per_item");
+    let mut per_item: UnorderedMap<String, LwwRegister<u64>> = UnorderedMap::new();
     for (k, v) in old_state.per_item_counts.entries().unwrap_or_else(|e| {
         panic!(
             "Migration failed: V1 per_item_counts iteration error {:?}",
@@ -113,7 +112,7 @@ impl ScenarioInvariantReshuffleV2 {
     pub fn init() -> ScenarioInvariantReshuffleV2 {
         ScenarioInvariantReshuffleV2 {
             total: LwwRegister::new(0),
-            per_item: UnorderedMap::new_with_field_name("per_item"),
+            per_item: UnorderedMap::new(),
         }
     }
 
