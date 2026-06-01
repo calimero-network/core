@@ -220,6 +220,51 @@ impl SyncManager {
                     );
                 }
 
+                InitPayload::EntityDeletePush { deletions, .. } => {
+                    let total = deletions.len();
+                    trace!(%context_id, total, "Handling EntityDeletePush from initiator");
+
+                    // Apply each tombstone through the authenticated DeleteRef
+                    // path (delete-wins by HLC; signature/nonce verified for
+                    // User/Shared). A deletion that loses the LWW race or fails
+                    // authorization is a safe no-op.
+                    let mut applied: u32 = 0;
+                    for deletion in &deletions {
+                        let action = calimero_storage::action::Action::DeleteRef {
+                            id: Id::new(deletion.id),
+                            deleted_at: deletion.deleted_at,
+                            metadata: deletion.metadata.clone(),
+                        };
+                        let result = with_runtime_env(runtime_env.clone(), || {
+                            Interface::<MainStorage>::apply_action(
+                                action,
+                                &calimero_storage::interface::ApplyContext::empty(),
+                            )
+                        });
+                        match result {
+                            Ok(_) => applied += 1,
+                            Err(e) => debug!(
+                                %context_id,
+                                id = %hex::encode(deletion.id),
+                                error = %e,
+                                "EntityDeletePush: skipped a tombstone (lost LWW or unauthorized)"
+                            ),
+                        }
+                    }
+
+                    let msg = StreamMessage::Message {
+                        sequence_id: sqx.next(),
+                        payload: MessagePayload::EntityDeletePushAck {
+                            applied_count: applied,
+                        },
+                        next_nonce: super::helpers::generate_nonce(),
+                    };
+                    transport.send(&msg).await?;
+                    requests_handled += 1;
+
+                    info!(%context_id, applied, total, "Applied pushed tombstones (delete-wins)");
+                }
+
                 _ => {
                     debug!(%context_id, "Received unknown payload, ending responder");
                     break;
