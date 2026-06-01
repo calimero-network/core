@@ -667,6 +667,68 @@ fn sorted_map_rebuilds_index_after_sync() {
     );
 }
 
+// SortedSet ordered-index path, end to end through real WASM — the `SortedSet`
+// counterpart of `sorted_map_range_through_real_wasm`. `sorted_tag_add`
+// maintains the index host-side; `sorted_tags_range`/`sorted_tags_all`/
+// `sorted_tags_last` read it back through the same host imports.
+#[test]
+fn sorted_set_range_through_real_wasm() {
+    let mut c = Cluster::new(1);
+
+    // Add deliberately out of order — the index is maintained host-side.
+    for tag in ["delta", "alpha", "charlie", "bravo", "echo"] {
+        let _artifact = c.call(0, "sorted_tag_add", json!({ "tag": tag }));
+    }
+
+    // Element-ordered window [bravo, echo) via `storage_index_scan`.
+    let range = c.query(
+        0,
+        "sorted_tags_range",
+        json!({ "start": "bravo", "end": "echo" }),
+    );
+    let range = range.get("output").cloned().unwrap_or(range);
+    assert_eq!(
+        range,
+        json!(["bravo", "charlie", "delta"]),
+        "sorted_tags_range [bravo, echo) via the host ordered index"
+    );
+
+    // Full listing ascending.
+    let all = c.query(0, "sorted_tags_all", json!({}));
+    let all = all.get("output").cloned().unwrap_or(all);
+    assert_eq!(
+        all,
+        json!(["alpha", "bravo", "charlie", "delta", "echo"]),
+        "sorted_tags_all ascending"
+    );
+
+    // Reverse-seek last (`storage_index_last`).
+    let last = c.query(0, "sorted_tags_last", json!({}));
+    let last = last.get("output").cloned().unwrap_or(last);
+    assert_eq!(last, json!("echo"), "sorted_tags_last via reverse seek");
+}
+
+/// `SortedSet` self-heal-after-sync, mirroring `sorted_map_rebuilds_index_after_sync`:
+/// a receiver applies elements via the generic sync path (index untouched), and
+/// its next ordered read must rebuild the stale index and serve correct results.
+#[test]
+fn sorted_set_rebuilds_index_after_sync() {
+    let mut c = Cluster::new(2);
+
+    for tag in ["m", "a", "z", "f"] {
+        let artifact = c.call(0, "sorted_tag_add", json!({ "tag": tag }));
+        c.apply(1, &artifact);
+    }
+
+    let range = c.query(1, "sorted_tags_range", json!({ "start": "a", "end": "z" }));
+    let range = range.get("output").cloned().unwrap_or(range);
+    assert_eq!(
+        range,
+        json!(["a", "f", "m"]),
+        "node 1 rebuilds its set index after sync and serves the range"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Single-writer sync coverage. These exercise the basic "one node edits, peers
 // apply the delta" path for the counter / set structures whose *concurrent*
