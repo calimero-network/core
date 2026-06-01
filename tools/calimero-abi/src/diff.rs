@@ -72,19 +72,25 @@ fn state_root_fields(manifest: &Manifest) -> BTreeMap<&str, &TypeRef> {
 /// Follow `$ref` → `Alias` chains to the effective type. An identity-gated CRDT
 /// can hide behind a newtype alias (`field: $ref Wiki`, `Wiki = alias → AuthoredMap`),
 /// so the identity check must resolve before inspecting the `crdt_type`. Stops at
-/// the first non-alias type (collection / scalar / record-ref / missing); cycle-guarded.
+/// the first non-alias type (collection / scalar / record-ref / missing). Cycle
+/// detection is exact via the visited set — a self/mutually-referential alias
+/// chain stops at the repeat instead of looping (no arbitrary depth bound).
 fn resolve_aliases<'a>(ty: &'a TypeRef, manifest: &'a Manifest) -> &'a TypeRef {
     let mut cur = ty;
-    for _ in 0..64 {
-        match cur {
-            TypeRef::Reference { ref_ } => match manifest.types.get(ref_) {
-                Some(TypeDef::Alias { target }) => cur = target,
-                _ => return cur,
-            },
+    let mut seen: Vec<&str> = Vec::new();
+    loop {
+        let TypeRef::Reference { ref_ } = cur else {
+            return cur;
+        };
+        if seen.contains(&ref_.as_str()) {
+            return cur;
+        }
+        seen.push(ref_.as_str());
+        match manifest.types.get(ref_) {
+            Some(TypeDef::Alias { target }) => cur = target,
             _ => return cur,
         }
     }
-    cur
 }
 
 /// The CRDT tag of a field's top-level type, if it is a CRDT collection.
@@ -112,8 +118,14 @@ fn crdt_label(ty: &TypeRef, manifest: &Manifest) -> String {
 /// compare equal iff their *fully resolved* shapes match. Without this, a field
 /// whose `$ref` name is stable while the referenced `types` entry changes would
 /// look unchanged and hide a downgrade. Cycle-guarded.
-fn canonical(ty: &TypeRef, manifest: &Manifest) -> serde_json::Value {
-    let value = serde_json::to_value(ty).unwrap_or(serde_json::Value::Null);
+///
+/// Serialization errors are propagated, never swallowed — in this security-critical
+/// comparison a silent `Null` substitution could make two distinct types compare
+/// equal and miss a downgrade. (For the plain `TypeRef`/`TypeDef` types this never
+/// fails in practice; failing loud is the fail-closed stance regardless.)
+fn canonical(ty: &TypeRef, manifest: &Manifest) -> eyre::Result<serde_json::Value> {
+    let value = serde_json::to_value(ty)
+        .map_err(|e| eyre::eyre!("failed to serialize field type for diff: {e}"))?;
     expand_refs(value, manifest, &mut Vec::new())
 }
 
@@ -121,39 +133,43 @@ fn expand_refs(
     value: serde_json::Value,
     manifest: &Manifest,
     seen: &mut Vec<String>,
-) -> serde_json::Value {
+) -> eyre::Result<serde_json::Value> {
     use serde_json::Value;
     match value {
         Value::Object(map) => {
             if map.len() == 1 {
                 if let Some(Value::String(name)) = map.get("$ref") {
                     if seen.iter().any(|n| n == name) {
-                        return serde_json::json!({ "$ref": name, "$cycle": true });
+                        return Ok(serde_json::json!({ "$ref": name, "$cycle": true }));
                     }
                     seen.push(name.clone());
                     let expanded = match manifest.types.get(name) {
                         Some(def) => {
-                            let def_value = serde_json::to_value(def).unwrap_or(Value::Null);
-                            expand_refs(def_value, manifest, seen)
+                            let def_value = serde_json::to_value(def).map_err(|e| {
+                                eyre::eyre!("failed to serialize type '{name}' for diff: {e}")
+                            })?;
+                            expand_refs(def_value, manifest, seen)?
                         }
                         None => serde_json::json!({ "$ref": name, "$missing": true }),
                     };
                     let _ = seen.pop();
-                    return expanded;
+                    return Ok(expanded);
                 }
             }
-            Value::Object(
-                map.into_iter()
-                    .map(|(k, v)| (k, expand_refs(v, manifest, seen)))
-                    .collect(),
-            )
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                let _ = out.insert(k, expand_refs(v, manifest, seen)?);
+            }
+            Ok(Value::Object(out))
         }
-        Value::Array(arr) => Value::Array(
-            arr.into_iter()
-                .map(|v| expand_refs(v, manifest, seen))
-                .collect(),
-        ),
-        other => other,
+        Value::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for v in arr {
+                out.push(expand_refs(v, manifest, seen)?);
+            }
+            Ok(Value::Array(out))
+        }
+        other => Ok(other),
     }
 }
 
@@ -174,7 +190,11 @@ fn root_record_fields<'a>(manifest: &'a Manifest, which: &str) -> eyre::Result<&
 
 /// Diff `current` (the new build) against `baseline` (the previous version),
 /// returning one [`Finding`] per changed top-level state field.
-pub fn diff_state_schemas(current: &Manifest, baseline: &Manifest) -> Vec<Finding> {
+///
+/// Private + reachable only through [`diff_checked`], which validates the state
+/// roots first. Keeping it private avoids the footgun of diffing a manifest whose
+/// `state_root` silently resolves to zero fields (which would mask downgrades).
+fn diff_state_schemas(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec<Finding>> {
     let cur = state_root_fields(current);
     let base = state_root_fields(baseline);
     let mut findings = Vec::new();
@@ -201,7 +221,7 @@ pub fn diff_state_schemas(current: &Manifest, baseline: &Manifest) -> Vec<Findin
                 }
             }
             Some(cur_ty) => {
-                if canonical(cur_ty, current) != canonical(base_ty, baseline) {
+                if canonical(cur_ty, current)? != canonical(base_ty, baseline)? {
                     if is_identity_gated(base_ty, baseline) && !is_identity_gated(cur_ty, current) {
                         findings.push(Finding {
                             field: (*name).to_owned(),
@@ -235,7 +255,7 @@ pub fn diff_state_schemas(current: &Manifest, baseline: &Manifest) -> Vec<Findin
         }
     }
 
-    findings
+    Ok(findings)
 }
 
 /// Validate both manifests have a resolvable state-root record, then diff.
@@ -244,7 +264,7 @@ pub fn diff_state_schemas(current: &Manifest, baseline: &Manifest) -> Vec<Findin
 pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec<Finding>> {
     let _ = root_record_fields(current, "current")?;
     let _ = root_record_fields(baseline, "baseline")?;
-    Ok(diff_state_schemas(current, baseline))
+    diff_state_schemas(current, baseline)
 }
 
 fn load_manifest(path: &Path) -> eyre::Result<Manifest> {
@@ -258,16 +278,18 @@ fn load_manifest(path: &Path) -> eyre::Result<Manifest> {
     })
 }
 
-/// CLI entry point: diff two `state-schema.json` files, print findings, and (by
-/// default) exit non-zero if any breaking / unsafe change is present.
-pub fn run_diff(current: &Path, baseline: &Path, exit_zero: bool) -> eyre::Result<()> {
+/// Diff two `state-schema.json` files and print findings. Returns `true` if the
+/// caller should fail (a breaking/unsafe change was found and `exit_zero` is
+/// false). The process exit is left to `main` so I/O flushes and any cleanup run
+/// normally — `run_diff` never calls `std::process::exit`.
+pub fn run_diff(current: &Path, baseline: &Path, exit_zero: bool) -> eyre::Result<bool> {
     let current = load_manifest(current)?;
     let baseline = load_manifest(baseline)?;
     let findings = diff_checked(&current, &baseline)?;
 
     if findings.is_empty() {
         println!("✓ No state-schema changes.");
-        return Ok(());
+        return Ok(false);
     }
 
     let mut fail = false;
@@ -286,10 +308,7 @@ pub fn run_diff(current: &Path, baseline: &Path, exit_zero: bool) -> eyre::Resul
         fail |= finding.class.is_failure();
     }
 
-    if fail && !exit_zero {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(fail && !exit_zero)
 }
 
 #[cfg(test)]
@@ -313,7 +332,7 @@ mod tests {
     fn authored_map_to_unordered_map_is_unsafe_downgrade() {
         let baseline = manifest(&format!("[{AUTHORED_MAP}]"));
         let current = manifest(&format!("[{UNORDERED_MAP}]"));
-        let findings = diff_state_schemas(&current, &baseline);
+        let findings = diff_checked(&current, &baseline).unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].field, "wiki");
         assert_eq!(findings[0].class, FindingClass::UnsafeIdentityDowngrade);
@@ -323,7 +342,7 @@ mod tests {
     fn shared_storage_removed_is_unsafe_downgrade() {
         let baseline = manifest(&format!("[{SHARED_STORAGE}]"));
         let current = manifest("[]");
-        let findings = diff_state_schemas(&current, &baseline);
+        let findings = diff_checked(&current, &baseline).unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].field, "acl");
         assert_eq!(findings[0].class, FindingClass::UnsafeIdentityDowngrade);
@@ -333,7 +352,7 @@ mod tests {
     fn added_field_is_additive() {
         let baseline = manifest(&format!("[{COUNTER_U64}]"));
         let current = manifest(&format!("[{COUNTER_U64},{SHARED_STORAGE}]"));
-        let findings = diff_state_schemas(&current, &baseline);
+        let findings = diff_checked(&current, &baseline).unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].field, "acl");
         assert_eq!(findings[0].class, FindingClass::Additive);
@@ -343,7 +362,7 @@ mod tests {
     fn non_identity_type_change_is_breaking() {
         let baseline = manifest(&format!("[{COUNTER_U64}]"));
         let current = manifest(&format!("[{COUNTER_STR}]"));
-        let findings = diff_state_schemas(&current, &baseline);
+        let findings = diff_checked(&current, &baseline).unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].class, FindingClass::Breaking);
     }
@@ -351,7 +370,7 @@ mod tests {
     #[test]
     fn identical_schema_has_no_findings() {
         let m = manifest(&format!("[{COUNTER_U64}]"));
-        assert!(diff_state_schemas(&m, &m).is_empty());
+        assert!(diff_checked(&m, &m).unwrap().is_empty());
     }
 
     #[test]
@@ -360,10 +379,11 @@ mod tests {
         // is a normal breaking change, NOT an unsafe downgrade.
         let base = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}"#;
         let cur = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"u64"},"crdt_type":"authored_map"}}"#;
-        let findings = diff_state_schemas(
+        let findings = diff_checked(
             &manifest(&format!("[{cur}]")),
             &manifest(&format!("[{base}]")),
-        );
+        )
+        .unwrap();
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].class, FindingClass::Breaking);
     }
@@ -389,7 +409,7 @@ mod tests {
                 "Root":{"kind":"record","fields":[{"name":"wiki","type":{"$ref":"Wiki"}}]}
             },"methods":[],"events":[],"state_root":"Root"}"#,
         );
-        let findings = diff_state_schemas(&current, &baseline);
+        let findings = diff_checked(&current, &baseline).unwrap();
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(findings[0].field, "wiki");
         assert_eq!(findings[0].class, FindingClass::UnsafeIdentityDowngrade);
@@ -411,7 +431,7 @@ mod tests {
                 "Root":{"kind":"record","fields":[{"name":"data","type":{"$ref":"Inner"}}]}
             },"methods":[],"events":[],"state_root":"Root"}"#,
         );
-        let findings = diff_state_schemas(&current, &baseline);
+        let findings = diff_checked(&current, &baseline).unwrap();
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(findings[0].class, FindingClass::Breaking);
     }

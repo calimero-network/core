@@ -99,7 +99,9 @@ fn main() -> eyre::Result<()> {
             baseline,
             exit_zero,
         } => {
-            diff::run_diff(&current, &baseline, exit_zero)?;
+            if diff::run_diff(&current, &baseline, exit_zero)? {
+                std::process::exit(1);
+            }
         }
     }
 
