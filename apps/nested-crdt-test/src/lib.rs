@@ -304,4 +304,18 @@ mod tests {
 
         assert_eq!(app.view(|s| s.get_counter("a".into())).unwrap(), 2);
     }
+
+    #[test]
+    fn call_as_restores_executor_even_on_panic() {
+        let mut app = TestHost::new(NestedCrdtTest::init);
+        let before = app.executor_id();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.call_as([42; 32], |_s| -> u64 { panic!("intentional test panic") });
+        }));
+        assert!(result.is_err());
+
+        // The impersonated identity must not leak past the panic.
+        assert_eq!(app.executor_id(), before);
+    }
 }

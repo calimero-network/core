@@ -74,10 +74,24 @@ pub trait TestState: Sized {
 /// [`call`](TestHost::call), read with [`view`](TestHost::view), and inspect
 /// captured [`events`](TestHost::events) / [`logs`](TestHost::logs).
 ///
-/// State is held in a thread-local mock store, so a `TestHost` owns the store
-/// for its thread: creating a new one resets that state. Run independent
-/// scenarios in separate `#[test]` functions (Rust runs them on separate
-/// threads) or construct a fresh `TestHost` per scenario.
+/// # State isolation
+///
+/// All mock state (storage, events, logs, identity) lives in thread-locals, and
+/// [`TestHost::new`] resets every one of them — so each harness starts from a
+/// clean slate. Rust's test runner uses a thread *pool* but runs tests
+/// sequentially on each thread (one test finishes before that thread starts the
+/// next), so the reset-on-construction is what keeps tests independent, not a
+/// thread-per-test guarantee. Construct a fresh `TestHost` at the top of each
+/// `#[test]`; don't keep two live at once on one thread (the second `new`
+/// resets the first's store out from under it).
+///
+/// # Default identity
+///
+/// Until you call [`set_executor`](TestHost::set_executor) /
+/// [`set_context`](TestHost::set_context) / [`call_as`](TestHost::call_as), the
+/// harness reports fixed well-known executor / context ids. Access-control tests
+/// that assert a *rejection* path must set a non-owner identity explicitly —
+/// the default will otherwise satisfy owner checks and silently pass.
 #[must_use = "a TestHost only does work when you call/view through it"]
 pub struct TestHost<S> {
     _state: PhantomData<S>,
@@ -132,26 +146,42 @@ where
     }
 
     /// Runs a mutating method as a specific executor identity, then restores the
-    /// previous identity.
+    /// previous identity — even if the closure panics.
     ///
     /// Sets both the SDK-level [`env::executor_id`](crate::env::executor_id)
     /// (what app logic reads) and the storage-layer authorship identity (what
     /// CRDT element writes record), so multi-author scenarios resolve exactly as
-    /// they would across nodes.
+    /// they would across nodes. Both layers switch together for the duration of
+    /// the closure and are unwound together: the SDK identity is restored by an
+    /// RAII guard nested *inside* the storage layer's own
+    /// `with_executor_id` scope, so a panic can't leave the two layers
+    /// disagreeing for a later `call` / `view` on the same thread.
     pub fn call_as<R>(&mut self, executor: [u8; 32], f: impl FnOnce(&mut S) -> R) -> R {
-        let prev = host::executor_id();
-        host::set_executor_id(executor);
+        // Restores the SDK-host executor on scope exit (incl. unwind), mirroring
+        // the storage layer's RAII restore in `with_executor_id`.
+        struct SdkExecutorGuard([u8; 32]);
+        impl Drop for SdkExecutorGuard {
+            fn drop(&mut self) {
+                host::set_executor_id(self.0);
+            }
+        }
 
         let mut out = None;
         let mut f = Some(f);
+        // `__test_with_executor` switches the storage executor to `executor`
+        // for the body below (and restores it on the way out). We switch the
+        // SDK executor *inside* that body so both layers are aligned before any
+        // user code runs and restored together as the body unwinds.
         S::__test_with_executor(executor, &mut || {
+            let _sdk = SdkExecutorGuard(host::executor_id());
+            host::set_executor_id(executor);
+
             let mut inner = f.take();
             S::__test_with_mut(&mut |state| {
                 out = Some((inner.take().expect("call_as closure invoked once"))(state));
             });
         });
 
-        host::set_executor_id(prev);
         out.expect("state was loaded and the closure ran")
     }
 

@@ -210,10 +210,14 @@ pub(crate) fn private_storage_remove(key: &[u8]) -> bool {
 
 pub(crate) fn private_storage_write(key: &[u8], value: &[u8]) -> bool {
     with(|h| {
-        h.private_storage
-            .insert(key.to_vec(), value.to_vec())
-            .is_some()
-    })
+        let _ = h.private_storage.insert(key.to_vec(), value.to_vec());
+    });
+    // Match the WASM `private_storage_write` convention: `true` = the write
+    // succeeded (false would mean private storage is unavailable on this node).
+    // This deliberately differs from main `storage_write`, whose bool reports
+    // whether a previous value was evicted — see `env::storage_write` /
+    // `env::private_storage_write` docs.
+    true
 }
 
 // ============================================================================

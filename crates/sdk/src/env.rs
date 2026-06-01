@@ -850,6 +850,10 @@ pub fn private_storage_write(key: &[u8], value: &[u8]) -> bool {
 }
 
 /// Fill the buffer with random bytes.
+///
+/// Under the in-process test harness (off-`wasm32`) this is backed by a
+/// deterministic, **non-cryptographic** PRNG so test runs are reproducible — do
+/// not rely on it for security properties in tests.
 #[inline]
 pub fn random_bytes(buf: &mut [u8]) {
     #[cfg(target_arch = "wasm32")]
