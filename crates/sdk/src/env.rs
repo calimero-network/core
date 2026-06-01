@@ -609,27 +609,56 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
 /// index-validity marker on failure).
 #[inline]
 pub fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
-    unsafe { sys::storage_index_set(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value))) }
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe {
+            sys::storage_index_set(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value)))
+        }
         .try_into()
         .unwrap_or_else(expected_boolean)
+    }
+    // `SortedMap`'s ordered index is served by `calimero_storage`'s own native
+    // mock (a process-local `BTreeMap`) under the test harness, so this SDK-level
+    // host hook is never reached off-wasm.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (key, value);
+        unsupported_native("storage_index_set")
+    }
 }
 
 /// Remove `key` from the ordered index. Returns whether the host persisted the
 /// write (see [`storage_index_set`]).
 #[inline]
 pub fn storage_index_remove(key: &[u8]) -> bool {
-    unsafe { sys::storage_index_remove(Ref::new(&Buffer::from(key))) }
-        .try_into()
-        .unwrap_or_else(expected_boolean)
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::storage_index_remove(Ref::new(&Buffer::from(key))) }
+            .try_into()
+            .unwrap_or_else(expected_boolean)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = key;
+        unsupported_native("storage_index_remove")
+    }
 }
 
 /// Remove every ordered-index key beginning with `prefix`. Returns whether the
 /// host persisted the write (see [`storage_index_set`]).
 #[inline]
 pub fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
-    unsafe { sys::storage_index_remove_prefix(Ref::new(&Buffer::from(prefix))) }
-        .try_into()
-        .unwrap_or_else(expected_boolean)
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::storage_index_remove_prefix(Ref::new(&Buffer::from(prefix))) }
+            .try_into()
+            .unwrap_or_else(expected_boolean)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = prefix;
+        unsupported_native("storage_index_remove_prefix")
+    }
 }
 
 /// Scan the ordered index over `[lo, hi)`, ascending, after `offset` and
@@ -642,53 +671,74 @@ pub fn storage_index_scan(
     offset: usize,
     limit: Option<usize>,
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
-    // Encode the limit as `n + 1`, with `0` = unbounded. A `MAX` sentinel would
-    // be ambiguous: `usize` is 32-bit on wasm32, so `usize::MAX` (`u32::MAX`)
-    // would not equal the host's `u64::MAX`. `0` is unambiguous on any width.
-    let limit_raw = limit.map_or(0, |n| n.saturating_add(1));
-    let found: bool = unsafe {
-        sys::storage_index_scan(
-            Ref::new(&Buffer::from(lo)),
-            Ref::new(&Buffer::from(hi)),
-            PtrSizedInt::new(offset),
-            PtrSizedInt::new(limit_raw),
-            DATA_REGISTER,
-        )
-        .try_into()
-    }
-    .unwrap_or_else(expected_boolean);
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Encode the limit as `n + 1`, with `0` = unbounded. A `MAX` sentinel
+        // would be ambiguous: `usize` is 32-bit on wasm32, so `usize::MAX`
+        // (`u32::MAX`) would not equal the host's `u64::MAX`. `0` is unambiguous
+        // on any width.
+        let limit_raw = limit.map_or(0, |n| n.saturating_add(1));
+        let found: bool = unsafe {
+            sys::storage_index_scan(
+                Ref::new(&Buffer::from(lo)),
+                Ref::new(&Buffer::from(hi)),
+                PtrSizedInt::new(offset),
+                PtrSizedInt::new(limit_raw),
+                DATA_REGISTER,
+            )
+            .try_into()
+        }
+        .unwrap_or_else(expected_boolean);
 
-    if !found {
-        return Vec::new();
+        if !found {
+            return Vec::new();
+        }
+        let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+        decode_index_pairs(&buf)
     }
-    let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-    decode_index_pairs(&buf)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (lo, hi, offset, limit);
+        unsupported_native("storage_index_scan")
+    }
 }
 
 /// The largest `(key, value)` in the ordered index over `[lo, hi)` — a reverse
 /// seek backing `SortedMap::last`.
 #[inline]
 pub fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    let found: bool = unsafe {
-        sys::storage_index_last(
-            Ref::new(&Buffer::from(lo)),
-            Ref::new(&Buffer::from(hi)),
-            DATA_REGISTER,
-        )
-        .try_into()
-    }
-    .unwrap_or_else(expected_boolean);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let found: bool = unsafe {
+            sys::storage_index_last(
+                Ref::new(&Buffer::from(lo)),
+                Ref::new(&Buffer::from(hi)),
+                DATA_REGISTER,
+            )
+            .try_into()
+        }
+        .unwrap_or_else(expected_boolean);
 
-    if !found {
-        return None;
+        if !found {
+            return None;
+        }
+        let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+        decode_index_pairs(&buf).into_iter().next()
     }
-    let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-    decode_index_pairs(&buf).into_iter().next()
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (lo, hi);
+        unsupported_native("storage_index_last")
+    }
 }
 
 /// Decode the length-prefixed scan reply produced by the host's
 /// `encode_index_pairs`. Malformed/truncated input yields what was parsed so
 /// far (the host controls this buffer, so it's well-formed in practice).
+///
+/// WASM-only: the ordered-index host hooks are unreachable off-wasm (see
+/// `storage_index_set`), so the decoder has no native caller.
+#[cfg(target_arch = "wasm32")]
 fn decode_index_pairs(buf: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out = Vec::new();
     let mut pos = 0usize;
