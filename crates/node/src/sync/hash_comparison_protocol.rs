@@ -1329,4 +1329,139 @@ mod tests {
             );
         });
     }
+
+    /// Characterization guard that isolates the `clear()` HashComparison
+    /// split-brain to delete *propagation*, NOT resurrection.
+    ///
+    /// When a node has cleared an entry but a peer still holds it, HC fetches
+    /// the peer's live copy and re-applies it through `apply_leaf_with_crdt_merge`
+    /// (the same entrypoint the bidirectional reconcile uses for a child the
+    /// peer has and we don't). This pins that the cleared node correctly
+    /// REFUSES to resurrect it: the tombstone's high-water `updated_at` (stamped
+    /// by `remove_child_from` at the clear) is strictly newer than the peer's
+    /// value (`updated_at = 100`), so delete-wins keeps it deleted.
+    ///
+    /// So the apply side is safe — the clear split-brain is solely that the
+    /// deletion never *reaches* the peer that kept the entry (HC carries no
+    /// tombstone). That non-convergence is reproduced end-to-end against the
+    /// real protocol by the sim test
+    /// `sync_sim::protocol::tests::test_hashcomparison_propagates_clear_tombstone`.
+    #[test]
+    fn hashcomparison_pull_does_not_resurrect_cleared_entry() {
+        use std::sync::Arc;
+
+        use calimero_node_primitives::sync::hash_comparison::{LeafMetadata, TreeLeafData};
+        use calimero_primitives::crdt::CrdtType;
+        use calimero_storage::action::Action;
+        use calimero_storage::entities::{ChildInfo, Metadata};
+        use calimero_storage::interface::ApplyContext;
+        use calimero_store::db::InMemoryDB;
+        use calimero_store::Store;
+
+        use crate::sync::helpers::apply_leaf_with_crdt_merge;
+
+        let context_id = ContextId::from([0xCB; 32]);
+        let identity = PublicKey::from([0u8; 32]);
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let runtime_env = create_runtime_env(&store, context_id, identity);
+
+        let root_id = Id::new(*context_id.as_ref());
+        let entry_id = Id::new([0x77u8; 32]);
+
+        let child_ids = |parent: Id| -> Vec<Id> {
+            Index::<MainStorage>::get_children_of(parent)
+                .unwrap_or_default()
+                .iter()
+                .map(ChildInfo::id)
+                .collect()
+        };
+
+        with_runtime_env(runtime_env.clone(), || {
+            // Context root.
+            Interface::<MainStorage>::apply_action(
+                Action::Update {
+                    id: root_id,
+                    data: vec![],
+                    ancestors: vec![],
+                    metadata: Metadata::default(),
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("create root");
+
+            let root_hash = Index::<MainStorage>::get_hashes_for(root_id)
+                .ok()
+                .flatten()
+                .map(|(full, _)| full)
+                .unwrap_or([0; 32]);
+            let root_meta = Index::<MainStorage>::get_index(root_id)
+                .ok()
+                .flatten()
+                .map(|idx| idx.metadata.clone())
+                .unwrap_or_default();
+
+            // Seed an LWW entry under root, written at hlc 100.
+            let mut md = Metadata::new(100, 100);
+            md.crdt_type = Some(CrdtType::LwwRegister {
+                inner_type: "String".to_owned(),
+            });
+            Interface::<MainStorage>::apply_action(
+                Action::Add {
+                    id: entry_id,
+                    data: b"peer-value".to_vec(),
+                    ancestors: vec![ChildInfo::new(root_id, root_hash, root_meta)],
+                    metadata: md,
+                },
+                &ApplyContext::empty(),
+            )
+            .expect("seed entry");
+            assert!(
+                child_ids(root_id).contains(&entry_id),
+                "entry should be seeded under root"
+            );
+
+            // CLEAR: delete the entry locally. `remove_child_from` stamps a
+            // tombstone (deleted_at = time_now(), >> 100), drops it from root's
+            // children, and would broadcast a DeleteRef on the delta path.
+            Interface::<MainStorage>::remove_child_from(root_id, entry_id).expect("clear entry");
+            assert!(
+                Index::<MainStorage>::is_deleted(entry_id).unwrap(),
+                "entry must be tombstoned after clear"
+            );
+            assert!(
+                !child_ids(root_id).contains(&entry_id),
+                "cleared entry must leave root's children"
+            );
+
+            // HASHCOMPARISON PULL: a peer that never saw the delete still holds
+            // the entry. HC fetches it as a leaf and re-applies it with the
+            // peer's (older) hlc=100 — the real HC apply entrypoint.
+            let leaf = TreeLeafData::new(
+                *entry_id.as_bytes(),
+                b"peer-value".to_vec(),
+                LeafMetadata::new(
+                    CrdtType::LwwRegister {
+                        inner_type: "String".to_owned(),
+                    },
+                    100,
+                    *root_id.as_bytes(),
+                ),
+            );
+            apply_leaf_with_crdt_merge(context_id, &leaf).expect("apply pulled leaf");
+
+            // DELETE-WINS: our deletion is newer than the pulled value, so the
+            // cleared entry MUST stay deleted. Today HC has no tombstone
+            // awareness, so it is resurrected and these assertions fail.
+            assert!(
+                Index::<MainStorage>::is_deleted(entry_id).unwrap(),
+                "HashComparison pull resurrected a cleared entry (tombstone lost) — \
+                 delete-wins violated, so the deletion can never converge"
+            );
+            assert!(
+                !child_ids(root_id).contains(&entry_id),
+                "HashComparison pull re-added the cleared entry to root's children — \
+                 root hash diverges from a peer that applied the delete"
+            );
+        });
+    }
 }
