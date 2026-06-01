@@ -187,11 +187,17 @@ pub enum CrdtCollectionType {
     Vector,
     /// UnorderedMap: Map with element IDs and CRDT metadata
     UnorderedMap,
+    /// SortedMap: Map iterated in ascending key order (range/prefix queries);
+    /// same add-wins merge as `UnorderedMap`
+    SortedMap,
     /// AuthoredMap: Map with per-entry author identity (insert is open;
     /// update/remove gated by stored owner == executor)
     AuthoredMap,
     /// UnorderedSet: Set with CRDT metadata
     UnorderedSet,
+    /// SortedSet: Set iterated in ascending element order (range/prefix queries);
+    /// same add-wins union merge as `UnorderedSet`
+    SortedSet,
     /// ReplicatedGrowableArray: String with character-level CRDT
     ReplicatedGrowableArray,
     /// AuthoredVector: List with per-element author identity

@@ -26,8 +26,8 @@ use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, PublicKey};
 use calimero_storage::collections::{
     AuthoredMap, AuthoredVector, Counter, FrozenStorage, GCounter, LwwRegister, Mergeable,
-    PNCounter, ReplicatedGrowableArray, SharedStorage, UnorderedMap, UnorderedSet, UserStorage,
-    Vector,
+    PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, UnorderedMap, UnorderedSet,
+    UserStorage, Vector,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -150,6 +150,10 @@ pub struct E2eKvStore {
     crdt_metrics: Vector<Counter>,
     /// Map of sets (union merge)
     crdt_tags: UnorderedMap<String, UnorderedSet<String>>,
+
+    // --- Sorted Map (key-ordered; range/prefix/pagination) ---
+    /// Key-ordered map exercised end-to-end through the WASM host index path.
+    sorted_items: SortedMap<String, LwwRegister<String>>,
 
     // --- RGA Document ---
     /// Collaborative text document
@@ -408,6 +412,7 @@ impl E2eKvStore {
             crdt_metadata: UnorderedMap::new(),
             crdt_metrics: Vector::new(),
             crdt_tags: UnorderedMap::new(),
+            sorted_items: SortedMap::new(),
             // RGA
             rga_document: ReplicatedGrowableArray::new(),
             rga_edit_count: GCounter::new(),
@@ -492,6 +497,40 @@ impl E2eKvStore {
             .entries()?
             .map(|(k, v)| (k, v.get().clone()))
             .collect())
+    }
+
+    // --- SortedMap (key-ordered) operations ---
+    //
+    // These drive the WASM host ordered-index path end to end: `sorted_set`
+    // maintains the index via `storage_index_set`; `sorted_keys`/`sorted_range`
+    // read it back via `storage_index_scan`.
+
+    pub fn sorted_set(&mut self, key: String, value: String) -> app::Result<()> {
+        self.sorted_items.insert(key, value.into())?;
+        Ok(())
+    }
+
+    /// All keys in ascending order (index-backed).
+    pub fn sorted_keys(&self) -> app::Result<Vec<String>> {
+        Ok(self.sorted_items.keys()?.collect())
+    }
+
+    /// Entries whose keys fall within `[start, end)`, ascending (a range seek).
+    pub fn sorted_range(
+        &self,
+        start: String,
+        end: String,
+    ) -> app::Result<BTreeMap<String, String>> {
+        Ok(self
+            .sorted_items
+            .range(start..end)?
+            .map(|(k, v)| (k, v.get().clone()))
+            .collect())
+    }
+
+    /// The largest key (reverse-seek `last`, index-backed).
+    pub fn sorted_last_key(&self) -> app::Result<Option<String>> {
+        Ok(self.sorted_items.last()?.map(|(k, _)| k))
     }
 
     pub fn len(&self) -> app::Result<usize> {

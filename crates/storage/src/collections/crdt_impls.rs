@@ -5,11 +5,15 @@
 //! - Counter
 //! - ReplicatedGrowableArray (RGA)
 //! - UnorderedMap
+//! - SortedMap
 //! - UnorderedSet
 //! - Vector
 
 use super::crdt_meta::{CrdtMeta, CrdtType, MergeError, Mergeable, StorageStrategy};
-use super::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap, UnorderedSet, Vector};
+use super::{
+    Counter, LwwRegister, ReplicatedGrowableArray, SortedMap, SortedSet, UnorderedMap,
+    UnorderedSet, Vector,
+};
 #[cfg(test)]
 use super::{GCounter, PNCounter};
 use crate::store::StorageAdaptor;
@@ -287,6 +291,61 @@ where
 }
 
 // ============================================================================
+// SortedMap
+// ============================================================================
+
+impl<K: 'static, V: 'static, S> CrdtMeta for SortedMap<K, V, S>
+where
+    S: StorageAdaptor,
+{
+    fn crdt_type() -> CrdtType {
+        CrdtType::sorted_map(std::any::type_name::<K>(), std::any::type_name::<V>())
+    }
+
+    fn storage_strategy() -> StorageStrategy {
+        StorageStrategy::Structured // Maps decompose into entries
+    }
+
+    fn can_contain_crdts() -> bool {
+        true // Map can contain CRDT values!
+    }
+}
+
+impl<K, V, S> Mergeable for SortedMap<K, V, S>
+where
+    K: borsh::BorshSerialize
+        + borsh::BorshDeserialize
+        + AsRef<[u8]>
+        + Ord
+        + Clone
+        + PartialEq
+        + 'static,
+    V: borsh::BorshSerialize + borsh::BorshDeserialize + Mergeable + 'static,
+    S: StorageAdaptor,
+{
+    /// Merge two sorted maps entry-by-entry.
+    ///
+    /// Identical add-wins semantics to [`UnorderedMap`] — keys union, shared
+    /// keys recursively merge their values. Iteration order falls out of `K:
+    /// Ord` and needs no special handling at merge time, so convergence is
+    /// inherited wholesale from the map merge.
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        let other_entries = other.entries()?;
+
+        for (key, other_value) in other_entries {
+            if let Some(mut our_value) = self.get(&key)? {
+                our_value.merge(&other_value)?;
+                drop(self.insert(key, our_value)?);
+            } else {
+                drop(self.insert(key, other_value)?);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
 // UnorderedSet
 // ============================================================================
 
@@ -343,6 +402,48 @@ where
             let _ = self.insert(value)?;
         }
 
+        Ok(())
+    }
+}
+
+// ============================================================================
+// SortedSet
+// ============================================================================
+
+impl<T: 'static, S> CrdtMeta for SortedSet<T, S>
+where
+    S: StorageAdaptor,
+{
+    fn crdt_type() -> CrdtType {
+        CrdtType::sorted_set(std::any::type_name::<T>())
+    }
+
+    fn storage_strategy() -> StorageStrategy {
+        StorageStrategy::Structured
+    }
+
+    fn can_contain_crdts() -> bool {
+        false // Set elements are values, not CRDTs
+    }
+}
+
+impl<T, S> Mergeable for SortedSet<T, S>
+where
+    T: borsh::BorshSerialize
+        + borsh::BorshDeserialize
+        + AsRef<[u8]>
+        + Ord
+        + Clone
+        + PartialEq
+        + 'static,
+    S: StorageAdaptor,
+{
+    /// Union (add-wins) merge — identical to [`UnorderedSet`]; only iteration is
+    /// element-ordered. Order falls out of `T: Ord`, so convergence is inherited.
+    fn merge(&mut self, other: &Self) -> Result<(), MergeError> {
+        for value in other.iter()? {
+            let _ = self.insert(value)?;
+        }
         Ok(())
     }
 }

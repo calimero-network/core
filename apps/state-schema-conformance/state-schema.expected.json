@@ -131,6 +131,64 @@
           }
         },
         {
+          "name": "sorted_string_map",
+          "type": {
+            "kind": "map",
+            "key": {
+              "kind": "string"
+            },
+            "value": {
+              "kind": "record",
+              "fields": [],
+              "crdt_type": "lww_register",
+              "inner_type": {
+                "kind": "string"
+              }
+            },
+            "crdt_type": "sorted_map"
+          }
+        },
+        {
+          "name": "sorted_counter_map",
+          "type": {
+            "kind": "map",
+            "key": {
+              "kind": "string"
+            },
+            "value": {
+              "kind": "record",
+              "fields": [],
+              "crdt_type": "counter"
+            },
+            "crdt_type": "sorted_map"
+          }
+        },
+        {
+          "name": "map_of_sorted_maps",
+          "type": {
+            "kind": "map",
+            "key": {
+              "kind": "string"
+            },
+            "value": {
+              "kind": "map",
+              "key": {
+                "kind": "string"
+              },
+              "value": {
+                "kind": "record",
+                "fields": [],
+                "crdt_type": "lww_register",
+                "inner_type": {
+                  "kind": "u32"
+                }
+              },
+              "crdt_type": "sorted_map"
+            },
+            "crdt_type": "unordered_map"
+          }
+        },
+        {
           "name": "counter_list",
           "type": {
             "kind": "list",
@@ -252,6 +310,16 @@
               "kind": "string"
             },
             "crdt_type": "unordered_set"
+          }
+        },
+        {
+          "name": "sorted_string_set",
+          "type": {
+            "kind": "list",
+            "items": {
+              "kind": "string"
+            },
+            "crdt_type": "sorted_set"
           }
         },
         {

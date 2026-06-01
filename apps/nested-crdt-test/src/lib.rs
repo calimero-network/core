@@ -14,7 +14,9 @@
 
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap, UnorderedSet, Vector};
+use calimero_storage::collections::{
+    Counter, LwwRegister, SortedMap, UnorderedMap, UnorderedSet, Vector,
+};
 
 #[app::state(emits = TestEvent)]
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -34,6 +36,11 @@ pub struct NestedCrdtTest {
 
     /// Map of sets - union merge
     pub tags: UnorderedMap<String, UnorderedSet<String>>,
+
+    /// Sorted map of registers - same add-wins/LWW merge as `registers`, but
+    /// iterated in ascending key order (exercises SortedMap range queries and
+    /// a CRDT value nested inside a SortedMap).
+    pub sorted_scores: SortedMap<String, LwwRegister<u64>>,
 }
 
 #[app::event]
@@ -60,6 +67,10 @@ pub enum TestEvent {
         key: String,
         tag: String,
     },
+    SortedScoreSet {
+        key: String,
+        value: u64,
+    },
 }
 
 #[app::logic]
@@ -73,6 +84,7 @@ impl NestedCrdtTest {
             metadata: UnorderedMap::new_with_field_name("metadata"),
             metrics: Vector::new_with_field_name("metrics"),
             tags: UnorderedMap::new_with_field_name("tags"),
+            sorted_scores: SortedMap::new_with_field_name("sorted_scores"),
         }
     }
 
@@ -117,6 +129,46 @@ impl NestedCrdtTest {
             .get(&key)?
             .map(|r| r.get().clone())
             .ok_or_else(|| app::err!("Register not found"))
+    }
+
+    // ===== SortedMap Operations =====
+
+    pub fn set_sorted_score(&mut self, key: String, value: u64) -> app::Result<()> {
+        drop(
+            self.sorted_scores
+                .insert(key.clone(), LwwRegister::new(value))?,
+        );
+
+        app::emit!(TestEvent::SortedScoreSet { key, value });
+
+        Ok(())
+    }
+
+    pub fn get_sorted_score(&self, key: String) -> app::Result<u64> {
+        let Some(register) = self.sorted_scores.get(&key)? else {
+            app::bail!("Score not found");
+        };
+
+        Ok(*register.get())
+    }
+
+    /// Keys in ascending order — the property that distinguishes SortedMap from
+    /// the unordered `registers` field.
+    pub fn sorted_score_keys(&self) -> app::Result<Vec<String>> {
+        Ok(self.sorted_scores.keys()?.collect())
+    }
+
+    /// Scores whose keys fall within `[start, end)`, in ascending order.
+    pub fn sorted_scores_range(
+        &self,
+        start: String,
+        end: String,
+    ) -> app::Result<Vec<(String, u64)>> {
+        Ok(self
+            .sorted_scores
+            .range(start..end)?
+            .map(|(k, v)| (k, *v.get()))
+            .collect())
     }
 
     // ===== Nested Map Operations =====

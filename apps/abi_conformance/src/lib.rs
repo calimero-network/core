@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
-use calimero_storage::collections::{LwwRegister, UnorderedMap, Vector};
+use calimero_storage::collections::{LwwRegister, SortedMap, UnorderedMap, Vector};
 use thiserror::Error;
 
 // Test multi-file ABI generation
@@ -118,6 +118,8 @@ pub enum Event {
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct AbiState {
     counters: UnorderedMap<String, LwwRegister<u32>>,
+    // Key-ordered map — locks the `SortedMap` ABI collection marker.
+    sorted_counters: SortedMap<String, LwwRegister<u32>>,
     users: Vector<LwwRegister<UserId32>>,
 }
 
@@ -129,6 +131,7 @@ impl AbiState {
     pub fn init() -> Self {
         Self {
             counters: UnorderedMap::new_with_field_name("counters"),
+            sorted_counters: SortedMap::new_with_field_name("sorted_counters"),
             users: Vector::new_with_field_name("users"),
         }
     }

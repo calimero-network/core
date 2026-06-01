@@ -1,4 +1,31 @@
 //! This module provides functionality for the unordered map data structure.
+//!
+//! [`UnorderedMap`] is the **default** key-value collection: point-lookup and
+//! full-scan only, with **no iteration-order guarantee** (entries come back in
+//! hashed entity-id order, not key order). Add-wins CRDT merge — keys union,
+//! shared keys merge their values recursively.
+//!
+//! # Complexity (on a node)
+//!
+//! | Operation | Cost |
+//! |---|---|
+//! | `get` / `insert` / `remove` / `contains` | `O(1)` point lookup |
+//! | `len` | `O(1)` |
+//! | `entries` / `keys` / `values` | `O(n)`, **unordered** |
+//!
+//! There is no separate index to maintain, so writes are as cheap as the
+//! storage engine allows and no extra disk is used per key.
+//!
+//! # `UnorderedMap` vs [`SortedMap`](super::SortedMap)
+//!
+//! **Default to `UnorderedMap`.** Reach for [`SortedMap`](super::SortedMap)
+//! *only* when you need keys in order — `range(a..b)`, `prefix("user:")`,
+//! pagination, sorted iteration, or min/max. `SortedMap` answers those in
+//! `O(log n + k)` via a maintained on-disk index, but pays for it on every
+//! write (an extra index write + a validity-marker read/write), in extra disk
+//! per key, and with an `O(n)` index rebuild on the first ordered read after a
+//! sync. If you only ever point-access a map, that index is pure overhead — use
+//! `UnorderedMap`. It is the `HashMap` to `SortedMap`'s `BTreeMap`.
 
 use core::borrow::Borrow;
 use core::fmt;

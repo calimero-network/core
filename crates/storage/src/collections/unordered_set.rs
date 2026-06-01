@@ -1,4 +1,31 @@
 //! This module provides functionality for the unordered set data structure.
+//!
+//! [`UnorderedSet`] is the **default** set collection: membership and full-scan
+//! only, with **no iteration-order guarantee** (elements come back in hashed
+//! entity-id order, not value order). Add-wins union CRDT — elements are never
+//! lost once added.
+//!
+//! # Complexity (on a node)
+//!
+//! | Operation | Cost |
+//! |---|---|
+//! | `insert` / `contains` / `remove` | `O(1)` point lookup |
+//! | `len` | `O(1)` |
+//! | `iter` | `O(n)`, **unordered** |
+//!
+//! There is no separate index to maintain, so writes are as cheap as the
+//! storage engine allows and no extra disk is used per element.
+//!
+//! # `UnorderedSet` vs [`SortedSet`](super::SortedSet)
+//!
+//! **Default to `UnorderedSet`.** Reach for [`SortedSet`](super::SortedSet)
+//! *only* when you need elements in order — `range(a..b)`, `prefix("user:")`,
+//! pagination, sorted iteration, or min/max. `SortedSet` answers those in
+//! `O(log n + k)` via a maintained on-disk index, but pays for it on every write
+//! (an extra index write + a validity-marker read/write), in extra disk per
+//! element, and with an `O(n)` index rebuild on the first ordered read after a
+//! sync. If you only ever test membership, that index is pure overhead — use
+//! `UnorderedSet`. It is the `HashSet` to `SortedSet`'s `BTreeSet`.
 
 use core::borrow::Borrow;
 use core::fmt;

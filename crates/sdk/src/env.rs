@@ -491,6 +491,129 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
     .unwrap_or_else(expected_boolean)
 }
 
+// ==================== Ordered Secondary Index (SortedMap) ====================
+//
+// Node-local, NOT synchronized. Keys are the unhashed `collection ‖ order_key`
+// so the backend keeps them in byte (= logical key) order. Only `SortedMap`
+// (via the `MainStorage` adaptor) calls these.
+
+/// Insert/overwrite `key -> value` in the ordered index. Returns whether the
+/// host persisted the write (so the caller can avoid stamping a stale
+/// index-validity marker on failure).
+#[inline]
+pub fn storage_index_set(key: &[u8], value: &[u8]) -> bool {
+    unsafe { sys::storage_index_set(Ref::new(&Buffer::from(key)), Ref::new(&Buffer::from(value))) }
+        .try_into()
+        .unwrap_or_else(expected_boolean)
+}
+
+/// Remove `key` from the ordered index. Returns whether the host persisted the
+/// write (see [`storage_index_set`]).
+#[inline]
+pub fn storage_index_remove(key: &[u8]) -> bool {
+    unsafe { sys::storage_index_remove(Ref::new(&Buffer::from(key))) }
+        .try_into()
+        .unwrap_or_else(expected_boolean)
+}
+
+/// Remove every ordered-index key beginning with `prefix`. Returns whether the
+/// host persisted the write (see [`storage_index_set`]).
+#[inline]
+pub fn storage_index_remove_prefix(prefix: &[u8]) -> bool {
+    unsafe { sys::storage_index_remove_prefix(Ref::new(&Buffer::from(prefix))) }
+        .try_into()
+        .unwrap_or_else(expected_boolean)
+}
+
+/// Scan the ordered index over `[lo, hi)`, ascending, after `offset` and
+/// capped at `limit` (`None` = unbounded). Decodes the host's length-prefixed
+/// reply (`count:u32`, then per pair `klen:u32, k, vlen:u32, v`, little-endian).
+#[inline]
+pub fn storage_index_scan(
+    lo: &[u8],
+    hi: &[u8],
+    offset: usize,
+    limit: Option<usize>,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    // Encode the limit as `n + 1`, with `0` = unbounded. A `MAX` sentinel would
+    // be ambiguous: `usize` is 32-bit on wasm32, so `usize::MAX` (`u32::MAX`)
+    // would not equal the host's `u64::MAX`. `0` is unambiguous on any width.
+    let limit_raw = limit.map_or(0, |n| n.saturating_add(1));
+    let found: bool = unsafe {
+        sys::storage_index_scan(
+            Ref::new(&Buffer::from(lo)),
+            Ref::new(&Buffer::from(hi)),
+            PtrSizedInt::new(offset),
+            PtrSizedInt::new(limit_raw),
+            DATA_REGISTER,
+        )
+        .try_into()
+    }
+    .unwrap_or_else(expected_boolean);
+
+    if !found {
+        return Vec::new();
+    }
+    let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+    decode_index_pairs(&buf)
+}
+
+/// The largest `(key, value)` in the ordered index over `[lo, hi)` — a reverse
+/// seek backing `SortedMap::last`.
+#[inline]
+pub fn storage_index_last(lo: &[u8], hi: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let found: bool = unsafe {
+        sys::storage_index_last(
+            Ref::new(&Buffer::from(lo)),
+            Ref::new(&Buffer::from(hi)),
+            DATA_REGISTER,
+        )
+        .try_into()
+    }
+    .unwrap_or_else(expected_boolean);
+
+    if !found {
+        return None;
+    }
+    let buf = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+    decode_index_pairs(&buf).into_iter().next()
+}
+
+/// Decode the length-prefixed scan reply produced by the host's
+/// `encode_index_pairs`. Malformed/truncated input yields what was parsed so
+/// far (the host controls this buffer, so it's well-formed in practice).
+fn decode_index_pairs(buf: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    let take_u32 = |buf: &[u8], pos: &mut usize| -> Option<usize> {
+        let end = pos.checked_add(4)?;
+        let n = u32::from_le_bytes(buf.get(*pos..end)?.try_into().ok()?) as usize;
+        *pos = end;
+        Some(n)
+    };
+    let Some(count) = take_u32(buf, &mut pos) else {
+        return out;
+    };
+    for _ in 0..count {
+        let Some(klen) = take_u32(buf, &mut pos) else {
+            break;
+        };
+        let Some(key) = buf.get(pos..pos + klen).map(<[u8]>::to_vec) else {
+            break;
+        };
+        pos += klen;
+        let Some(vlen) = take_u32(buf, &mut pos) else {
+            break;
+        };
+        let Some(value) = buf.get(pos..pos + vlen).map(<[u8]>::to_vec) else {
+            break;
+        };
+        pos += vlen;
+        out.push((key, value));
+    }
+    out
+}
+
 // ==================== Private Storage Functions ====================
 // These functions operate on node-local storage that is NOT synchronized across nodes.
 

@@ -3,7 +3,9 @@
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
-use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap, UnorderedSet, Vector};
+use calimero_storage::collections::{
+    Counter, LwwRegister, SortedMap, SortedSet, UnorderedMap, UnorderedSet, Vector,
+};
 
 // Test types for state schema conformance
 
@@ -74,6 +76,12 @@ pub struct StateSchemaConformance {
     record_map: UnorderedMap<String, LwwRegister<Person>>, // map<string, Person>
     nested_map: UnorderedMap<String, UnorderedMap<String, LwwRegister<u32>>>, // map<string, map<string, u32>> (direct nesting)
 
+    // Sorted maps (key-ordered): same shapes as the maps above but iterated in
+    // ascending key order. Exercises the SortedMap ABI marker and nesting.
+    sorted_string_map: SortedMap<String, LwwRegister<String>>, // sorted map<string, string>
+    sorted_counter_map: SortedMap<String, Counter>,            // sorted map<string, Counter>
+    map_of_sorted_maps: UnorderedMap<String, SortedMap<String, LwwRegister<u32>>>, // map<string, sorted map<string, u32>>
+
     // Lists using Vector (Calimero collection) - Vector items must be CRDTs
     counter_list: Vector<Counter>,              // list<Counter>
     register_list: Vector<LwwRegister<String>>, // list<LwwRegister<String>>
@@ -86,7 +94,8 @@ pub struct StateSchemaConformance {
     list_of_maps: Vector<UnorderedMap<String, LwwRegister<u32>>>, // list<map<string, u32>>
 
     // Sets
-    string_set: UnorderedSet<String>, // set<string>
+    string_set: UnorderedSet<String>,     // set<string>
+    sorted_string_set: SortedSet<String>, // sorted set<string> (range/prefix)
 
     // Counters
     visit_counter: Counter, // counter
@@ -115,6 +124,9 @@ impl StateSchemaConformance {
             int_map: UnorderedMap::new_with_field_name("int_map"),
             record_map: UnorderedMap::new_with_field_name("record_map"),
             nested_map: UnorderedMap::new_with_field_name("nested_map"),
+            sorted_string_map: SortedMap::new_with_field_name("sorted_string_map"),
+            sorted_counter_map: SortedMap::new_with_field_name("sorted_counter_map"),
+            map_of_sorted_maps: UnorderedMap::new_with_field_name("map_of_sorted_maps"),
             counter_list: Vector::new_with_field_name("counter_list"),
             register_list: Vector::new_with_field_name("register_list"),
             record_list: Vector::new_with_field_name("record_list"),
@@ -123,6 +135,7 @@ impl StateSchemaConformance {
             map_of_lists: UnorderedMap::new_with_field_name("map_of_lists"),
             list_of_maps: Vector::new_with_field_name("list_of_maps"),
             string_set: UnorderedSet::new_with_field_name("string_set"),
+            sorted_string_set: SortedSet::new_with_field_name("sorted_string_set"),
             visit_counter: Counter::new_with_field_name("visit_counter"),
             profile_map: UnorderedMap::new_with_field_name("profile_map"),
             status: LwwRegister::new(Status::Inactive),
