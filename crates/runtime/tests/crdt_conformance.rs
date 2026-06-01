@@ -368,16 +368,13 @@ fn kv_unordered_map_lww_converges() {
 }
 
 // The four tests below drive CONCURRENT writes to the SAME logical CRDT entity
-// (one counter / one set key). They currently do NOT converge through this
-// harness: the plain `StorageDelta::Actions` apply done by `__calimero_sync_next`
-// LWW-overwrites the CRDT container (apply_action only invokes CRDT merge on the
-// equal-`updated_at` branch — interface.rs ~707; concurrent writes have distinct
-// `updated_at`), so e.g. a GCounter reads 1 instead of 3. Whether this is a
-// product bug or a harness gap (the node ships `StorageDelta::CausalActions` and
-// also reconciles via HashComparison/merge_root_state, neither exercised here)
-// is the open classification question. Ignored so the suite stays green while
-// the distinction is resolved; run with `--ignored` to observe the divergence.
-#[ignore = "concurrent same-entity CRDT merge not exercised by plain Actions apply; see module note"]
+// (one counter / one set key) — the hardest convergence case. These were once
+// `#[ignore]`d because plain `StorageDelta::Actions` apply LWW-overwrote the
+// CRDT container instead of merging it (concurrent writes carry distinct
+// `updated_at`, so the merge only fired on the equal-timestamp branch). That
+// gap has since been closed — `apply_action` now routes concurrent same-entity
+// CRDT writes through the typed merge on the newer-timestamp branch too — so a
+// GCounter correctly sums to 3. Kept as live regression coverage.
 #[test]
 fn gcounter_converges() {
     let mut c = Cluster::new(3);
@@ -398,7 +395,6 @@ fn gcounter_converges() {
     assert_eq!(n, Some(3), "GCounter should sum concurrent increments");
 }
 
-#[ignore = "concurrent same-entity CRDT merge not exercised by plain Actions apply; see module note"]
 #[test]
 fn pncounter_converges() {
     let mut c = Cluster::new(3);
@@ -413,7 +409,6 @@ fn pncounter_converges() {
     assert_converged("pncounter", &roots);
 }
 
-#[ignore = "concurrent same-entity CRDT merge not exercised by plain Actions apply; see module note"]
 #[test]
 fn nested_counter_in_map_converges() {
     let mut c = Cluster::new(3);
@@ -457,7 +452,6 @@ fn vector_converges() {
     assert_converged("vector_push", &roots);
 }
 
-#[ignore = "concurrent same-entity CRDT merge not exercised by plain Actions apply; see module note"]
 #[test]
 fn unordered_set_in_map_converges() {
     // crdt_tags: UnorderedMap<String, UnorderedSet<String>> — concurrent tag
