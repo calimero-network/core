@@ -133,11 +133,10 @@ impl NestedCrdtTest {
 
     // ===== SortedMap Operations =====
 
-    pub fn set_sorted_score(&mut self, key: String, value: u64) -> Result<(), String> {
+    pub fn set_sorted_score(&mut self, key: String, value: u64) -> app::Result<()> {
         drop(
             self.sorted_scores
-                .insert(key.clone(), LwwRegister::new(value))
-                .map_err(|e| format!("Insert failed: {:?}", e))?,
+                .insert(key.clone(), LwwRegister::new(value))?,
         );
 
         app::emit!(TestEvent::SortedScoreSet { key, value });
@@ -145,21 +144,18 @@ impl NestedCrdtTest {
         Ok(())
     }
 
-    pub fn get_sorted_score(&self, key: String) -> Result<u64, String> {
-        self.sorted_scores
-            .get(&key)
-            .map_err(|e| format!("Get failed: {:?}", e))?
-            .map(|r| *r.get())
-            .ok_or_else(|| "Score not found".to_owned())
+    pub fn get_sorted_score(&self, key: String) -> app::Result<u64> {
+        let Some(register) = self.sorted_scores.get(&key)? else {
+            app::bail!("Score not found");
+        };
+
+        Ok(*register.get())
     }
 
     /// Keys in ascending order — the property that distinguishes SortedMap from
     /// the unordered `registers` field.
-    pub fn sorted_score_keys(&self) -> Result<Vec<String>, String> {
-        self.sorted_scores
-            .keys()
-            .map(|it| it.collect())
-            .map_err(|e| format!("Keys failed: {:?}", e))
+    pub fn sorted_score_keys(&self) -> app::Result<Vec<String>> {
+        Ok(self.sorted_scores.keys()?.collect())
     }
 
     /// Scores whose keys fall within `[start, end)`, in ascending order.
@@ -167,11 +163,12 @@ impl NestedCrdtTest {
         &self,
         start: String,
         end: String,
-    ) -> Result<Vec<(String, u64)>, String> {
-        self.sorted_scores
-            .range(start..end)
-            .map(|it| it.map(|(k, v)| (k, *v.get())).collect())
-            .map_err(|e| format!("Range failed: {:?}", e))
+    ) -> app::Result<Vec<(String, u64)>> {
+        Ok(self
+            .sorted_scores
+            .range(start..end)?
+            .map(|(k, v)| (k, *v.get()))
+            .collect())
     }
 
     // ===== Nested Map Operations =====
