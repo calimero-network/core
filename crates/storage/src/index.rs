@@ -61,6 +61,14 @@ thread_local! {
 // regardless of interleave. The guard is reentrant — a single logical operation
 // nests these calls on one thread — and native-only: WASM app execution is
 // single-threaded, so there is no race and the guard compiles out to nothing.
+//
+// Why ONE global lock rather than a per-entity/per-context lock: it is
+// deadlock-free by construction (a single lock has no acquisition order to
+// invert), whereas locking individual entries would let two threads grab a
+// parent and an ancestor in opposite orders during the ancestor-hash walk and
+// deadlock. Index mutations are microsecond-scale in-memory + one store write,
+// so global serialization is cheap; a per-context lock keyed by the
+// `RuntimeEnv` context is a safe future optimization if contention ever shows.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod mutation_lock {
     use std::cell::Cell;
@@ -75,6 +83,12 @@ pub(crate) mod mutation_lock {
     /// released only when the OUTERMOST guard on this thread drops, so nested
     /// mutators (e.g. `add_child_to` → `recalculate_ancestor_hashes_for`) don't
     /// self-deadlock.
+    ///
+    /// Like a `MutexGuard`, this must reach its `Drop`. `std::mem::forget`-ing
+    /// it leaks the held lock AND leaves this thread's reentrancy `DEPTH`
+    /// elevated forever, so the thread would never re-acquire the lock and
+    /// concurrent mutations from other threads would stop being serialized.
+    /// Don't `mem::forget` it (same hazard as `DeferredAncestorScope`).
     #[must_use]
     pub(crate) struct Guard(#[allow(dead_code)] Option<MutexGuard<'static, ()>>);
 
@@ -83,10 +97,14 @@ pub(crate) mod mutation_lock {
             let current = depth.get();
             depth.set(current + 1);
             if current == 0 {
-                // Recover from a poisoned lock: a panic mid-mutation never
-                // leaves a half-written index entry (each `save_index` is a
-                // single store write), so the protected data stays consistent
-                // and the lock is safe to keep using.
+                // Recover from poisoning rather than propagate. The lock only
+                // SERIALIZES access — it adds no transactionality, and the
+                // storage layer has none either, so a panic mid-mutation can
+                // leave the index partially updated whether or not this lock
+                // exists (that is the pre-existing, lock-free behaviour). What
+                // recovery buys is that one thread's panic doesn't permanently
+                // brick every other thread's index writes; surfacing the panic
+                // is the panicking caller's job, not this guard's.
                 Guard(Some(
                     LOCK.lock().unwrap_or_else(|poison| poison.into_inner()),
                 ))
@@ -98,8 +116,11 @@ pub(crate) mod mutation_lock {
 
     impl Drop for Guard {
         fn drop(&mut self) {
+            // Release the lock (outermost guard only) BEFORE clearing depth, so
+            // the "DEPTH > 0 ⇒ this thread holds the lock" invariant never
+            // momentarily inverts.
+            drop(self.0.take());
             DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
-            // The held `MutexGuard` (outermost guard only) drops here.
         }
     }
 }

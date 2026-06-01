@@ -23,6 +23,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
+use serial_test::serial;
+
 use crate::address::Id;
 use crate::entities::{ChildInfo, Metadata};
 use crate::index::Index;
@@ -60,6 +62,13 @@ impl StorageAdaptor for SharedStore {
             .insert(key, value.to_vec())
             .is_some()
     }
+
+    // These tests drive `Index::add_child_to` directly and assert on the index
+    // children list; they don't exercise the delta stream. Opt out of it so a
+    // stray `Action::Compare` push can't touch thread-local delta state.
+    fn participates_in_sync() -> bool {
+        false
+    }
 }
 
 /// Deterministic distinct child id: group byte + 2-byte counter.
@@ -77,7 +86,12 @@ fn child_id(group: u8, i: u16) -> Id {
 /// up with ALL of them. The read-modify-write race drops some: the parent's
 /// `children` list ends shorter than the number of inserts, which in production
 /// is the collection entity whose `full_hash` can no longer match the peer.
+///
+/// `#[serial]`: both tests in this module share the process-global
+/// [`shared_store`], so they must not run concurrently with each other (one's
+/// `reset_shared_store` would clear the other's data mid-run).
 #[test]
+#[serial]
 fn concurrent_add_child_to_loses_children() {
     reset_shared_store();
 
@@ -139,6 +153,7 @@ fn concurrent_add_child_to_loses_children() {
 /// `SyncSessionActor` apply raced its own execute path — so their collection
 /// hashes never match and HashComparison can't heal it.
 #[test]
+#[serial]
 fn concurrent_children_index_diverges_from_serial_full_hash() {
     // The exact same set of children, with identical ids/metadata.
     let children: Vec<ChildInfo> = (0..200u16)
