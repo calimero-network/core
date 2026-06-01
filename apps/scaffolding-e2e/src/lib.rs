@@ -26,8 +26,8 @@ use calimero_sdk::serde::Serialize;
 use calimero_sdk::{app, env, PublicKey};
 use calimero_storage::collections::{
     AuthoredMap, AuthoredVector, Counter, FrozenStorage, GCounter, LwwRegister, Mergeable,
-    PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, UnorderedMap, UnorderedSet,
-    UserStorage, Vector,
+    PNCounter, ReplicatedGrowableArray, SharedStorage, SortedMap, SortedSet, UnorderedMap,
+    UnorderedSet, UserStorage, Vector,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -154,6 +154,11 @@ pub struct E2eKvStore {
     // --- Sorted Map (key-ordered; range/prefix/pagination) ---
     /// Key-ordered map exercised end-to-end through the WASM host index path.
     sorted_items: SortedMap<String, LwwRegister<String>>,
+
+    // --- Sorted Set (element-ordered; range/membership/min-max) ---
+    /// Element-ordered set, exercised end-to-end through the same WASM host
+    /// ordered-index path as `sorted_items` (the `SortedSet` counterpart).
+    sorted_tags: SortedSet<String>,
 
     // --- RGA Document ---
     /// Collaborative text document
@@ -413,6 +418,7 @@ impl E2eKvStore {
             crdt_metrics: Vector::new(),
             crdt_tags: UnorderedMap::new(),
             sorted_items: SortedMap::new(),
+            sorted_tags: SortedSet::new(),
             // RGA
             rga_document: ReplicatedGrowableArray::new(),
             rga_edit_count: GCounter::new(),
@@ -531,6 +537,42 @@ impl E2eKvStore {
     /// The largest key (reverse-seek `last`, index-backed).
     pub fn sorted_last_key(&self) -> app::Result<Option<String>> {
         Ok(self.sorted_items.last()?.map(|(k, _)| k))
+    }
+
+    // --- SortedSet (element-ordered) operations ---
+    //
+    // The `SortedSet` counterpart of the methods above: `sorted_tag_add`
+    // maintains the ordered index, `sorted_tags_all`/`sorted_tags_range` read it
+    // back in element order, all through the same WASM host index path.
+
+    /// Insert `tag`; returns `true` if it was newly added.
+    pub fn sorted_tag_add(&mut self, tag: String) -> app::Result<bool> {
+        Ok(self.sorted_tags.insert(tag)?)
+    }
+
+    /// Remove `tag`; returns `true` if it was present.
+    pub fn sorted_tag_remove(&mut self, tag: String) -> app::Result<bool> {
+        Ok(self.sorted_tags.remove(&tag)?)
+    }
+
+    /// Whether `tag` is in the set.
+    pub fn sorted_tag_contains(&self, tag: String) -> app::Result<bool> {
+        Ok(self.sorted_tags.contains(&tag)?)
+    }
+
+    /// All elements in ascending order (index-backed).
+    pub fn sorted_tags_all(&self) -> app::Result<Vec<String>> {
+        Ok(self.sorted_tags.iter()?.collect())
+    }
+
+    /// Elements within `[start, end)`, ascending (a range seek).
+    pub fn sorted_tags_range(&self, start: String, end: String) -> app::Result<Vec<String>> {
+        Ok(self.sorted_tags.range(start..end)?.collect())
+    }
+
+    /// The largest element (reverse-seek `last`, index-backed).
+    pub fn sorted_tags_last(&self) -> app::Result<Option<String>> {
+        self.sorted_tags.last().map_err(Into::into)
     }
 
     pub fn len(&self) -> app::Result<usize> {
