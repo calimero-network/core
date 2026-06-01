@@ -138,3 +138,36 @@ impl TeamMetricsApp {
         Ok(stats.draws.value()?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn records_accumulate_per_team() {
+        let mut app = TestHost::new(TeamMetricsApp::init);
+
+        assert_eq!(app.call(|s| s.record_win("red".into())).unwrap(), 1);
+        assert_eq!(app.call(|s| s.record_win("red".into())).unwrap(), 2);
+        app.call(|s| s.record_loss("red".into())).unwrap();
+        app.call(|s| s.record_draw("red".into())).unwrap();
+
+        assert_eq!(app.view(|s| s.get_wins("red".into())).unwrap(), 2);
+        assert_eq!(app.view(|s| s.get_losses("red".into())).unwrap(), 1);
+        assert_eq!(app.view(|s| s.get_draws("red".into())).unwrap(), 1);
+    }
+
+    #[test]
+    fn teams_are_independent() {
+        let mut app = TestHost::new(TeamMetricsApp::init);
+
+        app.call(|s| s.record_win("red".into())).unwrap();
+        app.call(|s| s.record_win("blue".into())).unwrap();
+        app.call(|s| s.record_win("blue".into())).unwrap();
+
+        assert_eq!(app.view(|s| s.get_wins("red".into())).unwrap(), 1);
+        assert_eq!(app.view(|s| s.get_wins("blue".into())).unwrap(), 2);
+    }
+}

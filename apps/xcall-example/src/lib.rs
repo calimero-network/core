@@ -111,3 +111,28 @@ impl XCallExample {
         Ok(value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn pong_increments_counter() {
+        let mut app = TestHost::new(XCallExample::init);
+
+        assert_eq!(app.view(|s| s.get_counter()).unwrap(), 0);
+
+        // `pong` is the callback a remote `ping` triggers; here we invoke it
+        // directly (the cross-context `ping` path needs a live runtime).
+        let from = ContextId::from([7u8; 32]);
+        app.call(|s| s.pong(from)).unwrap();
+        app.call(|s| s.pong(from)).unwrap();
+
+        assert_eq!(app.view(|s| s.get_counter()).unwrap(), 2);
+
+        let events = app.events();
+        assert!(events.iter().any(|e| e.kind == "PongReceived"));
+    }
+}

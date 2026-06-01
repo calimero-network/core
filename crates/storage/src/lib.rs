@@ -81,6 +81,10 @@ pub mod store;
 // `merge::registry` module docs for the rationale (core#2469).
 #[cfg(any(target_arch = "wasm32", test, feature = "testing"))]
 pub use merge::register_crdt_merge;
+// Always-native wrapper used by the `TestHost` bridge; no-op unless the
+// `testing` feature (or `cfg(test)`) compiles the registry in.
+#[cfg(not(target_arch = "wasm32"))]
+pub use merge::register_crdt_merge_for_test;
 
 /// Re-exported types, mostly for use in macros (for convenience).
 pub mod exports {

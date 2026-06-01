@@ -65,3 +65,32 @@ impl KvStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use calimero_sdk::testing::TestHost;
+
+    use super::*;
+
+    #[test]
+    fn set_and_get_shared() {
+        // The default executor is registered as the sole writer in `init`.
+        let mut app = TestHost::new(KvStore::init);
+
+        app.call(|s| s.set_shared("hello".into())).unwrap();
+        assert_eq!(app.view(|s| s.get_shared()).unwrap(), "hello");
+
+        app.call(|s| s.set_shared("world".into())).unwrap();
+        assert_eq!(app.view(|s| s.get_shared()).unwrap(), "world");
+    }
+
+    #[test]
+    fn rotate_writers_emits_event() {
+        let mut app = TestHost::new(KvStore::init);
+
+        let me: PublicKey = app.executor_id().into();
+        app.call(|s| s.rotate_writers(vec![me])).unwrap();
+
+        assert!(app.events().iter().any(|e| e.kind == "WritersRotated"));
+    }
+}

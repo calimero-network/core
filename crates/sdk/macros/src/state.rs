@@ -54,6 +54,9 @@ impl ToTokens for StateImpl<'_> {
         // Generate deterministic ID assignment method
         let assign_ids_impl = generate_assign_deterministic_ids_impl(ident, generics, orig);
 
+        // Generate the in-process test-harness bridge (native-only)
+        let test_state_impl = generate_test_state_impl(ident, generics, orig);
+
         quote! {
             // State is always persisted via borsh (init save, root-state merge,
             // `merge_root_state_typed::<T>`), so the macro injects the derives and
@@ -82,6 +85,9 @@ impl ToTokens for StateImpl<'_> {
 
             // Auto-generated deterministic ID assignment
             #assign_ids_impl
+
+            // Auto-generated TestHost bridge
+            #test_state_impl
         }
         .to_tokens(tokens);
     }
@@ -599,6 +605,85 @@ fn generate_registration_hook(ident: &Ident, ty_generics: &syn::TypeGenerics<'_>
                 ::std::vec::Vec<u8>,
                 ::std::vec::Vec<u8>,
             >::Ok(serialized));
+        }
+    }
+}
+
+/// Generate the [`calimero_sdk::testing::TestState`] bridge for the state type.
+///
+/// `TestHost` lives in `calimero_sdk` but can't name
+/// `calimero_storage::collections::Root` (the storage crate depends on the SDK,
+/// not vice-versa). This generated impl — emitted into the app crate, which
+/// depends on both — closes that loop: it drives `Root` for install / load /
+/// mutate / commit against the native mock store so app methods run under a
+/// plain `cargo test`.
+///
+/// Gated on `#[cfg(test)]` so it's absent from normal / wasm builds. It reaches
+/// the CRDT merge registry via `register_crdt_merge_for_test` — an always-native
+/// wrapper that's a no-op unless `calimero-storage`'s `testing` feature compiles
+/// the registry in. That keeps `cargo test` compiling for every example app,
+/// even ones with no `TestHost` tests of their own; an app that actually drives
+/// `TestHost` enables the feature (as a dev-dependency) so real registration
+/// happens and `Root` writes don't hit `NoMergeFunctionRegistered`.
+///
+/// Only emitted for struct states. Enum states have no
+/// `__assign_deterministic_ids` method (no fields), and a CRDT root is always a
+/// struct in practice, so an enum-root app simply has no `TestHost` bridge.
+fn generate_test_state_impl(
+    ident: &Ident,
+    generics: &Generics,
+    orig: &StructOrEnumItem,
+) -> TokenStream {
+    if matches!(orig, StructOrEnumItem::Enum(_)) {
+        return quote! {};
+    }
+
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    quote! {
+        #[cfg(test)]
+        impl #impl_generics ::calimero_sdk::testing::TestState for #ident #ty_generics #where_clause {
+            fn __test_reset() {
+                ::calimero_storage::env::reset_environment();
+            }
+
+            fn __test_install(build: &mut dyn ::core::ops::FnMut() -> Self) {
+                // Native equivalent of the WASM `__calimero_register_merge`
+                // export: populate the CRDT merge registry so root-entity
+                // writes can resolve their typed merge. Idempotent. The
+                // `_for_test` wrapper is always present off-wasm (a no-op
+                // unless the `testing` feature is enabled), so this bridge
+                // compiles even for example apps without `TestHost` tests.
+                ::calimero_storage::register_crdt_merge_for_test::<#ident #ty_generics>();
+
+                let root = ::calimero_storage::collections::Root::new(|| {
+                    let mut state = build();
+                    // Mirror the `#[app::init]` entrypoint: deterministic IDs
+                    // then a single commit of the freshly-built root.
+                    state.__assign_deterministic_ids();
+                    state
+                });
+                root.commit();
+            }
+
+            fn __test_with_mut(f: &mut dyn ::core::ops::FnMut(&mut Self)) {
+                let mut app = ::calimero_storage::collections::Root::<#ident #ty_generics>::fetch()
+                    .expect("TestHost: app state has not been initialized");
+                // Going through DerefMut marks the root dirty so `commit`
+                // persists the mutation.
+                f(&mut *app);
+                app.commit();
+            }
+
+            fn __test_with_ref(f: &mut dyn ::core::ops::FnMut(&Self)) {
+                let app = ::calimero_storage::collections::Root::<#ident #ty_generics>::fetch()
+                    .expect("TestHost: app state has not been initialized");
+                f(&*app);
+            }
+
+            fn __test_with_executor(id: [u8; 32], f: &mut dyn ::core::ops::FnMut()) {
+                ::calimero_storage::env::with_executor_id(id, || f());
+            }
         }
     }
 }
