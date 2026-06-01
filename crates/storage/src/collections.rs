@@ -70,9 +70,12 @@ pub use frozen_value::FrozenValue;
 /// change (the value was a throwaway copy). Now the mutation does not compile —
 /// the borrow checker steers you to the right tool:
 ///
-/// - to **mutate and persist**, use [`get_mut`] or [`entry`]`().or_default()`;
-/// - to **take an owned, mutable copy on purpose** (e.g. mutate locally and
-///   `insert` it back deliberately), call [`into_inner`](ValueRef::into_inner).
+/// - to **mutate and persist**, use [`get_mut`] or [`entry`]`().or_default()`
+///   (both write back automatically — no manual re-insert);
+/// - to **take an owned copy on purpose**, `.clone()` it (when `V: Clone`).
+///
+/// There is intentionally no public `into_inner`/unwrap: handing back an owned,
+/// mutable value with no write-back is exactly the footgun this guard closes.
 ///
 /// [`get_mut`]: UnorderedMap::get_mut
 /// [`entry`]: UnorderedMap::entry
@@ -89,10 +92,15 @@ impl<V> ValueRef<V> {
 
     /// Consume the guard and take ownership of the value.
     ///
-    /// Use this for the deliberate read-modify-write-back pattern (mutate a copy,
-    /// then `insert` it). Prefer `get_mut`/`entry().or_default()` when you can —
-    /// they persist automatically without the manual re-insert.
-    pub fn into_inner(self) -> V {
+    /// Deliberately **crate-internal**: exposing it publicly would re-open the
+    /// footgun this guard exists to close — `map.get(k)?.into_inner()` yields an
+    /// owned, mutable copy whose changes are silently dropped unless manually
+    /// re-`insert`ed. Public callers should instead mutate-and-persist via
+    /// [`get_mut`](UnorderedMap::get_mut) / [`entry`](UnorderedMap::entry)`().or_default()`,
+    /// or take an explicit owned copy with `.clone()` when `V: Clone`. The
+    /// storage crate itself uses this for the few deliberate read-modify-write
+    /// paths (e.g. CRDT merge) where a held mutable guard would conflict.
+    pub(crate) fn into_inner(self) -> V {
         self.value
     }
 }

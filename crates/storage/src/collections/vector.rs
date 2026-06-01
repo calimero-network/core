@@ -219,8 +219,8 @@ where
     ///
     /// Returns a read-only [`ValueRef`] guard (an owned copy that derefs to
     /// `&V`). To *mutate* the stored value use [`update`](Self::update) or
-    /// [`get_mut`](Self::get_mut); to take an owned mutable copy on purpose call
-    /// [`ValueRef::into_inner`].
+    /// [`get_mut`](Self::get_mut), or `.clone()` the guard for an owned copy when
+    /// `V: Clone`.
     ///
     /// # Errors
     ///

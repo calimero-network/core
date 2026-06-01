@@ -398,8 +398,8 @@ where
     /// Returns a read-only [`ValueRef`] guard (an owned, deserialized copy that
     /// derefs to `&V`). Reads work transparently through it; to *mutate* the
     /// stored value use [`get_mut`](Self::get_mut) or
-    /// [`entry`](Self::entry)`().or_default()`, and to take an owned mutable copy
-    /// on purpose call [`ValueRef::into_inner`].
+    /// [`entry`](Self::entry)`().or_default()` (both write back automatically),
+    /// or `.clone()` the guard for an owned copy when `V: Clone`.
     ///
     /// # Errors
     ///
