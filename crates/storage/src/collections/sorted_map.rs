@@ -337,14 +337,26 @@ where
         // converge across nodes instead of carrying per-node random ids.
         super::rekey::rekey_nested_value(&mut value, id);
 
-        if let Some(mut entry) = self.inner.get_mut(id)? {
-            let (_, v) = &mut *entry;
-
-            // A value-only update doesn't change the key set, so the ordered
-            // index entry stays correct; we deliberately don't stamp the marker
-            // here (the post-write `full_hash` isn't available until the guard
-            // drops), so the next ordered read rebuilds once. Rare path.
-            return Ok(Some(mem::replace(v, value)));
+        if self.inner.contains(id)? {
+            // Value-only update. Scope the guard in its own block so its
+            // write-back refreshes the collection's `full_hash` before we read
+            // it below. (`value` is moved only on this returning path, so the
+            // fall-through new-key path keeps ownership of it.)
+            let old = {
+                let mut entry = self
+                    .inner
+                    .get_mut(id)?
+                    .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
+                let (_, v) = &mut *entry;
+                mem::replace(v, value)
+            };
+            // The key set didn't change, so the ordered index is still correct —
+            // restamp the marker to the new `full_hash` so the next ordered read
+            // stays a seek instead of forcing a needless O(n) rebuild.
+            if S::index_supported() {
+                self.stamp_index_marker();
+            }
+            return Ok(Some(old));
         }
 
         // Capture the order key before `key` is moved, so we can warm the index
@@ -1664,6 +1676,42 @@ mod tests {
         assert_eq!(
             forward, shuffled,
             "SortedMap entity hash diverged on shuffled insertion order"
+        );
+    }
+
+    // A value-only update (re-`insert` on an existing key) doesn't change the key
+    // set, so the ordered index stays correct and the validity marker must remain
+    // current — otherwise every value update would force a needless O(n) rebuild
+    // on the next ordered read.
+    #[test]
+    fn value_only_update_keeps_index_marker_current() {
+        crate::env::reset_for_testing();
+        let mut map: SortedMap<String, String, Indexed> = SortedMap::new();
+        map.insert("a".to_owned(), "1".to_owned()).unwrap();
+        map.insert("b".to_owned(), "2".to_owned()).unwrap();
+
+        // Warm + validate the index, then confirm the marker is current.
+        assert!(map.ensure_index().unwrap());
+        assert!(map.index_marker_current());
+
+        // Re-insert an existing key with a new value (the key set is unchanged).
+        drop(map.insert("a".to_owned(), "99".to_owned()).unwrap());
+        assert!(
+            map.index_marker_current(),
+            "value-only update left the index marker stale, forcing a needless rebuild"
+        );
+
+        // The read is still correct without a rebuild.
+        let got: Vec<(String, String)> = map
+            .range("a".to_owned()..="b".to_owned())
+            .unwrap()
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("a".to_owned(), "99".to_owned()),
+                ("b".to_owned(), "2".to_owned())
+            ]
         );
     }
 }

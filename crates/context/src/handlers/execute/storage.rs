@@ -226,10 +226,27 @@ impl Storage for ContextStorage {
         // Stop the seek after `offset + limit` items so a bounded read walks
         // O(offset + limit), not the whole range.
         let max = limit.map(|n| offset.saturating_add(n));
-        let pairs = self
-            .borrow_index_store()
-            .raw_scan(Column::SortedIndex, &full_lo, &full_hi, max)
-            .unwrap_or_default();
+        // A scan error must not masquerade as "no entries": log it loudly so a
+        // backend fault is visible rather than silently dropping rows. The
+        // authoritative entity set is untouched, and the next ordered read
+        // rebuilds the index via the validity marker, so an empty page here is a
+        // recoverable degradation, not data loss.
+        let pairs = match self.borrow_index_store().raw_scan(
+            Column::SortedIndex,
+            &full_lo,
+            &full_hi,
+            max,
+        ) {
+            Ok(pairs) => pairs,
+            Err(error) => {
+                tracing::error!(
+                    target: "calimero_context::sorted_index",
+                    %error,
+                    "ordered-index scan failed; returning an empty page (entities intact, index self-heals on next read)"
+                );
+                Vec::new()
+            }
+        };
         // Strip the context-id prefix to hand back the adaptor-level key.
         let plen = self.index_prefix_len();
         let stripped = pairs

@@ -285,8 +285,16 @@ impl StorageAdaptor for MainStorage {
     ) -> Vec<(Vec<u8>, Id)> {
         use core::ops::Bound::{Excluded, Included, Unbounded};
         let prefix = collection.as_bytes();
-        // env scan is `[lo, hi)`; translate the inclusive/exclusive bounds into
-        // byte bounds (append 0x00 to make an inclusive end / exclusive start).
+        // The env scan is the half-open `[lo, hi)`. We translate the logical
+        // inclusive/exclusive bounds by appending a single `0x00` byte. This is
+        // exact for *all* byte keys — including keys that themselves contain or
+        // end in `0x00` — because no byte string `x` satisfies `k < x < k‖0x00`:
+        // any `x` that starts with `k` and is longer is `>= k‖0x00`, and any `x`
+        // that diverges from `k` before `k` ends is either `< k` or `> k‖0x00`.
+        //   - Included end  `<= k`  ⇒ hi = k‖0x00 (admits k, excludes the next key).
+        //   - Excluded start `> k`  ⇒ lo = k‖0x00 (drops k, admits the next key).
+        // (A `prefix_upper_bound`-style successor would be WRONG for an inclusive
+        // *end*: succ([5]) = [6] would wrongly admit [5,0] > [5].)
         let lo = match start {
             Included(k) => index_key(collection, &k),
             Excluded(k) => {

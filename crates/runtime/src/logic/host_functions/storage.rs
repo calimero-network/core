@@ -462,6 +462,15 @@ impl VMHostFunctions<'_> {
     pub fn storage_index_set(&mut self, key_ptr: u64, value_ptr: u64) -> VMLogicResult<u32> {
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
         let value = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(value_ptr)? };
+        // Bound guest-supplied sizes like `storage_write` does, so a buggy/hostile
+        // guest can't drive unbounded host allocation through the index path.
+        let logic = self.borrow_logic();
+        if key.len() > logic.limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+        if value.len() > logic.limits.max_storage_value_size.get() {
+            return Err(HostError::ValueLengthOverflow.into());
+        }
         let key = self.read_guest_memory_slice(&key)?.to_vec();
         let value = self.read_guest_memory_slice(&value)?.to_vec();
         trace!(target: "runtime::host::storage", op = "index_set", key_len = key.len(), "storage_index_set");
@@ -472,6 +481,9 @@ impl VMHostFunctions<'_> {
     /// Remove `key` from the ordered index. Returns `1` if persisted, else `0`.
     pub fn storage_index_remove(&mut self, key_ptr: u64) -> VMLogicResult<u32> {
         let key = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(key_ptr)? };
+        if key.len() > self.borrow_logic().limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
         let key = self.read_guest_memory_slice(&key)?.to_vec();
         trace!(target: "runtime::host::storage", op = "index_del", key_len = key.len(), "storage_index_remove");
         let ok = self.with_logic_mut(|logic| logic.storage.index_del(&key));
@@ -482,6 +494,9 @@ impl VMHostFunctions<'_> {
     /// persisted, else `0`.
     pub fn storage_index_remove_prefix(&mut self, prefix_ptr: u64) -> VMLogicResult<u32> {
         let prefix = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(prefix_ptr)? };
+        if prefix.len() > self.borrow_logic().limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
         let prefix = self.read_guest_memory_slice(&prefix)?.to_vec();
         trace!(target: "runtime::host::storage", op = "index_del_prefix", prefix_len = prefix.len(), "storage_index_remove_prefix");
         let ok = self.with_logic_mut(|logic| logic.storage.index_del_prefix(&prefix));
@@ -504,15 +519,23 @@ impl VMHostFunctions<'_> {
     ) -> VMLogicResult<u32> {
         let lo = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(lo_ptr)? };
         let hi = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(hi_ptr)? };
+        // The bounds are index keys; cap them like any other storage key.
+        let max_key = self.borrow_logic().limits.max_storage_key_size.get();
+        if lo.len() > max_key || hi.len() > max_key {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
         let lo = self.read_guest_memory_slice(&lo)?.to_vec();
         let hi = self.read_guest_memory_slice(&hi)?.to_vec();
 
         // `n + 1`-encoded: 0 = unbounded, else `limit - 1`.
         let limit = (limit != 0).then(|| (limit - 1) as usize);
+        // Saturate rather than silently truncate `u64 -> usize` (usize is 32-bit
+        // on a wasm32 host build); a clamp to usize::MAX just means "skip all".
+        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
         let pairs = self
             .borrow_logic()
             .storage
-            .index_scan(&lo, &hi, offset as usize, limit);
+            .index_scan(&lo, &hi, offset, limit);
 
         trace!(
             target: "runtime::host::storage",
@@ -538,6 +561,10 @@ impl VMHostFunctions<'_> {
     ) -> VMLogicResult<u32> {
         let lo = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(lo_ptr)? };
         let hi = unsafe { self.read_guest_memory_typed::<sys::Buffer<'_>>(hi_ptr)? };
+        let max_key = self.borrow_logic().limits.max_storage_key_size.get();
+        if lo.len() > max_key || hi.len() > max_key {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
         let lo = self.read_guest_memory_slice(&lo)?.to_vec();
         let hi = self.read_guest_memory_slice(&hi)?.to_vec();
 
