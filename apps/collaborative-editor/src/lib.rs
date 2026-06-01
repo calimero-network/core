@@ -33,7 +33,6 @@ pub struct EditorState {
 
 /// Events emitted by the collaborative editor
 #[app::event]
-#[derive(Debug)]
 pub enum EditorEvent {
     /// Emitted when the document is initialized
     DocumentCreated {

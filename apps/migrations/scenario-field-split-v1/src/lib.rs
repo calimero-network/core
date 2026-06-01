@@ -5,7 +5,6 @@ use calimero_storage::collections::LwwRegister;
 const SCHEMA_VERSION_V1: &str = "1.0.0";
 
 #[app::state]
-#[derive(Debug)]
 pub struct ScenarioFieldSplitV1 {
     name: LwwRegister<String>,
     address: LwwRegister<String>,

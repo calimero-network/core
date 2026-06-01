@@ -11,7 +11,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 /// the migration identically on every node (the per-user slot key is part of
 /// the stored map, so it must round-trip).
 #[app::state]
-#[derive(Debug)]
 pub struct ScenarioUserStorageV1 {
     notes: UserStorage<LwwRegister<String>>,
     title: LwwRegister<String>,

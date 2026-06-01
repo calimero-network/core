@@ -90,7 +90,6 @@ pub struct FileShareState {
 
 /// Events emitted by the application
 #[app::event]
-#[derive(Debug)]
 pub enum FileShareEvent {
     /// Emitted when a file is successfully uploaded
     FileUploaded {

@@ -4,7 +4,6 @@ use calimero_sdk::{app, ContextId};
 use calimero_storage::collections::Counter;
 
 #[app::state(emits = Event)]
-#[derive(Debug)]
 pub struct XCallExample {
     /// Counter for tracking pongs received.
     counter: Counter,

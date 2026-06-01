@@ -14,7 +14,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// node under LazyOnAccess), diverging the owners. Carrying the collection
 /// preserves the v1 owner stamps byte-for-byte, so every node converges.
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct ScenarioAuthoredMapV2 {
     entries: AuthoredMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,

@@ -14,7 +14,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 /// both the stored value and the writer set survive the migration identically
 /// on every node.
 #[app::state]
-#[derive(Debug)]
 pub struct ScenarioSharedStorageV1 {
     doc: SharedStorage<LwwRegister<String>>,
     title: LwwRegister<String>,

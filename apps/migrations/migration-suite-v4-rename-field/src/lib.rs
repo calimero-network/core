@@ -8,7 +8,6 @@ const SCHEMA_VERSION_V3: &str = "3.0.0";
 const SCHEMA_VERSION_V4: &str = "4.0.0";
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct MigrationSuiteV4RenameField {
     items: UnorderedMap<String, LwwRegister<String>>,
     details: LwwRegister<String>,

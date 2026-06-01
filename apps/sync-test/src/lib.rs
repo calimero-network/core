@@ -11,7 +11,6 @@ use calimero_sdk::app;
 use calimero_storage::collections::{LwwRegister, UnorderedMap};
 
 #[app::state]
-#[derive(Debug)]
 pub struct SyncTest {
     /// Key-value entries written by different nodes.
     entries: UnorderedMap<String, LwwRegister<String>>,

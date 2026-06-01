@@ -14,7 +14,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// identity), so every node applying the SAME transform over the SAME old set
 /// produces a byte-identical set — even though migrate emits no sync delta.
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct ScenarioUnorderedSetV2 {
     tags: UnorderedSet<String>,
     title: LwwRegister<String>,

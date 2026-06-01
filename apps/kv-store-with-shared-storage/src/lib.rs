@@ -7,7 +7,6 @@ use calimero_storage::collections::{LwwRegister, SharedStorage};
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct KvStore {
     /// Group-writable register. Initial writer is whoever installed the app.
     /// Rotation lets the writer set evolve over the app's lifetime.

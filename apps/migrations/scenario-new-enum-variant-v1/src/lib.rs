@@ -14,7 +14,6 @@ pub enum Status {
 }
 
 #[app::state]
-#[derive(Debug)]
 pub struct ScenarioNewEnumVariantV1 {
     items: UnorderedMap<String, LwwRegister<String>>,
     status: LwwRegister<Status>,

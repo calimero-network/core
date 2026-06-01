@@ -102,7 +102,6 @@ impl Default for PrivateSecrets {
 // MAIN STATE
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct E2eKvStore {
     // --- KV Storage ---
     /// Public replicated KV map

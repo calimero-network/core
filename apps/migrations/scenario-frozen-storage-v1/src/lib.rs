@@ -10,7 +10,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 /// (not a string) so it never needs an encode/decode codec, and is fetched back
 /// via `get_last_doc()` so no hash has to round-trip through a workflow variable.
 #[app::state]
-#[derive(Debug)]
 pub struct ScenarioFrozenStorageV1 {
     documents: FrozenStorage<String>,
     title: LwwRegister<String>,

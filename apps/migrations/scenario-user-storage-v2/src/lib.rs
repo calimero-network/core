@@ -16,7 +16,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// the collection preserves the v1 slot keys byte-for-byte, so every node
 /// converges.
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct ScenarioUserStorageV2 {
     notes: UserStorage<LwwRegister<String>>,
     title: LwwRegister<String>,

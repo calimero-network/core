@@ -7,7 +7,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 /// v1 state for the authored-vector migration scenario. `entries` is an
 /// `AuthoredVector` whose every element records the executor that pushed it.
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct ScenarioAuthoredVectorV1 {
     entries: AuthoredVector<LwwRegister<String>>,
     title: LwwRegister<String>,

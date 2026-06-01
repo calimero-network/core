@@ -5,7 +5,6 @@ use calimero_storage::collections::LwwRegister;
 const SCHEMA_VERSION_V1: &str = "1.0.0";
 
 #[app::state]
-#[derive(Debug)]
 pub struct ScenarioFieldRemoveArchiveV1 {
     name: LwwRegister<String>,
     legacy_note: LwwRegister<String>,

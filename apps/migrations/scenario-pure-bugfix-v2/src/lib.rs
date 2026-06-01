@@ -8,7 +8,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 // same types, same order. v2 differs only in the body of `sum_all_values`,
 // where the off-by-one bug has been fixed. No `#[app::migrate]` is needed.
 #[app::state]
-#[derive(Debug)]
 pub struct ScenarioPureBugfixV2 {
     items: UnorderedMap<String, LwwRegister<u64>>,
     last_sum: LwwRegister<u64>,

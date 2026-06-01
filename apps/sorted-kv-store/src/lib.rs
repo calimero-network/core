@@ -15,7 +15,6 @@ use calimero_storage::collections::{LwwRegister, SortedMap};
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct SortedKvStore {
     items: SortedMap<String, LwwRegister<String>>,
 }

@@ -18,7 +18,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 /// per node under LazyOnAccess), diverging the writer sets. Carrying the
 /// wrapper preserves the v1 writer set byte-for-byte, so every node converges.
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct ScenarioSharedStorageV2 {
     doc: SharedStorage<LwwRegister<String>>,
     title: LwwRegister<String>,

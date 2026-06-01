@@ -19,7 +19,6 @@ pub struct Status {
 }
 
 #[app::state]
-#[derive(Debug)]
 pub struct ScenarioStructToEnumV1 {
     name: LwwRegister<String>,
     status: LwwRegister<Status>,

@@ -27,7 +27,6 @@ pub struct TeamStats {
 
 /// Application state
 #[app::state(emits = MetricsEvent)]
-#[derive(Debug)]
 pub struct TeamMetricsApp {
     /// Maps team_id → team statistics
     /// The TeamStats struct uses #[derive(Mergeable)] - no manual impl needed!
@@ -35,7 +34,6 @@ pub struct TeamMetricsApp {
 }
 
 #[app::event]
-#[derive(Debug)]
 pub enum MetricsEvent {
     WinRecorded { team_id: String, total: u64 },
     LossRecorded { team_id: String, total: u64 },

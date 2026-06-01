@@ -8,7 +8,6 @@ use calimero_storage::collections::{Counter, LwwRegister, UnorderedMap};
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct KvStore {
     items: UnorderedMap<String, LwwRegister<String>>,
     handlers_called: UnorderedMap<String, LwwRegister<String>>, // Track handlers called with CRDT counter

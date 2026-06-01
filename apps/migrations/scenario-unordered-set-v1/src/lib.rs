@@ -7,7 +7,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 /// v1 state for the unordered-set migration scenario. `tags` is a plain
 /// content-addressed `UnorderedSet` (no executor identity in its element ids).
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct ScenarioUnorderedSetV1 {
     tags: UnorderedSet<String>,
     title: LwwRegister<String>,

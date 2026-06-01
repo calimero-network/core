@@ -8,7 +8,6 @@ use calimero_storage::collections::{LwwRegister, UnorderedMap};
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct KvStoreInit {
     items: UnorderedMap<String, LwwRegister<String>>,
 }

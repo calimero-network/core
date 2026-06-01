@@ -8,7 +8,6 @@ const SCHEMA_VERSION_V4: &str = "4.0.0";
 const SCHEMA_VERSION_V5: &str = "5.0.0";
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct MigrationSuiteV5ChangeType {
     items: UnorderedMap<String, LwwRegister<String>>,
     details: LwwRegister<String>,

@@ -5,7 +5,6 @@ use calimero_storage::collections::{LwwRegister, UnorderedMap};
 const SCHEMA_VERSION_V1: &str = "1.0.0";
 
 #[app::state]
-#[derive(Debug)]
 pub struct ScenarioInvariantReshuffleV1 {
     global_count: LwwRegister<u64>,
     per_item_counts: UnorderedMap<String, LwwRegister<u64>>,

@@ -23,7 +23,6 @@ const SCHEMA_VERSION_V2: &str = "2.0.0";
 // requires every top-level field to be `Mergeable`, which collection
 // types satisfy but a plain struct of collections does not.
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct ScenarioInvariantReshuffleV2 {
     total: LwwRegister<u64>,
     per_item: UnorderedMap<String, LwwRegister<u64>>,

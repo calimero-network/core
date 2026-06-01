@@ -12,7 +12,6 @@ use calimero_sdk::app;
 use calimero_storage::collections::SortedSet;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct SortedSetStore {
     items: SortedSet<String>,
 }

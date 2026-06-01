@@ -94,7 +94,6 @@ pub enum ConformanceError {
 
 // Events
 #[app::event]
-#[derive(Debug)]
 pub enum Event {
     Ping,
     Named(String),
@@ -114,7 +113,6 @@ pub enum Event {
 // generation actually has to handle them. State schemas are covered separately
 // by the `state-schema-conformance` app.
 #[app::state(emits = Event)]
-#[derive(Debug)]
 pub struct AbiState {
     counters: UnorderedMap<String, LwwRegister<u32>>,
     // Key-ordered map — locks the `SortedMap` ABI collection marker.

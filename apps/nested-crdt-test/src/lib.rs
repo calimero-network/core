@@ -18,7 +18,6 @@ use calimero_storage::collections::{
 };
 
 #[app::state(emits = TestEvent)]
-#[derive(Debug)]
 pub struct NestedCrdtTest {
     /// Map of counters - concurrent increments should sum
     pub counters: UnorderedMap<String, Counter>,
@@ -42,7 +41,6 @@ pub struct NestedCrdtTest {
 }
 
 #[app::event]
-#[derive(Debug)]
 pub enum TestEvent {
     CounterIncremented {
         key: String,

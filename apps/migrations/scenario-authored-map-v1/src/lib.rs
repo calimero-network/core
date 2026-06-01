@@ -10,7 +10,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 /// each entry's recorded owner survives the migration identically on every
 /// node (authorship is part of the stored value, so it must round-trip).
 #[app::state]
-#[derive(Debug)]
 pub struct ScenarioAuthoredMapV1 {
     entries: AuthoredMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,

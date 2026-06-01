@@ -8,7 +8,6 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 const SCHEMA_VERSION_V2: &str = "2.0.0";
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug)]
 pub struct ScenarioCrdtNativeV2 {
     items: UnorderedMap<String, LwwRegister<String>>,
     title: LwwRegister<String>,

@@ -5,7 +5,6 @@ use calimero_storage::collections::{LwwRegister, UnorderedMap};
 const SCHEMA_VERSION_V2: &str = "2.0.0";
 
 #[app::state]
-#[derive(Debug)]
 pub struct ScenarioNewMethodV2 {
     items: UnorderedMap<String, LwwRegister<String>>,
     counter: LwwRegister<u64>,
