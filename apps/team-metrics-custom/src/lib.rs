@@ -53,8 +53,7 @@ impl Mergeable for TeamStats {
 
 /// Application state
 #[app::state(emits = MetricsEvent)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug)]
 pub struct TeamMetricsApp {
     /// Maps team_id → team statistics
     /// TeamStats has a CUSTOM Mergeable impl with full control
@@ -62,8 +61,7 @@ pub struct TeamMetricsApp {
 }
 
 #[app::event]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug)]
 pub enum MetricsEvent {
     WinRecorded { team_id: String, total: u64 },
     LossRecorded { team_id: String, total: u64 },

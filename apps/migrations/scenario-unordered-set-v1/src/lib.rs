@@ -1,5 +1,4 @@
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_storage::collections::{LwwRegister, UnorderedSet};
 
@@ -8,8 +7,7 @@ const SCHEMA_VERSION_V1: &str = "1.0.0";
 /// v1 state for the unordered-set migration scenario. `tags` is a plain
 /// content-addressed `UnorderedSet` (no executor identity in its element ids).
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug)]
 pub struct ScenarioUnorderedSetV1 {
     tags: UnorderedSet<String>,
     title: LwwRegister<String>,

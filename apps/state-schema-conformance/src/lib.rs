@@ -67,8 +67,7 @@ pub enum Status {
 
 // State with comprehensive Calimero collection types
 #[app::state]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug)]
 pub struct StateSchemaConformance {
     // Maps with various value types (all using UnorderedMap with LwwRegister values)
     string_map: UnorderedMap<String, LwwRegister<String>>, // map<string, string>

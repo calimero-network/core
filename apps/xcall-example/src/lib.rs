@@ -1,12 +1,10 @@
 #![allow(clippy::len_without_is_empty)]
 
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::{app, ContextId};
 use calimero_storage::collections::Counter;
 
 #[app::state(emits = Event)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug)]
 pub struct XCallExample {
     /// Counter for tracking pongs received.
     counter: Counter,

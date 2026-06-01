@@ -1,15 +1,13 @@
 use std::collections::BTreeSet;
 
 use calimero_sdk::app;
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
 use calimero_sdk::PublicKey;
 use calimero_storage::collections::{LwwRegister, SharedStorage};
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug)]
 pub struct KvStore {
     /// Group-writable register. Initial writer is whoever installed the app.
     /// Rotation lets the writer set evolve over the app's lifetime.

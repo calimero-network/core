@@ -19,8 +19,7 @@ pub enum Status {
 }
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug)]
 pub struct ScenarioStructToEnumV2 {
     name: LwwRegister<String>,
     status: LwwRegister<Status>,

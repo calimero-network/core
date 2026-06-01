@@ -11,8 +11,7 @@ use calimero_storage::collections::{FrozenStorage, LwwRegister, UnorderedMap, Us
 use thiserror::Error;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug)]
 pub struct KvStore {
     // Public items, viewable by all
     items: UnorderedMap<String, LwwRegister<String>>,

@@ -75,8 +75,6 @@ impl calimero_storage::collections::Mergeable for FileRecord {
 
 /// Application state for the file sharing system.
 #[app::state(emits = FileShareEvent)]
-#[derive(BorshDeserialize, BorshSerialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct FileShareState {
     /// Context owner's identity as base58-encoded public key.
     /// Set during initialization from `env::executor_id()`.
@@ -92,8 +90,7 @@ pub struct FileShareState {
 
 /// Events emitted by the application
 #[app::event]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug)]
 pub enum FileShareEvent {
     /// Emitted when a file is successfully uploaded
     FileUploaded {

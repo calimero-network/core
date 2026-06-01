@@ -9,7 +9,6 @@
 
 #![allow(clippy::len_without_is_empty)]
 
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::{app, env};
 use calimero_storage::collections::{Counter, LwwRegister, ReplicatedGrowableArray, UnorderedMap};
 
@@ -20,8 +19,6 @@ use calimero_storage::collections::{Counter, LwwRegister, ReplicatedGrowableArra
 /// All fields must be CRDTs to avoid divergence during concurrent updates.
 /// Using LWW merge on root state with non-CRDT fields causes data loss.
 #[app::state(emits = EditorEvent)]
-#[derive(BorshDeserialize, BorshSerialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
 pub struct EditorState {
     /// The collaborative text document using RGA CRDT
     pub document: ReplicatedGrowableArray,
@@ -36,8 +33,7 @@ pub struct EditorState {
 
 /// Events emitted by the collaborative editor
 #[app::event]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug)]
 pub enum EditorEvent {
     /// Emitted when the document is initialized
     DocumentCreated {

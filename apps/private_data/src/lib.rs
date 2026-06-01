@@ -65,8 +65,7 @@ use thiserror::Error;
 /// Only the hash of each secret lives here; the secret itself is
 /// node-local (see [`Secrets`]).
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(Debug)]
 pub struct SecretGame {
     /// Mapping of game_id -> sha256(secret) hex. `LwwRegister` is a
     /// CRDT type — appropriate here because this is synced state
