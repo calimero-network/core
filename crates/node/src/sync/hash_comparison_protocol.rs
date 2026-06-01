@@ -408,27 +408,7 @@ async fn run_initiator_impl<T: SyncTransport>(
                         get_local_tree_node(context_id, &remote_node.id, false)
                     })?;
                     if let Some(local) = local_node {
-                        if local.is_internal() {
-                            // The peer presents this node as a leaf (e.g. it
-                            // cleared the collection to childless, so its
-                            // `find_by_id_raw` emits a leaf), but we still hold
-                            // it as an internal node with children. The peer's
-                            // child comparison never runs for a leaf, so push
-                            // our local leaves: the peer rejects any it has
-                            // tombstoned (delete-wins) and reports those
-                            // tombstones back, which `push_entities` applies —
-                            // converging the clear even when the holder is the
-                            // initiator. Leaves the peer is simply missing are
-                            // re-added (add-wins), as in any other push.
-                            let local_leaves = with_runtime_env(runtime_env.clone(), || {
-                                collect_local_leaves(context_id, &remote_node.id, false)
-                            })?;
-                            for leaf in local_leaves {
-                                if leaf.value.len() <= MAX_LEAF_VALUE_SIZE {
-                                    pending_local_leaf_pushes.push(leaf);
-                                }
-                            }
-                        } else if local.is_leaf() && local.hash != remote_node.hash {
+                        if local.is_leaf() && local.hash != remote_node.hash {
                             if let Some(local_leaf) = local.leaf_data {
                                 // Same guard `collect_local_leaves`
                                 // applies on the snapshot-push path:
@@ -535,15 +515,8 @@ async fn run_initiator_impl<T: SyncTransport>(
                                 collect_local_leaves(context_id, &local_node.id, is_this_node_root)
                             })?;
                             if !leaves.is_empty() {
-                                push_entities(
-                                    transport,
-                                    &runtime_env,
-                                    context_id,
-                                    identity,
-                                    &leaves,
-                                    &mut stats,
-                                )
-                                .await?;
+                                push_entities(transport, context_id, identity, &leaves, &mut stats)
+                                    .await?;
                             }
                         }
                     }
@@ -564,7 +537,6 @@ async fn run_initiator_impl<T: SyncTransport>(
     if !pending_local_leaf_pushes.is_empty() {
         let pushed = push_entities(
             transport,
-            &runtime_env,
             context_id,
             identity,
             &pending_local_leaf_pushes,
@@ -821,12 +793,10 @@ async fn run_responder_impl<T: SyncTransport>(
                     );
                 }
 
-                let reported_tombstones = outcome.rejected_tombstones.len();
                 let msg = StreamMessage::Message {
                     sequence_id,
                     payload: MessagePayload::EntityPushAck {
                         applied_count: applied,
-                        deletions: outcome.rejected_tombstones,
                     },
                     next_nonce: generate_nonce(),
                 };
@@ -838,7 +808,6 @@ async fn run_responder_impl<T: SyncTransport>(
                 info!(
                     %context_id,
                     applied,
-                    reported_tombstones,
                     deferred_root_merges = outcome.deferred_root_merges.len(),
                     total = entity_count,
                     "Applied pushed entities via CRDT merge"
@@ -1106,8 +1075,7 @@ async fn push_local_subtrees<T: SyncTransport>(
             collect_local_leaves(context_id, child_id, false)
         })?;
         if !leaves.is_empty() {
-            total +=
-                push_entities(transport, runtime_env, context_id, identity, &leaves, stats).await?;
+            total += push_entities(transport, context_id, identity, &leaves, stats).await?;
         }
     }
 
@@ -1119,7 +1087,6 @@ async fn push_local_subtrees<T: SyncTransport>(
 /// Sends in batches of `MAX_ENTITIES_PER_PUSH` to avoid overly large messages.
 async fn push_entities<T: SyncTransport>(
     transport: &mut T,
-    runtime_env: &calimero_storage::env::RuntimeEnv,
     context_id: ContextId,
     identity: PublicKey,
     leaves: &[TreeLeafData],
@@ -1149,40 +1116,10 @@ async fn push_entities<T: SyncTransport>(
 
         match ack {
             StreamMessage::Message {
-                payload:
-                    MessagePayload::EntityPushAck {
-                        applied_count,
-                        deletions,
-                    },
+                payload: MessagePayload::EntityPushAck { applied_count },
                 ..
             } => {
                 total_pushed += u64::from(applied_count);
-
-                // Symmetric clear propagation: the peer reported tombstones for
-                // entities we just pushed (our live copy lost delete-wins).
-                // Apply them locally through the authenticated DeleteRef path so
-                // the deletion converges on this node in the same session.
-                for deletion in &deletions {
-                    let action = calimero_storage::action::Action::DeleteRef {
-                        id: calimero_storage::address::Id::new(deletion.id),
-                        deleted_at: deletion.deleted_at,
-                        metadata: deletion.metadata.clone(),
-                    };
-                    let result = with_runtime_env(runtime_env.clone(), || {
-                        Interface::<MainStorage>::apply_action(
-                            action,
-                            &calimero_storage::interface::ApplyContext::empty(),
-                        )
-                    });
-                    if let Err(e) = result {
-                        debug!(
-                            %context_id,
-                            id = %hex::encode(deletion.id),
-                            error = %e,
-                            "EntityPushAck: skipped a reported tombstone (lost LWW or unauthorized)"
-                        );
-                    }
-                }
             }
             _ => {
                 bail!(

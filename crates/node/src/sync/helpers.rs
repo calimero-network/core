@@ -1,7 +1,7 @@
 //! Common helper functions for sync protocols.
 //!
 //! **DRY Principle**: Extract repeated logic from protocol implementations.
-use calimero_node_primitives::sync::{EntityDeletion, TreeLeafData};
+use calimero_node_primitives::sync::TreeLeafData;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -491,12 +491,6 @@ pub struct EntityPushOutcome {
     /// Carrying the leaf's HLC timestamp lets the dispatcher use the
     /// actual remote write time instead of a synthetic value.
     pub deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)>,
-    /// Tombstones the responder holds for entities the initiator just pushed
-    /// (the push lost delete-wins). Reported back so the initiator — which
-    /// still holds the live copy — converges to the deletion in the same
-    /// session, making clear-propagation symmetric regardless of who
-    /// initiated. See `push_entities`.
-    pub rejected_tombstones: Vec<EntityDeletion>,
 }
 
 /// Handle an incoming `EntityPush` by applying CRDT merge for each entity.
@@ -538,7 +532,6 @@ pub fn handle_entity_push(
         let mut applied = 0u32;
         let mut dropped_unauthorized = 0u32;
         let mut deferred_root_merges: Vec<([u8; 32], Vec<u8>, u64)> = Vec::new();
-        let mut rejected_tombstones: Vec<EntityDeletion> = Vec::new();
         for leaf in entities {
             if !leaf.is_valid() {
                 tracing::warn!(
@@ -580,26 +573,6 @@ pub fn handle_entity_push(
             // internally by `apply_leaf_with_crdt_merge` via direct LWW
             // write — see the comment there.
             let entity_id = Id::new(leaf.key);
-
-            // Symmetric clear propagation: if we hold a tombstone for this
-            // entity newer than (or concurrent with) the pushed value, the push
-            // loses delete-wins. Report our tombstone back so the initiator —
-            // which still holds the live copy it just pushed — converges to the
-            // deletion in this same session, instead of waiting to initiate a
-            // sync of its own.
-            if let Ok(Some(idx)) = Index::<MainStorage>::get_index(entity_id) {
-                if let Some(deleted_at) = idx.deleted_at {
-                    if deleted_at >= leaf.metadata.hlc_timestamp {
-                        rejected_tombstones.push(EntityDeletion {
-                            id: leaf.key,
-                            deleted_at,
-                            metadata: idx.metadata.clone(),
-                        });
-                        continue;
-                    }
-                }
-            }
-
             if calimero_storage::collections::is_app_root_entry(entity_id)
                 && !is_opaque_crdt_type(&leaf.metadata.crdt_type)
             {
@@ -632,7 +605,6 @@ pub fn handle_entity_push(
         EntityPushOutcome {
             applied,
             deferred_root_merges,
-            rejected_tombstones,
         }
     })
 }

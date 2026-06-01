@@ -748,53 +748,6 @@ mod tests {
         );
     }
 
-    /// Symmetric convergence: the deletion converges in a SINGLE round even when
-    /// the node that did NOT clear is the one that initiates the sync.
-    ///
-    /// Here `bob` (still holding the entry) initiates against `alice` (cleared).
-    /// Alice's now-childless node presents as a leaf, so bob's child comparison
-    /// short-circuits — but bob detects the leaf-vs-internal mismatch and pushes
-    /// its live leaves, and alice's responder reports its newer tombstone back in
-    /// the `EntityPushAck`, which bob applies (delete-wins). Without that
-    /// reported-tombstone feedback this direction would only converge once alice
-    /// happened to initiate a sync of her own.
-    #[tokio::test]
-    async fn test_hashcomparison_clear_converges_when_holder_initiates() {
-        use crate::sync_sim::actions::StorageOp;
-
-        let ctx = shared_context();
-        let mut alice = SimNode::new_in_context("alice", ctx);
-        let mut bob = SimNode::new_in_context("bob", ctx);
-
-        let entry = EntityId::from_u64(1);
-        alice.insert_entity_with_metadata(entry, b"v1".to_vec(), EntityMetadata::default());
-        bob.insert_entity_with_metadata(entry, b"v1".to_vec(), EntityMetadata::default());
-        assert_eq!(alice.root_hash(), bob.root_hash());
-
-        // Alice clears; bob still holds the entry.
-        alice.apply_storage_op(StorageOp::Remove { id: entry });
-        assert_eq!(alice.entity_count(), 0);
-        assert_eq!(bob.entity_count(), 1);
-
-        // The *holder* (bob) initiates — only direction, no second pass.
-        execute_hash_comparison_sync(&mut bob, &alice)
-            .await
-            .expect("bob->alice sync ok");
-
-        assert_eq!(
-            bob.entity_count(),
-            0,
-            "bob did not converge to the deletion when it was the initiator \
-             (reported-tombstone feedback missing)"
-        );
-        assert_eq!(alice.entity_count(), 0, "alice stays cleared");
-        assert_eq!(
-            alice.root_hash(),
-            bob.root_hash(),
-            "roots must converge after a single sync regardless of who initiated"
-        );
-    }
-
     /// **BUG REPRODUCTION**: Both nodes have unique data, initiator has MORE.
     ///
     /// Alice has 1 shared + 10 unique, Bob has 1 shared + 3 unique.

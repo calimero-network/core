@@ -201,12 +201,10 @@ impl SyncManager {
                         .await;
                     }
 
-                    let reported_tombstones = outcome.rejected_tombstones.len();
                     let msg = StreamMessage::Message {
                         sequence_id: sqx.next(),
                         payload: MessagePayload::EntityPushAck {
                             applied_count: applied,
-                            deletions: outcome.rejected_tombstones,
                         },
                         next_nonce: super::helpers::generate_nonce(),
                     };
@@ -216,7 +214,6 @@ impl SyncManager {
                     info!(
                         %context_id,
                         applied,
-                        reported_tombstones,
                         deferred_root_merges = outcome.deferred_root_merges.len(),
                         total = entity_count,
                         "Applied pushed entities via CRDT merge"
