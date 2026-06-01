@@ -280,14 +280,14 @@ impl SecretGame {
     /// Attach a private note to a game (private state).
     pub fn set_note(&self, game_id: String, note: String) -> app::Result<()> {
         let mut secrets = Secrets::private_load_or_default()?;
-        let _ = secrets.as_mut().notes.insert(game_id, note);
+        secrets.as_mut().notes.insert(game_id, note);
         Ok(())
     }
 
     /// Add a private user-defined tag.
     pub fn add_tag(&self, tag: String) -> app::Result<()> {
         let mut secrets = Secrets::private_load_or_default()?;
-        let _ = secrets.as_mut().tags.insert(tag);
+        secrets.as_mut().tags.insert(tag);
         Ok(())
     }
 

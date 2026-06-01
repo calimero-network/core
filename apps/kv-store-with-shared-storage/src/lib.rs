@@ -35,7 +35,7 @@ impl KvStore {
     pub fn init() -> KvStore {
         let initializer: PublicKey = calimero_sdk::env::executor_id().into();
         let mut writers = BTreeSet::new();
-        let _ = writers.insert(initializer);
+        writers.insert(initializer);
         KvStore {
             shared_value: SharedStorage::new(writers, false),
         }
@@ -44,7 +44,7 @@ impl KvStore {
     /// Set the shared value. Caller must be a current writer.
     pub fn set_shared(&mut self, value: String) -> app::Result<()> {
         app::log!("Setting shared value: {:?}", value);
-        let _ = self.shared_value.insert(LwwRegister::new(value.clone()))?;
+        self.shared_value.insert(LwwRegister::new(value.clone()))?;
         app::emit!(Event::SharedSet { value: &value });
         Ok(())
     }

@@ -34,7 +34,7 @@ impl ScenarioSharedStorageV1 {
         // Seed the writer set with the creating node so it can write.
         let mut writers = BTreeSet::new();
         let executor: PublicKey = env::executor_id().into();
-        let _ = writers.insert(executor);
+        writers.insert(executor);
         ScenarioSharedStorageV1 {
             doc: SharedStorage::new_with_field_name("doc", writers, false),
             title: LwwRegister::new("untitled".to_owned()),
@@ -48,7 +48,7 @@ impl ScenarioSharedStorageV1 {
 
     /// Replace the shared value. Only a writer may write.
     pub fn set_doc(&mut self, value: String) -> app::Result<()> {
-        let _ = self.doc.insert(value.into())?;
+        self.doc.insert(value.into())?;
         Ok(())
     }
 
