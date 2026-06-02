@@ -31,12 +31,29 @@ mkdir -p "${PROFILING_REPORTS_DIR:-/profiling/reports}"
 # usable on all of them. A kptr_restrict / perf_event_paranoid *warning*
 # about kernel-symbol resolution is benign; only a real perf_event_open or
 # kernel-tools failure is fatal.
+#
+# Set to "true" by the first successful probe so start_profiling can skip a
+# redundant re-check after install_kernel_tools has already confirmed perf.
+PERF_USABLE=''
 perf_sanity_check() {
     local err rc
+    # A missing perf binary must read as a failure: bash reports it as
+    # "command not found" (rc=127), which none of the fatal stderr patterns
+    # below match, so without this guard the function would fall through to
+    # "usable" and the apt fallback would never fire. Short-circuit here so we
+    # also don't spawn the 0.3s probe for a binary that isn't there.
+    command -v perf >/dev/null 2>&1 || {
+        echo "[Profiling] perf not found in PATH"
+        return 1
+    }
     err=$(perf record -o /dev/null -- sleep 0.3 2>&1)
     rc=$?
+    # 'perf_event_open' is anchored to a failure context — the bare syscall
+    # name also shows up in benign informational lines on some perf builds,
+    # while the real fatal line ("...perf_event_open() ... returned ...
+    # Operation not permitted") is already caught by the permission patterns.
     if printf '%s\n' "$err" | grep -qiE \
-        'operation not permitted|permission denied|perf_event_open|not found for kernel|no such file or directory|cannot (find|open|read)'; then
+        'operation not permitted|permission denied|perf_event_open.*(fail|return|error)|not found for kernel|no such file or directory|cannot (find|open|read)'; then
         echo "[Profiling] perf sanity check failed (rc=$rc). Full stderr:"
         printf '%s\n' "$err" | sed 's/^/[Profiling]   /'
         return 1
@@ -45,6 +62,7 @@ perf_sanity_check() {
         echo "[Profiling] perf exited $rc with no fatal error; treating as usable. stderr:"
         printf '%s\n' "$err" | sed 's/^/[Profiling]   /'
     fi
+    PERF_USABLE=true
     return 0
 }
 
@@ -97,7 +115,10 @@ start_profiling() {
         return
     fi
     
-    if ! perf_sanity_check; then
+    # install_kernel_tools already probed perf at startup; only re-check if
+    # that probe didn't confirm it (PERF_USABLE unset) to avoid a redundant
+    # 0.3s probe on the happy path.
+    if [ "$PERF_USABLE" != "true" ] && ! perf_sanity_check; then
         echo "[Profiling] perf not usable, skipping CPU profiling"
         return
     fi
