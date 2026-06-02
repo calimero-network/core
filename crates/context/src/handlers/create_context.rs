@@ -26,7 +26,7 @@ use tracing::{debug, error, warn};
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
 use crate::handlers::execute::{persist_signed_signatures, sign_authorized_actions};
-use crate::{ContextManager, ContextMeta};
+use crate::{evict_application_if_full, evict_idle_context_if_full, ContextManager, ContextMeta};
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -216,6 +216,28 @@ impl Prepared<'_> {
 
         let identity_secret = identity_secret.unwrap_or_else(|| PrivateKey::random(&mut rng));
 
+        // Resolve the application (fetching on a cache miss) *before* evicting,
+        // so a failed lookup never wastes an eviction — evict only once the
+        // insert is guaranteed to happen.
+        let application = match applications.get(&effective_app_id) {
+            Some(existing) => existing.clone(),
+            None => {
+                let fetched = node_client
+                    .get_application(&effective_app_id)?
+                    .ok_or_eyre("application not found")?;
+                evict_application_if_full(applications);
+                applications
+                    .entry(effective_app_id)
+                    .or_insert(fetched)
+                    .clone()
+            }
+        };
+
+        // Make room for the freshly created context. Placed after the
+        // membership/capability validation above (so failed auth never drains
+        // the cache) and immediately before the derivation loop that inserts.
+        evict_idle_context_if_full(contexts);
+
         let mut context = None;
         for _ in 0..5 {
             let context_secret = if let Some(seed) = seed {
@@ -257,25 +279,12 @@ impl Prepared<'_> {
 
         let identity = identity_secret.public_key();
 
-        let application = match applications.entry(effective_app_id) {
-            btree_map::Entry::Vacant(vacant) => {
-                let application = node_client
-                    .get_application(&effective_app_id)?
-                    .ok_or_eyre("application not found")?;
-
-                vacant.insert(application)
-            }
-            btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
-        };
-
         let meta = Context::new(context_id, effective_app_id, Hash::default());
 
         let context = entry.insert(ContextMeta {
             meta,
             lock: Arc::new(Mutex::new(context_id)),
         });
-
-        let application = application.clone();
 
         Ok(Self {
             external_config,

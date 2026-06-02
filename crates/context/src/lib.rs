@@ -127,6 +127,19 @@ impl Default for ContextManagerConfig {
     }
 }
 
+/// Upper bound on the number of contexts kept in the in-memory hot cache
+/// (`ContextManager::contexts`). A safety valve against unbounded growth on
+/// long-running nodes that access many distinct contexts — NOT a hard limit:
+/// the cache may briefly exceed it when every entry is live (see
+/// [`evict_idle_context_if_full`]). The datastore remains authoritative, so an
+/// evicted context is simply re-fetched on next access.
+const MAX_CACHED_CONTEXTS: usize = 1024;
+
+/// Upper bound on cached application metadata (`ContextManager::applications`).
+/// Mirrors the compiled-`modules` cap (`MAX_CACHED_MODULES`); application
+/// metadata is a pure cache over the datastore, so eviction is harmless.
+const MAX_CACHED_APPLICATIONS: usize = 256;
+
 /// A metadata container for a single, in-memory context.
 ///
 /// It holds the context's core properties and an asynchronous mutex (`lock`).
@@ -137,6 +150,112 @@ impl Default for ContextManagerConfig {
 struct ContextMeta {
     meta: Context,
     lock: Arc<Mutex<ContextId>>,
+}
+
+/// Evict one *idle* context to keep `contexts` under [`MAX_CACHED_CONTEXTS`].
+///
+/// Call this immediately before inserting a *new* (not-yet-cached) context. It
+/// is a no-op while the cache is below the cap.
+///
+/// # Why eviction must be gated on the lock being idle
+///
+/// Each [`ContextMeta`] carries a per-context `lock: Arc<Mutex<ContextId>>`
+/// that serializes all operations on that context. The guard is handed out as
+/// an *owned* guard (`try_lock_owned`/`lock_owned`) and is held outside the
+/// actor across the entire WASM execution — it can even be passed back in as
+/// `ContextAtomic::Held(..)`. An outstanding guard therefore holds a clone of
+/// the `Arc`, so a context with an in-flight operation always has
+/// `Arc::strong_count(&lock) >= 2`. An idle, evictable entry is exactly
+/// `strong_count == 1` (only the cache holds it).
+///
+/// If we evicted a *live* entry, the next `get_or_fetch_context` would mint a
+/// brand-new `Arc<Mutex>` for that context. Two concurrent operations would
+/// then serialize on *different* mutexes — breaking the invariant and
+/// corrupting state. Hence we only ever evict `strong_count == 1` entries.
+///
+/// If every entry is live, no eviction happens and the cache is allowed to
+/// exceed the cap temporarily; it self-corrects as in-flight operations
+/// finish. The over-cap count is bounded by the number of contexts executing
+/// concurrently, which node concurrency already limits.
+///
+/// The victim is the first *idle* entry in `ContextId` (key) order, not the
+/// least-recently-used one — deliberately, matching the compiled-`modules`
+/// cap. A wrong guess only costs a re-fetch from the authoritative datastore,
+/// so true LRU isn't worth the access-tracking overhead; it remains a possible
+/// follow-up if profiling ever shows churn on a hot context.
+fn evict_idle_context_if_full(contexts: &mut BTreeMap<ContextId, ContextMeta>) {
+    if contexts.len() < MAX_CACHED_CONTEXTS {
+        return;
+    }
+
+    let victim = contexts
+        .iter()
+        .find(|(_, meta)| Arc::strong_count(&meta.lock) == 1)
+        .map(|(id, _)| *id);
+
+    match victim {
+        Some(id) => {
+            let _ = contexts.remove(&id);
+            tracing::debug!(context = %id, "evicted idle context from cache (at capacity)");
+        }
+        None => {
+            // Over-cap with every entry live is a *legitimate* designed state
+            // here (unlike the applications cap, which has no live-gating and
+            // can always drain to cap — hence its debug_assert). So we don't
+            // assert; instead we make a *significant* overage observable in
+            // production, since it signals sustained high concurrency on this
+            // node. The map drains back toward the cap as live ops finish and
+            // subsequent inserts each evict one freed entry.
+            let len = contexts.len();
+            if len > MAX_CACHED_CONTEXTS + MAX_CACHED_CONTEXTS / 10 {
+                tracing::warn!(
+                    cap = MAX_CACHED_CONTEXTS,
+                    len,
+                    "context cache significantly over capacity and all entries \
+                     live; deferring eviction (sustained high concurrency?)"
+                );
+            } else {
+                tracing::debug!(
+                    cap = MAX_CACHED_CONTEXTS,
+                    len,
+                    "context cache at capacity but all entries live; deferring eviction"
+                );
+            }
+        }
+    }
+}
+
+/// Evict one application to keep `applications` under
+/// [`MAX_CACHED_APPLICATIONS`]. Call before inserting a new application.
+///
+/// Application metadata carries no per-entry lock, so this is a plain
+/// first-entry-by-key-order eviction — identical to the compiled-`modules`
+/// cap. Like that cap it is NOT usage-aware: `ApplicationId`s are hashes, so
+/// the lowest key is effectively random rather than "least useful", and an
+/// evicted entry is simply re-fetched from the node on next use. A no-op while
+/// below the cap.
+///
+/// Callers guard on `!contains_key(id)` before calling, and `pop_first` only
+/// removes a key already present, so the entry about to be inserted is never
+/// itself the victim.
+fn evict_application_if_full(applications: &mut BTreeMap<ApplicationId, Application>) {
+    if applications.len() < MAX_CACHED_APPLICATIONS {
+        return;
+    }
+
+    if let Some((id, _)) = applications.pop_first() {
+        tracing::debug!(application = %id, "evicted application from cache (at capacity)");
+    }
+
+    // Each insert site evicts exactly once before adding one entry, so the map
+    // should never sit more than one over the cap here. A larger overage means
+    // an insert site bypassed this helper — catch it in dev.
+    debug_assert!(
+        applications.len() <= MAX_CACHED_APPLICATIONS,
+        "applications cache over cap after eviction ({} > {MAX_CACHED_APPLICATIONS}); \
+         an insert site likely bypassed evict_application_if_full",
+        applications.len(),
+    );
 }
 
 /// The central actor responsible for managing the lifecycle of all contexts.
@@ -156,11 +275,20 @@ pub struct ContextManager {
 
     /// An in-memory cache of active contexts (`ContextId` -> `ContextMeta`).
     /// This serves as a hot cache to avoid expensive disk I/O for frequently accessed contexts.
+    ///
+    /// Size-capped to `MAX_CACHED_CONTEXTS` so long-running nodes that touch
+    /// many distinct contexts don't grow this map without bound. Eviction is
+    /// gated on the per-context lock being idle — see
+    /// [`evict_idle_context_if_full`] for why that gate is load-bearing for
+    /// correctness, not just hygiene.
     // todo! potentially make this a dashmap::DashMap
-    // todo! use cached::TimedSizedCache with a gc task
     contexts: BTreeMap<ContextId, ContextMeta>,
     /// An in-memory cache of application metadata (`ApplicationId` -> `Application`).
     /// Caching this prevents repeated fetching and parsing of application details.
+    ///
+    /// Size-capped to `MAX_CACHED_APPLICATIONS` via [`evict_application_if_full`]
+    /// (a plain by-key-order eviction, mirroring the compiled-`modules` cap)
+    /// since application metadata is a pure cache over the datastore.
     ///
     /// # Note
     /// Even when 2 applications point to the same bytecode,
@@ -471,72 +599,221 @@ impl ContextManager {
         &mut self,
         context_id: &ContextId,
     ) -> eyre::Result<Option<&ContextMeta>> {
-        let entry = self.contexts.entry(*context_id);
+        // Cache miss: fetch first, so a lookup for a non-existent context never
+        // triggers (and wastes) an eviction. Only once we know the context
+        // exists do we make room and insert. Kept as a self-contained block so
+        // its borrows end before the single returning borrow taken below (the
+        // borrow checker can't return a reference through a split hit/miss
+        // match otherwise).
+        let was_cached = self.contexts.contains_key(context_id);
+        if !was_cached {
+            let Some(context) = self.context_client.get_context(context_id)? else {
+                return Ok(None);
+            };
 
-        match entry {
-            btree_map::Entry::Occupied(mut occupied) => {
-                // CRITICAL FIX: Always reload dag_heads from database to get latest state
-                // The dag_heads can be updated by delta_store when receiving network deltas,
-                // but the cached Context object won't reflect these changes.
-                // This was causing all deltas to use genesis as parent instead of actual dag_heads.
-                let handle = self.datastore.handle();
-                let key = calimero_store::key::ContextMeta::new(*context_id);
+            evict_idle_context_if_full(&mut self.contexts);
 
-                if let Some(meta) = handle.get(&key)? {
-                    let cached = occupied.get_mut();
-
-                    // Update dag_heads if they changed in DB
-                    if cached.meta.dag_heads != meta.dag_heads {
-                        tracing::debug!(
-                            %context_id,
-                            old_heads_count = cached.meta.dag_heads.len(),
-                            new_heads_count = meta.dag_heads.len(),
-                            "Refreshing dag_heads from database (cache was stale)"
-                        );
-                        cached.meta.dag_heads = meta.dag_heads;
-                    }
-
-                    // Also update root_hash in case it changed
-                    cached.meta.root_hash = meta.root_hash.into();
-
-                    // Refresh application_id too. A LazyOnAccess upgrade (or
-                    // a cascade target-application change) rewrites the
-                    // context's bound application in the DB out-of-band of
-                    // this in-memory cache. Callers (notably the execute
-                    // path's post-lazy-upgrade re-fetch) resolve the WASM
-                    // module from `application_id`; if the cache still holds
-                    // the pre-upgrade id, the method runs the OLD module
-                    // against the freshly-migrated (new-shaped) state — a
-                    // borsh "Not all bytes read" panic. Keeping app_id in
-                    // lockstep with the DB closes that window.
-                    let db_application_id = meta.application.application_id();
-                    if cached.meta.application_id != db_application_id {
-                        tracing::debug!(
-                            %context_id,
-                            old_application_id = %cached.meta.application_id,
-                            new_application_id = %db_application_id,
-                            "Refreshing application_id from database (cache was stale)"
-                        );
-                        cached.meta.application_id = db_application_id;
-                    }
-                }
-
-                Ok(Some(occupied.into_mut()))
-            }
-            btree_map::Entry::Vacant(vacant) => {
-                let Some(context) = self.context_client.get_context(context_id)? else {
-                    return Ok(None);
-                };
-
-                let lock = Arc::new(Mutex::new(*context_id));
-
-                let item = vacant.insert(ContextMeta {
+            let lock = Arc::new(Mutex::new(*context_id));
+            let _ = self.contexts.insert(
+                *context_id,
+                ContextMeta {
                     meta: context,
                     lock,
-                });
+                },
+            );
+        }
 
-                Ok(Some(item))
+        let btree_map::Entry::Occupied(mut occupied) = self.contexts.entry(*context_id) else {
+            // Unreachable: the entry was either already cached or just inserted
+            // above, and this actor processes messages serially.
+            debug_assert!(false, "context entry vanished between insert and lookup");
+            return Ok(None);
+        };
+
+        // For an already-cached entry, reload from the DB to pick up
+        // out-of-band changes. A freshly fetched-and-inserted entry is already
+        // current, so skip the redundant read.
+        if was_cached {
+            // CRITICAL FIX: Always reload dag_heads from database to get latest state
+            // The dag_heads can be updated by delta_store when receiving network deltas,
+            // but the cached Context object won't reflect these changes.
+            // This was causing all deltas to use genesis as parent instead of actual dag_heads.
+            let handle = self.datastore.handle();
+            let key = calimero_store::key::ContextMeta::new(*context_id);
+
+            if let Some(meta) = handle.get(&key)? {
+                let cached = occupied.get_mut();
+
+                // Update dag_heads if they changed in DB
+                if cached.meta.dag_heads != meta.dag_heads {
+                    tracing::debug!(
+                        %context_id,
+                        old_heads_count = cached.meta.dag_heads.len(),
+                        new_heads_count = meta.dag_heads.len(),
+                        "Refreshing dag_heads from database (cache was stale)"
+                    );
+                    cached.meta.dag_heads = meta.dag_heads;
+                }
+
+                // Also update root_hash in case it changed
+                cached.meta.root_hash = meta.root_hash.into();
+
+                // Refresh application_id too. A LazyOnAccess upgrade (or
+                // a cascade target-application change) rewrites the
+                // context's bound application in the DB out-of-band of
+                // this in-memory cache. Callers (notably the execute
+                // path's post-lazy-upgrade re-fetch) resolve the WASM
+                // module from `application_id`; if the cache still holds
+                // the pre-upgrade id, the method runs the OLD module
+                // against the freshly-migrated (new-shaped) state — a
+                // borsh "Not all bytes read" panic. Keeping app_id in
+                // lockstep with the DB closes that window.
+                let db_application_id = meta.application.application_id();
+                if cached.meta.application_id != db_application_id {
+                    tracing::debug!(
+                        %context_id,
+                        old_application_id = %cached.meta.application_id,
+                        new_application_id = %db_application_id,
+                        "Refreshing application_id from database (cache was stale)"
+                    );
+                    cached.meta.application_id = db_application_id;
+                }
             }
         }
+
+        Ok(Some(occupied.into_mut()))
+    }
+}
+
+#[cfg(test)]
+mod cache_eviction_tests {
+    use std::str::FromStr as _;
+
+    use super::*;
+    use calimero_primitives::hash::Hash;
+
+    /// Distinct `ContextId` per index (two bytes cover well beyond the cap).
+    fn cid(i: usize) -> ContextId {
+        let mut bytes = [0u8; 32];
+        bytes[0] = (i & 0xff) as u8;
+        bytes[1] = ((i >> 8) & 0xff) as u8;
+        ContextId::from(bytes)
+    }
+
+    /// An entry whose lock is held by nobody → `strong_count == 1` (evictable).
+    fn idle_meta(id: ContextId) -> ContextMeta {
+        ContextMeta {
+            meta: Context::new(id, ApplicationId::from([0u8; 32]), Hash::default()),
+            lock: Arc::new(Mutex::new(id)),
+        }
+    }
+
+    /// An entry with an outstanding owned guard → `strong_count == 2` (live,
+    /// MUST NOT be evicted). The returned guard must be kept alive by the test.
+    fn live_meta(id: ContextId) -> (ContextMeta, OwnedMutexGuard<ContextId>) {
+        let lock = Arc::new(Mutex::new(id));
+        let guard = lock.clone().try_lock_owned().expect("fresh lock is free");
+        let meta = ContextMeta {
+            meta: Context::new(id, ApplicationId::from([0u8; 32]), Hash::default()),
+            lock,
+        };
+        (meta, guard)
+    }
+
+    #[test]
+    fn no_eviction_below_cap() {
+        let mut contexts = BTreeMap::new();
+        for i in 0..(MAX_CACHED_CONTEXTS - 1) {
+            let _ = contexts.insert(cid(i), idle_meta(cid(i)));
+        }
+        evict_idle_context_if_full(&mut contexts);
+        assert_eq!(contexts.len(), MAX_CACHED_CONTEXTS - 1);
+    }
+
+    #[test]
+    fn evicts_one_idle_entry_at_cap() {
+        let mut contexts = BTreeMap::new();
+        for i in 0..MAX_CACHED_CONTEXTS {
+            let _ = contexts.insert(cid(i), idle_meta(cid(i)));
+        }
+        evict_idle_context_if_full(&mut contexts);
+        assert_eq!(contexts.len(), MAX_CACHED_CONTEXTS - 1);
+    }
+
+    #[test]
+    fn never_evicts_a_live_entry() {
+        let mut contexts = BTreeMap::new();
+        let mut guards = Vec::new();
+
+        // Every entry live except a single idle one (the lowest key, so it's
+        // also the first candidate eviction would consider by key order).
+        let idle_id = cid(0);
+        let _ = contexts.insert(idle_id, idle_meta(idle_id));
+        for i in 1..MAX_CACHED_CONTEXTS {
+            let (meta, guard) = live_meta(cid(i));
+            let _ = contexts.insert(cid(i), meta);
+            guards.push(guard);
+        }
+
+        evict_idle_context_if_full(&mut contexts);
+
+        // The idle entry is gone; every live entry survives.
+        assert_eq!(contexts.len(), MAX_CACHED_CONTEXTS - 1);
+        assert!(!contexts.contains_key(&idle_id));
+        for i in 1..MAX_CACHED_CONTEXTS {
+            assert!(contexts.contains_key(&cid(i)), "live entry {i} was evicted");
+        }
+        drop(guards);
+    }
+
+    #[test]
+    fn no_eviction_when_all_entries_live() {
+        let mut contexts = BTreeMap::new();
+        let mut guards = Vec::new();
+        for i in 0..MAX_CACHED_CONTEXTS {
+            let (meta, guard) = live_meta(cid(i));
+            let _ = contexts.insert(cid(i), meta);
+            guards.push(guard);
+        }
+
+        // Cache is at cap but nothing is evictable → it stays over/at cap
+        // rather than corrupting a live context's lock identity.
+        evict_idle_context_if_full(&mut contexts);
+        assert_eq!(contexts.len(), MAX_CACHED_CONTEXTS);
+        drop(guards);
+    }
+
+    fn app(i: usize) -> Application {
+        use calimero_primitives::application::{ApplicationBlob, ApplicationSource};
+        use calimero_primitives::blobs::BlobId;
+        let id = ApplicationId::from([i as u8; 32]);
+        Application::new(
+            id,
+            ApplicationBlob {
+                bytecode: BlobId::from([0u8; 32]),
+                compiled: BlobId::from([0u8; 32]),
+            },
+            0,
+            ApplicationSource::from_str("http://example.test").expect("valid url"),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn application_cap_evicts_at_cap_only() {
+        let mut apps = BTreeMap::new();
+        for i in 0..(MAX_CACHED_APPLICATIONS - 1) {
+            let a = app(i);
+            let _ = apps.insert(a.id, a);
+        }
+        // Below cap → no-op.
+        evict_application_if_full(&mut apps);
+        assert_eq!(apps.len(), MAX_CACHED_APPLICATIONS - 1);
+
+        // Fill to cap, then eviction drops exactly one.
+        let a = app(MAX_CACHED_APPLICATIONS - 1);
+        let _ = apps.insert(a.id, a);
+        evict_application_if_full(&mut apps);
+        assert_eq!(apps.len(), MAX_CACHED_APPLICATIONS - 1);
     }
 }
