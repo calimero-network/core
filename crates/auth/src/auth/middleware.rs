@@ -733,9 +733,9 @@ mod tests {
 
         let mut headers = HeaderMap::new();
         match &err {
-            crate::AuthError::InvalidToken(msg)
-                if !msg.contains("expired") && !msg.contains("revoked") =>
-            {
+            // Expiry is now its own variant, so the generic arm no longer needs
+            // to exclude "expired" messages.
+            crate::AuthError::InvalidToken(msg) if !msg.contains("revoked") => {
                 headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
             }
             _ => {}
@@ -778,9 +778,9 @@ mod tests {
         // Generic invalid token -> 401 Unauthorized
         let generic_err = crate::AuthError::InvalidToken("Malformed".to_string());
         let status = match &generic_err {
-            crate::AuthError::InvalidToken(msg)
-                if !msg.contains("expired") && !msg.contains("revoked") =>
-            {
+            // Expiry is now its own variant, so the generic arm no longer needs
+            // to exclude "expired" messages.
+            crate::AuthError::InvalidToken(msg) if !msg.contains("revoked") => {
                 StatusCode::UNAUTHORIZED
             }
             _ => StatusCode::INTERNAL_SERVER_ERROR,

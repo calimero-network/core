@@ -627,7 +627,10 @@ impl TokenManager {
             &DecodingKey::from_secret(secret.as_bytes()),
             &validation,
         )
-        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+        .map_err(|e| match e.kind() {
+            jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::TokenExpired,
+            _ => AuthError::InvalidToken(e.to_string()),
+        })?;
 
         Ok(token_data.claims)
     }
