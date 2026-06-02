@@ -2407,7 +2407,22 @@ impl DeltaStore {
             ),
         }
 
-        // Also track the expected root hash for merge detection
+        // Track the expected root hash for merge detection, and process any
+        // now-unblocked pending deltas. Both are gated on `added_count > 0`
+        // (a checkpoint NEWLY restored this call) rather than on persistence,
+        // and that is deliberate:
+        //
+        // - These reflect in-memory DAG state, so they must run whenever the
+        //   DAG actually changed — even if the DB write below failed. Skipping
+        //   `try_process_pending` on a persist failure would strand pending
+        //   children whose parent checkpoint IS present in memory.
+        // - `added_count == 0` means every checkpoint was already in the DAG.
+        //   The maps were therefore populated on the earlier call that first
+        //   restored them (when `added_count > 0`), so re-running this block is
+        //   unnecessary — including in the persist-retry/self-heal case, where
+        //   the DB write is redone but the in-memory bookkeeping already holds.
+        //   (A restart clears the in-memory DAG, so a post-restart re-add is
+        //   `added_count > 0` again and re-populates the maps.)
         if added_count > 0 {
             let mut head_hashes = self.head_root_hashes.write().await;
             for head_id in dag.get_heads().iter() {
