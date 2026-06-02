@@ -26,7 +26,7 @@ fn state_schema(src: &str) -> Manifest {
 /// real wasm-section round-trip the node uses at upgrade time.
 fn embed_then_read(schema: &Manifest) -> Manifest {
     let empty_module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
-    let wasm = write_embedded_state_schema(&empty_module, schema);
+    let wasm = write_embedded_state_schema(&empty_module, schema).expect("embed");
     read_embedded_state_schema(&wasm).expect("calimero_abi_v1 section present after embed")
 }
 

@@ -499,6 +499,13 @@ impl Handler<UpgradeGroupRequest> for ContextManager {
 /// from a top-level state field (e.g. AuthoredMap -> UnorderedMap). Fail-OPEN
 /// (allow, with a warning) when either schema is unavailable — apps built before
 /// ABI embedding have no `calimero_abi_v1` section and cannot be checked.
+///
+/// Scope: callers run this gate only for migration upgrades (`has_migration`).
+/// A code-only upgrade does not transform existing state — the new bytecode
+/// reads the old data in place, so an incompatible top-level type change fails
+/// to deserialize rather than silently re-interpreting identity-gated entries as
+/// plain. Extending the gate to code-only app swaps is a possible defence-in-depth
+/// follow-up (tracked under #2587).
 fn verify_no_identity_downgrade(
     old: Option<&Manifest>,
     new: Option<&Manifest>,
@@ -529,11 +536,17 @@ async fn resolve_embedded_schema(
     node_client: &calimero_node_primitives::client::NodeClient,
     application_id: &ApplicationId,
 ) -> Option<Manifest> {
-    let bytes = node_client
-        .get_application_bytes(application_id, None)
-        .await
-        .ok()??;
-    calimero_wasm_abi::embed::read_embedded_state_schema(&bytes)
+    match node_client.get_application_bytes(application_id, None).await {
+        Ok(Some(bytes)) => calimero_wasm_abi::embed::read_embedded_state_schema(&bytes),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(
+                %application_id, error = %err,
+                "L1 gate: failed to fetch application bytes; treating as no embedded ABI (fail-open)"
+            );
+            None
+        }
+    }
 }
 
 struct UpgradePreamble {
