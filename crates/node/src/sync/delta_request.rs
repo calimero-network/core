@@ -286,6 +286,28 @@ fn verify_fetched_parent(
     VerifiedParent::Apply { position: pos }
 }
 
+/// Register one chunk of fetched, already-verified deltas into the DAG via the
+/// batch API. Mirrors the single-delta path's warn-and-continue: a failed
+/// commit leaves the chunk unpersisted and the next sync re-fetches it.
+async fn flush_delta_batch(
+    delta_store: &crate::delta_store::DeltaStore,
+    context_id: &ContextId,
+    batch: Vec<crate::delta_store::BatchDeltaInput>,
+) {
+    if batch.is_empty() {
+        return;
+    }
+    let batch_count = batch.len();
+    if let Err(e) = delta_store.add_deltas_batch(batch).await {
+        warn!(
+            ?e,
+            %context_id,
+            batch_count,
+            "Failed to persist fetched delta batch to DAG"
+        );
+    }
+}
+
 impl SyncManager {
     /// Request missing deltas from a peer and add them to the DAG
     ///
@@ -319,6 +341,13 @@ impl SyncManager {
             visited_ids.insert(*id);
         }
 
+        // Verified deltas waiting to be registered into the DAG. Accumulated
+        // across fetches and flushed in `DELTA_BATCH_MAX` chunks so N deltas
+        // take one DAG write-lock scope + one atomic persist instead of N.
+        // Bounding the buffer also keeps memory in check (we never hold more
+        // than one chunk's payloads beyond what's already in flight).
+        let mut delta_batch: Vec<crate::delta_store::BatchDeltaInput> = Vec::new();
+
         // Phase 1: Fetch ALL missing deltas recursively
         // No artificial limit - DAG is acyclic so this will naturally terminate at genesis
         while !to_fetch.is_empty() {
@@ -334,6 +363,12 @@ impl SyncManager {
                         limit = MAX_DELTA_FETCH_LIMIT,
                         "Exceeded maximum delta fetch limit. The sync gap is too large."
                     );
+
+                    // Flush what we've buffered so far before bailing — those
+                    // deltas are verified and shouldn't be dropped just because
+                    // the gap is too large to finish.
+                    flush_delta_batch(&delta_store, &context_id, std::mem::take(&mut delta_batch))
+                        .await;
 
                     // Stop syncing. Progress so far is saved in DeltaStore (Pending).
                     return Ok(());
@@ -411,17 +446,20 @@ impl SyncManager {
                         // verified against).
                         let governance_position_blob =
                             position.as_ref().and_then(|gp| borsh::to_vec(gp).ok());
-                        if let Err(e) = delta_store
-                            .add_delta(
-                                dag_delta,
-                                Some(fetched.author_id),
-                                governance_position_blob,
-                                fetched.delta_signature,
+                        delta_batch.push(crate::delta_store::BatchDeltaInput {
+                            delta: dag_delta,
+                            events: None,
+                            author_id: Some(fetched.author_id),
+                            governance_position_blob,
+                            delta_signature: fetched.delta_signature,
+                        });
+                        if delta_batch.len() >= crate::delta_store::DELTA_BATCH_MAX {
+                            flush_delta_batch(
+                                &delta_store,
+                                &context_id,
+                                std::mem::take(&mut delta_batch),
                             )
-                            .await
-                        {
-                            warn!(?e, %context_id, delta_id = ?missing_id, "Failed to persist fetched delta to DAG");
-                            continue;
+                            .await;
                         }
                     }
                     Ok(None) => {
@@ -439,6 +477,9 @@ impl SyncManager {
                 }
             }
         }
+
+        // Register any deltas left in the buffer below the chunk threshold.
+        flush_delta_batch(&delta_store, &context_id, std::mem::take(&mut delta_batch)).await;
 
         if fetch_count > 0 {
             info!(
