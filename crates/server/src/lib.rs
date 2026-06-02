@@ -22,6 +22,7 @@ use crate::service_mounts::mount_runtime_services;
 pub mod admin;
 mod auth;
 pub mod config;
+mod execute;
 pub mod jsonrpc;
 mod metrics;
 mod service_mounts;

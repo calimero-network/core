@@ -1619,6 +1619,7 @@ dependencies = [
  "borsh",
  "bytes",
  "cached-path",
+ "calimero-blobstore",
  "calimero-context",
  "calimero-context-client",
  "calimero-context-config",
@@ -1628,6 +1629,7 @@ dependencies = [
  "calimero-server-primitives",
  "calimero-store",
  "calimero-tee-attestation",
+ "calimero-utils-actix",
  "chrono",
  "color-eyre",
  "eyre",
@@ -1644,14 +1646,17 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "tokio-stream",
+ "tokio-tungstenite",
  "tokio-util",
  "tower 0.4.13",
  "tower-http 0.5.2",
  "tower-sessions",
  "tracing",
  "tracing-subscriber",
+ "uuid 1.21.0",
 ]
 
 [[package]]
@@ -1669,6 +1674,7 @@ dependencies = [
  "tdx-quote",
  "thiserror 1.0.69",
  "url",
+ "uuid 1.21.0",
 ]
 
 [[package]]

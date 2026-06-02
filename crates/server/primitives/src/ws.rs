@@ -3,8 +3,12 @@ use eyre::Error as EyreError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Client ID is a locally unique identifier of a WebSocket client connection.
-pub type ConnectionId = u64;
+use crate::jsonrpc::ExecutionRequest;
+
+/// Client ID is a globally unique identifier of a WebSocket client connection.
+/// Internal-only (log correlation + connection-map key); never sent to clients,
+/// so widening it from a per-process counter to a UUID is non-breaking.
+pub type ConnectionId = uuid::Uuid;
 /// Request Id is a locally unique identifier of a WebSocket request.
 pub type RequestId = u64;
 
@@ -22,6 +26,10 @@ pub struct Request<P> {
 pub enum RequestPayload {
     Subscribe(SubscribeRequest),
     Unsubscribe(UnsubscribeRequest),
+    /// Bidirectional query/mutate over the same socket. Reuses the JSON-RPC
+    /// execution envelope so the wire shape and validation match `/jsonrpc`;
+    /// the runtime decides whether a call reads or writes state.
+    Execute(ExecutionRequest),
 }
 // *************************************************************************
 
