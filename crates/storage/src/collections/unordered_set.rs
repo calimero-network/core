@@ -550,4 +550,39 @@ mod tests {
         let items: Vec<String> = set.iter().expect("items failed").collect();
         assert_eq!(items.len(), 1);
     }
+
+    #[test]
+    fn insert_inherits_collection_storage_domain() {
+        use std::collections::BTreeSet;
+
+        use calimero_primitives::identity::PublicKey;
+
+        use crate::collections::compute_id;
+        use crate::entities::StorageType;
+        use crate::interface::Interface;
+        use crate::store::MainStorage;
+
+        crate::env::reset_for_testing();
+
+        // A set inserts entries via the bare `Collection::insert`, so guarding the
+        // set element propagates `Shared{writers}` to every member entity.
+        let mut guarded = UnorderedSet::<String>::new();
+        let writers: BTreeSet<PublicKey> = std::iter::once(PublicKey::from([7u8; 32])).collect();
+        guarded
+            .inner
+            .element_mut()
+            .set_shared_domain(writers.clone());
+        let _ignored = guarded.insert("x".to_owned()).expect("insert");
+
+        let set_id = guarded.inner.id();
+        let child = compute_id(set_id, "x".as_bytes());
+        let entry =
+            <Interface<MainStorage>>::find_by_id::<crate::collections::Entry<String>>(child)
+                .expect("load member entry")
+                .expect("member entry exists");
+        match entry.storage.metadata.storage_type {
+            StorageType::Shared { writers: w, .. } => assert_eq!(w, writers),
+            other => panic!("set member must inherit Shared, got {other:?}"),
+        }
+    }
 }

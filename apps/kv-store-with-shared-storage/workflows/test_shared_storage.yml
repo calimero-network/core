@@ -83,6 +83,45 @@ steps:
       - 'json_equal({{node2_read}}, {"output": "initial-from-node1"})'
 
   # ============================================
+  # Guarded collection: a whole map guarded by the writer set.
+  # Every entry is stamped Shared{writers}, so a writer's entry converges and a
+  # non-writer's entry is rejected at merge.
+  # ============================================
+
+  - name: Node 1 (writer) sets a map entry
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: map_set
+    args:
+      key: "greeting"
+      value: "hello"
+
+  - name: Wait for map entry to sync to node 2
+    type: wait_for_sync
+    context_id: "{{context_id}}"
+    nodes:
+      - new-calimero-node-1
+      - new-calimero-node-2
+    timeout: 60
+    trigger_sync: true
+
+  - name: Node 2 reads the writer's map entry
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: map_get
+    args:
+      key: "greeting"
+    outputs:
+      node2_map_read: result
+
+  - name: Assert the writer's guarded map entry converged to node 2
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_map_read}}, {"output": "hello"})'
+
+  # ============================================
   # Rotation: node 1 hands the writer set to node 2
   # ============================================
 
@@ -137,3 +176,40 @@ steps:
     type: json_assert
     statements:
       - 'json_equal({{node1_read_after_rotation}}, {"output": "post-rotation-from-node2"})'
+
+  # ============================================
+  # Adversarial (last — it deliberately diverges node 2, so nothing convergent
+  # may follow). The map's writer set is still {node 1}: `rotate_writers` only
+  # rotated the scalar register, not the map. So node 2 is a non-writer for the
+  # map. Its forged map write is applied locally but rejected by node 1 at merge,
+  # so node 1 never sees it (the nodes do NOT converge — that is the point, hence
+  # a fixed `wait` rather than `wait_for_sync`).
+  # ============================================
+
+  - name: Node 2 (non-writer for the map) forges a map write
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: map_set
+    args:
+      key: "evil"
+      value: "forged"
+
+  - name: Let the forged delta attempt (and fail) to propagate
+    type: wait
+    seconds: 20
+
+  - name: Node 1 reads the entry the non-writer tried to set
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: map_get
+    args:
+      key: "evil"
+    outputs:
+      node1_evil_read: result
+
+  - name: Assert the non-writer's forged write did NOT reach node 1
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_evil_read}}, {"output": null})'

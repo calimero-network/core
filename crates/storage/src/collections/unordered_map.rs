@@ -295,8 +295,14 @@ where
         K: AsRef<[u8]> + PartialEq + 'static,
         V: 'static,
     {
-        // By default, add as the Public storage.
-        self.insert_with_storage_type(key, value, StorageType::Public, None)
+        // Children inherit this collection's own storage domain. For an ordinary
+        // map the collection element is `Public`, so this is identical to the
+        // previous hardcoded default. When the collection element carries
+        // `Shared{writers}` (a guarded collection — e.g. the value of a
+        // `SharedStorage`), every entry is stamped with that same writer set, so
+        // the whole subtree is guarded at merge instead of only the wrapper.
+        let inherited = self.inner.element().metadata.storage_type.clone();
+        self.insert_with_storage_type(key, value, inherited, None)
     }
 
     /// Insert a key-value pair into the map with the specified `StorageType`.
@@ -1360,6 +1366,108 @@ mod tests {
         assert_eq!(old_val, "value3");
         assert_eq!(map.get("key3").unwrap(), None); // Key should be gone
         assert_eq!(map.len().unwrap(), 2); // Length should decrease
+    }
+
+    #[test]
+    fn insert_inherits_collection_storage_domain() {
+        use std::collections::BTreeSet;
+
+        use calimero_primitives::identity::PublicKey;
+
+        use crate::address::Id;
+        use crate::collections::compute_id;
+        use crate::entities::{Data, StorageType};
+        use crate::interface::Interface;
+        use crate::store::MainStorage;
+
+        crate::env::reset_for_testing();
+
+        // Load a map entry's stored entity and return the StorageType it was
+        // stamped with. `crate::collections::Entry` is the storage entry type
+        // (distinct from this module's public `Entry` API enum).
+        fn child_storage_type(map_id: Id, key: &str) -> StorageType {
+            let child = compute_id(map_id, key.as_bytes());
+            let entry = <Interface<MainStorage>>::find_by_id::<
+                crate::collections::Entry<(String, String)>,
+            >(child)
+            .expect("load child entry")
+            .expect("child entry exists");
+            entry.storage.metadata.storage_type
+        }
+
+        // Ordinary map: entries stay Public — no behaviour change.
+        let mut public_map = UnorderedMap::<String, String>::new();
+        let _ignored = public_map
+            .insert("k".to_owned(), "v".to_owned())
+            .expect("insert into public map");
+        let public_id = <UnorderedMap<String, String> as Data>::id(&public_map);
+        assert!(
+            matches!(child_storage_type(public_id, "k"), StorageType::Public),
+            "ordinary map entries must remain Public",
+        );
+
+        // Guarded map: stamping the collection's own element `Shared{writers}`
+        // propagates that domain to every entry, so the whole subtree is guarded
+        // at merge — not just the wrapper. This is the core of guarding a
+        // collection by a writer set.
+        let mut guarded = UnorderedMap::<String, String>::new();
+        let writers: BTreeSet<PublicKey> = std::iter::once(PublicKey::from([7u8; 32])).collect();
+        guarded.element_mut().set_shared_domain(writers.clone());
+        let _ignored = guarded
+            .insert("k".to_owned(), "v".to_owned())
+            .expect("insert into guarded map");
+        let guarded_id = <UnorderedMap<String, String> as Data>::id(&guarded);
+        match child_storage_type(guarded_id, "k") {
+            StorageType::Shared { writers: w, .. } => assert_eq!(w, writers),
+            other => panic!("guarded map entry must inherit Shared, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn entry_or_default_inherits_collection_storage_domain() {
+        use std::collections::BTreeSet;
+
+        use calimero_primitives::identity::PublicKey;
+
+        use crate::address::Id;
+        use crate::collections::compute_id;
+        use crate::entities::{Data, StorageType};
+        use crate::interface::Interface;
+        use crate::store::MainStorage;
+
+        crate::env::reset_for_testing();
+
+        fn child_storage_type(map_id: Id, key: &str) -> StorageType {
+            let child = compute_id(map_id, key.as_bytes());
+            let entry = <Interface<MainStorage>>::find_by_id::<
+                crate::collections::Entry<(String, String)>,
+            >(child)
+            .expect("load child entry")
+            .expect("child entry exists");
+            entry.storage.metadata.storage_type
+        }
+
+        // Guard the collection, then create an entry through the Entry/or_default
+        // write-back path (a different write path than `map.insert`). It must
+        // inherit the domain too, otherwise guarding silently fails for the
+        // blessed nested-CRDT mutation API.
+        let mut guarded = UnorderedMap::<String, String>::new();
+        let writers: BTreeSet<PublicKey> = std::iter::once(PublicKey::from([7u8; 32])).collect();
+        guarded.element_mut().set_shared_domain(writers.clone());
+        {
+            let mut value = guarded
+                .entry("k".to_owned())
+                .expect("entry")
+                .or_default()
+                .expect("or_default");
+            *value = "v".to_owned();
+        }
+
+        let guarded_id = <UnorderedMap<String, String> as Data>::id(&guarded);
+        match child_storage_type(guarded_id, "k") {
+            StorageType::Shared { writers: w, .. } => assert_eq!(w, writers),
+            other => panic!("entry/or_default entry must inherit Shared, got {other:?}"),
+        }
     }
 
     #[test]

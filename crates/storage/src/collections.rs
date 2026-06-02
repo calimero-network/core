@@ -511,7 +511,15 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
 
     /// Inserts an item into the collection.
     fn insert(&mut self, id: Option<Id>, item: T) -> StoreResult<T> {
-        self.insert_with_storage_type(id, item, StorageType::Public)
+        // Entries inherit this collection's own storage domain. For an ordinary
+        // collection the element is `Public`, so this is the previous default;
+        // when the element carries `Shared{writers}` (a guarded collection) every
+        // entry is stamped with that writer set. This is the chokepoint for the
+        // `Entry`/`or_default` write-back path and for collections that insert via
+        // the bare `Collection::insert` (sets, vectors, RGA), so guarding a
+        // collection covers those paths too — not only the direct `map.insert`.
+        let inherited = self.storage.metadata.storage_type.clone();
+        self.insert_with_storage_type(id, item, inherited)
     }
 
     /// Inserts an item with a caller-provided fixed `id` and `field_name`,
