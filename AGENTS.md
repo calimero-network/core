@@ -28,6 +28,10 @@ cargo fmt --check
 cargo clippy -- -A warnings
 ```
 
+A pre-commit hook (`cargo fmt --check` on staged Rust files) installs itself on
+any `cargo build`/`cargo test` via the `calimero-git-hooks` build script — no
+husky/pnpm needed, and it works from git worktrees. Sources live in `.githooks/`.
+
 ## Universal Conventions
 
 ### Import Organization (StdExternalCrate Pattern)

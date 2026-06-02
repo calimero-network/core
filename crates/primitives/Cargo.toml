@@ -25,6 +25,11 @@ zeroize.workspace = true
 [dev-dependencies]
 hex.workspace = true
 
+# Installs the repo's git hooks (.githooks/) during `cargo test`. Wired onto a
+# foundational crate so a normal test run also reinstalls them, on top of the
+# workspace-member build trigger. See crates/git-hooks and .githooks/.
+calimero-git-hooks = { path = "../git-hooks" }
+
 # Reimport self with the borsh feature enabled
 calimero-primitives = { path = ".", features = ["borsh"] }
 

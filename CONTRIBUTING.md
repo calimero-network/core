@@ -47,6 +47,31 @@ general guidelines:
 
 For **versioning and how to cut a release**, see [docs/RELEASE.md](docs/RELEASE.md).
 
+## Git hooks
+
+The repository ships a pre-commit hook that runs `cargo fmt --check` whenever a
+commit touches Rust files, mirroring the formatting gate in CI. It installs
+itself automatically — the `calimero-git-hooks` build script wires it up during
+any `cargo build` or `cargo test`, so a normal first build is all it takes. No
+`npm`/`pnpm`/husky is required, and it works from linked git worktrees too (the
+installer asks git where hooks belong, which for a worktree is the shared
+`.git/hooks` directory).
+
+The hook scripts live in [`.githooks/`](.githooks/); edit them there and re-run
+`cargo test` to reinstall. To run the formatter manually:
+
+```bash
+cargo fmt
+```
+
+> **Migrating from the old husky setup:** earlier checkouts pointed git at the
+> hooks via `core.hooksPath=.husky`. If `git config --get core.hooksPath` still
+> prints `.husky`, clear it once so the auto-installed hook is used:
+>
+> ```bash
+> git config --unset core.hooksPath
+> ```
+
 ## Issues
 
 Use [Issues][] to report problems, request features, or discuss changes before

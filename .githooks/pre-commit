@@ -1,0 +1,24 @@
+#!/bin/sh
+#
+# Calimero pre-commit hook.
+#
+# Installed automatically by the `calimero-git-hooks` build script during
+# `cargo build`/`cargo test`, so every contributor gets it without extra setup
+# (no npm/pnpm/husky required). It is worktree-aware: the installer asks git
+# where hooks belong, so it works from linked worktrees too.
+#
+# Source of truth lives in `.githooks/` at the repository root; edit it there
+# and re-run `cargo test` to reinstall.
+
+set -eu
+
+# Only run the Rust formatting check when staged changes touch Rust files,
+# mirroring the `cargo fmt --check` gate in CI (.github/workflows/ci-checks.yml).
+if git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$'; then
+	echo "pre-commit: checking Rust formatting (cargo fmt --check)..."
+	if ! cargo fmt --check; then
+		echo
+		echo "pre-commit: formatting check failed. Run 'cargo fmt' and re-stage your changes." >&2
+		exit 1
+	fi
+fi
