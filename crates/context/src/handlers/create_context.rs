@@ -26,7 +26,7 @@ use tracing::{debug, error, warn};
 use super::execute::execute;
 use super::execute::storage::{ContextPrivateStorage, ContextStorage};
 use crate::handlers::execute::{persist_signed_signatures, sign_authorized_actions};
-use crate::{ContextManager, ContextMeta};
+use crate::{evict_application_if_full, evict_idle_context_if_full, ContextManager, ContextMeta};
 use calimero_governance_store::governance_broadcast::ObserveDelivery;
 
 impl Handler<CreateContextRequest> for ContextManager {
@@ -50,6 +50,13 @@ impl Handler<CreateContextRequest> for ContextManager {
             let (_, sk) = self.node_namespace_identity(&group_id)?;
             Some(PrivateKey::from(sk))
         });
+
+        // Make room before `Prepared::new` inserts the freshly created context
+        // and its application — done here (rather than inside the `mem::transmute`
+        // entry loop below) where `self.contexts`/`self.applications` are
+        // borrow-free. Both are no-ops while below their caps.
+        evict_idle_context_if_full(&mut self.contexts);
+        evict_application_if_full(&mut self.applications);
 
         let prepared = match Prepared::new(
             &self.node_client,
