@@ -43,6 +43,7 @@ eyre.workspace = true
 owo-colors.workspace = true
 rand.workspace = true
 serde_json.workspace = true
+wasmer.workspace = true
 wat.workspace = true
 
 [features]

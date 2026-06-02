@@ -59,7 +59,31 @@ impl ToTokens for PublicLogicMethod<'_> {
             .any(|modifier| matches!(modifier, Modifer::Init));
 
         let input = if args.is_empty() {
-            quote! {}
+            // No declared arguments: a method that takes none must not silently
+            // accept named ones. An absent body, an empty/`null` body, or any
+            // non-object body carries no named arguments and is accepted (so
+            // callers need not send `{}`); only a populated JSON object — i.e.
+            // actual extra arguments — is rejected. Mirrors `deny_unknown_fields`
+            // on the args-bearing branch below.
+            quote_spanned! {name.span()=>
+                if let Some(input) = ::calimero_sdk::env::input() {
+                    if !input.is_empty() {
+                        if let Ok(::calimero_sdk::serde_json::Value::Object(fields)) =
+                            ::calimero_sdk::serde_json::from_slice::<
+                                ::calimero_sdk::serde_json::Value,
+                            >(&input)
+                        {
+                            if !fields.is_empty() {
+                                ::calimero_sdk::env::panic_str(&format!(
+                                    "Failed to deserialize input from JSON: method takes no \
+                                     arguments but received unknown field(s): {:?}",
+                                    fields.keys().collect::<::std::vec::Vec<_>>()
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
         } else {
             let input_ident = idents::input();
 
@@ -214,6 +238,7 @@ impl ToTokens for PublicLogicMethod<'_> {
             #[no_mangle]
             pub extern "C" fn #name() {
                 ::calimero_sdk::env::setup_panic_hook();
+                ::calimero_sdk::env::init_logging();
 
                 ::calimero_sdk::event::register::<#self_>();
 

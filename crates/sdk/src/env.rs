@@ -66,6 +66,19 @@ pub mod ext;
 #[doc(hidden)]
 pub mod host;
 
+/// Host-backed `tracing` subscriber (cargo feature `tracing`). Routes
+/// `tracing` macro output through [`log`] so it reaches the execution outcome.
+#[cfg(feature = "tracing")]
+mod subscriber;
+
+/// Sets the maximum `tracing` level forwarded to the host (feature `tracing`).
+#[cfg(feature = "tracing")]
+pub use subscriber::set_log_level;
+/// Re-exported so apps can set the level without depending on `tracing`
+/// directly, e.g. `env::set_log_level(env::LevelFilter::DEBUG)`.
+#[cfg(feature = "tracing")]
+pub use tracing::level_filters::LevelFilter;
+
 /// Register ID used for data operations in the WASM runtime.
 #[cfg(target_arch = "wasm32")]
 const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 1);
@@ -161,6 +174,20 @@ pub fn setup_panic_hook() {
             )
         }
     }));
+}
+
+/// Installs the host-backed `tracing` subscriber so `tracing` macros
+/// (`info!`/`debug!`/…) emitted by the app — and by any crate it imports — are
+/// forwarded to the host log and surface in the execution outcome.
+///
+/// No-op unless the `tracing` cargo feature is enabled. Idempotent: the
+/// generated WASM exports call this at method entry (alongside
+/// [`setup_panic_hook`]), so apps get `tracing` output with no manual setup.
+/// Tune verbosity with [`set_log_level`].
+#[inline]
+pub fn init_logging() {
+    #[cfg(feature = "tracing")]
+    subscriber::init();
 }
 
 /// Marks code as unreachable for optimization purposes.

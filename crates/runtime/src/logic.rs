@@ -110,8 +110,21 @@ const DEFAULT_MAX_REGISTERS: u64 = 100;
 /// Default maximum register size in MiB (100 MiB).
 const DEFAULT_MAX_REGISTER_SIZE_MIB: u64 = 100;
 /// Default maximum number of log entries.
-const DEFAULT_MAX_LOGS: u64 = 100;
-/// Default maximum log message size in KiB (16 KiB).
+///
+/// Bounds the per-execution log buffer (worst case `max_logs * max_log_size`,
+/// i.e. ~16 MiB, held transiently in the `Outcome`). Bumped 10× over the
+/// original 100 so an app that logs liberally — or surfaces `tracing` via the
+/// SDK's host-backed subscriber — has headroom. A heavy whole-tree DEBUG trace
+/// can still exceed this; raise the limit explicitly or narrow the
+/// level/target for those.
+const DEFAULT_MAX_LOGS: u64 = 1024;
+/// Default maximum log message size in KiB.
+///
+/// A single over-long line *traps* the execution (`LogLengthOverflow`) rather
+/// than truncating, so this is NOT shrunk: `tracing` from dependency crates
+/// (e.g. `calimero_storage`'s merge logs) can exceed a few KiB, and trapping
+/// an execution over a log line would be a bad trade. The line-count budget is
+/// raised instead (see `DEFAULT_MAX_LOGS`).
 const DEFAULT_MAX_LOG_SIZE_KIB: u64 = 16;
 /// Default maximum number of events.
 const DEFAULT_MAX_EVENTS: u64 = 100;
@@ -781,7 +794,7 @@ mod tests {
         assert_eq!(limits.max_registers, 100);
         assert_eq!(*limits.max_register_size.deref(), 100 << 20);
         assert_eq!(limits.max_registers_capacity, 1 << 30); // 1 GiB
-        assert_eq!(limits.max_logs, 100);
+        assert_eq!(limits.max_logs, 1024);
         assert_eq!(limits.max_log_size, 16 << 10); // 16 KiB
         assert_eq!(limits.max_events, 100);
         assert_eq!(limits.max_event_kind_size, 100);
