@@ -396,7 +396,14 @@ impl Reconciler {
             );
             true
         } else {
-            tracing::warn!(
+            // ERROR, not WARN: this is the authoritative "recovery ran and
+            // FAILED" signal. We pulled canonical state from a *trusted anchor*
+            // and the root STILL doesn't match the *signed* expected hash — a
+            // confirmed, non-transient split-brain (unlike the heartbeat's
+            // unauthenticated peer-hash observation, which is gated to WARN
+            // until it persists). When this fires it is genuinely
+            // operator-investigation territory and should page / fail CI.
+            tracing::error!(
                 %context_id,
                 %anchor_peer,
                 op_kind,
@@ -404,7 +411,7 @@ impl Reconciler {
                 actual_root_hash = %hex::encode(actual_root_hash),
                 "reconcile-after-divergence: post-adoption hash does NOT match signed expected — \
                  either the anchor served non-canonical state or local apply diverged again; \
-                 operator-investigation territory until pre-adoption rejection lands"
+                 recovery from a trusted anchor failed, confirmed split-brain"
             );
             false
         }
