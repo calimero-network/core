@@ -388,6 +388,13 @@ pub enum MessagePayload<'a> {
         nodes: Vec<LevelNode>,
         /// Whether there are more levels below this one.
         has_more_levels: bool,
+        /// Authenticated tombstones for children of the queried parents that
+        /// this responder has deleted. Lets a holder that still has the entity
+        /// (the initiator) learn of the deletion and apply it delete-wins —
+        /// the LevelWise analogue of `TreeNode::deleted_children`. Without it a
+        /// cleared responder returns no nodes at level 0 and the initiator's
+        /// loop exits before ever seeing the deletion (holder-initiates clear).
+        deleted_children: Vec<super::hash_comparison::EntityDeletion>,
     },
 
     /// Acknowledgment of received EntityPush for bidirectional HashComparison sync.
@@ -604,6 +611,7 @@ mod tests {
             level: 0,
             nodes: nodes.clone(),
             has_more_levels: true,
+            deleted_children: vec![],
         };
 
         let encoded = borsh::to_vec(&response).expect("serialize");
@@ -614,12 +622,14 @@ mod tests {
                 level,
                 nodes: decoded_nodes,
                 has_more_levels,
+                deleted_children,
             } => {
                 assert_eq!(level, 0);
                 assert_eq!(decoded_nodes.len(), 2);
                 assert!(has_more_levels);
                 assert!(decoded_nodes[0].is_internal());
                 assert!(decoded_nodes[1].is_internal());
+                assert!(deleted_children.is_empty());
             }
             _ => panic!("wrong variant"),
         }
@@ -642,6 +652,7 @@ mod tests {
             level: 1,
             nodes,
             has_more_levels: false,
+            deleted_children: vec![],
         };
 
         let encoded = borsh::to_vec(&response).expect("serialize");
@@ -652,6 +663,7 @@ mod tests {
                 level,
                 nodes: decoded_nodes,
                 has_more_levels,
+                deleted_children: _,
             } => {
                 assert_eq!(level, 1);
                 assert_eq!(decoded_nodes.len(), 2);
@@ -670,6 +682,7 @@ mod tests {
             level: 2,
             nodes: vec![],
             has_more_levels: false,
+            deleted_children: vec![],
         };
 
         let encoded = borsh::to_vec(&response).expect("serialize");
@@ -680,10 +693,12 @@ mod tests {
                 level,
                 nodes,
                 has_more_levels,
+                deleted_children,
             } => {
                 assert_eq!(level, 2);
                 assert!(nodes.is_empty());
                 assert!(!has_more_levels);
+                assert!(deleted_children.is_empty());
             }
             _ => panic!("wrong variant"),
         }

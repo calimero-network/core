@@ -259,12 +259,13 @@ async fn run_initiator_impl<T: SyncTransport>(
             bail!("Expected Message, got {:?}", response);
         };
 
-        let (resp_level, mut nodes, has_more_levels) = match payload {
+        let (resp_level, mut nodes, has_more_levels, remote_deleted) = match payload {
             MessagePayload::LevelWiseResponse {
                 level: resp_level,
                 nodes,
                 has_more_levels,
-            } => (resp_level, nodes, has_more_levels),
+                deleted_children,
+            } => (resp_level, nodes, has_more_levels, deleted_children),
             MessagePayload::SnapshotError { error } => {
                 warn!(%context_id, ?error, "Peer returned error");
                 bail!("Peer error: {:?}", error);
@@ -319,9 +320,29 @@ async fn run_initiator_impl<T: SyncTransport>(
             %context_id,
             level,
             nodes_received = nodes.len(),
+            deleted_received = remote_deleted.len(),
             has_more_levels,
             "Received level response"
         );
+
+        // Apply any tombstones the responder advertised for this level FIRST —
+        // before the empty-nodes early-out below. A cleared collection returns
+        // zero live nodes but a non-empty `deleted_children`; applying here
+        // (authenticated DeleteRef, delete-wins) is what converges a clear when
+        // the holder initiates. Safe no-op when we already deleted or lose LWW.
+        if !remote_deleted.is_empty() {
+            let applied = with_runtime_env(runtime_env.clone(), || {
+                crate::sync::hash_comparison_protocol::apply_remote_tombstones(&remote_deleted)
+            });
+            stats.entities_merged += applied;
+            debug!(
+                %context_id,
+                level,
+                advertised = remote_deleted.len(),
+                applied,
+                "Applied remote tombstones from level response"
+            );
+        }
 
         if nodes.is_empty() {
             debug!(%context_id, level, "No nodes at this level, sync complete");
@@ -605,13 +626,14 @@ async fn run_responder_impl<T: SyncTransport>(
     let mut sequence_id = 0u64;
 
     // Handle the first request (already parsed by the manager)
-    let (nodes, has_more_levels) =
+    let (nodes, has_more_levels, deleted_children) =
         handle_levelwise_request(context_id, first_level, first_parent_ids, &runtime_env)?;
 
     debug!(
         %context_id,
         level = first_level,
         nodes_found = nodes.len(),
+        deleted = deleted_children.len(),
         has_more_levels,
         "Responding with first level nodes"
     );
@@ -622,6 +644,7 @@ async fn run_responder_impl<T: SyncTransport>(
             level: first_level,
             nodes,
             has_more_levels,
+            deleted_children,
         },
         next_nonce: generate_nonce(),
     };
@@ -638,7 +661,7 @@ fn handle_levelwise_request(
     level: u32,
     parent_ids: Option<Vec<[u8; 32]>>,
     runtime_env: &calimero_storage::env::RuntimeEnv,
-) -> Result<(Vec<LevelNode>, bool)> {
+) -> Result<(Vec<LevelNode>, bool, Vec<EntityDeletion>)> {
     trace!(
         %context_id,
         level,
@@ -655,7 +678,7 @@ fn handle_levelwise_request(
             "Level exceeds maximum"
         );
         // Return empty response rather than error to avoid leaking state
-        return Ok((vec![], false));
+        return Ok((vec![], false, vec![]));
     }
 
     // DoS protection: truncate parent_ids if too large
@@ -715,13 +738,14 @@ async fn run_responder_loop<T: SyncTransport>(
             InitPayload::LevelWiseRequest {
                 level, parent_ids, ..
             } => {
-                let (nodes, has_more_levels) =
+                let (nodes, has_more_levels, deleted_children) =
                     handle_levelwise_request(context_id, level, parent_ids, runtime_env)?;
 
                 debug!(
                     %context_id,
                     level,
                     nodes_found = nodes.len(),
+                    deleted = deleted_children.len(),
                     has_more_levels,
                     "Responding with level nodes"
                 );
@@ -732,6 +756,7 @@ async fn run_responder_loop<T: SyncTransport>(
                         level,
                         nodes,
                         has_more_levels,
+                        deleted_children,
                     },
                     next_nonce: generate_nonce(),
                 };
@@ -871,19 +896,20 @@ fn get_nodes_at_level(
     context_id: ContextId,
     level: usize,
     parent_ids: Option<&[[u8; 32]]>,
-) -> Result<(Vec<LevelNode>, bool)> {
+) -> Result<(Vec<LevelNode>, bool, Vec<EntityDeletion>)> {
     let mut nodes = Vec::new();
+    let mut deleted_children = Vec::new();
     let mut has_more_levels = false;
 
     let root_id = Id::new(*context_id.as_ref());
 
     // Verify root exists before proceeding
     match Index::<MainStorage>::get_index(root_id) {
-        Ok(Some(_)) => {}                      // Root exists, continue
-        Ok(None) => return Ok((nodes, false)), // Empty tree
+        Ok(Some(_)) => {}                                        // Root exists, continue
+        Ok(None) => return Ok((nodes, false, deleted_children)), // Empty tree
         Err(e) => {
             warn!(%context_id, error = %e, "Failed to get root index");
-            return Ok((nodes, false));
+            return Ok((nodes, false, deleted_children));
         }
     }
 
@@ -896,7 +922,7 @@ fn get_nodes_at_level(
         None => {
             // This shouldn't happen - deeper levels need parent_ids
             warn!(%context_id, level, "No parent_ids for level > 0");
-            return Ok((nodes, false));
+            return Ok((nodes, false, deleted_children));
         }
         Some(ids) => ids.iter().map(|id| Id::new(*id)).collect(),
     };
@@ -907,6 +933,14 @@ fn get_nodes_at_level(
             Ok(None) => continue,
             Err(_) => continue,
         };
+
+        // Tombstones for children this parent deleted ride alongside the live
+        // node list so a holder (the initiator) learns of the deletion even
+        // when the parent now has zero live children (the cleared-collection
+        // case, where the node list would otherwise be empty).
+        deleted_children.extend(
+            crate::sync::hash_comparison_protocol::collect_deleted_children_wire(&parent_index),
+        );
 
         let Some(children) = parent_index.children() else {
             continue;
@@ -1014,7 +1048,7 @@ fn get_nodes_at_level(
         }
     }
 
-    Ok((nodes, has_more_levels))
+    Ok((nodes, has_more_levels, deleted_children))
 }
 
 // =============================================================================
