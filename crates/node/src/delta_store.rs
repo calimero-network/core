@@ -2328,30 +2328,39 @@ impl DeltaStore {
                 }
             };
 
-            // Restore the checkpoint to the DAG (marks it as applied) and
-            // stage it for the atomic DB write below.
+            // Restore the checkpoint to the in-memory DAG (marks it applied).
+            // `restore_applied_delta` is idempotent: it returns false when the
+            // checkpoint is already present, which `added_count` reflects.
             if dag.restore_applied_delta(checkpoint.clone()) {
                 added_count += 1;
-
-                checkpoint_records.push((
-                    calimero_store::key::ContextDagDelta::new(self.applier.context_id, head_id),
-                    calimero_store::types::ContextDagDelta {
-                        delta_id: head_id,
-                        parents: checkpoint.parents.clone(),
-                        actions: serialized_actions,
-                        hlc: checkpoint.hlc,
-                        applied: true, // Checkpoints are always "applied"
-                        expected_root_hash: checkpoint.expected_root_hash,
-                        events: None,
-                        // Snapshot checkpoints are receiver-side derived
-                        // (boundary heads from a snapshot transfer), not
-                        // peer-authored deltas; no author claim to verify.
-                        author_id: None,
-                        governance_position_blob: None,
-                        delta_signature: None,
-                    },
-                ));
             }
+
+            // Stage the checkpoint for persistence UNCONDITIONALLY — not gated
+            // on the restore result. If a previous call already put it in the
+            // DAG but its persist failed, `restore_applied_delta` now returns
+            // false; gating the write on it would strand the DB copy (the DAG
+            // has the checkpoint, the DB doesn't, and peers requesting it get
+            // "delta not found") until a process restart. Re-staging every
+            // time makes the write self-healing across retries; rewriting an
+            // already-persisted checkpoint is an idempotent same-bytes put.
+            checkpoint_records.push((
+                calimero_store::key::ContextDagDelta::new(self.applier.context_id, head_id),
+                calimero_store::types::ContextDagDelta {
+                    delta_id: head_id,
+                    parents: checkpoint.parents.clone(),
+                    actions: serialized_actions,
+                    hlc: checkpoint.hlc,
+                    applied: true, // Checkpoints are always "applied"
+                    expected_root_hash: checkpoint.expected_root_hash,
+                    events: None,
+                    // Snapshot checkpoints are receiver-side derived
+                    // (boundary heads from a snapshot transfer), not
+                    // peer-authored deltas; no author claim to verify.
+                    author_id: None,
+                    governance_position_blob: None,
+                    delta_signature: None,
+                },
+            ));
         }
 
         // Commit all staged checkpoints atomically. Logged, not propagated, to
