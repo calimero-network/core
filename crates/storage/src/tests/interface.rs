@@ -1539,13 +1539,34 @@ mod shared_storage_rotation_authentication {
             &alice_sk,
             vec![],
         );
+        // Populate delta_id/delta_hlc so the rotation-log write hook fires and we
+        // can assert the rotation actually took effect (not just that it was
+        // accepted). The writer set is persisted to the rotation log, not the
+        // index `storage_type` (apply does not patch a child's own metadata) — so
+        // the log is what we assert.
+        use crate::logical_clock::{HybridTimestamp, Timestamp, ID, NTP64};
+        let delta_hlc = HybridTimestamp::new(Timestamp::new(
+            NTP64(nonce1 + 1_000_000),
+            ID::from(core::num::NonZeroU128::new(1).unwrap()),
+        ));
         let ctx = ApplyContext {
             effective_writers: Some(writers),
-            delta_id: None,
-            delta_hlc: None,
+            delta_id: Some([0xD1; 32]),
+            delta_hlc: Some(delta_hlc),
         };
         MainInterface::apply_action(rotation, &ctx)
             .expect("authentic rotation by a current writer must be accepted");
+
+        // The rotation must be recorded in the wrapper's rotation log with the
+        // new writer set.
+        let log = crate::rotation_log::load::<MainStorage>(id)
+            .unwrap()
+            .expect("rotation log must exist after an accepted rotation");
+        assert_eq!(
+            log.entries.last().expect("a rotation entry").new_writers,
+            new_writers,
+            "accepted rotation must record the new writer set in the rotation log"
+        );
     }
 }
 

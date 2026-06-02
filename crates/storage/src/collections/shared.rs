@@ -91,12 +91,15 @@ pub struct SharedStorage<
     /// `Element` is the wrapper entity; its metadata carries the writer set.
     #[borsh(bound(serialize = "", deserialize = ""))]
     inner: Collection<T, S>,
-    /// If true, `rotate_writers` is rejected. Monotonic: set at construction or
-    /// by merge, never cleared. Rides root state inline — unlike the value, this
-    /// is a small scalar that is never double-written as a per-entity action, so
-    /// it cannot cause the root-hash divergence the inline value once did. It is
-    /// fail-safe: a forged `frozen=true` only *locks* rotation (a minor DoS),
-    /// and the monotonic merge means it can never be forged back to `false`.
+    /// If true, `rotate_writers` is rejected. **Genesis-immutable**: set once in
+    /// `new`, no setter. It rides root-state borsh inline (so cold-join peers
+    /// learn it at genesis), but `Mergeable::merge` deliberately does NOT adopt a
+    /// peer's `frozen` — so a forged root-state delta cannot freeze an existing
+    /// honest node's rotation. The residual trust assumption is the **genesis
+    /// blob**: a cold joiner that receives a forged genesis with `frozen=true`
+    /// from a malicious provider would be locked (the accepted "minor DoS"). This
+    /// is the same genesis-provider trust the writer set itself relies on (the
+    /// initial sole writer controls genesis).
     frozen: bool,
     /// Lazy cache of the deserialized value entry (Root's pattern). Not part of
     /// borsh — the value is a separate entity loaded on first access.
@@ -353,6 +356,15 @@ where
     ///    (The full causal `writers_at(parents)` resolution is the node-side
     ///    apply-time check; with no DAG context during local execution the
     ///    most-recently-appended entry is the right local answer.)
+    ///
+    ///    Note this local gate is **best-effort under concurrent rotations**:
+    ///    "most-recently-appended" is this node's insertion order, which can
+    ///    differ from causal order if concurrent rotations arrive interleaved.
+    ///    A local `insert`/`rotate_writers` may then accept/reject against a set
+    ///    the merge-time verifier (which uses the proper causal `writers_at`)
+    ///    would resolve differently. The merge check is the security boundary;
+    ///    full local causal resolution is deferred to the concurrent-rotation
+    ///    work (P4).
     /// 2. **Index `storage_type`** — written by `add_child_to` at construction,
     ///    by `apply_action` for a received bootstrap/write, and by
     ///    [`Index::set_storage_type`] on the *originating* node's own rotation
@@ -380,6 +392,18 @@ where
                 return writers;
             }
         }
+        // Neither the rotation log nor a Shared index entry exists. A wrapper a
+        // writer can legitimately act on always has one, so this is an anomaly
+        // (missing/corrupt index, or acting before the wrapper synced). Fail
+        // closed with the empty set — but warn, since the empty set silently
+        // locks every writer out (`insert`/`rotate_writers` → ActionNotAllowed).
+        tracing::warn!(
+            target: "storage::shared",
+            wrapper_id = %self.inner.id(),
+            "SharedStorage current_writers found no rotation log or Shared index \
+             entry — failing closed with an empty writer set (missing/corrupt \
+             index, or wrapper not yet synced)"
+        );
         BTreeSet::new()
     }
 
