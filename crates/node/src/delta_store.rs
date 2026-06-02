@@ -1922,6 +1922,18 @@ impl DeltaStore {
     ) -> Vec<([u8; 32], Vec<u8>)> {
         let mut forwarded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
+        // Build the records to persist first, then commit them and the
+        // updated `dag_heads` as one atomic batch below. Writing each delta
+        // with its own `put` and then updating `dag_heads` separately left a
+        // window where a crash or I/O error midway persisted some cascaded
+        // deltas as `applied: true` while `dag_heads` stayed stale — on
+        // restart the delta-load path would miss the unpersisted deltas and
+        // the in-memory DAG and the DB could diverge permanently.
+        let mut records: Vec<(
+            calimero_store::key::ContextDagDelta,
+            calimero_store::types::ContextDagDelta,
+        )> = Vec::with_capacity(applied_bodies.len());
+
         if !applied_bodies.is_empty() {
             info!(
                 context_id = %self.applier.context_id,
@@ -1929,7 +1941,7 @@ impl DeltaStore {
                 "Persisting newly-applied deltas (cascades and/or Add-path parents)"
             );
 
-            let mut handle = self.applier.context_client.datastore_handle();
+            let handle = self.applier.context_client.datastore_handle();
             for (cid, applied_delta) in applied_bodies {
                 let db_key =
                     calimero_store::key::ContextDagDelta::new(self.applier.context_id, *cid);
@@ -1984,12 +1996,11 @@ impl DeltaStore {
                 }
 
                 // Preserve `events` in the DB until handler execution is
-                // confirmed by the caller (#2185). If we crash between
-                // this write and `execute_cascaded_events` succeeding,
-                // the next `load_persisted_deltas` / cascade scan will
-                // find `applied: true, events: Some(..)` and replay the
-                // handlers. `mark_events_executed` clears the column
-                // once handlers have run.
+                // confirmed by the caller. If we crash between this write
+                // and `execute_cascaded_events` succeeding, the next
+                // `load_persisted_deltas` / cascade scan will find
+                // `applied: true, events: Some(..)` and replay the handlers.
+                // `mark_events_executed` clears the column once they run.
                 let record = calimero_store::types::ContextDagDelta {
                     delta_id: *cid,
                     parents: applied_delta.parents.clone(),
@@ -1997,53 +2008,40 @@ impl DeltaStore {
                     hlc: applied_delta.hlc,
                     applied: true,
                     expected_root_hash: applied_delta.expected_root_hash,
-                    events: stored_events.clone(),
+                    events: stored_events,
                     author_id: None,
                     governance_position_blob: None,
                     delta_signature: None,
                 };
-                if let Err(e) = handle.put(&db_key, &record) {
-                    warn!(
-                        ?e,
-                        context_id = %self.applier.context_id,
-                        delta_id = ?cid,
-                        "Failed to persist applied delta to database"
-                    );
-                } else if stored_events.is_some() {
-                    info!(
-                        context_id = %self.applier.context_id,
-                        delta_id = ?cid,
-                        "Persisted applied delta - has events for handler execution"
-                    );
-                }
+                records.push((db_key, record));
             }
         }
 
-        // Update the database's `dag_heads` so sync handshakes and
-        // `broadcast_heartbeat` see the post-cascade state. Failing to
-        // do this was the original bug behind #2178.
-        //
-        // The failure is logged rather than propagated to match
-        // `get_missing_parents`'s warn-and-continue behaviour. Stale
-        // `dag_heads` is recoverable (the next sync session overwrites
-        // them). Since #2185, events are preserved in the DB record
-        // until the caller confirms handler execution, so a failure
-        // here no longer risks losing the event payloads — they still
-        // live in both the in-memory Vec we return *and* in the DB.
-        match self
-            .applier
-            .context_client
-            .update_dag_heads(&self.applier.context_id, heads.clone())
-        {
+        // Commit the delta records and the post-cascade `dag_heads` as one
+        // atomic write so sync handshakes and `broadcast_heartbeat` never
+        // observe heads that point past deltas the DB doesn't hold (and vice
+        // versa). The failure is logged rather than propagated to match
+        // `get_missing_parents`'s warn-and-continue behaviour: on failure
+        // nothing is written, so the DB stays at its pre-cascade state and
+        // the next sync replays cleanly. Events are preserved in the DB
+        // record (and in the Vec we return) until the caller confirms
+        // handler execution, so a failure here can't lose event payloads.
+        match self.applier.context_client.persist_deltas_and_dag_heads(
+            &self.applier.context_id,
+            &records,
+            heads.clone(),
+        ) {
             Ok(()) => debug!(
                 context_id = %self.applier.context_id,
                 new_heads = ?heads,
-                "Updated database dag_heads"
+                persisted_deltas = records.len(),
+                "Atomically persisted cascaded deltas and dag_heads"
             ),
             Err(e) => warn!(
                 ?e,
                 context_id = %self.applier.context_id,
-                "Failed to update dag_heads in database; next sync will correct it"
+                "Failed to persist cascaded deltas and dag_heads atomically; \
+                 DB left at pre-cascade state, next sync will correct it"
             ),
         }
 
