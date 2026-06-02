@@ -65,6 +65,9 @@ pub struct NodeConfig {
     pub gc_interval_secs: Option<u64>, // Optional GC interval in seconds (default: 12 hours)
     pub mode: NodeMode,
     pub specialized_node: SpecializedNodeConfig,
+    /// Resolved per-execution VM resource limits from the `[runtime.limits]`
+    /// config section (unset fields fall back to `VMLimits::default`).
+    pub vm_limits: calimero_runtime::logic::VMLimits,
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
@@ -202,7 +205,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
         context_client.clone(),
         Some(&mut registry),
-    );
+    )
+    .with_vm_limits(config.vm_limits);
 
     let _ignored = Actor::start_in_arbiter(&arbiter_pool.get().await?, move |ctx| {
         assert!(context_recipient.init(ctx), "failed to initialize");
