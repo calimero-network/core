@@ -1588,6 +1588,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tracing",
+ "tracing-subscriber",
  "trybuild",
 ]
 
@@ -8736,6 +8738,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]

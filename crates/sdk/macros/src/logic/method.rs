@@ -214,6 +214,7 @@ impl ToTokens for PublicLogicMethod<'_> {
             #[no_mangle]
             pub extern "C" fn #name() {
                 ::calimero_sdk::env::setup_panic_hook();
+                ::calimero_sdk::env::init_logging();
 
                 ::calimero_sdk::event::register::<#self_>();
 
