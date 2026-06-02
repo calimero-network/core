@@ -194,21 +194,22 @@ where
 
         let writers = self.current_writers();
 
-        // If the user wrote a value during `init`, capture it before relocating
-        // and drop the old (random-id) value entry. The common case — `init`
-        // only constructs the wrapper — has no value entry yet, so this is None
-        // and only the wrapper moves (the same path a plain collection takes).
+        // Capture the value, then relocate it with the wrapper. `from_inner`
+        // creates the value entry eagerly, so it is present here — but read with
+        // a `T::default()` fallback rather than asserting presence: relocation
+        // must ALWAYS leave a value entry at the new id, so that even if the old
+        // entry were somehow missing (storage corruption, a future lazy-creation
+        // refactor) we never end up with the wrapper at the new id and no value
+        // entry, which `load_value` would silently paper over with a default.
         let old_value_id = compute_id(self.inner.id(), VALUE_KEY);
-        let carried_value: Option<T> = self
+        let carried_value: T = self
             .inner
             .get(old_value_id)
-            .expect("read SharedStorage value during reassign");
-        if carried_value.is_some() {
-            let _ignored = MainStorage::storage_remove(Key::Entry(old_value_id));
-            let _ignored = MainStorage::storage_remove(Key::Index(old_value_id));
-            let _ =
-                <Index<MainStorage>>::remove_child_reference_only(self.inner.id(), old_value_id);
-        }
+            .expect("read SharedStorage value during reassign")
+            .unwrap_or_default();
+        let _ignored = MainStorage::storage_remove(Key::Entry(old_value_id));
+        let _ignored = MainStorage::storage_remove(Key::Index(old_value_id));
+        let _ = <Index<MainStorage>>::remove_child_reference_only(self.inner.id(), old_value_id);
 
         // Relocate the wrapper entity to its deterministic id, then re-stamp the
         // Shared domain (the reassign preserves storage_type, but re-set to be
@@ -219,22 +220,20 @@ where
         let _saved = <Interface<MainStorage>>::save(&mut self.inner)
             .expect("failed to persist relocated SharedStorage wrapper");
 
-        // Re-write the value entry under the new wrapper id, if there was one.
-        if let Some(value) = carried_value {
-            let new_value_id = compute_id(self.inner.id(), VALUE_KEY);
-            let value = self
-                .inner
-                .insert_with_storage_type(
-                    Some(new_value_id),
-                    value,
-                    StorageType::Shared {
-                        writers,
-                        signature_data: None,
-                    },
-                )
-                .expect("failed to relocate SharedStorage value");
-            *self.value.borrow_mut() = Some(value);
-        }
+        // Re-write the value entry under the new wrapper id (always).
+        let new_value_id = compute_id(self.inner.id(), VALUE_KEY);
+        let value = self
+            .inner
+            .insert_with_storage_type(
+                Some(new_value_id),
+                carried_value,
+                StorageType::Shared {
+                    writers,
+                    signature_data: None,
+                },
+            )
+            .expect("failed to relocate SharedStorage value");
+        *self.value.borrow_mut() = Some(value);
     }
 }
 
