@@ -113,6 +113,15 @@ pub enum ParseError<'a> {
         type_name: &'static str,
         suggestion: &'static str,
     },
+    #[error(
+        "`{type_name}` cannot be used inside `#[app::private]` — it {explanation}\n\n\
+         A node-local private namespace has a single writer, so the multi-writer / \
+         sync-layer semantics this type models have no meaning here."
+    )]
+    PrivateIncompatibleCollection {
+        type_name: String,
+        explanation: &'static str,
+    },
 }
 
 impl AsRef<Self> for ParseError<'_> {

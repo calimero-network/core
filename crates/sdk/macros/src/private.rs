@@ -31,9 +31,11 @@ use sha2::{Digest, Sha256};
 /// straight into the outer private blob and need no substitution.
 ///
 /// **Deliberately excluded** (using them inside `#[app::private]`
-/// is a semantic mismatch and currently produces a normal type
-/// error, since their `::new()` stays pinned to `MainStorage`; a
-/// dedicated compile-time diagnostic is tracked in #2428):
+/// is a semantic mismatch — rather than silently leaving their
+/// `::new()` pinned to `MainStorage` and letting a downstream type
+/// error surface, they're listed in `PRIVATE_INCOMPATIBLE` and
+/// rejected with a targeted compile error pointing at the primitive
+/// to use instead):
 ///
 /// - CRDT data-types (`LwwRegister`, `Counter`, `GCounter`,
 ///   `PNCounter`, `ReplicatedGrowableArray`) — CRDTs exist for
@@ -57,6 +59,154 @@ const TREE_BACKED_TYPES: &[(&str, usize)] = &[
     ("SortedSet", 1),
     ("Vector", 1),
 ];
+
+/// Calimero collections whose entire reason for existing is the
+/// *synced* multi-writer tree — CRDTs, access-control wrappers, and
+/// authored collections. Unlike the structural primitives in
+/// `TREE_BACKED_TYPES`, these can't simply be re-pointed at
+/// `PrivateStorage`: a node-local namespace has a single writer, so
+/// per-entry authorship, cross-node merge, per-user scoping, and
+/// last-write-wins reconciliation are all meaningless. Seeing one
+/// inside `#[app::private]` is a semantic mistake, not a mechanical
+/// one, so we reject it with a targeted compile error rather than
+/// silently leaving it pinned to `MainStorage` (which re-introduces
+/// the very leak `#[app::private]` is supposed to prevent).
+///
+/// Each entry pairs the type name with the tail of the sentence
+/// "`<Name>` cannot be used inside `#[app::private]` — it `<...>`",
+/// so the message tells the user *why* it's wrong and *what* to
+/// reach for instead.
+///
+/// Matched on the *last segment* of the type path, the same way
+/// `try_inject_on_path` matches `TREE_BACKED_TYPES`, so
+/// fully-qualified paths are covered too. Aliases / `use as` renames
+/// slip past — the same limitation the injection path has.
+const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
+    (
+        "AuthoredMap",
+        "tracks per-entry authorship for multi-writer convergence; use `UnorderedMap` instead.",
+    ),
+    (
+        "AuthoredVector",
+        "tracks per-entry authorship for multi-writer convergence; use `Vector` instead.",
+    ),
+    (
+        "Counter",
+        "is a CRDT counter for concurrent increments across nodes; use a plain integer field.",
+    ),
+    (
+        "GCounter",
+        "is a CRDT counter for concurrent increments across nodes; use a plain integer field.",
+    ),
+    (
+        "PNCounter",
+        "is a CRDT counter for concurrent increments across nodes; use a plain integer field.",
+    ),
+    (
+        "ReplicatedGrowableArray",
+        "is a collaborative-edit text CRDT; use `Vector<u8>` or a `String` field.",
+    ),
+    (
+        "SharedStorage",
+        "models single-signature shared/causal reconciliation; pointless with one writer.",
+    ),
+    (
+        "UserStorage",
+        "models per-user scoping at the sync layer; pointless in a node-local namespace.",
+    ),
+    (
+        "FrozenStorage",
+        "models cross-node immutability; redundant in single-node storage.",
+    ),
+    (
+        "LwwRegister",
+        "is a last-write-wins register for concurrent writes; just use the value type directly.",
+    ),
+];
+
+/// Recursively walk `ty` — descending through the same wrappers
+/// `inject_private_storage` does (generics, tuples, references,
+/// arrays, slices, groups, parens) — and collect every offending
+/// `PRIVATE_INCOMPATIBLE` type encountered, paired with its
+/// explanation. We collect the offending *ident* (not just the name)
+/// so the eventual `compile_error!` can be spanned right at the
+/// culprit type. Read-only twin of `inject_private_storage`: a
+/// nested `Option<AuthoredVector<T>>` is caught just as a top-level
+/// field would be.
+fn collect_private_incompatible<'t>(ty: &'t Type, found: &mut Vec<(&'t Ident, &'static str)>) {
+    match ty {
+        Type::Path(type_path) => {
+            if let Some(last) = type_path.path.segments.last() {
+                let name = last.ident.to_string();
+                if let Some(&(_, explanation)) =
+                    PRIVATE_INCOMPATIBLE.iter().find(|(n, _)| *n == name)
+                {
+                    found.push((&last.ident, explanation));
+                }
+                if let PathArguments::AngleBracketed(args) = &last.arguments {
+                    for arg in &args.args {
+                        if let GenericArgument::Type(inner) = arg {
+                            collect_private_incompatible(inner, found);
+                        }
+                    }
+                }
+            }
+        }
+        Type::Reference(r) => collect_private_incompatible(&r.elem, found),
+        Type::Tuple(t) => {
+            for elem in &t.elems {
+                collect_private_incompatible(elem, found);
+            }
+        }
+        Type::Array(a) => collect_private_incompatible(&a.elem, found),
+        Type::Slice(s) => collect_private_incompatible(&s.elem, found),
+        Type::Group(g) => collect_private_incompatible(&g.elem, found),
+        Type::Paren(p) => collect_private_incompatible(&p.elem, found),
+        _ => {}
+    }
+}
+
+/// Walk every field of `item` and push a targeted compile error into
+/// `errors` for each `PRIVATE_INCOMPATIBLE` collection found — at any
+/// depth. Runs before substitution: catching the misuse up front is
+/// the whole point, and there's nothing sensible to rewrite anyway.
+fn check_private_compatible<'a>(item: &'a StructOrEnumItem, errors: &Errors<'a, StructOrEnumItem>) {
+    let mut found: Vec<(&Ident, &'static str)> = Vec::new();
+
+    let walk_fields = |fields: &'a Fields, found: &mut Vec<(&'a Ident, &'static str)>| match fields
+    {
+        Fields::Named(fields) => {
+            for field in &fields.named {
+                collect_private_incompatible(&field.ty, found);
+            }
+        }
+        Fields::Unnamed(fields) => {
+            for field in &fields.unnamed {
+                collect_private_incompatible(&field.ty, found);
+            }
+        }
+        Fields::Unit => {}
+    };
+
+    match item {
+        StructOrEnumItem::Struct(item) => walk_fields(&item.fields, &mut found),
+        StructOrEnumItem::Enum(item) => {
+            for variant in &item.variants {
+                walk_fields(&variant.fields, &mut found);
+            }
+        }
+    }
+
+    for (ident, explanation) in found {
+        errors.subsume(SynError::new_spanned(
+            ident,
+            ParseError::PrivateIncompatibleCollection {
+                type_name: ident.to_string(),
+                explanation,
+            },
+        ));
+    }
+}
 
 /// Recursively walk `ty` and inject `PrivateStorage` on every
 /// tree-backed collection encountered — including ones nested inside
@@ -337,6 +487,11 @@ impl<'a> TryFrom<PrivateImplInput<'a>> for PrivateImpl<'a> {
             errors.subsume(SynError::new_spanned(ident, ParseError::UseOfReservedIdent));
         }
 
+        // Reject multi-writer / sync-semantic Calimero collections
+        // before we attempt any substitution — they have no coherent
+        // meaning in a single-writer private namespace.
+        check_private_compatible(input.item, &errors);
+
         // Generate a default key if none provided (hash ident to avoid collisions)
         let key_bytes = input
             .args
@@ -518,6 +673,103 @@ mod tests {
             assert!(
                 !included.contains(head),
                 "{head} is in both TREE_BACKED_TYPES and an EXCLUDED_* list — pick one"
+            );
+        }
+    }
+
+    // `PRIVATE_INCOMPATIBLE` detection tests: the multi-writer /
+    // sync-semantic family must be *caught* (errored on), not just
+    // "left alone" by the rewrite. These pin the diagnostic side of
+    // the contract the rewrite tests above pin the substitution side
+    // of.
+
+    fn incompatible_names(input: Type) -> Vec<String> {
+        let mut found = Vec::new();
+        super::collect_private_incompatible(&input, &mut found);
+        found
+            .into_iter()
+            .map(|(ident, _)| ident.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn every_incompatible_type_is_detected() {
+        // Each name in the list is flagged when it appears as a field
+        // type. We construct a minimal valid instantiation per type so
+        // the parser is happy; detection keys off the ident, not the
+        // generics.
+        for (name, _) in super::PRIVATE_INCOMPATIBLE {
+            let ty: Type = syn::parse_str(&format!("{name}<String>")).expect("parse");
+            let names = incompatible_names(ty);
+            assert_eq!(
+                names,
+                vec![(*name).to_owned()],
+                "{name} must be flagged as private-incompatible"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_incompatible_type_is_detected() {
+        // Buried inside a wrapper it must still be caught — otherwise a
+        // user could smuggle the leak back in via `Option<...>`.
+        let names = incompatible_names(parse_quote!(Option<AuthoredVector<String>>));
+        assert_eq!(names, vec!["AuthoredVector".to_owned()]);
+    }
+
+    #[test]
+    fn multiple_incompatible_types_all_reported() {
+        // A tuple with two offenders flags both, so the user fixes
+        // every misuse in one compile cycle rather than whack-a-mole.
+        let names = incompatible_names(parse_quote!((Counter, AuthoredMap<String, String>)));
+        assert_eq!(names, vec!["Counter".to_owned(), "AuthoredMap".to_owned()]);
+    }
+
+    #[test]
+    fn compatible_primitive_is_not_flagged() {
+        // The supported primitives must NOT trip the incompatible
+        // check — they're handled by substitution instead.
+        assert!(incompatible_names(parse_quote!(UnorderedMap<String, String>)).is_empty());
+        assert!(incompatible_names(parse_quote!(Vector<u8>)).is_empty());
+        assert!(incompatible_names(parse_quote!(BTreeMap<String, String>)).is_empty());
+    }
+
+    #[test]
+    fn excluded_lists_match_private_incompatible() {
+        // Anti-drift: every type the rewrite tests assert is "left
+        // alone" must also be one the diagnostic rejects, and vice
+        // versa. Two lists, one truth.
+        let incompatible: std::collections::HashSet<&str> = super::PRIVATE_INCOMPATIBLE
+            .iter()
+            .map(|(n, _)| *n)
+            .collect();
+        for excluded in EXCLUDED_CRDT_TYPES
+            .iter()
+            .chain(EXCLUDED_ACCESS_CONTROL_TYPES)
+        {
+            let head = excluded.split('<').next().expect("non-empty");
+            assert!(
+                incompatible.contains(head),
+                "{head} is left-alone by the rewrite but missing from PRIVATE_INCOMPATIBLE — \
+                 it would silently fall back to MainStorage"
+            );
+        }
+        assert_eq!(
+            incompatible.len(),
+            EXCLUDED_CRDT_TYPES.len() + EXCLUDED_ACCESS_CONTROL_TYPES.len(),
+            "PRIVATE_INCOMPATIBLE names a type the exclusion lists don't — keep them in sync"
+        );
+    }
+
+    #[test]
+    fn private_incompatible_disjoint_from_tree_backed() {
+        // A type can't be both rewritten and rejected.
+        let included: std::collections::HashSet<&str> =
+            super::TREE_BACKED_TYPES.iter().map(|(n, _)| *n).collect();
+        for (name, _) in super::PRIVATE_INCOMPATIBLE {
+            assert!(
+                !included.contains(name),
+                "{name} is in both TREE_BACKED_TYPES and PRIVATE_INCOMPATIBLE — pick one"
             );
         }
     }
