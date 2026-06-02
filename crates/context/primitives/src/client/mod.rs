@@ -2021,10 +2021,19 @@ mod atomic_persist_tests {
             "staged put must not be visible before commit"
         );
         batch.commit().expect("commit batch");
-        assert!(
-            has_delta(&store, &cid, DELTA_A),
-            "commit must persist staged puts"
-        );
+
+        // Round-trip fidelity: a record staged via `StoreBatch::put` (which
+        // writes through `Transaction::raw_put` with `K::column()` +
+        // `key.as_key().as_bytes()`) must read back byte-for-byte via the
+        // typed `Handle::get` path. This pins down that the raw key/column
+        // encoding matches what `Handle::put` would have written.
+        let read_back = store
+            .handle()
+            .get(&key_a)
+            .expect("read staged record")
+            .expect("record present after commit");
+        assert_eq!(read_back.delta_id, rec_a.delta_id, "delta_id round-trips");
+        assert_eq!(read_back.actions, rec_a.actions, "actions round-trip");
 
         // A batch dropped without commit writes nothing.
         let (key_b, rec_b) = delta_record(&cid, DELTA_B);
