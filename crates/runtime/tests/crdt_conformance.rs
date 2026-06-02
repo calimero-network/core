@@ -823,19 +823,24 @@ fn unknown_argument_is_rejected() {
         .expect("valid single-arg call should run");
 }
 
-/// KNOWN LIMITATION: a method with no declared arguments takes the
-/// `args.is_empty()` branch in the macro (`crates/sdk/macros/src/logic/method.rs`),
-/// which emits no input struct and never reads the payload — so extra JSON
-/// fields sent to it are still silently ignored, `deny_unknown_fields`
-/// notwithstanding. This test pins that behavior so a future change to the
-/// no-arg branch is a deliberate, reviewed decision rather than an accident.
+/// A method with no declared arguments (the macro's `args.is_empty()` branch)
+/// rejects a populated JSON object — i.e. extra arguments it cannot consume —
+/// but still accepts an empty `{}` or `null` body, which carry no named
+/// arguments, so callers aren't forced to send a particular empty form
+/// (core#2600).
 #[test]
-fn extra_fields_to_zero_arg_method_are_ignored() {
+fn extra_fields_to_zero_arg_method_are_rejected() {
     let mut c = Cluster::new(1);
     let module = c.module;
-    // `entries` declares no arguments; the surplus field is not rejected.
-    run(module, &mut c.nodes[0], "entries", json!({"bogus": "x"}))
-        .expect("zero-arg method ignores its payload (documented limitation)");
+
+    // `entries` declares no arguments; a field it cannot consume is rejected.
+    assert_unknown_field_rejected(&mut c, "entries", json!({"bogus": "x"}), "bogus");
+
+    // Empty-object and null bodies carry no arguments and must still succeed.
+    run(module, &mut c.nodes[0], "entries", json!({}))
+        .expect("zero-arg method accepts an empty object body");
+    run(module, &mut c.nodes[0], "entries", json!(null))
+        .expect("zero-arg method accepts a null body");
 }
 
 #[test]
