@@ -303,6 +303,15 @@ impl ContextRegistry {
     /// newly-applied deltas advances heads — the behaviour the standalone
     /// [`update_dag_heads`] used to provide.
     ///
+    /// Atomicity covers the *write* only. The `meta` read, the in-memory
+    /// `dag_heads` mutation, and the commit are not one transaction, so two
+    /// callers racing on the same context could read the same `meta` and the
+    /// later commit would clobber the earlier one's heads (a read-modify-write
+    /// race, same as the standalone [`update_dag_heads`] it replaces). The
+    /// node's callers serialise per-context behind the DAG write lock, so
+    /// this is not hit in practice; a CAS / per-context lock would be needed
+    /// to make it safe for unsynchronised callers.
+    ///
     /// [`update_dag_heads`]: Self::update_dag_heads
     pub fn persist_deltas_and_dag_heads(
         &self,
@@ -340,6 +349,40 @@ impl ContextRegistry {
             delta_count = deltas.len(),
             dag_heads_count,
             "Atomically persisted cascaded deltas and dag_heads"
+        );
+
+        Ok(())
+    }
+
+    /// Atomically persist a batch of DAG-delta records in a single backend
+    /// write, *without* touching `dag_heads`.
+    ///
+    /// This is the sibling of [`persist_deltas_and_dag_heads`] for callers
+    /// that manage heads themselves (e.g. snapshot-boundary checkpoints,
+    /// whose heads are derived from the snapshot transfer). The batch is
+    /// all-or-nothing — a crash or I/O error can't leave a subset of the
+    /// records on disk while the rest are missing. An empty slice is a no-op.
+    ///
+    /// [`persist_deltas_and_dag_heads`]: Self::persist_deltas_and_dag_heads
+    pub fn persist_delta_records(
+        &self,
+        deltas: &[(key::ContextDagDelta, types::ContextDagDelta)],
+    ) -> eyre::Result<()> {
+        if deltas.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = Transaction::default();
+        for (delta_key, record) in deltas {
+            let value: Slice<'_> = borsh::to_vec(record)?.into();
+            tx.put(delta_key, value);
+        }
+
+        self.datastore.apply(&tx)?;
+
+        tracing::debug!(
+            delta_count = deltas.len(),
+            "Atomically persisted delta records"
         );
 
         Ok(())
@@ -1075,10 +1118,7 @@ impl ContextClient {
         self.registry.update_dag_heads(context_id, dag_heads)
     }
 
-    /// Atomically persist a batch of applied DAG-delta records together with
-    /// the context's updated `dag_heads`, in a single backend write batch:
-    /// either all of it lands or none does, so a mid-write failure can't
-    /// leave persisted deltas pointing past stale heads.
+    /// See [`ContextRegistry::persist_deltas_and_dag_heads`].
     pub fn persist_deltas_and_dag_heads(
         &self,
         context_id: &ContextId,
@@ -1087,6 +1127,14 @@ impl ContextClient {
     ) -> eyre::Result<()> {
         self.registry
             .persist_deltas_and_dag_heads(context_id, deltas, dag_heads)
+    }
+
+    /// See [`ContextRegistry::persist_delta_records`].
+    pub fn persist_delta_records(
+        &self,
+        deltas: &[(key::ContextDagDelta, types::ContextDagDelta)],
+    ) -> eyre::Result<()> {
+        self.registry.persist_delta_records(deltas)
     }
 
     /// Updates the ApplicationId for a context.
@@ -1919,6 +1967,82 @@ mod atomic_persist_tests {
             read_heads(&store, &cid),
             vec![INITIAL_HEAD],
             "heads must remain at pre-cascade value"
+        );
+    }
+
+    #[test]
+    fn persist_delta_records_is_all_or_nothing() {
+        let cid = ctx();
+
+        // Happy path: every record lands; no meta read/heads write involved.
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let registry = ContextRegistry::new(store.clone());
+        registry
+            .persist_delta_records(&[delta_record(&cid, DELTA_A), delta_record(&cid, DELTA_B)])
+            .expect("records persist");
+        assert!(has_delta(&store, &cid, DELTA_A), "delta A persisted");
+        assert!(has_delta(&store, &cid, DELTA_B), "delta B persisted");
+
+        // Failure path: a backend whose `apply` fails leaves nothing behind.
+        // Armed from the start — this method never reads or seeds, so no
+        // `put` should occur (all writes go through `apply`).
+        let armed = Arc::new(AtomicBool::new(true));
+        let failing = Store::new(Arc::new(FailOnApply {
+            inner: InMemoryDB::owned(),
+            armed: Arc::clone(&armed),
+        }));
+        let failing_registry = ContextRegistry::new(failing.clone());
+        let err = failing_registry
+            .persist_delta_records(&[delta_record(&cid, DELTA_A)])
+            .expect_err("commit must surface the backend failure");
+        assert!(
+            err.to_string().contains("injected apply failure"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !has_delta(&failing, &cid, DELTA_A),
+            "delta A must not persist"
+        );
+    }
+
+    #[test]
+    fn store_batch_stages_until_commit_and_discards_on_drop() {
+        use calimero_store::StoreBatch;
+
+        let store = Store::new(Arc::new(InMemoryDB::owned()));
+        let cid = ctx();
+
+        // Staged puts are invisible until commit.
+        let (key_a, rec_a) = delta_record(&cid, DELTA_A);
+        let mut batch = StoreBatch::new(&store);
+        batch.put(&key_a, &rec_a).expect("stage put");
+        assert!(
+            !has_delta(&store, &cid, DELTA_A),
+            "staged put must not be visible before commit"
+        );
+        batch.commit().expect("commit batch");
+
+        // Round-trip fidelity: a record staged via `StoreBatch::put` (which
+        // writes through `Transaction::raw_put` with `K::column()` +
+        // `key.as_key().as_bytes()`) must read back byte-for-byte via the
+        // typed `Handle::get` path. This pins down that the raw key/column
+        // encoding matches what `Handle::put` would have written.
+        let read_back = store
+            .handle()
+            .get(&key_a)
+            .expect("read staged record")
+            .expect("record present after commit");
+        assert_eq!(read_back.delta_id, rec_a.delta_id, "delta_id round-trips");
+        assert_eq!(read_back.actions, rec_a.actions, "actions round-trip");
+
+        // A batch dropped without commit writes nothing.
+        let (key_b, rec_b) = delta_record(&cid, DELTA_B);
+        let mut dropped = StoreBatch::new(&store);
+        dropped.put(&key_b, &rec_b).expect("stage put");
+        drop(dropped);
+        assert!(
+            !has_delta(&store, &cid, DELTA_B),
+            "dropped (uncommitted) batch must not persist"
         );
     }
 }

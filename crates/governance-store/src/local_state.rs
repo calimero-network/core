@@ -192,13 +192,14 @@ pub(crate) fn append_op_log_entry(
 /// nonce in the same batch. Keeping these separate avoids the
 /// namespace-governance path double-writing the nonce.
 ///
-/// CRASH-SAFETY INVARIANT (no atomic multi-key write available):
-/// `calimero-store` has no transactional batch — `StoreBatch` commits each
-/// `put` immediately (see `crates/store/src/batch.rs`) and `Store::handle()`
-/// writes straight through to the backend. So the two `put`s below are NOT
-/// atomic; a crash can land between them. The write ORDER is therefore
-/// chosen to be crash-safe: the op-log ENTRY is written first, the
-/// `GroupOpHead` second.
+/// CRASH-SAFETY INVARIANT (this path writes two keys non-atomically):
+/// the two `Store::handle()` puts below write straight through to the
+/// backend, so a crash can land between them. An atomic alternative now
+/// exists — `Store::apply` (and `StoreBatch`) commit a multi-key
+/// `Transaction` as one `WriteBatch` — but migrating this path onto it is
+/// deferred (see the closing note); the ordered-write reasoning below still
+/// governs the current code. The write ORDER is therefore chosen to be
+/// crash-safe: the op-log ENTRY is written first, the `GroupOpHead` second.
 ///
 /// - Crash after entry, before head: an ORPHAN log entry exists at
 ///   `sequence` while the head still points at `sequence - 1`. This is
@@ -219,9 +220,10 @@ pub(crate) fn append_op_log_entry(
 /// This mirrors the entry-then-head ordering the authoring side uses
 /// (`persist_group_governance_progress` below) and the head-advance /
 /// store-operation ordering note in
-/// `namespace_governance::apply_signed_op`. Replacing this with a real
-/// single-batch atomic write is deferred to the codebase-wide store-batch
-/// work tracked alongside the cascade-delete atomicity discussion.
+/// `namespace_governance::apply_signed_op`. Migrating this to a single
+/// atomic batch — now that `Store::apply` / `StoreBatch` provide one — would
+/// remove the orphan-entry window entirely; it is left as a follow-up so the
+/// crash-safety reasoning here can be retired rather than merely relocated.
 pub(crate) fn persist_group_op_log_entry(
     store: &Store,
     group_id: &ContextGroupId,
