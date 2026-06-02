@@ -43,11 +43,13 @@
 //!
 //! # Merge semantics
 //!
-//! The wrapper itself carries no CRDT value to merge — the value is a separate
-//! entity. The only field merged at root-state time is `frozen` (monotonic:
-//! once frozen on either side, stays frozen). There is deliberately **no**
-//! writer-set merge here: convergence is the rotation log + ADR 0001, applied
-//! and verified on the node side, not an LWW on root-state bytes.
+//! The wrapper carries no CRDT value to merge at root-state time: the value is a
+//! separate entity (merged per-entity) and the writer set converges via the
+//! rotation log + ADR 0001 on the node side, not an LWW on root-state bytes.
+//! `frozen` is genesis-immutable (set in `new`, no setter) — it rides root-state
+//! borsh so joiners see it, but the merge deliberately does **not** adopt the
+//! peer's `frozen`, so a forged root-state delta cannot freeze rotation on an
+//! honest node.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -210,11 +212,26 @@ where
         // refactor) we never end up with the wrapper at the new id and no value
         // entry, which `load_value` would silently paper over with a default.
         let old_value_id = compute_id(self.inner.id(), VALUE_KEY);
-        let carried_value: T = self
+        let carried_value: T = match self
             .inner
             .get(old_value_id)
             .expect("read SharedStorage value during reassign")
-            .unwrap_or_default();
+        {
+            Some(value) => value,
+            None => {
+                // Eager construction guarantees the value entry exists, so a
+                // miss here means storage corruption. Default to keep relocation
+                // total (the new id always gets an entry), but make the anomaly
+                // visible rather than silently papering over lost data.
+                tracing::warn!(
+                    target: "storage::shared",
+                    old_value_id = %old_value_id,
+                    "SharedStorage value entry missing during reassign — \
+                     relocating a default (possible storage corruption)"
+                );
+                T::default()
+            }
+        };
         let _ignored = MainStorage::storage_remove(Key::Entry(old_value_id));
         let _ignored = MainStorage::storage_remove(Key::Index(old_value_id));
         let _ = <Index<MainStorage>>::remove_child_reference_only(self.inner.id(), old_value_id);
@@ -489,19 +506,38 @@ where
         // entry's own rotation log, and the new writer's later writes verify.
         // This is the single-child analogue of the per-collection
         // anchor-inheritance that retroactive collection revocation will
-        // generalise. The value entry is created eagerly at construction, so it
-        // is present here; read with a `T::default()` fallback and re-stamp
-        // unconditionally so the rotation is never silently lost if it were
-        // absent.
+        // generalise.
+        //
+        // The value entry is created eagerly at construction, so it is present
+        // on the originating node. If it is somehow absent (corruption, or a
+        // writer rotating before the value entry has synced), do NOT fabricate a
+        // default: re-stamping a default value would ship a signed `Update` that
+        // overwrites the real value once it arrives. Skip the value re-stamp and
+        // warn — the value entry's rotation log picks up the new set when its own
+        // `Add` is (re)applied.
         let value_id = self.value_id();
-        let value = self.inner.get(value_id)?.unwrap_or_default();
-        let _restamped =
-            self.inner
-                .insert_with_storage_type(Some(value_id), value, new_shared.clone())?;
-        // Originating-node fallback: persist the new set on the value entry's
-        // and wrapper's index too (the rotation log is only appended on
-        // receivers, so this node's own log stays empty).
-        let _ignored = <Index<S>>::set_storage_type(value_id, new_shared.clone());
+        match self.inner.get(value_id)? {
+            Some(value) => {
+                let _restamped = self.inner.insert_with_storage_type(
+                    Some(value_id),
+                    value,
+                    new_shared.clone(),
+                )?;
+                // Originating-node fallback: persist the new set on the value
+                // entry's index too (the rotation log is only appended on
+                // receivers, so this node's own log stays empty).
+                let _ignored = <Index<S>>::set_storage_type(value_id, new_shared.clone());
+            }
+            None => {
+                tracing::warn!(
+                    target: "storage::shared",
+                    value_id = %value_id,
+                    "SharedStorage value entry missing during rotation — skipping \
+                     value re-stamp (possible storage corruption or pre-sync race)"
+                );
+            }
+        }
+        // Originating-node fallback: persist the new set on the wrapper's index.
         let _ignored = <Index<S>>::set_storage_type(wrapper_id, new_shared);
 
         // Invalidate the lazy cache so the next access reloads the value with
@@ -532,22 +568,28 @@ where
     }
 }
 
-// Mergeable: invoked at root-state merge time. The value is a separate entity
-// (synced + merged per-entity), and the writer set converges via the rotation
-// log on the node side — so the only field merged here is `frozen` (monotonic).
+// Mergeable: invoked at root-state merge time. Nothing rides this merge — the
+// value is a separate entity (merged per-entity), the writer set converges via
+// the rotation log, and `frozen` is genesis-immutable and deliberately not
+// adopted from the peer (so a forged root-state delta can't freeze rotation).
 impl<T, S> Mergeable for SharedStorage<T, S>
 where
     T: BorshSerialize + BorshDeserialize + Mergeable,
     S: StorageAdaptor,
 {
-    fn merge(&mut self, other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
-        // Frozen is monotonic: once set on either side, stays set. No
-        // writer-set merge here — that would be the forgeable LWW-on-root-state
-        // path the handle design removes; convergence is the verified rotation
-        // log + ADR 0001, applied on the node side.
-        if other.frozen {
-            self.frozen = true;
-        }
+    fn merge(&mut self, _other: &Self) -> Result<(), crate::collections::crdt_meta::MergeError> {
+        // Nothing to merge. The value is a separate entity (synced + merged
+        // per-entity) and the writer set converges via the verified rotation log
+        // (ADR 0001) on the node side — neither rides this merge.
+        //
+        // `frozen` is intentionally NOT merged from `other`. It is set once at
+        // construction and has no setter, so it is genesis-immutable; joiners
+        // receive it via root-state deserialization at genesis, and there is no
+        // post-genesis transition to propagate. Crucially, NOT adopting
+        // `other.frozen` here means a forged root-state delta carrying
+        // `frozen = true` cannot freeze an honest node's rotation capability —
+        // the honest node keeps its own value. (A `frozen` change could only
+        // come from genesis, which the initial sole writer is trusted for.)
         Ok(())
     }
 }
@@ -854,7 +896,11 @@ mod tests {
 
     #[test]
     #[serial]
-    fn merge_frozen_is_monotonic() {
+    fn merge_does_not_adopt_peers_frozen() {
+        // `frozen` is genesis-immutable and deliberately NOT merged from the
+        // peer, so a forged root-state delta carrying `frozen = true` cannot
+        // freeze an honest node's rotation. Merge leaves the local value intact
+        // in both directions.
         env::reset_for_testing();
         env::set_executor_id(ALICE);
         // Establish ROOT so the wrapper's `add_child_to(ROOT)` succeeds.
@@ -863,14 +909,18 @@ mod tests {
         let b = SharedStorage::<TestVal>::new(writers(&[ALICE]), true);
 
         Mergeable::merge(&mut a, &b).unwrap();
-        assert!(a.frozen, "frozen=true on b should propagate to a");
+        assert!(
+            !a.frozen,
+            "merge must NOT adopt the peer's frozen=true (forge resistance)"
+        );
 
-        // Reverse direction: frozen stays once set.
+        // Reverse direction: a locally-frozen instance stays frozen (merge
+        // doesn't clear it either — it just doesn't touch `frozen`).
         let _root2: Root<TestVal> = Root::new(TestVal::default);
         let mut a2 = SharedStorage::<TestVal>::new(writers(&[ALICE]), true);
         let b2 = SharedStorage::<TestVal>::new(writers(&[ALICE]), false);
         Mergeable::merge(&mut a2, &b2).unwrap();
-        assert!(a2.frozen, "frozen=true on a2 must not be cleared by merge");
+        assert!(a2.frozen, "merge must not clear a locally-set frozen");
     }
 
     #[test]

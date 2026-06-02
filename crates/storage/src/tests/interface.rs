@@ -1449,6 +1449,60 @@ mod shared_storage_rotation_authentication {
     }
 
     #[test]
+    fn forged_rotation_rejected_via_stored_writers_fallback() {
+        // Complement to `forged_shared_rotation_rejected_at_merge`: exercise the
+        // path where the apply context carries NO `effective_writers` (empty
+        // ctx). The verifier must then fall back to the entity's *stored* writer
+        // set and still reject a non-writer's forged rotation — covering the
+        // case where rotation-log resolution yielded nothing.
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = pubkey_of(&alice_sk);
+        let mallory_sk = make_signing_key(0x4D);
+        let mallory = pubkey_of(&mallory_sk);
+
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let id = Id::new([0x5E; 32]);
+
+        let nonce1 = env::time_now();
+        let bootstrap = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            writers.clone(),
+            nonce1,
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+
+        // Empty ctx → no effective_writers → verifier falls back to stored
+        // writers {alice}; mallory's signature is not from a stored writer.
+        let forged = build_signed_shared_action(
+            false,
+            id,
+            b"v0".to_vec(),
+            [mallory].into_iter().collect(),
+            nonce1 + 1_000_000,
+            &mallory_sk,
+            vec![],
+        );
+        let result = MainInterface::apply_action(forged, &ApplyContext::empty());
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "forged rotation must be rejected via the stored-writers fallback, got {result:?}"
+        );
+
+        let stored = <Index<MainStorage>>::get_metadata(id).unwrap().unwrap();
+        match stored.storage_type {
+            StorageType::Shared { writers: w, .. } => assert_eq!(w, writers),
+            other => panic!("expected Shared storage_type, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn authentic_rotation_by_current_writer_accepted() {
         env::reset_for_testing();
         let root = setup_root_for_main();
