@@ -340,6 +340,18 @@ pub struct EntityIndex {
     /// Enables proper conflict resolution (delete vs update) in distributed scenarios.
     /// Garbage collected after retention period (default: 1 day).
     pub deleted_at: Option<u64>,
+
+    /// Ids of this entity's children that have been removed (tombstoned).
+    ///
+    /// A deletion is the *absence* of a child from `children`, which the
+    /// add-biased HC/LevelWise comparison can't see. This list makes the
+    /// deletion explicit so it can be carried on the sync wire
+    /// (`TreeNode.deleted_children`): a peer that still holds the child learns
+    /// of the deletion during comparison and applies delete-wins — without
+    /// anyone pushing the live entity. The child's `deleted_at` + signed
+    /// metadata are read from the child's own tombstone index at wire-build
+    /// time, so only the id is kept here.
+    pub deleted_children: Vec<Id>,
 }
 
 impl EntityIndex {
@@ -359,6 +371,7 @@ impl EntityIndex {
             own_hash: [0; 32],
             metadata: Metadata::default(),
             deleted_at: None,
+            deleted_children: Vec::new(),
         }
     }
 
@@ -378,6 +391,15 @@ impl EntityIndex {
     #[must_use]
     pub fn children(&self) -> Option<&[ChildInfo]> {
         self.children.as_deref()
+    }
+
+    /// Ids of this entity's children that have been removed (tombstoned).
+    ///
+    /// Carried on the sync wire so a peer that still holds a child converges
+    /// to the deletion (delete-wins) without anyone pushing the live entity.
+    #[must_use]
+    pub fn deleted_children(&self) -> &[Id] {
+        &self.deleted_children
     }
 
     /// Returns the full hash (entity + all descendants).
@@ -400,6 +422,7 @@ pub struct Index<S: StorageAdaptor>(PhantomData<S>);
 impl<S: StorageAdaptor> Index<S> {
     /// Adds a child to a parent's collection.
     pub(crate) fn add_child_to(parent_id: Id, child: ChildInfo) -> Result<(), StorageError> {
+        let added_child_id = child.id();
         // Serialize the read-modify-write so a concurrent local-write / sync
         // apply on the same parent can't lose a child (core#2571).
         let _mutation_guard = index_mutation_guard();
@@ -413,6 +436,7 @@ impl<S: StorageAdaptor> Index<S> {
             own_hash: [0; 32],
             metadata: Metadata::default(),
             deleted_at: None,
+            deleted_children: Vec::new(),
         });
 
         // Get or create child index
@@ -424,6 +448,7 @@ impl<S: StorageAdaptor> Index<S> {
             own_hash: [0; 32],
             metadata: child.metadata.clone(),
             deleted_at: None,
+            deleted_children: Vec::new(),
         });
         child_index.parent_id = Some(parent_id);
         child_index.own_hash = child.merkle_hash();
@@ -481,6 +506,13 @@ impl<S: StorageAdaptor> Index<S> {
             }
         }
 
+        // A re-added (resurrected) child is live again, so it must no longer be
+        // advertised as deleted on the wire — else a peer would apply a stale
+        // delete-wins against it.
+        parent_index
+            .deleted_children
+            .retain(|id| *id != added_child_id);
+
         parent_index.full_hash =
             Self::calculate_full_hash_for_children(parent_index.own_hash, &parent_index.children)?;
         Self::save_index(&parent_index)?;
@@ -503,6 +535,7 @@ impl<S: StorageAdaptor> Index<S> {
             own_hash: [0; 32],
             metadata: root.metadata.clone(),
             deleted_at: None,
+            deleted_children: Vec::new(),
         });
         index.own_hash = root.merkle_hash();
         // Keep stored full_hash current. Without this, a root holds
@@ -885,6 +918,15 @@ impl<S: StorageAdaptor> Index<S> {
             if children.is_empty() {
                 parent_index.children = None;
             }
+        }
+
+        // Record the removal so the deletion is explicit on the sync wire
+        // (the child vanishes from `children`, which the add-biased HC/LevelWise
+        // comparison can't otherwise observe). Deduped; the per-child
+        // `deleted_at` + signed metadata are read from the child's own tombstone
+        // index at wire-build time.
+        if !parent_index.deleted_children.contains(&child_id) {
+            parent_index.deleted_children.push(child_id);
         }
 
         // Recalculate parent's hash
