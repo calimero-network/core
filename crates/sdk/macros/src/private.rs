@@ -127,21 +127,29 @@ const PRIVATE_INCOMPATIBLE: &[(&str, &str)] = &[
 /// Recursively walk `ty` — descending through the same wrappers
 /// `inject_private_storage` does (generics, tuples, references,
 /// arrays, slices, groups, parens) — and collect every offending
-/// `PRIVATE_INCOMPATIBLE` type encountered, paired with its
-/// explanation. We collect the offending *ident* (not just the name)
-/// so the eventual `compile_error!` can be spanned right at the
-/// culprit type. Read-only twin of `inject_private_storage`: a
-/// nested `Option<AuthoredVector<T>>` is caught just as a top-level
-/// field would be.
-fn collect_private_incompatible<'t>(ty: &'t Type, found: &mut Vec<(&'t Ident, &'static str)>) {
+/// `PRIVATE_INCOMPATIBLE` type encountered, paired with the matching
+/// `(name, explanation)` const entry. We collect the offending
+/// *ident* (not just the name) so the eventual `compile_error!` can be
+/// spanned right at the culprit type, and carry the `&'static` name so
+/// the diagnostic reuses the const string rather than re-allocating.
+/// Read-only twin of `inject_private_storage`: a nested
+/// `Option<AuthoredVector<T>>` is caught just as a top-level field
+/// would be.
+fn collect_private_incompatible<'t>(
+    ty: &'t Type,
+    found: &mut Vec<(&'t Ident, &'static (&'static str, &'static str))>,
+) {
     match ty {
         Type::Path(type_path) => {
             if let Some(last) = type_path.path.segments.last() {
                 let name = last.ident.to_string();
-                if let Some(&(_, explanation)) =
-                    PRIVATE_INCOMPATIBLE.iter().find(|(n, _)| *n == name)
-                {
-                    found.push((&last.ident, explanation));
+                if let Some(entry) = PRIVATE_INCOMPATIBLE.iter().find(|(n, _)| *n == name) {
+                    // The whole field is already invalid — don't recurse
+                    // into its type args, or `AuthoredVector<Counter>`
+                    // would noisily report `Counter` too when the only
+                    // mistake the user made is the outer type.
+                    found.push((&last.ident, entry));
+                    return;
                 }
                 if let PathArguments::AngleBracketed(args) = &last.arguments {
                     for arg in &args.args {
@@ -166,42 +174,43 @@ fn collect_private_incompatible<'t>(ty: &'t Type, found: &mut Vec<(&'t Ident, &'
     }
 }
 
+/// Collect every `PRIVATE_INCOMPATIBLE` offender across one set of
+/// fields (a struct body, or a single enum variant).
+fn collect_incompatible_in_fields<'a>(
+    fields: &'a Fields,
+    found: &mut Vec<(&'a Ident, &'static (&'static str, &'static str))>,
+) {
+    let fields = match fields {
+        Fields::Named(fields) => &fields.named,
+        Fields::Unnamed(fields) => &fields.unnamed,
+        Fields::Unit => return,
+    };
+    for field in fields {
+        collect_private_incompatible(&field.ty, found);
+    }
+}
+
 /// Walk every field of `item` and push a targeted compile error into
 /// `errors` for each `PRIVATE_INCOMPATIBLE` collection found — at any
 /// depth. Runs before substitution: catching the misuse up front is
 /// the whole point, and there's nothing sensible to rewrite anyway.
 fn check_private_compatible<'a>(item: &'a StructOrEnumItem, errors: &Errors<'a, StructOrEnumItem>) {
-    let mut found: Vec<(&Ident, &'static str)> = Vec::new();
-
-    let walk_fields = |fields: &'a Fields, found: &mut Vec<(&'a Ident, &'static str)>| match fields
-    {
-        Fields::Named(fields) => {
-            for field in &fields.named {
-                collect_private_incompatible(&field.ty, found);
-            }
-        }
-        Fields::Unnamed(fields) => {
-            for field in &fields.unnamed {
-                collect_private_incompatible(&field.ty, found);
-            }
-        }
-        Fields::Unit => {}
-    };
+    let mut found = Vec::new();
 
     match item {
-        StructOrEnumItem::Struct(item) => walk_fields(&item.fields, &mut found),
+        StructOrEnumItem::Struct(item) => collect_incompatible_in_fields(&item.fields, &mut found),
         StructOrEnumItem::Enum(item) => {
             for variant in &item.variants {
-                walk_fields(&variant.fields, &mut found);
+                collect_incompatible_in_fields(&variant.fields, &mut found);
             }
         }
     }
 
-    for (ident, explanation) in found {
+    for (ident, &(type_name, explanation)) in found {
         errors.subsume(SynError::new_spanned(
             ident,
             ParseError::PrivateIncompatibleCollection {
-                type_name: ident.to_string(),
+                type_name,
                 explanation,
             },
         ));
@@ -743,22 +752,32 @@ mod tests {
             .iter()
             .map(|(n, _)| *n)
             .collect();
-        for excluded in EXCLUDED_CRDT_TYPES
+        let excluded: std::collections::HashSet<&str> = EXCLUDED_CRDT_TYPES
             .iter()
             .chain(EXCLUDED_ACCESS_CONTROL_TYPES)
-        {
-            let head = excluded.split('<').next().expect("non-empty");
+            // Pull just the leading identifier (everything before `<`).
+            .map(|ty| ty.split('<').next().expect("non-empty"))
+            .collect();
+
+        // Forward: every left-alone type must be rejected by the
+        // diagnostic, or it would silently fall back to MainStorage.
+        for name in &excluded {
             assert!(
-                incompatible.contains(head),
-                "{head} is left-alone by the rewrite but missing from PRIVATE_INCOMPATIBLE — \
+                incompatible.contains(name),
+                "{name} is left-alone by the rewrite but missing from PRIVATE_INCOMPATIBLE — \
                  it would silently fall back to MainStorage"
             );
         }
-        assert_eq!(
-            incompatible.len(),
-            EXCLUDED_CRDT_TYPES.len() + EXCLUDED_ACCESS_CONTROL_TYPES.len(),
-            "PRIVATE_INCOMPATIBLE names a type the exclusion lists don't — keep them in sync"
-        );
+        // Reverse: every rejected type must be a known left-alone
+        // type, so the diagnostic never names something out of thin
+        // air. The two checks together pin set equality regardless of
+        // duplicates — length alone wouldn't.
+        for name in &incompatible {
+            assert!(
+                excluded.contains(name),
+                "{name} is in PRIVATE_INCOMPATIBLE but not in any EXCLUDED_* list — keep them in sync"
+            );
+        }
     }
 
     #[test]

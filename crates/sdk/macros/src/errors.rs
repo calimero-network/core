@@ -119,7 +119,7 @@ pub enum ParseError<'a> {
          sync-layer semantics this type models have no meaning here."
     )]
     PrivateIncompatibleCollection {
-        type_name: String,
+        type_name: &'static str,
         explanation: &'static str,
     },
 }
