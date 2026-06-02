@@ -32,12 +32,14 @@
 //!   log, so it is rejected — see the node sync layer.
 //! - **During local execution** (this module): there is no DAG/`happens_before`
 //!   context and the local rotation log is only appended for *received* deltas,
-//!   so the authoritative local source is the **index metadata**
-//!   ([`Index::get_metadata`]) for the wrapper entity, which is only ever
-//!   updated by a signature-verified per-entity action on apply (or by the
-//!   local node's own committed write). The wrapper's in-memory `Element`
-//!   metadata is the bootstrap fallback for a freshly-created, not-yet-committed
-//!   wrapper.
+//!   so the authoritative local source is the wrapper entity's **rotation log**
+//!   (latest entry) falling back to its **index metadata**
+//!   ([`Index::get_metadata`]) — both of which are only ever written by a
+//!   signature-verified action (apply) or the local node's own committed
+//!   write/rotation. It deliberately does NOT fall back to the in-memory
+//!   `Element` metadata, which is deserialized from the unverified root-state
+//!   blob; trusting it would reintroduce the forgeable writer-set source this
+//!   change removes.
 //!
 //! # Merge semantics
 //!
@@ -137,8 +139,14 @@ where
         writers: BTreeSet<PublicKey>,
         frozen: bool,
     ) -> Self {
+        // Pass the deterministic id explicitly — `new_shared(None, ..)` would
+        // mint a random one, breaking this method's documented contract for any
+        // direct caller (the `#[app::state]` macro relocates `new()`'s random id
+        // via `reassign_deterministic_id`, but this constructor must be
+        // deterministic on its own).
+        let id = compute_collection_id(None, field_name);
         let inner = Collection::new_shared(
-            None,
+            Some(id),
             Some(field_name),
             CrdtType::SharedStorage,
             writers.clone(),
@@ -313,7 +321,7 @@ where
         Ok(self.load_value())
     }
 
-    /// The current writer set, resolved from the authoritative source.
+    /// The current writer set, resolved only from **verified** local sources.
     ///
     /// Resolution order:
     /// 1. **Rotation log** (`rotation_log::load`). On a node that *received*
@@ -322,12 +330,19 @@ where
     ///    (The full causal `writers_at(parents)` resolution is the node-side
     ///    apply-time check; with no DAG context during local execution the
     ///    most-recently-appended entry is the right local answer.)
-    /// 2. **Index `storage_type`** — the fallback for the *originating* node,
-    ///    whose own rotations are not self-applied so its log stays empty.
-    ///    `rotate_writers` writes the new set here on the originator (see
-    ///    [`Index::set_storage_type`]).
-    /// 3. **In-memory `Element`** — bootstrap, for a freshly-created wrapper that
-    ///    has not been committed yet.
+    /// 2. **Index `storage_type`** — written by `add_child_to` at construction,
+    ///    by `apply_action` for a received bootstrap/write, and by
+    ///    [`Index::set_storage_type`] on the *originating* node's own rotation
+    ///    (whose log stays empty because it does not self-apply).
+    ///
+    /// It deliberately does **not** fall back to the in-memory `Element`
+    /// metadata: that is populated from the borsh-deserialized root-state blob,
+    /// which is unverified — trusting it would reintroduce the forgeable
+    /// writer-set source this change exists to remove (a forged root-state delta
+    /// could influence the local gate). Any wrapper a writer can legitimately
+    /// act on has an index entry (construction and sync-apply both write one);
+    /// if neither source has a writer set, fail closed with the empty set rather
+    /// than trust unverified bytes.
     fn current_writers(&self) -> BTreeSet<PublicKey> {
         if let Ok(Some(log)) = rotation_log::load::<S>(self.inner.id()) {
             if let Some(entry) = log.entries.last() {
@@ -342,10 +357,7 @@ where
                 return writers;
             }
         }
-        match &self.inner.element().metadata.storage_type {
-            StorageType::Shared { writers, .. } => writers.clone(),
-            _ => BTreeSet::new(),
-        }
+        BTreeSet::new()
     }
 
     /// Read the current writer set. Public so callers can present a
@@ -462,29 +474,34 @@ where
             .set_shared_domain(new_writers.clone());
         let _saved = <Interface<S>>::save(&mut self.inner)?;
 
-        // Re-stamp the single value entry too, if it has been materialised. The
-        // value lives in its own entity, verified at merge against *its* writer
-        // set; without re-stamping, a writer added by this rotation could never
-        // write the value (the entry would stay guarded by the pre-rotation
-        // set). Re-stamping emits a signed `Update` (data unchanged → hash
-        // unchanged, no divergence) so the receiver appends the new set to the
-        // value entry's own rotation log, and the new writer's later writes
-        // verify. This is the single-child analogue of the per-collection
+        // Re-stamp the single value entry too. The value lives in its own
+        // entity, verified at merge against *its* writer set; without
+        // re-stamping, a writer added by this rotation could never write the
+        // value (the entry would stay guarded by the pre-rotation set).
+        // Re-stamping emits a signed `Update` (data unchanged → hash unchanged,
+        // no divergence) so the receiver appends the new set to the value
+        // entry's own rotation log, and the new writer's later writes verify.
+        // This is the single-child analogue of the per-collection
         // anchor-inheritance that retroactive collection revocation will
-        // generalise.
+        // generalise. The value entry is created eagerly at construction, so it
+        // is present here; read with a `T::default()` fallback and re-stamp
+        // unconditionally so the rotation is never silently lost if it were
+        // absent.
         let value_id = self.value_id();
-        if let Some(value) = self.inner.get(value_id)? {
-            let _restamped =
-                self.inner
-                    .insert_with_storage_type(Some(value_id), value, new_shared.clone())?;
-            // Originating-node fallback: persist the new set on the value
-            // entry's index too (its rotation log is only appended on receivers).
-            let _ignored = <Index<S>>::set_storage_type(value_id, new_shared.clone());
-        }
-
-        // Originating-node fallback: persist the new set on the wrapper's index,
-        // since this node does not self-apply its own rotation into its log.
+        let value = self.inner.get(value_id)?.unwrap_or_default();
+        let _restamped =
+            self.inner
+                .insert_with_storage_type(Some(value_id), value, new_shared.clone())?;
+        // Originating-node fallback: persist the new set on the value entry's
+        // and wrapper's index too (the rotation log is only appended on
+        // receivers, so this node's own log stays empty).
+        let _ignored = <Index<S>>::set_storage_type(value_id, new_shared.clone());
         let _ignored = <Index<S>>::set_storage_type(wrapper_id, new_shared);
+
+        // Invalidate the lazy cache so the next access reloads the value with
+        // the new writer stamp rather than serving a copy whose in-memory
+        // element still carries the pre-rotation set.
+        *self.value.borrow_mut() = None;
         Ok(())
     }
 }
@@ -581,6 +598,30 @@ mod tests {
 
     fn writers(keys: &[[u8; 32]]) -> BTreeSet<PublicKey> {
         keys.iter().copied().map(pk).collect()
+    }
+
+    #[test]
+    #[serial]
+    fn new_with_field_name_is_deterministic() {
+        // Regression: `new_with_field_name` must produce the field-derived
+        // deterministic id directly (not a random one relocated later), so a
+        // direct caller without the `#[app::state]` macro still converges.
+        use crate::collections::compute_collection_id;
+        use crate::entities::Data;
+
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+        let _root: Root<TestVal> = Root::new(TestVal::default);
+
+        let expected = compute_collection_id(None, "doc");
+        let a = SharedStorage::<TestVal>::new_with_field_name("doc", writers(&[ALICE]), false);
+        assert_eq!(a.element().id(), expected);
+        let b = SharedStorage::<TestVal>::new_with_field_name("doc", writers(&[ALICE]), false);
+        assert_eq!(
+            b.element().id(),
+            expected,
+            "must be deterministic across constructions"
+        );
     }
 
     #[test]
