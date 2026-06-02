@@ -802,6 +802,20 @@ pub struct DeltaStore {
     head_root_hashes: Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>,
 }
 
+/// Outcome of [`DeltaStore::persist_cascaded_deltas_and_update_heads`].
+///
+/// `committed` is `true` only if the atomic batch actually landed (or there
+/// was nothing to write). Callers that included a freshly-applied `primary`
+/// delta MUST check it: `false` means the delta's `applied: true` record
+/// never reached the DB, so its event handlers must not run — a restart
+/// would re-apply the delta and run them again (a duplicate). Cascade-only
+/// callers may ignore it and keep their warn-and-continue behaviour (the
+/// next sync corrects the heads).
+struct CascadePersistOutcome {
+    committed: bool,
+    forwarded_events: Vec<([u8; 32], Vec<u8>)>,
+}
+
 impl DeltaStore {
     /// Creates a new delta store
     pub fn new(
@@ -1270,9 +1284,13 @@ impl DeltaStore {
                 .collect()
         };
 
+        // Cascade-only path: no `primary`, so ignore `committed` and keep the
+        // warn-and-continue behaviour (a failed heads write is corrected by
+        // the next sync).
         let cascaded_events = self
             .persist_cascaded_deltas_and_update_heads(&cascaded_bodies, None, heads)
-            .await;
+            .await
+            .forwarded_events;
 
         Ok(cascaded_events)
     }
@@ -1491,8 +1509,20 @@ impl DeltaStore {
         let cascaded_with_events: Vec<([u8; 32], Vec<u8>)> = if result
             || !cascaded_deltas.is_empty()
         {
-            self.persist_cascaded_deltas_and_update_heads(&cascaded_bodies, primary_record, heads)
-                .await
+            // When this call carries the just-applied primary delta, a failed
+            // commit must surface as an error: the primary's `applied: true`
+            // record never landed, so the caller must not run its event
+            // handlers — a restart would re-apply the delta and run them again
+            // (a duplicate). Cascade-only commit failures stay best-effort (the
+            // next sync corrects the heads).
+            let primary_present = primary_record.is_some();
+            let outcome = self
+                .persist_cascaded_deltas_and_update_heads(&cascaded_bodies, primary_record, heads)
+                .await;
+            if primary_present && !outcome.committed {
+                eyre::bail!("failed to atomically persist applied delta and dag_heads");
+            }
+            outcome.forwarded_events
         } else {
             Vec::new()
         };
@@ -1830,13 +1860,16 @@ impl DeltaStore {
             let mut bodies_to_persist = added_parent_bodies;
             bodies_to_persist.extend(cascaded_bodies);
 
+            // Cascade-only path (no `primary`): ignore `committed` and keep
+            // warn-and-continue — the next sync corrects a failed heads write.
             all_cascaded_events.extend(
                 self.persist_cascaded_deltas_and_update_heads(
                     &bodies_to_persist,
                     None,
                     heads_after_cascade,
                 )
-                .await,
+                .await
+                .forwarded_events,
             );
         }
 
@@ -1903,7 +1936,7 @@ impl DeltaStore {
             calimero_store::types::ContextDagDelta,
         )>,
         heads: Vec<[u8; 32]>,
-    ) -> Vec<([u8; 32], Vec<u8>)> {
+    ) -> CascadePersistOutcome {
         let mut forwarded_events: Vec<([u8; 32], Vec<u8>)> = Vec::new();
 
         // Build the records to persist first, then commit them and the
@@ -1988,7 +2021,10 @@ impl DeltaStore {
                              aborting persist so dag_heads can't advance past \
                              an unpersisted delta"
                         );
-                        return Vec::new();
+                        return CascadePersistOutcome {
+                            committed: false,
+                            forwarded_events: Vec::new(),
+                        };
                     }
                 };
 
@@ -2043,7 +2079,10 @@ impl DeltaStore {
                     persisted_deltas = records.len(),
                     "Atomically persisted cascaded deltas and dag_heads"
                 );
-                forwarded_events
+                CascadePersistOutcome {
+                    committed: true,
+                    forwarded_events,
+                }
             }
             Err(e) => {
                 // The commit failed, so none of these records landed. Don't
@@ -2052,6 +2091,8 @@ impl DeltaStore {
                 // crash-safety contract (a restart's `load_persisted_deltas`
                 // wouldn't find them to replay). The next sync re-applies the
                 // deltas and re-forwards from the durable DB records instead.
+                // `committed: false` lets an Add-path caller propagate the
+                // failure instead of running the primary delta's handlers.
                 warn!(
                     ?e,
                     context_id = %self.applier.context_id,
@@ -2059,7 +2100,10 @@ impl DeltaStore {
                      DB left at pre-cascade state, events not forwarded, next \
                      sync will correct it"
                 );
-                Vec::new()
+                CascadePersistOutcome {
+                    committed: false,
+                    forwarded_events: Vec::new(),
+                }
             }
         }
     }
@@ -2311,6 +2355,12 @@ impl DeltaStore {
         // Commit all staged checkpoints atomically. Logged, not propagated, to
         // match the rest of this best-effort path: on failure none land and
         // the next snapshot sync re-adds them.
+        //
+        // This runs while the DAG write lock is still held (the head-hash
+        // bookkeeping and `try_process_pending` below both need it). That's
+        // not a new cost: the previous per-checkpoint `put` loop did its DB
+        // I/O under the same lock — this is now a single batched `apply`, so
+        // strictly less I/O inside the critical section.
         match self
             .applier
             .context_client
