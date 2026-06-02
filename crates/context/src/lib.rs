@@ -177,6 +177,12 @@ struct ContextMeta {
 /// exceed the cap temporarily; it self-corrects as in-flight operations
 /// finish. The over-cap count is bounded by the number of contexts executing
 /// concurrently, which node concurrency already limits.
+///
+/// The victim is the first *idle* entry in `ContextId` (key) order, not the
+/// least-recently-used one — deliberately, matching the compiled-`modules`
+/// cap. A wrong guess only costs a re-fetch from the authoritative datastore,
+/// so true LRU isn't worth the access-tracking overhead; it remains a possible
+/// follow-up if profiling ever shows churn on a hot context.
 fn evict_idle_context_if_full(contexts: &mut BTreeMap<ContextId, ContextMeta>) {
     if contexts.len() < MAX_CACHED_CONTEXTS {
         return;
@@ -214,6 +220,16 @@ fn evict_application_if_full(applications: &mut BTreeMap<ApplicationId, Applicat
     if let Some((id, _)) = applications.pop_first() {
         tracing::debug!(application = %id, "evicted application from cache (at capacity)");
     }
+
+    // Each insert site evicts exactly once before adding one entry, so the map
+    // should never sit more than one over the cap here. A larger overage means
+    // an insert site bypassed this helper — catch it in dev.
+    debug_assert!(
+        applications.len() <= MAX_CACHED_APPLICATIONS,
+        "applications cache over cap after eviction ({} > {MAX_CACHED_APPLICATIONS}); \
+         an insert site likely bypassed evict_application_if_full",
+        applications.len(),
+    );
 }
 
 /// The central actor responsible for managing the lifecycle of all contexts.
@@ -557,81 +573,89 @@ impl ContextManager {
         &mut self,
         context_id: &ContextId,
     ) -> eyre::Result<Option<&ContextMeta>> {
-        // On a cache miss we're about to insert below, so make room first.
-        // Done before taking the `entry` borrow since eviction needs its own
-        // `&mut self.contexts`. A miss that turns out to be a non-existent
-        // context just wastes one (harmless) eviction.
-        if !self.contexts.contains_key(context_id) {
+        // Cache miss: fetch first, so a lookup for a non-existent context never
+        // triggers (and wastes) an eviction. Only once we know the context
+        // exists do we make room and insert. Kept as a self-contained block so
+        // its borrows end before the single returning borrow taken below (the
+        // borrow checker can't return a reference through a split hit/miss
+        // match otherwise).
+        let was_cached = self.contexts.contains_key(context_id);
+        if !was_cached {
+            let Some(context) = self.context_client.get_context(context_id)? else {
+                return Ok(None);
+            };
+
             evict_idle_context_if_full(&mut self.contexts);
-        }
 
-        let entry = self.contexts.entry(*context_id);
-
-        match entry {
-            btree_map::Entry::Occupied(mut occupied) => {
-                // CRITICAL FIX: Always reload dag_heads from database to get latest state
-                // The dag_heads can be updated by delta_store when receiving network deltas,
-                // but the cached Context object won't reflect these changes.
-                // This was causing all deltas to use genesis as parent instead of actual dag_heads.
-                let handle = self.datastore.handle();
-                let key = calimero_store::key::ContextMeta::new(*context_id);
-
-                if let Some(meta) = handle.get(&key)? {
-                    let cached = occupied.get_mut();
-
-                    // Update dag_heads if they changed in DB
-                    if cached.meta.dag_heads != meta.dag_heads {
-                        tracing::debug!(
-                            %context_id,
-                            old_heads_count = cached.meta.dag_heads.len(),
-                            new_heads_count = meta.dag_heads.len(),
-                            "Refreshing dag_heads from database (cache was stale)"
-                        );
-                        cached.meta.dag_heads = meta.dag_heads;
-                    }
-
-                    // Also update root_hash in case it changed
-                    cached.meta.root_hash = meta.root_hash.into();
-
-                    // Refresh application_id too. A LazyOnAccess upgrade (or
-                    // a cascade target-application change) rewrites the
-                    // context's bound application in the DB out-of-band of
-                    // this in-memory cache. Callers (notably the execute
-                    // path's post-lazy-upgrade re-fetch) resolve the WASM
-                    // module from `application_id`; if the cache still holds
-                    // the pre-upgrade id, the method runs the OLD module
-                    // against the freshly-migrated (new-shaped) state — a
-                    // borsh "Not all bytes read" panic. Keeping app_id in
-                    // lockstep with the DB closes that window.
-                    let db_application_id = meta.application.application_id();
-                    if cached.meta.application_id != db_application_id {
-                        tracing::debug!(
-                            %context_id,
-                            old_application_id = %cached.meta.application_id,
-                            new_application_id = %db_application_id,
-                            "Refreshing application_id from database (cache was stale)"
-                        );
-                        cached.meta.application_id = db_application_id;
-                    }
-                }
-
-                Ok(Some(occupied.into_mut()))
-            }
-            btree_map::Entry::Vacant(vacant) => {
-                let Some(context) = self.context_client.get_context(context_id)? else {
-                    return Ok(None);
-                };
-
-                let lock = Arc::new(Mutex::new(*context_id));
-
-                let item = vacant.insert(ContextMeta {
+            let lock = Arc::new(Mutex::new(*context_id));
+            let _ = self.contexts.insert(
+                *context_id,
+                ContextMeta {
                     meta: context,
                     lock,
-                });
+                },
+            );
+        }
 
-                Ok(Some(item))
+        let btree_map::Entry::Occupied(mut occupied) = self.contexts.entry(*context_id) else {
+            // Unreachable: the entry was either already cached or just inserted
+            // above, and this actor processes messages serially.
+            debug_assert!(false, "context entry vanished between insert and lookup");
+            return Ok(None);
+        };
+
+        // For an already-cached entry, reload from the DB to pick up
+        // out-of-band changes. A freshly fetched-and-inserted entry is already
+        // current, so skip the redundant read.
+        if was_cached {
+            // CRITICAL FIX: Always reload dag_heads from database to get latest state
+            // The dag_heads can be updated by delta_store when receiving network deltas,
+            // but the cached Context object won't reflect these changes.
+            // This was causing all deltas to use genesis as parent instead of actual dag_heads.
+            let handle = self.datastore.handle();
+            let key = calimero_store::key::ContextMeta::new(*context_id);
+
+            if let Some(meta) = handle.get(&key)? {
+                let cached = occupied.get_mut();
+
+                // Update dag_heads if they changed in DB
+                if cached.meta.dag_heads != meta.dag_heads {
+                    tracing::debug!(
+                        %context_id,
+                        old_heads_count = cached.meta.dag_heads.len(),
+                        new_heads_count = meta.dag_heads.len(),
+                        "Refreshing dag_heads from database (cache was stale)"
+                    );
+                    cached.meta.dag_heads = meta.dag_heads;
+                }
+
+                // Also update root_hash in case it changed
+                cached.meta.root_hash = meta.root_hash.into();
+
+                // Refresh application_id too. A LazyOnAccess upgrade (or
+                // a cascade target-application change) rewrites the
+                // context's bound application in the DB out-of-band of
+                // this in-memory cache. Callers (notably the execute
+                // path's post-lazy-upgrade re-fetch) resolve the WASM
+                // module from `application_id`; if the cache still holds
+                // the pre-upgrade id, the method runs the OLD module
+                // against the freshly-migrated (new-shaped) state — a
+                // borsh "Not all bytes read" panic. Keeping app_id in
+                // lockstep with the DB closes that window.
+                let db_application_id = meta.application.application_id();
+                if cached.meta.application_id != db_application_id {
+                    tracing::debug!(
+                        %context_id,
+                        old_application_id = %cached.meta.application_id,
+                        new_application_id = %db_application_id,
+                        "Refreshing application_id from database (cache was stale)"
+                    );
+                    cached.meta.application_id = db_application_id;
+                }
             }
         }
+
+        Ok(Some(occupied.into_mut()))
     }
 }
 
