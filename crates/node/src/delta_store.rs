@@ -151,7 +151,16 @@ struct ContextStorageApplier {
     /// false, `writers_at` returns `None`, and the verifier falls back
     /// to v2 stored-writers, potentially admitting a revoked writer.
     /// (#2266 + #2272 review)
-    topology: Arc<RwLock<IndexMap<[u8; 32], Vec<[u8; 32]>>>>,
+    ///
+    /// Wrapped in an inner `Arc` for copy-on-write reads: the
+    /// `resolve_effective_writers_for_delta` read path needs a snapshot
+    /// that outlives the lock guard (the `happens_before` closure holds
+    /// it across the per-entity loop), but deep-cloning the whole map on
+    /// every Shared-touching apply allocated up to ~1MB at the cap on the
+    /// hot sync path. With the inner `Arc`, reads bump a refcount and
+    /// writers `Arc::make_mut` to clone-on-first-write only when a reader
+    /// snapshot is still live.
+    topology: Arc<RwLock<Arc<IndexMap<[u8; 32], Vec<[u8; 32]>>>>>,
 }
 
 #[async_trait::async_trait]
@@ -337,13 +346,17 @@ impl DeltaApplier<Vec<Action>> for ContextStorageApplier {
         // below so it can't grow without limit on long-lived nodes.
         {
             let mut topology = self.topology.write().await;
+            // `make_mut` clones the inner map only if a reader snapshot is
+            // still holding the previous `Arc`; otherwise it mutates in
+            // place.
+            let topology = Arc::make_mut(&mut topology);
             let _previous = topology.insert(delta.id, delta.parents.clone());
 
             // Evict oldest-first (insertion order) so recently-applied
             // deltas — whose ancestry links are still needed by buffered
             // children — survive the cap. Cf. #2272 review on
             // non-deterministic eviction.
-            cap_topology(&mut topology);
+            cap_topology(topology);
         }
 
         // Store the ACTUAL computed hash after applying this delta for future merge detection
@@ -635,8 +648,10 @@ impl ContextStorageApplier {
 
         // Snapshot topology once per delta apply. The `happens_before`
         // closure consults this snapshot for every reachability test
-        // inside `writers_at`, avoiding repeated lock acquisitions.
-        let topology_snapshot = self.topology.read().await.clone();
+        // inside `writers_at`, avoiding repeated lock acquisitions. The
+        // inner `Arc` makes this a refcount bump rather than a deep clone
+        // of the whole map; the guard is released immediately.
+        let topology_snapshot = Arc::clone(&*self.topology.read().await);
 
         for entity_id in shared_entities {
             // Read the rotation log directly from the datastore rather
@@ -677,12 +692,13 @@ impl ContextStorageApplier {
     /// restoration completes.
     async fn restore_topology(&self, deltas: impl IntoIterator<Item = ([u8; 32], Vec<[u8; 32]>)>) {
         let mut topology = self.topology.write().await;
-        seed_topology(&mut topology, deltas);
+        let topology = Arc::make_mut(&mut topology);
+        seed_topology(topology, deltas);
         // #2272 review: enforce the same `MAX_TOPOLOGY_ENTRIES` cap that
         // `apply()` uses. Without this, a context with 100K persisted
         // deltas would seed all of them at startup and consume ~10MB+
         // until enough new deltas triggered the steady-state cap.
-        cap_topology(&mut topology);
+        cap_topology(topology);
     }
 }
 
@@ -827,7 +843,7 @@ impl DeltaStore {
             // `restore_topology` so cross-restart ancestry is preserved.
             // Insertion-ordered (IndexMap) so the eviction at the
             // `MAX_TOPOLOGY_ENTRIES` cap is deterministic (oldest-first).
-            topology: Arc::new(RwLock::new(IndexMap::new())),
+            topology: Arc::new(RwLock::new(Arc::new(IndexMap::new()))),
         });
 
         Self {
