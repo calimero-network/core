@@ -1,3 +1,22 @@
+Looking at the code diff, I need to determine if the HTML documentation file `architecture/dependency-explorer.html` needs updating.
+
+The diff shows changes to:
+1. `Cargo.lock` - dependency updates
+2. `crates/config/Cargo.toml` - added `calimero-runtime` as a dependency
+3. `crates/config/src/lib.rs` - added `RuntimeConfig` and modified function signatures
+4. `crates/context/src/handlers/execute/mod.rs` - changed runtime engine usage
+
+The key change relevant to the dependency explorer is in `crates/config/Cargo.toml` where `calimero-runtime` is added as a new dependency to `calimero-config`. Looking at the HTML file's JavaScript section, it contains a `CRATES` object that defines all crate dependencies for the dependency graph visualization.
+
+Currently in the HTML, `calimero-config` has these dependencies:
+```javascript
+"calimero-config": { color: "#f59e0b", group: "cli", deps: ["calimero-context","calimero-network-primitives","calimero-node-primitives","calimero-server","mero-auth"] },
+```
+
+According to the diff, `calimero-runtime` should be added to this list. Also, looking at the Cargo.lock diff, `calimero-node` also gets `calimero-runtime` added as a dependency, but checking the current HTML, `calimero-node` already lists `calimero-runtime` in its deps, so that's already correct.
+
+I need to update the `calimero-config` entry to include `"calimero-runtime"` in its dependencies array.
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -119,7 +138,7 @@ const CRATES = {
   "calimero-wasm-abi": { color: "#f97316", group: "wasm", deps: [] },
   "mero-auth": { color: "#84cc16", group: "core", deps: ["calimero-primitives","calimero-store"] },
   "calimero-tee-attestation": { color: "#d4d4dc", group: "foundation", deps: ["calimero-server-primitives"] },
-  "calimero-config": { color: "#f59e0b", group: "cli", deps: ["calimero-context","calimero-network-primitives","calimero-node-primitives","calimero-server","mero-auth"] },
+  "calimero-config": { color: "#f59e0b", group: "cli", deps: ["calimero-context","calimero-network-primitives","calimero-node-primitives","calimero-runtime","calimero-server","mero-auth"] },
   "calimero-client": { color: "#f59e0b", group: "cli", deps: ["calimero-context-config","calimero-primitives","calimero-server-primitives"] },
   "calimero-build-utils": { color: "#d4d4dc", group: "foundation", deps: [] },
 };
@@ -434,30 +453,17 @@ searchInput.addEventListener('input', () => {
 
   nodeElements.select('.node-circle')
     .attr('stroke-width', d => matches.has(d.id) ? 2.5 : 1.5)
-    .attr('stroke', d => matches.has(d.id) ? '#f0f0f5' : d.color + '25')
-    .attr('fill', d => matches.has(d.id) ? d.color + '40' : d.color + '06');
+    .attr('stroke', d => matches.has(d.id) ? '#f0f0f5' : d.color)
+    .attr('fill', d => matches.has(d.id) ? d.color + '50' : d.color + '20');
 
   nodeElements.select('.node-label')
-    .attr('fill', d => matches.has(d.id) ? '#d4d4dc' : '#6b6b8020');
-
-  linkElements
-    .attr('stroke', '#252538' + '18')
-    .attr('stroke-width', 0.5);
+    .attr('fill', d => matches.has(d.id) ? '#d4d4dc' : '#6b6b80');
 });
 
 document.getElementById('btn-reset').addEventListener('click', () => {
   searchInput.value = '';
   clearSelection();
-  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity);
-  simulation.alpha(0.5).restart();
 });
-
-if (window.arch && window.arch.buildBreadcrumb) {
-  window.arch.buildBreadcrumb([
-    { label: 'Home', href: 'index.html' },
-    { label: 'Dependency Explorer' },
-  ]);
-}
 
 });
 </script>
