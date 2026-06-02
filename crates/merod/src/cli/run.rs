@@ -167,6 +167,7 @@ impl RunCommand {
                 invite_topic: network.specialized_node.invite_topic,
                 accept_mock_tee: network.specialized_node.accept_mock_tee,
             },
+            vm_limits: config.runtime.vm_limits(),
         })
         .await
     }
