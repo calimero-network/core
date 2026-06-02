@@ -816,6 +816,48 @@ mod tests {
         );
     }
 
+    /// Symmetric convergence in ONE round when the node that still HOLDS the
+    /// entry initiates (the #2591 case). `bob` (holder) initiates against `alice`
+    /// (cleared). Alice's now-childless node carries `deleted_children=[entry]`
+    /// on the wire, so bob applies the deletion (delete-wins) during comparison
+    /// — no live entity pushed, single direction. Before tombstones-in-tree this
+    /// only converged once *alice* happened to initiate.
+    #[tokio::test]
+    async fn test_hashcomparison_clear_converges_when_holder_initiates() {
+        use crate::sync_sim::actions::StorageOp;
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        let entry = EntityId::from_u64(1);
+        alice.insert_entity_with_metadata(entry, b"v1".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(entry, b"v1".to_vec(), EntityMetadata::default());
+        assert_eq!(alice.root_hash(), bob.root_hash());
+
+        alice.apply_storage_op(StorageOp::Remove { id: entry });
+        assert_eq!(alice.entity_count(), 0);
+        assert_eq!(bob.entity_count(), 1);
+
+        // The HOLDER (bob) initiates — only direction, no second pass.
+        execute_hash_comparison_sync(&mut bob, &alice)
+            .await
+            .expect("bob->alice sync ok");
+
+        assert_eq!(
+            bob.entity_count(),
+            0,
+            "bob did not converge to the deletion when it was the initiator \
+             (deleted_children not propagated)"
+        );
+        assert_eq!(alice.entity_count(), 0, "alice stays cleared");
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "roots must converge after a single sync regardless of who initiated"
+        );
+    }
+
     /// LevelWise (the wide/shallow-tree protocol) must also propagate clears.
     /// It's pull-only, so the cleared node propagates the deletion via
     /// `EntityDeletePush` when it initiates. Without it, a clear reconciled via
@@ -851,6 +893,48 @@ mod tests {
             alice.root_hash(),
             bob.root_hash(),
             "roots must converge after LevelWise clear propagation"
+        );
+    }
+
+    /// LevelWise must also converge a clear when the HOLDER initiates (#2591).
+    /// `bob` (holder) initiates against cleared `alice`. Alice returns zero live
+    /// nodes at level 0 but carries `deleted_children=[entry]` on the wire, which
+    /// bob applies (delete-wins) before its empty-nodes early-out — so the clear
+    /// converges in a single pull. Before tombstones-in-tree the empty level
+    /// response made bob exit the loop still holding the entry.
+    #[tokio::test]
+    async fn test_levelwise_clear_converges_when_holder_initiates() {
+        use crate::sync_sim::actions::StorageOp;
+
+        let ctx = shared_context();
+        let mut alice = SimNode::new_in_context("alice", ctx);
+        let mut bob = SimNode::new_in_context("bob", ctx);
+
+        let entry = EntityId::from_u64(1);
+        alice.insert_entity_with_metadata(entry, b"v1".to_vec(), EntityMetadata::default());
+        bob.insert_entity_with_metadata(entry, b"v1".to_vec(), EntityMetadata::default());
+        assert_eq!(alice.root_hash(), bob.root_hash());
+
+        alice.apply_storage_op(StorageOp::Remove { id: entry });
+        assert_eq!(alice.entity_count(), 0);
+        assert_eq!(bob.entity_count(), 1);
+
+        // The HOLDER (bob) initiates the pull.
+        execute_level_wise_sync(&mut bob, &alice)
+            .await
+            .expect("bob->alice levelwise ok");
+
+        assert_eq!(
+            bob.entity_count(),
+            0,
+            "bob did not converge to the deletion as LevelWise initiator \
+             (deleted_children not carried on the level response)"
+        );
+        assert_eq!(alice.entity_count(), 0, "alice stays cleared");
+        assert_eq!(
+            alice.root_hash(),
+            bob.root_hash(),
+            "roots must converge after a single LevelWise pull regardless of initiator"
         );
     }
 

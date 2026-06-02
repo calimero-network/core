@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Implemented (item 1) — PR #2601, merged 2026-06-02 |
 | **Date** | 2026-06-02 |
 | **Owner** | Storage / Context / Node sync |
 | **Issue** | #2230 (SharedStorage v2: live per-entity verification) — **item 1 only** |

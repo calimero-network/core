@@ -616,6 +616,7 @@ mod index__private_methods {
             own_hash: hash2,
             metadata: Metadata::default(),
             deleted_at: None,
+            deleted_children: Vec::new(),
         };
         <Index<MainStorage>>::save_index(&index).unwrap();
 
@@ -637,6 +638,7 @@ mod index__private_methods {
             own_hash: hash2,
             metadata: Metadata::default(),
             deleted_at: None,
+            deleted_children: Vec::new(),
         };
         <Index<MainStorage>>::save_index(&index).unwrap();
         assert_eq!(<Index<MainStorage>>::get_index(id).unwrap().unwrap(), index);
@@ -1088,6 +1090,7 @@ mod minimal_struct_layout_compat {
                 field_name,
             },
             deleted_at: Some(9999),
+            deleted_children: Vec::new(),
         }
     }
 

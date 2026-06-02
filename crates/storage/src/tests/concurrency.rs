@@ -520,3 +520,120 @@ fn concurrent_merge_splits_value_from_own_hash() {
         );
     }
 }
+
+/// Apply an `Action::Update` to container `c` carrying new `data` at HLC `ts`.
+/// `c` already has children; this updates the container's OWN value (the path a
+/// title/metadata edit on a collection takes), exercising `save_internal`'s
+/// value-merge + own_hash/full_hash recompute while children are changing.
+fn update_container_value(c: Id, data: Vec<u8>, ts: u64) {
+    use crate::action::Action;
+    use crate::collections::crdt_meta::CrdtType;
+    use crate::interface::{ApplyContext, Interface};
+
+    let mut md = Metadata::new(ts, ts);
+    md.crdt_type = Some(CrdtType::LwwRegister {
+        inner_type: "String".to_string(),
+    });
+    Interface::<SharedStore>::apply_action(
+        Action::Update {
+            id: c,
+            data,
+            ancestors: vec![],
+            metadata: md,
+        },
+        &ApplyContext::empty(),
+    )
+    .expect("update container value");
+}
+
+/// **core#2571 — the last untested storage-layer suspect (named in the
+/// `concurrent_apply_action_nested_inserts_converge` doc): a concurrent
+/// container `Action::Update` racing child inserts on the SAME parent.**
+///
+/// This is the storage-layer shape of the frozen-rga divergence: the RGA-doc /
+/// title edit updates a *container's own value* (`save_internal` → own_hash +
+/// `recalculate_ancestor_hashes` → root) at the same time the container gains
+/// children (`add_child_to` → its full_hash → root). Both paths recompute the
+/// container's — and the root's — Merkle hash from overlapping inputs. If the
+/// composite isn't serialized, a value-update could write a root hash computed
+/// from a stale child set (or vice-versa), leaving a stable-but-different root.
+///
+/// Strictly-increasing update timestamps make the LWW winner deterministic, so
+/// serial and concurrent runs MUST settle on the same container value and the
+/// same (complete) child set — hence the same root hash. Repeated rounds make a
+/// non-sticky race observable.
+#[test]
+#[serial]
+fn concurrent_container_update_races_child_adds_root_converges() {
+    let root = Id::new([0x41; 32]);
+    let c = Id::new([0x42; 32]);
+
+    const ROUNDS: u16 = 30;
+    const N: u16 = 120;
+
+    // Deterministic serial baseline (compute once): interleave child-add i and
+    // container-update i, in order. Strictly-increasing update ts → the final
+    // container value is update N-1 regardless of interleave.
+    let serial_root = {
+        reset_shared_store();
+        Index::<SharedStore>::add_root(ChildInfo::new(root, [0u8; 32], Metadata::new(1, 1)))
+            .expect("seed root");
+        seed_lww_leaf(root, c, b"genesis");
+        for i in 0..N {
+            apply_leaf_under_map(
+                c,
+                child_id(0xEE, i),
+                vec![(i >> 8) as u8, i as u8],
+                1000 + i as u64,
+            );
+            update_container_value(c, vec![0xCC, i as u8], 2000 + i as u64);
+        }
+        let (full, _) = Index::<SharedStore>::get_hashes_for(root)
+            .expect("root hashes")
+            .expect("root present");
+        full
+    };
+
+    for round in 0..ROUNDS {
+        reset_shared_store();
+        Index::<SharedStore>::add_root(ChildInfo::new(root, [0u8; 32], Metadata::new(1, 1)))
+            .expect("seed root");
+        seed_lww_leaf(root, c, b"genesis");
+
+        // Thread A: add the children under c. Thread B: churn c's own value with
+        // strictly-newer ts. They race the container's full_hash/own_hash recompute.
+        let t_execute = std::thread::spawn(move || {
+            for i in 0..N {
+                apply_leaf_under_map(
+                    c,
+                    child_id(0xEE, i),
+                    vec![(i >> 8) as u8, i as u8],
+                    1000 + i as u64,
+                );
+            }
+        });
+        let t_sync = std::thread::spawn(move || {
+            for i in 0..N {
+                update_container_value(c, vec![0xCC, i as u8], 2000 + i as u64);
+            }
+        });
+        t_execute.join().unwrap();
+        t_sync.join().unwrap();
+
+        let children = Index::<SharedStore>::get_children_of(c).unwrap().len();
+        assert_eq!(
+            children, N as usize,
+            "round {round}: container lost a child under concurrent value-update + adds",
+        );
+        let (concurrent_root, _) = Index::<SharedStore>::get_hashes_for(root)
+            .expect("root hashes")
+            .expect("root present");
+        assert_eq!(
+            hex::encode(serial_root),
+            hex::encode(concurrent_root),
+            "core#2571 residual (round {round}): a container value-Update racing child \
+             inserts produced a different ROOT full_hash than the identical ops applied \
+             serially — the same-content / different-root split-brain",
+        );
+    }
+}

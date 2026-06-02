@@ -22,7 +22,7 @@
 //! ├── delta.rs           # DeltaSyncRequest, DeltaPayload, etc.
 //! ├── hash_comparison.rs # TreeNode, TreeNodeRequest, compare_tree_nodes()
 //! ├── bloom_filter.rs    # DeltaIdBloomFilter, BloomFilterRequest, etc.
-//! ├── snapshot.rs        # SnapshotPage, BroadcastMessage, StreamMessage, etc.
+//! ├── snapshot.rs        # SnapshotRecord, BroadcastMessage, StreamMessage, etc.
 //! ├── subtree.rs         # SubtreePrefetchRequest, SubtreeData, etc.
 //! └── levelwise.rs       # LevelWiseRequest, LevelWiseResponse, etc.
 //! ```
@@ -84,9 +84,8 @@ pub use wire::{InitPayload, MessagePayload, StreamMessage, MAX_TREE_REQUEST_DEPT
 
 // Snapshot types
 pub use snapshot::{
-    check_snapshot_safety, BroadcastMessage, SnapshotBoundaryRequest, SnapshotBoundaryResponse,
-    SnapshotComplete, SnapshotCursor, SnapshotEntity, SnapshotEntityPage, SnapshotError,
-    SnapshotPage, SnapshotRequest, SnapshotStreamRequest, SnapshotVerifyResult,
+    check_snapshot_safety, BroadcastMessage, SnapshotComplete, SnapshotCursor, SnapshotEntity,
+    SnapshotEntityPage, SnapshotError, SnapshotRequest, SnapshotVerifyResult,
     DEFAULT_SNAPSHOT_PAGE_SIZE, MAX_COMPRESSED_PAYLOAD_SIZE, MAX_DAG_HEADS, MAX_ENTITIES_PER_PAGE,
     MAX_ENTITY_DATA_SIZE, MAX_SIGNED_GROUP_OP_PAYLOAD_BYTES, MAX_SNAPSHOT_PAGES,
     MAX_SNAPSHOT_PAGE_SIZE,

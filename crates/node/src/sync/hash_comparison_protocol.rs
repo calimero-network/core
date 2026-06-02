@@ -438,6 +438,26 @@ async fn run_initiator_impl<T: SyncTransport>(
                 // Internal node: compare with local version
                 let is_this_node_root = is_root_request && remote_node.id == node_id;
 
+                // Tombstone reconciliation (symmetric clear convergence): the
+                // remote advertises children it deleted. For any we still hold
+                // live, apply the deletion (delete-wins by HLC) via the
+                // authenticated DeleteRef path — so a peer that cleared an entry
+                // converges us even when WE initiated the sync, without anyone
+                // pushing the live entity. (Our own deletions flow the other way
+                // via the remote_only → EntityDeletePush path below.)
+                if !remote_node.deleted_children.is_empty() {
+                    let applied = with_runtime_env(runtime_env.clone(), || {
+                        apply_remote_tombstones(&remote_node.deleted_children)
+                    });
+                    if applied > 0 {
+                        debug!(
+                            %context_id,
+                            applied,
+                            "applied remote deleted_children (clear convergence)"
+                        );
+                    }
+                }
+
                 let local_version = with_runtime_env(runtime_env.clone(), || {
                     get_local_tree_node(context_id, &remote_node.id, is_this_node_root)
                 })?;
@@ -1216,52 +1236,108 @@ fn get_local_tree_node(
         .map(|children| children.iter().map(|c| *c.id().as_bytes()).collect())
         .unwrap_or_default();
 
-    if children_ids.is_empty() {
-        // Leaf node
-        if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
-            let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
-                // No CRDT type ("opaque" leaf — e.g. the `Root<T>` state entry).
-                // Emit a real *leaf* (not a malformed empty `internal` node, which the
-                // peer's `TreeNode::is_valid()` rejects) carrying a synthetic LWW wire
-                // type — merge-equivalent to `None` and Merkle-hash-neutral.
-                trace!(%entity_id, "opaque leaf, synthesised LWW wire type for sync");
-                CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
-            });
-            // Carry the leaf's Merkle parent_id on the wire — see the same
-            // comment in `collect_leaves_recursive` for rationale.
-            let mut metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
-                .with_created_at(index.metadata.created_at());
-            if let Some(parent_id) = index.parent_id() {
-                metadata = metadata.with_parent(*parent_id.as_bytes());
-            }
-            // Full ancestor chain — see the matching block in
-            // `collect_leaves_recursive` for rationale.
-            if let Ok(ancestors) = Index::<MainStorage>::get_ancestors_of(entity_id) {
-                metadata = metadata.with_ancestors(ancestors);
-            }
-            if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
-                metadata = metadata.with_authorization(auth);
-            }
-            let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
-            Ok(Some(TreeNode::leaf(
-                *entity_id.as_bytes(),
-                full_hash,
-                leaf_data,
-            )))
-        } else {
-            Ok(Some(TreeNode::internal(
-                *entity_id.as_bytes(),
-                full_hash,
-                vec![],
-            )))
+    // Tombstones for children this node removed, resolved to signed
+    // `EntityDeletion`s from each child's own tombstone index. Carried on the
+    // wire so a peer that still holds the child converges to the deletion
+    // (delete-wins) during comparison — without anyone pushing the live entity.
+    let deleted_children = collect_deleted_children_wire(&index);
+
+    // A node with live children and/or tombstoned children is INTERNAL. A
+    // collection cleared to childless still carries `deleted_children`, so emit
+    // it as internal carrying the tombstones (not as a leaf) — that's what lets
+    // the deletion propagate. Behaviour is unchanged when there are no
+    // tombstones (`deleted_children` empty): the old leaf/internal split below.
+    if !children_ids.is_empty() || !deleted_children.is_empty() {
+        let mut node = TreeNode::internal(*entity_id.as_bytes(), full_hash, children_ids);
+        node.deleted_children = deleted_children;
+        return Ok(Some(node));
+    }
+
+    // No children, live or tombstoned — leaf, or empty-internal.
+    if let Some(entry_data) = Interface::<MainStorage>::find_by_id_raw(entity_id) {
+        let crdt_type = index.metadata.crdt_type.clone().unwrap_or_else(|| {
+            // No CRDT type ("opaque" leaf — e.g. the `Root<T>` state entry).
+            // Emit a real *leaf* (not a malformed empty `internal` node, which the
+            // peer's `TreeNode::is_valid()` rejects) carrying a synthetic LWW wire
+            // type — merge-equivalent to `None` and Merkle-hash-neutral.
+            trace!(%entity_id, "opaque leaf, synthesised LWW wire type for sync");
+            CrdtType::lww_register(OPAQUE_LEAF_CRDT_TYPE_NAME)
+        });
+        // Carry the leaf's Merkle parent_id on the wire — see the same
+        // comment in `collect_leaves_recursive` for rationale.
+        let mut metadata = LeafMetadata::new(crdt_type, index.metadata.updated_at(), [0u8; 32])
+            .with_created_at(index.metadata.created_at());
+        if let Some(parent_id) = index.parent_id() {
+            metadata = metadata.with_parent(*parent_id.as_bytes());
         }
+        // Full ancestor chain — see the matching block in
+        // `collect_leaves_recursive` for rationale.
+        if let Ok(ancestors) = Index::<MainStorage>::get_ancestors_of(entity_id) {
+            metadata = metadata.with_ancestors(ancestors);
+        }
+        if let Some(auth) = crate::sync::helpers::wire_authorization_for(&index.metadata) {
+            metadata = metadata.with_authorization(auth);
+        }
+        let leaf_data = TreeLeafData::new(*entity_id.as_bytes(), entry_data, metadata);
+        Ok(Some(TreeNode::leaf(
+            *entity_id.as_bytes(),
+            full_hash,
+            leaf_data,
+        )))
     } else {
         Ok(Some(TreeNode::internal(
             *entity_id.as_bytes(),
             full_hash,
-            children_ids,
+            vec![],
         )))
     }
+}
+
+/// Apply tombstones a remote node advertised in its `deleted_children`, for any
+/// entity we still hold live. Each goes through the authenticated
+/// `Action::DeleteRef` path (delete-wins by HLC; signature/nonce verified for
+/// User/Shared, safe no-op when it loses or fails auth). Returns the count
+/// applied. Must be called inside a `with_runtime_env` scope.
+pub(crate) fn apply_remote_tombstones(deletions: &[EntityDeletion]) -> u64 {
+    let mut applied = 0u64;
+    for deletion in deletions {
+        let action = calimero_storage::action::Action::DeleteRef {
+            id: Id::new(deletion.id),
+            deleted_at: deletion.deleted_at,
+            metadata: deletion.metadata.clone(),
+        };
+        if Interface::<MainStorage>::apply_action(
+            action,
+            &calimero_storage::interface::ApplyContext::empty(),
+        )
+        .is_ok()
+        {
+            applied += 1;
+        }
+    }
+    applied
+}
+
+/// Resolve a node's `deleted_children` (child ids) to signed `EntityDeletion`s
+/// for the wire, reading each child's own tombstone index for `deleted_at` +
+/// the (signed) metadata. Entries whose child index is gone (GC'd) or not
+/// actually tombstoned are skipped.
+pub(crate) fn collect_deleted_children_wire(
+    index: &calimero_storage::index::EntityIndex,
+) -> Vec<EntityDeletion> {
+    index
+        .deleted_children()
+        .iter()
+        .filter_map(|child_id| {
+            let cidx = Index::<MainStorage>::get_index(*child_id).ok().flatten()?;
+            let deleted_at = cidx.deleted_at?;
+            Some(EntityDeletion {
+                id: *child_id.as_bytes(),
+                deleted_at,
+                metadata: cidx.metadata.clone(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

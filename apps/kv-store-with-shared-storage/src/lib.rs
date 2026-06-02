@@ -76,7 +76,15 @@ impl KvStore {
         Ok(self.shared_map.get()?.get(&key)?.map(|v| v.get().clone()))
     }
 
-    /// Rotate the writer set. Caller must be a current writer; rejected if frozen.
+    /// Rotate the writer set of the shared **register** (`shared_value`) only.
+    /// Caller must be a current writer; rejected if frozen.
+    ///
+    /// Note: this intentionally does NOT rotate `shared_map` — each
+    /// `SharedStorage` field has its own independent writer set. An app that
+    /// wants to rotate both must call rotate on each (the e2e relies on the map
+    /// staying guarded by the original set for its adversarial step). This is an
+    /// example app; production apps should name such methods per the field they
+    /// rotate to avoid surprising callers.
     pub fn rotate_writers(&mut self, new_writers: Vec<PublicKey>) -> app::Result<()> {
         app::log!("Rotating writers: {:?}", new_writers);
         let set: BTreeSet<PublicKey> = new_writers.into_iter().collect();
@@ -86,20 +94,26 @@ impl KvStore {
         Ok(())
     }
 
-    /// Read the current writer count of the shared register. Used by the
-    /// adversarial e2e to assert a forged rotation did not change the set on the
-    /// honest node.
+    /// e2e-support method (not for production). Read the current writer count of
+    /// the shared register so the adversarial workflow can assert a forged
+    /// rotation did not change the set on the honest node. It is a public
+    /// `#[app::logic]` method because the e2e drives this app as a black box over
+    /// RPC, so `#[cfg(test)]`/feature gating would make it unreachable to the
+    /// harness; a real app would not expose it.
     pub fn writer_count(&self) -> app::Result<u64> {
         Ok(self.shared_value.writers().len() as u64)
     }
 
-    /// Adversarial-test helper: attempt to rotate the writer set, reporting
-    /// whether the **local** writer gate accepted it (`true`) or refused it
-    /// (`false`) instead of trapping. Lets an e2e assert that a non-writer
-    /// member cannot rotate the set without failing the call itself. The
-    /// authoritative rejection of a *forged rotation delta* (one that bypasses
-    /// this local gate) happens at merge on the honest node and is covered by
-    /// the storage-layer test `forged_shared_rotation_rejected_at_merge`.
+    /// e2e-support method (not for production). Attempt to rotate the writer set,
+    /// reporting whether the **local** writer gate accepted it (`true`) or
+    /// refused it (`false`) instead of trapping, so the adversarial workflow can
+    /// assert a non-writer member cannot rotate without failing the RPC call
+    /// itself. Deliberately swallows the error to return a bool — not suitable
+    /// for production (a real app should propagate it). Public for the same
+    /// black-box-RPC reason as `writer_count`. The authoritative rejection of a
+    /// *forged rotation delta* (one that bypasses this local gate) happens at
+    /// merge and is covered by the storage test
+    /// `forged_shared_rotation_rejected_at_merge`.
     pub fn try_rotate_writers(&mut self, new_writers: Vec<PublicKey>) -> app::Result<bool> {
         let set: BTreeSet<PublicKey> = new_writers.into_iter().collect();
         match self.shared_value.rotate_writers(set) {
