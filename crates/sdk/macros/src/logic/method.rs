@@ -74,7 +74,7 @@ impl ToTokens for PublicLogicMethod<'_> {
 
             quote_spanned! {name.span()=>
                 #[derive(::calimero_sdk::serde::Deserialize)]
-                #[serde(crate = "::calimero_sdk::serde")]
+                #[serde(crate = "::calimero_sdk::serde", deny_unknown_fields)]
                 struct #input_ident #input_lifetime {
                     #(
                         #args

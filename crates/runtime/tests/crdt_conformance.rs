@@ -769,6 +769,62 @@ fn nested_counter_single_writer_syncs() {
     assert_converged("nested_counter_single", &roots);
 }
 
+// ---------------------------------------------------------------------------
+// Argument validation (core#1646): the macro-generated input struct now uses
+// serde `deny_unknown_fields`, so passing an argument a method does not declare
+// must fail loudly instead of being silently dropped.
+// ---------------------------------------------------------------------------
+
+/// `set(key, value)` called with an extra `bogus` field must error rather than
+/// silently ignore it; the same call without the extra field still succeeds.
+#[test]
+fn unknown_argument_is_rejected() {
+    let mut c = Cluster::new(1);
+    let module = c.module;
+    let executor = c.nodes[0].executor;
+
+    // Extra `bogus` field: rejected by `deny_unknown_fields`.
+    let bad = to_json_vec(&json!({"key": "k", "value": "v", "bogus": "x"})).unwrap();
+    let outcome = module
+        .run(
+            CTX.into(),
+            executor.into(),
+            "set",
+            &bad,
+            &mut c.nodes[0].store,
+            None,
+            None,
+        )
+        .expect("host should not trap — the app panics with a deserialize error");
+    let err = outcome
+        .returns
+        .expect_err("call with an unknown argument must fail, not silently ignore it");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("unknown field") && msg.contains("bogus"),
+        "expected an unknown-field deserialize error mentioning `bogus`, got: {msg}"
+    );
+
+    // The declared arguments alone still deserialize and execute fine.
+    let ok = to_json_vec(&json!({"key": "k", "value": "v"})).unwrap();
+    let outcome = module
+        .run(
+            CTX.into(),
+            executor.into(),
+            "set",
+            &ok,
+            &mut c.nodes[0].store,
+            None,
+            None,
+        )
+        .expect("valid call should run");
+    assert!(
+        outcome.returns.is_ok(),
+        "valid arguments must still succeed, got: {:?}",
+        outcome.returns
+    );
+}
+
 #[test]
 fn unordered_set_single_writer_syncs() {
     let mut c = Cluster::new(3);
