@@ -1981,13 +1981,23 @@ impl DeltaStore {
                 let serialized_actions = match borsh::to_vec(&applied_delta.payload) {
                     Ok(s) => s,
                     Err(e) => {
+                        // Aborting the whole batch — not `continue` — is the
+                        // point of the atomic path. Skipping just this delta
+                        // would still commit `heads` below, advancing them
+                        // past a delta we never persisted: exactly the
+                        // divergence this code prevents. Bail with no events
+                        // forwarded and no heads write; the in-memory DAG
+                        // keeps the delta applied and the next sync re-runs
+                        // this persist cleanly.
                         warn!(
                             ?e,
                             context_id = %self.applier.context_id,
                             delta_id = ?cid,
-                            "Failed to serialize applied delta actions, skipping persistence"
+                            "Failed to serialize applied delta actions; \
+                             aborting persist so dag_heads can't advance past \
+                             an unpersisted delta"
                         );
-                        continue;
+                        return Vec::new();
                     }
                 };
 
@@ -2023,29 +2033,38 @@ impl DeltaStore {
         // versa). The failure is logged rather than propagated to match
         // `get_missing_parents`'s warn-and-continue behaviour: on failure
         // nothing is written, so the DB stays at its pre-cascade state and
-        // the next sync replays cleanly. Events are preserved in the DB
-        // record (and in the Vec we return) until the caller confirms
-        // handler execution, so a failure here can't lose event payloads.
+        // the next sync replays cleanly.
         match self.applier.context_client.persist_deltas_and_dag_heads(
             &self.applier.context_id,
             &records,
             heads.clone(),
         ) {
-            Ok(()) => debug!(
-                context_id = %self.applier.context_id,
-                new_heads = ?heads,
-                persisted_deltas = records.len(),
-                "Atomically persisted cascaded deltas and dag_heads"
-            ),
-            Err(e) => warn!(
-                ?e,
-                context_id = %self.applier.context_id,
-                "Failed to persist cascaded deltas and dag_heads atomically; \
-                 DB left at pre-cascade state, next sync will correct it"
-            ),
+            Ok(()) => {
+                debug!(
+                    context_id = %self.applier.context_id,
+                    new_heads = ?heads,
+                    persisted_deltas = records.len(),
+                    "Atomically persisted cascaded deltas and dag_heads"
+                );
+                forwarded_events
+            }
+            Err(e) => {
+                // The commit failed, so none of these records landed. Don't
+                // forward their events: running handlers for deltas whose
+                // `applied: true` record was never written would break the
+                // crash-safety contract (a restart's `load_persisted_deltas`
+                // wouldn't find them to replay). The next sync re-applies the
+                // deltas and re-forwards from the durable DB records instead.
+                warn!(
+                    ?e,
+                    context_id = %self.applier.context_id,
+                    "Failed to persist cascaded deltas and dag_heads atomically; \
+                     DB left at pre-cascade state, events not forwarded, next \
+                     sync will correct it"
+                );
+                Vec::new()
+            }
         }
-
-        forwarded_events
     }
 
     /// Mark a delta's events as executed by clearing its `events` column

@@ -303,6 +303,15 @@ impl ContextRegistry {
     /// newly-applied deltas advances heads — the behaviour the standalone
     /// [`update_dag_heads`] used to provide.
     ///
+    /// Atomicity covers the *write* only. The `meta` read, the in-memory
+    /// `dag_heads` mutation, and the commit are not one transaction, so two
+    /// callers racing on the same context could read the same `meta` and the
+    /// later commit would clobber the earlier one's heads (a read-modify-write
+    /// race, same as the standalone [`update_dag_heads`] it replaces). The
+    /// node's callers serialise per-context behind the DAG write lock, so
+    /// this is not hit in practice; a CAS / per-context lock would be needed
+    /// to make it safe for unsynchronised callers.
+    ///
     /// [`update_dag_heads`]: Self::update_dag_heads
     pub fn persist_deltas_and_dag_heads(
         &self,
@@ -1075,10 +1084,7 @@ impl ContextClient {
         self.registry.update_dag_heads(context_id, dag_heads)
     }
 
-    /// Atomically persist a batch of applied DAG-delta records together with
-    /// the context's updated `dag_heads`, in a single backend write batch:
-    /// either all of it lands or none does, so a mid-write failure can't
-    /// leave persisted deltas pointing past stale heads.
+    /// See [`ContextRegistry::persist_deltas_and_dag_heads`].
     pub fn persist_deltas_and_dag_heads(
         &self,
         context_id: &ContextId,
