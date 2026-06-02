@@ -404,7 +404,7 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
     }
 }
 
-/// Test 2 — write-gate refuses user `ExecuteRequest` against a
+/// Test 2 — write-gate refuses a state-op `ExecuteRequest` against a
 /// context whose owning group has `GroupUpgradeStatus::InProgress`.
 ///
 /// Scope: this test verifies ONLY the write-gate's behavior given a
@@ -419,10 +419,20 @@ async fn cascade_dispatch_e2e_single_node_emitter() {
 /// status without racing the propagator (whose internals may evolve)
 /// or depending on `propagate_upgrade` failing for the right reason.
 ///
-/// A `context_client.execute` for the context in `G1` must surface
-/// `ExecuteError::UpgradeInProgress { group_id: g1 }`.
+/// We exercise the state-op (`__calimero_sync_next`) path specifically:
+/// PR-5 (#2539 step 1) relaxed the gate so that *user calls* now execute
+/// during `InProgress` (reads are served from the pre-migration root, and
+/// only a *write* is refused post-execution). State-ops are writes by
+/// construction, so they remain refused **before** execution — which is the
+/// branch this test pins, deterministically and without loading a real WASM
+/// module (the fixture installs a dummy bytecode blob). A `context_client.execute`
+/// of `__calimero_sync_next` for the context in `G1` must surface
+/// `ExecuteError::UpgradeInProgress { group_id: g1 }`. (The user-call
+/// read-allowed / write-refused behavior is covered by the
+/// `upgrade_rejects_committed_write` unit tests in `calimero-context` and the
+/// `21-reads-available-during-upgrade` merobox workflow, which run a real app.)
 #[tokio::test]
-async fn cascade_dispatch_e2e_write_gate_blocks_user_calls() {
+async fn cascade_dispatch_e2e_write_gate_blocks_state_ops() {
     let node = boot_test_node().await;
     let mut rng = OsRng;
     let admin_sk = PrivateKey::random(&mut rng);
@@ -457,13 +467,13 @@ async fn cascade_dispatch_e2e_write_gate_blocks_user_calls() {
         .execute(
             &fx.ctx_g1,
             &fx.admin_pk,
-            "set_description".to_owned(),
+            "__calimero_sync_next".to_owned(),
             Vec::new(),
             Vec::new(),
             None,
         )
         .await
-        .expect_err("execute must be refused while G1 is InProgress");
+        .expect_err("state-op execute must be refused while G1 is InProgress");
 
     use calimero_context_client::messages::ExecuteError;
     match err {
@@ -475,7 +485,7 @@ async fn cascade_dispatch_e2e_write_gate_blocks_user_calls() {
         }
         other => panic!(
             "expected ExecuteError::UpgradeInProgress, got {other:?} — \
-             write-gate is not firing on a pre-set InProgress status"
+             state-op write-gate is not firing on a pre-set InProgress status"
         ),
     }
 }

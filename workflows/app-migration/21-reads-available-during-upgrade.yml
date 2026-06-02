@@ -1,0 +1,271 @@
+name: 21 — Reads available during an in-progress upgrade (PR-5, #2539 step 1)
+description: >
+  PR-5 relaxes the cascade write-gate so that only WRITES pause while a group
+  upgrade is `InProgress` — READS keep serving, from the committed
+  pre-migration root. This workflow proves that behaviorally with a real app.
+
+  Setup mirrors 01-namespace-cascade-migration (2 nodes, namespace + Open
+  descendant subgroup + one context, v1 state synced to node 2, LazyOnAccess).
+
+  The core is a `parallel` step with two concurrent branches on the emitter:
+    - upgrade-branch: ONE upgrade_group(cascade=true, migrate_v1_to_v2) against
+      the namespace root — this drives the group through the `InProgress` window.
+    - reads-branch: a sustained burst of `get_description` view calls against the
+      context, each `expected_failure: false`. A read refused during `InProgress`
+      (the OLD behaviour) makes the reads-branch fail → the workflow fails; with
+      PR-5 every read is served from the pre-migration root and the branch passes.
+
+  After the parallel block, the cascade is allowed to settle and BOTH nodes are
+  asserted to actually reach v2 (so the reads-branch did overlap a real upgrade,
+  not a no-op), and a final read returns the migrated-but-equal description.
+
+  DETERMINISM NOTE: this is a behavioural / illustrative guard. A read can only
+  catch the regression if it lands inside the emitter's `InProgress` window; the
+  sustained burst (started concurrently with the upgrade) maximises that overlap,
+  but the window length is propagation-dependent. The DETERMINISTIC guarantees
+  for PR-5 live in Rust: the `upgrade_rejects_committed_write` unit tests and the
+  `cascade_dispatch_e2e_write_gate_blocks_state_ops` actor test (both pin
+  `InProgress` directly). Write-refusal-during-upgrade is covered there too, so
+  this workflow deliberately omits a timing-fragile write-expected-failure assert.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 2
+  image: merod:local
+  prefix: app-migration-reads
+  base_port: 9250
+  base_rpc_port: 9350
+
+steps:
+  # Phase 1: install v1 + v2 on the admin node only (node 2 fetches both
+  # versions over BlobShare: v1 on context join, v2 when the cascade
+  # announces the target blob). App ids are content-addressed.
+  - name: Install migration-suite-v1 on node 1
+    type: install_application
+    node: app-migration-reads-1
+    path: apps/migrations/migration-suite-v1/res/migration_suite_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install migration-suite-v2-add-field on node 1
+    type: install_application
+    node: app-migration-reads-1
+    path: apps/migrations/migration-suite-v2-add-field/res/migration_suite_v2_add_field.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Phase 2: node 1 builds namespace + Open subgroup + context (v1).
+  - name: Create namespace on node 1 (anchors app_v1)
+    type: create_namespace
+    node: app-migration-reads-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-reads-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create descendant Open subgroup on node 1
+    type: create_group_in_namespace
+    node: app-migration-reads-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "reads-target-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-reads-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-reads-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: invite node 2, materialise inherited membership + context.
+  - name: Create namespace invitation for node 2
+    type: create_namespace_invitation
+    node: app-migration-reads-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      namespace_invitation: invitation
+
+  - name: Wait for subgroup-visibility + context-registered ops to gossip
+    type: wait
+    seconds: 10
+
+  - name: Node 2 joins namespace
+    type: join_namespace
+    node: app-migration-reads-2
+    namespace_id: "{{namespace_id}}"
+    invitation: "{{namespace_invitation}}"
+
+  - name: Node 2 materialises subgroup membership via inheritance
+    type: join_subgroup_inheritance
+    node: app-migration-reads-2
+    group_id: "{{group_id}}"
+
+  - name: Node 2 joins the context
+    type: join_context
+    node: app-migration-reads-2
+    context_id: "{{ctx_id}}"
+
+  # Phase 4: write v1 state on node 1, sync to node 2.
+  - name: Node 1 writes v1 description
+    type: call
+    node: app-migration-reads-1
+    context_id: "{{ctx_id}}"
+    method: set_description
+    args:
+      description: "set-before-upgrade"
+
+  - name: Node 1 increments counter (v1)
+    type: call
+    node: app-migration-reads-1
+    context_id: "{{ctx_id}}"
+    method: increment_counter
+
+  - name: Wait for v1 state to sync to node 2
+    type: wait_for_sync
+    context_id: "{{ctx_id}}"
+    nodes:
+      - app-migration-reads-1
+      - app-migration-reads-2
+    timeout: 90
+    trigger_sync: true
+
+  - name: Sanity — node 1 reads v1 description before upgrade
+    type: call
+    node: app-migration-reads-1
+    context_id: "{{ctx_id}}"
+    method: get_description
+    outputs:
+      desc_before: result
+
+  - name: Assert v1 description readable pre-upgrade
+    type: json_assert
+    statements:
+      - 'json_equal({{desc_before}}, {"output": "set-before-upgrade"})'
+
+  # LazyOnAccess is the cross-node migration model (each node self-migrates
+  # its own byte-identical v1 state on next access).
+  - name: Set upgrade policy to lazy-on-access on node 1
+    type: update_group_settings
+    node: app-migration-reads-1
+    group_id: "{{namespace_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Phase 5 (the point of this workflow): upgrade and reads run CONCURRENTLY.
+  # The upgrade drives the group's `InProgress` window; the sustained reads
+  # must all keep succeeding throughout it. fail-slow so EVERY read failure is
+  # surfaced (one refused read fails the workflow under the old block-all gate).
+  - name: Upgrade (cascade) while reads continue in parallel
+    type: parallel
+    failure_mode: fail-slow
+    mode: sustained
+    groups:
+      - name: upgrade-branch
+        steps:
+          - name: Cascade namespace v1 → v2 (initiated by node 1)
+            type: upgrade_group
+            node: app-migration-reads-1
+            group_id: "{{namespace_id}}"
+            target_application_id: "{{app_v2}}"
+            migrate_method: migrate_v1_to_v2
+            cascade: true
+      - name: reads-branch
+        count: 25
+        steps:
+          - name: Read description during upgrade (must keep succeeding)
+            type: call
+            node: app-migration-reads-1
+            context_id: "{{ctx_id}}"
+            method: get_description
+            expected_failure: false
+
+  # Phase 6: let the cascade + lazy migrations settle, then prove the upgrade
+  # was REAL (both nodes reached v2) so the reads above overlapped an actual
+  # in-progress upgrade rather than a no-op.
+  - name: Wait for cascade + migration to apply on both nodes
+    type: wait
+    seconds: 15
+
+  - name: Node 1 reads post-upgrade schema_info (eager-migrated)
+    type: call
+    node: app-migration-reads-1
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node1: result
+
+  - name: Node 2 reads post-upgrade schema_info (triggers lazy migration)
+    type: call
+    node: app-migration-reads-2
+    context_id: "{{ctx_id}}"
+    method: schema_info
+    outputs:
+      v2_schema_node2: result
+
+  - name: Assert BOTH nodes reached v2 with v1 data preserved
+    type: json_assert
+    statements:
+      - 'json_subset({{v2_schema_node1}}, {"output": {"schema_version": "2.0.0", "description": "set-before-upgrade"}})'
+      - 'json_subset({{v2_schema_node2}}, {"output": {"schema_version": "2.0.0", "description": "set-before-upgrade"}})'
+
+  - name: Final read returns migrated-but-equal description on node 1
+    type: call
+    node: app-migration-reads-1
+    context_id: "{{ctx_id}}"
+    method: get_description
+    outputs:
+      desc_after: result
+
+  - name: Assert description survived the upgrade (read path intact end-to-end)
+    type: json_assert
+    statements:
+      - 'json_equal({{desc_after}}, {"output": "set-before-upgrade"})'
+
+  # Phase 7: teardown (node 1 holds admin authority).
+  - name: Delete context
+    type: delete_context
+    node: app-migration-reads-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-reads-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-reads-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1 on node 1
+    type: uninstall_application
+    node: app-migration-reads-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2 on node 1
+    type: uninstall_application
+    node: app-migration-reads-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false
