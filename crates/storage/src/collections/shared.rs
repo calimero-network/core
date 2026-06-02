@@ -34,6 +34,15 @@ use crate::interface::{Interface, StorageError};
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
 /// Group-writable storage with a mutable writer set.
+///
+/// When `T` is a **collection** (`UnorderedMap`, `UnorderedSet`, …), in-place
+/// edits MUST go through [`get_mut`](SharedStorage::get_mut): it re-establishes
+/// the `Shared{writers}` domain on the collection element so every entry
+/// inserted through it is guarded at merge. The inner value is private and
+/// [`get`](SharedStorage::get) is read-only, so `get_mut` is the only mutation
+/// path — the writer set (`writers`, a persisted field) is the source of truth
+/// and the element domain is re-derived from it on each `get_mut`, so the
+/// guarantee survives reload without the element domain itself being persisted.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct SharedStorage<
     T: BorshSerialize + BorshDeserialize + Mergeable,
@@ -128,6 +137,52 @@ where
         self.storage.set_shared_domain(self.writers.clone());
         let _ = <Interface<MainStorage>>::add_child_to(*ROOT_ID, self)
             .expect("failed to re-register SharedStorage with new id");
+    }
+}
+
+impl<T, S> SharedStorage<T, S>
+where
+    T: BorshSerialize + BorshDeserialize + Mergeable + Data,
+    S: StorageAdaptor,
+{
+    /// Mutable access to a collection value (`UnorderedMap`, `UnorderedSet`, …)
+    /// for in-place editing.
+    ///
+    /// Re-establishes the writer domain on the collection's element before
+    /// handing out the reference, so every entry inserted through it inherits
+    /// `Shared{writers}` and is guarded at merge — including after a reload,
+    /// where the collection element's own domain may not have been persisted.
+    /// Only collections (which implement [`Data`]) get this; a scalar value is
+    /// edited via the whole-value replace path instead.
+    ///
+    /// # Rotation semantics (current)
+    /// Each entry is stamped with the writer set current at the time it is
+    /// written, carried inline on that entry. So after `rotate_writers`, new
+    /// entries are guarded by the new set, but entries written before the
+    /// rotation keep their own stamp and remain verifiable against the old set —
+    /// rotation is forward-only, it does not retroactively revoke write access to
+    /// existing entries. Making every entry re-resolve the writer set from the
+    /// wrapper's rotation log at the op's causal cut (so a rotation revokes the
+    /// whole subtree) needs the DAG-causal rotation machinery; doing it by
+    /// re-stamping entries eagerly diverges the root hash across peers (see the
+    /// note on `rotate_writers`). Until then, treat a guarded collection's writer
+    /// set as effectively fixed for already-written entries.
+    ///
+    /// # Errors
+    /// Currently infallible; the `Result` is preserved for forward compatibility.
+    pub fn get_mut(&mut self) -> Result<&mut T, StoreError> {
+        // Re-establish the domain only when it isn't already current, so a
+        // read-mostly `get_mut` doesn't spuriously mark the element dirty.
+        let already_current = matches!(
+            &self.value.element().metadata.storage_type,
+            crate::entities::StorageType::Shared { writers, .. } if writers == &self.writers
+        );
+        if !already_current {
+            self.value
+                .element_mut()
+                .set_shared_domain(self.writers.clone());
+        }
+        Ok(&mut self.value)
     }
 }
 
@@ -365,6 +420,95 @@ mod tests {
 
     fn writers(keys: &[[u8; 32]]) -> BTreeSet<PublicKey> {
         keys.iter().copied().map(pk).collect()
+    }
+
+    #[test]
+    #[serial]
+    fn shared_collection_entries_inherit_writer_domain() {
+        use crate::collections::{compute_id, LwwRegister, UnorderedMap};
+        use crate::entities::{Data, StorageType};
+        use crate::interface::Interface;
+        use crate::store::MainStorage;
+
+        env::reset_for_testing();
+
+        type Map = UnorderedMap<String, LwwRegister<String>>;
+
+        let ws = writers(&[[7u8; 32]]);
+        let mut guarded: SharedStorage<Map> = SharedStorage::new(ws.clone(), false);
+
+        // Edit the inner map in place through the guarded `get_mut`, which
+        // re-establishes the writer domain on the map element first.
+        let _old = guarded
+            .get_mut()
+            .expect("get_mut")
+            .insert("k".to_owned(), LwwRegister::new("v".to_owned()))
+            .expect("insert");
+
+        // The entry must carry the Shared writer domain — the whole subtree is
+        // guarded at merge, not just the SharedStorage wrapper entity.
+        let map_id = <Map as Data>::id(guarded.get().expect("get"));
+        let child = compute_id(map_id, "k".as_bytes());
+        let entry = <Interface<MainStorage>>::find_by_id::<
+            crate::collections::Entry<(String, LwwRegister<String>)>,
+        >(child)
+        .expect("load child")
+        .expect("child exists");
+        match entry.storage.metadata.storage_type {
+            StorageType::Shared { writers: w, .. } => assert_eq!(w, ws),
+            other => panic!("SharedStorage<Map> entry must inherit Shared, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn shared_collection_guards_entries_after_reload() {
+        use borsh::{from_slice, to_vec};
+
+        use crate::collections::{compute_id, LwwRegister, UnorderedMap};
+        use crate::entities::{Data, StorageType};
+        use crate::interface::Interface;
+        use crate::store::MainStorage;
+
+        env::reset_for_testing();
+
+        type Map = UnorderedMap<String, LwwRegister<String>>;
+
+        let ws = writers(&[[7u8; 32]]);
+        let mut guarded: SharedStorage<Map> = SharedStorage::new(ws.clone(), false);
+        let _old = guarded
+            .get_mut()
+            .expect("get_mut")
+            .insert("a".to_owned(), LwwRegister::new("1".to_owned()))
+            .expect("insert a");
+
+        // Simulate a reload: borsh round-trip the wrapper. The in-memory writer
+        // domain on the collection element is dropped, but `writers` (a persisted
+        // field) survives — it is the source of truth.
+        let bytes = to_vec(&guarded).expect("serialize wrapper");
+        let mut reloaded: SharedStorage<Map> = from_slice(&bytes).expect("deserialize wrapper");
+        assert_eq!(reloaded.writers(), &ws, "writer set must survive reload");
+
+        // After reload, `get_mut` re-derives the domain from the persisted writer
+        // set, so a NEW entry is still guarded — the guarantee does not depend on
+        // the element domain itself persisting.
+        let _old = reloaded
+            .get_mut()
+            .expect("get_mut after reload")
+            .insert("b".to_owned(), LwwRegister::new("2".to_owned()))
+            .expect("insert b");
+
+        let map_id = <Map as Data>::id(reloaded.get().expect("get"));
+        let child_b = compute_id(map_id, "b".as_bytes());
+        let entry = <Interface<MainStorage>>::find_by_id::<
+            crate::collections::Entry<(String, LwwRegister<String>)>,
+        >(child_b)
+        .expect("load child b")
+        .expect("child b exists");
+        match entry.storage.metadata.storage_type {
+            StorageType::Shared { writers: w, .. } => assert_eq!(w, ws),
+            other => panic!("entry written after reload must be guarded, got {other:?}"),
+        }
     }
 
     #[test]
