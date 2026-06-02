@@ -47,6 +47,8 @@ SUITES=(
     "apps/migrations/scenario-authored-vector-v2"
     "apps/migrations/scenario-unordered-set-v1"
     "apps/migrations/scenario-unordered-set-v2"
+    "apps/migrations/scenario-identity-downgrade-v1"
+    "apps/migrations/scenario-identity-downgrade-v2"
 )
 
 for suite in "${SUITES[@]}"; do

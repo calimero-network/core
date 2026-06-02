@@ -1,0 +1,182 @@
+name: 21 — Scenario "identity downgrade" negative-path gate (L1, 1-node)
+description: >
+  Single-node negative-path test for the L1 identity-downgrade gate.
+  Node 1 installs scenario-identity-downgrade-v1 (state: wiki AuthoredMap),
+  creates a namespace + Open subgroup + context, sets the upgrade policy to
+  lazy_on_access, then attempts to upgrade to v2 (wiki UnorderedMap) with a
+  migrate_v1_to_v2 method. The emitter-side gate in upgrade_group.rs
+  (verify_no_identity_downgrade) MUST refuse this upgrade before any group op
+  is emitted — the upgrade_group RPC returns an error, and the step is expected
+  to fail. Two trailing assertions confirm the gate fired for the right reason
+  (assert_log_present for "identity downgrade forbidden") and that the migration
+  body never executed (assert_log_absent for "Executing migration").
+
+  Acts as the regression guard for #2587: if the L1 gate is accidentally
+  removed or short-circuited, the upgrade_group call succeeds → step fails
+  (expected_failure not satisfied) → workflow fails.
+
+no_docker: false
+nuke_on_start: true
+nuke_on_end: false
+
+nodes:
+  count: 1
+  image: merod:local
+  prefix: app-migration-iddowngrade
+  base_port: 9280
+  base_rpc_port: 9380
+
+steps:
+  # Phase 1: Install both binaries on the node.
+  #
+  # v1 = AuthoredMap (identity-carrying); v2 = UnorderedMap (plain map).
+  # The gate refuses the v1→v2 migration upgrade, so v2 is only installed
+  # to obtain its application_id for the upgrade attempt — the bytecode
+  # never becomes the active app for any context.
+  - name: Install scenario-identity-downgrade-v1 on node 1
+    type: install_application
+    node: app-migration-iddowngrade-1
+    path: apps/migrations/scenario-identity-downgrade-v1/res/scenario_identity_downgrade_v1.wasm
+    dev: true
+    outputs:
+      app_v1: applicationId
+
+  - name: Install scenario-identity-downgrade-v2 on node 1
+    type: install_application
+    node: app-migration-iddowngrade-1
+    path: apps/migrations/scenario-identity-downgrade-v2/res/scenario_identity_downgrade_v2.wasm
+    dev: true
+    outputs:
+      app_v2: applicationId
+
+  # Phase 2: Node 1 builds namespace + Open subgroup + context.
+  - name: Create namespace on node 1
+    type: create_namespace
+    node: app-migration-iddowngrade-1
+    application_id: "{{app_v1}}"
+    outputs:
+      namespace_id: namespaceId
+
+  - name: Capture admin key (for teardown)
+    type: get_namespace_identity
+    node: app-migration-iddowngrade-1
+    namespace_id: "{{namespace_id}}"
+    outputs:
+      admin_key: publicKey
+
+  - name: Create Open subgroup on node 1
+    type: create_group_in_namespace
+    node: app-migration-iddowngrade-1
+    namespace_id: "{{namespace_id}}"
+    group_name: "iddowngrade-subgroup"
+    outputs:
+      group_id: groupId
+
+  - name: Mark subgroup as Open
+    type: set_subgroup_visibility
+    node: app-migration-iddowngrade-1
+    group_id: "{{group_id}}"
+    visibility: open
+
+  - name: Create context in subgroup on node 1 (v1)
+    type: create_context
+    node: app-migration-iddowngrade-1
+    application_id: "{{app_v1}}"
+    group_id: "{{group_id}}"
+    outputs:
+      ctx_id: contextId
+
+  # Phase 3: Write v1 state so the group has a context with live data,
+  # then set upgrade policy to lazy-on-access (required for migration).
+  - name: Write a wiki entry (v1)
+    type: call
+    node: app-migration-iddowngrade-1
+    context_id: "{{ctx_id}}"
+    method: put
+    args:
+      key: "hello"
+      value: "world"
+
+  # LazyOnAccess is required for migration-carrying upgrades (see
+  # ensure_migration_policy_supported). The L1 gate check runs inside the
+  # LazyOnAccess branch of upgrade_group before any op is emitted.
+  - name: Set upgrade policy to lazy-on-access
+    type: update_group_settings
+    node: app-migration-iddowngrade-1
+    group_id: "{{group_id}}"
+    upgrade_policy: lazy_on_access
+
+  # Phase 4: Attempt the forbidden upgrade.
+  #
+  # The emitter-side gate (verify_no_identity_downgrade) detects
+  # AuthoredMap → UnorderedMap on the top-level `wiki` field and returns
+  # Err before emitting any GroupOp. The RPC surfaces this as an error;
+  # expected_failure: true makes the step PASS on refusal and FAIL if the
+  # upgrade unexpectedly succeeds (gate broken).
+  - name: Attempt identity-downgrade upgrade (L1 gate must refuse it)
+    type: upgrade_group
+    node: app-migration-iddowngrade-1
+    group_id: "{{group_id}}"
+    target_application_id: "{{app_v2}}"
+    migrate_method: migrate_v1_to_v2
+    expected_failure: true
+
+  # Short wait so the docker log stream is flushed before the log asserts.
+  - name: Wait for log flush
+    type: wait
+    seconds: 5
+
+  # Phase 5: Assert gate semantics.
+  #
+  # assert_log_present: the warn! line emitted by verify_no_identity_downgrade
+  # contains "identity downgrade forbidden". This confirms the gate fired
+  # (not some other error) and the warn! was actually written before bail!.
+  - name: Assert the L1 gate refused the downgrade
+    type: assert_log_present
+    nodes:
+      - app-migration-iddowngrade-1
+    patterns:
+      - "identity downgrade forbidden"
+    min_matches: 1
+
+  # assert_log_absent: "Executing migration" is the log line emitted by the
+  # lazy-migration executor when it actually invokes the migrate wasm method.
+  # The gate refuses before any GroupOp is emitted, so no migration can ever
+  # execute — this line must be absent from the node log.
+  - name: Assert the migration body never executed
+    type: assert_log_absent
+    nodes:
+      - app-migration-iddowngrade-1
+    patterns:
+      - "Executing migration"
+
+  # Phase 6: Teardown.
+  - name: Delete context
+    type: delete_context
+    node: app-migration-iddowngrade-1
+    context_id: "{{ctx_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete subgroup
+    type: delete_group
+    node: app-migration-iddowngrade-1
+    group_id: "{{group_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Delete namespace
+    type: delete_namespace
+    node: app-migration-iddowngrade-1
+    namespace_id: "{{namespace_id}}"
+    requester: "{{admin_key}}"
+
+  - name: Uninstall v1 on node 1
+    type: uninstall_application
+    node: app-migration-iddowngrade-1
+    application_id: "{{app_v1}}"
+
+  - name: Uninstall v2 on node 1
+    type: uninstall_application
+    node: app-migration-iddowngrade-1
+    application_id: "{{app_v2}}"
+
+stop_all_nodes: false

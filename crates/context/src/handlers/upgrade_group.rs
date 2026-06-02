@@ -510,6 +510,10 @@ fn verify_no_identity_downgrade(
         return Ok(());
     };
     if let Some(d) = identity_downgrades(old, new).into_iter().next() {
+        tracing::warn!(
+            field = %d.field, from = %d.from, to = %d.to,
+            "identity downgrade forbidden: refusing migration upgrade that strips authorship/writer-ACL"
+        );
         eyre::bail!(
             "identity downgrade forbidden: field '{}' {} -> {} strips authorship/writer-ACL network-wide \
              (use owner-driven rewrite; see #2534)",
