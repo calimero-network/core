@@ -2,7 +2,6 @@ use calimero_governance_store::{
     CapabilitiesRepository, GroupKeyring, MetaRepository, MigrationsRepository, NamespaceRepository,
 };
 use std::borrow::Cow;
-use std::collections::btree_map;
 // Removed: NonZeroUsize (replaced with CausalDelta)
 use std::time::Instant;
 
@@ -48,7 +47,7 @@ use crate::error::ContextError;
 use crate::handlers::update_application::{
     create_storage_callbacks, update_application_id, update_application_with_migration,
 };
-use crate::ContextManager;
+use crate::{evict_application_if_full, ContextManager};
 use calimero_governance_store::metrics::ExecutionLabels;
 
 pub mod storage;
@@ -978,16 +977,21 @@ impl ContextManager {
                 return Ok(CachedOrBlob::Cached(cached.clone()));
             }
 
-            let app = match act.applications.entry(application_id) {
-                btree_map::Entry::Vacant(vacant) => {
-                    let Some(app) = act.node_client.get_application(&application_id)? else {
-                        bail!(ExecuteError::ApplicationNotInstalled { application_id });
-                    };
-
-                    vacant.insert(app)
-                }
-                btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
-            };
+            // Fetch on a cache miss *before* evicting (so a not-installed app
+            // never wastes an eviction), then cap the cache before inserting.
+            // This `get_module` path is the dominant `applications` insert site
+            // on a long-running node, so it must honour the cap too.
+            if !act.applications.contains_key(&application_id) {
+                let Some(app) = act.node_client.get_application(&application_id)? else {
+                    bail!(ExecuteError::ApplicationNotInstalled { application_id });
+                };
+                evict_application_if_full(&mut act.applications);
+                let _ = act.applications.insert(application_id, app);
+            }
+            let app = act
+                .applications
+                .get(&application_id)
+                .expect("application just inserted or already cached");
 
             let blob = app
                 .resolve_service_blob(service_name.as_deref())
