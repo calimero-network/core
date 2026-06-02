@@ -1,3 +1,24 @@
+I need to analyze the code diff to determine if the HTML documentation file needs updating.
+
+The diff shows changes to:
+1. `Cargo.lock` - dependency additions
+2. `crates/server/Cargo.toml` - new dependencies added (uuid, tokio-tungstenite, tempfile, calimero-blobstore, calimero-utils-actix)
+3. `crates/server/primitives/src/ws.rs` - changes to WebSocket types
+4. `crates/server/src/execute.rs` - new file for shared execution path
+
+Looking at the HTML file `architecture/dependency-explorer.html`, it contains a hardcoded dependency graph in the JavaScript section. The `CRATES` object defines all the crates and their dependencies.
+
+Specifically, checking the "calimero-server" crate definition:
+```javascript
+"calimero-server": { color: "#f97316", group: "core", deps: ["calimero-context-config","calimero-context-primitives","calimero-node-primitives","calimero-primitives","calimero-server-primitives","calimero-store","calimero-tee-attestation","mero-auth"] },
+```
+
+According to the diff, `calimero-server` now has additional dependencies:
+- `calimero-blobstore`
+- `calimero-utils-actix`
+
+These dependencies are already in the graph as separate crates, but they're not listed as dependencies of `calimero-server`. The HTML file needs to be updated to reflect these new dependencies.
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -99,7 +120,7 @@ const CRATES = {
   "calimero-network": { color: "#8b5cf6", group: "core", deps: ["calimero-network-primitives","calimero-primitives","calimero-utils-actix"] },
   "calimero-network-primitives": { color: "#8b5cf6", group: "types", deps: ["calimero-primitives","calimero-utils-actix"] },
   "calimero-node-primitives": { color: "#3b82f6", group: "types", deps: ["calimero-blobstore","calimero-crypto","calimero-network-primitives","calimero-primitives","calimero-storage","calimero-store","calimero-utils-actix"] },
-  "calimero-server": { color: "#f97316", group: "core", deps: ["calimero-context-config","calimero-context-primitives","calimero-node-primitives","calimero-primitives","calimero-server-primitives","calimero-store","calimero-tee-attestation","mero-auth"] },
+  "calimero-server": { color: "#f97316", group: "core", deps: ["calimero-blobstore","calimero-context-config","calimero-context-primitives","calimero-node-primitives","calimero-primitives","calimero-server-primitives","calimero-store","calimero-tee-attestation","calimero-utils-actix","mero-auth"] },
   "calimero-server-primitives": { color: "#f97316", group: "types", deps: ["calimero-context-config","calimero-context-primitives","calimero-primitives"] },
   "calimero-runtime": { color: "#ec4899", group: "core", deps: ["calimero-node-primitives","calimero-primitives","calimero-storage","calimero-sys"] },
   "calimero-store": { color: "#06b6d4", group: "data", deps: ["calimero-primitives","calimero-storage"] },
@@ -434,30 +455,21 @@ searchInput.addEventListener('input', () => {
 
   nodeElements.select('.node-circle')
     .attr('stroke-width', d => matches.has(d.id) ? 2.5 : 1.5)
-    .attr('stroke', d => matches.has(d.id) ? '#f0f0f5' : d.color + '25')
-    .attr('fill', d => matches.has(d.id) ? d.color + '40' : d.color + '06');
+    .attr('stroke', d => matches.has(d.id) ? '#f0f0f5' : d.color)
+    .attr('fill', d => matches.has(d.id) ? d.color + '50' : d.color + '20');
 
   nodeElements.select('.node-label')
-    .attr('fill', d => matches.has(d.id) ? '#d4d4dc' : '#6b6b8020');
-
-  linkElements
-    .attr('stroke', '#252538' + '18')
-    .attr('stroke-width', 0.5);
+    .attr('fill', d => matches.has(d.id) ? '#d4d4dc' : '#6b6b80');
 });
 
 document.getElementById('btn-reset').addEventListener('click', () => {
   searchInput.value = '';
   clearSelection();
-  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity);
-  simulation.alpha(0.5).restart();
+  svg.transition().duration(750).call(
+    zoom.transform,
+    d3.zoomIdentity.translate(0, 0).scale(1)
+  );
 });
-
-if (window.arch && window.arch.buildBreadcrumb) {
-  window.arch.buildBreadcrumb([
-    { label: 'Home', href: 'index.html' },
-    { label: 'Dependency Explorer' },
-  ]);
-}
 
 });
 </script>
