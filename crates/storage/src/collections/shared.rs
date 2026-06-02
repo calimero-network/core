@@ -259,6 +259,12 @@ where
     /// entry may not exist yet on a peer that received the wrapper before the
     /// value's per-entity `Add` synced, so a missing entry yields `T::default()`
     /// rather than panicking.
+    ///
+    /// The `unsafe` ptr cast ties the returned `&mut T` to `&self` and **drops
+    /// the `RefMut` guard** at the end of this call (mirroring [`Root::get`]) —
+    /// so a later call does not collide with a still-held `RefCell` borrow.
+    /// Sound because storage values are never aliased (each read deserializes a
+    /// fresh copy) and execution is single-threaded WASM.
     #[expect(
         clippy::mut_from_ref,
         clippy::expect_used,
