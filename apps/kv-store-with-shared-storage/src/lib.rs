@@ -85,6 +85,28 @@ impl KvStore {
         app::emit!(Event::WritersRotated { count });
         Ok(())
     }
+
+    /// Read the current writer count of the shared register. Used by the
+    /// adversarial e2e to assert a forged rotation did not change the set on the
+    /// honest node.
+    pub fn writer_count(&self) -> app::Result<u64> {
+        Ok(self.shared_value.writers().len() as u64)
+    }
+
+    /// Adversarial-test helper: attempt to rotate the writer set, reporting
+    /// whether the **local** writer gate accepted it (`true`) or refused it
+    /// (`false`) instead of trapping. Lets an e2e assert that a non-writer
+    /// member cannot rotate the set without failing the call itself. The
+    /// authoritative rejection of a *forged rotation delta* (one that bypasses
+    /// this local gate) happens at merge on the honest node and is covered by
+    /// the storage-layer test `forged_shared_rotation_rejected_at_merge`.
+    pub fn try_rotate_writers(&mut self, new_writers: Vec<PublicKey>) -> app::Result<bool> {
+        let set: BTreeSet<PublicKey> = new_writers.into_iter().collect();
+        match self.shared_value.rotate_writers(set) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
 }
 
 #[cfg(test)]

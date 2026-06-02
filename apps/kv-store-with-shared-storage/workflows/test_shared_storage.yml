@@ -122,6 +122,44 @@ steps:
       - 'json_equal({{node2_map_read}}, {"output": "hello"})'
 
   # ============================================
+  # Adversarial rotation (pre-rotation): node 2 is NOT yet a writer of the
+  # shared register, so its attempt to rotate the writer set to itself must be
+  # refused. This proves writer-set rotation is gated to current writers — the
+  # authenticated-rotation guarantee of this change. (The merge-time rejection
+  # of a forged rotation *delta* that bypasses the local gate is covered by the
+  # storage test `forged_shared_rotation_rejected_at_merge`.)
+  # ============================================
+
+  - name: Node 2 (non-writer) attempts to rotate the writer set to itself
+    type: call
+    node: new-calimero-node-2
+    context_id: '{{context_id}}'
+    method: try_rotate_writers
+    args:
+      new_writers:
+        - "{{public_key_new-calimero-node-2}}"
+    outputs:
+      node2_rotate_accepted: result
+
+  - name: Assert node 2's non-writer rotation was refused
+    type: json_assert
+    statements:
+      - 'json_equal({{node2_rotate_accepted}}, {"output": false})'
+
+  - name: Node 1 reads the writer count after the refused rotation
+    type: call
+    node: new-calimero-node-1
+    context_id: '{{context_id}}'
+    method: writer_count
+    outputs:
+      node1_writer_count: result
+
+  - name: Assert the writer set is unchanged on the honest node (still 1)
+    type: json_assert
+    statements:
+      - 'json_equal({{node1_writer_count}}, {"output": 1})'
+
+  # ============================================
   # Rotation: node 1 hands the writer set to node 2
   # ============================================
 
