@@ -28,7 +28,14 @@ use tracing_subscriber::{Layer, Registry};
 /// Maximum enabled log level, encoded as a small ordinal (0 = OFF … 5 = TRACE)
 /// so it lives in a single relaxed atomic. Read on every event by the filter,
 /// which is why the level can change after the subscriber is already global.
-static MAX_LEVEL: AtomicU8 = AtomicU8::new(LEVEL_INFO);
+///
+/// Defaults to WARN, not INFO: dependency crates compiled into the guest (most
+/// notably `calimero_storage`) log routine operations at INFO, so an INFO
+/// default would flood every execution's log buffer with internals. WARN
+/// surfaces warnings/errors out of the box; apps opt into INFO/DEBUG via
+/// [`set_log_level`] when they actually want the detail (e.g. debugging a
+/// storage divergence).
+static MAX_LEVEL: AtomicU8 = AtomicU8::new(LEVEL_WARN);
 
 const LEVEL_OFF: u8 = 0;
 const LEVEL_ERROR: u8 = 1;

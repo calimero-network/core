@@ -112,20 +112,20 @@ const DEFAULT_MAX_REGISTER_SIZE_MIB: u64 = 100;
 /// Default maximum number of log entries.
 ///
 /// Bounds the per-execution log buffer (worst case `max_logs * max_log_size`,
-/// i.e. ~16 MiB, held transiently in the `Outcome`). `tracing` (incl. the
-/// storage crate's, routed through the SDK's host-backed subscriber) emits
-/// many short lines, so the budget favours line *count* over per-line size —
-/// enough for an app that logs liberally and for a DEBUG session. A heavy
-/// whole-tree DEBUG trace can still exceed this; raise the limit explicitly or
-/// narrow the level/target for those.
-const DEFAULT_MAX_LOGS: u64 = 4096;
+/// i.e. ~16 MiB, held transiently in the `Outcome`). Bumped 10× over the
+/// original 100 so an app that logs liberally — or surfaces `tracing` via the
+/// SDK's host-backed subscriber — has headroom. A heavy whole-tree DEBUG trace
+/// can still exceed this; raise the limit explicitly or narrow the
+/// level/target for those.
+const DEFAULT_MAX_LOGS: u64 = 1024;
 /// Default maximum log message size in KiB.
 ///
-/// A single over-long line *traps* the execution (`LogLengthOverflow`), not
-/// truncates, so this stays comfortably above any realistic log/`tracing`
-/// line (which are typically well under 1 KiB) while being far below the old
-/// 16 KiB — the buffer budget is better spent on more lines than bigger ones.
-const DEFAULT_MAX_LOG_SIZE_KIB: u64 = 4;
+/// A single over-long line *traps* the execution (`LogLengthOverflow`) rather
+/// than truncating, so this is NOT shrunk: `tracing` from dependency crates
+/// (e.g. `calimero_storage`'s merge logs) can exceed a few KiB, and trapping
+/// an execution over a log line would be a bad trade. The line-count budget is
+/// raised instead (see `DEFAULT_MAX_LOGS`).
+const DEFAULT_MAX_LOG_SIZE_KIB: u64 = 16;
 /// Default maximum number of events.
 const DEFAULT_MAX_EVENTS: u64 = 100;
 /// Default maximum event kind size in bytes.
@@ -794,8 +794,8 @@ mod tests {
         assert_eq!(limits.max_registers, 100);
         assert_eq!(*limits.max_register_size.deref(), 100 << 20);
         assert_eq!(limits.max_registers_capacity, 1 << 30); // 1 GiB
-        assert_eq!(limits.max_logs, 4096);
-        assert_eq!(limits.max_log_size, 4 << 10); // 4 KiB
+        assert_eq!(limits.max_logs, 1024);
+        assert_eq!(limits.max_log_size, 16 << 10); // 16 KiB
         assert_eq!(limits.max_events, 100);
         assert_eq!(limits.max_event_kind_size, 100);
         assert_eq!(limits.max_event_data_size, 16 << 10); // 16 KiB

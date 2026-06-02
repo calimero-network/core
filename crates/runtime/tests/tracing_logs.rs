@@ -80,10 +80,13 @@ fn engine_module() -> &'static (Engine, Module) {
     static EM: OnceLock<(Engine, Module)> = OnceLock::new();
     EM.get_or_init(|| {
         // DEBUG-level storage logging on the scaffolding root (many collections)
-        // easily exceeds the 100-log default, which would trap with
-        // `LogsOverflow`. Raise the cap well past anything a single probe emits.
+        // emits far more, and larger, lines than the production defaults allow
+        // (it would trap with `LogsOverflow` / `LogLengthOverflow`). Raise both
+        // caps well past anything a single probe emits — this is a test rig, not
+        // a statement about production limits.
         let limits = VMLimits {
             max_logs: 100_000,
+            max_log_size: 1 << 20, // 1 MiB
             ..VMLimits::default()
         };
         let engine = Engine::new(wasmer::Engine::default(), limits);
@@ -124,23 +127,23 @@ fn run(method: &str, params: Value) -> Outcome {
 
 #[test]
 fn app_tracing_reaches_outcome_and_filters_by_level() {
-    // Default level is INFO: info + warn pass, debug is filtered out.
+    // Default level is WARN: warn passes, info + debug are filtered out.
     let outcome = run("tracing_probe", json!({ "debug": false }));
     let logs = outcome.logs;
 
-    let info = logs
+    let warn = logs
         .iter()
-        .find(|l| l.contains("tracing_probe: info line"))
-        .unwrap_or_else(|| panic!("missing info line; logs: {logs:#?}"));
-    assert!(info.contains("INFO"), "level rendered into line: {info:?}");
+        .find(|l| l.contains("tracing_probe: warn line"))
+        .unwrap_or_else(|| panic!("missing warn line; logs: {logs:#?}"));
+    assert!(warn.contains("WARN"), "level rendered into line: {warn:?}");
 
     assert!(
-        logs.iter().any(|l| l.contains("tracing_probe: warn line")),
-        "warn line present; logs: {logs:#?}"
+        !logs.iter().any(|l| l.contains("tracing_probe: info line")),
+        "info line must be filtered out at the WARN default; logs: {logs:#?}"
     );
     assert!(
         !logs.iter().any(|l| l.contains("tracing_probe: debug line")),
-        "debug line must be filtered out at INFO; logs: {logs:#?}"
+        "debug line must be filtered out at the WARN default; logs: {logs:#?}"
     );
 }
 
