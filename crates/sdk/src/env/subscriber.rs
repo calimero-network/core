@@ -26,8 +26,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{Layer, Registry};
 
 /// Maximum enabled log level, encoded as a small ordinal (0 = OFF … 5 = TRACE)
-/// so it lives in a single relaxed atomic. Read on every event by the filter,
-/// which is why the level can change after the subscriber is already global.
+/// so it lives in a single atomic. Read on every event by the filter, which is
+/// why the level can change after the subscriber is already global.
 ///
 /// Defaults to WARN, not INFO: dependency crates compiled into the guest (most
 /// notably `calimero_storage`) log routine operations at INFO, so an INFO
@@ -61,7 +61,11 @@ fn level_filter_to_u8(level: LevelFilter) -> u8 {
 }
 
 fn current_max() -> LevelFilter {
-    match MAX_LEVEL.load(Ordering::Relaxed) {
+    // `Acquire`/`Release` (paired with `set_log_level`'s store) rather than
+    // `Relaxed`: in WASM the guest is single-threaded so it makes no
+    // difference, but the SDK also compiles for native test targets where a
+    // level set on one thread should be promptly visible on another.
+    match MAX_LEVEL.load(Ordering::Acquire) {
         LEVEL_OFF => LevelFilter::OFF,
         LEVEL_ERROR => LevelFilter::ERROR,
         LEVEL_WARN => LevelFilter::WARN,
@@ -78,8 +82,14 @@ fn current_max() -> LevelFilter {
 ///
 /// Call this from your app's initializer (or a dedicated method) to control
 /// verbosity, e.g. `env::set_log_level(LevelFilter::DEBUG)`.
+///
+/// Note: at DEBUG, `tracing` from *every* crate compiled into the guest is
+/// forwarded — including `calimero_storage` internals (keys, values, merge
+/// detail). Those lines land in the execution `Outcome`, so treat DEBUG as a
+/// debugging aid, not something to leave on where the `Outcome` is persisted
+/// or exposed.
 pub fn set_log_level(level: LevelFilter) {
-    MAX_LEVEL.store(level_filter_to_u8(level), Ordering::Relaxed);
+    MAX_LEVEL.store(level_filter_to_u8(level), Ordering::Release);
 }
 
 /// A `Write` sink that buffers one event's bytes and, on drop (end of the
@@ -124,6 +134,24 @@ impl MakeWriter<'_> for HostMakeWriter {
     }
 }
 
+/// Builds the host-backed subscriber. The single source of truth for its
+/// configuration so tests exercise exactly what [`init`] installs.
+///
+/// `without_time`: the default fmt timer calls `SystemTime::now()`, which traps
+/// on `wasm32-unknown-unknown`. `with_ansi(false)`: no colour escapes in
+/// plain-text host logs. The level filter reads the global atomic per event so
+/// `set_log_level` stays effective after install.
+fn build_subscriber() -> impl tracing::Subscriber + Send + Sync {
+    let layer = tracing_subscriber::fmt::layer()
+        .with_writer(HostMakeWriter)
+        .without_time()
+        .with_ansi(false)
+        .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+            meta.level() <= &current_max()
+        }));
+    Registry::default().with(layer)
+}
+
 /// Installs the host-backed subscriber as the global default, once.
 ///
 /// Called automatically at the entry of every generated WASM export (next to
@@ -131,20 +159,7 @@ impl MakeWriter<'_> for HostMakeWriter {
 /// call repeatedly.
 pub fn init() {
     INIT.call_once(|| {
-        // `without_time`: the default fmt timer calls `SystemTime::now()`,
-        // which traps on `wasm32-unknown-unknown`. `with_ansi(false)`: no
-        // colour escapes in plain-text host logs. The level filter reads the
-        // global atomic per event so `set_log_level` stays effective.
-        let layer = tracing_subscriber::fmt::layer()
-            .with_writer(HostMakeWriter)
-            .without_time()
-            .with_ansi(false)
-            .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
-                meta.level() <= &current_max()
-            }));
-
-        let subscriber = Registry::default().with(layer);
-        let _ = tracing::subscriber::set_global_default(subscriber);
+        let _ = tracing::subscriber::set_global_default(build_subscriber());
     });
 }
 
@@ -152,38 +167,27 @@ pub fn init() {
 mod tests {
     use tracing::level_filters::LevelFilter;
     use tracing::{debug, info, warn};
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::{Layer, Registry};
 
-    use super::{current_max, set_log_level, HostMakeWriter};
+    use super::{build_subscriber, set_log_level};
     use crate::env::host;
 
     /// `MAX_LEVEL` is a process-global atomic, so these tests must not run
     /// concurrently or one's `set_log_level` would perturb another's filter.
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Builds a fresh subscriber identical to the installed one. Tests use a
-    /// thread-local default (`with_default`) rather than the process-global
-    /// default so they don't collide when run in parallel, and they read the
-    /// host mock's captured logs directly (no full `TestHost` app needed).
-    fn test_subscriber() -> impl tracing::Subscriber + Send + Sync {
-        let layer = tracing_subscriber::fmt::layer()
-            .with_writer(HostMakeWriter)
-            .without_time()
-            .with_ansi(false)
-            .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
-                meta.level() <= &current_max()
-            }));
-        Registry::default().with(layer)
+    /// Serialize on `TEST_LOCK`, recovering a poisoned lock (a panicking test
+    /// shouldn't cascade-fail the rest of the module via lock poisoning).
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
     fn forwards_events_to_host_with_level() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         host::reset();
         set_log_level(LevelFilter::INFO);
 
-        tracing::subscriber::with_default(test_subscriber(), || {
+        tracing::subscriber::with_default(build_subscriber(), || {
             info!(item = 7, "processing");
         });
 
@@ -197,11 +201,11 @@ mod tests {
 
     #[test]
     fn level_filters_below_threshold() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         host::reset();
         set_log_level(LevelFilter::INFO);
 
-        tracing::subscriber::with_default(test_subscriber(), || {
+        tracing::subscriber::with_default(build_subscriber(), || {
             debug!("dropped at INFO");
             warn!("kept at INFO");
         });
@@ -213,10 +217,10 @@ mod tests {
 
     #[test]
     fn level_change_takes_effect_immediately() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         host::reset();
 
-        tracing::subscriber::with_default(test_subscriber(), || {
+        tracing::subscriber::with_default(build_subscriber(), || {
             set_log_level(LevelFilter::INFO);
             debug!("first, dropped");
             set_log_level(LevelFilter::DEBUG);

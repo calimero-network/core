@@ -41,9 +41,39 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Newest mtime across the app's build inputs: every `*.rs` under `src/`
+/// (recursively), plus `Cargo.toml` and `build.sh`. Returns `None` if nothing
+/// could be stat'd (forces a rebuild). Mirrors the `crdt_conformance` fixture
+/// so a change to a sibling module or the manifest doesn't leave stale wasm.
+fn newest_mtime(app_dir: &std::path::Path) -> Option<std::time::SystemTime> {
+    fn visit(dir: &std::path::Path, newest: &mut Option<std::time::SystemTime>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, newest);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
+                    *newest = Some(newest.map_or(m, |cur| cur.max(m)));
+                }
+            }
+        }
+    }
+    let mut newest = None;
+    visit(&app_dir.join("src"), &mut newest);
+    for f in ["Cargo.toml", "build.sh"] {
+        if let Ok(m) = std::fs::metadata(app_dir.join(f)).and_then(|m| m.modified()) {
+            newest = Some(newest.map_or(m, |cur| cur.max(m)));
+        }
+    }
+    newest
+}
+
 /// Build the scaffolding-e2e app once per test-binary run and return its wasm.
-/// Rebuilds only when the binary is missing or older than `src/lib.rs` (a
-/// coarse but adequate freshness check for a fixture).
+/// Rebuilds when the binary is missing or older than ANY build input (see
+/// [`newest_mtime`]).
 fn scaffolding_wasm() -> &'static [u8] {
     static WASM: OnceLock<Vec<u8>> = OnceLock::new();
     WASM.get_or_init(|| {
@@ -53,10 +83,7 @@ fn scaffolding_wasm() -> &'static [u8] {
         let wasm_mtime = std::fs::metadata(&wasm_path)
             .and_then(|m| m.modified())
             .ok();
-        let src_mtime = std::fs::metadata(app_dir.join("src/lib.rs"))
-            .and_then(|m| m.modified())
-            .ok();
-        let needs_build = match (wasm_mtime, src_mtime) {
+        let needs_build = match (wasm_mtime, newest_mtime(&app_dir)) {
             (Some(w), Some(s)) => w < s,
             _ => true,
         };
