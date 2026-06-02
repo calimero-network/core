@@ -1,0 +1,13 @@
+[package]
+name = "calimero-git-hooks"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Dev-only build script that installs the repo's git hooks (.githooks/) for the current checkout, including linked worktrees."
+publish = false
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"

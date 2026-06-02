@@ -11,6 +11,7 @@ description = "Core Calimero infrastructure and tools"
 # Shared version of all public crates; bump this when cutting a release.
 version = "0.10.1-rc.47"
 exclude = [
+    "./crates/git-hooks",
     "./apps/abi_conformance",
     "./apps/blobs",
     "./apps/collaborative-editor",
@@ -80,6 +81,7 @@ members = [
     "./crates/governance-store",
     "./crates/crypto",
     "./crates/dag",
+    "./crates/git-hooks",
     "./crates/meroctl",
     "./crates/client",
     "./crates/merod",
