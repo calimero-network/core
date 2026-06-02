@@ -1,0 +1,651 @@
+//! Semantic diff of two `state-schema.json` versions.
+//!
+//! Classifies each top-level state-field change as additive, breaking
+//! (migration required), or — the security-relevant one —
+//! `UNSAFE_IDENTITY_DOWNGRADE`: an identity-gated CRDT (`AuthoredMap`,
+//! `AuthoredVector`, `SharedStorage`) replaced by a non-identity-gated type or
+//! dropped, which silently strips per-entry authorship / the writer-ACL
+//! network-wide. This is the CI (L2) layer of the migration safety rail; it
+//! consumes the authoritative `collection_category` classifier from
+//! `calimero-wasm-abi`.
+
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
+
+use calimero_wasm_abi::schema::{
+    collection_category, CollectionCategory, CrdtCollectionType, Field, Manifest, TypeDef, TypeRef,
+};
+
+/// Classification of a single field-level change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindingClass {
+    /// A new field that an old state can default-fill — no migration needed.
+    Additive,
+    /// A change that requires a migration (type change, field removed).
+    Breaking,
+    /// An identity-gated field downgraded to a non-identity-gated type (or
+    /// dropped) — strips authorship / writer-ACL with no error. Requires an
+    /// explicit, reasoned opt-in.
+    UnsafeIdentityDowngrade,
+}
+
+impl FindingClass {
+    /// Short tag used in CLI output.
+    pub fn tag(self) -> &'static str {
+        match self {
+            FindingClass::Additive => "ADDITIVE",
+            FindingClass::Breaking => "BREAKING",
+            FindingClass::UnsafeIdentityDowngrade => "UNSAFE_IDENTITY_DOWNGRADE",
+        }
+    }
+
+    /// Whether this finding should fail CI by default.
+    pub fn is_failure(self) -> bool {
+        matches!(
+            self,
+            FindingClass::Breaking | FindingClass::UnsafeIdentityDowngrade
+        )
+    }
+}
+
+/// A single classified change to a state field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    pub field: String,
+    pub class: FindingClass,
+    pub detail: String,
+}
+
+/// Index record fields by name. Operates on already-validated fields from
+/// [`root_record_fields`] (no silent "missing root → zero fields" path), and
+/// errors on a duplicate field name rather than silently letting one shadow the
+/// other — a duplicate in a record is a malformed schema and could hide a change.
+fn fields_by_name<'a>(
+    fields: &'a [Field],
+    which: &str,
+) -> eyre::Result<BTreeMap<&'a str, &'a TypeRef>> {
+    let mut out = BTreeMap::new();
+    for field in fields {
+        if out.insert(field.name.as_str(), &field.type_).is_some() {
+            eyre::bail!("{which} state root has a duplicate field '{}'", field.name);
+        }
+    }
+    Ok(out)
+}
+
+/// The `CrdtCollectionType` of a *canonical* (fully `$ref`/alias-expanded) field
+/// value, if its top-level type is a CRDT collection.
+///
+/// Identity classification reads from the same validated canonical value used for
+/// the equality comparison — there is no second alias-resolution path that could
+/// disagree with it or silently fall through on a cycle (a cyclic/dangling ref
+/// fails closed during canonicalization, before this is ever called).
+///
+/// Scope: this inspects only the *top-level* type of a state field. A `crdt_type`
+/// lives on a `Collection`, so an inline or aliased identity-gated CRDT is caught;
+/// an identity-gated CRDT nested *inside* a `Record`/`Variant` field is NOT (the
+/// rail guards top-level state fields — nested provenance would need a recursive
+/// walk, out of scope here).
+///
+/// The `.ok()` cannot fail open on an *unknown* CRDT type: `value` is a re-serialized
+/// `TypeRef` whose `crdt_type` is a strongly-typed `Option<CrdtCollectionType>`, so an
+/// unrecognised type was already rejected at manifest load (untagged `TypeRef` matches
+/// no variant → parse error → fail-closed before any diff runs; see
+/// `unknown_crdt_type_fails_closed_at_manifest_load`). Here `None` therefore means only
+/// "no `crdt_type` key" — a genuinely plain (non-CRDT) field.
+fn canonical_crdt(value: &serde_json::Value) -> Option<CrdtCollectionType> {
+    serde_json::from_value::<CrdtCollectionType>(value.get("crdt_type")?.clone()).ok()
+}
+
+fn is_identity_gated(value: &serde_json::Value) -> bool {
+    canonical_crdt(value)
+        .is_some_and(|ct| collection_category(&ct) == CollectionCategory::IdentityGated)
+}
+
+fn crdt_label(value: &serde_json::Value) -> String {
+    canonical_crdt(value).map_or_else(|| "plain".to_owned(), |ct| format!("{ct:?}"))
+}
+
+/// Canonical form of a field type with all `$ref`s expanded inline, so two fields
+/// compare equal iff their *fully resolved* shapes match. Without this, a field
+/// whose `$ref` name is stable while the referenced `types` entry changes would
+/// look unchanged and hide a downgrade. Cycle-guarded.
+///
+/// Serialization errors are propagated, never swallowed — in this security-critical
+/// comparison a silent `Null` substitution could make two distinct types compare
+/// equal and miss a downgrade. (For the plain `TypeRef`/`TypeDef` types this never
+/// fails in practice; failing loud is the fail-closed stance regardless.)
+fn canonical(ty: &TypeRef, manifest: &Manifest) -> eyre::Result<serde_json::Value> {
+    let value = serde_json::to_value(ty)
+        .map_err(|e| eyre::eyre!("failed to serialize field type for diff: {e}"))?;
+    expand_refs(value, manifest, &mut HashSet::new())
+}
+
+/// `path` is the set of `$ref` names on the *current* DFS expansion path (a stack,
+/// not a global visited set): a name is added before recursing into its definition
+/// and removed after. So a type reachable via several distinct paths (a DAG) is
+/// expanded once per path — correct — while a true cycle (a name reappearing on its
+/// own path) is detected and fails closed.
+fn expand_refs(
+    value: serde_json::Value,
+    manifest: &Manifest,
+    path: &mut HashSet<String>,
+) -> eyre::Result<serde_json::Value> {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            // Detect a `$ref` by key presence, NOT `len() == 1`: if a future schema
+            // ever carried extra keys alongside `$ref`, a `len() == 1` guard would
+            // skip expansion and compare two refs literally, hiding a target change.
+            if let Some(Value::String(name)) = map.get("$ref") {
+                let name = name.clone();
+                // Fail-closed on a reference cycle: a cyclic type cannot be fully
+                // canonicalized, and a truncation sentinel could compare equal across
+                // two distinct cyclic schemas and mask a change. O(1) check against
+                // the current DFS path.
+                if !path.insert(name.clone()) {
+                    eyre::bail!("$ref '{name}' is part of a reference cycle — cannot canonicalize");
+                }
+                let Some(def) = manifest.types.get(&name) else {
+                    // Fail-closed: a `$ref` to a type absent from `types` is a
+                    // corrupt/truncated schema. A sentinel here would compare equal
+                    // on both sides and silently suppress the field's diff.
+                    eyre::bail!("$ref '{name}' is not defined in `types`");
+                };
+                // For an alias, expand its *target* (not the `{kind:alias, target}`
+                // wrapper), so an aliased type canonicalizes identically to the same
+                // type written inline — otherwise inline-vs-alias falsely diff as
+                // BREAKING. Structural defs (record/variant/bytes) expand as-is.
+                let def_value = match def {
+                    TypeDef::Alias { target } => serde_json::to_value(target),
+                    other => serde_json::to_value(other),
+                }
+                .map_err(|e| eyre::eyre!("failed to serialize type '{name}' for diff: {e}"))?;
+                let resolved = expand_refs(def_value, manifest, path)?;
+                let _ = path.remove(&name);
+                // Pure `{ "$ref": .. }` → just the resolved target. With extra keys
+                // (not expected today), keep both so no difference is silently dropped.
+                if map.len() == 1 {
+                    return Ok(resolved);
+                }
+                let mut out = serde_json::Map::with_capacity(map.len());
+                let _ = out.insert("$resolved".to_owned(), resolved);
+                for (k, v) in map {
+                    if k != "$ref" {
+                        let _ = out.insert(k, expand_refs(v, manifest, path)?);
+                    }
+                }
+                return Ok(Value::Object(out));
+            }
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                let _ = out.insert(k, expand_refs(v, manifest, path)?);
+            }
+            Ok(Value::Object(out))
+        }
+        Value::Array(arr) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for v in arr {
+                out.push(expand_refs(v, manifest, path)?);
+            }
+            Ok(Value::Array(out))
+        }
+        other => Ok(other),
+    }
+}
+
+/// Resolve a manifest's state root to its record fields, or fail. Fail-closed: a
+/// missing / non-record `state_root` must NOT be treated as "zero fields" (that
+/// would make a flawed baseline silently pass a downgrade as merely additive).
+fn root_record_fields<'a>(manifest: &'a Manifest, which: &str) -> eyre::Result<&'a [Field]> {
+    let root = manifest
+        .state_root
+        .as_deref()
+        .ok_or_else(|| eyre::eyre!("{which} schema has no state_root"))?;
+    match manifest.types.get(root) {
+        Some(TypeDef::Record { fields }) => Ok(fields),
+        Some(_) => eyre::bail!("{which} state_root '{root}' is not a record type"),
+        None => eyre::bail!("{which} state_root '{root}' is not defined in `types`"),
+    }
+}
+
+/// Diff `current` (the new build) against `baseline` (the previous version),
+/// returning one [`Finding`] per changed top-level state field.
+///
+/// Fail-closed by construction: the field maps are built from [`root_record_fields`],
+/// which errors on a missing / non-record `state_root`. There is no silent
+/// "zero fields" path, so the guarantee does not depend on call-site discipline.
+pub fn diff_checked(current: &Manifest, baseline: &Manifest) -> eyre::Result<Vec<Finding>> {
+    let cur_fields = fields_by_name(root_record_fields(current, "current")?, "current")?;
+    let base_fields = fields_by_name(root_record_fields(baseline, "baseline")?, "baseline")?;
+
+    // Canonicalize every field exactly once (expands `$ref`/alias, fails closed on a
+    // dangling/cyclic ref). These cached values are the single validated
+    // representation per field: they drive BOTH the equality comparison and the
+    // identity-gated classification, so there is no second resolution path that
+    // could disagree, and a corrupt ref in ANY field (added / removed / changed)
+    // fails closed here before any classification runs.
+    let cur = canonicalize_fields(&cur_fields, current)?;
+    let base = canonicalize_fields(&base_fields, baseline)?;
+
+    let mut findings = Vec::new();
+
+    // Removed or changed fields (walk the baseline).
+    for (name, base_c) in &base {
+        match cur.get(name) {
+            None => {
+                if is_identity_gated(base_c) {
+                    findings.push(Finding {
+                        field: (*name).to_owned(),
+                        class: FindingClass::UnsafeIdentityDowngrade,
+                        detail: format!(
+                            "identity-gated field '{name}' ({}) removed — strips authorship / writer-ACL network-wide",
+                            crdt_label(base_c)
+                        ),
+                    });
+                } else {
+                    findings.push(Finding {
+                        field: (*name).to_owned(),
+                        class: FindingClass::Breaking,
+                        detail: format!("field '{name}' removed — migration required"),
+                    });
+                }
+            }
+            Some(cur_c) => {
+                if cur_c != base_c {
+                    if is_identity_gated(base_c) && !is_identity_gated(cur_c) {
+                        findings.push(Finding {
+                            field: (*name).to_owned(),
+                            class: FindingClass::UnsafeIdentityDowngrade,
+                            detail: format!(
+                                "field '{name}' {} → {} — strips authorship / writer-ACL network-wide",
+                                crdt_label(base_c),
+                                crdt_label(cur_c)
+                            ),
+                        });
+                    } else {
+                        findings.push(Finding {
+                            field: (*name).to_owned(),
+                            class: FindingClass::Breaking,
+                            detail: format!("field '{name}' type changed — migration required"),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Added fields (walk the current).
+    for name in cur.keys() {
+        if !base.contains_key(name) {
+            findings.push(Finding {
+                field: (*name).to_owned(),
+                class: FindingClass::Additive,
+                detail: format!("field '{name}' added"),
+            });
+        }
+    }
+
+    Ok(findings)
+}
+
+/// Canonicalize each field's type once, keyed by field name.
+fn canonicalize_fields<'a>(
+    fields: &BTreeMap<&'a str, &TypeRef>,
+    manifest: &Manifest,
+) -> eyre::Result<BTreeMap<&'a str, serde_json::Value>> {
+    fields
+        .iter()
+        .map(|(name, ty)| Ok((*name, canonical(ty, manifest)?)))
+        .collect()
+}
+
+fn load_manifest(path: &Path) -> eyre::Result<Manifest> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| eyre::eyre!("failed to read {}: {e}", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| {
+        eyre::eyre!(
+            "failed to parse {} as a state-schema manifest: {e}",
+            path.display()
+        )
+    })
+}
+
+/// Diff two `state-schema.json` files and print findings. Returns `true` if the
+/// caller should fail (a breaking/unsafe change was found and `exit_zero` is
+/// false). The process exit is left to `main` so I/O flushes and any cleanup run
+/// normally — `run_diff` never calls `std::process::exit`.
+pub fn run_diff(current: &Path, baseline: &Path, exit_zero: bool) -> eyre::Result<bool> {
+    let current = load_manifest(current)?;
+    let baseline = load_manifest(baseline)?;
+    let findings = diff_checked(&current, &baseline)?;
+
+    if findings.is_empty() {
+        println!("✓ No state-schema changes.");
+        return Ok(false);
+    }
+
+    let mut fail = false;
+    for finding in &findings {
+        let marker = match finding.class {
+            FindingClass::Additive => "+",
+            FindingClass::Breaking => "⚠",
+            FindingClass::UnsafeIdentityDowngrade => "⛔",
+        };
+        println!("{marker} [{}] {}", finding.class.tag(), finding.detail);
+        if finding.class == FindingClass::UnsafeIdentityDowngrade {
+            println!(
+                "    override requires #[migrate(unsafe_strip_identity = \"…\")] + governance allowance (see #2534)"
+            );
+        }
+        fail |= finding.class.is_failure();
+    }
+
+    Ok(fail && !exit_zero)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(fields_json: &str) -> Manifest {
+        let json = format!(
+            r#"{{"schema_version":"wasm-abi/1","types":{{"Root":{{"kind":"record","fields":{fields_json}}}}},"methods":[],"events":[],"state_root":"Root"}}"#
+        );
+        serde_json::from_str(&json).expect("valid manifest json")
+    }
+
+    const AUTHORED_MAP: &str = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}"#;
+    const UNORDERED_MAP: &str = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"unordered_map"}}"#;
+    const SHARED_STORAGE: &str = r#"{"name":"acl","type":{"kind":"record","fields":[],"crdt_type":"shared_storage","inner_type":{"kind":"string"}}}"#;
+    const COUNTER_U64: &str = r#"{"name":"counter","type":{"kind":"record","fields":[],"crdt_type":"lww_register","inner_type":{"kind":"u64"}}}"#;
+    const COUNTER_STR: &str = r#"{"name":"counter","type":{"kind":"record","fields":[],"crdt_type":"lww_register","inner_type":{"kind":"string"}}}"#;
+
+    #[test]
+    fn authored_map_to_unordered_map_is_unsafe_downgrade() {
+        let baseline = manifest(&format!("[{AUTHORED_MAP}]"));
+        let current = manifest(&format!("[{UNORDERED_MAP}]"));
+        let findings = diff_checked(&current, &baseline).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].field, "wiki");
+        assert_eq!(findings[0].class, FindingClass::UnsafeIdentityDowngrade);
+    }
+
+    #[test]
+    fn shared_storage_removed_is_unsafe_downgrade() {
+        let baseline = manifest(&format!("[{SHARED_STORAGE}]"));
+        let current = manifest("[]");
+        let findings = diff_checked(&current, &baseline).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].field, "acl");
+        assert_eq!(findings[0].class, FindingClass::UnsafeIdentityDowngrade);
+    }
+
+    #[test]
+    fn added_field_is_additive() {
+        let baseline = manifest(&format!("[{COUNTER_U64}]"));
+        let current = manifest(&format!("[{COUNTER_U64},{SHARED_STORAGE}]"));
+        let findings = diff_checked(&current, &baseline).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].field, "acl");
+        assert_eq!(findings[0].class, FindingClass::Additive);
+    }
+
+    #[test]
+    fn non_identity_type_change_is_breaking() {
+        let baseline = manifest(&format!("[{COUNTER_U64}]"));
+        let current = manifest(&format!("[{COUNTER_STR}]"));
+        let findings = diff_checked(&current, &baseline).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].class, FindingClass::Breaking);
+    }
+
+    #[test]
+    fn identical_schema_has_no_findings() {
+        let m = manifest(&format!("[{COUNTER_U64}]"));
+        assert!(diff_checked(&m, &m).unwrap().is_empty());
+    }
+
+    #[test]
+    fn authored_to_authored_value_change_is_breaking_not_downgrade() {
+        // AuthoredMap<…,String> -> AuthoredMap<…,u64> stays identity-gated, so it
+        // is a normal breaking change, NOT an unsafe downgrade.
+        let base = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}"#;
+        let cur = r#"{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"u64"},"crdt_type":"authored_map"}}"#;
+        let findings = diff_checked(
+            &manifest(&format!("[{cur}]")),
+            &manifest(&format!("[{base}]")),
+        )
+        .unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].class, FindingClass::Breaking);
+    }
+
+    fn manifest_raw(json: &str) -> Manifest {
+        serde_json::from_str(json).expect("valid manifest json")
+    }
+
+    #[test]
+    fn alias_to_authored_map_downgrade_is_unsafe() {
+        // The field is a `$ref` to a newtype alias; the alias target downgrades from
+        // AuthoredMap to UnorderedMap. The `$ref` name is stable, so naive top-level
+        // equality would miss it — alias resolution must catch it as an unsafe downgrade.
+        let baseline = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Wiki":{"kind":"alias","target":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}},
+                "Root":{"kind":"record","fields":[{"name":"wiki","type":{"$ref":"Wiki"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let current = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Wiki":{"kind":"alias","target":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"unordered_map"}},
+                "Root":{"kind":"record","fields":[{"name":"wiki","type":{"$ref":"Wiki"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let findings = diff_checked(&current, &baseline).unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].field, "wiki");
+        assert_eq!(findings[0].class, FindingClass::UnsafeIdentityDowngrade);
+    }
+
+    #[test]
+    fn ref_target_record_change_is_breaking() {
+        // The field's `$ref` name is unchanged, but the referenced record gains a
+        // field. Canonical (ref-expanding) comparison must see the structural change.
+        let baseline = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Inner":{"kind":"record","fields":[{"name":"a","type":{"kind":"u64"}}]},
+                "Root":{"kind":"record","fields":[{"name":"data","type":{"$ref":"Inner"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let current = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Inner":{"kind":"record","fields":[{"name":"a","type":{"kind":"u64"}},{"name":"b","type":{"kind":"string"}}]},
+                "Root":{"kind":"record","fields":[{"name":"data","type":{"$ref":"Inner"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let findings = diff_checked(&current, &baseline).unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].class, FindingClass::Breaking);
+    }
+
+    #[test]
+    fn missing_state_root_is_error_not_silent_pass() {
+        // A baseline with no resolvable state_root must error (fail-closed), never be
+        // treated as zero fields (which would mask a downgrade as merely additive).
+        let baseline =
+            manifest_raw(r#"{"schema_version":"wasm-abi/1","types":{},"methods":[],"events":[]}"#);
+        let current = manifest(&format!("[{AUTHORED_MAP}]"));
+        assert!(diff_checked(&current, &baseline).is_err());
+    }
+
+    #[test]
+    fn diff_checked_passes_through_valid_manifests() {
+        let baseline = manifest(&format!("[{COUNTER_U64}]"));
+        let current = manifest(&format!("[{COUNTER_U64},{SHARED_STORAGE}]"));
+        let findings = diff_checked(&current, &baseline).expect("valid roots");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].class, FindingClass::Additive);
+    }
+
+    #[test]
+    fn adding_an_identity_gated_field_is_additive() {
+        // A NEW identity-gated field (absent in baseline) is additive — no existing
+        // provenance is stripped, so it must not be a false UnsafeIdentityDowngrade.
+        let baseline = manifest(&format!("[{COUNTER_U64}]"));
+        let current = manifest(&format!("[{COUNTER_U64},{AUTHORED_MAP}]"));
+        let findings = diff_checked(&current, &baseline).unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].field, "wiki");
+        assert_eq!(findings[0].class, FindingClass::Additive);
+    }
+
+    #[test]
+    fn authored_map_to_authored_vector_is_breaking_not_downgrade() {
+        // Both sides stay identity-gated (AuthoredMap → AuthoredVector), so this is a
+        // normal breaking change — NOT an unsafe identity downgrade (no provenance lost).
+        let base = r#"{"name":"x","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}"#;
+        let cur = r#"{"name":"x","type":{"kind":"list","items":{"kind":"string"},"crdt_type":"authored_vector"}}"#;
+        let findings = diff_checked(
+            &manifest(&format!("[{cur}]")),
+            &manifest(&format!("[{base}]")),
+        )
+        .unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].class, FindingClass::Breaking);
+    }
+
+    #[test]
+    fn inline_type_equals_alias_of_same_type_no_finding() {
+        // An inline AuthoredMap and a `$ref` to a newtype alias of the *same* map are
+        // semantically identical, so the diff must report no change — the alias
+        // wrapper must not leak into the canonical form.
+        let baseline = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Root":{"kind":"record","fields":[{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let current = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Wiki":{"kind":"alias","target":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}},
+                "Root":{"kind":"record","fields":[{"name":"wiki","type":{"$ref":"Wiki"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        assert!(
+            diff_checked(&current, &baseline).unwrap().is_empty(),
+            "inline vs alias-of-same-type must not be flagged as changed"
+        );
+    }
+
+    #[test]
+    fn multi_hop_alias_chain_downgrade_is_unsafe() {
+        // wiki: $ref A → alias B → alias (authored_map), downgraded to unordered_map.
+        // resolve_aliases must follow every hop to see the identity-gated type.
+        let baseline = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "A":{"kind":"alias","target":{"$ref":"B"}},
+                "B":{"kind":"alias","target":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}},
+                "Root":{"kind":"record","fields":[{"name":"wiki","type":{"$ref":"A"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let current = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "A":{"kind":"alias","target":{"$ref":"B"}},
+                "B":{"kind":"alias","target":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"unordered_map"}},
+                "Root":{"kind":"record","fields":[{"name":"wiki","type":{"$ref":"A"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let findings = diff_checked(&current, &baseline).unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].class, FindingClass::UnsafeIdentityDowngrade);
+    }
+
+    #[test]
+    fn cyclic_ref_is_error() {
+        // A self-referential alias cannot be canonicalized; fail closed.
+        let baseline = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Node":{"kind":"alias","target":{"$ref":"Node"}},
+                "Root":{"kind":"record","fields":[{"name":"n","type":{"$ref":"Node"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let current = manifest(&format!("[{COUNTER_U64}]"));
+        assert!(diff_checked(&current, &baseline).is_err());
+    }
+
+    #[test]
+    fn duplicate_field_name_is_error() {
+        let dup = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Root":{"kind":"record","fields":[
+                    {"name":"x","type":{"kind":"u64"}},
+                    {"name":"x","type":{"kind":"string"}}
+                ]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let ok = manifest(&format!("[{COUNTER_U64}]"));
+        assert!(diff_checked(&ok, &dup).is_err());
+    }
+
+    #[test]
+    fn dangling_ref_is_error_not_silent_skip() {
+        // A `$ref` to a type absent from `types` is a corrupt schema. On the
+        // comparison path it must error (fail-closed), never resolve to a sentinel
+        // that compares equal on both sides and silently suppresses the diff. The
+        // field is present in both so the canonical comparison (which expands refs)
+        // actually runs.
+        let baseline = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Root":{"kind":"record","fields":[{"name":"x","type":{"$ref":"Gone"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let current = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Root":{"kind":"record","fields":[{"name":"x","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_map"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        assert!(diff_checked(&current, &baseline).is_err());
+    }
+
+    #[test]
+    fn unknown_crdt_type_fails_closed_at_manifest_load() {
+        // A `crdt_type` this binary's `CrdtCollectionType` enum does not know (e.g. a
+        // schema emitted by a newer toolchain) must fail CLOSED. The boundary is the
+        // manifest *parse*, not classification: `crdt_type` is a strongly-typed
+        // `Option<CrdtCollectionType>` on an untagged `TypeRef`, so an unrecognised
+        // value matches no variant and the whole manifest is rejected. An unknown
+        // type therefore never reaches `canonical_crdt`/`is_identity_gated` to be
+        // silently mis-graded as plain — it errors out before any diff runs.
+        let raw = r#"{"schema_version":"wasm-abi/1","types":{
+            "Root":{"kind":"record","fields":[{"name":"wiki","type":{"kind":"map","key":{"kind":"string"},"value":{"kind":"string"},"crdt_type":"authored_set_v2_future"}}]}
+        },"methods":[],"events":[],"state_root":"Root"}"#;
+        assert!(
+            serde_json::from_str::<Manifest>(raw).is_err(),
+            "an unrecognised crdt_type must be rejected at manifest load (fail-closed)"
+        );
+    }
+
+    #[test]
+    fn ref_with_extra_sibling_keys_preserves_both() {
+        // A typed `TypeRef::Ref` serializes to exactly `{"$ref": name}`, so the current
+        // schema never emits a `$ref` with sibling keys — but if a future format did,
+        // `expand_refs` must keep BOTH the resolved target (under `$resolved`) and the
+        // siblings, never silently dropping a difference. Exercises the `len() > 1`
+        // branch directly (unreachable from a parsed manifest today, fail-closed by design).
+        let m = manifest_raw(
+            r#"{"schema_version":"wasm-abi/1","types":{
+                "Inner":{"kind":"record","fields":[{"name":"a","type":{"kind":"u64"}}]},
+                "Root":{"kind":"record","fields":[{"name":"x","type":{"kind":"u64"}}]}
+            },"methods":[],"events":[],"state_root":"Root"}"#,
+        );
+        let value = serde_json::json!({"$ref": "Inner", "extra": "keep-me"});
+        let out = expand_refs(value, &m, &mut HashSet::new()).unwrap();
+        let obj = out.as_object().expect("object out");
+        assert!(obj.contains_key("$resolved"), "resolved target kept: {out}");
+        assert_eq!(obj.get("extra").unwrap(), "keep-me", "sibling kept: {out}");
+        assert!(
+            !obj.contains_key("$ref"),
+            "$ref replaced by $resolved: {out}"
+        );
+    }
+}

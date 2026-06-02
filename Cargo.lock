@@ -8909,6 +8909,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "scenario-identity-downgrade-v1"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
+name = "scenario-identity-downgrade-v2"
+version = "0.0.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-wasm-abi",
+ "serde_json",
+]
+
+[[package]]
 name = "scenario-invariant-reshuffle-v1"
 version = "0.0.0"
 dependencies = [

@@ -112,6 +112,62 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # Static migration-safety guard (no merobox / no runtime): build the
+  # deliberate identity-downgrade scenario, emit both versions' state schemas,
+  # and assert `calimero-abi diff` catches the AuthoredMap -> UnorderedMap
+  # downgrade (UNSAFE_IDENTITY_DOWNGRADE, exit 1). This proves the L2 lint fires
+  # on a real, emitter-produced schema pair — the downgrade pair is intentionally
+  # NOT in the merobox matrix because a downgrade migration is unsafe at runtime.
+  schema-downgrade-guard:
+    name: Schema downgrade guard
+    runs-on: ubuntu-24.04-8cpu
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          # Read the warm e2e-rust-apps dependency cache, but never SAVE under that
+          # key: the `build` job owns it, and a second writer for the same key only
+          # races / wastes a save. This guard is read-only on the shared cache.
+          shared-key: e2e-rust-apps
+          save-if: false
+
+      - name: Build calimero-abi
+        run: cargo build -p mero-abi
+
+      - name: Emit downgrade-scenario state schemas
+        run: |
+          bash apps/migrations/scenario-identity-downgrade-v1/build.sh
+          bash apps/migrations/scenario-identity-downgrade-v2/build.sh
+
+      - name: calimero-abi diff must flag the identity downgrade
+        run: |
+          set +e
+          # Capture stderr too (2>&1): on a compile/runtime failure the diagnostic
+          # would otherwise be lost and the assertion below would print a confusing
+          # "expected exit 1" against empty output instead of the real error.
+          OUT=$(cargo run -q -p mero-abi -- diff \
+            apps/migrations/scenario-identity-downgrade-v2/res/state-schema.json \
+            apps/migrations/scenario-identity-downgrade-v1/res/state-schema.json 2>&1)
+          CODE=$?
+          echo "$OUT"
+          if [ "$CODE" -ne 1 ]; then
+            echo "::error::expected exit 1 (the downgrade must fail CI), got $CODE"
+            exit 1
+          fi
+          echo "$OUT" | grep -q "UNSAFE_IDENTITY_DOWNGRADE" || {
+            echo "::error::expected an UNSAFE_IDENTITY_DOWNGRADE finding"
+            exit 1
+          }
+          echo "✓ identity downgrade correctly flagged and failed CI"
+
   # Fan-out: one matrix entry per workflow YAML. Each entry downloads
   # the pre-built image + fixtures, then runs exactly one merobox
   # workflow. fail-fast disabled so a flaky scenario doesn't mask
