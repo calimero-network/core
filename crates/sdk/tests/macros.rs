@@ -51,4 +51,5 @@ fn all() {
     t.compile_fail("tests/macros/error_const_generic.rs");
     t.compile_fail("tests/macros/error_explicit_abi.rs");
     t.compile_fail("tests/macros/error_event_on_struct.rs");
+    t.compile_fail("tests/macros/error_private_incompatible.rs");
 }
