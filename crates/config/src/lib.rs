@@ -2,6 +2,7 @@ use core::time::Duration;
 
 use calimero_context::config::ContextConfig;
 use calimero_network_primitives::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
+use calimero_runtime::RuntimeConfig;
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::config::AuthMode;
 use calimero_server::jsonrpc::JsonRpcConfig;
@@ -57,6 +58,12 @@ pub struct ConfigFile {
     pub blobstore: BlobStoreConfig,
 
     pub context: ContextConfig,
+
+    /// WASM runtime configuration (`[runtime]`), e.g. operator-tunable VM
+    /// limits. Defaults to current hardcoded behavior when the section is
+    /// absent.
+    #[serde(default)]
+    pub runtime: RuntimeConfig,
 
     /// TEE-related configuration (KMS, attestation, etc.).
     #[serde(default)]
@@ -465,8 +472,10 @@ impl BlobStoreConfig {
 }
 
 impl ConfigFile {
+    // Not `const`: `RuntimeConfig::default()` is not a const fn. The only
+    // caller is node init at runtime, so const-ness bought nothing.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         identity: IdentityConfig,
         mode: NodeMode,
         network: NetworkConfig,
@@ -483,6 +492,7 @@ impl ConfigFile {
             datastore,
             blobstore,
             context,
+            runtime: RuntimeConfig::default(),
             tee: None,
         }
     }

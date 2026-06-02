@@ -1017,6 +1017,9 @@ impl ContextManager {
 
         let module_task = blob_task.and_then(move |cached_or_blob, act, _ctx| {
             let node_client = act.node_client.clone();
+            // Operator-configured limits, baked into the engine that compiles
+            // or deserializes the module here and applied at execution time.
+            let vm_limits = act.vm_limits;
 
             async move {
                 let mut blob = match cached_or_blob {
@@ -1039,8 +1042,10 @@ impl ContextManager {
                 let original_blob_id = blob.compiled;
 
                 if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled, None).await? {
-                    let module =
-                        unsafe { calimero_runtime::Engine::headless().from_precompiled(&compiled) };
+                    let module = unsafe {
+                        calimero_runtime::Engine::headless_with_limits(vm_limits)
+                            .from_precompiled(&compiled)
+                    };
 
                     match module {
                         Ok(module) => {
@@ -1078,7 +1083,9 @@ impl ContextManager {
                 // Compile WASM in a blocking task to avoid blocking the async executor.
                 // Note: panics during compilation will surface as JoinError.
                 let module = global_runtime()
-                    .spawn_blocking(move || calimero_runtime::Engine::default().compile(&bytecode))
+                    .spawn_blocking(move || {
+                        calimero_runtime::Engine::with_limits(vm_limits).compile(&bytecode)
+                    })
                     .await
                     .wrap_err("WASM compilation task failed")? // JoinError (task panicked/cancelled)
                     ?; // Compilation error
