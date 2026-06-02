@@ -397,14 +397,21 @@ where
         let old = self.inner.get(self.value_id())?.unwrap_or_default();
 
         let value_id = self.value_id();
-        let new = self.inner.insert_with_storage_type(
-            Some(value_id),
-            value,
-            StorageType::Shared {
-                writers,
-                signature_data: None,
-            },
-        )?;
+        let shared = StorageType::Shared {
+            writers,
+            signature_data: None,
+        };
+        let new = self
+            .inner
+            .insert_with_storage_type(Some(value_id), value, shared.clone())?;
+        // Track the current writer set on the value entry's own index. After a
+        // rotation this node received, the value entry's index still carries the
+        // pre-rotation set (apply does not patch a child's own `storage_type`);
+        // without this, the runtime's post-execution `update_signature_in_place`
+        // would see a writer-set mismatch (the just-signed write claims the new
+        // set) and abort the whole transaction. Hash-neutral; no-ops when
+        // unchanged.
+        let _ignored = <Index<S>>::set_storage_type(value_id, shared);
         *self.value.borrow_mut() = Some(new);
         Ok(Some(old))
     }
@@ -575,6 +582,47 @@ mod tests {
 
     fn writers(keys: &[[u8; 32]]) -> BTreeSet<PublicKey> {
         keys.iter().copied().map(pk).collect()
+    }
+
+    #[test]
+    #[serial]
+    fn value_entry_index_tracks_writers_through_rotation() {
+        // Regression for the post-rotation write abort: the value entry's index
+        // `storage_type` must follow the writer set so the runtime's
+        // post-execution `update_signature_in_place` does not see a writer-set
+        // mismatch (which aborts the transaction). `insert` and `rotate_writers`
+        // both keep it current.
+        use crate::collections::compute_id;
+        use crate::entities::{Data, StorageType};
+        use crate::index::Index;
+        use crate::store::MainStorage;
+
+        env::reset_for_testing();
+        env::set_executor_id(ALICE);
+
+        let mut s = Root::new(|| SharedStorage::<TestVal>::new(writers(&[ALICE]), false));
+        s.insert(TestVal(1)).unwrap();
+
+        let value_id = compute_id(s.element().id(), super::VALUE_KEY);
+        let writers_of = |id| match <Index<MainStorage>>::get_metadata(id)
+            .unwrap()
+            .unwrap()
+            .storage_type
+        {
+            StorageType::Shared { writers, .. } => writers,
+            other => panic!("expected Shared, got {other:?}"),
+        };
+        assert_eq!(writers_of(value_id), writers(&[ALICE]));
+
+        // Rotation must carry the value entry's index to the new set.
+        s.rotate_writers(writers(&[ALICE, BOB])).unwrap();
+        assert_eq!(writers_of(value_id), writers(&[ALICE, BOB]));
+
+        // A write by the newly-added writer keeps it current (would mismatch if
+        // the index had stayed at the pre-rotation set).
+        env::set_executor_id(BOB);
+        s.insert(TestVal(2)).unwrap();
+        assert_eq!(writers_of(value_id), writers(&[ALICE, BOB]));
     }
 
     #[test]

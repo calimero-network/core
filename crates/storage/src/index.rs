@@ -629,6 +629,9 @@ impl<S: StorageAdaptor> Index<S> {
     ) -> Result<(), StorageError> {
         let _mutation_guard = index_mutation_guard();
         if let Some(mut index) = Self::get_index(id)? {
+            if index.metadata.storage_type == storage_type {
+                return Ok(()); // unchanged — skip the redundant write
+            }
             index.metadata.storage_type = storage_type;
             Self::save_index(&index)?;
         }
