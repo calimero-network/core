@@ -1510,11 +1510,19 @@ impl DeltaStore {
             || !cascaded_deltas.is_empty()
         {
             // When this call carries the just-applied primary delta, a failed
-            // commit must surface as an error: the primary's `applied: true`
-            // record never landed, so the caller must not run its event
-            // handlers — a restart would re-apply the delta and run them again
-            // (a duplicate). Cascade-only commit failures stay best-effort (the
-            // next sync corrects the heads).
+            // commit must surface as an error so the caller does NOT run its
+            // event handlers: the `applied: true` record never landed, and
+            // the atomic batch wrote nothing, so the durable outcome is that
+            // this delta did not happen.
+            //
+            // Post-bail the in-memory DAG is ahead of the DB (the delta is
+            // applied in memory, absent on disk, heads stale). That is the
+            // intended, recoverable state: a restart rebuilds the DAG from the
+            // DB via `load_persisted_deltas`, which won't find this record, so
+            // the delta is simply re-delivered by sync and re-applied then —
+            // handlers run exactly once, on the durable apply. Running them now
+            // would double-run them after that re-apply. Cascade-only commit
+            // failures stay best-effort (the next sync corrects the heads).
             let primary_present = primary_record.is_some();
             let outcome = self
                 .persist_cascaded_deltas_and_update_heads(&cascaded_bodies, primary_record, heads)
@@ -2365,13 +2373,21 @@ impl DeltaStore {
 
         // Commit all staged checkpoints atomically. Logged, not propagated, to
         // match the rest of this best-effort path: on failure none land and
-        // the next snapshot sync re-adds them.
+        // the next snapshot sync re-stages and retries them (records are now
+        // staged unconditionally above, so the retry heals a prior failure).
         //
-        // This runs while the DAG write lock is still held (the head-hash
-        // bookkeeping and `try_process_pending` below both need it). That's
-        // not a new cost: the previous per-checkpoint `put` loop did its DB
-        // I/O under the same lock — this is now a single batched `apply`, so
-        // strictly less I/O inside the critical section.
+        // This runs while the DAG write lock is still held — deliberately, and
+        // not just for parity with the old per-checkpoint `put` loop. The
+        // head-hash bookkeeping below tags *every current head* with
+        // `boundary_root_hash`, which is only correct while the heads are
+        // exactly the checkpoints just restored. Dropping the lock for the
+        // persist (as `add_delta_internal` does) would let a concurrent
+        // `add_delta` inject a non-boundary head in the gap, which the
+        // bookkeeping would then mis-tag with `boundary_root_hash`. So the
+        // restore → persist → head-hash → `try_process_pending` span is one
+        // critical section. The cost is bounded: this is a single batched
+        // `apply` (less in-lock I/O than the prior N puts), on the infrequent
+        // snapshot-sync path.
         match self
             .applier
             .context_client
