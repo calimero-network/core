@@ -19,6 +19,12 @@ use crate::config::ServerConfig;
 /// Build a 401 response, adding `X-Auth-Error: token_expired` if the error
 /// indicates an expired token. Centralises the logic so the Bearer and
 /// query-param paths stay in sync.
+///
+/// Only expiry is signalled here. Revoked tokens are intentionally not
+/// distinguished: revoked keys currently surface as "Key not found" because
+/// `KeyManager::get_key` filters them out, so there is no reliable revoked
+/// signal to propagate yet. Fixing that (and adding an `X-Auth-Error:
+/// token_revoked` arm) is tracked separately.
 fn unauthorized_response(err: &AuthError) -> Response {
     let mut resp = StatusCode::UNAUTHORIZED.into_response();
     if matches!(err, AuthError::TokenExpired) {

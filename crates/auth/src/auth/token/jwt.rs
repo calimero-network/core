@@ -622,15 +622,16 @@ impl TokenManager {
         validation.validate_exp = true;
         validation.set_issuer(&[&self.config.issuer]);
 
+        // NB: a challenge is a short-lived auth nonce, not a Bearer access
+        // token. Its expiry is deliberately NOT mapped to `AuthError::TokenExpired`
+        // — that variant signals access-token expiry and drives the SDK's refresh
+        // flow, which makes no sense for an expired challenge.
         let token_data = decode::<ChallengeClaims>(
             token,
             &DecodingKey::from_secret(secret.as_bytes()),
             &validation,
         )
-        .map_err(|e| match e.kind() {
-            jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::TokenExpired,
-            _ => AuthError::InvalidToken(e.to_string()),
-        })?;
+        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
 
         Ok(token_data.claims)
     }
