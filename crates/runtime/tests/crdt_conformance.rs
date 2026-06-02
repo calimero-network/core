@@ -601,7 +601,11 @@ fn frozen_rga_e2e_sequence_converges() {
     c.apply(2, &f);
 
     // 2. node-1 seeds the RGA doc; broadcast.
-    let ins = c.call(0, "rga_insert_text", json!({"position": 0, "text": "Hello"}));
+    let ins = c.call(
+        0,
+        "rga_insert_text",
+        json!({"position": 0, "text": "Hello"}),
+    );
     c.apply(1, &ins);
     c.apply(2, &ins);
 
@@ -621,7 +625,11 @@ fn frozen_rga_e2e_sequence_converges() {
 
     // 5. The trigger: node-1 sets the document title (LWW). Capture the WRITER's
     //    own post-write root, then apply to the receivers and capture theirs.
-    let (r0, title) = c.call_full(0, "rga_set_title", json!({"new_title": "E2E Test Document"}));
+    let (r0, title) = c.call_full(
+        0,
+        "rga_set_title",
+        json!({"new_title": "E2E Test Document"}),
+    );
     let r1 = {
         let m = c.module;
         apply_delta(m, &mut c.nodes[1], &title).unwrap()
