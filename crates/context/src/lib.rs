@@ -340,6 +340,12 @@ pub struct ContextManager {
     /// Runtime-tunable timing knobs (see [`ContextManagerConfig`]).
     /// Populated with [`ContextManagerConfig::default`] by [`Self::new`].
     pub(crate) config: ContextManagerConfig,
+
+    /// Operator-configured per-execution VM resource limits, baked into every
+    /// engine the execute handler builds (precompiled + compile paths).
+    /// Defaults to [`VMLimits::default`]; override via [`Self::with_vm_limits`]
+    /// from the node config's `[runtime.limits]` section.
+    pub(crate) vm_limits: calimero_runtime::logic::VMLimits,
 }
 
 /// Creates a new `ContextManager`.
@@ -372,7 +378,17 @@ impl ContextManager {
             namespace_dags: HashMap::new(),
             ack_router,
             config: ContextManagerConfig::default(),
+            vm_limits: calimero_runtime::logic::VMLimits::default(),
         }
+    }
+
+    /// Override the per-execution VM resource limits applied when running guest
+    /// WASM. Builder-style so the production path (node startup) can thread
+    /// operator config in while tests keep the [`VMLimits::default`] behavior.
+    #[must_use]
+    pub fn with_vm_limits(mut self, vm_limits: calimero_runtime::logic::VMLimits) -> Self {
+        self.vm_limits = vm_limits;
+        self
     }
 
     /// Get this node's identity for the namespace (root group) that contains `group_id`.

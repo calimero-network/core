@@ -54,6 +54,10 @@ pub fn validate_config(config: &ConfigFile, node_path: &Utf8Path) -> EyreResult<
         .wrap_err("Path accessibility validation failed")?;
     validate_required_credentials(config).wrap_err("Credentials validation failed")?;
     validate_limit_values(config).wrap_err("Limit values validation failed")?;
+    config
+        .runtime
+        .validate()
+        .wrap_err("Runtime VM limits validation failed")?;
 
     Ok(())
 }

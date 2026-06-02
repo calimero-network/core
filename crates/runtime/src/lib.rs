@@ -10,6 +10,7 @@ use wasmer::{DeserializeError, Instance, SerializeError, Store};
 #[cfg(feature = "profiling")]
 use wasmer::sys::{CompilerConfig, Cranelift};
 
+pub mod config;
 mod constants;
 mod constraint;
 pub mod errors;
@@ -18,6 +19,7 @@ mod memory;
 mod panic_payload;
 pub mod store;
 
+pub use config::{RuntimeConfig, RuntimeLimitsConfig};
 pub use constraint::Constraint;
 use errors::{FunctionCallError, HostError, Location, PanicContext, VMRuntimeError};
 use logic::{Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
@@ -87,11 +89,7 @@ pub struct Engine {
 
 impl Default for Engine {
     fn default() -> Self {
-        let limits = VMLimits::default();
-
-        let engine = Self::create_engine();
-
-        Self::new(engine, limits)
+        Self::with_limits(VMLimits::default())
     }
 }
 
@@ -127,10 +125,26 @@ impl Engine {
         wasmer::Engine::default()
     }
 
+    /// Like [`Engine::default`], but with operator-configured `limits` instead
+    /// of [`VMLimits::default`]. The limits are baked into every `Module` this
+    /// engine compiles and applied at execution time.
+    #[must_use]
+    pub fn with_limits(limits: VMLimits) -> Self {
+        let engine = Self::create_engine();
+
+        Self::new(engine, limits)
+    }
+
     #[must_use]
     pub fn headless() -> Self {
-        let limits = VMLimits::default();
+        Self::headless_with_limits(VMLimits::default())
+    }
 
+    /// Like [`Engine::headless`], but with operator-configured `limits` instead
+    /// of [`VMLimits::default`]. The limits are baked into every `Module` this
+    /// engine deserializes and applied at execution time.
+    #[must_use]
+    pub fn headless_with_limits(limits: VMLimits) -> Self {
         // Headless engines lack a compiler, so Wasmer skips perf.map generation.
         // For profiling, use a full engine to enable WASM symbol resolution.
         #[cfg(feature = "profiling")]
@@ -140,8 +154,7 @@ impl Engine {
                 .unwrap_or(false)
             {
                 debug!("Using profiling-enabled engine for precompiled module (required for perf.map generation)");
-                let engine = Self::create_engine();
-                return Self::new(engine, limits);
+                return Self::with_limits(limits);
             }
         }
 

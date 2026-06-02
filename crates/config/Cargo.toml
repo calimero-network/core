@@ -23,6 +23,7 @@ url = { workspace = true, features = ["serde"] }
 
 calimero-context.workspace = true
 calimero-node-primitives.workspace = true
+calimero-runtime.workspace = true
 calimero-server = { workspace = true }
 calimero-network-primitives.workspace = true
 mero-auth.workspace = true
