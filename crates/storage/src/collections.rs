@@ -295,6 +295,54 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         this
     }
 
+    /// Creates a collection whose element is stamped `Shared{writers}` (and
+    /// carries the given `crdt_type`) **before** its single registration with
+    /// ROOT, so it emits exactly one `Add` action carrying the `Shared` domain —
+    /// not an `Add(Public)` followed by an `Update(Shared)`.
+    ///
+    /// Used by [`SharedStorage`](super::SharedStorage) for its wrapper entity:
+    /// stamping after `add_child_to` would emit two actions for the same entity
+    /// in the bootstrap delta, and a bootstrap `Update(Shared)` over a freshly
+    /// `Add`ed `Public` entity is a different (untested) merge path than a
+    /// single `Add(Shared)`.
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
+    pub(crate) fn new_shared(
+        id: Option<Id>,
+        field_name: Option<&str>,
+        crdt_type: CrdtType,
+        writers: std::collections::BTreeSet<calimero_primitives::identity::PublicKey>,
+    ) -> Self {
+        let id = id.unwrap_or_else(|| Id::random());
+
+        let mut storage = match field_name {
+            Some(name) => Element::new_with_field_name_and_crdt_type(
+                Some(id),
+                Some(name.to_string()),
+                crdt_type,
+            ),
+            None => {
+                let mut element = Element::new(Some(id));
+                element.metadata.crdt_type = Some(crdt_type);
+                element
+            }
+        };
+        storage.set_shared_domain(writers);
+
+        let mut this = Self {
+            children_ids: RefCell::new(None),
+            storage,
+            _priv: PhantomData,
+        };
+
+        if id.is_root() {
+            let _ignored = <Interface<S>>::save(&mut this).expect("save");
+        } else {
+            let _ = <Interface<S>>::add_child_to(*ROOT_ID, &mut this).expect("add child");
+        }
+
+        this
+    }
+
     /// Creates a detached collection that is NOT registered with the storage system.
     ///
     /// This is used for placeholder fields that are never actually used, such as

@@ -609,6 +609,35 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(Self::get_index(id)?.map(|index| index.metadata))
     }
 
+    /// Persist a new `storage_type` for an existing entity's index entry.
+    ///
+    /// `storage_type` is not part of any Merkle hash (it lives in
+    /// [`EntityIndex::metadata`], separate from the hashed entity bytes), so
+    /// this is hash-neutral and cannot cause root-hash divergence. It exists so
+    /// a `SharedStorage` writer-set rotation can persist the new set on the
+    /// **originating** node, whose rotation log is not appended locally (only
+    /// the apply path on a *receiving* node appends it). On receivers the log is
+    /// the authoritative source; this keeps the local index a correct fallback.
+    ///
+    /// No-op if the entity has no index entry yet.
+    ///
+    /// # Errors
+    /// Returns `StorageError` if the index cannot be loaded or written.
+    pub(crate) fn set_storage_type(
+        id: Id,
+        storage_type: crate::entities::StorageType,
+    ) -> Result<(), StorageError> {
+        let _mutation_guard = index_mutation_guard();
+        if let Some(mut index) = Self::get_index(id)? {
+            if index.metadata.storage_type == storage_type {
+                return Ok(()); // unchanged — skip the redundant write
+            }
+            index.metadata.storage_type = storage_type;
+            Self::save_index(&index)?;
+        }
+        Ok(())
+    }
+
     /// Checks if an entity is deleted (tombstone marker set).
     ///
     /// Returns false if entity has no index (not found).

@@ -1357,6 +1357,198 @@ mod shared_storage_replay_protection {
     }
 }
 
+/// Tests for `SharedStorage` writer-set rotation authentication.
+///
+/// A writer-set rotation propagates as a signed per-entity action and is
+/// verified at merge against the *current* writer set (resolved from the
+/// rotation log / `effective_writers`, with the stored writers as the
+/// fallback). A rotation forged by a non-writer must be rejected — this is the
+/// merge-time backstop behind the local writer gate, and the property that
+/// makes the writer set unforgeable.
+#[cfg(test)]
+mod shared_storage_rotation_authentication {
+    use std::collections::BTreeSet;
+
+    use ed25519_dalek::SigningKey;
+
+    use crate::address::Id;
+    use crate::entities::StorageType;
+    use crate::env;
+    use crate::index::Index;
+    use crate::interface::{ApplyContext, MainInterface, StorageError};
+    use crate::store::MainStorage;
+    use crate::tests::common::{build_signed_shared_action, pubkey_of, setup_root_for_main};
+
+    fn make_signing_key(seed: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed; 32])
+    }
+
+    #[test]
+    fn forged_shared_rotation_rejected_at_merge() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = pubkey_of(&alice_sk);
+        let mallory_sk = make_signing_key(0x4D); // a context member, NOT a writer
+        let mallory = pubkey_of(&mallory_sk);
+
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let id = Id::new([0x5E; 32]);
+
+        // Bootstrap the Shared entity with writers = {alice}, signed by alice.
+        let nonce1 = env::time_now();
+        let bootstrap = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            writers.clone(),
+            nonce1,
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+
+        // Mallory forges a rotation: an Update that swaps the writer set to
+        // {mallory}, signed by mallory (who is not a current writer). The
+        // verifier resolves the authoritative writer set to {alice} (here via
+        // effective_writers, as the node sync layer would from the rotation
+        // log) and rejects mallory's signature.
+        let forged = build_signed_shared_action(
+            false,
+            id,
+            b"v0".to_vec(),
+            [mallory].into_iter().collect(),
+            nonce1 + 1_000_000,
+            &mallory_sk,
+            vec![],
+        );
+        let ctx = ApplyContext {
+            effective_writers: Some(writers.clone()),
+            delta_id: None,
+            delta_hlc: None,
+        };
+        let result = MainInterface::apply_action(forged, &ctx);
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "forged rotation by a non-writer must be rejected, got {result:?}"
+        );
+
+        // The stored writer set is unchanged: the honest node still trusts only
+        // {alice}.
+        let stored = <Index<MainStorage>>::get_metadata(id).unwrap().unwrap();
+        match stored.storage_type {
+            StorageType::Shared { writers: w, .. } => {
+                assert_eq!(
+                    w, writers,
+                    "writer set must be unchanged after forged rotation"
+                );
+            }
+            other => panic!("expected Shared storage_type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn forged_rotation_rejected_via_stored_writers_fallback() {
+        // Complement to `forged_shared_rotation_rejected_at_merge`: exercise the
+        // path where the apply context carries NO `effective_writers` (empty
+        // ctx). The verifier must then fall back to the entity's *stored* writer
+        // set and still reject a non-writer's forged rotation — covering the
+        // case where rotation-log resolution yielded nothing.
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = pubkey_of(&alice_sk);
+        let mallory_sk = make_signing_key(0x4D);
+        let mallory = pubkey_of(&mallory_sk);
+
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let id = Id::new([0x5E; 32]);
+
+        let nonce1 = env::time_now();
+        let bootstrap = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            writers.clone(),
+            nonce1,
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+
+        // Empty ctx → no effective_writers → verifier falls back to stored
+        // writers {alice}; mallory's signature is not from a stored writer.
+        let forged = build_signed_shared_action(
+            false,
+            id,
+            b"v0".to_vec(),
+            [mallory].into_iter().collect(),
+            nonce1 + 1_000_000,
+            &mallory_sk,
+            vec![],
+        );
+        let result = MainInterface::apply_action(forged, &ApplyContext::empty());
+        assert!(
+            matches!(result, Err(StorageError::InvalidSignature)),
+            "forged rotation must be rejected via the stored-writers fallback, got {result:?}"
+        );
+
+        let stored = <Index<MainStorage>>::get_metadata(id).unwrap().unwrap();
+        match stored.storage_type {
+            StorageType::Shared { writers: w, .. } => assert_eq!(w, writers),
+            other => panic!("expected Shared storage_type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn authentic_rotation_by_current_writer_accepted() {
+        env::reset_for_testing();
+        let root = setup_root_for_main();
+
+        let alice_sk = make_signing_key(0xA1);
+        let alice = pubkey_of(&alice_sk);
+        let bob_sk = make_signing_key(0xB0);
+        let bob = pubkey_of(&bob_sk);
+
+        let writers: BTreeSet<_> = [alice].into_iter().collect();
+        let id = Id::new([0x5E; 32]);
+
+        let nonce1 = env::time_now();
+        let bootstrap = build_signed_shared_action(
+            true,
+            id,
+            b"v0".to_vec(),
+            writers.clone(),
+            nonce1,
+            &alice_sk,
+            vec![root],
+        );
+        MainInterface::apply_action(bootstrap, &ApplyContext::empty()).unwrap();
+
+        // Alice (a current writer) rotates the set to {alice, bob}. Verified
+        // against the current set {alice}; alice's signature is valid.
+        let new_writers: BTreeSet<_> = [alice, bob].into_iter().collect();
+        let rotation = build_signed_shared_action(
+            false,
+            id,
+            b"v0".to_vec(),
+            new_writers.clone(),
+            nonce1 + 1_000_000,
+            &alice_sk,
+            vec![],
+        );
+        let ctx = ApplyContext {
+            effective_writers: Some(writers),
+            delta_id: None,
+            delta_hlc: None,
+        };
+        MainInterface::apply_action(rotation, &ctx)
+            .expect("authentic rotation by a current writer must be accepted");
+    }
+}
+
 /// Tests for Frozen storage verification.
 ///
 /// Frozen storage is immutable and content-addressed:
