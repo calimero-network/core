@@ -8,15 +8,31 @@
 //! a field to [`RuntimeLimitsConfig`] and overlay it in
 //! [`RuntimeLimitsConfig::apply`].
 
+use eyre::{bail, Result as EyreResult};
 use serde::{Deserialize, Serialize};
 
 use crate::logic::VMLimits;
+
+/// Upper bound accepted for `max_logs`. Past this, the worst-case log buffer
+/// (`max_logs * max_log_size`) is large enough that the value is almost
+/// certainly a typo or a misguided attempt to disable the limit, so we reject
+/// it rather than let it exhaust node memory.
+const MAX_LOGS_CEILING: u64 = 1_000_000;
+/// Upper bound accepted for `max_log_size`, in bytes (10 MiB). Single log
+/// lines are never legitimately this large; a value above it is treated as a
+/// misconfiguration.
+const MAX_LOG_SIZE_CEILING: u64 = 10 * 1024 * 1024;
 
 /// The `[runtime]` config section.
 ///
 /// Every field defaults, so an absent `[runtime]` section (or any absent
 /// sub-key) leaves the built-in [`VMLimits::default`] behavior untouched.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+///
+/// Not `Copy` despite being small and currently all-`Copy`: `#[non_exhaustive]`
+/// signals this will grow, and a future non-`Copy` field (a path, a list)
+/// would make dropping the derive a breaking change. `Clone` covers every
+/// current use.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct RuntimeConfig {
     /// Per-execution VM resource limits (`[runtime.limits]`).
@@ -27,9 +43,18 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     /// Resolve the configured overrides into a concrete [`VMLimits`], falling
     /// back to [`VMLimits::default`] for every field left unset.
+    ///
+    /// Call [`RuntimeConfig::validate`] (e.g. at node startup) before relying
+    /// on the result; this method itself does not reject out-of-range values.
     #[must_use]
     pub fn vm_limits(&self) -> VMLimits {
         self.limits.apply(VMLimits::default())
+    }
+
+    /// Reject operator misconfigurations before they reach the engine. See
+    /// [`RuntimeLimitsConfig::validate`].
+    pub fn validate(&self) -> EyreResult<()> {
+        self.limits.validate()
     }
 }
 
@@ -41,7 +66,12 @@ impl RuntimeConfig {
 /// resource-constrained deployments want them lower, verbose-tracing debug
 /// sessions want them higher — which the hardcoded defaults could not satisfy
 /// without recompilation.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+///
+/// **Memory budgeting:** the transient per-execution log buffer is bounded by
+/// the *product* `max_logs * max_log_size` (worst case, held in the `Outcome`).
+/// With the defaults that is ~16 MiB; raising both simultaneously multiplies
+/// the ceiling, so tune them together with that product in mind.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct RuntimeLimitsConfig {
     /// Override for [`VMLimits::max_logs`]: the maximum number of log entries
@@ -70,6 +100,30 @@ impl RuntimeLimitsConfig {
             base.max_log_size = max_log_size;
         }
         base
+    }
+
+    /// Reject values large enough to be footguns rather than intent. An
+    /// operator who sets `max_logs` near `u64::MAX` would let a single
+    /// execution's log buffer exhaust node memory (worst case
+    /// `max_logs * max_log_size`); a sanity ceiling turns that into a
+    /// startup error instead of a runtime OOM. Unset fields always pass.
+    pub fn validate(&self) -> EyreResult<()> {
+        if let Some(max_logs) = self.max_logs {
+            if max_logs > MAX_LOGS_CEILING {
+                bail!(
+                    "runtime.limits.max_logs = {max_logs} exceeds the maximum of {MAX_LOGS_CEILING}"
+                );
+            }
+        }
+        if let Some(max_log_size) = self.max_log_size {
+            if max_log_size > MAX_LOG_SIZE_CEILING {
+                bail!(
+                    "runtime.limits.max_log_size = {max_log_size} exceeds the maximum of \
+                     {MAX_LOG_SIZE_CEILING} bytes"
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -114,5 +168,56 @@ mod tests {
         let resolved = cfg.vm_limits();
         assert_eq!(resolved.max_logs, 2048);
         assert_eq!(resolved.max_log_size, 32768);
+    }
+
+    #[test]
+    fn validate_accepts_defaults_and_reasonable_overrides() {
+        RuntimeConfig::default()
+            .validate()
+            .expect("defaults are valid");
+
+        let cfg = RuntimeConfig {
+            limits: RuntimeLimitsConfig {
+                max_logs: Some(4096),
+                max_log_size: Some(64 * 1024),
+            },
+        };
+        cfg.validate().expect("reasonable overrides are valid");
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_values() {
+        let cfg = RuntimeConfig {
+            limits: RuntimeLimitsConfig {
+                max_logs: Some(u64::MAX),
+                max_log_size: None,
+            },
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("max_logs"), "unexpected error: {err}");
+
+        let cfg = RuntimeConfig {
+            limits: RuntimeLimitsConfig {
+                max_logs: None,
+                max_log_size: Some(u64::MAX),
+            },
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("max_log_size"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn unknown_keys_are_ignored_not_rejected() {
+        // The config is intentionally lenient (matching the rest of the node
+        // config): an unknown/typo'd key is silently ignored rather than
+        // failing the parse. This test pins that behavior so a future switch
+        // to `deny_unknown_fields` is a conscious, reviewed change.
+        let toml = r#"
+            [limits]
+            max_log = 4096
+        "#;
+        let cfg: RuntimeConfig = toml::from_str(toml).expect("unknown key is ignored");
+        let defaults = VMLimits::default();
+        assert_eq!(cfg.vm_limits().max_logs, defaults.max_logs);
     }
 }
