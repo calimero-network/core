@@ -1,4 +1,5 @@
 pub mod downgrade;
+pub mod embed;
 pub mod emitter;
 pub mod normalize;
 pub mod schema;

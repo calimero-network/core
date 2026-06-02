@@ -1801,6 +1801,7 @@ dependencies = [
  "serde_json",
  "syn 2.0.117",
  "thiserror 1.0.69",
+ "wasmparser 0.118.2",
 ]
 
 [[package]]
